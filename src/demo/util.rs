@@ -1,4 +1,3 @@
-use rand::random;
 use tokio::time::{self, Duration};
 
 pub async fn sleep(seconds: f64) {
@@ -7,7 +6,8 @@ pub async fn sleep(seconds: f64) {
 
 pub async fn latency() {
     // Random duration from 100..2000 ms
-    let duration = 0.1 + 1.9 * random::<f64>();
+
+    let duration = 0.1 + 1.9 * rand::random::<f64>();
     sleep(duration).await;
 }
 

@@ -2,8 +2,6 @@ mod bluetooth_endpoint;
 pub use bluetooth_endpoint::BluetoothEndpoint;
 mod discovery;
 pub use discovery::Discovery;
-mod pairing;
-pub use pairing::Pairing;
 mod sign;
 pub use sign::Sign;
 

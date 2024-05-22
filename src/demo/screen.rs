@@ -1,5 +1,6 @@
-use std::{sync::Arc, time::Duration};
-use tokio::sync::{Mutex, Notify};
+use std::{sync::{Arc, Mutex}, time::Duration};
+use tokio::sync::Notify;
+use anyhow::Result;
 use bc_envelope::prelude::*;
 
 #[derive(Debug)]
@@ -45,7 +46,7 @@ impl Drop for ScreenGuard {
         let screen = self.screen.clone();
         tokio::spawn(async move {
             //println!("Dropping ScreenGuard");
-            screen.clear().await;
+            screen.clear();
         });
     }
 }
@@ -66,32 +67,21 @@ impl Screen {
         })
     }
 
-    pub async fn show(self: Arc<Self>, data: String) -> ScreenGuard {
-        *self.data.lock().await = Some(data);
+    pub fn show(self: Arc<Self>, data: String) -> ScreenGuard {
+        *(self.data.lock().unwrap()) = Some(data);
         self.notify.notify_waiters();
         ScreenGuard::new(&self)
     }
 
-    pub async fn clear(self: Arc<Self>) {
-        *self.data.lock().await = None;
+    pub fn clear(self: Arc<Self>) {
+        *(self.data.lock().unwrap()) = None;
         self.notify.notify_waiters();
         println!("{} 📺 Screen cleared", self.prefix);
     }
 
-    pub async fn show_envelope(self: Arc<Self>, envelope: &Envelope) -> ScreenGuard {
+    pub fn show_envelope(self: Arc<Self>, envelope: &Envelope) -> ScreenGuard {
         let data = envelope.ur_string().to_uppercase();
-        self.show(data).await
-    }
-}
-
-// Internal methods
-impl Screen {
-    pub fn data(&self) -> &Mutex<Option<String>> {
-        &self.data
-    }
-
-    pub fn notify(&self) -> &Notify {
-        &self.notify
+        self.show(data)
     }
 }
 
@@ -116,10 +106,10 @@ impl Camera {
     }
 
     async fn poll_visible(&self) -> Option<String> {
-        self.screen.data().lock().await.clone()
+        self.screen.data.lock().unwrap().clone()
     }
 
-    pub async fn scan_envelope(&self, duration: Duration) -> anyhow::Result<Envelope> {
+    pub async fn scan_envelope(&self, duration: Duration) -> Result<Envelope> {
         let string = self.scan_qr_code(duration).await;
         if string.is_none() {
             return Err(CameraError::NoQrCode.into());
@@ -134,7 +124,7 @@ impl Camera {
             return current;
         }
 
-        let mut notify_guard = Box::pin(self.screen.notify().notified());
+        let mut notify_guard = Box::pin(self.screen.notify.notified());
         tokio::select! {
             _ = tokio::time::sleep(timeout) => {}
             _ = &mut notify_guard => {

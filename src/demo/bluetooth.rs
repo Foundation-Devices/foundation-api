@@ -6,6 +6,7 @@ use tokio::{
     time::{self, Duration}
 };
 use bc_envelope::prelude::*;
+use anyhow::Result;
 
 #[derive(Debug)]
 pub struct BluetoothChannel {
@@ -27,21 +28,21 @@ impl BluetoothChannel {
         &self.endpoint
     }
 
-    pub async fn send_envelope(&self, envelope: &bc_envelope::Envelope) -> anyhow::Result<()> {
+    pub async fn send_envelope(&self, envelope: &Envelope) -> Result<()> {
         self.send(envelope.to_cbor_data()).await
     }
 
-    pub async fn send(&self, message: impl Into<Bytes>) -> anyhow::Result<()> {
+    pub async fn send(&self, message: impl Into<Bytes>) -> Result<()> {
         let sender = self.sender.lock().await;
         sender.send(message.into()).await.map_err(|e| anyhow::anyhow!(e))
     }
 
-    pub async fn receive_envelope(&self, timeout: Duration) -> anyhow::Result<bc_envelope::Envelope> {
+    pub async fn receive_envelope(&self, timeout: Duration) -> Result<Envelope> {
         let bytes = self.receive(timeout).await?;
         Envelope::try_from_cbor_data(bytes)
     }
 
-    pub async fn receive(&self, timeout: Duration) -> anyhow::Result<Bytes> {
+    pub async fn receive(&self, timeout: Duration) -> Result<Bytes> {
         let mut receiver = self.receiver.lock().await;
         Ok(
             time::timeout(timeout, receiver.recv())

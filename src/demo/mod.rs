@@ -9,6 +9,6 @@ pub use envoy::{Envoy, ENVOY_PREFIX};
 mod util;
 pub use util::{sleep, handle_ctrl_c, latency, chapter_title};
 mod enclave;
-pub use enclave::{Enclave, EnclaveEnvelope};
-mod demo_enclave;
-pub use demo_enclave::DemoEnclave;
+pub use enclave::Enclave;
+#[allow(unused_imports)]
+pub use enclave::{SecureFrom, SecureInto, SecureTryFrom, SecureTryInto};
