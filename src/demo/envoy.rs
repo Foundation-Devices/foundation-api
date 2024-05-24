@@ -6,7 +6,7 @@ use bc_envelope::prelude::*;
 use tokio::{sync::Mutex, task::JoinHandle, time::Duration};
 
 use foundation_api::{Discovery, Sign, GENERATE_SEED_FUNCTION, PAIRING_FUNCTION, SHUTDOWN_FUNCTION, SIGN_FUNCTION};
-use crate::{chapter_title, latency, sleep, BluetoothChannel, Camera, Enclave, SecureFrom, SecureTryFrom};
+use crate::{chapter_title, latency, paint_broadcast, paint_request, paint_response, sleep, BluetoothChannel, Camera, Enclave, SecureFrom, SecureTryFrom};
 
 pub const ENVOY_PREFIX: &str = "🔶 Envoy   ";
 
@@ -91,7 +91,7 @@ impl Envoy {
                         log!("❌ Error in event: {:?}", e);
                     }
                 } else {
-                    log!("🧡…");
+                    log!("🧡");
                 }
 
                 if *stop.lock().await {
@@ -103,7 +103,7 @@ impl Envoy {
 
     async fn handle_event(self: &Arc<Self>, envelope: Envelope, stop: Arc<Mutex<bool>>) -> Result<()> {
         let response = SealedResponse::secure_try_from(envelope, &self.enclave)?;
-        log!("📡 Received: {}", response);
+        log!("📡 Received: {}", paint_response!(response));
 
         // Verify the sender is one of the paired devices
         self.check_paired_device(response.sender()).await?;
@@ -117,7 +117,7 @@ impl Envoy {
             let seed: Seed = result.extract_subject()?;
             log!("🌱 Got seed: {}", hex::encode(seed.data()));
         } else if function == SIGN_FUNCTION {
-            log!("🔏 Verifying signature…");
+            log!("🔏 Verifying signature");
             let verified_envelope = result.verify(&self.passport_key().await)?;
             let sign = Sign::try_from(expression)?;
             if verified_envelope.is_identical_to(sign.signing_subject()) {
@@ -139,7 +139,7 @@ impl Envoy {
     async fn send_request_with_id(self: &Arc<Self>, log_prefix: &str, request_id: &ARID, body: Expression, state: Option<impl EnvelopeEncodable>, recipient: &PublicKeyBase) -> Result<()> {
         let request = SealedRequest::new_with_body(body, request_id, self.public_key())
             .with_optional_state(state);
-        log!("{} Sending: {}…", log_prefix, &request);
+        log!("{} Sending: {}", log_prefix, paint_request!(format!("{}", request)));
         let sent_envelope = Envelope::secure_from((request, recipient), &self.enclave);
         self.bluetooth.send_envelope(&sent_envelope).await
     }
@@ -153,10 +153,10 @@ impl Envoy {
         let request_id = ARID::new();
         self.send_request_with_id(log_prefix, &request_id, body, state, recipient).await?;
 
-        log!("{} Waiting for response…", log_prefix);
+        log!("{} Waiting for response", log_prefix);
         let received_envelope = self.bluetooth.receive_envelope(Duration::from_secs(10)).await?;
         let response = SealedResponse::secure_try_from((received_envelope, &request_id), &self.enclave)?;
-        log!("{} Received: {}", log_prefix, response);
+        log!("{} Received: {}", log_prefix, paint_response!(response));
         Ok(response)
     }
 
@@ -169,18 +169,23 @@ impl Envoy {
     }
 
     async fn run_pairing_mode(self: &Arc<Self>) -> Result<()> {
-        log!("📷 Scanning for discovery QR code…");
+        log!("📷 Scanning for discovery QR code");
         let scanned_envelope = self.camera.scan_envelope(Duration::from_secs(10)).await?;
-        let request = SealedRequest::try_from(scanned_envelope)?;
-        let passport_key = request.sender().clone();
-        let discovery = Discovery::try_from(request.body().clone())?;
-        log!("📷 Scanned discovery QR code: {}", request);
+        log!("📷 Scanned discovery QR code: {}", paint_broadcast!(scanned_envelope.format_flat()));
+        let inner = scanned_envelope.unwrap_envelope()?;
+        let discovery = Discovery::try_from(Expression::try_from(inner)?)?;
+        let sender = discovery.sender();
+        scanned_envelope.verify(sender)?;
+
         // This is here for pairing, but we're not actually using it in this demo.
+        // Presumably the call below would be sent to this endpoint.
         let _endpoint = discovery.bluetooth_endpoint();
+
         // We're using the public key from the disovery to send the pairing request, as we're not
         // paired yet. The other commands use the first paired device.
-        self.call("🤝", Expression::new(PAIRING_FUNCTION), None::<Expression>, &passport_key).await?.result()?;
-        self.add_paired_device(&passport_key).await;
+        let body = Expression::new(PAIRING_FUNCTION);
+        self.call("🤝", body.clone(), Some(body), sender).await?.result()?;
+        self.add_paired_device(sender).await;
 
         Ok(())
     }

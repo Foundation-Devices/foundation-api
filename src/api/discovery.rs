@@ -1,23 +1,27 @@
 use anyhow::Result;
-use bc_components::UUID;
+use bc_components::{PublicKeyBase, UUID};
 use bc_envelope::prelude::*;
 
-use super::{BluetoothEndpoint, CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SERVICE_PARAM};
+use super::{BluetoothEndpoint, CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Discovery(BluetoothEndpoint);
+pub struct Discovery {
+    sender: PublicKeyBase,
+    endpoint: BluetoothEndpoint,
+}
 
 impl Discovery {
-    pub fn new(endpoint: BluetoothEndpoint) -> Self {
-        Self(endpoint)
+    pub fn new(sender: PublicKeyBase, endpoint: BluetoothEndpoint) -> Self {
+        Self { sender, endpoint }
     }
 }
 
 impl From<Discovery> for Expression {
     fn from(value: Discovery) -> Self {
         Expression::new(DISCOVERY_FUNCTION)
-            .with_parameter(SERVICE_PARAM, value.0.service().clone())
-            .with_parameter(CHARACTERISTIC_PARAM, value.0.characteristic().clone())
+            .with_parameter(SENDER_PARAM, value.sender)
+            .with_parameter(SERVICE_PARAM, value.endpoint.service().clone())
+            .with_parameter(CHARACTERISTIC_PARAM, value.endpoint.characteristic().clone())
     }
 }
 
@@ -25,15 +29,20 @@ impl TryFrom<Expression> for Discovery {
     type Error = anyhow::Error;
 
     fn try_from(expression: Expression) -> Result<Self> {
+        let sender: PublicKeyBase = expression.extract_object_for_parameter(SENDER_PARAM)?;
         let service: UUID = expression.extract_object_for_parameter(SERVICE_PARAM)?;
         let characteristic: UUID = expression.extract_object_for_parameter(CHARACTERISTIC_PARAM)?;
         let endpoint = BluetoothEndpoint::from_fields(service, characteristic);
-        Ok(Self(endpoint))
+        Ok(Self::new(sender, endpoint))
     }
 }
 
 impl Discovery {
+    pub fn sender(&self) -> &PublicKeyBase {
+        &self.sender
+    }
+
     pub fn bluetooth_endpoint(&self) -> &BluetoothEndpoint {
-        &self.0
+        &self.endpoint
     }
 }

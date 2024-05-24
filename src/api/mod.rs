@@ -21,6 +21,7 @@ pub const SHUTDOWN_FUNCTION: Function = Function::new_static_named(SHUTDOWN_FUNC
 
 // Parameters
 
+const SENDER_PARAM: Parameter = Parameter::new_static_named("sender");
 const SERVICE_PARAM: Parameter = Parameter::new_static_named("bluetoothService");
 const CHARACTERISTIC_PARAM: Parameter = Parameter::new_static_named("bluetoothCharacteristic");
 const SIGNING_SUBJECT_PARAM: Parameter = Parameter::new_static_named("signingSubject");

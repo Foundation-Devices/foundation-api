@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::Result;
 use bc_components::{PrivateKeyBase, PublicKeyBase, ARID};
 use bc_envelope::prelude::*;
@@ -23,7 +25,6 @@ impl Enclave {
 }
 
 /// Private key operations
-#[allow(dead_code)]
 impl Enclave {
     pub fn sign(&self, envelope: &Envelope) -> Envelope {
         envelope.sign(&self.private_key)
@@ -76,7 +77,6 @@ impl<T, U> SecureInto<U> for T where U: SecureFrom<T> {
 // Fallable conversions using the enclave
 //
 
-#[allow(dead_code)]
 pub trait SecureTryInto<T>: Sized {
     type Error;
 
