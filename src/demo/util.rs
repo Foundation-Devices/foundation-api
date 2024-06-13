@@ -1,24 +1,30 @@
-use tokio::time::{self, Duration};
+use tokio::time::{ self, Duration };
 // use nu_ansi_term::Color::LightPurple;
 
 #[macro_export]
 macro_rules! paint_broadcast {
     ($e:expr) => {
-        nu_ansi_term::Color::LightGreen.paint(format!("{}", $e)).to_string()
+        nu_ansi_term::Color::LightGreen
+            .paint(format!("{}", $e))
+            .to_string()
     };
 }
 
 #[macro_export]
 macro_rules! paint_request {
     ($e:expr) => {
-        nu_ansi_term::Color::LightPurple.paint(format!("{}", $e)).to_string()
+        nu_ansi_term::Color::LightPurple
+            .paint(format!("{}", $e))
+            .to_string()
     };
 }
 
 #[macro_export]
 macro_rules! paint_response {
     ($e:expr) => {
-        nu_ansi_term::Color::LightBlue.paint(format!("{}", $e)).to_string()
+        nu_ansi_term::Color::LightBlue
+            .paint(format!("{}", $e))
+            .to_string()
     };
 }
 

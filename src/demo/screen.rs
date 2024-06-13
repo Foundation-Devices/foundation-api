@@ -1,7 +1,7 @@
-use std::{sync::{Arc, Mutex}, time::Duration};
-use tokio::sync::Notify;
 use anyhow::Result;
 use bc_envelope::prelude::*;
+use std::{ sync::{ Arc, Mutex }, time::Duration };
+use tokio::sync::Notify;
 
 #[derive(Debug)]
 pub struct ScreenPeers {
@@ -13,10 +13,7 @@ impl ScreenPeers {
     pub fn new(screen_prefix: &str, camera_prefix: &str) -> Self {
         let screen = Screen::new(screen_prefix);
         let camera = Camera::new(&screen, camera_prefix);
-        Self {
-            screen,
-            camera,
-        }
+        Self { screen, camera }
     }
 
     pub fn screen(&self) -> &Arc<Screen> {
@@ -36,7 +33,7 @@ pub struct ScreenGuard {
 impl ScreenGuard {
     pub fn new(screen: &Arc<Screen>) -> Self {
         Self {
-            screen: screen.clone()
+            screen: screen.clone(),
         }
     }
 }
@@ -68,13 +65,13 @@ impl Screen {
     }
 
     pub fn show(self: Arc<Self>, data: String) -> ScreenGuard {
-        *(self.data.lock().unwrap()) = Some(data);
+        *self.data.lock().unwrap() = Some(data);
         self.notify.notify_waiters();
         ScreenGuard::new(&self)
     }
 
     pub fn clear(self: Arc<Self>) {
-        *(self.data.lock().unwrap()) = None;
+        *self.data.lock().unwrap() = None;
         self.notify.notify_waiters();
         println!("{} 📺 Screen cleared", self.prefix);
     }
@@ -101,7 +98,7 @@ impl Camera {
     pub fn new(screen: &Arc<Screen>, prefix: &str) -> Arc<Self> {
         Arc::new(Camera {
             _prefix: prefix.to_string(),
-            screen: screen.clone()
+            screen: screen.clone(),
         })
     }
 

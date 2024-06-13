@@ -1,12 +1,30 @@
-use std::{sync::Arc, collections::HashSet};
+use std::{ collections::HashSet, sync::Arc };
 
-use anyhow::{anyhow, bail, Ok, Result};
-use bc_components::{PublicKeyBase, Seed, ARID};
+use anyhow::{ anyhow, bail, Ok, Result };
+use bc_components::{ PublicKeyBase, Seed };
 use bc_envelope::prelude::*;
-use tokio::{sync::Mutex, task::JoinHandle, time::Duration};
+use tokio::{ sync::Mutex, task::JoinHandle, time::Duration };
 
-use foundation_api::{Discovery, Sign, GENERATE_SEED_FUNCTION, PAIRING_FUNCTION, SHUTDOWN_FUNCTION, SIGN_FUNCTION};
-use crate::{chapter_title, latency, paint_broadcast, paint_request, paint_response, sleep, BluetoothChannel, Camera, Enclave, SecureFrom, SecureTryFrom};
+use crate::{
+    chapter_title,
+    latency,
+    paint_broadcast,
+    paint_response,
+    sleep,
+    BluetoothChannel,
+    Camera,
+    Enclave,
+};
+use foundation_api::{
+    AbstractBluetoothChannel,
+    Discovery,
+    SecureTryFrom,
+    Sign,
+    GENERATE_SEED_FUNCTION,
+    PAIRING_FUNCTION,
+    SHUTDOWN_FUNCTION,
+    SIGN_FUNCTION,
+};
 
 pub const ENVOY_PREFIX: &str = "🔶 Envoy   ";
 
@@ -60,20 +78,21 @@ impl Envoy {
 
         chapter_title("🌱 Envoy tells Passport to generate a seed.");
         let body = Expression::new(GENERATE_SEED_FUNCTION);
-        self.send_request("🌱", body.clone(), Some(body)).await?;
+        let recipient = self.first_paired_device().await;
+        self.bluetooth.send_request(&recipient, &self.enclave, body.clone(), Some(body)).await?;
 
         sleep(5.0).await;
 
         chapter_title("🔏 Envoy tells Passport to sign an envelope.");
         let envelope_to_sign = Envelope::new("Signed by Passport");
         let body = Expression::from(Sign::new(envelope_to_sign));
-        self.send_request("🔏", body.clone(), Some(body)).await?;
+        self.bluetooth.send_request(&recipient, &self.enclave, body.clone(), Some(body)).await?;
 
         sleep(5.0).await;
 
         chapter_title("🚪 Envoy tells Passport to shut down");
         let body = Expression::new(SHUTDOWN_FUNCTION);
-        self.send_request( "🚪", body.clone(), Some(body)).await?;
+        self.bluetooth.send_request(&recipient, &self.enclave, body.clone(), Some(body)).await?;
 
         event_loop.await?;
 
@@ -84,7 +103,9 @@ impl Envoy {
         let stop = Arc::new(Mutex::new(false));
         tokio::spawn(async move {
             loop {
-                let received_envelope = self.bluetooth.receive_envelope(Duration::from_secs(1)).await.ok();
+                let received_envelope = self.bluetooth
+                    .receive_envelope(Duration::from_secs(1)).await
+                    .ok();
                 if let Some(envelope) = received_envelope {
                     let handle_event_result = self.handle_event(envelope, stop.clone()).await;
                     if let Err(e) = handle_event_result {
@@ -101,7 +122,11 @@ impl Envoy {
         })
     }
 
-    async fn handle_event(self: &Arc<Self>, envelope: Envelope, stop: Arc<Mutex<bool>>) -> Result<()> {
+    async fn handle_event(
+        self: &Arc<Self>,
+        envelope: Envelope,
+        stop: Arc<Mutex<bool>>
+    ) -> Result<()> {
         let response = SealedResponse::secure_try_from(envelope, &self.enclave)?;
         log!("📡 Received: {}", paint_response!(response));
 
@@ -109,7 +134,10 @@ impl Envoy {
         self.check_paired_device(response.sender()).await?;
 
         let result = response.result()?.clone();
-        let state = response.state().cloned().ok_or_else(|| anyhow!("No state found in response."))?;
+        let state = response
+            .state()
+            .cloned()
+            .ok_or_else(|| anyhow!("No state found in response."))?;
         let expression = Expression::try_from(state)?;
         let function = expression.function().clone();
 
@@ -136,30 +164,6 @@ impl Envoy {
 }
 
 impl Envoy {
-    async fn send_request_with_id(self: &Arc<Self>, log_prefix: &str, request_id: &ARID, body: Expression, state: Option<impl EnvelopeEncodable>, recipient: &PublicKeyBase) -> Result<()> {
-        let request = SealedRequest::new_with_body(body, request_id, self.public_key())
-            .with_optional_state(state);
-        log!("{} Sending: {}", log_prefix, paint_request!(format!("{}", request)));
-        let sent_envelope = Envelope::secure_from((request, recipient), &self.enclave);
-        self.bluetooth.send_envelope(&sent_envelope).await
-    }
-
-    async fn send_request(self: &Arc<Self>, log_prefix: &str, body: Expression, state: Option<impl EnvelopeEncodable>) -> Result<()> {
-        let recipient = self.first_paired_device().await;
-        self.send_request_with_id(log_prefix, &ARID::new(), body, state, &recipient).await
-    }
-
-    async fn call(self: &Arc<Self>, log_prefix: &str, body: Expression, state: Option<impl EnvelopeEncodable>, recipient: &PublicKeyBase) -> Result<SealedResponse> {
-        let request_id = ARID::new();
-        self.send_request_with_id(log_prefix, &request_id, body, state, recipient).await?;
-
-        log!("{} Waiting for response", log_prefix);
-        let received_envelope = self.bluetooth.receive_envelope(Duration::from_secs(10)).await?;
-        let response = SealedResponse::secure_try_from((received_envelope, &request_id), &self.enclave)?;
-        log!("{} Received: {}", log_prefix, paint_response!(response));
-        Ok(response)
-    }
-
     async fn check_paired_device(self: &Arc<Self>, sender: &PublicKeyBase) -> Result<()> {
         if self.paired_devices.lock().await.contains(sender) {
             Ok(())
@@ -184,7 +188,7 @@ impl Envoy {
         // We're using the public key from the disovery to send the pairing request, as we're not
         // paired yet. The other commands use the first paired device.
         let body = Expression::new(PAIRING_FUNCTION);
-        self.call("🤝", body.clone(), Some(body), sender).await?.result()?;
+        self.bluetooth.call(sender, &self.enclave, body.clone(), Some(body)).await?.result()?;
         self.add_paired_device(sender).await;
 
         Ok(())
@@ -210,9 +214,5 @@ impl Envoy {
 
     async fn passport_key(&self) -> PublicKeyBase {
         self.first_paired_device().await
-    }
-
-    fn public_key(&self) -> &PublicKeyBase {
-        self.enclave.public_key()
     }
 }

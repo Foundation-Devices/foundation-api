@@ -1,8 +1,10 @@
 use anyhow::Result;
-use bc_components::{PublicKeyBase, UUID};
+use bc_components::{ PublicKeyBase, UUID };
 use bc_envelope::prelude::*;
 
-use super::{BluetoothEndpoint, CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM};
+use crate::BluetoothEndpoint;
+
+use super::{ CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {

@@ -1,12 +1,9 @@
-use std::sync::Arc;
-use bytes::Bytes;
-use foundation_api::BluetoothEndpoint;
-use tokio::{
-    sync::{Mutex, mpsc::{self, Sender, Receiver}},
-    time::{self, Duration}
-};
-use bc_envelope::prelude::*;
 use anyhow::Result;
+use async_trait::async_trait;
+use bytes::Bytes;
+use foundation_api::{ AbstractBluetoothChannel, BluetoothEndpoint };
+use std::sync::Arc;
+use tokio::{ sync::{ mpsc::{ self, Receiver, Sender }, Mutex }, time::{ self, Duration } };
 
 #[derive(Debug)]
 pub struct BluetoothChannel {
@@ -16,39 +13,33 @@ pub struct BluetoothChannel {
 }
 
 impl BluetoothChannel {
-    pub fn new(endpoint: BluetoothEndpoint, sender: Sender<Bytes>, receiver: Receiver<Bytes>) -> Arc<Self> {
+    pub fn new(
+        endpoint: BluetoothEndpoint,
+        sender: Sender<Bytes>,
+        receiver: Receiver<Bytes>
+    ) -> Arc<Self> {
         Arc::new(Self {
             endpoint,
             sender: Mutex::new(sender),
             receiver: Mutex::new(receiver),
         })
     }
+}
 
-    pub fn endpoint(&self) -> &BluetoothEndpoint {
+#[async_trait]
+impl AbstractBluetoothChannel for BluetoothChannel {
+    fn endpoint(&self) -> &BluetoothEndpoint {
         &self.endpoint
     }
 
-    pub async fn send_envelope(&self, envelope: &Envelope) -> Result<()> {
-        self.send(envelope.to_cbor_data()).await
-    }
-
-    pub async fn send(&self, message: impl Into<Bytes>) -> Result<()> {
+    async fn send(&self, message: impl Into<Bytes> + std::marker::Send) -> Result<()> {
         let sender = self.sender.lock().await;
         sender.send(message.into()).await.map_err(|e| anyhow::anyhow!(e))
     }
 
-    pub async fn receive_envelope(&self, timeout: Duration) -> Result<Envelope> {
-        let bytes = self.receive(timeout).await?;
-        Envelope::try_from_cbor_data(bytes)
-    }
-
-    pub async fn receive(&self, timeout: Duration) -> Result<Bytes> {
+    async fn receive(&self, timeout: Duration) -> Result<Bytes> {
         let mut receiver = self.receiver.lock().await;
-        Ok(
-            time::timeout(timeout, receiver.recv())
-            .await?
-            .unwrap()
-        )
+        Ok(time::timeout(timeout, receiver.recv()).await?.unwrap())
     }
 }
 

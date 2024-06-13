@@ -6,21 +6,17 @@ async fn main() {
     // Gracefully handle Ctrl-C
     handle_ctrl_c();
 
-    chapter_title("🤝 Envoy and Passport pair using Discovery QR code and Bluetooth pairing request/response.");
+    chapter_title(
+        "🤝 Envoy and Passport pair using Discovery QR code and Bluetooth pairing request/response."
+    );
 
     // Instantiate the channels that connect the devices
     let screen_peers = ScreenPeers::new(PASSPORT_PREFIX, ENVOY_PREFIX);
     let bluetooth_peers = BluetoothPeers::new();
 
     // Instantiate the two devices
-    let passport = Passport::new(
-        screen_peers.screen().clone(),
-        bluetooth_peers.peer1().clone()
-    );
-    let envoy = Envoy::new(
-        screen_peers.camera().clone(),
-        bluetooth_peers.peer2().clone()
-    );
+    let passport = Passport::new(screen_peers.screen().clone(), bluetooth_peers.peer1().clone());
+    let envoy = Envoy::new(screen_peers.camera().clone(), bluetooth_peers.peer2().clone());
 
     // Start the devices
     let passport_task = passport.boot();

@@ -1,7 +1,7 @@
-use bc_envelope::prelude::*;
 use anyhow::Result;
+use bc_envelope::prelude::*;
 
-use super::{SIGN_FUNCTION, SIGNING_SUBJECT_PARAM};
+use super::{ SIGNING_SUBJECT_PARAM, SIGN_FUNCTION };
 
 #[derive(Debug, Clone)]
 pub struct Sign(Envelope);
@@ -20,8 +20,7 @@ impl Sign {
 
 impl From<Sign> for Expression {
     fn from(value: Sign) -> Self {
-        Expression::new(SIGN_FUNCTION)
-            .with_parameter(SIGNING_SUBJECT_PARAM, &value.0)
+        Expression::new(SIGN_FUNCTION).with_parameter(SIGNING_SUBJECT_PARAM, &value.0)
     }
 }
 

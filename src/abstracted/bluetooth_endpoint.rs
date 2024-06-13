@@ -8,7 +8,10 @@ pub struct BluetoothEndpoint {
 
 impl BluetoothEndpoint {
     pub fn from_fields(service: UUID, characteristic: UUID) -> Self {
-        Self { service, characteristic }
+        Self {
+            service,
+            characteristic,
+        }
     }
 
     pub fn new() -> Self {
