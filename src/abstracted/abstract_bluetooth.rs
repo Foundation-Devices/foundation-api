@@ -2,7 +2,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bc_components::{ PublicKeyBase, ARID };
 use bc_envelope::prelude::*;
-use bytes::Bytes;
 use tokio::time::Duration;
 
 use crate::{ AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom };
@@ -10,8 +9,8 @@ use crate::{ AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom };
 #[async_trait]
 pub trait AbstractBluetoothChannel {
     fn endpoint(&self) -> &BluetoothEndpoint;
-    async fn send(&self, message: impl Into<Bytes> + std::marker::Send) -> Result<()>;
-    async fn receive(&self, timeout: Duration) -> Result<Bytes>;
+    async fn send(&self, message: impl Into<Vec<u8>> + std::marker::Send) -> Result<()>;
+    async fn receive(&self, timeout: Duration) -> Result<Vec<u8>>;
 
     async fn send_envelope(&self, envelope: &Envelope) -> Result<()> {
         self.send(envelope.to_cbor_data()).await
