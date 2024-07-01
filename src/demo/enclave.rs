@@ -14,7 +14,7 @@ pub struct Enclave {
 impl Enclave {
     pub fn new() -> Self {
         let private_key = PrivateKeyBase::new();
-        let public_key = private_key.public_key();
+        let public_key = private_key.schnorr_public_key_base();
         Self {
             private_key,
             public_key,
