@@ -1,12 +1,12 @@
 mod screen;
-pub use screen::{ Camera, Screen, ScreenPeers };
+pub use screen::{Camera, Screen, ScreenPeers};
 mod bluetooth;
-pub use bluetooth::{ BluetoothChannel, BluetoothPeers };
+pub use bluetooth::{BluetoothChannel, BluetoothPeers};
 mod passport;
-pub use passport::{ Passport, PASSPORT_PREFIX };
+pub use passport::{Passport, PASSPORT_PREFIX};
 mod envoy;
-pub use envoy::{ Envoy, ENVOY_PREFIX };
+pub use envoy::{Envoy, ENVOY_PREFIX};
 mod util;
-pub use util::{ chapter_title, handle_ctrl_c, latency, sleep };
+pub use util::{chapter_title, handle_ctrl_c, latency, sleep};
 mod enclave;
 pub use enclave::Enclave;

@@ -1,6 +1,8 @@
-use anyhow::Result;
-use bc_components::{ PublicKeyBase, ARID };
-use bc_envelope::prelude::*;
+use {
+    anyhow::Result,
+    bc_components::{PublicKeyBase, ARID},
+    bc_envelope::prelude::*,
+};
 
 pub trait AbstractEnclave {
     // Public key operations
@@ -20,7 +22,7 @@ pub trait AbstractEnclave {
     fn sealed_request_and_recipient_to_envelope(
         &self,
         request: SealedRequest,
-        recipient: &PublicKeyBase
+        recipient: &PublicKeyBase,
     ) -> Envelope;
 
     // Response -> Envelope
@@ -34,7 +36,7 @@ pub trait AbstractEnclave {
     fn envelope_to_sealed_response_with_request_id(
         &self,
         envelope: Envelope,
-        request_id: &ARID
+        request_id: &ARID,
     ) -> Result<SealedResponse>;
 }
 
@@ -42,15 +44,25 @@ pub trait AbstractEnclave {
 // Infallable conversions using an enclave
 //
 
-pub trait SecureInto<T, E>: Sized where E: AbstractEnclave {
+pub trait SecureInto<T, E>: Sized
+where
+    E: AbstractEnclave,
+{
     fn secure_into(self, enclave: &E) -> T;
 }
 
-pub trait SecureFrom<T, E>: Sized where E: AbstractEnclave {
+pub trait SecureFrom<T, E>: Sized
+where
+    E: AbstractEnclave,
+{
     fn secure_from(value: T, enclave: &E) -> Self;
 }
 
-impl<T, U, E> SecureInto<U, E> for T where U: SecureFrom<T, E>, E: AbstractEnclave {
+impl<T, U, E> SecureInto<U, E> for T
+where
+    U: SecureFrom<T, E>,
+    E: AbstractEnclave,
+{
     fn secure_into(self, enclave: &E) -> U {
         U::secure_from(self, enclave)
     }
@@ -60,19 +72,30 @@ impl<T, U, E> SecureInto<U, E> for T where U: SecureFrom<T, E>, E: AbstractEncla
 // Fallable conversions using an enclave
 //
 
-pub trait SecureTryInto<T, E>: Sized where E: AbstractEnclave {
+pub trait SecureTryInto<T, E>: Sized
+where
+    E: AbstractEnclave,
+{
     type Error;
 
     fn secure_try_into(self, enclave: &E) -> Result<T, Self::Error>;
 }
 
-pub trait SecureTryFrom<T, E>: Sized where Self: Sized, E: AbstractEnclave {
+pub trait SecureTryFrom<T, E>: Sized
+where
+    Self: Sized,
+    E: AbstractEnclave,
+{
     type Error;
 
     fn secure_try_from(value: T, enclave: &E) -> Result<Self, Self::Error>;
 }
 
-impl<T, U, E> SecureTryInto<U, E> for T where U: SecureTryFrom<T, E>, E: AbstractEnclave {
+impl<T, U, E> SecureTryInto<U, E> for T
+where
+    U: SecureTryFrom<T, E>,
+    E: AbstractEnclave,
+{
     type Error = <U as SecureTryFrom<T, E>>::Error;
 
     fn secure_try_into(self, enclave: &E) -> Result<U, Self::Error> {
@@ -84,13 +107,19 @@ impl<T, U, E> SecureTryInto<U, E> for T where U: SecureTryFrom<T, E>, E: Abstrac
 // Request -> Envelope
 //
 
-impl<E> SecureFrom<SealedRequest, E> for Envelope where E: AbstractEnclave {
+impl<E> SecureFrom<SealedRequest, E> for Envelope
+where
+    E: AbstractEnclave,
+{
     fn secure_from(value: SealedRequest, enclave: &E) -> Self {
         enclave.sealed_request_to_envelope(value)
     }
 }
 
-impl<E> SecureFrom<(SealedRequest, &PublicKeyBase), E> for Envelope where E: AbstractEnclave {
+impl<E> SecureFrom<(SealedRequest, &PublicKeyBase), E> for Envelope
+where
+    E: AbstractEnclave,
+{
     fn secure_from((value, recipient): (SealedRequest, &PublicKeyBase), enclave: &E) -> Self {
         enclave.sealed_request_and_recipient_to_envelope(value, recipient)
     }
@@ -100,7 +129,10 @@ impl<E> SecureFrom<(SealedRequest, &PublicKeyBase), E> for Envelope where E: Abs
 // Response -> Envelope
 //
 
-impl<E> SecureFrom<SealedResponse, E> for Envelope where E: AbstractEnclave {
+impl<E> SecureFrom<SealedResponse, E> for Envelope
+where
+    E: AbstractEnclave,
+{
     fn secure_from(value: SealedResponse, enclave: &E) -> Self {
         enclave.sealed_response_to_envelope(value)
     }
@@ -110,7 +142,10 @@ impl<E> SecureFrom<SealedResponse, E> for Envelope where E: AbstractEnclave {
 // Envelope -> Request
 //
 
-impl<E> SecureTryFrom<Envelope, E> for SealedRequest where E: AbstractEnclave {
+impl<E> SecureTryFrom<Envelope, E> for SealedRequest
+where
+    E: AbstractEnclave,
+{
     type Error = anyhow::Error;
 
     fn secure_try_from(value: Envelope, enclave: &E) -> Result<Self, Self::Error> {
@@ -122,7 +157,10 @@ impl<E> SecureTryFrom<Envelope, E> for SealedRequest where E: AbstractEnclave {
 // Envelope -> Response
 //
 
-impl<E> SecureTryFrom<Envelope, E> for SealedResponse where E: AbstractEnclave {
+impl<E> SecureTryFrom<Envelope, E> for SealedResponse
+where
+    E: AbstractEnclave,
+{
     type Error = anyhow::Error;
 
     fn secure_try_from(value: Envelope, enclave: &E) -> Result<Self, Self::Error> {
@@ -130,12 +168,15 @@ impl<E> SecureTryFrom<Envelope, E> for SealedResponse where E: AbstractEnclave {
     }
 }
 
-impl<E> SecureTryFrom<(Envelope, &ARID), E> for SealedResponse where E: AbstractEnclave {
+impl<E> SecureTryFrom<(Envelope, &ARID), E> for SealedResponse
+where
+    E: AbstractEnclave,
+{
     type Error = anyhow::Error;
 
     fn secure_try_from(
         (value, request_id): (Envelope, &ARID),
-        enclave: &E
+        enclave: &E,
     ) -> Result<Self, Self::Error> {
         enclave.envelope_to_sealed_response_with_request_id(value, request_id)
     }

@@ -1,10 +1,11 @@
-use anyhow::Result;
-use async_trait::async_trait;
-use bc_components::{ PublicKeyBase, ARID };
-use bc_envelope::prelude::*;
-use tokio::time::Duration;
-
-use crate::{ AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom };
+use {
+    crate::{AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom},
+    anyhow::Result,
+    async_trait::async_trait,
+    bc_components::{PublicKeyBase, ARID},
+    bc_envelope::prelude::*,
+    tokio::time::Duration,
+};
 
 #[async_trait]
 pub trait AbstractBluetoothChannel {
@@ -27,16 +28,14 @@ pub trait AbstractBluetoothChannel {
         enclave: &E,
         request_id: &ARID,
         body: Expression,
-        state: Option<S>
-    )
-        -> Result<()>
-        where S: EnvelopeEncodable + Send + Sync, E: AbstractEnclave + Send + Sync
+        state: Option<S>,
+    ) -> Result<()>
+    where
+        S: EnvelopeEncodable + Send + Sync,
+        E: AbstractEnclave + Send + Sync,
     {
-        let request = SealedRequest::new_with_body(
-            body,
-            request_id,
-            enclave.public_key()
-        ).with_optional_state(state);
+        let request = SealedRequest::new_with_body(body, request_id, enclave.public_key())
+            .with_optional_state(state);
         let sent_envelope = Envelope::secure_from((request, recipient), enclave);
         self.send_envelope(&sent_envelope).await
     }
@@ -46,12 +45,14 @@ pub trait AbstractBluetoothChannel {
         recipient: &PublicKeyBase,
         enclave: &E,
         body: Expression,
-        state: Option<S>
-    )
-        -> Result<()>
-        where S: EnvelopeEncodable + Send + Sync, E: AbstractEnclave + Send + Sync
+        state: Option<S>,
+    ) -> Result<()>
+    where
+        S: EnvelopeEncodable + Send + Sync,
+        E: AbstractEnclave + Send + Sync,
     {
-        self.send_request_with_id(recipient, enclave, &ARID::new(), body, state).await
+        self.send_request_with_id(recipient, enclave, &ARID::new(), body, state)
+            .await
     }
 
     async fn call<E, S>(
@@ -59,13 +60,15 @@ pub trait AbstractBluetoothChannel {
         recipient: &PublicKeyBase,
         enclave: &E,
         body: Expression,
-        state: Option<S>
-    )
-        -> Result<SealedResponse>
-        where S: EnvelopeEncodable + Send + Sync, E: AbstractEnclave + Send + Sync
+        state: Option<S>,
+    ) -> Result<SealedResponse>
+    where
+        S: EnvelopeEncodable + Send + Sync,
+        E: AbstractEnclave + Send + Sync,
     {
         let request_id = ARID::new();
-        self.send_request_with_id(recipient, enclave, &request_id, body, state).await?;
+        self.send_request_with_id(recipient, enclave, &request_id, body, state)
+            .await?;
 
         let received_envelope = self.receive_envelope(Duration::from_secs(10)).await?;
         let response = SealedResponse::secure_try_from((received_envelope, &request_id), enclave)?;
@@ -78,9 +81,10 @@ pub trait AbstractBluetoothChannel {
         enclave: &E,
         id: &ARID,
         result: Option<Envelope>,
-        peer_continuation: Option<&Envelope>
+        peer_continuation: Option<&Envelope>,
     ) -> Result<()>
-        where E: AbstractEnclave + Send + Sync
+    where
+        E: AbstractEnclave + Send + Sync,
     {
         let response = SealedResponse::new_success(id, enclave.public_key())
             .with_optional_result(result)
@@ -94,9 +98,10 @@ pub trait AbstractBluetoothChannel {
         enclave: &E,
         id: &ARID,
         error: &str,
-        peer_continuation: Option<&Envelope>
+        peer_continuation: Option<&Envelope>,
     ) -> Result<()>
-        where E: AbstractEnclave + Send + Sync
+    where
+        E: AbstractEnclave + Send + Sync,
     {
         let response = SealedResponse::new_failure(id, enclave.public_key())
             .with_error(error)
@@ -108,9 +113,10 @@ pub trait AbstractBluetoothChannel {
         &self,
         recipient: &PublicKeyBase,
         enclave: &E,
-        response: SealedResponse
+        response: SealedResponse,
     ) -> Result<()>
-        where E: AbstractEnclave + Send + Sync
+    where
+        E: AbstractEnclave + Send + Sync,
     {
         let envelope = enclave.seal(&Envelope::from(response), recipient);
         self.send_envelope(&envelope).await
