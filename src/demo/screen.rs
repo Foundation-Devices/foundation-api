@@ -1,7 +1,12 @@
-use anyhow::Result;
-use bc_envelope::prelude::*;
-use std::{ sync::{ Arc, Mutex }, time::Duration };
-use tokio::sync::Notify;
+use {
+    anyhow::Result,
+    bc_envelope::prelude::*,
+    std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    },
+    tokio::sync::Notify,
+};
 
 #[derive(Debug)]
 pub struct ScreenPeers {
