@@ -62,7 +62,7 @@ impl Envoy {
 
 impl Envoy {
     async fn main(self: Arc<Self>) {
-        if let Err(e) = self._main().await {
+        if let Err(e) = self._nashville().await {
             log!("❌ Error in main: {:?}", e);
         }
         log!("🏁 Finished.");
@@ -95,6 +95,24 @@ impl Envoy {
         self.bluetooth.send_request(&recipient, &self.enclave, body.clone(), Some(body)).await?;
 
         event_loop.await?;
+
+        Ok(())
+    }
+
+    async fn _nashville(self: Arc<Self>) -> Result<()> {
+        self.run_pairing_mode().await?;
+
+        chapter_title("📡 Envoy enters main loop, waiting for responses via Bluetooth.");
+        let event_loop = self.clone().run_event_loop();
+
+        sleep(5.0).await;
+
+        chapter_title("💸 Envoy tells Passport the USD exchange rate.");
+        let body = Expression::new(GENERATE_SEED_FUNCTION);
+        let recipient = self.first_paired_device().await;
+        self.bluetooth.send_request(&recipient, &self.enclave, body.clone(), Some(body)).await?;
+
+        sleep(5.0).await;
 
         Ok(())
     }

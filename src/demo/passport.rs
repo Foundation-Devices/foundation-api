@@ -1,20 +1,12 @@
 use std::{ collections::HashSet, sync::Arc };
 
 use anyhow::{ bail, Result };
-use bc_components::{ PublicKeyBase, Seed };
+use bc_components::{PublicKeyBase, Seed};
 use bc_envelope::prelude::*;
-use tokio::{ sync::Mutex, task::JoinHandle, time::Duration };
+use foundation_ur::Encoder;
+use tokio::{sync::Mutex, task::JoinHandle, time::Duration };
 
-use foundation_api::{
-    AbstractBluetoothChannel,
-    AbstractEnclave,
-    Discovery,
-    SecureTryFrom,
-    Sign,
-    GENERATE_SEED_FUNCTION,
-    SHUTDOWN_FUNCTION,
-    SIGN_FUNCTION,
-};
+use foundation_api::{AbstractBluetoothChannel, AbstractEnclave, Discovery, SecureTryFrom, Sign, GENERATE_SEED_FUNCTION, SHUTDOWN_FUNCTION, SIGN_FUNCTION, PairingResponse, PassportModel, PassportSerial, PassportFirmwareVersion};
 
 use crate::{ chapter_title, latency, paint_broadcast, paint_request, Enclave };
 
@@ -169,7 +161,17 @@ impl Passport {
 
         // Show the QR code, but clear the screen no matter how we exit this function
         let _screen_guard = self.screen().show_envelope(&envelope);
-        log!("📺 Displaying discovery QR code: {}", paint_broadcast!(envelope.format_flat()));
+        log!("📺 Discovery envelope: {}", paint_broadcast!(envelope.format_flat()));
+
+        let mut encoder = Encoder::new();
+        let envelope_data = envelope.tagged_cbor_data();
+        encoder.start("discovery", &*envelope_data, 50);
+
+        for _ in 0..10 {
+            let part = encoder.next_part();
+            let qr = part.to_string();
+            log!("📺 Displaying discovery QR code(s): {}", paint_broadcast!(qr));
+        }
 
         log!("🤝 Waiting for pairing request");
         let received_envelope = self.bluetooth.receive_envelope(Duration::from_secs(10)).await?;
@@ -177,11 +179,17 @@ impl Passport {
         log!("🤝 Received: {}", paint_request!(request));
         match self.add_paired_device(request.sender()).await {
             Ok(_) => {
+                let response =  Envelope::new(PairingResponse {
+                    passport_model: PassportModel::Prime,
+                    passport_serial: PassportSerial("1234-5678".to_owned()),
+                    passport_firmware_version: PassportFirmwareVersion("1.0.0".to_owned())
+                }.tagged_cbor());
+
                 self.bluetooth.send_ok_response(
                     request.sender(),
                     &self.enclave,
                     request.id(),
-                    Some(Envelope::ok()),
+                    Some(response.into()),
                     request.peer_continuation()
                 ).await?;
             }
