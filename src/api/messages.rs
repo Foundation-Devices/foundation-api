@@ -16,24 +16,24 @@ use {
     },
 };
 
-/// Message sent from KeyOS to Envoy.
+/// Message sent from Envoy to KeyOS.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum KeyOsMessage {
+pub enum EnvoyMessage {
     Pair { pubkey: PublicKeyBase },
     // TODO: Placeholders for now
     Onboarding1,
     Onboarding2,
 }
 
-/// Message sent from Envoy to KeyOS.
+/// Message sent from KeyOS to Envoy.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum EnvoyMessage {
+pub enum KeyOsMessage {
     // TODO: Placeholders for now
     Onboarding3,
     Onboarding4,
 }
 
-impl KeyOsMessage {
+impl EnvoyMessage {
     pub fn into_sealed_request(
         self,
         privkey: &PrivateKeyBase,
@@ -97,7 +97,7 @@ impl KeyOsMessage {
     }
 }
 
-impl EnvoyMessage {
+impl KeyOsMessage {
     pub fn into_sealed_response(
         self,
         request_id: &ARID,
@@ -175,15 +175,15 @@ mod tests {
         let recipient_privkey = PrivateKeyBase::new();
         let recipient_pubkey = recipient_privkey.schnorr_public_key_base();
         for msg in [
-            KeyOsMessage::Pair {
+            EnvoyMessage::Pair {
                 pubkey: sender_pubkey.clone(),
             },
-            KeyOsMessage::Onboarding1,
-            KeyOsMessage::Onboarding2,
+            EnvoyMessage::Onboarding1,
+            EnvoyMessage::Onboarding2,
         ] {
             let envelope = msg.to_sealed_request(&sender_privkey, &recipient_pubkey);
             let (_, sender, decoded_msg) =
-                KeyOsMessage::try_from_sealed_request(envelope, &recipient_privkey).unwrap();
+                EnvoyMessage::try_from_sealed_request(envelope, &recipient_privkey).unwrap();
             assert_eq!(decoded_msg, msg);
             assert_eq!(sender, sender_pubkey);
         }
@@ -196,10 +196,10 @@ mod tests {
         let recipient_privkey = PrivateKeyBase::new();
         let recipient_pubkey = recipient_privkey.schnorr_public_key_base();
         let request_id = ARID::new();
-        for msg in [EnvoyMessage::Onboarding3, EnvoyMessage::Onboarding4] {
+        for msg in [KeyOsMessage::Onboarding3, KeyOsMessage::Onboarding4] {
             let envelope = msg.to_sealed_response(&request_id, &sender_privkey, &recipient_pubkey);
             let (decoded_request_id, sender, decoded_msg) =
-                EnvoyMessage::try_from_sealed_response(envelope, &recipient_privkey).unwrap();
+                KeyOsMessage::try_from_sealed_response(envelope, &recipient_privkey).unwrap();
             assert_eq!(decoded_msg, msg);
             assert_eq!(sender, sender_pubkey);
             assert_eq!(decoded_request_id, request_id);
