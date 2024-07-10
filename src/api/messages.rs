@@ -39,13 +39,7 @@ impl KeyOsMessage {
         privkey: &PrivateKeyBase,
         recipient: &PublicKeyBase,
     ) -> Envelope {
-        let body = match self {
-            Self::Pair { pubkey } => {
-                Expression::new(PAIR_FUNCTION).with_parameter(PUBKEY_PARAM, pubkey)
-            }
-            Self::Onboarding1 => Expression::new(ONBOARDING1_FUNCTION),
-            Self::Onboarding2 => Expression::new(ONBOARDING2_FUNCTION),
-        };
+        let body = self.into_expression();
         let request = SealedRequest::new_with_body(
             body.clone(),
             ARID::new(),
@@ -69,23 +63,37 @@ impl KeyOsMessage {
     ) -> Result<(ARID, PublicKeyBase, Self)> {
         let request =
             SealedRequest::try_from((envelope, privkey)).context("Decoding sealed request")?;
-        let id = request.id().clone();
-        let function = request.function();
+        let request_id = request.id().clone();
         let body = request.body().clone();
         let sender = request.sender().clone();
-        let msg = if function == &PAIR_FUNCTION {
-            let pubkey = body
+        let msg = Self::from_expression(body)?;
+        Ok((request_id, sender, msg))
+    }
+
+    fn into_expression(self) -> Expression {
+        match self {
+            Self::Pair { pubkey } => {
+                Expression::new(PAIR_FUNCTION).with_parameter(PUBKEY_PARAM, pubkey)
+            }
+            Self::Onboarding1 => Expression::new(ONBOARDING1_FUNCTION),
+            Self::Onboarding2 => Expression::new(ONBOARDING2_FUNCTION),
+        }
+    }
+
+    fn from_expression(expression: Expression) -> Result<Self> {
+        let function = expression.function();
+        if function == &PAIR_FUNCTION {
+            let pubkey = expression
                 .extract_object_for_parameter(PUBKEY_PARAM)
                 .context("Expected a pubkey")?;
-            Self::Pair { pubkey }
+            Ok(Self::Pair { pubkey })
         } else if function == &ONBOARDING1_FUNCTION {
-            Self::Onboarding1
+            Ok(Self::Onboarding1)
         } else if function == &ONBOARDING2_FUNCTION {
-            Self::Onboarding2
+            Ok(Self::Onboarding2)
         } else {
-            return Err(anyhow!("Unknown function"));
-        };
-        Ok((id, sender, msg))
+            Err(anyhow!("Unknown function"))
+        }
     }
 }
 
@@ -96,10 +104,7 @@ impl EnvoyMessage {
         privkey: &PrivateKeyBase,
         recipient: &PublicKeyBase,
     ) -> Envelope {
-        let result = match self {
-            Self::Onboarding3 => Expression::new(ONBOARDING3_FUNCTION),
-            Self::Onboarding4 => Expression::new(ONBOARDING4_FUNCTION),
-        };
+        let result = self.into_expression();
         let response = SealedResponse::new_success(request_id, privkey.schnorr_public_key_base())
             .with_optional_result(result.into());
         Envelope::from(response).seal(privkey, recipient)
@@ -123,24 +128,23 @@ impl EnvoyMessage {
             .context("Decoding sealed response")?;
         let result = response.result().cloned().context("Decoding result")?;
         let expression = Expression::try_from(result)?;
-        let function = expression.function();
         let request_id = response
             .id()
             .cloned()
             .ok_or_else(|| anyhow!("No request ID found"))?;
         let sender = response.sender().clone();
-        let msg = if function == &ONBOARDING3_FUNCTION {
-            Self::Onboarding3
-        } else if function == &ONBOARDING4_FUNCTION {
-            Self::Onboarding4
-        } else {
-            return Err(anyhow!("Unknown function"));
-        };
+        let msg = Self::from_expression(expression)?;
         Ok((request_id, sender, msg))
     }
 
-    pub fn from_envelope(envelope: Envelope) -> Result<Self> {
-        let expression = Expression::try_from(envelope).context("Expected an expression")?;
+    fn into_expression(self) -> Expression {
+        match self {
+            Self::Onboarding3 => Expression::new(ONBOARDING3_FUNCTION),
+            Self::Onboarding4 => Expression::new(ONBOARDING4_FUNCTION),
+        }
+    }
+
+    fn from_expression(expression: Expression) -> Result<Self> {
         let function = expression.function();
         if function == &ONBOARDING3_FUNCTION {
             Ok(Self::Onboarding3)
