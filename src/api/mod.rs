@@ -1,8 +1,14 @@
-mod discovery;
-pub use discovery::Discovery;
-mod sign;
 use bc_envelope::prelude::*;
-pub use sign::Sign;
+
+mod discovery;
+mod messages;
+mod sign;
+
+pub use {
+    discovery::Discovery,
+    messages::{EnvoyMessage, KeyOsMessage},
+    sign::Sign,
+};
 
 // Functions
 
