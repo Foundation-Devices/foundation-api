@@ -1,7 +1,8 @@
-use anyhow::Result;
-use bc_envelope::prelude::*;
-
-use super::{ SIGNING_SUBJECT_PARAM, SIGN_FUNCTION };
+use {
+    super::{SIGNING_SUBJECT_PARAM, SIGN_FUNCTION},
+    anyhow::Result,
+    bc_envelope::prelude::*,
+};
 
 #[derive(Debug, Clone)]
 pub struct Sign(Envelope);
@@ -28,6 +29,8 @@ impl TryFrom<Expression> for Sign {
     type Error = anyhow::Error;
 
     fn try_from(expression: Expression) -> Result<Self> {
-        Ok(Self(expression.object_for_parameter(SIGNING_SUBJECT_PARAM)?))
+        Ok(Self(
+            expression.object_for_parameter(SIGNING_SUBJECT_PARAM)?,
+        ))
     }
 }

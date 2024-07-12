@@ -1,10 +1,10 @@
-use anyhow::Result;
-use bc_components::{ PublicKeyBase, UUID };
-use bc_envelope::prelude::*;
-
-use crate::BluetoothEndpoint;
-
-use super::{ CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM };
+use {
+    super::{CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM},
+    crate::BluetoothEndpoint,
+    anyhow::Result,
+    bc_components::{PublicKeyBase, UUID},
+    bc_envelope::prelude::*,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {
@@ -23,7 +23,10 @@ impl From<Discovery> for Expression {
         Expression::new(DISCOVERY_FUNCTION)
             .with_parameter(SENDER_PARAM, value.sender)
             .with_parameter(SERVICE_PARAM, value.endpoint.service().clone())
-            .with_parameter(CHARACTERISTIC_PARAM, value.endpoint.characteristic().clone())
+            .with_parameter(
+                CHARACTERISTIC_PARAM,
+                value.endpoint.characteristic().clone(),
+            )
     }
 }
 

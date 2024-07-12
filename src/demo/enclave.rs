@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
-use anyhow::Result;
-use bc_components::{ PrivateKeyBase, PublicKeyBase, ARID };
-use bc_envelope::prelude::*;
-use foundation_api::AbstractEnclave;
+use {
+    anyhow::Result,
+    bc_components::{PrivateKeyBase, PublicKeyBase, ARID},
+    bc_envelope::prelude::*,
+    foundation_api::AbstractEnclave,
+};
 
 #[derive(Debug)]
 pub struct Enclave {
@@ -14,7 +16,7 @@ pub struct Enclave {
 impl Enclave {
     pub fn new() -> Self {
         let private_key = PrivateKeyBase::new();
-        let public_key = private_key.public_key();
+        let public_key = private_key.schnorr_public_key_base();
         Self {
             private_key,
             public_key,
@@ -62,7 +64,7 @@ impl AbstractEnclave for Enclave {
     fn sealed_request_and_recipient_to_envelope(
         &self,
         request: SealedRequest,
-        recipient: &PublicKeyBase
+        recipient: &PublicKeyBase,
     ) -> Envelope {
         Envelope::from((request, &self.private_key, recipient))
     }
@@ -82,7 +84,7 @@ impl AbstractEnclave for Enclave {
     fn envelope_to_sealed_response_with_request_id(
         &self,
         envelope: Envelope,
-        request_id: &ARID
+        request_id: &ARID,
     ) -> Result<SealedResponse> {
         SealedResponse::try_from((envelope, Some(request_id), None, &self.private_key))
     }
@@ -90,8 +92,7 @@ impl AbstractEnclave for Enclave {
 
 #[cfg(test)]
 pub mod tests {
-    use super::*;
-    use indoc::indoc;
+    use {super::*, indoc::indoc};
 
     #[test]
     fn test_sign() {
@@ -100,17 +101,16 @@ pub mod tests {
         let signed = enclave.sign(&envelope);
         assert_eq!(
             signed.format(),
-            (
-                indoc! {
-                    r#"
+            (indoc! {
+                r#"
         {
             "Hello, World!"
         } [
             'verifiedBy': Signature
         ]
         "#
-                }
-            ).trim()
+            })
+            .trim()
         );
         let verified = enclave.verify(&signed).unwrap();
         assert!(envelope.is_identical_to(&verified));
@@ -123,15 +123,14 @@ pub mod tests {
         let encrypted = envelope.encrypt_to_recipient(enclave.public_key());
         assert_eq!(
             encrypted.format(),
-            (
-                indoc! {
-                    r#"
+            (indoc! {
+                r#"
         ENCRYPTED [
             'hasRecipient': SealedMessage
         ]
         "#
-                }
-            ).trim()
+            })
+            .trim()
         );
         let decrypted = enclave.decrypt(&encrypted).unwrap();
         assert!(envelope.is_identical_to(&decrypted));
@@ -145,15 +144,14 @@ pub mod tests {
         let signed_and_encrypted = enclave1.seal(&envelope, enclave2.public_key());
         assert_eq!(
             signed_and_encrypted.format(),
-            (
-                indoc! {
-                    r#"
+            (indoc! {
+                r#"
         ENCRYPTED [
             'hasRecipient': SealedMessage
         ]
         "#
-                }
-            ).trim()
+            })
+            .trim()
         );
         let verified_and_decrypted = enclave2
             .unseal(&signed_and_encrypted, enclave1.public_key())
@@ -168,15 +166,14 @@ pub mod tests {
         let encrypted = enclave.self_encrypt(&envelope);
         assert_eq!(
             encrypted.format(),
-            (
-                indoc! {
-                    r#"
+            (indoc! {
+                r#"
         ENCRYPTED [
             'hasRecipient': SealedMessage
         ]
         "#
-                }
-            ).trim()
+            })
+            .trim()
         );
         let decrypted = enclave.self_decrypt(&encrypted).unwrap();
         assert!(envelope.is_identical_to(&decrypted));

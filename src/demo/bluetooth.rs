@@ -1,22 +1,29 @@
-use anyhow::Result;
-use async_trait::async_trait;
-use bytes::Bytes;
-use foundation_api::{ AbstractBluetoothChannel, BluetoothEndpoint };
-use std::sync::Arc;
-use tokio::{ sync::{ mpsc::{ self, Receiver, Sender }, Mutex }, time::{ self, Duration } };
+use {
+    anyhow::Result,
+    async_trait::async_trait,
+    foundation_api::{AbstractBluetoothChannel, BluetoothEndpoint},
+    std::sync::Arc,
+    tokio::{
+        sync::{
+            mpsc::{self, Receiver, Sender},
+            Mutex,
+        },
+        time::{self, Duration},
+    },
+};
 
 #[derive(Debug)]
 pub struct BluetoothChannel {
     endpoint: BluetoothEndpoint,
-    sender: Mutex<Sender<Bytes>>,
-    receiver: Mutex<Receiver<Bytes>>,
+    sender: Mutex<Sender<Vec<u8>>>,
+    receiver: Mutex<Receiver<Vec<u8>>>,
 }
 
 impl BluetoothChannel {
     pub fn new(
         endpoint: BluetoothEndpoint,
-        sender: Sender<Bytes>,
-        receiver: Receiver<Bytes>
+        sender: Sender<Vec<u8>>,
+        receiver: Receiver<Vec<u8>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             endpoint,
@@ -32,12 +39,15 @@ impl AbstractBluetoothChannel for BluetoothChannel {
         &self.endpoint
     }
 
-    async fn send(&self, message: impl Into<Bytes> + std::marker::Send) -> Result<()> {
+    async fn send(&self, message: impl Into<Vec<u8>> + std::marker::Send) -> Result<()> {
         let sender = self.sender.lock().await;
-        sender.send(message.into()).await.map_err(|e| anyhow::anyhow!(e))
+        sender
+            .send(message.into())
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
     }
 
-    async fn receive(&self, timeout: Duration) -> Result<Bytes> {
+    async fn receive(&self, timeout: Duration) -> Result<Vec<u8>> {
         let mut receiver = self.receiver.lock().await;
         Ok(time::timeout(timeout, receiver.recv()).await?.unwrap())
     }

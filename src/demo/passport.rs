@@ -69,8 +69,10 @@ impl Passport {
         let stop = Arc::new(Mutex::new(false));
         tokio::spawn(async move {
             loop {
-                let received_envelope = self.bluetooth
-                    .receive_envelope(Duration::from_secs(1)).await
+                let received_envelope = self
+                    .bluetooth
+                    .receive_envelope(Duration::from_secs(1))
+                    .await
                     .ok();
                 if let Some(envelope) = received_envelope {
                     let handle_event_result = self.handle_event(envelope, stop.clone()).await;
@@ -91,7 +93,7 @@ impl Passport {
     async fn handle_event(
         self: &Arc<Self>,
         envelope: Envelope,
-        stop: Arc<Mutex<bool>>
+        stop: Arc<Mutex<bool>>,
     ) -> Result<()> {
         let request = SealedRequest::secure_try_from(envelope, &self.enclave)?;
         log!("📡 Received: {}", paint_request!(request));
@@ -108,34 +110,40 @@ impl Passport {
             let seed = &Seed::new();
             log!("🌱 Generated seed: {}", hex::encode(seed.data()));
             let result = Envelope::new(seed.to_cbor());
-            self.bluetooth.send_ok_response(
-                &sender,
-                &self.enclave,
-                &id,
-                Some(result),
-                request.peer_continuation()
-            ).await?;
+            self.bluetooth
+                .send_ok_response(
+                    &sender,
+                    &self.enclave,
+                    &id,
+                    Some(result),
+                    request.peer_continuation(),
+                )
+                .await?;
         } else if function == SIGN_FUNCTION {
             let sign = Sign::try_from(body)?;
             let signing_subject = sign.signing_subject();
             log!("🔏 Signing envelope: {}", signing_subject.format_flat());
             let result = self.enclave.sign(signing_subject);
-            self.bluetooth.send_ok_response(
-                &sender,
-                &self.enclave,
-                &id,
-                Some(result),
-                request.peer_continuation()
-            ).await?;
+            self.bluetooth
+                .send_ok_response(
+                    &sender,
+                    &self.enclave,
+                    &id,
+                    Some(result),
+                    request.peer_continuation(),
+                )
+                .await?;
         } else if function == SHUTDOWN_FUNCTION {
             log!("🚪 Shutdown signal received");
-            self.bluetooth.send_ok_response(
-                &sender,
-                &self.enclave,
-                &id,
-                None,
-                request.peer_continuation()
-            ).await?;
+            self.bluetooth
+                .send_ok_response(
+                    &sender,
+                    &self.enclave,
+                    &id,
+                    None,
+                    request.peer_continuation(),
+                )
+                .await?;
             *stop.lock().await = true;
         } else {
             bail!("Unknown function: {}", function);
@@ -153,11 +161,11 @@ impl Passport {
     }
 
     async fn run_pairing_mode(self: &Arc<Self>) -> Result<()> {
-        let discovery = Discovery::new(
-            self.public_key().clone(),
-            self.bluetooth.endpoint().clone()
-        );
-        let envelope = self.enclave.sign(&discovery.into_expression().into_envelope());
+        let discovery =
+            Discovery::new(self.public_key().clone(), self.bluetooth.endpoint().clone());
+        let envelope = self
+            .enclave
+            .sign(&discovery.into_expression().into_envelope());
 
         // Show the QR code, but clear the screen no matter how we exit this function
         let _screen_guard = self.screen().show_envelope(&envelope);
@@ -174,7 +182,10 @@ impl Passport {
         }
 
         log!("🤝 Waiting for pairing request");
-        let received_envelope = self.bluetooth.receive_envelope(Duration::from_secs(10)).await?;
+        let received_envelope = self
+            .bluetooth
+            .receive_envelope(Duration::from_secs(10))
+            .await?;
         let request = SealedRequest::secure_try_from(received_envelope, &self.enclave)?;
         log!("🤝 Received: {}", paint_request!(request));
         match self.add_paired_device(request.sender()).await {
@@ -194,13 +205,15 @@ impl Passport {
                 ).await?;
             }
             Err(e) => {
-                self.bluetooth.send_error_response(
-                    request.sender(),
-                    &self.enclave,
-                    request.id(),
-                    &e.to_string(),
-                    request.peer_continuation()
-                ).await?;
+                self.bluetooth
+                    .send_error_response(
+                        request.sender(),
+                        &self.enclave,
+                        request.id(),
+                        &e.to_string(),
+                        request.peer_continuation(),
+                    )
+                    .await?;
             }
         }
 
@@ -213,7 +226,10 @@ impl Passport {
             log!("🤝 Already paired to that device.");
         } else {
             // If the key is different, store it.
-            self.paired_devices.lock().await.insert(paired_device_key.clone());
+            self.paired_devices
+                .lock()
+                .await
+                .insert(paired_device_key.clone());
             log!("🤝 Successfully paired.");
         }
 

@@ -1,6 +1,6 @@
 [package]
 name = "foundation-api"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Foundation API using Gordian Sealed Transaction Protocol (GSTP)."
 authors = ["Wolf McNally, Blockchain Commons, Foundation Devices"]
@@ -9,11 +9,10 @@ readme = "README.md"
 license = "Proprietary"
 
 [dependencies]
-dcbor = { version = "^0.14.1", features = ["multithreaded"] }
-bc-envelope = { version = "^0.17.4", features = ["multithreaded"] }
-bc-components = "^0.11.0"
+dcbor = { version = "^0.15.0", features = ["multithreaded"] }
+bc-envelope = { version = "^0.18.0", features = ["multithreaded"] }
+bc-components = "^0.12.0"
 
-bytes = "^1.5.0"
 anyhow = "^1.0.0"
 thiserror = "^1.0.58"
 mpsc = "0.2.3"

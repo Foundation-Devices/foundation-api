@@ -1,4 +1,4 @@
-use tokio::time::{ self, Duration };
+use tokio::time::{self, Duration};
 // use nu_ansi_term::Color::LightPurple;
 
 #[macro_export]
