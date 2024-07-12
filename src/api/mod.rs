@@ -1,16 +1,14 @@
 mod discovery;
 pub use discovery::Discovery;
-mod sign;
-mod passport;
 mod pairing;
-pub use pairing::PairingResponse;
-pub use passport::PassportSerial;
-pub use passport::PassportModel;
-pub use passport::PassportFirmwareVersion;
-
-pub use sign::Sign;
-
+mod passport;
+mod sign;
 use bc_envelope::prelude::*;
+pub use {
+    pairing::PairingResponse,
+    passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
+    sign::Sign,
+};
 
 // Functions
 

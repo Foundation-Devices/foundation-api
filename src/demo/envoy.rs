@@ -116,7 +116,9 @@ impl Envoy {
         chapter_title("💸 Envoy tells Passport the USD exchange rate.");
         let body = Expression::new(GENERATE_SEED_FUNCTION);
         let recipient = self.first_paired_device().await;
-        self.bluetooth.send_request(&recipient, &self.enclave, body.clone(), Some(body)).await?;
+        self.bluetooth
+            .send_request(&recipient, &self.enclave, body.clone(), Some(body))
+            .await?;
 
         sleep(5.0).await;
 

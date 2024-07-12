@@ -1,7 +1,9 @@
-use anyhow::Error;
-use bc_components::tag_constant;
-use dcbor::{CBOR, CBORTagged, CBORTaggedDecodable, CBORTaggedEncodable, Tag};
-use paste::paste;
+use {
+    anyhow::Error,
+    bc_components::tag_constant,
+    dcbor::{CBORTagged, CBORTaggedDecodable, CBORTaggedEncodable, Tag, CBOR},
+    paste::paste,
+};
 
 tag_constant!(PASSPORT_MODEL, 721, "passport-model");
 
@@ -19,7 +21,7 @@ impl From<u8> for PassportModel {
             1 => Self::Gen1,
             2 => Self::Gen2,
             3 => Self::Prime,
-            _ => panic!("unknown passport model")
+            _ => panic!("unknown passport model"),
         }
     }
 }
@@ -91,7 +93,7 @@ impl CBORTaggedDecodable for PassportFirmwareVersion {
     where
         Self: Sized,
     {
-        let version= cbor.try_into_text()?;
+        let version = cbor.try_into_text()?;
         Ok(PassportFirmwareVersion(version))
     }
 }
@@ -126,7 +128,7 @@ impl CBORTaggedDecodable for PassportSerial {
     where
         Self: Sized,
     {
-        let serial= cbor.try_into_text()?;
+        let serial = cbor.try_into_text()?;
         Ok(PassportSerial(serial))
     }
 }

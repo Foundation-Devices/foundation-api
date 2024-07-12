@@ -1,16 +1,17 @@
-use anyhow::Error;
-use bc_components::tag_constant;
-use dcbor::{CBOR, CBORTagged, CBORTaggedDecodable, CBORTaggedEncodable, Tag};
-use paste::paste;
-
-use crate::api::passport::{PassportFirmwareVersion, PassportModel, PassportSerial};
+use {
+    crate::api::passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
+    anyhow::Error,
+    bc_components::tag_constant,
+    dcbor::{CBORTagged, CBORTaggedDecodable, CBORTaggedEncodable, Tag, CBOR},
+    paste::paste,
+};
 
 tag_constant!(PASSPORT_PAIRING_RESPONSE, 701, "passport-pairing-response");
 
 pub struct PairingResponse {
     pub passport_model: PassportModel,
     pub passport_firmware_version: PassportFirmwareVersion,
-    pub passport_serial: PassportSerial
+    pub passport_serial: PassportSerial,
 }
 
 impl CBORTagged for PairingResponse {
@@ -44,13 +45,14 @@ impl CBORTaggedDecodable for PairingResponse {
     {
         let map = cbor.try_into_map()?;
         let passport_model: PassportModel = map.extract::<i32, CBOR>(1)?.try_into()?;
-        let passport_firmware_version: PassportFirmwareVersion = map.extract::<i32, CBOR>(2)?.try_into()?;
+        let passport_firmware_version: PassportFirmwareVersion =
+            map.extract::<i32, CBOR>(2)?.try_into()?;
         let passport_serial: PassportSerial = map.extract::<i32, CBOR>(3)?.try_into()?;
 
-        Ok(PairingResponse{
+        Ok(PairingResponse {
             passport_model,
             passport_firmware_version,
-            passport_serial
+            passport_serial,
         })
     }
 }
