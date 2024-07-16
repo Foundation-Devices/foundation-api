@@ -1,8 +1,11 @@
+#[cfg(feature = "tokio")]
 mod demo;
-use demo::*;
 
+#[cfg(feature = "tokio")]
 #[tokio::main]
 async fn main() {
+    use demo::*;
+
     // Gracefully handle Ctrl-C
     handle_ctrl_c();
 
@@ -34,4 +37,9 @@ async fn main() {
     envoy_task.await.unwrap();
 
     chapter_title("🏁 All done");
+}
+
+#[cfg(not(feature = "tokio"))]
+fn main() {
+    println!("Please enable the 'tokio' feature to run this example.");
 }
