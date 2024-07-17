@@ -22,6 +22,10 @@ impl Enclave {
             public_key,
         }
     }
+
+    pub fn private_key(&self) -> &PrivateKeyBase {
+        &self.private_key
+    }
 }
 
 impl AbstractEnclave for Enclave {
