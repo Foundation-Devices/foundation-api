@@ -4,7 +4,7 @@ use {
     async_trait::async_trait,
     bc_components::{PublicKeyBase, ARID},
     bc_envelope::prelude::*,
-    tokio::time::Duration,
+    std::time::Duration,
 };
 
 #[async_trait]
