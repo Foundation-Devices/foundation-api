@@ -46,7 +46,6 @@ impl Discovery {
     pub fn sender(&self) -> &PublicKeyBase {
         &self.sender
     }
-
     pub fn bluetooth_endpoint(&self) -> &BluetoothEndpoint {
         &self.endpoint
     }

@@ -2,23 +2,27 @@ use {
     super::{BluetoothChannel, Screen},
     crate::{chapter_title, latency, paint_broadcast, paint_request, Enclave},
     anyhow::{bail, Result},
-    bc_components::{PublicKeyBase, Seed},
+    bc_components::{PrivateKeyBase, PublicKeyBase, Seed},
     bc_envelope::prelude::*,
     foundation_api::{
         AbstractBluetoothChannel,
         AbstractEnclave,
         Discovery,
+        ExchangeRate,
         PairingResponse,
         PassportFirmwareVersion,
         PassportModel,
         PassportSerial,
         SecureTryFrom,
         Sign,
+        EXCHANGE_RATE_FUNCTION,
         GENERATE_SEED_FUNCTION,
         SHUTDOWN_FUNCTION,
         SIGN_FUNCTION,
     },
     foundation_ur::Encoder,
+    foundation_urtypes::registry::{DerivedKey, HDKey},
+    hex::ToHex,
     std::{collections::HashSet, sync::Arc},
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
@@ -117,7 +121,10 @@ impl Passport {
         let body = request.body().clone();
         let sender = request.sender().clone();
 
-        if function == GENERATE_SEED_FUNCTION {
+        if function == EXCHANGE_RATE_FUNCTION {
+            let fx = ExchangeRate::try_from(body)?;
+            log!("💸 {} rate is: {}", fx.currency_code(), fx.rate());
+        } else if function == GENERATE_SEED_FUNCTION {
             let seed = &Seed::new();
             log!("🌱 Generated seed: {}", hex::encode(seed.data()));
             let result = Envelope::new(seed.to_cbor());
@@ -174,6 +181,12 @@ impl Passport {
     async fn run_pairing_mode(self: &Arc<Self>) -> Result<()> {
         let discovery =
             Discovery::new(self.public_key().clone(), self.bluetooth.endpoint().clone());
+
+        log!(
+            "🔑 Private key: {:?}",
+            self.private_key().encode_hex::<String>()
+        );
+
         let envelope = self
             .enclave
             .sign(&discovery.into_expression().into_envelope());
@@ -187,7 +200,7 @@ impl Passport {
 
         let mut encoder = Encoder::new();
         let envelope_data = envelope.tagged_cbor_data();
-        encoder.start("discovery", &*envelope_data, 50);
+        encoder.start("discovery", &*envelope_data, 300);
 
         for _ in 0..10 {
             let part = encoder.next_part();
@@ -212,6 +225,20 @@ impl Passport {
                         passport_model: PassportModel::Prime,
                         passport_serial: PassportSerial("1234-5678".to_owned()),
                         passport_firmware_version: PassportFirmwareVersion("1.0.0".to_owned()),
+                        hdkey: HDKey::DerivedKey(DerivedKey {
+                            is_private: false,
+                            key_data: [
+                                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                                19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+                            ],
+                            chain_code: None,
+                            use_info: None,
+                            origin: None,
+                            children: None,
+                            parent_fingerprint: None,
+                            name: None,
+                            note: None,
+                        }),
                     }
                     .tagged_cbor(),
                 );
@@ -267,5 +294,9 @@ impl Passport {
 
     fn public_key(&self) -> &PublicKeyBase {
         self.enclave.public_key()
+    }
+
+    fn private_key(&self) -> &PrivateKeyBase {
+        self.enclave.private_key()
     }
 }
