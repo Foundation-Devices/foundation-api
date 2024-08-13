@@ -1,3 +1,6 @@
+use std::io::Read;
+use foundation_ur::{Decoder, Encoder};
+use foundation_ur::UR;
 use {
     crate::{AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom},
     anyhow::Result,
@@ -14,12 +17,41 @@ pub trait AbstractBluetoothChannel {
     async fn receive(&self, timeout: Duration) -> Result<Vec<u8>>;
 
     async fn send_envelope(&self, envelope: &Envelope) -> Result<()> {
-        self.send(envelope.to_cbor_data()).await
+        // Split envelope in chunks
+        let cbor = envelope.to_cbor_data();
+
+        let mut encoder = Encoder::new();
+        encoder.start("ql", &*cbor, 100);
+
+        for _ in 0..encoder.sequence_count() {
+            let chunk = encoder.next_part().to_string();
+            // let part = chunk.as_part().unwrap();
+            // self.send(part.data).await.expect("couldn't send");
+            // println!("Sent {} bytes over BLE", part.data.len());
+            self.send(chunk).await.expect("couldn't send");
+        }
+
+        Ok(())
     }
 
     async fn receive_envelope(&self, timeout: Duration) -> Result<Envelope> {
-        let bytes = self.receive(timeout).await?;
-        Envelope::try_from_cbor_data(bytes)
+        let mut decoder = Decoder::default();
+        loop {
+            let bytes = self.receive(timeout).await?;
+            println!("Received {} bytes over BLE", bytes.len());
+            let ur_string = String::from_utf8(bytes)?;
+            println!("Looking like: {}", ur_string);
+
+            let ur = UR::parse(&*ur_string)?;
+            decoder.receive(ur).expect("couldn't decode");
+
+            if decoder.is_complete() {
+                break;
+            }
+        }
+
+        let message = decoder.message()?;
+        Envelope::try_from_cbor_data(Vec::from(message.unwrap()))
     }
 
     async fn send_request_with_id<E, S>(

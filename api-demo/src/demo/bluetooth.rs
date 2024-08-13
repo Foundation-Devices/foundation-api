@@ -1,7 +1,7 @@
 use {
     anyhow::Result,
     async_trait::async_trait,
-    foundation_api::{AbstractBluetoothChannel, BluetoothEndpoint},
+    foundation_abstracted::{AbstractBluetoothChannel, BluetoothEndpoint},
     std::sync::Arc,
     tokio::{
         sync::{

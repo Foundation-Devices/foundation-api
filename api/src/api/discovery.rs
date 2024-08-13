@@ -1,10 +1,10 @@
 use {
     super::{CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM},
-    crate::BluetoothEndpoint,
     anyhow::Result,
     bc_components::{PublicKeyBase, UUID},
     bc_envelope::prelude::*,
 };
+use crate::bluetooth_endpoint::BluetoothEndpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {

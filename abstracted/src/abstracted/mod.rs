@@ -1,5 +1,4 @@
-mod bluetooth_endpoint;
-pub use bluetooth_endpoint::BluetoothEndpoint;
+pub use foundation_api::bluetooth_endpoint::BluetoothEndpoint;
 mod abstract_bluetooth;
 pub use abstract_bluetooth::AbstractBluetoothChannel;
 mod abstract_enclave;

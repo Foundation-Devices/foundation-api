@@ -4,6 +4,8 @@ mod fx;
 mod pairing;
 mod passport;
 mod sign;
+pub mod bluetooth_endpoint;
+
 use bc_envelope::prelude::*;
 pub use {
     fx::{ExchangeRate, EXCHANGE_RATE_FUNCTION},

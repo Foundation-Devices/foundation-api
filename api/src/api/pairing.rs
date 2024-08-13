@@ -3,8 +3,7 @@ use {
     anyhow::Error,
     bc_components::tag_constant,
     dcbor::{CBORTagged, CBORTaggedDecodable, CBORTaggedEncodable, Tag, CBOR},
-    foundation_urtypes::registry::{DerivedKeyRef, HDKey, HDKeyRef, KeypathRef, MasterKey},
-    minicbor::{self, encode::Write, Encode, Encoder},
+    foundation_urtypes::registry::{DerivedKeyRef, HDKey, HDKeyRef, KeypathRef},
     paste::paste,
 };
 
