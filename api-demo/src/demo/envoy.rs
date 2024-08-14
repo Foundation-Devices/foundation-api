@@ -12,18 +12,18 @@ use {
     anyhow::{anyhow, bail, Ok, Result},
     bc_components::{PublicKeyBase, Seed},
     bc_envelope::prelude::*,
+    foundation_abstracted::AbstractBluetoothChannel,
+    foundation_abstracted::SecureTryFrom,
     foundation_api::{
-        AbstractBluetoothChannel,
         Discovery,
         ExchangeRate,
-        SecureTryFrom,
         Sign,
         GENERATE_SEED_FUNCTION,
         PAIRING_FUNCTION,
         SHUTDOWN_FUNCTION,
         SIGN_FUNCTION,
     },
-    std::{collections::HashSet, ops::Bound::Excluded, sync::Arc},
+    std::{collections::HashSet, sync::Arc},
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
 
@@ -213,7 +213,7 @@ impl Envoy {
         let sender = discovery.sender();
         scanned_envelope.verify(sender)?;
 
-        // This is here for pairing, but we're not actually using it in this demo.
+        // This is here for pairing, but we're not actually using it in this api-demo.
         // Presumably the call below would be sent to this endpoint.
         let _endpoint = discovery.bluetooth_endpoint();
 
