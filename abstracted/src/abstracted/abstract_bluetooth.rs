@@ -1,5 +1,5 @@
 use std::io::Read;
-use foundation_ur::{Decoder, Encoder};
+use foundation_ur::fountain::{Decoder, Encoder, part::Part};
 use foundation_ur::UR;
 use {
     crate::{AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom},
@@ -21,17 +21,14 @@ pub trait AbstractBluetoothChannel {
         let cbor = envelope.to_cbor_data();
 
         let mut encoder = Encoder::new();
-        encoder.start("ql", &*cbor, 100);
+        encoder.start(&*cbor, 100);
 
         for _ in 0..encoder.sequence_count() {
-            let chunk = encoder.next_part().to_string();
+            let part = encoder.next_part();
+            let part_cbor = minicbor::to_vec(&part).unwrap();
 
-            // TODO: Jean-Pierre to improve this
-            // let part = chunk.as_part().unwrap();
-            // self.send(part.data).await.expect("couldn't send");
-            // println!("Sent {} bytes over BLE", part.data.len());
-
-            self.send(chunk).await.expect("couldn't send");
+            self.send(part_cbor.clone()).await.expect("couldn't send");
+            println!("Sent {} bytes over BLE", part_cbor.len());
         }
 
         Ok(())
@@ -42,11 +39,10 @@ pub trait AbstractBluetoothChannel {
         loop {
             let bytes = self.receive(timeout).await?;
             println!("Received {} bytes over BLE", bytes.len());
-            let ur_string = String::from_utf8(bytes)?;
-            println!("Looking like: {}", ur_string);
+            println!("Looking like: {}", hex::encode(&bytes));
 
-            let ur = UR::parse(&*ur_string)?;
-            decoder.receive(ur).expect("couldn't decode");
+            let part = minicbor::decode::<Part>(&bytes).expect("couldn't decode part");
+            decoder.receive(&part).expect("couldn't decode");
 
             if decoder.is_complete() {
                 break;

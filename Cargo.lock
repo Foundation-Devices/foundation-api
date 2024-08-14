@@ -603,6 +603,7 @@ dependencies = [
  "foundation-urtypes",
  "hex",
  "indoc",
+ "minicbor 0.24.2",
  "nu-ansi-term",
  "thiserror",
  "tokio",
