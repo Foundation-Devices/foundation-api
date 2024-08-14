@@ -17,7 +17,7 @@ pub trait AbstractBluetoothChannel {
     async fn receive(&self, timeout: Duration) -> Result<Vec<u8>>;
 
     async fn send_envelope(&self, envelope: &Envelope) -> Result<()> {
-        // Split envelope in chunks
+        // Split envelope into chunks
         let cbor = envelope.to_cbor_data();
 
         let mut encoder = Encoder::new();
@@ -25,9 +25,12 @@ pub trait AbstractBluetoothChannel {
 
         for _ in 0..encoder.sequence_count() {
             let chunk = encoder.next_part().to_string();
+
+            // TODO: Jean-Pierre to improve this
             // let part = chunk.as_part().unwrap();
             // self.send(part.data).await.expect("couldn't send");
             // println!("Sent {} bytes over BLE", part.data.len());
+
             self.send(chunk).await.expect("couldn't send");
         }
 
