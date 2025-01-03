@@ -1,13 +1,18 @@
 use std::io::Read;
+use bc_envelope::{EnvelopeEncodable, Expression, ResponseBehavior};
+use bc_envelope::prelude::CBOREncodable;
+use bc_xid::XIDDocument;
 use foundation_ur::{Decoder, Encoder};
 use foundation_ur::UR;
+use gstp::{SealedRequestBehavior, SealedResponseBehavior};
 use {
     crate::{AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom},
     anyhow::Result,
     async_trait::async_trait,
     bc_components::{PublicKeyBase, ARID},
-    bc_envelope::prelude::*,
+    bc_envelope::Envelope,
     std::time::Duration,
+    gstp::{SealedRequest, SealedResponse},
 };
 
 #[async_trait]
@@ -59,7 +64,7 @@ pub trait AbstractBluetoothChannel {
 
     async fn send_request_with_id<E, S>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         request_id: &ARID,
         body: Expression,
@@ -69,7 +74,7 @@ pub trait AbstractBluetoothChannel {
         S: EnvelopeEncodable + Send + Sync,
         E: AbstractEnclave + Send + Sync,
     {
-        let request = SealedRequest::new_with_body(body, request_id, enclave.public_key())
+        let request = SealedRequest::new_with_body(body, request_id, enclave.xid_document())
             .with_optional_state(state);
         let sent_envelope = Envelope::secure_from((request, recipient), enclave);
         self.send_envelope(&sent_envelope).await
@@ -77,7 +82,7 @@ pub trait AbstractBluetoothChannel {
 
     async fn send_request<E, S>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         body: Expression,
         state: Option<S>,
@@ -92,7 +97,7 @@ pub trait AbstractBluetoothChannel {
 
     async fn call<E, S>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         body: Expression,
         state: Option<S>,
@@ -112,7 +117,7 @@ pub trait AbstractBluetoothChannel {
 
     async fn send_ok_response<E>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         id: &ARID,
         result: Option<Envelope>,
@@ -121,7 +126,7 @@ pub trait AbstractBluetoothChannel {
     where
         E: AbstractEnclave + Send + Sync,
     {
-        let response = SealedResponse::new_success(id, enclave.public_key())
+        let response = SealedResponse::new_success(id,enclave.xid_document())
             .with_optional_result(result)
             .with_peer_continuation(peer_continuation);
         self.send_response(recipient, enclave, response).await
@@ -129,7 +134,7 @@ pub trait AbstractBluetoothChannel {
 
     async fn send_error_response<E>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         id: &ARID,
         error: &str,
@@ -138,7 +143,7 @@ pub trait AbstractBluetoothChannel {
     where
         E: AbstractEnclave + Send + Sync,
     {
-        let response = SealedResponse::new_failure(id, enclave.public_key())
+        let response = SealedResponse::new_failure(id, enclave.xid_document())
             .with_error(error)
             .with_peer_continuation(peer_continuation);
         self.send_response(recipient, enclave, response).await
@@ -146,14 +151,14 @@ pub trait AbstractBluetoothChannel {
 
     async fn send_response<E>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         response: SealedResponse,
     ) -> Result<()>
     where
         E: AbstractEnclave + Send + Sync,
     {
-        let envelope = enclave.seal(&Envelope::from(response), recipient);
+        let envelope = response.to_envelope(None, None, Some(recipient))?;
         self.send_envelope(&envelope).await
     }
 }

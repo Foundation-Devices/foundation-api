@@ -8,11 +8,14 @@ pub mod bluetooth_endpoint;
 
 use bc_envelope::prelude::*;
 pub use {
-    fx::{ExchangeRate, EXCHANGE_RATE_FUNCTION},
+    fx::ExchangeRate,
     pairing::PairingResponse,
-    passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
+    passport::PassportModel,
+    passport::{PassportFirmwareVersion, PassportSerial},
     sign::Sign,
 };
+
+use minicbor::{Encode, Decode};
 
 // Functions
 
@@ -27,9 +30,40 @@ pub const GENERATE_SEED_FUNCTION: Function =
     Function::new_static_named(GENERATE_SEED_FUNCTION_NAME);
 pub const SHUTDOWN_FUNCTION: Function = Function::new_static_named(SHUTDOWN_FUNCTION_NAME);
 
+pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
+
 // Parameters
 
 const SENDER_PARAM: Parameter = Parameter::new_static_named("sender");
 const SERVICE_PARAM: Parameter = Parameter::new_static_named("bluetoothService");
 const CHARACTERISTIC_PARAM: Parameter = Parameter::new_static_named("bluetoothCharacteristic");
 const SIGNING_SUBJECT_PARAM: Parameter = Parameter::new_static_named("signingSubject");
+
+
+pub trait QuantumLinkMessage<C>: Encode<C> {
+    fn encode(&self) -> Expression where Self: Encode<()> {
+        let mut buffer = [0u8; 128];
+
+        minicbor::encode(self, buffer.as_mut()).unwrap();
+        // Convert raw data to DCBOR
+
+        let dcbor = CBOR::try_from_data(buffer.as_ref()).unwrap();
+
+        let envelope = Envelope::new(dcbor);
+        Expression::new(QUANTUM_LINK).with_parameter("message", envelope)
+    }
+}
+
+// impl EnvelopeEncodable for dyn QuantumLinkMessage {
+//
+//     fn into_envelope(self) -> Envelope {
+//         self
+//     }
+//
+//     fn to_envelope(&self) -> Envelope
+//     where
+//         Self: Clone
+//     {
+//         todo!()
+//     }
+// }

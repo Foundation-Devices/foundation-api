@@ -1,3 +1,6 @@
+use bc_components::{XIDProvider, XID};
+use bc_xid::XIDDocument;
+use gstp::{SealedResponse, SealedResponseBehavior};
 use {
     crate::{
         chapter_title,
@@ -26,6 +29,7 @@ use {
     std::{collections::HashSet, sync::Arc},
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
+use foundation_api::QuantumLinkMessage;
 
 pub const ENVOY_PREFIX: &str = "🔶 Envoy   ";
 
@@ -41,7 +45,7 @@ pub struct Envoy {
     bluetooth: Arc<BluetoothChannel>,
     camera: Arc<Camera>,
     enclave: Enclave,
-    paired_devices: Mutex<HashSet<PublicKeyBase>>,
+    paired_devices: Mutex<Vec<XIDDocument>>,
 }
 
 impl Envoy {
@@ -50,7 +54,7 @@ impl Envoy {
             camera,
             bluetooth,
             enclave: Enclave::new(),
-            paired_devices: Mutex::new(HashSet::new()),
+            paired_devices: Mutex::new(Vec::new()),
         })
     }
 
@@ -116,7 +120,7 @@ impl Envoy {
 
         loop {
             chapter_title("💸 Envoy tells Passport the USD exchange rate.");
-            let body: Expression = ExchangeRate::new("USD", 65432.21).into();
+            let body: Expression = ExchangeRate::new("USD", 65432.21).encode();
             let recipient = self.first_paired_device().await;
             self.bluetooth
                 .send_request(&recipient, &self.enclave, body.clone(), Some(body))
@@ -175,7 +179,7 @@ impl Envoy {
             log!("🌱 Got seed: {}", hex::encode(seed.data()));
         } else if function == SIGN_FUNCTION {
             log!("🔏 Verifying signature");
-            let verified_envelope = result.verify(&self.passport_key().await)?;
+            let verified_envelope = result.verify(self.passport_xid_document().await.inception_signing_key().unwrap())?;
             let sign = Sign::try_from(expression)?;
             if verified_envelope.is_identical_to(sign.signing_subject()) {
                 log!("🔏 Signature verified and contents match.");
@@ -193,8 +197,8 @@ impl Envoy {
 }
 
 impl Envoy {
-    async fn check_paired_device(self: &Arc<Self>, sender: &PublicKeyBase) -> Result<()> {
-        if self.paired_devices.lock().await.contains(sender) {
+    async fn check_paired_device(self: &Arc<Self>, sender: &XIDDocument) -> Result<()> {
+        if self.paired_devices.lock().await.contains(&sender) {
             Ok(())
         } else {
             bail!("Unknown device.")
@@ -211,7 +215,7 @@ impl Envoy {
         let inner = scanned_envelope.unwrap_envelope()?;
         let discovery = Discovery::try_from(Expression::try_from(inner)?)?;
         let sender = discovery.sender();
-        scanned_envelope.verify(sender)?;
+        scanned_envelope.verify(sender.inception_signing_key().unwrap())?;
 
         // This is here for pairing, but we're not actually using it in this api-demo.
         // Presumably the call below would be sent to this endpoint.
@@ -220,25 +224,26 @@ impl Envoy {
         // We're using the public key from the disovery to send the pairing request, as
         // we're not paired yet. The other commands use the first paired device.
         let body = Expression::new(PAIRING_FUNCTION);
-        self.bluetooth
+        let response = self.bluetooth
             .call(sender, &self.enclave, body.clone(), Some(body))
-            .await?
-            .result()?;
-        self.add_paired_device(sender).await;
+            .await?;
+        let bluetooth_sender = response.sender();
+
+        self.add_paired_device(&bluetooth_sender).await;
 
         Ok(())
     }
 
-    async fn add_paired_device(self: &Arc<Self>, paired_device_key: &PublicKeyBase) {
+    async fn add_paired_device(self: &Arc<Self>, paired_device_xid: &XIDDocument) {
         // If `paired_devices` contains the key, do nothing (idempotent operation)
-        if self.paired_devices.lock().await.contains(paired_device_key) {
+        if self.paired_devices.lock().await.contains(paired_device_xid) {
             log!("🤝 Already paired to that device.");
         } else {
             // If the key is different, store it.
             self.paired_devices
                 .lock()
                 .await
-                .insert(paired_device_key.clone());
+                .push(paired_device_xid.clone());
             log!("🤝 Successfully paired.");
         }
     }
@@ -246,7 +251,7 @@ impl Envoy {
 
 // Internal methods
 impl Envoy {
-    async fn first_paired_device(&self) -> PublicKeyBase {
+    async fn first_paired_device(&self) -> XIDDocument {
         self.paired_devices
             .lock()
             .await
@@ -256,7 +261,7 @@ impl Envoy {
             .clone()
     }
 
-    async fn passport_key(&self) -> PublicKeyBase {
+    async fn passport_xid_document(&self) -> XIDDocument {
         self.first_paired_device().await
     }
 }

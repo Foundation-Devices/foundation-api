@@ -1,3 +1,4 @@
+use bc_xid::XIDDocument;
 use {
     super::{CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM},
     anyhow::Result,
@@ -8,12 +9,12 @@ use crate::bluetooth_endpoint::BluetoothEndpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {
-    sender: PublicKeyBase,
+    sender: XIDDocument,
     endpoint: BluetoothEndpoint,
 }
 
 impl Discovery {
-    pub fn new(sender: PublicKeyBase, endpoint: BluetoothEndpoint) -> Self {
+    pub fn new(sender: XIDDocument, endpoint: BluetoothEndpoint) -> Self {
         Self { sender, endpoint }
     }
 }
@@ -34,7 +35,7 @@ impl TryFrom<Expression> for Discovery {
     type Error = anyhow::Error;
 
     fn try_from(expression: Expression) -> Result<Self> {
-        let sender: PublicKeyBase = expression.extract_object_for_parameter(SENDER_PARAM)?;
+        let sender: XIDDocument = expression.extract_object_for_parameter(SENDER_PARAM)?;
         let service: UUID = expression.extract_object_for_parameter(SERVICE_PARAM)?;
         let characteristic: UUID = expression.extract_object_for_parameter(CHARACTERISTIC_PARAM)?;
         let endpoint = BluetoothEndpoint::from_fields(service, characteristic);
@@ -43,7 +44,7 @@ impl TryFrom<Expression> for Discovery {
 }
 
 impl Discovery {
-    pub fn sender(&self) -> &PublicKeyBase {
+    pub fn sender(&self) -> &XIDDocument {
         &self.sender
     }
     pub fn bluetooth_endpoint(&self) -> &BluetoothEndpoint {

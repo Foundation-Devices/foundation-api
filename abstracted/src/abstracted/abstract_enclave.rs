@@ -1,3 +1,5 @@
+use bc_xid::XIDDocument;
+use gstp::{SealedRequest, SealedResponse};
 use {
     anyhow::Result,
     bc_components::{PublicKeyBase, ARID},
@@ -6,15 +8,15 @@ use {
 
 pub trait AbstractEnclave {
     // Public key operations
-    fn public_key(&self) -> &PublicKeyBase;
+    fn xid_document(&self) -> &XIDDocument;
     fn self_encrypt(&self, envelope: &Envelope) -> Envelope;
     fn verify(&self, envelope: &Envelope) -> Result<Envelope>;
 
     // Private key operations
     fn sign(&self, envelope: &Envelope) -> Envelope;
-    fn seal(&self, envelope: &Envelope, recipient: &PublicKeyBase) -> Envelope;
+    //fn seal(&self, envelope: &Envelope, recipient: &XIDDocument) -> Envelope;
     fn decrypt(&self, envelope: &Envelope) -> Result<Envelope>;
-    fn unseal(&self, envelope: &Envelope, sender: &PublicKeyBase) -> Result<Envelope>;
+    //fn unseal(&self, envelope: &Envelope, sender: &XIDDocument) -> Result<Envelope>;
     fn self_decrypt(&self, envelope: &Envelope) -> Result<Envelope>;
 
     // Request -> Envelope
@@ -22,7 +24,7 @@ pub trait AbstractEnclave {
     fn sealed_request_and_recipient_to_envelope(
         &self,
         request: SealedRequest,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
     ) -> Envelope;
 
     // Response -> Envelope
@@ -116,11 +118,11 @@ where
     }
 }
 
-impl<E> SecureFrom<(SealedRequest, &PublicKeyBase), E> for Envelope
+impl<E> SecureFrom<(SealedRequest, &XIDDocument), E> for Envelope
 where
     E: AbstractEnclave,
 {
-    fn secure_from((value, recipient): (SealedRequest, &PublicKeyBase), enclave: &E) -> Self {
+    fn secure_from((value, recipient): (SealedRequest, &XIDDocument), enclave: &E) -> Self {
         enclave.sealed_request_and_recipient_to_envelope(value, recipient)
     }
 }
