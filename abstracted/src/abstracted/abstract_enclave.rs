@@ -2,7 +2,7 @@ use bc_xid::XIDDocument;
 use gstp::{SealedRequest, SealedResponse};
 use {
     anyhow::Result,
-    bc_components::{PublicKeyBase, ARID},
+    bc_components::ARID,
     bc_envelope::prelude::*,
 };
 

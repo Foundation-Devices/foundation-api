@@ -1,4 +1,3 @@
-use minicbor::{Decode, Encode};
 
 const MTU_SIZE: usize = 244;
 const CHUNK_SIZE: usize = MTU_SIZE - 5;

@@ -1,4 +1,3 @@
-use bc_components::{XIDProvider, XID};
 use bc_xid::XIDDocument;
 use gstp::{SealedResponse, SealedResponseBehavior};
 use {
@@ -13,7 +12,7 @@ use {
         Enclave,
     },
     anyhow::{anyhow, bail, Ok, Result},
-    bc_components::{PublicKeyBase, Seed},
+    bc_components::Seed,
     bc_envelope::prelude::*,
     foundation_abstracted::AbstractBluetoothChannel,
     foundation_abstracted::SecureTryFrom,
@@ -22,11 +21,10 @@ use {
         ExchangeRate,
         Sign,
         GENERATE_SEED_FUNCTION,
-        PAIRING_FUNCTION,
         SHUTDOWN_FUNCTION,
         SIGN_FUNCTION,
     },
-    std::{collections::HashSet, sync::Arc},
+    std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
 use foundation_api::{PairingRequest, QuantumLinkMessage};

@@ -15,7 +15,7 @@ pub use {
     sign::Sign,
 };
 
-use minicbor::{Encode, Decode};
+use minicbor::Encode;
 
 // Functions
 

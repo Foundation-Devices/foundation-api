@@ -1,15 +1,12 @@
-use std::io::Read;
 use bc_envelope::{EnvelopeEncodable, Expression, ResponseBehavior};
 use bc_envelope::prelude::CBOREncodable;
 use bc_xid::XIDDocument;
-use foundation_ur::{Decoder, Encoder};
-use foundation_ur::UR;
 use gstp::{SealedRequestBehavior, SealedResponseBehavior};
 use {
     crate::{AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom},
     anyhow::Result,
     async_trait::async_trait,
-    bc_components::{PublicKeyBase, ARID},
+    bc_components::ARID,
     bc_envelope::Envelope,
     std::time::Duration,
     gstp::{SealedRequest, SealedResponse},

@@ -1,9 +1,8 @@
-use bc_components::XID;
 use bc_xid::XIDDocument;
 use {
     super::{CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM},
     anyhow::Result,
-    bc_components::{PublicKeyBase, UUID},
+    bc_components::UUID,
     bc_envelope::prelude::*,
 };
 use crate::bluetooth_endpoint::BluetoothEndpoint;

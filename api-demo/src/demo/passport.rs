@@ -1,5 +1,3 @@
-use std::hash::{Hash, Hasher};
-use bc_components::{XIDProvider, XID};
 use foundation_api::QuantumLinkMessage;
 use foundation_api::{PassportFirmwareVersion, PassportSerial};
 use gstp::SealedRequestBehavior;
@@ -10,25 +8,19 @@ use {
     super::{BluetoothChannel, Screen},
     crate::{chapter_title, latency, paint_broadcast, paint_request, Enclave},
     anyhow::{bail, Result},
-    bc_components::{PrivateKeyBase, PublicKeyBase, Seed},
+    bc_components::PrivateKeyBase,
     bc_envelope::prelude::*,
     foundation_abstracted::AbstractBluetoothChannel,
     foundation_abstracted::AbstractEnclave,
     foundation_abstracted::SecureTryFrom,
     foundation_api::{
         Discovery,
-        ExchangeRate,
         PairingResponse,
         PassportModel,
-        Sign,
-        GENERATE_SEED_FUNCTION,
-        SHUTDOWN_FUNCTION,
-        SIGN_FUNCTION,
     },
     foundation_ur::Encoder,
-    foundation_urtypes::registry::{DerivedKey, HDKey},
     hex::ToHex,
-    std::{collections::HashSet, sync::Arc},
+    std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
 use foundation_api::QUANTUM_LINK;
