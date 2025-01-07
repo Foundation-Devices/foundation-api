@@ -15,6 +15,8 @@ use {
     gstp::{SealedRequest, SealedResponse},
 };
 
+use btp::{chunk, Unchunker};
+
 #[async_trait]
 pub trait AbstractBluetoothChannel {
     fn endpoint(&self) -> &BluetoothEndpoint;
@@ -25,17 +27,7 @@ pub trait AbstractBluetoothChannel {
         // Split envelope into chunks
         let cbor = envelope.to_cbor_data();
 
-        let mut encoder = Encoder::new();
-        encoder.start("ql", &*cbor, 100);
-
-        for _ in 0..encoder.sequence_count() {
-            let chunk = encoder.next_part().to_string();
-
-            // TODO: Jean-Pierre to improve this
-            // let part = chunk.as_part().unwrap();
-            // self.send(part.data).await.expect("couldn't send");
-            // println!("Sent {} bytes over BLE", part.data.len());
-
+        for chunk in chunk(&*cbor) {
             self.send(chunk).await.expect("couldn't send");
         }
 
@@ -43,22 +35,19 @@ pub trait AbstractBluetoothChannel {
     }
 
     async fn receive_envelope(&self, timeout: Duration) -> Result<Envelope> {
-        let mut decoder = Decoder::default();
+        let mut unchunker = Unchunker::new();
         loop {
             let bytes = self.receive(timeout).await?;
             println!("Received {} bytes over BLE", bytes.len());
-            let ur_string = String::from_utf8(bytes)?;
+            unchunker.receive(&bytes)?;
 
-            let ur = UR::parse(&*ur_string)?;
-            decoder.receive(ur).expect("couldn't decode");
-
-            if decoder.is_complete() {
+            if unchunker.is_complete() {
                 break;
             }
         }
 
-        let message = decoder.message()?;
-        Envelope::try_from_cbor_data(Vec::from(message.unwrap()))
+        let message = unchunker.data();
+        Envelope::try_from_cbor_data(message.to_owned())
     }
 
     async fn send_request_with_id<E, S>(

@@ -131,52 +131,6 @@ impl Passport {
             bail!("Unknown function: {}", function);
         }
 
-        // if function == EXCHANGE_RATE_FUNCTION {
-        //     let fx = ExchangeRate::try_from(body)?;
-        //     log!("💸 {} rate is: {}", fx.currency_code(), fx.rate());
-        // } else if function == GENERATE_SEED_FUNCTION {
-        //     let seed = &Seed::new();
-        //     log!("🌱 Generated seed: {}", hex::encode(seed.data()));
-        //     let result = Envelope::new(seed.to_cbor());
-        //     self.bluetooth
-        //         .send_ok_response(
-        //             &sender,
-        //             &self.enclave,
-        //             &id,
-        //             Some(result),
-        //             request.peer_continuation(),
-        //         )
-        //         .await?;
-        // } else if function == SIGN_FUNCTION {
-        //     let sign = Sign::try_from(body)?;
-        //     let signing_subject = sign.signing_subject();
-        //     log!("🔏 Signing envelope: {}", signing_subject.format_flat());
-        //     let result = self.enclave.sign(signing_subject);
-        //     self.bluetooth
-        //         .send_ok_response(
-        //             &sender,
-        //             &self.enclave,
-        //             &id,
-        //             Some(result),
-        //             request.peer_continuation(),
-        //         )
-        //         .await?;
-        // } else if function == SHUTDOWN_FUNCTION {
-        //     log!("🚪 Shutdown signal received");
-        //     self.bluetooth
-        //         .send_ok_response(
-        //             &sender,
-        //             &self.enclave,
-        //             &id,
-        //             None,
-        //             request.peer_continuation(),
-        //         )
-        //         .await?;
-        //     *stop.lock().await = true;
-        // } else {
-        //     bail!("Unknown function: {}", function);
-        // }
-
         Ok(())
     }
 

@@ -1,0 +1,9 @@
+[package]
+name = "btp"
+version = "0.1.0"
+edition = "2024"
+homepage.workspace = true
+
+[dependencies]
+minicbor = "0.25.1"
+anyhow = "1.0.95"

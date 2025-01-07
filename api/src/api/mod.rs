@@ -53,17 +53,3 @@ pub trait QuantumLinkMessage<C>: Encode<C> {
         Expression::new(QUANTUM_LINK).with_parameter("message", envelope)
     }
 }
-
-// impl EnvelopeEncodable for dyn QuantumLinkMessage {
-//
-//     fn into_envelope(self) -> Envelope {
-//         self
-//     }
-//
-//     fn to_envelope(&self) -> Envelope
-//     where
-//         Self: Clone
-//     {
-//         todo!()
-//     }
-// }

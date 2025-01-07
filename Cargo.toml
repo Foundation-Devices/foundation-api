@@ -3,8 +3,8 @@ resolver = "2"
 members = [
     "api",
     "api-demo",
-    "abstracted"
-]
+    "abstracted",
+    "btp"]
 
 [workspace.package]
 homepage = "https://github.com/Foundation-Devices/foundation-api"
@@ -13,5 +13,6 @@ homepage = "https://github.com/Foundation-Devices/foundation-api"
 foundation-api = { path = "api" }
 foundation-api-demo = { path = "api-demo" }
 foundation-abstracted = { path = "abstracted" }
+btp = { path = "btp" }
 
 
