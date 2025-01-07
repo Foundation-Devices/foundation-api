@@ -1,5 +1,5 @@
-use bc_envelope::{EnvelopeEncodable, Expression, ResponseBehavior};
 use bc_envelope::prelude::CBOREncodable;
+use bc_envelope::{EnvelopeEncodable, Expression, ResponseBehavior};
 use bc_xid::XIDDocument;
 use gstp::{SealedRequestBehavior, SealedResponseBehavior};
 use {
@@ -8,8 +8,8 @@ use {
     async_trait::async_trait,
     bc_components::ARID,
     bc_envelope::Envelope,
-    std::time::Duration,
     gstp::{SealedRequest, SealedResponse},
+    std::time::Duration,
 };
 
 use btp::{chunk, Unchunker};
@@ -111,7 +111,7 @@ pub trait AbstractBluetoothChannel {
     where
         E: AbstractEnclave + Send + Sync,
     {
-        let response = SealedResponse::new_success(id,enclave.xid_document())
+        let response = SealedResponse::new_success(id, enclave.xid_document())
             .with_optional_result(result)
             .with_peer_continuation(peer_continuation);
         self.send_response(recipient, enclave, response).await

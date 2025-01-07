@@ -1,21 +1,18 @@
 mod discovery;
 pub use discovery::Discovery;
+pub mod bluetooth_endpoint;
 mod fx;
 mod pairing;
 mod passport;
 mod sign;
-pub mod bluetooth_endpoint;
 
-use bc_envelope::prelude::*;
+use {bc_envelope::prelude::*, minicbor::Encode};
 pub use {
     fx::ExchangeRate,
-    pairing::{PairingResponse, PairingRequest},
-    passport::PassportModel,
-    passport::{PassportFirmwareVersion, PassportSerial},
+    pairing::{PairingRequest, PairingResponse},
+    passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
     sign::Sign,
 };
-
-use minicbor::Encode;
 
 // Functions
 
@@ -39,9 +36,11 @@ const SERVICE_PARAM: Parameter = Parameter::new_static_named("bluetoothService")
 const CHARACTERISTIC_PARAM: Parameter = Parameter::new_static_named("bluetoothCharacteristic");
 const SIGNING_SUBJECT_PARAM: Parameter = Parameter::new_static_named("signingSubject");
 
-
 pub trait QuantumLinkMessage<C>: Encode<C> {
-    fn encode(&self) -> Expression where Self: Encode<()> {
+    fn encode(&self) -> Expression
+    where
+        Self: Encode<()>,
+    {
         let mut buffer: Vec<u8> = Vec::new();
 
         minicbor::encode(self, &mut buffer).unwrap();

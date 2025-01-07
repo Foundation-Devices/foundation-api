@@ -50,7 +50,9 @@ impl AbstractEnclave for Enclave {
     }
 
     fn seal_response(&self, envelope: &SealedResponse, recipient: &XIDDocument) -> Envelope {
-        envelope.to_envelope(None, Some(&self.private_key), Some(recipient)).unwrap()
+        envelope
+            .to_envelope(None, Some(&self.private_key), Some(recipient))
+            .unwrap()
     }
 
     fn decrypt(&self, envelope: &Envelope) -> Result<Envelope> {
@@ -66,7 +68,9 @@ impl AbstractEnclave for Enclave {
     }
 
     fn sealed_request_to_envelope(&self, request: SealedRequest) -> Envelope {
-        request.to_envelope(None, Some(&self.private_key), None).unwrap()
+        request
+            .to_envelope(None, Some(&self.private_key), None)
+            .unwrap()
         //Envelope::from((request, &self.private_key))
     }
 
@@ -75,12 +79,16 @@ impl AbstractEnclave for Enclave {
         request: SealedRequest,
         recipient: &XIDDocument,
     ) -> Envelope {
-        request.to_envelope(None, Some(&self.private_key), Some(recipient)).unwrap()
+        request
+            .to_envelope(None, Some(&self.private_key), Some(recipient))
+            .unwrap()
         //Envelope::from((request, &self.private_key, recipient))
     }
 
     fn sealed_response_to_envelope(&self, response: SealedResponse) -> Envelope {
-        response.to_envelope(None, Some(&self.private_key), None).unwrap()
+        response
+            .to_envelope(None, Some(&self.private_key), None)
+            .unwrap()
         //Envelope::from((response, &self.private_key))
     }
 
@@ -97,7 +105,12 @@ impl AbstractEnclave for Enclave {
         envelope: Envelope,
         request_id: &ARID,
     ) -> Result<SealedResponse> {
-        SealedResponse::try_from_encrypted_envelope(&envelope, Some(request_id), None, &self.private_key)
+        SealedResponse::try_from_encrypted_envelope(
+            &envelope,
+            Some(request_id),
+            None,
+            &self.private_key,
+        )
     }
 }
 

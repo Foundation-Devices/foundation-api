@@ -1,10 +1,14 @@
-use minicbor_derive::{Decode, Encode};
-use crate::api::QuantumLinkMessage;
+use {
+    crate::api::QuantumLinkMessage,
+    minicbor_derive::{Decode, Encode},
+};
 
 #[derive(Clone, Encode, Decode)]
 pub struct ExchangeRate {
-    #[n(0)] currency_code: String,
-    #[n(1)] rate: f32,
+    #[n(0)]
+    currency_code: String,
+    #[n(1)]
+    rate: f32,
 }
 
 impl ExchangeRate {

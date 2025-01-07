@@ -7,3 +7,4 @@ homepage.workspace = true
 [dependencies]
 minicbor = "0.25.1"
 anyhow = "1.0.95"
+consts = { git = "https://github.com/Foundation-Devices/prime-ble-firmware.git", features = ["dle"] }

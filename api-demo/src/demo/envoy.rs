@@ -1,14 +1,9 @@
 use bc_xid::XIDDocument;
+use foundation_api::{PairingRequest, QuantumLinkMessage};
 use gstp::{SealedResponse, SealedResponseBehavior};
 use {
     crate::{
-        chapter_title,
-        latency,
-        paint_broadcast,
-        paint_response,
-        sleep,
-        BluetoothChannel,
-        Camera,
+        chapter_title, latency, paint_broadcast, paint_response, sleep, BluetoothChannel, Camera,
         Enclave,
     },
     anyhow::{anyhow, bail, Ok, Result},
@@ -17,17 +12,11 @@ use {
     foundation_abstracted::AbstractBluetoothChannel,
     foundation_abstracted::SecureTryFrom,
     foundation_api::{
-        Discovery,
-        ExchangeRate,
-        Sign,
-        GENERATE_SEED_FUNCTION,
-        SHUTDOWN_FUNCTION,
-        SIGN_FUNCTION,
+        Discovery, ExchangeRate, Sign, GENERATE_SEED_FUNCTION, SHUTDOWN_FUNCTION, SIGN_FUNCTION,
     },
     std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
-use foundation_api::{PairingRequest, QuantumLinkMessage};
 
 pub const ENVOY_PREFIX: &str = "🔶 Envoy   ";
 
@@ -177,7 +166,12 @@ impl Envoy {
             log!("🌱 Got seed: {}", hex::encode(seed.data()));
         } else if function == SIGN_FUNCTION {
             log!("🔏 Verifying signature");
-            let verified_envelope = result.verify(self.passport_xid_document().await.inception_signing_key().unwrap())?;
+            let verified_envelope = result.verify(
+                self.passport_xid_document()
+                    .await
+                    .inception_signing_key()
+                    .unwrap(),
+            )?;
             let sign = Sign::try_from(expression)?;
             if verified_envelope.is_identical_to(sign.signing_subject()) {
                 log!("🔏 Signature verified and contents match.");
@@ -224,8 +218,9 @@ impl Envoy {
 
         // We're using the public key from the disovery to send the pairing request, as
         // we're not paired yet. The other commands use the first paired device.
-        let body = PairingRequest{}.encode();
-        let response = self.bluetooth
+        let body = PairingRequest {}.encode();
+        let response = self
+            .bluetooth
             .call(sender, &self.enclave, body.clone(), Some(body))
             .await?;
         let bluetooth_sender = response.sender();

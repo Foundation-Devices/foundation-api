@@ -1,6 +1,6 @@
+use consts::APP_MTU;
 
-const MTU_SIZE: usize = 244;
-const CHUNK_SIZE: usize = MTU_SIZE - 5;
+const CHUNK_SIZE: usize = APP_MTU - 5;
 
 pub struct Chunker<'a> {
     data: &'a [u8],
@@ -9,7 +9,7 @@ pub struct Chunker<'a> {
 }
 
 impl<'a> Iterator for Chunker<'a> {
-    type Item = [u8; MTU_SIZE];
+    type Item = [u8; APP_MTU];
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.current_chunk >= self.total_chunks {
@@ -20,7 +20,7 @@ impl<'a> Iterator for Chunker<'a> {
         let chunk_size = std::cmp::min(remaining_data, CHUNK_SIZE);
         let chunk = &self.data[self.current_chunk * CHUNK_SIZE..][..chunk_size];
 
-        let mut buffer = [0u8; MTU_SIZE];
+        let mut buffer = [0u8; APP_MTU];
         let mut encoder = minicbor::Encoder::new(&mut buffer[..]);
 
         // Encode chunk index (m of n) and data
@@ -65,7 +65,6 @@ impl Unchunker {
     pub fn is_complete(&self) -> bool {
         self.is_complete
     }
-
 
     pub fn data(&self) -> &Vec<u8> {
         &self.data
@@ -115,7 +114,7 @@ mod tests {
         let data = b"This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.";
 
         // Chunk the data
-        let chunked_data: Vec<[u8; MTU_SIZE]> = chunk(data).collect();
+        let chunked_data: Vec<[u8; APP_MTU]> = chunk(data).collect();
 
         assert_eq!(chunked_data.len(), 3);
 

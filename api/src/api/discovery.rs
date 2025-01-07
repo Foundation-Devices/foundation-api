@@ -1,11 +1,11 @@
-use bc_xid::XIDDocument;
 use {
     super::{CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM},
+    crate::bluetooth_endpoint::BluetoothEndpoint,
     anyhow::Result,
     bc_components::UUID,
     bc_envelope::prelude::*,
+    bc_xid::XIDDocument,
 };
-use crate::bluetooth_endpoint::BluetoothEndpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {

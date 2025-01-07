@@ -342,6 +342,7 @@ name = "btp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "consts",
  "minicbor 0.25.1",
 ]
 
@@ -430,6 +431,11 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "consts"
+version = "0.1.0"
+source = "git+https://github.com/Foundation-Devices/prime-ble-firmware.git#656a77755ea3a247248088caf3d398075516c8c7"
 
 [[package]]
 name = "core-foundation-sys"

@@ -1,9 +1,10 @@
-use foundation_api::QuantumLinkMessage;
-use foundation_api::{PassportFirmwareVersion, PassportSerial};
-use gstp::SealedRequestBehavior;
 use bc_xid::XIDDocument;
+use foundation_api::QuantumLinkMessage;
+use foundation_api::QUANTUM_LINK;
+use foundation_api::{PassportFirmwareVersion, PassportSerial};
 use foundation_urtypes::registry::{DerivedKeyRef, HDKeyRef};
 use gstp::SealedRequest;
+use gstp::SealedRequestBehavior;
 use {
     super::{BluetoothChannel, Screen},
     crate::{chapter_title, latency, paint_broadcast, paint_request, Enclave},
@@ -13,17 +14,12 @@ use {
     foundation_abstracted::AbstractBluetoothChannel,
     foundation_abstracted::AbstractEnclave,
     foundation_abstracted::SecureTryFrom,
-    foundation_api::{
-        Discovery,
-        PairingResponse,
-        PassportModel,
-    },
+    foundation_api::{Discovery, PairingResponse, PassportModel},
     foundation_ur::Encoder,
     hex::ToHex,
     std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
-use foundation_api::QUANTUM_LINK;
 
 pub const PASSPORT_PREFIX: &str = "🛂 Passport";
 
@@ -136,8 +132,7 @@ impl Passport {
 
     async fn run_pairing_mode(self: &Arc<Self>) -> Result<()> {
         let xid_document = self.xid_document().clone();
-        let discovery =
-            Discovery::new(xid_document, self.bluetooth.endpoint().clone());
+        let discovery = Discovery::new(xid_document, self.bluetooth.endpoint().clone());
 
         log!(
             "🔑 Private key: {:?}",
@@ -230,9 +225,17 @@ impl Passport {
         Ok(())
     }
 
-    async fn add_paired_device(self: &Arc<Self>, paired_device_xid_document: &XIDDocument) -> Result<()> {
+    async fn add_paired_device(
+        self: &Arc<Self>,
+        paired_device_xid_document: &XIDDocument,
+    ) -> Result<()> {
         // If `paired_devices` contains the key, do nothing (idempotent operation)
-        if self.paired_devices.lock().await.contains(paired_device_xid_document) {
+        if self
+            .paired_devices
+            .lock()
+            .await
+            .contains(paired_device_xid_document)
+        {
             log!("🤝 Already paired to that device.");
         } else {
             // If the key is different, store it.
