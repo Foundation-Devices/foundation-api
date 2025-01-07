@@ -47,7 +47,7 @@ pub struct Passport {
     screen: Arc<Screen>,
     bluetooth: Arc<BluetoothChannel>,
     enclave: Enclave,
-    paired_devices: Mutex<HashSet<XID>>,
+    paired_devices: Mutex<Vec<XIDDocument>>,
 }
 
 impl Passport {
@@ -56,7 +56,7 @@ impl Passport {
             screen,
             bluetooth,
             enclave: Enclave::new(),
-            paired_devices: Mutex::new(HashSet::new()),
+            paired_devices: Mutex::new(Vec::new()),
         })
     }
 
@@ -120,7 +120,7 @@ impl Passport {
         log!("📡 Received: {}", paint_request!(request));
 
         // Verify the sender is one of the paired devices
-        self.check_paired_device(&request.sender().xid()).await?;
+        self.check_paired_device(&request.sender()).await?;
 
         let id = request.id().clone();
         let function = request.function().clone();
@@ -180,7 +180,7 @@ impl Passport {
         Ok(())
     }
 
-    async fn check_paired_device(self: &Arc<Self>, sender: &XID) -> Result<()> {
+    async fn check_paired_device(self: &Arc<Self>, sender: &XIDDocument) -> Result<()> {
         if self.paired_devices.lock().await.contains(sender) {
             Ok(())
         } else {
@@ -189,8 +189,9 @@ impl Passport {
     }
 
     async fn run_pairing_mode(self: &Arc<Self>) -> Result<()> {
+        let xid_document = self.xid_document().clone();
         let discovery =
-            Discovery::new(self.public_key().clone(), self.bluetooth.endpoint().clone());
+            Discovery::new(xid_document, self.bluetooth.endpoint().clone());
 
         log!(
             "🔑 Private key: {:?}",
@@ -200,6 +201,8 @@ impl Passport {
         let envelope = self
             .enclave
             .sign(&discovery.into_expression().into_envelope());
+
+        register_tags();
 
         // Show the QR code, but clear the screen no matter how we exit this function
         let _screen_guard = self.screen().show_envelope(&envelope);
@@ -212,23 +215,25 @@ impl Passport {
         let envelope_data = envelope.tagged_cbor_data();
         encoder.start("discovery", &*envelope_data, 300);
 
-        for _ in 0..10 {
-            let part = encoder.next_part();
-            let qr = part.to_string();
-            log!(
-                "📺 Displaying discovery QR code(s): {}",
-                paint_broadcast!(qr)
-            );
-        }
+        // for _ in 0..10 {
+        //     let part = encoder.next_part();
+        //     let qr = part.to_string();
+        //     log!(
+        //         "📺 Displaying discovery QR code(s): {}",
+        //         paint_broadcast!(qr)
+        //     );
+        // }
 
         log!("🤝 Waiting for pairing request");
+
         let received_envelope = self
             .bluetooth
             .receive_envelope(Duration::from_secs(10))
             .await?;
+
         let request = SealedRequest::secure_try_from(received_envelope, &self.enclave)?;
         log!("🤝 Received: {}", paint_request!(request));
-        match self.add_paired_device(&request.sender().xid()).await {
+        match self.add_paired_device(&request.sender()).await {
             Ok(_) => {
                 let response = Envelope::new(
                     PairingResponse {
@@ -258,7 +263,7 @@ impl Passport {
                         request.sender(),
                         &self.enclave,
                         request.id(),
-                        Some(response.into()),
+                        Some(response),
                         request.peer_continuation(),
                     )
                     .await?;
@@ -279,16 +284,16 @@ impl Passport {
         Ok(())
     }
 
-    async fn add_paired_device(self: &Arc<Self>, paired_device_xid: &XID) -> Result<()> {
+    async fn add_paired_device(self: &Arc<Self>, paired_device_xid_document: &XIDDocument) -> Result<()> {
         // If `paired_devices` contains the key, do nothing (idempotent operation)
-        if self.paired_devices.lock().await.contains(paired_device_xid) {
+        if self.paired_devices.lock().await.contains(paired_device_xid_document) {
             log!("🤝 Already paired to that device.");
         } else {
             // If the key is different, store it.
             self.paired_devices
                 .lock()
                 .await
-                .insert(paired_device_xid.clone());
+                .push(paired_device_xid_document.clone());
             log!("🤝 Successfully paired.");
         }
 
@@ -302,7 +307,7 @@ impl Passport {
         self.screen.clone()
     }
 
-    fn public_key(&self) -> &XIDDocument {
+    fn xid_document(&self) -> &XIDDocument {
         self.enclave.xid_document()
     }
 

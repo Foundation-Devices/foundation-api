@@ -1,3 +1,4 @@
+use bc_components::XID;
 use bc_xid::XIDDocument;
 use {
     super::{CHARACTERISTIC_PARAM, DISCOVERY_FUNCTION, SENDER_PARAM, SERVICE_PARAM},
@@ -35,11 +36,13 @@ impl TryFrom<Expression> for Discovery {
     type Error = anyhow::Error;
 
     fn try_from(expression: Expression) -> Result<Self> {
-        let sender: XIDDocument = expression.extract_object_for_parameter(SENDER_PARAM)?;
+        let envelope = expression.object_for_parameter(SENDER_PARAM)?;
+        let sender: XIDDocument = XIDDocument::try_from(envelope)?;
+
         let service: UUID = expression.extract_object_for_parameter(SERVICE_PARAM)?;
         let characteristic: UUID = expression.extract_object_for_parameter(CHARACTERISTIC_PARAM)?;
         let endpoint = BluetoothEndpoint::from_fields(service, characteristic);
-        Ok(Self::new(sender, endpoint))
+        Ok(Self::new(XIDDocument::try_from(sender)?, endpoint))
     }
 }
 

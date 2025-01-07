@@ -9,7 +9,7 @@ pub mod bluetooth_endpoint;
 use bc_envelope::prelude::*;
 pub use {
     fx::ExchangeRate,
-    pairing::PairingResponse,
+    pairing::{PairingResponse, PairingRequest},
     passport::PassportModel,
     passport::{PassportFirmwareVersion, PassportSerial},
     sign::Sign,
@@ -42,12 +42,12 @@ const SIGNING_SUBJECT_PARAM: Parameter = Parameter::new_static_named("signingSub
 
 pub trait QuantumLinkMessage<C>: Encode<C> {
     fn encode(&self) -> Expression where Self: Encode<()> {
-        let mut buffer = [0u8; 128];
+        let mut buffer: Vec<u8> = Vec::new();
 
-        minicbor::encode(self, buffer.as_mut()).unwrap();
+        minicbor::encode(self, &mut buffer).unwrap();
         // Convert raw data to DCBOR
 
-        let dcbor = CBOR::try_from_data(buffer.as_ref()).unwrap();
+        let dcbor = CBOR::try_from_data(buffer).unwrap();
 
         let envelope = Envelope::new(dcbor);
         Expression::new(QUANTUM_LINK).with_parameter("message", envelope)

@@ -48,7 +48,6 @@ pub trait AbstractBluetoothChannel {
             let bytes = self.receive(timeout).await?;
             println!("Received {} bytes over BLE", bytes.len());
             let ur_string = String::from_utf8(bytes)?;
-            println!("Looking like: {}", ur_string);
 
             let ur = UR::parse(&*ur_string)?;
             decoder.receive(ur).expect("couldn't decode");
@@ -158,7 +157,7 @@ pub trait AbstractBluetoothChannel {
     where
         E: AbstractEnclave + Send + Sync,
     {
-        let envelope = response.to_envelope(None, None, Some(recipient))?;
+        let envelope = enclave.seal_response(&response, recipient);
         self.send_envelope(&envelope).await
     }
 }

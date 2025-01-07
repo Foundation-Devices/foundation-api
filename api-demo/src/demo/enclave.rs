@@ -21,9 +21,9 @@ impl Enclave {
         let private_key = PrivateKeyBase::new();
         let public_key = private_key.schnorr_public_key_base();
         Self {
-            private_key: private_key.clone(),
-            public_key,
-            xid_document: XIDDocument::new_with_private_key(private_key),
+            private_key,
+            public_key: public_key.clone(),
+            xid_document: XIDDocument::new(public_key),
         }
     }
 
@@ -49,9 +49,9 @@ impl AbstractEnclave for Enclave {
         envelope.sign(&self.private_key)
     }
 
-    // fn seal(&self, envelope: &Envelope, recipient: &XIDDocument) -> Envelope {
-    //     envelope.seal(&self.private_key, recipient.encryption_key().unwrap())
-    // }
+    fn seal_response(&self, envelope: &SealedResponse, recipient: &XIDDocument) -> Envelope {
+        envelope.to_envelope(None, Some(&self.private_key), Some(recipient)).unwrap()
+    }
 
     fn decrypt(&self, envelope: &Envelope) -> Result<Envelope> {
         envelope.decrypt_to_recipient(&self.private_key)

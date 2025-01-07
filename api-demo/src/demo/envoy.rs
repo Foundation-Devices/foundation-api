@@ -29,7 +29,7 @@ use {
     std::{collections::HashSet, sync::Arc},
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
-use foundation_api::QuantumLinkMessage;
+use foundation_api::{PairingRequest, QuantumLinkMessage};
 
 pub const ENVOY_PREFIX: &str = "🔶 Envoy   ";
 
@@ -213,7 +213,10 @@ impl Envoy {
             paint_broadcast!(scanned_envelope.format_flat())
         );
         let inner = scanned_envelope.unwrap_envelope()?;
-        let discovery = Discovery::try_from(Expression::try_from(inner)?)?;
+        register_tags();
+        let expression = Expression::try_from(inner)?;
+
+        let discovery = Discovery::try_from(expression)?;
         let sender = discovery.sender();
         scanned_envelope.verify(sender.inception_signing_key().unwrap())?;
 
@@ -223,7 +226,7 @@ impl Envoy {
 
         // We're using the public key from the disovery to send the pairing request, as
         // we're not paired yet. The other commands use the first paired device.
-        let body = Expression::new(PAIRING_FUNCTION);
+        let body = PairingRequest{}.encode();
         let response = self.bluetooth
             .call(sender, &self.enclave, body.clone(), Some(body))
             .await?;

@@ -2,10 +2,8 @@ use foundation_urtypes::registry::HDKeyRef;
 use minicbor_derive::{Decode, Encode};
 use {
     crate::api::passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
-    foundation_urtypes::registry::{HDKey},
 };
 use crate::api::QuantumLinkMessage;
-use crate::ExchangeRate;
 
 #[derive(Encode, Decode)]
 pub struct PairingResponse<'a> {
@@ -16,3 +14,9 @@ pub struct PairingResponse<'a> {
 }
 
 impl QuantumLinkMessage<PairingResponse<'_>> for PairingResponse<'_> {}
+
+#[derive(Encode, Decode)]
+pub struct PairingRequest {}
+
+impl QuantumLinkMessage<PairingRequest> for PairingRequest {}
+

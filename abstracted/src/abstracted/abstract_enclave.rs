@@ -14,7 +14,7 @@ pub trait AbstractEnclave {
 
     // Private key operations
     fn sign(&self, envelope: &Envelope) -> Envelope;
-    //fn seal(&self, envelope: &Envelope, recipient: &XIDDocument) -> Envelope;
+    fn seal_response(&self, envelope: &SealedResponse, recipient: &XIDDocument) -> Envelope;
     fn decrypt(&self, envelope: &Envelope) -> Result<Envelope>;
     //fn unseal(&self, envelope: &Envelope, sender: &XIDDocument) -> Result<Envelope>;
     fn self_decrypt(&self, envelope: &Envelope) -> Result<Envelope>;
