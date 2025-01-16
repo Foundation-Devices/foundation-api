@@ -5,6 +5,11 @@ mod fx;
 mod pairing;
 mod passport;
 mod sign;
+mod onboarding;
+mod settings;
+mod scv;
+mod firmware;
+mod status;
 
 use {bc_envelope::prelude::*, minicbor::Encode};
 pub use {
