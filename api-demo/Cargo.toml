@@ -37,9 +37,5 @@ async-trait = "0.1.80"
 foundation-ur = { git = "https://github.com/Foundation-Devices/foundation-rs" }
 foundation-urtypes = { version = "0.5.0", git = "https://github.com/Foundation-Devices/foundation-rs" }
 
-minicbor = { version = "0.24.2" }
-minicbor-derive = "0.15.3"
-
-
 [dev-dependencies]
 indoc = "^2.0.4"
