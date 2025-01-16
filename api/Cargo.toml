@@ -9,7 +9,6 @@ readme = "README.md"
 license = "Proprietary"
 
 [dependencies]
-dcbor = { version = "0.16.1", features = ["no_std"] }
 bc-components = "0.15.0"
 bc-envelope = { version = "0.21.0", default-features = false, features = [
     "multithreaded",
