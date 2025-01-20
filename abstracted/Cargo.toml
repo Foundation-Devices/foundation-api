@@ -8,6 +8,7 @@ license = "Proprietary"
 
 [dependencies]
 foundation-api = { workspace = true }
+btp = { workspace = true }
 gstp = "0.3.0"
 bc-components = "0.15.0"
 bc-envelope = { version = "0.21.0", default-features = false, features = [
@@ -28,5 +29,4 @@ bc-xid = "0.3.0"
 
 anyhow = "^1.0.0"
 async-trait = "0.1.80"
-btp = { workspace = true }
 
