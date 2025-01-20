@@ -74,13 +74,24 @@ impl Unchunker {
 impl Unchunker {
     pub fn receive(&mut self, data: &Vec<u8>) -> anyhow::Result<Option<&Vec<u8>>> {
         let mut decoder = minicbor::Decoder::new(data);
-        let array_len = decoder.array()?.unwrap();
+        let array_len = match decoder.array() {
+            Ok(x) => match x {
+                Some(x) => x,
+                None => {
+                    return Err(anyhow::anyhow!("No array in CBOR"));
+                }
+            },
+            Err(_) => {
+                return Err(anyhow::anyhow!("Couldn't decode CBOR"));
+            },
+        };
+
         if array_len != 2 {
             return Err(anyhow::anyhow!("Invalid array length"));
         }
 
-        let m = decoder.u32()?;
-        let n = decoder.u32()?;
+        let m = decoder.u32().unwrap();
+        let n = decoder.u32().unwrap();
 
         if n == 0 {
             return Err(anyhow::anyhow!("Invalid n value"));
@@ -92,7 +103,7 @@ impl Unchunker {
 
         self.seen += 1;
 
-        let chunk_data = decoder.bytes()?;
+        let chunk_data = decoder.bytes().unwrap();
         self.data.extend_from_slice(chunk_data);
 
         if self.seen == n {

@@ -695,10 +695,8 @@ dependencies = [
  "bc-envelope",
  "bc-xid",
  "foundation-urtypes",
- "indoc",
  "minicbor 0.24.2",
  "minicbor-derive 0.15.3",
- "paste",
 ]
 
 [[package]]
