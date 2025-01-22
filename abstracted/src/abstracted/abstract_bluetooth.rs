@@ -3,7 +3,7 @@ use bc_envelope::{EnvelopeEncodable, Expression, ResponseBehavior};
 use bc_xid::XIDDocument;
 use gstp::{SealedRequestBehavior, SealedResponseBehavior};
 use {
-    crate::{AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom},
+    crate::{AbstractEnclave, SecureFrom, SecureTryFrom},
     anyhow::Result,
     async_trait::async_trait,
     bc_components::ARID,
@@ -16,7 +16,7 @@ use btp::{chunk, Unchunker};
 
 #[async_trait]
 pub trait AbstractBluetoothChannel {
-    fn endpoint(&self) -> &BluetoothEndpoint;
+    fn address(&self) -> [u8; 6];
     async fn send(&self, message: impl Into<Vec<u8>> + std::marker::Send) -> Result<()>;
     async fn receive(&self, timeout: Duration) -> Result<Vec<u8>>;
 

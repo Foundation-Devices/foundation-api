@@ -1,5 +1,9 @@
 use bc_xid::XIDDocument;
-use foundation_api::{PairingRequest, QuantumLinkMessage};
+use foundation_api::api::discovery::Discovery;
+use foundation_api::{QuantumLinkMessage, QUANTUM_LINK};
+
+use foundation_api::fx::ExchangeRate;
+use foundation_api::pairing::PairingRequest;
 use gstp::{SealedResponse, SealedResponseBehavior};
 use {
     crate::{
@@ -7,13 +11,9 @@ use {
         Enclave,
     },
     anyhow::{anyhow, bail, Ok, Result},
-    bc_components::Seed,
     bc_envelope::prelude::*,
     foundation_abstracted::AbstractBluetoothChannel,
     foundation_abstracted::SecureTryFrom,
-    foundation_api::{
-        Discovery, ExchangeRate, Sign, GENERATE_SEED_FUNCTION, SHUTDOWN_FUNCTION, SIGN_FUNCTION,
-    },
     std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
@@ -54,50 +54,13 @@ impl Envoy {
 
 impl Envoy {
     async fn main(self: Arc<Self>) {
-        if let Err(e) = self._nashville().await {
+        if let Err(e) = self._main().await {
             log!("❌ Error in main: {:?}", e);
         }
         log!("🏁 Finished.");
     }
 
     async fn _main(self: Arc<Self>) -> Result<()> {
-        self.run_pairing_mode().await?;
-
-        chapter_title("📡 Envoy enters main loop, waiting for responses via Bluetooth.");
-        let event_loop = self.clone().run_event_loop();
-
-        sleep(5.0).await;
-
-        chapter_title("🌱 Envoy tells Passport to generate a seed.");
-        let body = Expression::new(GENERATE_SEED_FUNCTION);
-        let recipient = self.first_paired_device().await;
-        self.bluetooth
-            .send_request(&recipient, &self.enclave, body.clone(), Some(body))
-            .await?;
-
-        sleep(5.0).await;
-
-        chapter_title("🔏 Envoy tells Passport to sign an envelope.");
-        let envelope_to_sign = Envelope::new("Signed by Passport");
-        let body = Expression::from(Sign::new(envelope_to_sign));
-        self.bluetooth
-            .send_request(&recipient, &self.enclave, body.clone(), Some(body))
-            .await?;
-
-        sleep(5.0).await;
-
-        chapter_title("🚪 Envoy tells Passport to shut down");
-        let body = Expression::new(SHUTDOWN_FUNCTION);
-        self.bluetooth
-            .send_request(&recipient, &self.enclave, body.clone(), Some(body))
-            .await?;
-
-        event_loop.await?;
-
-        Ok(())
-    }
-
-    async fn _nashville(self: Arc<Self>) -> Result<()> {
         self.run_pairing_mode().await?;
 
         chapter_title("📡 Envoy enters main loop, waiting for responses via Bluetooth.");
@@ -145,7 +108,7 @@ impl Envoy {
     async fn handle_event(
         self: &Arc<Self>,
         envelope: Envelope,
-        stop: Arc<Mutex<bool>>,
+        _stop: Arc<Mutex<bool>>,
     ) -> Result<()> {
         let response = SealedResponse::secure_try_from(envelope, &self.enclave)?;
         log!("📡 Received: {}", paint_response!(response));
@@ -153,7 +116,7 @@ impl Envoy {
         // Verify the sender is one of the paired devices
         self.check_paired_device(response.sender()).await?;
 
-        let result = response.result()?.clone();
+        let _result = response.result()?.clone();
         let state = response
             .state()
             .cloned()
@@ -161,29 +124,10 @@ impl Envoy {
         let expression = Expression::try_from(state)?;
         let function = expression.function().clone();
 
-        if function == GENERATE_SEED_FUNCTION {
-            let seed: Seed = result.extract_subject()?;
-            log!("🌱 Got seed: {}", hex::encode(seed.data()));
-        } else if function == SIGN_FUNCTION {
-            log!("🔏 Verifying signature");
-            let verified_envelope = result.verify(
-                self.passport_xid_document()
-                    .await
-                    .inception_signing_key()
-                    .unwrap(),
-            )?;
-            let sign = Sign::try_from(expression)?;
-            if verified_envelope.is_identical_to(sign.signing_subject()) {
-                log!("🔏 Signature verified and contents match.");
-            } else {
-                bail!("Signature verification succeeded, but contents do not match.");
-            }
-        } else if function == SHUTDOWN_FUNCTION {
-            log!("🚪 Shutting down.");
-            *stop.lock().await = true;
-        } else {
+        if function != QUANTUM_LINK {
             bail!("Unknown function: {}", function);
         }
+
         Ok(())
     }
 }
@@ -211,10 +155,6 @@ impl Envoy {
         let discovery = Discovery::try_from(expression)?;
         let sender = discovery.sender();
         scanned_envelope.verify(sender.inception_signing_key().unwrap())?;
-
-        // This is here for pairing, but we're not actually using it in this api-demo.
-        // Presumably the call below would be sent to this endpoint.
-        let _endpoint = discovery.bluetooth_endpoint();
 
         // We're using the public key from the disovery to send the pairing request, as
         // we're not paired yet. The other commands use the first paired device.
@@ -257,7 +197,7 @@ impl Envoy {
             .clone()
     }
 
-    async fn passport_xid_document(&self) -> XIDDocument {
+    async fn _passport_xid_document(&self) -> XIDDocument {
         self.first_paired_device().await
     }
 }

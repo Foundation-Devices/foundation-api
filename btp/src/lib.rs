@@ -83,7 +83,7 @@ impl Unchunker {
             },
             Err(_) => {
                 return Err(anyhow::anyhow!("Couldn't decode CBOR"));
-            },
+            }
         };
 
         if array_len != 2 {

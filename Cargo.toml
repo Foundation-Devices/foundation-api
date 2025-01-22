@@ -4,7 +4,7 @@ members = [
     "api",
     "api-demo",
     "abstracted",
-    "btp"]
+    "btp", "quantum-link-macros"]
 
 [workspace.package]
 homepage = "https://github.com/Foundation-Devices/foundation-api"
@@ -13,5 +13,6 @@ homepage = "https://github.com/Foundation-Devices/foundation-api"
 foundation-api = { path = "api" }
 foundation-abstracted = { path = "abstracted" }
 btp = { path = "btp" }
+quantum-link-macros = { path = "quantum-link-macros" }
 
 

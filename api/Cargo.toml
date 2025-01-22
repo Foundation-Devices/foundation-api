@@ -1,6 +1,6 @@
 [package]
 name = "foundation-api"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Foundation API using Gordian Sealed Transaction Protocol (GSTP)."
 authors = ["Wolf McNally, Blockchain Commons, Foundation Devices"]
@@ -9,7 +9,6 @@ readme = "README.md"
 license = "Proprietary"
 
 [dependencies]
-bc-components = "0.15.0"
 bc-envelope = { version = "0.21.0", default-features = false, features = [
     "multithreaded",
     "attachment",
@@ -31,3 +30,4 @@ foundation-urtypes = { version = "0.5.0", git = "https://github.com/Foundation-D
 minicbor = { version = "0.24.2" }
 minicbor-derive = "0.15.0"
 bc-xid = "0.3.0"
+quantum-link-macros = { workspace = true }

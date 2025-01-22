@@ -1,7 +1,9 @@
 use bc_xid::XIDDocument;
+use foundation_api::api::passport::{PassportFirmwareVersion, PassportSerial};
+use foundation_api::pairing::PairingResponse;
+use foundation_api::passport::PassportModel;
 use foundation_api::QuantumLinkMessage;
 use foundation_api::QUANTUM_LINK;
-use foundation_api::{PassportFirmwareVersion, PassportSerial};
 use foundation_urtypes::registry::{DerivedKeyRef, HDKeyRef};
 use gstp::SealedRequest;
 use gstp::SealedRequestBehavior;
@@ -14,7 +16,7 @@ use {
     foundation_abstracted::AbstractBluetoothChannel,
     foundation_abstracted::AbstractEnclave,
     foundation_abstracted::SecureTryFrom,
-    foundation_api::{Discovery, PairingResponse, PassportModel},
+    foundation_api::api::discovery::Discovery,
     foundation_ur::Encoder,
     hex::ToHex,
     std::sync::Arc,
@@ -102,7 +104,7 @@ impl Passport {
     async fn handle_event(
         self: &Arc<Self>,
         envelope: Envelope,
-        stop: Arc<Mutex<bool>>,
+        _stop: Arc<Mutex<bool>>,
     ) -> Result<()> {
         let request = SealedRequest::secure_try_from(envelope, &self.enclave)?;
         log!("📡 Received: {}", paint_request!(request));
@@ -110,10 +112,10 @@ impl Passport {
         // Verify the sender is one of the paired devices
         self.check_paired_device(&request.sender()).await?;
 
-        let id = request.id().clone();
+        let _id = request.id().clone();
         let function = request.function().clone();
-        let body = request.body().clone();
-        let sender = request.sender().clone();
+        let _body = request.body().clone();
+        let _sender = request.sender().clone();
 
         if function != QUANTUM_LINK {
             bail!("Unknown function: {}", function);
@@ -132,7 +134,7 @@ impl Passport {
 
     async fn run_pairing_mode(self: &Arc<Self>) -> Result<()> {
         let xid_document = self.xid_document().clone();
-        let discovery = Discovery::new(xid_document, self.bluetooth.endpoint().clone());
+        let discovery = Discovery::new(xid_document, self.bluetooth.address().clone());
 
         log!(
             "🔑 Private key: {:?}",

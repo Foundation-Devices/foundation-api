@@ -1,9 +1,10 @@
 use {
     crate::api::QuantumLinkMessage,
     minicbor_derive::{Decode, Encode},
+    quantum_link_macros::QuantumLinkMessage,
 };
 
-#[derive(Clone, Encode, Decode)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
 pub enum OnboardingState {
     #[n(0)]
     SecuringDevice,
@@ -20,6 +21,5 @@ pub enum OnboardingState {
     #[n(6)]
     ConnectingWallet,
     #[n(7)]
-    Completed
+    Completed,
 }
-

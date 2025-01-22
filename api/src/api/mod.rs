@@ -1,45 +1,24 @@
-mod discovery;
-pub use discovery::Discovery;
-pub mod bluetooth_endpoint;
-mod fx;
-mod pairing;
-mod passport;
-mod sign;
-mod onboarding;
-mod settings;
-mod scv;
-mod firmware;
-mod status;
+pub mod discovery;
+pub mod firmware;
+pub mod fx;
+pub mod onboarding;
+pub mod pairing;
+pub mod passport;
+pub mod scv;
+pub mod settings;
+pub mod status;
 
 use {bc_envelope::prelude::*, minicbor::Encode};
-pub use {
-    fx::ExchangeRate,
-    pairing::{PairingRequest, PairingResponse},
-    passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
-    sign::Sign,
-};
 
 // Functions
-
 pub const DISCOVERY_FUNCTION: Function = Function::new_static_named("discovery");
 pub const PAIRING_FUNCTION: Function = Function::new_static_named("pairing");
-
-pub const SIGN_FUNCTION_NAME: &str = "sign";
-pub const GENERATE_SEED_FUNCTION_NAME: &str = "generateSeed";
-pub const SHUTDOWN_FUNCTION_NAME: &str = "shutdown";
-pub const SIGN_FUNCTION: Function = Function::new_static_named(SIGN_FUNCTION_NAME);
-pub const GENERATE_SEED_FUNCTION: Function =
-    Function::new_static_named(GENERATE_SEED_FUNCTION_NAME);
-pub const SHUTDOWN_FUNCTION: Function = Function::new_static_named(SHUTDOWN_FUNCTION_NAME);
-
 pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
 
 // Parameters
 
 const SENDER_PARAM: Parameter = Parameter::new_static_named("sender");
-const SERVICE_PARAM: Parameter = Parameter::new_static_named("bluetoothService");
-const CHARACTERISTIC_PARAM: Parameter = Parameter::new_static_named("bluetoothCharacteristic");
-const SIGNING_SUBJECT_PARAM: Parameter = Parameter::new_static_named("signingSubject");
+const SENDER_BLE_ADDRESS_PARAM: Parameter = Parameter::new_static_named("senderBleAddress");
 
 pub trait QuantumLinkMessage<C>: Encode<C> {
     fn encode(&self) -> Expression

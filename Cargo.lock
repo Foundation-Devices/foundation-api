@@ -688,15 +688,15 @@ dependencies = [
 
 [[package]]
 name = "foundation-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
- "bc-components",
  "bc-envelope",
  "bc-xid",
  "foundation-urtypes",
  "minicbor 0.24.4",
  "minicbor-derive 0.15.3",
+ "quantum-link-macros",
 ]
 
 [[package]]
@@ -1513,6 +1513,14 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
+]
+
+[[package]]
+name = "quantum-link-macros"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn 2.0.96",
 ]
 
 [[package]]

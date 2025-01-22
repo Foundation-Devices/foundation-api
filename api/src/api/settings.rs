@@ -1,9 +1,10 @@
 use {
     crate::api::QuantumLinkMessage,
     minicbor_derive::{Decode, Encode},
+    quantum_link_macros::QuantumLinkMessage,
 };
 
-#[derive(Clone, Encode, Decode)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
 pub struct Settings {
     #[n(0)]
     magic_backup: bool,
@@ -18,5 +19,3 @@ impl Settings {
         self.magic_backup
     }
 }
-
-impl QuantumLinkMessage<Settings> for Settings {}

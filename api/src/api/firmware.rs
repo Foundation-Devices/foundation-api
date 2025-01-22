@@ -1,9 +1,10 @@
 use {
     crate::api::QuantumLinkMessage,
     minicbor_derive::{Decode, Encode},
+    quantum_link_macros::QuantumLinkMessage,
 };
 
-#[derive(Clone, Encode, Decode)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
 pub struct FirmwareUpdate {
     #[n(0)]
     version: String,
@@ -15,7 +16,11 @@ pub struct FirmwareUpdate {
 
 impl FirmwareUpdate {
     pub fn new(version: String, timestamp: u32, changelog: String) -> Self {
-        Self { version, timestamp, changelog }
+        Self {
+            version,
+            timestamp,
+            changelog,
+        }
     }
 
     pub fn version(&self) -> &str {
@@ -30,5 +35,3 @@ impl FirmwareUpdate {
         &self.changelog
     }
 }
-
-impl QuantumLinkMessage<FirmwareUpdate> for FirmwareUpdate {}

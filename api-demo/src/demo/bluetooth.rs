@@ -1,7 +1,7 @@
 use {
     anyhow::Result,
     async_trait::async_trait,
-    foundation_abstracted::{AbstractBluetoothChannel, BluetoothEndpoint},
+    foundation_abstracted::AbstractBluetoothChannel,
     std::sync::Arc,
     tokio::{
         sync::{
@@ -14,19 +14,19 @@ use {
 
 #[derive(Debug)]
 pub struct BluetoothChannel {
-    endpoint: BluetoothEndpoint,
+    address: [u8; 6],
     sender: Mutex<Sender<Vec<u8>>>,
     receiver: Mutex<Receiver<Vec<u8>>>,
 }
 
 impl BluetoothChannel {
     pub fn new(
-        endpoint: BluetoothEndpoint,
+        address: [u8; 6],
         sender: Sender<Vec<u8>>,
         receiver: Receiver<Vec<u8>>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            endpoint,
+            address,
             sender: Mutex::new(sender),
             receiver: Mutex::new(receiver),
         })
@@ -35,8 +35,8 @@ impl BluetoothChannel {
 
 #[async_trait]
 impl AbstractBluetoothChannel for BluetoothChannel {
-    fn endpoint(&self) -> &BluetoothEndpoint {
-        &self.endpoint
+    fn address(&self) -> [u8; 6] {
+        self.address
     }
 
     async fn send(&self, message: impl Into<Vec<u8>> + std::marker::Send) -> Result<()> {
@@ -61,13 +61,13 @@ pub struct BluetoothPeers {
 
 impl BluetoothPeers {
     pub fn new() -> Self {
-        let endpoint1 = BluetoothEndpoint::new();
-        let endpoint2 = endpoint1.clone();
+        let address1 = [1, 2, 3, 4, 5, 6];
+        let address2 = [6, 5, 4, 3, 2, 1];
         let (sender1, receiver1) = mpsc::channel(100);
         let (sender2, receiver2) = mpsc::channel(100);
         Self {
-            peer1: BluetoothChannel::new(endpoint1, sender1, receiver2),
-            peer2: BluetoothChannel::new(endpoint2, sender2, receiver1),
+            peer1: BluetoothChannel::new(address1, sender1, receiver2),
+            peer2: BluetoothChannel::new(address2, sender2, receiver1),
         }
     }
 

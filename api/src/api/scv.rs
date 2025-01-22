@@ -1,9 +1,10 @@
 use {
     crate::api::QuantumLinkMessage,
     minicbor_derive::{Decode, Encode},
+    quantum_link_macros::QuantumLinkMessage,
 };
 
-#[derive(Clone, Encode, Decode)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
 pub struct Challenge {
     #[n(0)]
     id: String,
@@ -35,11 +36,7 @@ impl Challenge {
     }
 }
 
-
-impl QuantumLinkMessage<Challenge> for Challenge {}
-
-
-#[derive(Clone, Encode, Decode)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
 pub struct ChallengeResponse {
     #[n(0)]
     challenge_id: String,
@@ -54,7 +51,7 @@ impl ChallengeResponse {
         ChallengeResponse {
             challenge_id,
             words,
-            der_signature
+            der_signature,
         }
     }
 
@@ -70,5 +67,3 @@ impl ChallengeResponse {
         &self.der_signature
     }
 }
-
-impl QuantumLinkMessage<ChallengeResponse> for ChallengeResponse {}
