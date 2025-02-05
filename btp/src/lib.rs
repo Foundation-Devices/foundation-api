@@ -1,6 +1,6 @@
 use consts::APP_MTU;
 
-const CHUNK_SIZE: usize = APP_MTU - 5;
+const CHUNK_SIZE: usize = APP_MTU - 7;
 
 pub struct Chunker<'a> {
     data: &'a [u8],

@@ -9,8 +9,8 @@ license = "Proprietary"
 [dependencies]
 foundation-api = { workspace = true }
 foundation-abstracted = { workspace = true }
-bc-components = "0.15.0"
-bc-envelope = { version = "0.21.0", default-features = false, features = [
+bc-components = "0.16.0"
+bc-envelope = { version = "0.22.0", default-features = false, features = [
     "multithreaded",
     "attachment",
     "compress",
@@ -25,8 +25,8 @@ bc-envelope = { version = "0.21.0", default-features = false, features = [
     "types"
 ]}
 
-gstp = "0.3.0"
-bc-xid = "0.3.0"
+gstp = "0.4.0"
+bc-xid = "0.4.0"
 
 anyhow = "^1.0.0"
 thiserror = "^1.0.58"

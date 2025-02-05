@@ -11,14 +11,12 @@ use {
     super::{BluetoothChannel, Screen},
     crate::{chapter_title, latency, paint_broadcast, paint_request, Enclave},
     anyhow::{bail, Result},
-    bc_components::PrivateKeyBase,
     bc_envelope::prelude::*,
     foundation_abstracted::AbstractBluetoothChannel,
     foundation_abstracted::AbstractEnclave,
     foundation_abstracted::SecureTryFrom,
     foundation_api::api::discovery::Discovery,
     foundation_ur::Encoder,
-    hex::ToHex,
     std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
@@ -135,11 +133,6 @@ impl Passport {
     async fn run_pairing_mode(self: &Arc<Self>) -> Result<()> {
         let xid_document = self.xid_document().clone();
         let discovery = Discovery::new(xid_document, self.bluetooth.address().clone());
-
-        log!(
-            "🔑 Private key: {:?}",
-            self.private_key().encode_hex::<String>()
-        );
 
         let envelope = self
             .enclave
@@ -260,9 +253,5 @@ impl Passport {
 
     fn xid_document(&self) -> &XIDDocument {
         self.enclave.xid_document()
-    }
-
-    fn private_key(&self) -> &PrivateKeyBase {
-        self.enclave.private_key()
     }
 }

@@ -1,34 +1,39 @@
 #![allow(dead_code)]
 
+use bc_components::{EncapsulationScheme, SignatureScheme};
 use bc_xid::XIDDocument;
 use gstp::{SealedRequest, SealedResponse};
 use {
     anyhow::Result,
-    bc_components::{PrivateKeyBase, PublicKeyBase, ARID},
+    bc_components::{PrivateKeys, PublicKeys, ARID},
     bc_envelope::prelude::*,
     foundation_abstracted::AbstractEnclave,
 };
 
 #[derive(Debug)]
 pub struct Enclave {
-    private_key: PrivateKeyBase,
-    public_key: PublicKeyBase,
+    private_keys: PrivateKeys,
+    public_keys: PublicKeys,
     xid_document: XIDDocument,
 }
 
 impl Enclave {
     pub fn new() -> Self {
-        let private_key = PrivateKeyBase::new();
-        let public_key = private_key.schnorr_public_key_base();
+        let (signing_private_key, signing_public_key) = SignatureScheme::Dilithium2.keypair();
+        let (encapsulation_private_key, encapsulation_public_key) = EncapsulationScheme::Kyber512.keypair();
+
+        let private_keys = PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
+        let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
+
         Self {
-            private_key,
-            public_key: public_key.clone(),
-            xid_document: XIDDocument::new(public_key),
+            private_keys,
+            public_keys: public_keys.clone(),
+            xid_document: XIDDocument::new(public_keys),
         }
     }
 
-    pub fn private_key(&self) -> &PrivateKeyBase {
-        &self.private_key
+    pub fn private_keys(&self) -> &PrivateKeys {
+        &self.private_keys
     }
 }
 
@@ -38,25 +43,25 @@ impl AbstractEnclave for Enclave {
     }
 
     fn self_encrypt(&self, envelope: &Envelope) -> Envelope {
-        envelope.encrypt_to_recipient(&self.public_key)
+        envelope.encrypt_to_recipient(&self.public_keys)
     }
 
     fn verify(&self, envelope: &Envelope) -> Result<Envelope> {
-        envelope.verify(&self.public_key)
+        envelope.verify(&self.public_keys)
     }
 
     fn sign(&self, envelope: &Envelope) -> Envelope {
-        envelope.sign(&self.private_key)
+        envelope.sign(&self.private_keys)
     }
 
     fn seal_response(&self, envelope: &SealedResponse, recipient: &XIDDocument) -> Envelope {
         envelope
-            .to_envelope(None, Some(&self.private_key), Some(recipient))
+            .to_envelope(None, Some(&self.private_keys), Some(recipient))
             .unwrap()
     }
 
     fn decrypt(&self, envelope: &Envelope) -> Result<Envelope> {
-        envelope.decrypt_to_recipient(&self.private_key)
+        envelope.decrypt_to_recipient(&self.private_keys)
     }
 
     // fn unseal(&self, envelope: &Envelope, sender: &XIDDocument) -> Result<Envelope> {
@@ -64,12 +69,12 @@ impl AbstractEnclave for Enclave {
     // }
 
     fn self_decrypt(&self, envelope: &Envelope) -> Result<Envelope> {
-        envelope.decrypt_to_recipient(&self.private_key)
+        envelope.decrypt_to_recipient(&self.private_keys)
     }
 
     fn sealed_request_to_envelope(&self, request: SealedRequest) -> Envelope {
         request
-            .to_envelope(None, Some(&self.private_key), None)
+            .to_envelope(None, Some(&self.private_keys), None)
             .unwrap()
         //Envelope::from((request, &self.private_key))
     }
@@ -80,24 +85,24 @@ impl AbstractEnclave for Enclave {
         recipient: &XIDDocument,
     ) -> Envelope {
         request
-            .to_envelope(None, Some(&self.private_key), Some(recipient))
+            .to_envelope(None, Some(&self.private_keys), Some(recipient))
             .unwrap()
         //Envelope::from((request, &self.private_key, recipient))
     }
 
     fn sealed_response_to_envelope(&self, response: SealedResponse) -> Envelope {
         response
-            .to_envelope(None, Some(&self.private_key), None)
+            .to_envelope(None, Some(&self.private_keys), None)
             .unwrap()
         //Envelope::from((response, &self.private_key))
     }
 
     fn envelope_to_sealed_request(&self, envelope: Envelope) -> Result<SealedRequest> {
-        SealedRequest::try_from_envelope(&envelope, None, None, &self.private_key)
+        SealedRequest::try_from_envelope(&envelope, None, None, &self.private_keys)
     }
 
     fn envelope_to_sealed_response(&self, envelope: Envelope) -> Result<SealedResponse> {
-        SealedResponse::try_from_encrypted_envelope(&envelope, None, None, &self.private_key)
+        SealedResponse::try_from_encrypted_envelope(&envelope, None, None, &self.private_keys)
     }
 
     fn envelope_to_sealed_response_with_request_id(
@@ -109,7 +114,7 @@ impl AbstractEnclave for Enclave {
             &envelope,
             Some(request_id),
             None,
-            &self.private_key,
+            &self.private_keys,
         )
     }
 }
