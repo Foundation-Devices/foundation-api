@@ -1,6 +1,7 @@
 use consts::APP_MTU;
 
-const CHUNK_SIZE: usize = APP_MTU - 7;
+// TODO: is it possible to make this dynamic?
+const CHUNK_SIZE: usize = APP_MTU - 6;
 
 pub struct Chunker<'a> {
     data: &'a [u8],
@@ -25,8 +26,6 @@ impl<'a> Iterator for Chunker<'a> {
 
         // Encode chunk index (m of n) and data
         encoder
-            .array(2)
-            .unwrap()
             .u32(self.current_chunk as u32)
             .unwrap()
             .u32(self.total_chunks as u32)
@@ -74,21 +73,6 @@ impl Unchunker {
 impl Unchunker {
     pub fn receive(&mut self, data: &Vec<u8>) -> anyhow::Result<Option<&Vec<u8>>> {
         let mut decoder = minicbor::Decoder::new(data);
-        let array_len = match decoder.array() {
-            Ok(x) => match x {
-                Some(x) => x,
-                None => {
-                    return Err(anyhow::anyhow!("No array in CBOR"));
-                }
-            },
-            Err(_) => {
-                return Err(anyhow::anyhow!("Couldn't decode CBOR"));
-            }
-        };
-
-        if array_len != 2 {
-            return Err(anyhow::anyhow!("Invalid array length"));
-        }
 
         let m = decoder.u32().unwrap();
         let n = decoder.u32().unwrap();
