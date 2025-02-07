@@ -6,7 +6,7 @@ homepage.workspace = true
 
 [dependencies]
 #foundation-api = { workspace = true }
-quote = "1.0.38"
+quote = "^1"
 syn = "2.0.96"
 
 [lib]
