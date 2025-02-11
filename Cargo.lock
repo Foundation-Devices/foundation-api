@@ -705,7 +705,6 @@ dependencies = [
  "anyhow",
  "bc-envelope",
  "bc-xid",
- "foundation-urtypes",
  "minicbor 0.24.4",
  "minicbor-derive 0.15.3",
  "quantum-link-macros",

@@ -3,12 +3,12 @@ use {
         passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
         QuantumLinkMessage,
     },
-    foundation_urtypes::registry::HDKeyRef,
     minicbor_derive::{Decode, Encode},
 };
+use quantum_link_macros::QuantumLinkMessage;
 
-#[derive(Encode, Decode)]
-pub struct PairingResponse<'a> {
+#[derive(Encode, Decode, QuantumLinkMessage)]
+pub struct PairingResponse {
     #[n(0)]
     pub passport_model: PassportModel,
     #[n(1)]
@@ -16,12 +16,9 @@ pub struct PairingResponse<'a> {
     #[n(2)]
     pub passport_serial: PassportSerial,
     #[b(3)]
-    pub hdkey: HDKeyRef<'a>,
+    pub descriptor: String,
 }
 
-impl QuantumLinkMessage<PairingResponse<'_>> for PairingResponse<'_> {}
 
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, QuantumLinkMessage)]
 pub struct PairingRequest {}
-
-impl QuantumLinkMessage<PairingRequest> for PairingRequest {}

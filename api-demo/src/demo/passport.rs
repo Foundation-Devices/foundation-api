@@ -4,7 +4,6 @@ use foundation_api::pairing::PairingResponse;
 use foundation_api::passport::PassportModel;
 use foundation_api::QuantumLinkMessage;
 use foundation_api::QUANTUM_LINK;
-use foundation_urtypes::registry::{DerivedKeyRef, HDKeyRef};
 use gstp::SealedRequest;
 use gstp::SealedRequestBehavior;
 use {
@@ -20,6 +19,7 @@ use {
     std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
+use foundation_api::messages::QuantumLinkMessages;
 
 pub const PASSPORT_PREFIX: &str = "🛂 Passport";
 
@@ -119,6 +119,19 @@ impl Passport {
             bail!("Unknown function: {}", function);
         }
 
+        let message = QuantumLinkMessages::decode(&request.body())?;
+
+        match message {
+            QuantumLinkMessages::ExchangeRate(_) => {
+                println!("Received ExchangeRate message");
+            }
+            QuantumLinkMessages::FirmwareUpdate(_) => {}
+            QuantumLinkMessages::DeviceStatus(_) => {}
+            QuantumLinkMessages::EnvoyStatus(_) => {}
+            QuantumLinkMessages::PairingResponse(_) => {}
+            QuantumLinkMessages::PairingRequest(_) => {}
+        }
+
         Ok(())
     }
 
@@ -172,25 +185,13 @@ impl Passport {
         match self.add_paired_device(&request.sender()).await {
             Ok(_) => {
                 let response = Envelope::new(
+                    QuantumLinkMessages::PairingResponse(
                     PairingResponse {
                         passport_model: PassportModel::Prime,
                         passport_serial: PassportSerial("1234-5678".to_owned()),
                         passport_firmware_version: PassportFirmwareVersion("1.0.0".to_owned()),
-                        hdkey: HDKeyRef::DerivedKey(DerivedKeyRef {
-                            is_private: false,
-                            key_data: [
-                                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-                                19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
-                            ],
-                            chain_code: None,
-                            use_info: None,
-                            origin: None,
-                            children: None,
-                            parent_fingerprint: None,
-                            name: None,
-                            note: None,
-                        }),
-                    }
+                        descriptor: "bv12312321".to_owned(),
+                    })
                     .encode(),
                 );
 

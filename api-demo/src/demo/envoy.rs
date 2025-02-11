@@ -3,6 +3,7 @@ use foundation_api::api::discovery::Discovery;
 use foundation_api::{QuantumLinkMessage, QUANTUM_LINK};
 
 use foundation_api::fx::ExchangeRate;
+use foundation_api::messages::QuantumLinkMessages;
 use foundation_api::pairing::PairingRequest;
 use gstp::{SealedResponse, SealedResponseBehavior};
 use {
@@ -70,7 +71,8 @@ impl Envoy {
 
         loop {
             chapter_title("💸 Envoy tells Passport the USD exchange rate.");
-            let body: Expression = ExchangeRate::new("USD", 65432.21).encode();
+            let body: Expression =
+                QuantumLinkMessages::ExchangeRate(ExchangeRate::new("USD", 65432.21)).encode();
             let recipient = self.first_paired_device().await;
             self.bluetooth
                 .send_request(&recipient, &self.enclave, body.clone(), Some(body))
@@ -158,7 +160,7 @@ impl Envoy {
 
         // We're using the public key from the disovery to send the pairing request, as
         // we're not paired yet. The other commands use the first paired device.
-        let body = PairingRequest {}.encode();
+        let body = QuantumLinkMessages::PairingRequest(PairingRequest{}).encode();
         let response = self
             .bluetooth
             .call(sender, &self.enclave, body.clone(), Some(body))
