@@ -7,7 +7,7 @@ use crate::pairing::PairingResponse;
 use crate::pairing::PairingRequest;
 use crate::QuantumLinkMessage;
 
-#[derive(Encode, Decode, QuantumLinkMessage)]
+#[derive(Debug, Encode, Decode, QuantumLinkMessage)]
 pub enum QuantumLinkMessages {
     #[n(0)]
     ExchangeRate(#[n(0)] ExchangeRate),

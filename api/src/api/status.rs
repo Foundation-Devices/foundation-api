@@ -14,7 +14,7 @@ pub enum DeviceState {
     Rebooting,
 }
 
-#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage, Debug)]
 pub struct DeviceStatus {
     #[n(0)]
     state: DeviceState,
@@ -34,7 +34,7 @@ pub enum EnvoyState {
     DownloadingFirmware,
 }
 
-#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage, Debug)]
 pub struct EnvoyStatus {
     #[n(0)]
     state: EnvoyState,

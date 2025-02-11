@@ -4,7 +4,7 @@ use {
     quantum_link_macros::QuantumLinkMessage,
 };
 
-#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage, Debug)]
 pub struct FirmwareUpdate {
     #[n(0)]
     version: String,
