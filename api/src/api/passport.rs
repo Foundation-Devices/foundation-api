@@ -4,7 +4,7 @@ use {
     quantum_link_macros::QuantumLinkMessage,
 };
 
-#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
+#[derive(Debug, Clone, Encode, Decode, QuantumLinkMessage)]
 pub enum PassportModel {
     #[n(0)]
     Gen1,
@@ -14,8 +14,8 @@ pub enum PassportModel {
     Prime,
 }
 
-#[derive(Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct PassportFirmwareVersion(#[n(0)] pub String);
 
-#[derive(Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct PassportSerial(#[n(0)] pub String);

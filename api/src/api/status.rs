@@ -4,7 +4,7 @@ use {
     quantum_link_macros::QuantumLinkMessage,
 };
 
-#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage, Debug)]
 pub enum DeviceState {
     #[n(0)]
     Normal,
@@ -26,7 +26,7 @@ pub struct DeviceStatus {
     version: String,
 }
 
-#[derive(Clone, Encode, Decode, QuantumLinkMessage)]
+#[derive(Clone, Encode, Decode, QuantumLinkMessage, Debug)]
 pub enum EnvoyState {
     #[n(0)]
     Normal,

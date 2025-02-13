@@ -47,7 +47,7 @@ pub trait QuantumLinkMessage<C>: Encode<C> {
         let envelope = expression.object_for_parameter("ql")?;
         let raw_data = envelope.as_leaf().expect("there should be a leaf").to_cbor_data();
 
-        let message = minicbor::decode(&raw_data)?;
+        let message = minicbor::decode(&raw_data).map_err(|e| anyhow::anyhow!(e))?;
         Ok(message)
     }
 }
