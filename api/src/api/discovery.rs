@@ -1,9 +1,15 @@
 use {
-    super::{DISCOVERY_FUNCTION, SENDER_BLE_ADDRESS_PARAM, SENDER_PARAM},
     anyhow::Result,
     bc_envelope::prelude::*,
     bc_xid::XIDDocument,
 };
+
+// Functions
+pub const DISCOVERY_FUNCTION: Function = Function::new_static_named("discovery");
+
+// Parameters
+const SENDER_PARAM: Parameter = Parameter::new_static_named("sender");
+const SENDER_BLE_ADDRESS_PARAM: Parameter = Parameter::new_static_named("senderBleAddress");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {

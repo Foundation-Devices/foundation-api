@@ -1,9 +1,9 @@
 use bc_xid::XIDDocument;
 use foundation_api::api::discovery::Discovery;
-use foundation_api::{QuantumLinkMessage, QUANTUM_LINK};
+use foundation_api::api::quantum_link::QUANTUM_LINK;
 
 use foundation_api::fx::ExchangeRate;
-use foundation_api::messages::QuantumLinkMessages;
+use foundation_api::api::quantum_link::QuantumLinkMessages;
 use foundation_api::pairing::PairingRequest;
 use gstp::{SealedResponse, SealedResponseBehavior};
 use {
@@ -18,7 +18,6 @@ use {
     std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
-
 pub const ENVOY_PREFIX: &str = "🔶 Envoy   ";
 
 macro_rules! log {

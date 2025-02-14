@@ -1,8 +1,8 @@
 use {
-    crate::api::QuantumLinkMessage,
     minicbor_derive::{Decode, Encode},
     quantum_link_macros::QuantumLinkMessage,
 };
+use crate::api::quantum_link::QuantumLinkMessage;
 
 #[derive(Clone, Encode, Decode, QuantumLinkMessage, Debug)]
 pub enum DeviceState {

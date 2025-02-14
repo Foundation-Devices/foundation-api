@@ -2,8 +2,8 @@ use bc_xid::XIDDocument;
 use foundation_api::api::passport::{PassportFirmwareVersion, PassportSerial};
 use foundation_api::pairing::PairingResponse;
 use foundation_api::passport::PassportModel;
-use foundation_api::QuantumLinkMessage;
-use foundation_api::QUANTUM_LINK;
+use foundation_api::api::quantum_link::QuantumLinkMessage;
+use foundation_api::api::quantum_link::QUANTUM_LINK;
 use gstp::SealedRequest;
 use gstp::SealedRequestBehavior;
 use {
@@ -19,7 +19,7 @@ use {
     std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
-use foundation_api::messages::QuantumLinkMessages;
+use foundation_api::api::quantum_link::QuantumLinkMessages;
 
 pub const PASSPORT_PREFIX: &str = "🛂 Passport";
 
