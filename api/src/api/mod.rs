@@ -1,3 +1,5 @@
+pub mod quantum_link;
+pub mod message;
 pub mod discovery;
 pub mod firmware;
 pub mod fx;
@@ -7,4 +9,3 @@ pub mod passport;
 pub mod scv;
 pub mod settings;
 pub mod status;
-pub mod quantum_link;

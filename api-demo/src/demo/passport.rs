@@ -2,7 +2,7 @@ use bc_xid::XIDDocument;
 use foundation_api::api::passport::{PassportFirmwareVersion, PassportSerial};
 use foundation_api::pairing::PairingResponse;
 use foundation_api::passport::PassportModel;
-use foundation_api::api::quantum_link::QuantumLinkMessage;
+use foundation_api::api::quantum_link::QuantumLink;
 use foundation_api::api::quantum_link::QUANTUM_LINK;
 use gstp::SealedRequest;
 use gstp::SealedRequestBehavior;
@@ -19,7 +19,7 @@ use {
     std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
-use foundation_api::api::quantum_link::QuantumLinkMessages;
+use foundation_api::api::message::QuantumLinkMessage;
 
 pub const PASSPORT_PREFIX: &str = "🛂 Passport";
 
@@ -119,17 +119,17 @@ impl Passport {
             bail!("Unknown function: {}", function);
         }
 
-        let message = QuantumLinkMessages::decode(&request.body())?;
+        let message = QuantumLinkMessage::decode(&request.body())?;
 
         match message {
-            QuantumLinkMessages::ExchangeRate(_) => {
+            QuantumLinkMessage::ExchangeRate(_) => {
                 println!("Received ExchangeRate message");
             }
-            QuantumLinkMessages::FirmwareUpdate(_) => {}
-            QuantumLinkMessages::DeviceStatus(_) => {}
-            QuantumLinkMessages::EnvoyStatus(_) => {}
-            QuantumLinkMessages::PairingResponse(_) => {}
-            QuantumLinkMessages::PairingRequest(_) => {}
+            QuantumLinkMessage::FirmwareUpdate(_) => {}
+            QuantumLinkMessage::DeviceStatus(_) => {}
+            QuantumLinkMessage::EnvoyStatus(_) => {}
+            QuantumLinkMessage::PairingResponse(_) => {}
+            QuantumLinkMessage::PairingRequest(_) => {}
         }
 
         Ok(())
@@ -185,7 +185,7 @@ impl Passport {
         match self.add_paired_device(&request.sender()).await {
             Ok(_) => {
                 let response = Envelope::new(
-                    QuantumLinkMessages::PairingResponse(
+                    QuantumLinkMessage::PairingResponse(
                     PairingResponse {
                         passport_model: PassportModel::Prime,
                         passport_serial: PassportSerial("1234-5678".to_owned()),

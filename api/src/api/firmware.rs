@@ -1,10 +1,10 @@
+use crate::quantum_link::QuantumLink;
 use {
     minicbor_derive::{Decode, Encode},
-    quantum_link_macros::QuantumLinkMessage,
+    quantum_link_macros::QuantumLink,
 };
-use crate::api::quantum_link::QuantumLinkMessage;
 
-#[derive(Clone, Encode, Decode, QuantumLinkMessage, Debug)]
+#[derive(Clone, Encode, Decode, QuantumLink, Debug)]
 pub struct FirmwareUpdate {
     #[n(0)]
     version: String,

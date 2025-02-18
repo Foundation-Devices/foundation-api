@@ -1,10 +1,10 @@
 use {
     minicbor_derive::{Decode, Encode},
-    quantum_link_macros::QuantumLinkMessage,
+    quantum_link_macros::QuantumLink,
 };
-use crate::api::quantum_link::QuantumLinkMessage;
+use crate::api::quantum_link::QuantumLink;
 
-#[derive(Debug, Clone, Encode, Decode, QuantumLinkMessage)]
+#[derive(Debug, Clone, Encode, Decode, QuantumLink)]
 pub enum PassportModel {
     #[n(0)]
     Gen1,
