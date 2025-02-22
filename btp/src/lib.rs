@@ -46,13 +46,13 @@ pub fn chunk(data: &[u8]) -> Chunker<'_> {
     }
 }
 
-pub struct Unchunker {
+pub struct Dechunker {
     data: Vec<u8>,
     seen: u32,
     is_complete: bool,
 }
 
-impl Unchunker {
+impl Dechunker {
     pub fn new() -> Self {
         Self {
             data: Vec::new(),
@@ -68,9 +68,15 @@ impl Unchunker {
     pub fn data(&self) -> &Vec<u8> {
         &self.data
     }
+
+    pub fn clear(&mut self) {
+        self.data.clear();
+        self.seen = 0;
+        self.is_complete = false;
+    }
 }
 
-impl Unchunker {
+impl Dechunker {
     pub fn receive(&mut self, data: &Vec<u8>) -> anyhow::Result<Option<&Vec<u8>>> {
         let mut decoder = minicbor::Decoder::new(data);
 
@@ -114,7 +120,7 @@ mod tests {
         assert_eq!(chunked_data.len(), 3);
 
         // Unchunk the data
-        let mut unchunker = Unchunker::new();
+        let mut unchunker = Dechunker::new();
 
         for chunk in chunked_data {
             if let Ok(Some(unchunked_data)) = unchunker.receive(&chunk.to_vec()) {

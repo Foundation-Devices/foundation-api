@@ -12,7 +12,7 @@ use {
     std::time::Duration,
 };
 
-use btp::{chunk, Unchunker};
+use btp::{chunk, Dechunker};
 
 #[async_trait]
 pub trait AbstractBluetoothChannel {
@@ -32,7 +32,7 @@ pub trait AbstractBluetoothChannel {
     }
 
     async fn receive_envelope(&self, timeout: Duration) -> Result<Envelope> {
-        let mut unchunker = Unchunker::new();
+        let mut unchunker = Dechunker::new();
         loop {
             let bytes = self.receive(timeout).await?;
             println!("Received {} bytes over BLE", bytes.len());

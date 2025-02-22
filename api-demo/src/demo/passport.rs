@@ -20,6 +20,7 @@ use {
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
 use foundation_api::api::message::QuantumLinkMessage;
+use foundation_api::message::EnvoyMessage;
 
 pub const PASSPORT_PREFIX: &str = "🛂 Passport";
 
@@ -112,16 +113,16 @@ impl Passport {
 
         let _id = request.id().clone();
         let function = request.function().clone();
-        let _body = request.body().clone();
+        let body = request.body().clone();
         let _sender = request.sender().clone();
 
         if function != QUANTUM_LINK {
             bail!("Unknown function: {}", function);
         }
 
-        let message = QuantumLinkMessage::decode(&request.body())?;
+        let decoded = EnvoyMessage::decode(&body)?;
 
-        match message {
+        match decoded.message() {
             QuantumLinkMessage::ExchangeRate(_) => {
                 println!("Received ExchangeRate message");
             }
