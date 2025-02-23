@@ -2,10 +2,10 @@ use {
     crate::api::passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
     minicbor_derive::{Decode, Encode},
 };
-use quantum_link_macros::QuantumLink;
+use quantum_link_macros::quantum_link;
 use crate::api::quantum_link::QuantumLink;
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub struct PairingResponse {
     #[n(0)]
     pub passport_model: PassportModel,
@@ -18,5 +18,5 @@ pub struct PairingResponse {
 }
 
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub struct PairingRequest {}

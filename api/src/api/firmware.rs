@@ -1,10 +1,10 @@
+use quantum_link_macros::quantum_link;
 use crate::quantum_link::QuantumLink;
 use {
     minicbor_derive::{Decode, Encode},
-    quantum_link_macros::QuantumLink,
 };
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub struct FirmwareUpdate {
     #[n(0)]
     version: String,

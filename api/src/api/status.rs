@@ -1,10 +1,10 @@
 use {
     minicbor_derive::{Decode, Encode},
-    quantum_link_macros::QuantumLink,
+    quantum_link_macros::quantum_link,
 };
 use crate::api::quantum_link::QuantumLink;
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub enum DeviceState {
     #[n(0)]
     Normal,
@@ -14,7 +14,7 @@ pub enum DeviceState {
     Rebooting,
 }
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub struct DeviceStatus {
     #[n(0)]
     state: DeviceState,
@@ -26,7 +26,7 @@ pub struct DeviceStatus {
     version: String,
 }
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub enum EnvoyState {
     #[n(0)]
     Normal,
@@ -34,7 +34,7 @@ pub enum EnvoyState {
     DownloadingFirmware,
 }
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub struct EnvoyStatus {
     #[n(0)]
     state: EnvoyState,

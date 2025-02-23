@@ -1,10 +1,10 @@
 use {
     minicbor_derive::{Decode, Encode},
-    quantum_link_macros::QuantumLink,
+    quantum_link_macros::quantum_link
 };
 use crate::api::quantum_link::QuantumLink;
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub struct ExchangeRate {
     #[n(0)]
     currency_code: String,

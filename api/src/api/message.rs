@@ -1,12 +1,12 @@
 use crate::quantum_link::QuantumLink;
 use minicbor_derive::{Decode, Encode};
-use quantum_link_macros::QuantumLink;
+use quantum_link_macros::quantum_link;
 use crate::firmware::FirmwareUpdate;
 use crate::fx::ExchangeRate;
 use crate::pairing::{PairingRequest, PairingResponse};
 use crate::status::{DeviceStatus, EnvoyStatus};
 
-#[derive(Clone, Encode, Decode, QuantumLink)]
+#[quantum_link]
 pub struct EnvoyMessage {
     #[n(0)]
     message: QuantumLinkMessage,
@@ -28,7 +28,7 @@ impl EnvoyMessage {
     }
 }
 
-#[derive(Clone, Encode, Decode, QuantumLink)]
+#[quantum_link]
 pub struct PassportMessage {
     #[n(0)]
     message: QuantumLinkMessage,
@@ -50,7 +50,7 @@ impl PassportMessage {
     }
 }
 
-#[derive(Clone, Debug, Encode, Decode, QuantumLink, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub enum QuantumLinkMessage {
     #[n(0)]
     ExchangeRate(#[n(0)] ExchangeRate),

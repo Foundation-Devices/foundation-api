@@ -1,13 +1,15 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput};
+use syn::DeriveInput;
 
-#[proc_macro_derive(QuantumLink)]
-pub fn derive_quantum_link(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = input.ident;
+#[proc_macro_attribute]
+pub fn quantum_link(_metadata: TokenStream, input: TokenStream) -> TokenStream {
+    let input: DeriveInput = syn::parse(input).unwrap();
+    let name = input.ident.clone();
 
     let expanded = quote! {
+        #[derive(Clone, Debug, Encode, Decode, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+        #input
         impl QuantumLink<#name> for #name {}
     };
 
