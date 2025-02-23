@@ -4,7 +4,7 @@ use {
 };
 use crate::api::quantum_link::QuantumLink;
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug)]
+#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ExchangeRate {
     #[n(0)]
     currency_code: String,

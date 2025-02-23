@@ -46,6 +46,7 @@ pub fn chunk(data: &[u8]) -> Chunker<'_> {
     }
 }
 
+#[derive(Default)]
 pub struct Dechunker {
     data: Vec<u8>,
     seen: u32,
@@ -54,11 +55,7 @@ pub struct Dechunker {
 
 impl Dechunker {
     pub fn new() -> Self {
-        Self {
-            data: Vec::new(),
-            seen: 0,
-            is_complete: false,
-        }
+        Self::default()
     }
 
     pub fn is_complete(&self) -> bool {

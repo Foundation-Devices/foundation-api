@@ -50,7 +50,7 @@ impl PassportMessage {
     }
 }
 
-#[derive(Clone, Debug, Encode, Decode, QuantumLink)]
+#[derive(Clone, Debug, Encode, Decode, QuantumLink, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum QuantumLinkMessage {
     #[n(0)]
     ExchangeRate(#[n(0)] ExchangeRate),

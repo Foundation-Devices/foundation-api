@@ -4,7 +4,7 @@ use {
     quantum_link_macros::QuantumLink,
 };
 
-#[derive(Clone, Encode, Decode, QuantumLink, Debug)]
+#[derive(Clone, Encode, Decode, QuantumLink, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct FirmwareUpdate {
     #[n(0)]
     version: String,
