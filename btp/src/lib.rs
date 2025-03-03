@@ -77,8 +77,8 @@ impl Dechunker {
     pub fn receive(&mut self, data: &Vec<u8>) -> anyhow::Result<Option<&Vec<u8>>> {
         let mut decoder = minicbor::Decoder::new(data);
 
-        let m = decoder.u32().unwrap();
-        let n = decoder.u32().unwrap();
+        let m = decoder.u32().map_err(|_| anyhow::anyhow!("Invalid m value"))?;
+        let n = decoder.u32().map_err(|_| anyhow::anyhow!("Invalid n value"))?;
 
         if n == 0 {
             return Err(anyhow::anyhow!("Invalid n value"));
@@ -90,7 +90,7 @@ impl Dechunker {
 
         self.seen += 1;
 
-        let chunk_data = decoder.bytes().unwrap();
+        let chunk_data = decoder.bytes().map_err(|_| anyhow::anyhow!("Invalid chunk data"))?;
         self.data.extend_from_slice(chunk_data);
 
         if self.seen == n {
