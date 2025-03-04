@@ -26,6 +26,12 @@ pub struct DeviceStatus {
     version: String,
 }
 
+impl DeviceStatus {
+    pub fn new(state: DeviceState, battery_level: u8, ble_signal: u8, version: String) -> Self {
+        Self { state, battery_level, ble_signal, version }
+    }
+}
+
 #[quantum_link]
 pub enum EnvoyState {
     #[n(0)]
