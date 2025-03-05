@@ -6,6 +6,8 @@ use crate::fx::ExchangeRate;
 use crate::pairing::{PairingRequest, PairingResponse};
 use crate::status::{DeviceStatus, EnvoyStatus};
 
+use super::onboarding::OnboardingState;
+
 #[quantum_link]
 pub struct EnvoyMessage {
     #[n(0)]
@@ -64,4 +66,6 @@ pub enum QuantumLinkMessage {
     PairingResponse(#[n(0)] PairingResponse),
     #[n(5)]
     PairingRequest(#[n(0)] PairingRequest),
+    #[n(6)]
+    OnboardingState(#[n(0)] OnboardingState),
 }

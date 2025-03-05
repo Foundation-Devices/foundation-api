@@ -150,6 +150,7 @@ impl Envoy {
             QuantumLinkMessage::EnvoyStatus(_) => {}
             QuantumLinkMessage::PairingResponse(_) => {}
             QuantumLinkMessage::PairingRequest(_) => {}
+            QuantumLinkMessage::OnboardingState(_) => {}
         }
 
         Ok(())
