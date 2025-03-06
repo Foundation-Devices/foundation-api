@@ -3,6 +3,7 @@ use {
     quantum_link_macros::quantum_link,
 };
 use crate::api::quantum_link::QuantumLink;
+use flutter_rust_bridge::frb;
 
 #[quantum_link]
 pub enum DeviceState {
@@ -17,17 +18,17 @@ pub enum DeviceState {
 #[quantum_link]
 pub struct DeviceStatus {
     #[n(0)]
-    state: DeviceState,
+    pub state: DeviceState,
     #[n(1)]
-    battery_level: u8,
+    pub battery_level: u8,
     #[n(2)]
-    ble_signal: u8,
+    pub ble_signal: i8,
     #[n(3)]
-    version: String,
+    pub version: String,
 }
 
 impl DeviceStatus {
-    pub fn new(state: DeviceState, battery_level: u8, ble_signal: u8, version: String) -> Self {
+    pub fn new(state: DeviceState, battery_level: u8, ble_signal: i8, version: String) -> Self {
         Self { state, battery_level, ble_signal, version }
     }
 }
@@ -43,7 +44,7 @@ pub enum EnvoyState {
 #[quantum_link]
 pub struct EnvoyStatus {
     #[n(0)]
-    state: EnvoyState,
+    pub state: EnvoyState,
     #[n(1)]
-    version: String,
+    pub version: String,
 }

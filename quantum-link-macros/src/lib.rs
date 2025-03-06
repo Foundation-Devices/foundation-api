@@ -9,6 +9,7 @@ pub fn quantum_link(_metadata: TokenStream, input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #[derive(Clone, Debug, Encode, Decode, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+        #[frb(non_opaque)]
         #input
         impl QuantumLink<#name> for #name {}
     };

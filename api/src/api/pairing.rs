@@ -4,6 +4,8 @@ use {
 };
 use quantum_link_macros::quantum_link;
 use crate::api::quantum_link::QuantumLink;
+use flutter_rust_bridge::frb;
+
 
 #[quantum_link]
 pub struct PairingResponse {

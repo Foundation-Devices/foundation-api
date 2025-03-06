@@ -5,15 +5,16 @@ use crate::firmware::FirmwareUpdate;
 use crate::fx::ExchangeRate;
 use crate::pairing::{PairingRequest, PairingResponse};
 use crate::status::{DeviceStatus, EnvoyStatus};
+use flutter_rust_bridge::frb;
 
 use super::onboarding::OnboardingState;
 
 #[quantum_link]
 pub struct EnvoyMessage {
     #[n(0)]
-    message: QuantumLinkMessage,
+    pub message: QuantumLinkMessage,
     #[n(1)]
-    timestamp: u32,
+    pub timestamp: u32,
 }
 
 impl EnvoyMessage {
@@ -33,9 +34,9 @@ impl EnvoyMessage {
 #[quantum_link]
 pub struct PassportMessage {
     #[n(0)]
-    message: QuantumLinkMessage,
+    pub message: QuantumLinkMessage,
     #[n(1)]
-    status: DeviceStatus,
+    pub status: DeviceStatus,
 }
 
 impl PassportMessage {
