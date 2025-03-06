@@ -1,4 +1,3 @@
-use crate::api::quantum_link::QuantumLink;
 use {
     minicbor_derive::{Decode, Encode},
     quantum_link_macros::quantum_link,
