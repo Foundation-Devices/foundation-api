@@ -3,15 +3,17 @@ use crate::quantum_link::QuantumLink;
 use {
     minicbor_derive::{Decode, Encode},
 };
+use flutter_rust_bridge::frb;
+
 
 #[quantum_link]
 pub struct FirmwareUpdate {
     #[n(0)]
-    version: String,
+    pub version: String,
     #[n(1)]
-    timestamp: u32,
+    pub timestamp: u32,
     #[n(2)]
-    changelog: String,
+    pub changelog: String,
 }
 
 impl FirmwareUpdate {

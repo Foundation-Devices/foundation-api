@@ -3,15 +3,17 @@ use {
     quantum_link_macros::quantum_link,
 };
 use crate::api::quantum_link::QuantumLink;
+use flutter_rust_bridge::frb;
+
 
 #[quantum_link]
 pub struct Challenge {
     #[n(0)]
-    id: String,
+    pub id: String,
     #[n(1)]
-    signature: String,
+    pub signature: String,
     #[n(2)]
-    der_signature: String,
+    pub der_signature: String,
 }
 
 impl Challenge {
@@ -39,11 +41,11 @@ impl Challenge {
 #[quantum_link]
 pub struct ChallengeResponse {
     #[n(0)]
-    challenge_id: String,
+    pub challenge_id: String,
     #[n(1)]
-    words: Vec<String>,
+    pub words: Vec<String>,
     #[n(2)]
-    der_signature: String,
+    pub der_signature: String,
 }
 
 impl ChallengeResponse {
