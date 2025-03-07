@@ -7,31 +7,45 @@ use {
 #[quantum_link]
 pub enum OnboardingState {
     #[n(0)]
-    SecuringDevice,
+    FirmwareUpdateScreen,
     #[n(1)]
-    DeviceSecured,
+    DownloadingUpdate,
     #[n(2)]
-    WalletCreationScreen,
+    ReceivingUpdate,
     #[n(3)]
-    CreatingWallet,
+    VeryfyingSignatures,
     #[n(4)]
-    WalletCreated,
+    InstallingUpdate,
     #[n(5)]
-    MagicBackupScreen,
+    Rebooting,
     #[n(6)]
-    CreatingMagicBackup,
+    FirmwareUpdated,
     #[n(7)]
-    MagicBackupCreated,
+    SecuringDevice,
     #[n(8)]
-    CreatingManualBackup,
+    DeviceSecured,
     #[n(9)]
-    CreatingKeycardBackup,
+    WalletCreationScreen,
     #[n(10)]
-    WritingDownSeedWords,
+    CreatingWallet,
     #[n(11)]
-    ConnectingWallet,
+    WalletCreated,
     #[n(12)]
-    WalletConected,
+    MagicBackupScreen,
     #[n(13)]
+    CreatingMagicBackup,
+    #[n(14)]
+    MagicBackupCreated,
+    #[n(15)]
+    CreatingManualBackup,
+    #[n(16)]
+    CreatingKeycardBackup,
+    #[n(17)]
+    WritingDownSeedWords,
+    #[n(18)]
+    ConnectingWallet,
+    #[n(19)]
+    WalletConected,
+    #[n(20)]
     Completed,
 }
