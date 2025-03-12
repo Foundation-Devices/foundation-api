@@ -9,3 +9,4 @@ pub mod passport;
 pub mod scv;
 pub mod settings;
 pub mod status;
+pub mod bitcoin;
