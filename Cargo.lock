@@ -832,9 +832,11 @@ name = "foundation-api"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "bc-components",
  "bc-envelope",
  "bc-xid",
  "flutter_rust_bridge",
+ "gstp",
  "minicbor 0.24.4",
  "minicbor-derive 0.15.3",
  "quantum-link-macros",
