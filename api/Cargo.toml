@@ -33,6 +33,7 @@ flutter_rust_bridge = "=2.9.0"
 quantum-link-macros = { workspace = true }
 gstp = "0.5.0"
 bc-components = "0.17.0"
+log = "0.4.26"
 
 
 [lints.rust]

@@ -4,6 +4,7 @@ use bc_envelope::prelude::CBOR;
 use bc_envelope::{Envelope, EventBehavior, Expression, ExpressionBehavior, Function};
 use bc_xid::XIDDocument;
 use gstp::SealedEvent;
+use log::debug;
 use crate::message::{EnvoyMessage, PassportMessage};
 
 pub trait QuantumLink<C>: minicbor::Encode<C> {
@@ -66,7 +67,7 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct QuantumLinkIdentity {
     pub private_keys: Option<PrivateKeys>,
     pub public_keys: Option<PublicKeys>,
@@ -74,13 +75,19 @@ pub struct QuantumLinkIdentity {
 }
 
 pub fn generate_identity() -> QuantumLinkIdentity {
-    let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
-    let (encapsulation_private_key, encapsulation_public_key) = EncapsulationScheme::MLKEM512.keypair();
+    debug!("let (signing_private_key");
+    let (signing_private_key, signing_public_key) = SignatureScheme::Schnorr.keypair();
+    debug!(" let (encapsulation_private_key");
+    let (encapsulation_private_key, encapsulation_public_key) = EncapsulationScheme::X25519.keypair();
+    debug!("let private_keys = PrivateKeys::with_keys");
 
     let private_keys = PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
+    debug!("let public_keys = PublicKeys::new");
     let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
+    debug!("let xid_document = XIDDocument::new");
 
     let xid_document = XIDDocument::new(public_keys.clone());
+    debug!("Generated identity");
 
     QuantumLinkIdentity {
         private_keys: Some(private_keys),
