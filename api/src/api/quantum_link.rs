@@ -8,8 +8,8 @@ use crate::message::{EnvoyMessage, PassportMessage};
 
 pub trait QuantumLink<C>: minicbor::Encode<C> {
     fn encode(&self) -> Expression
-    where
-        Self: minicbor::Encode<()>,
+        where
+            Self: minicbor::Encode<()>,
     {
         let mut buffer: Vec<u8> = Vec::new();
 
@@ -21,8 +21,8 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     }
 
     fn decode(expression: &Expression) -> anyhow::Result<Self>
-    where
-        Self: for<'a> minicbor::Decode<'a, ()>,
+        where
+            Self: for<'a> minicbor::Decode<'a, ()>,
     {
         if expression.function().clone() != QUANTUM_LINK {
             bail!("Expected QuantumLink function");
@@ -41,7 +41,7 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
         &self,
         sender: QuantumLinkIdentity,
         recipient: QuantumLinkIdentity,
-    ) -> Envelope where Self: minicbor::Encode<()>  {
+    ) -> Envelope where Self: minicbor::Encode<()> {
         let event: SealedEvent<Expression> = SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender.xid_document.unwrap());
         event
             .to_envelope(None, Some(&sender.private_keys.unwrap()), Some(Some(&recipient.xid_document.unwrap()).unwrap()))
@@ -49,9 +49,9 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     }
 
     fn unseal(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<Expression>
-    where Self: for<'a> minicbor::Decode<'a, ()> {
+        where Self: for<'a> minicbor::Decode<'a, ()> {
         let event: SealedEvent<Expression> = SealedEvent::try_from_envelope(envelope, None, None, private_keys)?;
-        let expression= event.content().clone();
+        let expression = event.content().clone();
         Ok(expression)
     }
 
@@ -68,9 +68,9 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
 
 #[derive(Clone)]
 pub struct QuantumLinkIdentity {
-    private_keys: Option<PrivateKeys>,
-    public_keys: Option<PublicKeys>,
-    xid_document: Option<XIDDocument>,
+    pub private_keys: Option<PrivateKeys>,
+    pub public_keys: Option<PublicKeys>,
+    pub xid_document: Option<XIDDocument>,
 }
 
 pub fn generate_identity() -> QuantumLinkIdentity {
