@@ -1758,9 +1758,8 @@ dependencies = [
 
 [[package]]
 name = "pqcrypto-internals"
-version = "0.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cc3518d9ec325ec95d89749d4f5c111776b97c5bbd26e3ffe523aa300f1e27e"
+version = "0.2.10"
+source = "git+https://github.com/icota/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
 dependencies = [
  "cc",
  "dunce",
@@ -1771,8 +1770,7 @@ dependencies = [
 [[package]]
 name = "pqcrypto-mldsa"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bd3ecb90717f6bda0ad327703be9e899cdfa88f7ce05563bfd7016f8742bad6"
+source = "git+https://github.com/icota/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
 dependencies = [
  "cc",
  "glob",
@@ -1785,8 +1783,7 @@ dependencies = [
 [[package]]
 name = "pqcrypto-mlkem"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "219656f3ee9d9892e8ee475e7d8c35612fcec0ac2a18f847cca12b1affddb540"
+source = "git+https://github.com/icota/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
 dependencies = [
  "cc",
  "glob",
@@ -1798,8 +1795,7 @@ dependencies = [
 [[package]]
 name = "pqcrypto-traits"
 version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94e851c7654eed9e68d7d27164c454961a616cf8c203d500607ef22c737b51bb"
+source = "git+https://github.com/icota/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
 
 [[package]]
 name = "primeorder"
