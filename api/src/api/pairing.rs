@@ -19,6 +19,8 @@ pub struct PairingResponse {
     pub descriptor: String,
 }
 
-
 #[quantum_link]
-pub struct PairingRequest {}
+pub struct PairingRequest {
+    #[n(0)]
+    pub xid_document: Vec<u8>,
+}

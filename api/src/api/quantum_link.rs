@@ -5,6 +5,7 @@ use bc_envelope::{Envelope, EventBehavior, Expression, ExpressionBehavior, Funct
 use bc_xid::XIDDocument;
 use gstp::SealedEvent;
 use crate::message::{EnvoyMessage, PassportMessage};
+use flutter_rust_bridge::frb;
 
 pub trait QuantumLink<C>: minicbor::Encode<C> {
     fn encode(&self) -> Expression
@@ -67,6 +68,7 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
 }
 
 #[derive(Debug, Clone)]
+#[frb(opaque)]
 pub struct QuantumLinkIdentity {
     pub private_keys: Option<PrivateKeys>,
     pub public_keys: Option<PublicKeys>,
@@ -118,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn test_seak_unseal_quantumlink_message() {
+    fn test_seal_unseal_quantumlink_message() {
         let envoy = generate_identity();
         let passport = generate_identity();
 
