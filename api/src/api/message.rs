@@ -6,7 +6,7 @@ use crate::fx::ExchangeRate;
 use crate::pairing::{PairingRequest, PairingResponse};
 use crate::status::{DeviceStatus, EnvoyStatus};
 use flutter_rust_bridge::frb;
-
+use crate::bitcoin::*;
 use super::onboarding::OnboardingState;
 
 #[quantum_link]
@@ -69,4 +69,8 @@ pub enum QuantumLinkMessage {
     PairingRequest(#[n(0)] PairingRequest),
     #[n(6)]
     OnboardingState(#[n(0)] OnboardingState),
+    #[n(7)]
+    SignPsbt(#[n(0)] SignPsbt),
+    #[n(8)]
+    SyncUpdate(#[n(0)] SyncUpdate),
 }

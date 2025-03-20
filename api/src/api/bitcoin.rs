@@ -7,7 +7,7 @@ use flutter_rust_bridge::frb;
 
 
 #[quantum_link]
-pub struct Psbt {
+pub struct SignPsbt {
     #[n(0)]
     pub descriptor: String,
     #[n(1)]
@@ -19,7 +19,7 @@ pub struct SyncUpdate {
     #[n(0)]
     pub descriptor: String,
     #[n(1)]
-    pub psbt: Vec<u8>,
+    pub update: Vec<u8>,
 }
 
 
