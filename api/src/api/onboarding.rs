@@ -50,4 +50,10 @@ pub enum OnboardingState {
     WalletConected,
     #[n(20)]
     Completed,
+    #[n(21)]
+    SecurityChecked,
+    #[n(22)]
+    UpdateAvailable,
+    #[n(23)]
+    UpdateNotAvailable,
 }
