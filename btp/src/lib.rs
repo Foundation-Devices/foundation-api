@@ -1,5 +1,7 @@
-use std::collections::HashMap;
 use consts::APP_MTU;
+use std::collections::HashMap;
+
+mod tests;
 
 // TODO: is it possible to make this dynamic?
 const CHUNK_SIZE: usize = APP_MTU - 6;
@@ -69,6 +71,7 @@ impl Dechunker {
     }
 
     pub fn clear(&mut self) {
+        self.ooo_chunks.clear();
         self.data.clear();
         self.seen = 0;
         self.is_complete = false;
@@ -79,44 +82,42 @@ impl Dechunker {
     pub fn receive(&mut self, data: &Vec<u8>) -> anyhow::Result<Option<&Vec<u8>>> {
         let mut decoder = minicbor::Decoder::new(data);
 
-        let m = match decoder.u32() {
-            Ok(m) => m,
-            Err(_) => {
-                self.clear();
-                return Err(anyhow::anyhow!("Invalid m value"));
-            }
-        };
+        let m = decoder.u32().map_err(|_| {
+            self.clear();
+            anyhow::anyhow!("Invalid m value")
+        })?;
 
-        let n = match decoder.u32() {
-            Ok(n) => n,
-            Err(_) => {
-                self.clear();
-                return Err(anyhow::anyhow!("Invalid n value"));
-            }
-        };
+        let n = decoder.u32().map_err(|_| {
+            self.clear();
+            anyhow::anyhow!("Invalid n value")
+        })?;
 
         if n == 0 {
             self.clear();
-            return Err(anyhow::anyhow!("Invalid n value"));
+            return Err(anyhow::anyhow!("n cannot be zero"));
         }
 
         if m > n {
             self.clear();
-            return Err(anyhow::anyhow!("Invalid m value"));
+            return Err(anyhow::anyhow!("m cannot be greater than n"));
         }
 
         while !self.ooo_chunks.is_empty() {
             let first_ooo = *self.ooo_chunks.keys().min().unwrap();
             if m > first_ooo {
                 let chunk_data = self.ooo_chunks.remove(&first_ooo).unwrap();
-                self.data.extend_from_slice(&chunk_data);            }
-            else {
+                self.data.extend(chunk_data);
+            } else {
                 break;
             }
         }
 
-        if m > self.seen {
-            let chunk_data = decoder.bytes().map_err(|_| anyhow::anyhow!("Invalid chunk data"))?;
+        // Store chunk if it's out of order
+        if m != self.seen {
+            let chunk_data = decoder.bytes().map_err(|_| {
+                self.clear();
+                anyhow::anyhow!("Cannot parse OoO chunk data")
+            })?;
             self.ooo_chunks.insert(m, chunk_data.to_vec());
             self.seen += 1;
             return Ok(None);
@@ -124,7 +125,11 @@ impl Dechunker {
 
         self.seen += 1;
 
-        let chunk_data = decoder.bytes().map_err(|_| anyhow::anyhow!("Invalid chunk data"))?;
+        let chunk_data = decoder.bytes().map_err(|_| {
+            self.clear();
+            anyhow::anyhow!("Invalid chunk data")
+        })?;
+
         self.data.extend_from_slice(chunk_data);
 
         if self.seen == n {
@@ -133,53 +138,5 @@ impl Dechunker {
         };
 
         Ok(None)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn end_to_end() {
-        // Example data
-        let data = b"This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.";
-
-        // Chunk the data
-        let chunked_data: Vec<[u8; APP_MTU]> = chunk(data).collect();
-
-        assert_eq!(chunked_data.len(), 3);
-
-        // Unchunk the data
-        let mut unchunker = Dechunker::new();
-
-        for chunk in chunked_data {
-            unchunker.receive(&chunk.to_vec()).expect("TODO: panic message");
-            if unchunker.is_complete() {
-                assert!(data.eq(unchunker.data().as_slice()));
-            }
-        }
-    }
-
-    #[test]
-    fn end_to_end_ooo() {
-        // Example data
-        let data = b"This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.";
-
-        // Chunk the data
-        let mut chunked_data: Vec<[u8; APP_MTU]> = chunk(data).collect();
-
-        // Shuffle every other to simulate them being received out of order
-        chunked_data.swap(1,2);
-
-        // Unchunk the data
-        let mut dechunker = Dechunker::new();
-
-        for chunk in chunked_data {
-            dechunker.receive(&chunk.to_vec()).expect("error receiving chunk");
-            if dechunker.is_complete() {
-                assert!(data.eq(dechunker.data().as_slice()));
-            }
-        }
     }
 }
