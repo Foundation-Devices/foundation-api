@@ -131,7 +131,8 @@ impl Passport {
             QuantumLinkMessage::EnvoyStatus(_) => {}
             QuantumLinkMessage::PairingResponse(_) => {}
             QuantumLinkMessage::PairingRequest(_) => {}
-            QuantumLinkMessage::OnboardingState(_) => {} 
+            QuantumLinkMessage::OnboardingState(_) => {},
+            &QuantumLinkMessage::SignPsbt(_) | &QuantumLinkMessage::SyncUpdate(_) => todo!()
         }
 
         Ok(())

@@ -150,7 +150,8 @@ impl Envoy {
             QuantumLinkMessage::EnvoyStatus(_) => {}
             QuantumLinkMessage::PairingResponse(_) => {}
             QuantumLinkMessage::PairingRequest(_) => {}
-            QuantumLinkMessage::OnboardingState(_) => {}
+            QuantumLinkMessage::OnboardingState(_) => {},
+            &QuantumLinkMessage::SignPsbt(_) | &QuantumLinkMessage::SyncUpdate(_) => todo!()
         }
 
         Ok(())
@@ -183,7 +184,7 @@ impl Envoy {
 
         // We're using the public key from the disovery to send the pairing request, as
         // we're not paired yet. The other commands use the first paired device.
-        let body = QuantumLinkMessage::PairingRequest(PairingRequest {}).encode();
+        let body = QuantumLinkMessage::PairingRequest(PairingRequest { xid_document: vec![] }).encode();
         let response = self
             .bluetooth
             .call(sender, &self.enclave, body.clone(), Some(body))
