@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use consts::APP_MTU;
 
 // TODO: is it possible to make this dynamic?
@@ -51,6 +52,7 @@ pub struct Dechunker {
     data: Vec<u8>,
     seen: u32,
     is_complete: bool,
+    ooo_chunks: HashMap<u32, Vec<u8>>,
 }
 
 impl Dechunker {
@@ -77,15 +79,47 @@ impl Dechunker {
     pub fn receive(&mut self, data: &Vec<u8>) -> anyhow::Result<Option<&Vec<u8>>> {
         let mut decoder = minicbor::Decoder::new(data);
 
-        let m = decoder.u32().map_err(|_| anyhow::anyhow!("Invalid m value"))?;
-        let n = decoder.u32().map_err(|_| anyhow::anyhow!("Invalid n value"))?;
+        let m = match decoder.u32() {
+            Ok(m) => m,
+            Err(_) => {
+                self.clear();
+                return Err(anyhow::anyhow!("Invalid m value"));
+            }
+        };
+
+        let n = match decoder.u32() {
+            Ok(n) => n,
+            Err(_) => {
+                self.clear();
+                return Err(anyhow::anyhow!("Invalid n value"));
+            }
+        };
 
         if n == 0 {
+            self.clear();
             return Err(anyhow::anyhow!("Invalid n value"));
         }
 
-        if (m > n) || (m > self.seen) {
+        if m > n {
+            self.clear();
             return Err(anyhow::anyhow!("Invalid m value"));
+        }
+
+        while !self.ooo_chunks.is_empty() {
+            let first_ooo = *self.ooo_chunks.keys().min().unwrap();
+            if m > first_ooo {
+                let chunk_data = self.ooo_chunks.remove(&first_ooo).unwrap();
+                self.data.extend_from_slice(&chunk_data);            }
+            else {
+                break;
+            }
+        }
+
+        if m > self.seen {
+            let chunk_data = decoder.bytes().map_err(|_| anyhow::anyhow!("Invalid chunk data"))?;
+            self.ooo_chunks.insert(m, chunk_data.to_vec());
+            self.seen += 1;
+            return Ok(None);
         }
 
         self.seen += 1;
@@ -120,8 +154,31 @@ mod tests {
         let mut unchunker = Dechunker::new();
 
         for chunk in chunked_data {
-            if let Ok(Some(unchunked_data)) = unchunker.receive(&chunk.to_vec()) {
-                assert!(data.eq(unchunked_data.as_slice()));
+            unchunker.receive(&chunk.to_vec()).expect("TODO: panic message");
+            if unchunker.is_complete() {
+                assert!(data.eq(unchunker.data().as_slice()));
+            }
+        }
+    }
+
+    #[test]
+    fn end_to_end_ooo() {
+        // Example data
+        let data = b"This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.This is some example data to be chunked using minicbor.";
+
+        // Chunk the data
+        let mut chunked_data: Vec<[u8; APP_MTU]> = chunk(data).collect();
+
+        // Shuffle every other to simulate them being received out of order
+        chunked_data.swap(1,2);
+
+        // Unchunk the data
+        let mut dechunker = Dechunker::new();
+
+        for chunk in chunked_data {
+            dechunker.receive(&chunk.to_vec()).expect("error receiving chunk");
+            if dechunker.is_complete() {
+                assert!(data.eq(dechunker.data().as_slice()));
             }
         }
     }
