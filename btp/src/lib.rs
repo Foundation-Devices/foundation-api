@@ -52,9 +52,11 @@ pub fn chunk(data: &[u8]) -> Chunker<'_> {
 #[derive(Default)]
 pub struct Dechunker {
     data: Vec<u8>,
-    seen: u32,
+    pub seen: u32,
     is_complete: bool,
-    ooo_chunks: HashMap<u32, Vec<u8>>,
+    pub ooo_chunks: HashMap<u32, Vec<u8>>,
+    pub m: u32,
+    pub n: u32,
 }
 
 impl Dechunker {
@@ -87,10 +89,14 @@ impl Dechunker {
             anyhow::anyhow!("Invalid m value")
         })?;
 
+        self.m = m;
+
         let n = decoder.u32().map_err(|_| {
             self.clear();
             anyhow::anyhow!("Invalid n value")
         })?;
+
+        self.n = n;
 
         if n == 0 {
             self.clear();
