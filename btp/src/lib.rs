@@ -12,7 +12,7 @@ pub struct Chunker<'a> {
     current_chunk: usize,
 }
 
-impl<'a> Iterator for Chunker<'a> {
+impl Iterator for Chunker<'_> {
     type Item = [u8; APP_MTU];
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -81,7 +81,7 @@ impl Dechunker {
 }
 
 impl Dechunker {
-    pub fn receive(&mut self, data: &Vec<u8>) -> anyhow::Result<Option<&Vec<u8>>> {
+    pub fn receive(&mut self, data: &[u8]) -> anyhow::Result<Option<&Vec<u8>>> {
         let mut decoder = minicbor::Decoder::new(data);
 
         let m = decoder.u32().map_err(|_| {

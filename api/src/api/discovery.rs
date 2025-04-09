@@ -44,7 +44,7 @@ impl TryFrom<Expression> for Discovery {
         // expression.object_for_parameter(SENDER_BLE_ADDRESS_PARAM)?.to_cbor().into();
         // TODO: fix this
         Ok(Self::new(
-            XIDDocument::try_from(sender)?,
+            sender,
             [0, 0, 0, 0, 0, 0],
         ))
     }

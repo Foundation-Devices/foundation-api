@@ -109,7 +109,7 @@ impl Passport {
         log!("📡 Received: {}", paint_request!(request));
 
         // Verify the sender is one of the paired devices
-        self.check_paired_device(&request.sender()).await?;
+        self.check_paired_device(request.sender()).await?;
 
         let _id = request.id().clone();
         let function = request.function().clone();
@@ -148,7 +148,7 @@ impl Passport {
 
     async fn run_pairing_mode(self: &Arc<Self>) -> Result<()> {
         let xid_document = self.xid_document().clone();
-        let discovery = Discovery::new(xid_document, self.bluetooth.address().clone());
+        let discovery = Discovery::new(xid_document, self.bluetooth.address());
 
         let envelope = self
             .enclave
@@ -165,7 +165,7 @@ impl Passport {
 
         let mut encoder = Encoder::new();
         let envelope_data = envelope.tagged_cbor_data();
-        encoder.start("discovery", &*envelope_data, 300);
+        encoder.start("discovery", &envelope_data, 300);
 
         // for _ in 0..10 {
         //     let part = encoder.next_part();
@@ -185,7 +185,7 @@ impl Passport {
 
         let request = SealedRequest::secure_try_from(received_envelope, &self.enclave)?;
         log!("🤝 Received: {}", paint_request!(request));
-        match self.add_paired_device(&request.sender()).await {
+        match self.add_paired_device(request.sender()).await {
             Ok(_) => {
                 let response = Envelope::new(
                     QuantumLinkMessage::PairingResponse(

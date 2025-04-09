@@ -160,7 +160,7 @@ impl Envoy {
 
 impl Envoy {
     async fn check_paired_device(self: &Arc<Self>, sender: &XIDDocument) -> Result<()> {
-        if self.paired_devices.lock().await.contains(&sender) {
+        if self.paired_devices.lock().await.contains(sender) {
             Ok(())
         } else {
             bail!("Unknown device.")
@@ -191,7 +191,7 @@ impl Envoy {
             .await?;
         let bluetooth_sender = response.sender();
 
-        self.add_paired_device(&bluetooth_sender).await;
+        self.add_paired_device(bluetooth_sender).await;
 
         Ok(())
     }

@@ -16,7 +16,7 @@ mod tests {
 
         for chunk in chunked_data {
             unchunker
-                .receive(&chunk.to_vec())
+                .receive(chunk.as_ref())
                 .expect("TODO: panic message");
             if unchunker.is_complete() {
                 assert!(data.eq(unchunker.data().as_slice()));
@@ -42,7 +42,7 @@ mod tests {
 
         for chunk in chunked_data {
             dechunker
-                .receive(&chunk.to_vec())
+                .receive(chunk.as_ref())
                 .expect("error receiving chunk");
             if dechunker.is_complete() {
                 assert!(data.eq(dechunker.data().as_slice()));

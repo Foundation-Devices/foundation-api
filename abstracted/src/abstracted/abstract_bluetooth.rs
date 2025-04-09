@@ -24,7 +24,7 @@ pub trait AbstractBluetoothChannel {
         // Split envelope into chunks
         let cbor = envelope.to_cbor_data();
 
-        for chunk in chunk(&*cbor) {
+        for chunk in chunk(&cbor) {
             self.send(chunk).await.expect("couldn't send");
         }
 
