@@ -1,6 +1,6 @@
 [package]
 name = "foundation-api"
-version = "0.3.0"
+version = "1.0.0"
 edition = "2021"
 description = "Foundation API using Gordian Sealed Transaction Protocol (GSTP)."
 authors = ["Wolf McNally, Blockchain Commons, Foundation Devices"]
@@ -33,7 +33,6 @@ flutter_rust_bridge = "=2.9.0"
 quantum-link-macros = { workspace = true }
 gstp = "0.5.0"
 bc-components = "0.17.0"
-log = "0.4.26"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
