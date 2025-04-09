@@ -135,7 +135,7 @@ pub mod tests {
         {
             "Hello, World!"
         } [
-            'verifiedBy': Signature
+            'signed': Signature(MLDSA44)
         ]
         "#
             })
@@ -198,7 +198,7 @@ pub mod tests {
             (indoc! {
                 r#"
         ENCRYPTED [
-            'hasRecipient': SealedMessage
+            'hasRecipient': SealedMessage(MLKEM512)
         ]
         "#
             })
