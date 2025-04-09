@@ -7,6 +7,7 @@ use gstp::SealedEvent;
 use crate::message::{EnvoyMessage, PassportMessage};
 use flutter_rust_bridge::frb;
 
+pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
 pub trait QuantumLink<C>: minicbor::Encode<C> {
     fn encode(&self) -> Expression
         where
@@ -45,7 +46,7 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     ) -> Envelope where Self: minicbor::Encode<()> {
         let event: SealedEvent<Expression> = SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender.xid_document.unwrap());
         event
-            .to_envelope(None, Some(&sender.private_keys.unwrap()), Some(Some(&recipient.xid_document.unwrap()).unwrap()))
+            .to_envelope(None, Some(&sender.private_keys.unwrap()), Some(&recipient.xid_document.unwrap()))
             .unwrap()
     }
 
@@ -145,5 +146,3 @@ mod tests {
         assert_eq!(fx_rate.rate(), fx_rate_decoded.rate());
     }
 }
-
-pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
