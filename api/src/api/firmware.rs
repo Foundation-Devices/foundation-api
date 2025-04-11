@@ -37,3 +37,25 @@ impl FirmwareUpdate {
         &self.changelog
     }
 }
+
+#[quantum_link]
+pub struct FirmwarePayload {
+    #[n(0)]
+    pub payload: Vec<u8>,
+}
+
+impl FirmwarePayload {
+    pub fn new(payload: Vec<u8>) -> Self {
+        Self { payload }
+    }
+
+    pub fn payload(&self) -> &Vec<u8> {
+        &self.payload
+    }
+}
+
+#[quantum_link]
+pub struct TransferProgress {
+    #[n(0)]
+    pub percent: f32, 
+}
