@@ -4,7 +4,8 @@ use std::collections::HashMap;
 mod tests;
 
 // TODO: is it possible to make this dynamic?
-const CHUNK_SIZE: usize = APP_MTU - 6;
+const CBOR_OVERHEAD: usize = 16; // 2 u32 + CBOR bytes header + padding
+const CHUNK_SIZE: usize = APP_MTU - CBOR_OVERHEAD;
 
 pub struct Chunker<'a> {
     data: &'a [u8],
@@ -77,6 +78,13 @@ impl Dechunker {
         self.data.clear();
         self.seen = 0;
         self.is_complete = false;
+    }
+    pub fn progress(&self) -> f32 {
+        if self.n == 0 {
+            0.0
+        } else {
+            self.seen.min(self.n) as f32 / self.n as f32
+        }
     }
 }
 

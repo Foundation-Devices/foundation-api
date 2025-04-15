@@ -54,8 +54,3 @@ impl FirmwarePayload {
     }
 }
 
-#[quantum_link]
-pub struct TransferProgress {
-    #[n(0)]
-    pub percent: f32, 
-}

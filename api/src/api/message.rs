@@ -1,7 +1,7 @@
 use crate::quantum_link::QuantumLink;
 use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
-use crate::firmware::{FirmwareUpdate, FirmwarePayload, TransferProgress};
+use crate::firmware::{FirmwareUpdate, FirmwarePayload};
 use crate::fx::ExchangeRate;
 use crate::pairing::{PairingRequest, PairingResponse};
 use crate::status::{DeviceStatus, EnvoyStatus};
@@ -75,7 +75,5 @@ pub enum QuantumLinkMessage {
     SyncUpdate(#[n(0)] SyncUpdate),
     #[n(9)]
     FirmwarePayload(#[n(0)] FirmwarePayload),
-    #[n(10)]
-    TransferProgress(#[n(0)] TransferProgress),
 
 }
