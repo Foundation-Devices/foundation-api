@@ -92,64 +92,70 @@ impl Dechunker {
     pub fn receive(&mut self, data: &[u8]) -> anyhow::Result<Option<&Vec<u8>>> {
         let mut decoder = minicbor::Decoder::new(data);
 
-        let m = decoder.u32().map_err(|_| {
+        let m = decoder.u32().map_err(|e| {
             self.clear();
             anyhow::anyhow!("Invalid m value")
         })?;
 
-        self.m = m;
-
-        let n = decoder.u32().map_err(|_| {
+        let n = decoder.u32().map_err(|e| {
             self.clear();
             anyhow::anyhow!("Invalid n value")
         })?;
-
-        self.n = n;
 
         if n == 0 {
             self.clear();
             return Err(anyhow::anyhow!("n cannot be zero"));
         }
 
-        if m > n {
+        if m >= n {
             self.clear();
-            return Err(anyhow::anyhow!("m cannot be greater than n"));
+            return Err(anyhow::anyhow!("m must be less than n"));
         }
 
-        while !self.ooo_chunks.is_empty() {
-            let first_ooo = *self.ooo_chunks.keys().min().unwrap();
-            if m > first_ooo {
-                let chunk_data = self.ooo_chunks.remove(&first_ooo).unwrap();
-                self.data.extend(chunk_data);
-            } else {
-                break;
-            }
-        }
+        self.m = m;
+        self.n = n;
 
-        // Store chunk if it's out of order
-        if m != self.seen {
-            let chunk_data = decoder.bytes().map_err(|_| {
-                self.clear();
-                anyhow::anyhow!("Cannot parse OoO chunk data")
-            })?;
-            self.ooo_chunks.insert(m, chunk_data.to_vec());
-            self.seen += 1;
-            return Ok(None);
-        }
-
-        self.seen += 1;
-
-        let chunk_data = decoder.bytes().map_err(|_| {
+        // Decode chunk data
+        let chunk_data = decoder.bytes().map_err(|e| {
             self.clear();
             anyhow::anyhow!("Invalid chunk data")
         })?;
 
-        self.data.extend_from_slice(chunk_data);
+        // Handle out-of-order chunks first
+        if m != self.seen {
+            self.ooo_chunks.insert(m, chunk_data.to_vec());
 
-        if self.seen == n {
+            // Try to process any in-order chunks we might have now
+            while !self.ooo_chunks.is_empty() {
+                if let Some(&next_m) = self.ooo_chunks.keys().min() {
+                    if next_m == self.seen {
+                        let data = self.ooo_chunks.remove(&next_m).unwrap();
+                        self.data.extend(data);
+                        self.seen += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            return Ok(None);
+        }
+
+        // Handle in-order chunk
+        self.data.extend_from_slice(chunk_data);
+        self.seen += 1;
+
+        // Process any buffered OoO chunks that are now in-order
+        while let Some(data) = self.ooo_chunks.remove(&self.seen) {
+            self.data.extend(data);
+            self.seen += 1;
+        }
+
+        // Check if transfer is complete
+        if self.seen == self.n {
             self.is_complete = true;
             return Ok(Some(&self.data));
-        };
+        }
 
         Ok(None)
     }
