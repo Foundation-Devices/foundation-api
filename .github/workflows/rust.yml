@@ -16,6 +16,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Git Credentials via gh CLI
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # Configure git to use gh as a credential helper for https://github.com
+          gh auth setup-git
+          # Optional: Verify gh is authenticated (will show Logged in)
+          gh auth status
       - name: Build
         run: cargo build --verbose
       - name: Run tests
