@@ -3,7 +3,7 @@ use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureSchem
 use bc_envelope::prelude::CBOR;
 use bc_envelope::{Envelope, EventBehavior, Expression, ExpressionBehavior, Function};
 use bc_xid::XIDDocument;
-use gstp::SealedEvent;
+use gstp::{SealedEvent, SealedEventBehavior};
 use crate::message::{EnvoyMessage, PassportMessage};
 use flutter_rust_bridge::frb;
 
@@ -50,21 +50,21 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
             .unwrap()
     }
 
-    fn unseal(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<Expression>
+    fn unseal(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<(Expression, XIDDocument)>
         where Self: for<'a> minicbor::Decode<'a, ()> {
         let event: SealedEvent<Expression> = SealedEvent::try_from_envelope(envelope, None, None, private_keys)?;
         let expression = event.content().clone();
-        Ok(expression)
+        Ok((expression, event.sender().clone()))
     }
 
-    fn unseal_passport_message(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<PassportMessage> {
-        let expression = PassportMessage::unseal(envelope, private_keys)?;
-        PassportMessage::decode(&expression)
+    fn unseal_passport_message(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<(PassportMessage, XIDDocument)> {
+        let (expression, sender) = PassportMessage::unseal(envelope, private_keys)?;
+        Ok((PassportMessage::decode(&expression)?, sender))
     }
 
-    fn unseal_envoy_message(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<EnvoyMessage> {
-        let expression = EnvoyMessage::unseal(envelope, private_keys)?;
-        EnvoyMessage::decode(&expression)
+    fn unseal_envoy_message(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<(EnvoyMessage, XIDDocument)> {
+        let (expression, sender) = EnvoyMessage::unseal(envelope, private_keys)?;
+        Ok((EnvoyMessage::decode(&expression)?, sender))
     }
 }
 
@@ -137,7 +137,7 @@ mod tests {
         // Decode the message
         let decoded_message = EnvoyMessage::unseal_envoy_message(&envelope, &passport.private_keys.unwrap()).unwrap();
 
-        let fx_rate_decoded: ExchangeRate = match decoded_message.message {
+        let fx_rate_decoded: ExchangeRate = match decoded_message.0.message {
             QuantumLinkMessage::ExchangeRate(rate) => rate,
             _ => panic!("Expected ExchangeRate message"),
         };
