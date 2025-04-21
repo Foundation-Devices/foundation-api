@@ -1,6 +1,6 @@
 [package]
 name = "foundation-api"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Foundation API using Gordian Sealed Transaction Protocol (GSTP)."
 authors = ["Wolf McNally, Blockchain Commons, Foundation Devices"]
