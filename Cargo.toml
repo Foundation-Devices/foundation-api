@@ -16,6 +16,6 @@ btp = { path = "btp" }
 quantum-link-macros = { path = "quantum-link-macros" }
 
 [patch.crates-io]
-pqcrypto-traits = { git = "https://github.com/Foundation-Devices/pqcrypto", branch = "aarch64-feature-detection" }
-pqcrypto-mldsa = { git = "https://github.com/Foundation-Devices/pqcrypto", branch = "aarch64-feature-detection" }
-pqcrypto-mlkem = { git = "https://github.com/Foundation-Devices/pqcrypto", branch = "aarch64-feature-detection" }
+pqcrypto-traits = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
+pqcrypto-mldsa = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
+pqcrypto-mlkem = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
