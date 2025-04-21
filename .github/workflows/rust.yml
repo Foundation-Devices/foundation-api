@@ -24,6 +24,7 @@ jobs:
           gh auth setup-git
           # Optional: Verify gh is authenticated (will show Logged in)
           gh auth status
+          git config --list --show-origin
       - name: Build
         run: cargo build --verbose
       - name: Run tests
