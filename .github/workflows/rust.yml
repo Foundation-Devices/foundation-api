@@ -25,6 +25,16 @@ jobs:
           # Optional: Verify gh is authenticated (will show Logged in)
           gh auth status
           git config --list --show-origin
+
+      - name: Test Git Clone Private Repo
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Replace with a small private repo URL you have access to via the PAT
+          echo "Attempting to clone a known private repository..."
+          git clone https://github.com/Foundation-Devices/prime-ble-firmware.git temp_private_repo || echo "Failed to clone private repo"
+          rm -rf temp_private_repo
+
       - name: Build
         run: cargo build --verbose
       - name: Run tests
