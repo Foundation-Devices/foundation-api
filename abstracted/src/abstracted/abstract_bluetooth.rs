@@ -1,18 +1,22 @@
-use std::io::Read;
-use foundation_ur::fountain::{Decoder, Encoder, part::Part};
-use foundation_ur::UR;
+use bc_envelope::prelude::CBOREncodable;
+use bc_envelope::{EnvelopeEncodable, Expression, ResponseBehavior};
+use bc_xid::XIDDocument;
+use gstp::{SealedRequestBehavior, SealedResponseBehavior};
 use {
-    crate::{AbstractEnclave, BluetoothEndpoint, SecureFrom, SecureTryFrom},
+    crate::{AbstractEnclave, SecureFrom, SecureTryFrom},
     anyhow::Result,
     async_trait::async_trait,
-    bc_components::{PublicKeyBase, ARID},
-    bc_envelope::prelude::*,
+    bc_components::ARID,
+    bc_envelope::Envelope,
+    gstp::{SealedRequest, SealedResponse},
     std::time::Duration,
 };
 
+use btp::{chunk, Dechunker};
+
 #[async_trait]
 pub trait AbstractBluetoothChannel {
-    fn endpoint(&self) -> &BluetoothEndpoint;
+    fn address(&self) -> [u8; 6];
     async fn send(&self, message: impl Into<Vec<u8>> + std::marker::Send) -> Result<()>;
     async fn receive(&self, timeout: Duration) -> Result<Vec<u8>>;
 
@@ -20,42 +24,32 @@ pub trait AbstractBluetoothChannel {
         // Split envelope into chunks
         let cbor = envelope.to_cbor_data();
 
-        let mut encoder = Encoder::new();
-        encoder.start(&*cbor, 100);
-
-        for _ in 0..encoder.sequence_count() {
-            let part = encoder.next_part();
-            let part_cbor = minicbor::to_vec(&part).unwrap();
-
-            self.send(part_cbor.clone()).await.expect("couldn't send");
-            println!("Sent {} bytes over BLE", part_cbor.len());
+        for chunk in chunk(&cbor) {
+            self.send(chunk).await.expect("couldn't send");
         }
 
         Ok(())
     }
 
     async fn receive_envelope(&self, timeout: Duration) -> Result<Envelope> {
-        let mut decoder = Decoder::default();
+        let mut unchunker = Dechunker::new();
         loop {
             let bytes = self.receive(timeout).await?;
             println!("Received {} bytes over BLE", bytes.len());
-            println!("Looking like: {}", hex::encode(&bytes));
+            unchunker.receive(&bytes)?;
 
-            let part = minicbor::decode::<Part>(&bytes).expect("couldn't decode part");
-            decoder.receive(&part).expect("couldn't decode");
-
-            if decoder.is_complete() {
+            if unchunker.is_complete() {
                 break;
             }
         }
 
-        let message = decoder.message()?;
-        Envelope::try_from_cbor_data(Vec::from(message.unwrap()))
+        let message = unchunker.data();
+        Envelope::try_from_cbor_data(message.to_owned())
     }
 
     async fn send_request_with_id<E, S>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         request_id: &ARID,
         body: Expression,
@@ -65,7 +59,7 @@ pub trait AbstractBluetoothChannel {
         S: EnvelopeEncodable + Send + Sync,
         E: AbstractEnclave + Send + Sync,
     {
-        let request = SealedRequest::new_with_body(body, request_id, enclave.public_key())
+        let request = SealedRequest::new_with_body(body, request_id, enclave.xid_document())
             .with_optional_state(state);
         let sent_envelope = Envelope::secure_from((request, recipient), enclave);
         self.send_envelope(&sent_envelope).await
@@ -73,7 +67,7 @@ pub trait AbstractBluetoothChannel {
 
     async fn send_request<E, S>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         body: Expression,
         state: Option<S>,
@@ -88,7 +82,7 @@ pub trait AbstractBluetoothChannel {
 
     async fn call<E, S>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         body: Expression,
         state: Option<S>,
@@ -108,7 +102,7 @@ pub trait AbstractBluetoothChannel {
 
     async fn send_ok_response<E>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         id: &ARID,
         result: Option<Envelope>,
@@ -117,7 +111,7 @@ pub trait AbstractBluetoothChannel {
     where
         E: AbstractEnclave + Send + Sync,
     {
-        let response = SealedResponse::new_success(id, enclave.public_key())
+        let response = SealedResponse::new_success(id, enclave.xid_document())
             .with_optional_result(result)
             .with_peer_continuation(peer_continuation);
         self.send_response(recipient, enclave, response).await
@@ -125,7 +119,7 @@ pub trait AbstractBluetoothChannel {
 
     async fn send_error_response<E>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         id: &ARID,
         error: &str,
@@ -134,7 +128,7 @@ pub trait AbstractBluetoothChannel {
     where
         E: AbstractEnclave + Send + Sync,
     {
-        let response = SealedResponse::new_failure(id, enclave.public_key())
+        let response = SealedResponse::new_failure(id, enclave.xid_document())
             .with_error(error)
             .with_peer_continuation(peer_continuation);
         self.send_response(recipient, enclave, response).await
@@ -142,14 +136,14 @@ pub trait AbstractBluetoothChannel {
 
     async fn send_response<E>(
         &self,
-        recipient: &PublicKeyBase,
+        recipient: &XIDDocument,
         enclave: &E,
         response: SealedResponse,
     ) -> Result<()>
     where
         E: AbstractEnclave + Send + Sync,
     {
-        let envelope = enclave.seal(&Envelope::from(response), recipient);
+        let envelope = enclave.seal_response(&response, recipient);
         self.send_envelope(&envelope).await
     }
 }

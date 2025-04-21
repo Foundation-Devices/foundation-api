@@ -3,15 +3,19 @@ resolver = "2"
 members = [
     "api",
     "api-demo",
-    "abstracted"
-]
+    "abstracted",
+    "btp", "quantum-link-macros"]
 
 [workspace.package]
 homepage = "https://github.com/Foundation-Devices/foundation-api"
 
 [workspace.dependencies]
 foundation-api = { path = "api" }
-foundation-api-demo = { path = "api-demo" }
 foundation-abstracted = { path = "abstracted" }
+btp = { path = "btp" }
+quantum-link-macros = { path = "quantum-link-macros" }
 
-
+[patch.crates-io]
+pqcrypto-traits = { git = "https://github.com/icota/pqcrypto", branch = "aarch64-feature-detection" }
+pqcrypto-mldsa = { git = "https://github.com/icota/pqcrypto", branch = "aarch64-feature-detection" }
+pqcrypto-mlkem = { git = "https://github.com/icota/pqcrypto", branch = "aarch64-feature-detection" }

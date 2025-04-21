@@ -1,31 +1,26 @@
+use bc_xid::XIDDocument;
+use foundation_api::api::passport::{PassportFirmwareVersion, PassportSerial};
+use foundation_api::pairing::PairingResponse;
+use foundation_api::passport::PassportModel;
+use foundation_api::api::quantum_link::QuantumLink;
+use foundation_api::api::quantum_link::QUANTUM_LINK;
+use gstp::SealedRequest;
+use gstp::SealedRequestBehavior;
 use {
     super::{BluetoothChannel, Screen},
     crate::{chapter_title, latency, paint_broadcast, paint_request, Enclave},
     anyhow::{bail, Result},
-    bc_components::{PrivateKeyBase, PublicKeyBase, Seed},
     bc_envelope::prelude::*,
     foundation_abstracted::AbstractBluetoothChannel,
     foundation_abstracted::AbstractEnclave,
     foundation_abstracted::SecureTryFrom,
-    foundation_api::{
-        Discovery,
-        ExchangeRate,
-        PairingResponse,
-        PassportFirmwareVersion,
-        PassportModel,
-        PassportSerial,
-        Sign,
-        EXCHANGE_RATE_FUNCTION,
-        GENERATE_SEED_FUNCTION,
-        SHUTDOWN_FUNCTION,
-        SIGN_FUNCTION,
-    },
+    foundation_api::api::discovery::Discovery,
     foundation_ur::Encoder,
-    foundation_urtypes::registry::{DerivedKey, HDKey},
-    hex::ToHex,
-    std::{collections::HashSet, sync::Arc},
+    std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
+use foundation_api::api::message::QuantumLinkMessage;
+use foundation_api::message::EnvoyMessage;
 
 pub const PASSPORT_PREFIX: &str = "🛂 Passport";
 
@@ -41,7 +36,7 @@ pub struct Passport {
     screen: Arc<Screen>,
     bluetooth: Arc<BluetoothChannel>,
     enclave: Enclave,
-    paired_devices: Mutex<HashSet<PublicKeyBase>>,
+    paired_devices: Mutex<Vec<XIDDocument>>,
 }
 
 impl Passport {
@@ -50,7 +45,7 @@ impl Passport {
             screen,
             bluetooth,
             enclave: Enclave::new(),
-            paired_devices: Mutex::new(HashSet::new()),
+            paired_devices: Mutex::new(Vec::new()),
         })
     }
 
@@ -108,7 +103,7 @@ impl Passport {
     async fn handle_event(
         self: &Arc<Self>,
         envelope: Envelope,
-        stop: Arc<Mutex<bool>>,
+        _stop: Arc<Mutex<bool>>,
     ) -> Result<()> {
         let request = SealedRequest::secure_try_from(envelope, &self.enclave)?;
         log!("📡 Received: {}", paint_request!(request));
@@ -116,61 +111,35 @@ impl Passport {
         // Verify the sender is one of the paired devices
         self.check_paired_device(request.sender()).await?;
 
-        let id = request.id().clone();
+        let _id = request.id().clone();
         let function = request.function().clone();
         let body = request.body().clone();
-        let sender = request.sender().clone();
+        let _sender = request.sender().clone();
 
-        if function == EXCHANGE_RATE_FUNCTION {
-            let fx = ExchangeRate::try_from(body)?;
-            log!("💸 {} rate is: {}", fx.currency_code(), fx.rate());
-        } else if function == GENERATE_SEED_FUNCTION {
-            let seed = &Seed::new();
-            log!("🌱 Generated seed: {}", hex::encode(seed.data()));
-            let result = Envelope::new(seed.to_cbor());
-            self.bluetooth
-                .send_ok_response(
-                    &sender,
-                    &self.enclave,
-                    &id,
-                    Some(result),
-                    request.peer_continuation(),
-                )
-                .await?;
-        } else if function == SIGN_FUNCTION {
-            let sign = Sign::try_from(body)?;
-            let signing_subject = sign.signing_subject();
-            log!("🔏 Signing envelope: {}", signing_subject.format_flat());
-            let result = self.enclave.sign(signing_subject);
-            self.bluetooth
-                .send_ok_response(
-                    &sender,
-                    &self.enclave,
-                    &id,
-                    Some(result),
-                    request.peer_continuation(),
-                )
-                .await?;
-        } else if function == SHUTDOWN_FUNCTION {
-            log!("🚪 Shutdown signal received");
-            self.bluetooth
-                .send_ok_response(
-                    &sender,
-                    &self.enclave,
-                    &id,
-                    None,
-                    request.peer_continuation(),
-                )
-                .await?;
-            *stop.lock().await = true;
-        } else {
+        if function != QUANTUM_LINK {
             bail!("Unknown function: {}", function);
+        }
+
+        let decoded = EnvoyMessage::decode(&body)?;
+
+        match decoded.message() {
+            QuantumLinkMessage::ExchangeRate(_) => {
+                println!("Received ExchangeRate message");
+            }
+            QuantumLinkMessage::FirmwareUpdate(_) => {}
+            QuantumLinkMessage::DeviceStatus(_) => {}
+            QuantumLinkMessage::EnvoyStatus(_) => {}
+            QuantumLinkMessage::PairingResponse(_) => {}
+            QuantumLinkMessage::PairingRequest(_) => {}
+            QuantumLinkMessage::OnboardingState(_) => {},
+            QuantumLinkMessage::FirmwarePayload(_) => {}
+            &QuantumLinkMessage::SignPsbt(_) | &QuantumLinkMessage::SyncUpdate(_) => todo!()
         }
 
         Ok(())
     }
 
-    async fn check_paired_device(self: &Arc<Self>, sender: &PublicKeyBase) -> Result<()> {
+    async fn check_paired_device(self: &Arc<Self>, sender: &XIDDocument) -> Result<()> {
         if self.paired_devices.lock().await.contains(sender) {
             Ok(())
         } else {
@@ -179,17 +148,14 @@ impl Passport {
     }
 
     async fn run_pairing_mode(self: &Arc<Self>) -> Result<()> {
-        let discovery =
-            Discovery::new(self.public_key().clone(), self.bluetooth.endpoint().clone());
-
-        log!(
-            "🔑 Private key: {:?}",
-            self.private_key().encode_hex::<String>()
-        );
+        let xid_document = self.xid_document().clone();
+        let discovery = Discovery::new(xid_document, self.bluetooth.address());
 
         let envelope = self
             .enclave
             .sign(&discovery.into_expression().into_envelope());
+
+        register_tags();
 
         // Show the QR code, but clear the screen no matter how we exit this function
         let _screen_guard = self.screen().show_envelope(&envelope);
@@ -200,47 +166,37 @@ impl Passport {
 
         let mut encoder = Encoder::new();
         let envelope_data = envelope.tagged_cbor_data();
-        encoder.start("discovery", &*envelope_data, 300);
+        encoder.start("discovery", &envelope_data, 300);
 
-        for _ in 0..10 {
-            let part = encoder.next_part();
-            let qr = part.to_string();
-            log!(
-                "📺 Displaying discovery QR code(s): {}",
-                paint_broadcast!(qr)
-            );
-        }
+        // for _ in 0..10 {
+        //     let part = encoder.next_part();
+        //     let qr = part.to_string();
+        //     log!(
+        //         "📺 Displaying discovery QR code(s): {}",
+        //         paint_broadcast!(qr)
+        //     );
+        // }
 
         log!("🤝 Waiting for pairing request");
+
         let received_envelope = self
             .bluetooth
             .receive_envelope(Duration::from_secs(10))
             .await?;
+
         let request = SealedRequest::secure_try_from(received_envelope, &self.enclave)?;
         log!("🤝 Received: {}", paint_request!(request));
         match self.add_paired_device(request.sender()).await {
             Ok(_) => {
                 let response = Envelope::new(
+                    QuantumLinkMessage::PairingResponse(
                     PairingResponse {
                         passport_model: PassportModel::Prime,
                         passport_serial: PassportSerial("1234-5678".to_owned()),
                         passport_firmware_version: PassportFirmwareVersion("1.0.0".to_owned()),
-                        hdkey: HDKey::DerivedKey(DerivedKey {
-                            is_private: false,
-                            key_data: [
-                                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-                                19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
-                            ],
-                            chain_code: None,
-                            use_info: None,
-                            origin: None,
-                            children: None,
-                            parent_fingerprint: None,
-                            name: None,
-                            note: None,
-                        }),
-                    }
-                    .tagged_cbor(),
+                        descriptor: "bv12312321".to_owned(),
+                    })
+                    .encode(),
                 );
 
                 self.bluetooth
@@ -248,7 +204,7 @@ impl Passport {
                         request.sender(),
                         &self.enclave,
                         request.id(),
-                        Some(response.into()),
+                        Some(response),
                         request.peer_continuation(),
                     )
                     .await?;
@@ -269,16 +225,24 @@ impl Passport {
         Ok(())
     }
 
-    async fn add_paired_device(self: &Arc<Self>, paired_device_key: &PublicKeyBase) -> Result<()> {
+    async fn add_paired_device(
+        self: &Arc<Self>,
+        paired_device_xid_document: &XIDDocument,
+    ) -> Result<()> {
         // If `paired_devices` contains the key, do nothing (idempotent operation)
-        if self.paired_devices.lock().await.contains(paired_device_key) {
+        if self
+            .paired_devices
+            .lock()
+            .await
+            .contains(paired_device_xid_document)
+        {
             log!("🤝 Already paired to that device.");
         } else {
             // If the key is different, store it.
             self.paired_devices
                 .lock()
                 .await
-                .insert(paired_device_key.clone());
+                .push(paired_device_xid_document.clone());
             log!("🤝 Successfully paired.");
         }
 
@@ -292,11 +256,7 @@ impl Passport {
         self.screen.clone()
     }
 
-    fn public_key(&self) -> &PublicKeyBase {
-        self.enclave.public_key()
-    }
-
-    fn private_key(&self) -> &PrivateKeyBase {
-        self.enclave.private_key()
+    fn xid_document(&self) -> &XIDDocument {
+        self.enclave.xid_document()
     }
 }

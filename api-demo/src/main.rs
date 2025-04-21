@@ -1,5 +1,3 @@
-#![deny(unused_crate_dependencies)]
-
 mod demo;
 use demo::*;
 
