@@ -36,6 +36,10 @@ jobs:
           rm -rf temp_private_repo
 
       - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: cargo build --verbose
       - name: Run tests
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: cargo test --verbose
