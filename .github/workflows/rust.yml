@@ -11,7 +11,6 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
@@ -22,23 +21,7 @@ jobs:
         run: |
           # Configure git to use gh as a credential helper for https://github.com
           gh auth setup-git
-          # Optional: Verify gh is authenticated (will show Logged in)
-          gh auth status
-          git config --list --show-origin
 
-      - name: Test Git Clone Private Repo
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          # Replace with a small private repo URL you have access to via the PAT
-          echo "Attempting to clone a known private repository..."
-          git clone https://github.com/Foundation-Devices/prime-ble-firmware.git temp_private_repo || echo "Failed to clone private repo"
-          rm -rf temp_private_repo
-
-      - name: Build
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: cargo build --verbose
       - name: Run tests
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
