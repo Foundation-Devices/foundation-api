@@ -28,7 +28,7 @@ jobs:
 
       - name: Test Git Clone Private Repo
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           # Replace with a small private repo URL you have access to via the PAT
           echo "Attempting to clone a known private repository..."
