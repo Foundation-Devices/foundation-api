@@ -1758,7 +1758,7 @@ dependencies = [
 [[package]]
 name = "pqcrypto-internals"
 version = "0.2.10"
-source = "git+https://github.com/icota/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
+source = "git+https://github.com/Foundation-Devices/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
 dependencies = [
  "cc",
  "dunce",
@@ -1769,7 +1769,7 @@ dependencies = [
 [[package]]
 name = "pqcrypto-mldsa"
 version = "0.1.1"
-source = "git+https://github.com/icota/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
+source = "git+https://github.com/Foundation-Devices/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
 dependencies = [
  "cc",
  "glob",
@@ -1782,7 +1782,7 @@ dependencies = [
 [[package]]
 name = "pqcrypto-mlkem"
 version = "0.1.0"
-source = "git+https://github.com/icota/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
+source = "git+https://github.com/Foundation-Devices/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
 dependencies = [
  "cc",
  "glob",
@@ -1794,7 +1794,7 @@ dependencies = [
 [[package]]
 name = "pqcrypto-traits"
 version = "0.3.5"
-source = "git+https://github.com/icota/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
+source = "git+https://github.com/Foundation-Devices/pqcrypto?branch=aarch64-feature-detection#4de06ece91c627465c999284638c177fab0c0d86"
 
 [[package]]
 name = "primeorder"
