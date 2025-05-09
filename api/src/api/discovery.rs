@@ -1,8 +1,4 @@
-use {
-    anyhow::Result,
-    bc_envelope::prelude::*,
-    bc_xid::XIDDocument,
-};
+use {anyhow::Result, bc_envelope::prelude::*, bc_xid::XIDDocument};
 
 // Functions
 pub const DISCOVERY_FUNCTION: Function = Function::new_static_named("discovery");
@@ -43,10 +39,7 @@ impl TryFrom<Expression> for Discovery {
         //let sender_ble_address: [u8; 6] =
         // expression.object_for_parameter(SENDER_BLE_ADDRESS_PARAM)?.to_cbor().into();
         // TODO: fix this
-        Ok(Self::new(
-            sender,
-            [0, 0, 0, 0, 0, 0],
-        ))
+        Ok(Self::new(sender, [0, 0, 0, 0, 0, 0]))
     }
 }
 
