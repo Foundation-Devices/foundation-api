@@ -1,17 +1,17 @@
+use crate::message::{EnvoyMessage, PassportMessage};
 use anyhow::bail;
 use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID};
 use bc_envelope::prelude::CBOR;
 use bc_envelope::{Envelope, EventBehavior, Expression, ExpressionBehavior, Function};
 use bc_xid::XIDDocument;
-use gstp::{SealedEvent, SealedEventBehavior};
-use crate::message::{EnvoyMessage, PassportMessage};
 use flutter_rust_bridge::frb;
+use gstp::{SealedEvent, SealedEventBehavior};
 
 pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
 pub trait QuantumLink<C>: minicbor::Encode<C> {
     fn encode(&self) -> Expression
-        where
-            Self: minicbor::Encode<()>,
+    where
+        Self: minicbor::Encode<()>,
     {
         let mut buffer: Vec<u8> = Vec::new();
 
@@ -23,8 +23,8 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     }
 
     fn decode(expression: &Expression) -> anyhow::Result<Self>
-        where
-            Self: for<'a> minicbor::Decode<'a, ()>,
+    where
+        Self: for<'a> minicbor::Decode<'a, ()>,
     {
         if expression.function().clone() != QUANTUM_LINK {
             bail!("Expected QuantumLink function");
@@ -39,30 +39,49 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
         Ok(message)
     }
 
-    fn seal(
-        &self,
-        sender: QuantumLinkIdentity,
-        recipient: QuantumLinkIdentity,
-    ) -> Envelope where Self: minicbor::Encode<()> {
-        let event: SealedEvent<Expression> = SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender.xid_document.unwrap());
+    fn seal(&self, sender: QuantumLinkIdentity, recipient: QuantumLinkIdentity) -> Envelope
+    where
+        Self: minicbor::Encode<()>,
+    {
+        let event: SealedEvent<Expression> = SealedEvent::new(
+            QuantumLink::encode(self),
+            ARID::new(),
+            sender.xid_document.unwrap(),
+        );
         event
-            .to_envelope(None, Some(&sender.private_keys.unwrap()), Some(&recipient.xid_document.unwrap()))
+            .to_envelope(
+                None,
+                Some(&sender.private_keys.unwrap()),
+                Some(&recipient.xid_document.unwrap()),
+            )
             .unwrap()
     }
 
-    fn unseal(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<(Expression, XIDDocument)>
-        where Self: for<'a> minicbor::Decode<'a, ()> {
-        let event: SealedEvent<Expression> = SealedEvent::try_from_envelope(envelope, None, None, private_keys)?;
+    fn unseal(
+        envelope: &Envelope,
+        private_keys: &PrivateKeys,
+    ) -> anyhow::Result<(Expression, XIDDocument)>
+    where
+        Self: for<'a> minicbor::Decode<'a, ()>,
+    {
+        let event: SealedEvent<Expression> =
+            SealedEvent::try_from_envelope(envelope, None, None, private_keys)?;
         let expression = event.content().clone();
         Ok((expression, event.sender().clone()))
     }
 
-    fn unseal_passport_message(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<(PassportMessage, XIDDocument)> {
+    fn unseal_passport_message(
+        envelope: &Envelope,
+        private_keys: &PrivateKeys,
+    ) -> anyhow::Result<(PassportMessage, XIDDocument)> {
         let (expression, sender) = PassportMessage::unseal(envelope, private_keys)?;
         Ok((PassportMessage::decode(&expression)?, sender))
     }
 
-    fn unseal_envoy_message(envelope: &Envelope, private_keys: &PrivateKeys) -> anyhow::Result<(EnvoyMessage, XIDDocument)> {
+    fn unseal_envoy_message(
+        envelope: &Envelope,
+        private_keys: &PrivateKeys,
+    ) -> anyhow::Result<(EnvoyMessage, XIDDocument)> {
         let (expression, sender) = EnvoyMessage::unseal(envelope, private_keys)?;
         Ok((EnvoyMessage::decode(&expression)?, sender))
     }
@@ -78,7 +97,8 @@ pub struct QuantumLinkIdentity {
 
 pub fn generate_identity() -> QuantumLinkIdentity {
     let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
-    let (encapsulation_private_key, encapsulation_public_key) = EncapsulationScheme::MLKEM512.keypair();
+    let (encapsulation_private_key, encapsulation_public_key) =
+        EncapsulationScheme::MLKEM512.keypair();
 
     let private_keys = PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
     let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
@@ -135,7 +155,8 @@ mod tests {
         let envelope = QuantumLink::seal(&original_message, envoy.clone(), passport.clone());
 
         // Decode the message
-        let decoded_message = EnvoyMessage::unseal_envoy_message(&envelope, &passport.private_keys.unwrap()).unwrap();
+        let decoded_message =
+            EnvoyMessage::unseal_envoy_message(&envelope, &passport.private_keys.unwrap()).unwrap();
 
         let fx_rate_decoded: ExchangeRate = match decoded_message.0.message {
             QuantumLinkMessage::ExchangeRate(rate) => rate,

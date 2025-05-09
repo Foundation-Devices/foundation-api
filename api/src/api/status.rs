@@ -1,9 +1,9 @@
+use crate::api::quantum_link::QuantumLink;
+use flutter_rust_bridge::frb;
 use {
     minicbor_derive::{Decode, Encode},
     quantum_link_macros::quantum_link,
 };
-use crate::api::quantum_link::QuantumLink;
-use flutter_rust_bridge::frb;
 
 #[quantum_link]
 pub enum DeviceState {
@@ -29,7 +29,12 @@ pub struct DeviceStatus {
 
 impl DeviceStatus {
     pub fn new(state: DeviceState, battery_level: u8, ble_signal: i8, version: String) -> Self {
-        Self { state, battery_level, ble_signal, version }
+        Self {
+            state,
+            battery_level,
+            ble_signal,
+            version,
+        }
     }
 }
 

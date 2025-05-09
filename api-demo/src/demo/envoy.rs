@@ -119,7 +119,6 @@ impl Envoy {
         envelope: Envelope,
         _stop: Arc<Mutex<bool>>,
     ) -> Result<()> {
-
         // TODO: Need code here to determine if it's a SealedResponse, SealedRequest or Event
         let response = SealedResponse::secure_try_from(envelope, &self.enclave)?;
         log!("📡 Received: {}", paint_response!(response));
@@ -145,14 +144,7 @@ impl Envoy {
             QuantumLinkMessage::ExchangeRate(_) => {
                 println!("Received ExchangeRate message");
             }
-            QuantumLinkMessage::FirmwareUpdate(_) => {}
-            QuantumLinkMessage::DeviceStatus(_) => {}
-            QuantumLinkMessage::EnvoyStatus(_) => {}
-            QuantumLinkMessage::PairingResponse(_) => {}
-            QuantumLinkMessage::PairingRequest(_) => {}
-            QuantumLinkMessage::OnboardingState(_) => {},
-            QuantumLinkMessage::FirmwarePayload(_) => {}
-            &QuantumLinkMessage::SignPsbt(_) | &QuantumLinkMessage::SyncUpdate(_) => todo!()
+            _ => todo!(),
         }
 
         Ok(())
@@ -185,7 +177,10 @@ impl Envoy {
 
         // We're using the public key from the disovery to send the pairing request, as
         // we're not paired yet. The other commands use the first paired device.
-        let body = QuantumLinkMessage::PairingRequest(PairingRequest { xid_document: vec![] }).encode();
+        let body = QuantumLinkMessage::PairingRequest(PairingRequest {
+            xid_document: vec![],
+        })
+        .encode();
         let response = self
             .bluetooth
             .call(sender, &self.enclave, body.clone(), Some(body))
