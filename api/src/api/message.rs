@@ -8,6 +8,7 @@ use crate::status::{DeviceStatus, EnvoyStatus};
 use flutter_rust_bridge::frb;
 use crate::bitcoin::*;
 use super::onboarding::OnboardingState;
+use super::scv::ChallengeMessage;
 
 #[quantum_link]
 pub struct EnvoyMessage {
@@ -75,5 +76,7 @@ pub enum QuantumLinkMessage {
     SyncUpdate(#[n(0)] SyncUpdate),
     #[n(9)]
     FirmwarePayload(#[n(0)] FirmwarePayload),
+    #[n(10)]
+    ChallengeMessage(#[n(0)] ChallengeMessage),
 
 }

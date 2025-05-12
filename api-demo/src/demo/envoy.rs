@@ -152,6 +152,7 @@ impl Envoy {
             QuantumLinkMessage::PairingRequest(_) => {}
             QuantumLinkMessage::OnboardingState(_) => {},
             QuantumLinkMessage::FirmwarePayload(_) => {}
+            QuantumLinkMessage::ChallengeMessage(_)  => {}
             &QuantumLinkMessage::SignPsbt(_) | &QuantumLinkMessage::SyncUpdate(_) => todo!()
         }
 
