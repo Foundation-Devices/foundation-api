@@ -4,7 +4,7 @@ use crate::firmware::{FirmwarePayload, FirmwareUpdate};
 use crate::fx::ExchangeRate;
 use crate::pairing::{PairingRequest, PairingResponse};
 use crate::quantum_link::QuantumLink;
-use crate::scv::{ChallengeMessage, ProofMessage};
+use crate::scv::{SecurityChallengeMessage, SecurityProofMessage};
 use crate::status::{DeviceStatus, EnvoyStatus};
 use flutter_rust_bridge::frb;
 use minicbor_derive::{Decode, Encode};
@@ -79,7 +79,7 @@ pub enum QuantumLinkMessage {
     #[n(10)]
     BroadcastTransaction(#[n(0)] BroadcastTransaction),
     #[n(11)]
-    ChallengeMessage(#[n(0)] ChallengeMessage),
+    SecurityChallengeMessage(#[n(0)] SecurityChallengeMessage),
     #[n(12)]
-    ProofMessage(#[n(0)] ProofMessage),
+    SecurityProofMessage(#[n(0)] SecurityProofMessage),
 }
