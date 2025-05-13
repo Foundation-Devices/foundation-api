@@ -55,4 +55,6 @@ pub enum OnboardingState {
     UpdateAvailable,
     #[n(23)]
     UpdateNotAvailable,
+    #[n(24)]
+    SecurityCheckFailed,
 }
