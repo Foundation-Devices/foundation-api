@@ -68,3 +68,35 @@ impl ChallengeResponse {
         &self.der_signature
     }
 }
+
+#[quantum_link]
+pub struct ChallengeMessage {
+    #[n(0)]
+    pub data: Vec<u8>,
+}
+
+impl ChallengeMessage {
+    pub fn new(data: Vec<u8>) -> Self {
+        ChallengeMessage { data }
+    }
+
+    pub fn data(&self) -> &Vec<u8> {
+        &self.data
+    }
+}
+
+#[quantum_link]
+pub struct ProofMessage {
+    #[n(0)]
+    pub data: Vec<u8>,
+}
+
+impl ProofMessage {
+    pub fn new(data: Vec<u8>) -> Self {
+        ProofMessage { data }
+    }
+
+    pub fn data(&self) -> &Vec<u8> {
+        &self.data
+    }
+}

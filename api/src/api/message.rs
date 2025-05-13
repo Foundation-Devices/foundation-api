@@ -3,6 +3,7 @@ use crate::bitcoin::*;
 use crate::firmware::{FirmwarePayload, FirmwareUpdate};
 use crate::fx::ExchangeRate;
 use crate::pairing::{PairingRequest, PairingResponse};
+use crate::scv::{ChallengeMessage, ProofMessage}; 
 use crate::quantum_link::QuantumLink;
 use crate::status::{DeviceStatus, EnvoyStatus};
 use flutter_rust_bridge::frb;
@@ -77,4 +78,8 @@ pub enum QuantumLinkMessage {
     FirmwarePayload(#[n(0)] FirmwarePayload),
     #[n(10)]
     BroadcastTransaction(#[n(0)] BroadcastTransaction),
+    #[n(11)]
+    ChallengeMessage(#[n(0)] ChallengeMessage),
+    #[n(12)]
+    ProofMessage(#[n(0)] ProofMessage),
 }
