@@ -1,4 +1,5 @@
 use super::onboarding::OnboardingState;
+use crate::backup::Shard;
 use crate::bitcoin::*;
 use crate::firmware::{FirmwarePayload, FirmwareUpdate};
 use crate::fx::ExchangeRate;
