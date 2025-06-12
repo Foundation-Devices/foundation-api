@@ -1,4 +1,5 @@
 use super::onboarding::OnboardingState;
+use crate::backup::Shard;
 use crate::bitcoin::*;
 use crate::firmware::{FirmwarePayload, FirmwareUpdate};
 use crate::fx::ExchangeRate;
@@ -82,4 +83,6 @@ pub enum QuantumLinkMessage {
     SecurityChallengeMessage(#[n(0)] SecurityChallengeMessage),
     #[n(12)]
     SecurityProofMessage(#[n(0)] SecurityProofMessage),
+    #[n(13)]
+    Shard(#[n(0)] Shard),
 }
