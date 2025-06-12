@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod bitcoin;
 pub mod discovery;
 pub mod firmware;
