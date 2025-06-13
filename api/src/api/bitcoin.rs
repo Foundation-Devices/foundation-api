@@ -8,7 +8,7 @@ pub struct SignPsbt {
     #[n(0)]
     pub account_id: String,
     #[n(1)]
-    pub psbt: String,
+    pub psbt: Vec<u8>,
 }
 
 #[quantum_link]
@@ -24,5 +24,5 @@ pub struct BroadcastTransaction {
     #[n(0)]
     pub account_id: String,
     #[n(1)]
-    pub psbt: String,
+    pub psbt: Vec<u8>,
 }
