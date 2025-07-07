@@ -49,6 +49,6 @@ pub fn handle_ctrl_c() {
 
 pub fn chapter_title(title: &str) {
     println!();
-    println!("===== {} =====", title);
+    println!("===== {title} =====");
     println!();
 }
