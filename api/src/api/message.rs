@@ -1,4 +1,5 @@
 use super::onboarding::OnboardingState;
+use crate::api::raw::RawData;
 use crate::backup::Shard;
 use crate::bitcoin::*;
 use crate::firmware::{FirmwarePayload, FirmwareUpdate};
@@ -10,7 +11,6 @@ use crate::status::{DeviceStatus, EnvoyStatus};
 use flutter_rust_bridge::frb;
 use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
-use crate::api::raw::RawData;
 
 #[quantum_link]
 pub struct EnvoyMessage {
