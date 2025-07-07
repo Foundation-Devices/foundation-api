@@ -10,6 +10,7 @@ use crate::status::{DeviceStatus, EnvoyStatus};
 use flutter_rust_bridge::frb;
 use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
+use crate::api::raw::RawData;
 
 #[quantum_link]
 pub struct EnvoyMessage {
@@ -85,4 +86,6 @@ pub enum QuantumLinkMessage {
     SecurityProofMessage(#[n(0)] SecurityProofMessage),
     #[n(13)]
     Shard(#[n(0)] Shard),
+    #[n(14)]
+    RawData(#[n(0)] RawData),
 }

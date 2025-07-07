@@ -11,3 +11,4 @@ pub mod quantum_link;
 pub mod scv;
 pub mod settings;
 pub mod status;
+pub mod raw;
