@@ -139,7 +139,6 @@ impl Chunk {
 pub struct Dechunker {
     chunks: Vec<Option<Chunk>>,
     message_id: Option<u16>,
-    total_chunks: Option<u16>,
     is_complete: bool,
 }
 
@@ -154,7 +153,6 @@ impl Dechunker {
         Self {
             chunks: Vec::new(),
             message_id: None,
-            total_chunks: None,
             is_complete: false,
         }
     }
@@ -166,18 +164,15 @@ impl Dechunker {
     pub fn clear(&mut self) {
         self.chunks.clear();
         self.message_id = None;
-        self.total_chunks = None;
         self.is_complete = false;
     }
 
     pub fn progress(&self) -> f32 {
-        match self.total_chunks {
-            Some(total) if total > 0 => {
-                let received = self.chunks.iter().filter(|c| c.is_some()).count();
-                received as f32 / total as f32
-            }
-            _ => 0.0,
+        if self.chunks.len() == 0 {
+            return 0.0;
         }
+        let received = self.chunks.iter().filter(|c| c.is_some()).count();
+        received as f32 / self.chunks.len() as f32
     }
 
     pub fn receive(&mut self, data: &[u8]) -> Result<Option<Vec<u8>>, DecodeError> {
@@ -190,7 +185,6 @@ impl Dechunker {
         match self.message_id {
             None => {
                 self.message_id = Some(header.message_id);
-                self.total_chunks = Some(header.total_chunks);
                 self.chunks.resize(header.total_chunks as usize, None);
             }
             Some(id) if id != header.message_id => {
@@ -238,10 +232,8 @@ impl Dechunker {
         }
 
         let mut result = Vec::new();
-        let total = self.total_chunks? as usize;
-
-        for i in 0..total {
-            match self.chunks.get(i).and_then(|chunk| chunk.as_ref()) {
+        for chunk in &self.chunks {
+            match chunk {
                 Some(chunk) => result.extend_from_slice(chunk.as_slice()),
                 None => return None,
             }
