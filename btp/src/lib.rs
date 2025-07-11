@@ -12,18 +12,14 @@ struct Header {
     index: u16,
     total_chunks: u16,
     data_len: u8,
-    is_last: bool,
 }
 
 impl Header {
-    fn to_bytes(self) -> [u8; HEADER_SIZE] {
-        let mut bytes = [0; HEADER_SIZE];
+    fn write_bytes(&self, bytes: &mut [u8]) {
         bytes[0..2].copy_from_slice(&self.message_id.to_be_bytes());
         bytes[2..4].copy_from_slice(&self.index.to_be_bytes());
         bytes[4..6].copy_from_slice(&self.total_chunks.to_be_bytes());
         bytes[6] = self.data_len;
-        bytes[7] = if self.is_last { 1 } else { 0 };
-        bytes
     }
 
     fn from_bytes(bytes: &[u8]) -> Option<Self> {
@@ -34,13 +30,11 @@ impl Header {
         let index = u16::from_be_bytes([bytes[2], bytes[3]]);
         let total_chunks = u16::from_be_bytes([bytes[4], bytes[5]]);
         let data_len = bytes[6];
-        let is_last = bytes[7] != 0;
         Some(Self {
             message_id,
             index,
             total_chunks,
             data_len,
-            is_last,
         })
     }
 }
@@ -66,17 +60,15 @@ impl<'a> Iterator for Chunker<'a> {
 
         let end_idx = (start_idx + self.data_per_chunk).min(self.data.len());
         let chunk_data = &self.data[start_idx..end_idx];
-        let is_last = end_idx >= self.data.len();
 
         let header = Header {
             message_id: self.message_id,
             index: self.current_index,
             total_chunks: self.total_chunks,
             data_len: chunk_data.len() as u8,
-            is_last,
         };
 
-        buffer[..HEADER_SIZE].copy_from_slice(&header.to_bytes());
+        header.write_bytes(&mut buffer[..HEADER_SIZE]);
         buffer[HEADER_SIZE..HEADER_SIZE + chunk_data.len()].copy_from_slice(chunk_data);
         self.current_index += 1;
 
@@ -100,7 +92,7 @@ pub fn chunk(data: &[u8]) -> Chunker<'_> {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum DecodeError {
-    PacketTooSmall { size: usize },
+    ChunkTooSmall { size: usize },
     InvalidHeader,
     WrongMessageId { expected: u16, received: u16 },
 }
@@ -108,7 +100,7 @@ pub enum DecodeError {
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DecodeError::PacketTooSmall { size } => write!(f, "Packet too small: {size} bytes"),
+            DecodeError::ChunkTooSmall { size } => write!(f, "Packet too small: {size} bytes"),
             DecodeError::InvalidHeader => write!(f, "Invalid header"),
             DecodeError::WrongMessageId { expected, received } => {
                 write!(
@@ -139,7 +131,6 @@ impl Chunk {
 pub struct Dechunker {
     chunks: Vec<Option<Chunk>>,
     message_id: Option<u16>,
-    is_complete: bool,
 }
 
 impl Default for Dechunker {
@@ -153,18 +144,16 @@ impl Dechunker {
         Self {
             chunks: Vec::new(),
             message_id: None,
-            is_complete: false,
         }
     }
 
     pub fn is_complete(&self) -> bool {
-        self.is_complete
+        self.message_id.is_some() && self.chunks.iter().all(|c| c.is_some())
     }
 
     pub fn clear(&mut self) {
         self.chunks.clear();
         self.message_id = None;
-        self.is_complete = false;
     }
 
     pub fn progress(&self) -> f32 {
@@ -177,7 +166,7 @@ impl Dechunker {
 
     pub fn receive(&mut self, data: &[u8]) -> Result<Option<Vec<u8>>, DecodeError> {
         let Some((header_data, chunk_data)) = data.split_at_checked(HEADER_SIZE) else {
-            return Err(DecodeError::PacketTooSmall { size: data.len() });
+            return Err(DecodeError::ChunkTooSmall { size: data.len() });
         };
 
         let header = Header::from_bytes(header_data).ok_or(DecodeError::InvalidHeader)?;
@@ -209,17 +198,7 @@ impl Dechunker {
             });
         }
 
-        if header.is_last {
-            self.is_complete = true;
-        }
-
-        // attempt to complete the message
-        if self.is_complete {
-            let data = self.data();
-            return Ok(data);
-        }
-
-        Ok(None)
+        Ok(self.data())
     }
 
     pub fn message_id(&self) -> Option<u16> {
@@ -227,10 +206,6 @@ impl Dechunker {
     }
 
     pub fn data(&self) -> Option<Vec<u8>> {
-        if !self.is_complete {
-            return None;
-        }
-
         let mut result = Vec::new();
         for chunk in &self.chunks {
             match chunk {
