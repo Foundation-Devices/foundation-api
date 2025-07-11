@@ -355,9 +355,7 @@ dependencies = [
 name = "btp"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "consts",
- "minicbor 0.24.4",
  "rand 0.9.1",
 ]
 
