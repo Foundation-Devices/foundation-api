@@ -228,6 +228,10 @@ impl Dechunker {
         Ok(None)
     }
 
+    pub fn message_id(&self) -> Option<u16> {
+        self.message_id
+    }
+
     pub fn data(&self) -> Option<Vec<u8>> {
         if !self.is_complete {
             return None;
