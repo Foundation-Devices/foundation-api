@@ -1,52 +1,94 @@
 use consts::APP_MTU;
+use minicbor::encode::Write;
+use rand::Rng;
 use std::collections::HashMap;
 
 mod tests;
-
-// TODO: is it possible to make this dynamic?
-const CBOR_OVERHEAD: usize = 16; // 2 u32 + CBOR bytes header + padding
-const CHUNK_SIZE: usize = APP_MTU - CBOR_OVERHEAD;
 
 pub struct Chunker<'a> {
     data: &'a [u8],
     total_chunks: usize,
     current_chunk: usize,
+    message_id: u16,
 }
 
-impl Iterator for Chunker<'_> {
-    type Item = [u8; APP_MTU];
+struct SizedWriter {
+    buffer: [u8; APP_MTU],
+    pos: usize,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current_chunk >= self.total_chunks {
-            return None;
+impl Write for SizedWriter {
+    type Error = EndOfSlice;
+
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        if self.pos + buf.len() > APP_MTU {
+            return Err(EndOfSlice);
         }
+        self.buffer[self.pos..self.pos + buf.len()].copy_from_slice(buf);
+        self.pos += buf.len();
+        Ok(())
+    }
+}
+/// An error indicating the end of a slice.
+#[derive(Debug)]
 
-        let remaining_data = self.data.len() - self.current_chunk * CHUNK_SIZE;
-        let chunk_size = std::cmp::min(remaining_data, CHUNK_SIZE);
-        let chunk = &self.data[self.current_chunk * CHUNK_SIZE..][..chunk_size];
+pub struct EndOfSlice;
 
-        let mut buffer = [0u8; APP_MTU];
-        let mut encoder = minicbor::Encoder::new(&mut buffer[..]);
-
-        // Encode chunk index (m of n) and data
-        encoder
-            .u32(self.current_chunk as u32)
-            .unwrap()
-            .u32(self.total_chunks as u32)
-            .unwrap(); // m of n
-        encoder.bytes(chunk).unwrap();
-
-        self.current_chunk += 1;
-        Some(buffer)
+impl core::fmt::Display for EndOfSlice {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.write_str("end of slice")
     }
 }
 
-pub fn chunk(data: &[u8]) -> Chunker<'_> {
-    let total_chunks = (data.len() as f64 / CHUNK_SIZE as f64).ceil() as usize;
+impl core::error::Error for EndOfSlice {}
+
+
+pub fn chunk(data: &[u8]) -> Vec<[u8; APP_MTU]> {
+    let message_id = rand::rng().random::<u16>();
+    let current_chunk = 0;
+    let total_chunks = 0;
+
+    let chunks = vec![];
+
+    loop {
+        if current_chunk >= total_chunks {
+            return chunks;
+        }
+
+        let mut encoder = minicbor::Encoder::new(SizedWriter {
+            buffer: [0; APP_MTU],
+            pos: 0,
+        });
+
+        // Encode chunk index (m of n) and data
+        encoder
+            .u16(message_id)
+            .unwrap()
+            .u32(current_chunk as u32)
+            .unwrap()
+            .u32(total_chunks as u32)
+            .unwrap(); // m of n
+
+        dbg!(encoder.writer().pos);
+
+        let metadata_size = encoder.writer().pos;
+
+        let remaining_data = APP_MTU - metadata_size;
+        let chunk_size = std::cmp::min(remaining_data, APP_MTU);
+        let chunk = &self.data[self.current_chunk * chunk_size..][..chunk_size];
+
+        encoder.bytes(chunk).unwrap();
+
+        self.current_chunk += 1;
+        Some(encoder.into_writer().buffer)
+    }
+
+
     Chunker {
         data,
-        total_chunks,
+        total_chunks: 0,
         current_chunk: 0,
+        message_id,
     }
 }
 
@@ -58,6 +100,7 @@ pub struct Dechunker {
     pub ooo_chunks: HashMap<u32, Vec<u8>>,
     pub m: u32,
     pub n: u32,
+    pub id: u16,
 }
 
 impl Dechunker {
@@ -92,10 +135,21 @@ impl Dechunker {
     pub fn receive(&mut self, data: &[u8]) -> anyhow::Result<Option<&Vec<u8>>> {
         let mut decoder = minicbor::Decoder::new(data);
 
+        let id = decoder.u16().map_err(|_| {
+            self.clear();
+            anyhow::anyhow!("Invalid ID")
+        })?;
+
         let m = decoder.u32().map_err(|_| {
             self.clear();
             anyhow::anyhow!("Invalid m value")
         })?;
+
+        if m == 0 {
+            self.id = id;
+        } else if self.id != id {
+            return Ok(None);
+        }
 
         let n = decoder.u32().map_err(|_| {
             self.clear();
