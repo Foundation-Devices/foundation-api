@@ -43,8 +43,8 @@ pub trait AbstractBluetoothChannel {
             }
         }
 
-        let message = unchunker.data();
-        Envelope::try_from_cbor_data(message.to_owned())
+        let message = unchunker.data().expect("data is complete");
+        Envelope::try_from_cbor_data(message)
     }
 
     async fn send_request_with_id<E, S>(

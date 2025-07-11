@@ -13,6 +13,12 @@ use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
 
 #[quantum_link]
+pub struct RawMessage {
+    #[n(0)]
+    pub payload: Vec<u8>,
+}
+
+#[quantum_link]
 pub struct EnvoyMessage {
     #[n(0)]
     pub message: QuantumLinkMessage,

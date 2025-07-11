@@ -5,6 +5,5 @@ edition = "2021"
 homepage.workspace = true
 
 [dependencies]
-minicbor = "0.24.2"
-anyhow = "1.0.86"
 consts = { git = "https://github.com/Foundation-Devices/prime-ble-firmware.git", features = ["dle"] }
+rand = { workspace = true }
