@@ -5,6 +5,7 @@ use rand::Rng;
 mod tests;
 
 const HEADER_SIZE: usize = std::mem::size_of::<Header>();
+const CHUNK_DATA_SIZE: usize = APP_MTU - HEADER_SIZE;
 
 #[derive(Debug, Clone, Copy)]
 struct Header {
@@ -114,8 +115,6 @@ impl std::fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
-const CHUNK_DATA_SIZE: usize = APP_MTU - HEADER_SIZE;
-
 #[derive(Clone, Copy)]
 struct Chunk {
     data: [u8; CHUNK_DATA_SIZE],
@@ -164,7 +163,7 @@ impl Dechunker {
         received as f32 / self.chunks.len() as f32
     }
 
-    pub fn receive(&mut self, data: &[u8]) -> Result<Option<Vec<u8>>, DecodeError> {
+    pub fn receive(&mut self, data: &[u8]) -> Result<(), DecodeError> {
         let Some((header_data, chunk_data)) = data.split_at_checked(HEADER_SIZE) else {
             return Err(DecodeError::ChunkTooSmall { size: data.len() });
         };
@@ -198,7 +197,7 @@ impl Dechunker {
             });
         }
 
-        Ok(self.data())
+        Ok(())
     }
 
     pub fn message_id(&self) -> Option<u16> {
@@ -206,12 +205,20 @@ impl Dechunker {
     }
 
     pub fn data(&self) -> Option<Vec<u8>> {
-        let mut result = Vec::new();
+        if !self.is_complete() {
+            return None;
+        }
+
+        let mut result = Vec::with_capacity(
+            self.chunks
+                .iter()
+                .map(|chunk| chunk.as_ref().unwrap().len as usize)
+                .sum(),
+        );
+
         for chunk in &self.chunks {
-            match chunk {
-                Some(chunk) => result.extend_from_slice(chunk.as_slice()),
-                None => return None,
-            }
+            // is_complete confirms we are done
+            result.extend_from_slice(chunk.as_ref().unwrap().as_slice());
         }
 
         Some(result)

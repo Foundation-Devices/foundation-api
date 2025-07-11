@@ -1,4 +1,4 @@
-use crate::{chunk, Dechunker, APP_MTU};
+use crate::{chunk, Dechunker, APP_MTU, CHUNK_DATA_SIZE};
 
 #[test]
 fn end_to_end() {
@@ -37,15 +37,9 @@ fn end_to_end_ooo() {
     let mut dechunker = Dechunker::new();
 
     for chunk in chunked_data.iter() {
-        match dechunker.receive(chunk.as_ref()) {
-            Ok(result) => {
-                if let Some(reassembled) = result {
-                    assert_eq!(reassembled.len(), data.len(),);
-                    assert!(data.eq(&reassembled),);
-                }
-            }
-            Err(e) => panic!("Error receiving chunk: {e}"),
-        }
+        dechunker
+            .receive(chunk.as_ref())
+            .expect("Failed to receive chunk");
     }
 
     assert_eq!(dechunker.data(), Some(data));
@@ -59,9 +53,9 @@ fn test_single_chunk() {
     assert_eq!(chunks.len(), 1);
 
     let mut dechunker = Dechunker::new();
-    let result = dechunker.receive(&chunks[0]).unwrap();
+    dechunker.receive(&chunks[0]).unwrap();
 
-    assert_eq!(result, Some(data));
+    assert_eq!(dechunker.data(), Some(data));
     assert!(dechunker.is_complete());
 }
 
@@ -74,8 +68,7 @@ fn test_empty_data() {
 
 #[test]
 fn test_exact_chunk_boundary() {
-    let data_per_chunk = APP_MTU - crate::HEADER_SIZE;
-    let data = vec![42u8; data_per_chunk * 3];
+    let data = vec![42u8; CHUNK_DATA_SIZE * 3];
 
     let chunks: Vec<_> = chunk(&data).collect();
     assert_eq!(
@@ -86,13 +79,8 @@ fn test_exact_chunk_boundary() {
 
     let mut dechunker = Dechunker::new();
     for (i, chunk) in chunks.iter().enumerate() {
-        let result = dechunker.receive(chunk).unwrap();
-        if i < chunks.len() - 1 {
-            assert!(
-                result.is_none(),
-                "non-last chunks should not complete the message"
-            );
-        } else {
+        dechunker.receive(chunk).unwrap();
+        if i == chunks.len() - 1 {
             assert_eq!(
                 dechunker.data().as_ref(),
                 Some(&data),
@@ -122,12 +110,8 @@ fn test_different_message_ids() {
         "Chunk from different message should be rejected"
     );
 
-    let result = dechunker2.receive(&chunks2[0]).unwrap();
-    assert!(
-        result.is_some(),
-        "Single chunk message should complete immediately"
-    );
-    assert_eq!(result, Some(data2));
+    dechunker2.receive(&chunks2[0]).unwrap();
+    assert_eq!(dechunker2.data(), Some(data2));
 }
 
 #[test]
@@ -173,14 +157,10 @@ fn test_duplicate_chunks() {
     dechunker.receive(&chunks[0]).unwrap();
     dechunker.receive(&chunks[0]).unwrap();
 
-    let result = dechunker.receive(&chunks[0]).unwrap();
-    assert!(
-        result.is_some(),
-        "Duplicate chunks should not prevent completion"
-    );
+    dechunker.receive(&chunks[0]).unwrap();
     assert_eq!(
-        result.unwrap(),
-        data,
+        dechunker.data(),
+        Some(data),
         "Data should be correctly reassembled despite duplicates"
     );
 }
@@ -209,9 +189,9 @@ fn test_missing_middle_chunk() {
         "Message should not complete with middle chunk still missing"
     );
 
-    let result = dechunker.receive(&chunks[middle]).unwrap();
+    dechunker.receive(&chunks[middle]).unwrap();
 
-    assert_eq!(result, Some(data));
+    assert_eq!(dechunker.data(), Some(data));
     assert!(dechunker.is_complete());
 }
 
@@ -227,18 +207,12 @@ fn test_data_with_zeros() {
     let mut dechunker = Dechunker::new();
 
     for chunk in chunks {
-        if let Some(result) = dechunker.receive(&chunk).unwrap() {
-            assert_eq!(
-                result.len(),
-                data.len(),
-                "Data with zeros should maintain correct length"
-            );
-            assert_eq!(result, data, "Data with zeros should be preserved exactly");
-        }
+        dechunker.receive(&chunk).unwrap();
     }
 
-    assert!(
-        dechunker.is_complete(),
+    assert_eq!(
+        dechunker.data(),
+        Some(data),
         "Dechunker should complete successfully with zero-containing data"
     );
 }
@@ -256,15 +230,7 @@ fn test_reverse_order_decoding() {
     let mut dechunker = Dechunker::new();
 
     for chunk in chunks.iter().rev() {
-        let result = dechunker.receive(chunk).unwrap();
-
-        if result.is_some() {
-            assert_eq!(
-                result.unwrap(),
-                data,
-                "Data should be correctly reassembled"
-            );
-        }
+        dechunker.receive(chunk).unwrap();
     }
 
     assert!(dechunker.is_complete(), "Dechunker should be complete");
