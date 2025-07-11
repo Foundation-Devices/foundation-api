@@ -16,7 +16,7 @@ struct Header {
 }
 
 impl Header {
-    fn to_bytes(&self) -> [u8; HEADER_SIZE] {
+    fn to_bytes(self) -> [u8; HEADER_SIZE] {
         let mut bytes = [0; HEADER_SIZE];
         bytes[0..2].copy_from_slice(&self.message_id.to_be_bytes());
         bytes[2..4].copy_from_slice(&self.index.to_be_bytes());
@@ -87,7 +87,7 @@ impl<'a> Iterator for Chunker<'a> {
 pub fn chunk(data: &[u8]) -> Chunker<'_> {
     let message_id = rand::rng().random::<u16>();
     let data_per_chunk = APP_MTU - HEADER_SIZE;
-    let total_chunks = ((data.len() + data_per_chunk - 1) / data_per_chunk) as u16;
+    let total_chunks = data.len().div_ceil(data_per_chunk) as u16;
 
     Chunker {
         data,
@@ -108,13 +108,12 @@ pub enum DecodeError {
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DecodeError::PacketTooSmall { size } => write!(f, "Packet too small: {} bytes", size),
+            DecodeError::PacketTooSmall { size } => write!(f, "Packet too small: {size} bytes"),
             DecodeError::InvalidHeader => write!(f, "Invalid header"),
             DecodeError::WrongMessageId { expected, received } => {
                 write!(
                     f,
-                    "Wrong message ID: expected {}, received {}",
-                    expected, received
+                    "Wrong message ID: expected {expected}, received {received}"
                 )
             }
         }
@@ -142,6 +141,12 @@ pub struct Dechunker {
     message_id: Option<u16>,
     total_chunks: Option<u16>,
     is_complete: bool,
+}
+
+impl Default for Dechunker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Dechunker {
@@ -232,8 +237,8 @@ impl Dechunker {
         let total = self.total_chunks? as usize;
 
         for i in 0..total {
-            match self.chunks.get(i).map(|chunk| chunk.as_ref()).flatten() {
-                Some(chunk) => result.extend_from_slice(&chunk.as_slice()),
+            match self.chunks.get(i).and_then(|chunk| chunk.as_ref()) {
+                Some(chunk) => result.extend_from_slice(chunk.as_slice()),
                 None => return None,
             }
         }

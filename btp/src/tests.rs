@@ -44,7 +44,7 @@ fn end_to_end_ooo() {
                     assert!(data.eq(&reassembled),);
                 }
             }
-            Err(e) => panic!("Error receiving chunk: {}", e),
+            Err(e) => panic!("Error receiving chunk: {e}"),
         }
     }
 
@@ -198,9 +198,9 @@ fn test_missing_middle_chunk() {
 
     let middle = chunks.len() / 2;
 
-    for i in 0..chunks.len() {
+    for (i, chunk) in chunks.iter().enumerate() {
         if i != middle {
-            dechunker.receive(&chunks[i]).unwrap();
+            dechunker.receive(chunk).unwrap();
         }
     }
 
