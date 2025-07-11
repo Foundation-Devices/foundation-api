@@ -242,3 +242,35 @@ fn test_data_with_zeros() {
         "Dechunker should complete successfully with zero-containing data"
     );
 }
+
+#[test]
+fn test_reverse_order_decoding() {
+    let data = b"
+        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+        ".to_vec();
+    let chunks: Vec<_> = chunk(&data).collect();
+
+    let mut dechunker = Dechunker::new();
+
+    for chunk in chunks.iter().rev() {
+        let result = dechunker.receive(chunk).unwrap();
+
+        if result.is_some() {
+            assert_eq!(
+                result.unwrap(),
+                data,
+                "Data should be correctly reassembled"
+            );
+        }
+    }
+
+    assert!(dechunker.is_complete(), "Dechunker should be complete");
+    assert_eq!(
+        dechunker.data(),
+        Some(data),
+        "Final data should match original"
+    );
+}
