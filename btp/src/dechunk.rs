@@ -81,6 +81,7 @@ impl Chunk {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct Dechunker {
     chunks: Vec<Option<RawChunk>>,
     info: Option<MessageInfo>,
@@ -93,7 +94,7 @@ struct MessageInfo {
     chunks_received: u16,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct RawChunk {
     data: [u8; CHUNK_DATA_SIZE],
     len: u8,
@@ -105,18 +106,9 @@ impl RawChunk {
     }
 }
 
-impl Default for Dechunker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Dechunker {
     pub fn new() -> Self {
-        Self {
-            chunks: Vec::new(),
-            info: None,
-        }
+        Self::default()
     }
 
     pub fn is_complete(&self) -> bool {
@@ -136,7 +128,7 @@ impl Dechunker {
             .unwrap_or(0.0)
     }
 
-    pub fn push_chunk(&mut self, chunk: Chunk) -> Result<(), MessageIdError> {
+    pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<(), MessageIdError> {
         let header = &chunk.header;
 
         match self.info {
@@ -164,7 +156,6 @@ impl Dechunker {
                 data: chunk.chunk,
             });
 
-            // Increment chunks_received count
             if let Some(ref mut info) = self.info {
                 info.chunks_received += 1;
             }
@@ -175,7 +166,7 @@ impl Dechunker {
 
     pub fn receive(&mut self, data: &[u8]) -> Result<(), ReceiveError> {
         let chunk_with_header = Chunk::parse(data)?;
-        self.push_chunk(chunk_with_header)?;
+        self.insert_chunk(chunk_with_header)?;
         Ok(())
     }
 
