@@ -1,15 +1,18 @@
-use crate::{chunk, Dechunker, APP_MTU, CHUNK_DATA_SIZE};
+use crate::{
+    chunk, Chunk, Dechunker, DecodeError, MessageIdError, APP_MTU, CHUNK_DATA_SIZE, HEADER_SIZE,
+};
+use rand::{seq::SliceRandom, Rng, RngCore};
+
+static TEST_STR: &[u8]= b"
+This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+";
 
 #[test]
 fn end_to_end() {
-    let data = b"
-        1This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        2This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        3This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        4This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        ".to_vec();
-
-    let chunked_data: Vec<[u8; APP_MTU]> = chunk(&data).collect();
+    let chunked_data: Vec<[u8; APP_MTU]> = chunk(TEST_STR).collect();
 
     assert_eq!(chunked_data.len(), 3);
 
@@ -21,32 +24,39 @@ fn end_to_end() {
             .expect("Failed to receive chunk");
     }
 
-    assert_eq!(unchunker.data(), Some(data));
+    assert_eq!(unchunker.data(), Some(TEST_STR.to_vec()));
     assert!(unchunker.is_complete());
 }
 
 #[test]
 fn end_to_end_ooo() {
-    let data = vec![0u8; 100000];
+    for _ in 0..10 {
+        let mut rng = rand::rng();
+        let size = rng.random_range(50000..200000);
+        let mut data = vec![0u8; size];
+        rng.fill_bytes(&mut data);
 
-    let mut chunked_data: Vec<[u8; APP_MTU]> = chunk(&data).collect();
+        let mut chunks: Vec<_> = chunk(&data).collect();
+        chunks.shuffle(&mut rng);
 
-    chunked_data.swap(0, 2);
-    chunked_data.swap(4, 3);
+        let mut dechunker = Dechunker::new();
 
-    let mut dechunker = Dechunker::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            dechunker.receive(chunk.as_ref()).unwrap();
 
-    for chunk in chunked_data.iter() {
-        dechunker
-            .receive(chunk.as_ref())
-            .expect("Failed to receive chunk");
+            let expected_progress = (i + 1) as f32 / chunks.len() as f32;
+            assert!(
+                (dechunker.progress() - expected_progress).abs() < 0.01,
+                "Progress should match chunks received"
+            );
+        }
+
+        assert_eq!(dechunker.data(), Some(data));
     }
-
-    assert_eq!(dechunker.data(), Some(data));
 }
 
 #[test]
-fn test_single_chunk() {
+fn single_chunk() {
     let data = b"Small data".to_vec();
     let chunks: Vec<_> = chunk(&data).collect();
 
@@ -60,14 +70,14 @@ fn test_single_chunk() {
 }
 
 #[test]
-fn test_empty_data() {
+fn empty_data() {
     let data = b"";
     let chunks: Vec<_> = chunk(data).collect();
     assert_eq!(chunks.len(), 0, "Empty data should produce no chunks");
 }
 
 #[test]
-fn test_exact_chunk_boundary() {
+fn exact_chunk_boundary() {
     let data = vec![42u8; CHUNK_DATA_SIZE * 3];
 
     let chunks: Vec<_> = chunk(&data).collect();
@@ -92,7 +102,7 @@ fn test_exact_chunk_boundary() {
 }
 
 #[test]
-fn test_different_message_ids() {
+fn different_message_ids() {
     let data1 = b"Message 1".to_vec();
     let data2 = b"Message 2".to_vec();
 
@@ -100,8 +110,6 @@ fn test_different_message_ids() {
     let chunks2: Vec<_> = chunk(&data2).collect();
 
     let mut dechunker1 = Dechunker::new();
-    let mut dechunker2 = Dechunker::new();
-
     dechunker1.receive(&chunks1[0]).unwrap();
 
     let result = dechunker1.receive(&chunks2[0]);
@@ -112,13 +120,10 @@ fn test_different_message_ids() {
         ),
         "Chunk from different message should be rejected"
     );
-
-    dechunker2.receive(&chunks2[0]).unwrap();
-    assert_eq!(dechunker2.data(), Some(data2));
 }
 
 #[test]
-fn test_progress_tracking() {
+fn progress_tracking() {
     let data = vec![1u8; 10000];
     let chunks: Vec<_> = chunk(&data).collect();
 
@@ -151,7 +156,7 @@ fn test_progress_tracking() {
 }
 
 #[test]
-fn test_duplicate_chunks() {
+fn dechunker_decode_duplicate() {
     let data = b"Test duplicate handling".to_vec();
     let chunks: Vec<_> = chunk(&data).collect();
 
@@ -159,8 +164,8 @@ fn test_duplicate_chunks() {
 
     dechunker.receive(&chunks[0]).unwrap();
     dechunker.receive(&chunks[0]).unwrap();
-
     dechunker.receive(&chunks[0]).unwrap();
+
     assert_eq!(
         dechunker.data(),
         Some(data),
@@ -169,7 +174,7 @@ fn test_duplicate_chunks() {
 }
 
 #[test]
-fn test_missing_middle_chunk() {
+fn missing_middle_chunk() {
     let data = vec![1u8; 1000];
     let chunks: Vec<_> = chunk(&data).collect();
 
@@ -195,11 +200,10 @@ fn test_missing_middle_chunk() {
     dechunker.receive(&chunks[middle]).unwrap();
 
     assert_eq!(dechunker.data(), Some(data));
-    assert!(dechunker.is_complete());
 }
 
 #[test]
-fn test_data_with_zeros() {
+fn data_with_zeros() {
     let mut data = vec![0u8; 500];
     data[100] = 1;
     data[200] = 2;
@@ -221,14 +225,8 @@ fn test_data_with_zeros() {
 }
 
 #[test]
-fn test_reverse_order_decoding() {
-    let data = b"
-        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        ".to_vec();
-    let chunks: Vec<_> = chunk(&data).collect();
+fn reverse_order_decoding() {
+    let chunks: Vec<_> = chunk(TEST_STR).collect();
 
     let mut dechunker = Dechunker::new();
 
@@ -236,10 +234,162 @@ fn test_reverse_order_decoding() {
         dechunker.receive(chunk).unwrap();
     }
 
-    assert!(dechunker.is_complete(), "Dechunker should be complete");
+    assert_eq!(dechunker.data(), Some(TEST_STR.to_vec()));
+}
+
+#[test]
+fn chunk_parse_and_insert() {
+    use crate::Chunk;
+
+    let data = b"Test data for parse and push";
+    let chunks: Vec<_> = chunk(data).collect();
+
+    let mut dechunker = Dechunker::new();
+
+    for raw_chunk in &chunks {
+        let parsed = Chunk::parse(raw_chunk).unwrap();
+        dechunker.insert_chunk(parsed).unwrap();
+    }
+
+    assert_eq!(dechunker.data(), Some(data.to_vec()));
+}
+
+#[test]
+fn chunk_parse_errors() {
+    let small_data = vec![0u8; HEADER_SIZE - 1];
+    let result = Chunk::parse(&small_data);
+    assert!(matches!(result, Err(DecodeError::HeaderTooSmall)));
+}
+
+#[test]
+fn chunk_too_small() {
+    let header = crate::Header::new(1234, 0, 1, 100);
+    let mut raw_chunk = vec![0u8; HEADER_SIZE + 5];
+    raw_chunk[..HEADER_SIZE].copy_from_slice(header.as_bytes());
+
+    let result = Chunk::parse(&raw_chunk);
+    assert!(
+        matches!(
+            result,
+            Err(DecodeError::ChunkTooSmall {
+                expected: 100,
+                actual: 5
+            })
+        ),
+        "should fail if actual data is less than header claims"
+    );
+}
+
+#[test]
+fn chunk_too_large() {
+    let header = crate::Header::new(1234, 0, 1, 255);
+    let mut raw_chunk = vec![0u8; HEADER_SIZE + 255];
+    raw_chunk[..HEADER_SIZE].copy_from_slice(header.as_bytes());
+
+    let result = Chunk::parse(&raw_chunk);
+    assert!(
+        matches!(result, Err(DecodeError::ChunkTooLarge)),
+        "should fail when data_len exceeds maximum chunk size"
+    );
+}
+
+#[test]
+fn chunk_parse_invalid_index() {
+    use crate::{Chunk, DecodeError, HEADER_SIZE};
+
+    let header = crate::Header::new(1234, 10, 1, 5);
+    let mut raw_chunk = vec![0u8; HEADER_SIZE + 5];
+    raw_chunk[..HEADER_SIZE].copy_from_slice(header.as_bytes());
+
+    let result = Chunk::parse(&raw_chunk);
+    assert!(
+        matches!(
+            result,
+            Err(DecodeError::InvalidChunkIndex {
+                index: 10,
+                total_chunks: 1
+            })
+        ),
+        "invalid index"
+    );
+}
+
+#[test]
+fn insert_chunk_wrong_message_id() {
+    let data1 = b"First message";
+    let data2 = b"Second message";
+
+    let chunks1: Vec<_> = chunk(data1).collect();
+    let chunks2: Vec<_> = chunk(data2).collect();
+
+    let mut dechunker = Dechunker::new();
+
+    let chunk1 = Chunk::parse(&chunks1[0]).unwrap();
+    dechunker.insert_chunk(chunk1).unwrap();
+
+    let chunk2 = Chunk::parse(&chunks2[0]).unwrap();
+    let result = dechunker.insert_chunk(chunk2);
+
+    assert!(
+        matches!(result, Err(MessageIdError { .. })),
+        "message id mismatch"
+    );
+}
+
+#[test]
+fn insert_chunk_out_of_order() {
+    let mut rng = rand::rng();
+    let size = rng.random_range(5000..20000);
+    let mut data = vec![0u8; size];
+    rng.fill_bytes(&mut data);
+
+    let mut chunks: Vec<_> = chunk(&data).collect();
+    let original_count = chunks.len();
+
+    chunks.shuffle(&mut rng);
+
+    let mut dechunker = Dechunker::new();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let parsed = Chunk::parse(chunk).unwrap();
+        dechunker.insert_chunk(parsed).unwrap();
+
+        let expected_progress = (i + 1) as f32 / original_count as f32;
+        assert!(
+            (dechunker.progress() - expected_progress).abs() < 0.01,
+            "Progress should match chunks inserted"
+        );
+    }
+
     assert_eq!(
         dechunker.data(),
         Some(data),
-        "Final data should match original"
+        "Data should match after out of order reassembly"
     );
+}
+
+#[test]
+fn insert_duplicate_chunks() {
+    let data = b"Test duplicate handling";
+    let chunks: Vec<_> = chunk(data).collect();
+
+    let mut dechunker = Dechunker::new();
+
+    let chunk0 = Chunk::parse(&chunks[0]).unwrap();
+
+    dechunker.insert_chunk(chunk0).unwrap();
+    dechunker.insert_chunk(chunk0).unwrap();
+
+    assert_eq!(
+        dechunker.progress(),
+        1.0 / chunks.len() as f32,
+        "Progress should only count unique chunks"
+    );
+
+    for chunk in &chunks[1..] {
+        let parsed = Chunk::parse(chunk).unwrap();
+        dechunker.insert_chunk(parsed).unwrap();
+    }
+
+    assert_eq!(dechunker.data(), Some(data.to_vec()));
 }
