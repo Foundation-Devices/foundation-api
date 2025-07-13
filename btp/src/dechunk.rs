@@ -2,16 +2,27 @@ use crate::{Header, CHUNK_DATA_SIZE, HEADER_SIZE};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
-    #[error("Packet too small: {size} bytes")]
-    ChunkTooSmall { size: usize },
-    #[error("Invalid header")]
+    #[error("chunk too small, expected at least {}", HEADER_SIZE)]
+    HeaderTooSmall,
+
+    #[error("invalid chunk header")]
     InvalidHeader,
+
+    #[error("chunk data too small: header claims {expected} bytes, but only {actual} available")]
+    ChunkTooSmall { expected: usize, actual: usize },
+
+    #[error("invalid chunk index: {index} >= {total_chunks}")]
+    InvalidChunkIndex { index: u16, total_chunks: u16 },
+
+    #[error("chunk data length exceeds maximum chunk size {}", CHUNK_DATA_SIZE)]
+    ChunkTooLarge,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PushChunkError {
-    #[error("wrong message id: expected {expected}, actual {actual}")]
-    WrongMessageId { expected: u16, actual: u16 },
+#[error("wrong message id: expected {expected}, actual {actual}")]
+pub struct MessageIdError {
+    expected: u16,
+    actual: u16,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -19,7 +30,7 @@ pub enum ReceiveError {
     #[error(transparent)]
     Decode(#[from] DecodeError),
     #[error(transparent)]
-    Push(#[from] PushChunkError),
+    MessageId(#[from] MessageIdError),
 }
 
 #[derive(Clone, Copy)]
@@ -29,32 +40,43 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    pub fn data(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         &self.chunk[..self.header.data_len as usize]
     }
-}
 
-impl Chunk {
-    pub fn new(header: Header, chunk: [u8; CHUNK_DATA_SIZE]) -> Self {
-        Self { header, chunk }
-    }
-}
-
-impl Chunk {
     pub fn parse(data: &[u8]) -> Result<Self, DecodeError> {
         let (header_data, chunk_data) = data
             .split_at_checked(HEADER_SIZE)
-            .ok_or(DecodeError::ChunkTooSmall { size: data.len() })?;
+            .ok_or(DecodeError::HeaderTooSmall)?;
 
         let header = Header::from_bytes(header_data).ok_or(DecodeError::InvalidHeader)?;
 
+        if header.index >= header.total_chunks {
+            return Err(DecodeError::InvalidChunkIndex {
+                index: header.index,
+                total_chunks: header.total_chunks,
+            });
+        }
+
         let data_len = header.data_len as usize;
-        let mut chunk_array = [0u8; CHUNK_DATA_SIZE];
-        chunk_array[..data_len].copy_from_slice(&chunk_data[..data_len]);
+
+        if data_len > CHUNK_DATA_SIZE {
+            return Err(DecodeError::ChunkTooLarge);
+        }
+
+        if chunk_data.len() < data_len {
+            return Err(DecodeError::ChunkTooSmall {
+                expected: data_len,
+                actual: chunk_data.len(),
+            });
+        }
+
+        let mut chunk = [0u8; CHUNK_DATA_SIZE];
+        chunk[..data_len].copy_from_slice(&chunk_data[..data_len]);
 
         Ok(Chunk {
             header: *header,
-            chunk: chunk_array,
+            chunk,
         })
     }
 }
@@ -114,7 +136,7 @@ impl Dechunker {
             .unwrap_or(0.0)
     }
 
-    pub fn push_chunk(&mut self, chunk: Chunk) -> Result<(), PushChunkError> {
+    pub fn push_chunk(&mut self, chunk: Chunk) -> Result<(), MessageIdError> {
         let header = &chunk.header;
 
         match self.info {
@@ -127,7 +149,7 @@ impl Dechunker {
                 self.chunks.resize(header.total_chunks as usize, None);
             }
             Some(info) if info.message_id != header.message_id => {
-                return Err(PushChunkError::WrongMessageId {
+                return Err(MessageIdError {
                     expected: info.message_id,
                     actual: header.message_id,
                 });
@@ -166,6 +188,8 @@ impl Dechunker {
             return None;
         }
 
+        // unwraps are now ok
+
         let mut result = Vec::with_capacity(
             self.chunks
                 .iter()
@@ -174,7 +198,6 @@ impl Dechunker {
         );
 
         for chunk in &self.chunks {
-            // is_complete confirms we are done
             result.extend_from_slice(chunk.as_ref().unwrap().as_slice());
         }
 

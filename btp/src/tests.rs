@@ -108,9 +108,7 @@ fn test_different_message_ids() {
     assert!(
         matches!(
             result,
-            Err(crate::ReceiveError::Push(
-                crate::PushChunkError::WrongMessageId { .. }
-            ))
+            Err(crate::ReceiveError::MessageId(crate::MessageIdError { .. }))
         ),
         "Chunk from different message should be rejected"
     );
