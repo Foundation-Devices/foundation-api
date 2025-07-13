@@ -3,10 +3,10 @@ use crate::{chunk, Dechunker, APP_MTU, CHUNK_DATA_SIZE};
 #[test]
 fn end_to_end() {
     let data = b"
-        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
-        This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+        1This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+        2This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+        3This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
+        4This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.
         ".to_vec();
 
     let chunked_data: Vec<[u8; APP_MTU]> = chunk(&data).collect();
@@ -106,7 +106,12 @@ fn test_different_message_ids() {
 
     let result = dechunker1.receive(&chunks2[0]);
     assert!(
-        matches!(result, Err(crate::DecodeError::WrongMessageId { .. })),
+        matches!(
+            result,
+            Err(crate::ReceiveError::Push(
+                crate::PushChunkError::WrongMessageId { .. }
+            ))
+        ),
         "Chunk from different message should be rejected"
     );
 

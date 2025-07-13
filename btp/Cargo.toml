@@ -10,3 +10,4 @@ consts = { git = "https://github.com/Foundation-Devices/prime-ble-firmware.git",
     "dle",
 ] }
 rand = { workspace = true }
+thiserror = "2"
