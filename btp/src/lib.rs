@@ -1,3 +1,4 @@
+use bytemuck::{Pod, Zeroable};
 use consts::APP_MTU;
 use rand::Rng;
 
@@ -7,36 +8,37 @@ mod tests;
 const HEADER_SIZE: usize = std::mem::size_of::<Header>();
 const CHUNK_DATA_SIZE: usize = APP_MTU - HEADER_SIZE;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
 struct Header {
     message_id: u16,
     index: u16,
     total_chunks: u16,
     data_len: u8,
+    _padding: u8,
 }
 
 impl Header {
-    fn write_bytes(&self, bytes: &mut [u8]) {
-        bytes[0..2].copy_from_slice(&self.message_id.to_be_bytes());
-        bytes[2..4].copy_from_slice(&self.index.to_be_bytes());
-        bytes[4..6].copy_from_slice(&self.total_chunks.to_be_bytes());
-        bytes[6] = self.data_len;
-    }
-
-    fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < HEADER_SIZE {
-            return None;
-        }
-        let message_id = u16::from_be_bytes([bytes[0], bytes[1]]);
-        let index = u16::from_be_bytes([bytes[2], bytes[3]]);
-        let total_chunks = u16::from_be_bytes([bytes[4], bytes[5]]);
-        let data_len = bytes[6];
-        Some(Self {
+    #[inline]
+    fn new(message_id: u16, index: u16, total_chunks: u16, data_len: u8) -> Self {
+        Self {
             message_id,
             index,
             total_chunks,
             data_len,
-        })
+            _padding: 0,
+        }
+    }
+
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
+
+    #[inline]
+    fn from_bytes(bytes: &[u8]) -> Option<&Self> {
+        let header = bytemuck::try_from_bytes::<Header>(bytes).ok()?;
+        Some(header)
     }
 }
 
@@ -59,15 +61,15 @@ impl<'a> Iterator for Chunker<'a> {
         let end_idx = (start_idx + CHUNK_DATA_SIZE).min(self.data.len());
         let chunk_data = &self.data[start_idx..end_idx];
 
-        let header = Header {
-            message_id: self.message_id,
-            index: self.current_index,
-            total_chunks: self.total_chunks,
-            data_len: chunk_data.len() as u8,
-        };
+        let header = Header::new(
+            self.message_id,
+            self.current_index,
+            self.total_chunks,
+            chunk_data.len() as u8,
+        );
 
         let mut buffer = [0u8; APP_MTU];
-        header.write_bytes(&mut buffer[..HEADER_SIZE]);
+        buffer[..HEADER_SIZE].copy_from_slice(header.as_bytes());
         buffer[HEADER_SIZE..HEADER_SIZE + chunk_data.len()].copy_from_slice(chunk_data);
         self.current_index += 1;
 
