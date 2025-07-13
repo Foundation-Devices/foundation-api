@@ -45,21 +45,18 @@ pub struct Chunker<'a> {
     message_id: u16,
     current_index: u16,
     total_chunks: u16,
-    data_per_chunk: usize,
 }
 
 impl<'a> Iterator for Chunker<'a> {
     type Item = [u8; APP_MTU];
 
     fn next(&mut self) -> Option<Self::Item> {
-        let start_idx = self.current_index as usize * self.data_per_chunk;
+        let start_idx = self.current_index as usize * CHUNK_DATA_SIZE;
         if start_idx >= self.data.len() {
             return None;
         }
 
-        let mut buffer = [0u8; APP_MTU];
-
-        let end_idx = (start_idx + self.data_per_chunk).min(self.data.len());
+        let end_idx = (start_idx + CHUNK_DATA_SIZE).min(self.data.len());
         let chunk_data = &self.data[start_idx..end_idx];
 
         let header = Header {
@@ -69,6 +66,7 @@ impl<'a> Iterator for Chunker<'a> {
             data_len: chunk_data.len() as u8,
         };
 
+        let mut buffer = [0u8; APP_MTU];
         header.write_bytes(&mut buffer[..HEADER_SIZE]);
         buffer[HEADER_SIZE..HEADER_SIZE + chunk_data.len()].copy_from_slice(chunk_data);
         self.current_index += 1;
@@ -79,15 +77,13 @@ impl<'a> Iterator for Chunker<'a> {
 
 pub fn chunk(data: &[u8]) -> Chunker<'_> {
     let message_id = rand::rng().random::<u16>();
-    let data_per_chunk = APP_MTU - HEADER_SIZE;
-    let total_chunks = data.len().div_ceil(data_per_chunk) as u16;
+    let total_chunks = data.len().div_ceil(CHUNK_DATA_SIZE) as u16;
 
     Chunker {
         data,
         message_id,
         current_index: 0,
         total_chunks,
-        data_per_chunk,
     }
 }
 
