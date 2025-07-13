@@ -37,6 +37,7 @@ impl<'a> Iterator for Chunker<'a> {
     }
 }
 
+/// Splits data into chunks for transmission
 pub fn chunk(data: &[u8]) -> Chunker<'_> {
     let message_id = rand::Rng::random::<u16>(&mut rand::rng());
     let total_chunks = data.len().div_ceil(CHUNK_DATA_SIZE) as u16;

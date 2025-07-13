@@ -40,10 +40,12 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    /// Returns chunk data as slice
     pub fn as_slice(&self) -> &[u8] {
         &self.chunk[..self.header.data_len as usize]
     }
 
+    /// Parses raw bytes into a chunk
     pub fn parse(data: &[u8]) -> Result<Self, DecodeError> {
         let (header_data, chunk_data) = data
             .split_at_checked(HEADER_SIZE)
@@ -107,27 +109,33 @@ impl RawChunk {
 }
 
 impl Dechunker {
+    /// Creates a new dechunker
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns true if all chunks received
     pub fn is_complete(&self) -> bool {
         self.info
             .map(|info| info.chunks_received == info.total_chunks)
             .unwrap_or(false)
     }
 
+    /// Clears all chunks and resets state
     pub fn clear(&mut self) {
         self.chunks.clear();
         self.info = None;
     }
 
+    /// Returns progress as fraction (0.0 to 1.0)
     pub fn progress(&self) -> f32 {
         self.info
             .map(|info| info.chunks_received as f32 / info.total_chunks as f32)
             .unwrap_or(0.0)
     }
 
+    /// Inserts a parsed chunk. Use this for multiple concurrent messages.
+    /// First parse with [`Chunk::parse()`], lookup decoder by message ID, then insert.
     pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<(), MessageIdError> {
         let header = &chunk.header;
 
@@ -164,16 +172,20 @@ impl Dechunker {
         Ok(())
     }
 
+    /// Parses and inserts raw chunk data. Use this for single message at a time.
+    /// For multiple concurrent messages, use [`Chunk::parse()`] then [`Dechunker::insert_chunk()`].
     pub fn receive(&mut self, data: &[u8]) -> Result<(), ReceiveError> {
         let chunk_with_header = Chunk::parse(data)?;
         self.insert_chunk(chunk_with_header)?;
         Ok(())
     }
 
+    /// Returns the message ID if we've received a chunk
     pub fn message_id(&self) -> Option<u16> {
         self.info.map(|info| info.message_id)
     }
 
+    /// Returns reassembled data if complete
     pub fn data(&self) -> Option<Vec<u8>> {
         if !self.is_complete() {
             return None;
