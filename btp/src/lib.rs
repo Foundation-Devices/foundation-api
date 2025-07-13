@@ -125,9 +125,16 @@ impl Chunk {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct MessageInfo {
+    message_id: u16,
+    total_chunks: u16,
+    chunks_received: u16,
+}
+
 pub struct Dechunker {
     chunks: Vec<Option<Chunk>>,
-    message_id: Option<u16>,
+    info: Option<MessageInfo>,
 }
 
 impl Default for Dechunker {
@@ -140,25 +147,25 @@ impl Dechunker {
     pub fn new() -> Self {
         Self {
             chunks: Vec::new(),
-            message_id: None,
+            info: None,
         }
     }
 
     pub fn is_complete(&self) -> bool {
-        self.message_id.is_some() && self.chunks.iter().all(|c| c.is_some())
+        self.info
+            .map(|info| info.chunks_received == info.total_chunks)
+            .unwrap_or(false)
     }
 
     pub fn clear(&mut self) {
         self.chunks.clear();
-        self.message_id = None;
+        self.info = None;
     }
 
     pub fn progress(&self) -> f32 {
-        if self.chunks.len() == 0 {
-            return 0.0;
-        }
-        let received = self.chunks.iter().filter(|c| c.is_some()).count();
-        received as f32 / self.chunks.len() as f32
+        self.info
+            .map(|info| info.chunks_received as f32 / info.total_chunks as f32)
+            .unwrap_or(0.0)
     }
 
     pub fn receive(&mut self, data: &[u8]) -> Result<(), DecodeError> {
@@ -168,14 +175,18 @@ impl Dechunker {
 
         let header = Header::from_bytes(header_data).ok_or(DecodeError::InvalidHeader)?;
 
-        match self.message_id {
+        match self.info {
             None => {
-                self.message_id = Some(header.message_id);
+                self.info = Some(MessageInfo {
+                    message_id: header.message_id,
+                    total_chunks: header.total_chunks,
+                    chunks_received: 0,
+                });
                 self.chunks.resize(header.total_chunks as usize, None);
             }
-            Some(id) if id != header.message_id => {
+            Some(info) if info.message_id != header.message_id => {
                 return Err(DecodeError::WrongMessageId {
-                    expected: id,
+                    expected: info.message_id,
                     received: header.message_id,
                 });
             }
@@ -185,7 +196,6 @@ impl Dechunker {
         let data_len = header.data_len as usize;
 
         // store chunk if not already received
-        // should this be an error?
         if self.chunks[header.index as usize].is_none() {
             let mut data = [0u8; CHUNK_DATA_SIZE];
             data[..data_len].copy_from_slice(&chunk_data[..data_len]);
@@ -193,13 +203,18 @@ impl Dechunker {
                 data,
                 len: data_len as u8,
             });
+            
+            // Increment chunks_received count
+            if let Some(ref mut info) = self.info {
+                info.chunks_received += 1;
+            }
         }
 
         Ok(())
     }
 
     pub fn message_id(&self) -> Option<u16> {
-        self.message_id
+        self.info.map(|info| info.message_id)
     }
 
     pub fn data(&self) -> Option<Vec<u8>> {
