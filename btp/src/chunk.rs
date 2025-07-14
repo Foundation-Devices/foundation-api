@@ -40,6 +40,12 @@ impl<'a> Iterator for Chunker<'a> {
 /// Splits data into chunks for transmission
 pub fn chunk(data: &[u8]) -> Chunker<'_> {
     let message_id = rand::Rng::random::<u16>(&mut rand::rng());
+    chunk_with_id(data, message_id)
+}
+
+/// Splits data into chunks for transmission with a specified message ID
+/// this id should be random to avoid collisions with other in-flight messages
+pub fn chunk_with_id(data: &[u8], message_id: u16) -> Chunker<'_> {
     let total_chunks = data.len().div_ceil(CHUNK_DATA_SIZE) as u16;
 
     Chunker {
