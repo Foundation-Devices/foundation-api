@@ -5,5 +5,9 @@ edition = "2021"
 homepage.workspace = true
 
 [dependencies]
-consts = { git = "https://github.com/Foundation-Devices/prime-ble-firmware.git", features = ["dle"] }
+bytemuck = { version = "1", features = ["derive"] }
+consts = { git = "https://github.com/Foundation-Devices/prime-ble-firmware.git", features = [
+    "dle",
+] }
 rand = { workspace = true }
+thiserror = "2"

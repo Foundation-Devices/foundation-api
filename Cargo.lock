@@ -207,7 +207,7 @@ dependencies = [
  "rand 0.8.5",
  "secp256k1",
  "sha2",
- "thiserror",
+ "thiserror 1.0.69",
  "x25519-dalek",
 ]
 
@@ -228,7 +228,7 @@ dependencies = [
  "itertools 0.11.0",
  "paste",
  "ssh-key",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -253,7 +253,7 @@ checksum = "5ae105d819b82cb8a68e7c3a9c63a2080401f6f18be48e5fc0095a2e1db274e4"
 dependencies = [
  "bc-crypto",
  "bc-rand",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -264,7 +264,7 @@ checksum = "0eced5ba4f1321a74faac8a346d1d527a76ecec9fda7d746da22a43e923201a3"
 dependencies = [
  "anyhow",
  "dcbor",
- "thiserror",
+ "thiserror 1.0.69",
  "ur",
 ]
 
@@ -355,8 +355,10 @@ dependencies = [
 name = "btp"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "consts",
  "rand 0.9.1",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -376,6 +378,20 @@ name = "bytemuck"
 version = "1.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6b1fc10dbac614ebc03540c9dbd60e83887fda27794998c6528f1782047d540"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ecc273b49b3205b83d648f0690daa588925572cc5063745bfe547fe7ec8e1a1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.98",
+]
 
 [[package]]
 name = "byteorder"
@@ -601,7 +617,7 @@ dependencies = [
  "chrono",
  "half",
  "hex",
- "thiserror",
+ "thiserror 1.0.69",
  "unicode-normalization",
 ]
 
@@ -857,7 +873,7 @@ dependencies = [
  "gstp",
  "indoc",
  "nu-ansi-term",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
@@ -2317,7 +2333,7 @@ checksum = "c2bb82d84810c92ae464197c90f38f2bad403032d5a6b55ec746ce06d19eb867"
 dependencies = [
  "bc-rand",
  "bc-shamir",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2377,7 +2393,16 @@ version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "567b8a2dae586314f7be2a752ec7474332959c6460e02bde30d702a66d488708"
+dependencies = [
+ "thiserror-impl 2.0.12",
 ]
 
 [[package]]
@@ -2385,6 +2410,17 @@ name = "thiserror-impl"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.98",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f7cf42b4507d8ea322120659672cf1b9dbb93f8f2d4ecfd6e51350ff5b17a1d"
 dependencies = [
  "proc-macro2",
  "quote",
