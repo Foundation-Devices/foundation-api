@@ -14,7 +14,7 @@ foundation-api = { path = "api" }
 foundation-abstracted = { path = "abstracted" }
 btp = { path = "btp" }
 quantum-link-macros = { path = "quantum-link-macros" }
-rand = "0.9.1"
+getrandom = { version = "0.2" }
 
 [patch.crates-io]
 pqcrypto-traits = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
