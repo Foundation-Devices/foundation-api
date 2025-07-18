@@ -357,6 +357,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "consts",
+ "getrandom 0.2.15",
  "rand 0.9.1",
  "thiserror 2.0.12",
 ]
