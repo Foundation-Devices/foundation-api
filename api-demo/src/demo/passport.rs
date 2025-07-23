@@ -5,7 +5,7 @@ use foundation_api::api::quantum_link::QuantumLink;
 use foundation_api::api::quantum_link::QUANTUM_LINK;
 use foundation_api::message::EnvoyMessage;
 use foundation_api::pairing::PairingResponse;
-use foundation_api::passport::PassportModel;
+use foundation_api::passport::{PassportColor, PassportModel};
 use gstp::SealedRequest;
 use gstp::SealedRequestBehavior;
 use {
@@ -186,7 +186,7 @@ impl Passport {
                         passport_model: PassportModel::Prime,
                         passport_serial: PassportSerial("1234-5678".to_owned()),
                         passport_firmware_version: PassportFirmwareVersion("1.0.0".to_owned()),
-                        descriptor: "bv12312321".to_owned(),
+                        passport_color: PassportColor::Dark,
                     })
                     .encode(),
                 );
