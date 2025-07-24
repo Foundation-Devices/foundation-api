@@ -216,7 +216,7 @@ pub enum InsertBytesError {
     NoSlots,
 }
 
-pub struct MasterDechunker<const N: usize = 10> {
+pub struct MasterDechunker<const N: usize> {
     pub dechunkers: [Option<Dechunker>; N],
 }
 
