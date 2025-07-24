@@ -283,14 +283,14 @@ impl<const N: usize> MasterDechunker<N> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum StreamingError {
+pub enum StreamError {
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
     MessageId(#[from] MessageIdError),
 }
 
-pub struct StreamingDechunker<W: Write> {
+pub struct StreamDechunker<W: Write> {
     writer: W,
     pub(crate) chunks: Vec<Option<RawChunk>>,
     info: Option<MessageInfo>,
@@ -298,7 +298,7 @@ pub struct StreamingDechunker<W: Write> {
     bytes_written: u64,
 }
 
-impl<W: Write> StreamingDechunker<W> {
+impl<W: Write> StreamDechunker<W> {
     pub fn new(writer: W) -> Self {
         Self {
             writer,
@@ -309,7 +309,7 @@ impl<W: Write> StreamingDechunker<W> {
         }
     }
 
-    pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<bool, StreamingError> {
+    pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<bool, StreamError> {
         let header = &chunk.header;
 
         match self.info {
@@ -322,7 +322,7 @@ impl<W: Write> StreamingDechunker<W> {
                 self.chunks.resize(header.total_chunks as usize, None);
             }
             Some(info) if info.message_id != header.message_id => {
-                return Err(StreamingError::MessageId(MessageIdError {
+                return Err(StreamError::MessageId(MessageIdError {
                     expected: info.message_id,
                     actual: header.message_id,
                 }));
