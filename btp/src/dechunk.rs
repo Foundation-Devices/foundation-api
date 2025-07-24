@@ -1,7 +1,7 @@
 use crate::{Header, CHUNK_DATA_SIZE, HEADER_SIZE};
 use std::io::{self, Write};
 
-#[derive(Debug, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
     #[error("chunk too small, expected at least {}", HEADER_SIZE)]
     HeaderTooSmall,
@@ -209,15 +209,15 @@ impl Dechunker {
     }
 }
 
+pub struct MasterDechunker<const N: usize> {
+    dechunkers: [Option<DechunkerSlot>; N],
+    counter: u64,
+}
+
 #[derive(Debug)]
 struct DechunkerSlot {
     dechunker: Dechunker,
     last_used: u64,
-}
-
-pub struct MasterDechunker<const N: usize = 10> {
-    dechunkers: [Option<DechunkerSlot>; N],
-    counter: u64,
 }
 
 impl<const N: usize> Default for MasterDechunker<N> {
@@ -253,16 +253,10 @@ impl<const N: usize> MasterDechunker<N> {
             if let Some(empty_slot) = self.dechunkers.iter_mut().find(|slot| slot.is_none()) {
                 empty_slot
             } else {
-                let lru_index = self
-                    .dechunkers
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, slot)| slot.as_ref().map(|s| (i, s.last_used)))
-                    .min_by_key(|(_, last_used)| *last_used)
-                    .map(|(i, _)| i)
-                    .expect("should find slot");
-
-                &mut self.dechunkers[lru_index]
+                self.dechunkers
+                    .iter_mut()
+                    .min_by_key(|d| d.as_ref().map(|d| d.last_used))
+                    .expect("not empty")
             };
 
         let mut decoder = Dechunker::new();
@@ -278,6 +272,14 @@ impl<const N: usize> MasterDechunker<N> {
             });
             None
         }
+    }
+
+    pub fn get_dechunker(&self, msg_id: u16) -> Option<&Dechunker> {
+        self.dechunkers
+            .iter()
+            .filter_map(|d| d.as_ref())
+            .find(|d| d.dechunker.info.map(|m| m.message_id) == Some(msg_id))
+            .map(|d| &d.dechunker)
     }
 }
 
