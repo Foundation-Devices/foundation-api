@@ -653,8 +653,7 @@ fn streaming_dechunker_memory_efficiency() {
         let chunks_in_memory = streaming.chunks.iter().filter(|c| c.is_some()).count();
         assert_eq!(
             chunks_in_memory, 0,
-            "No chunks should be buffered when inserting in order (iteration {})",
-            i
+            "No chunks should be buffered when inserting in order (iteration {i})"
         );
     }
 
