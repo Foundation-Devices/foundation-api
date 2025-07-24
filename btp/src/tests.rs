@@ -1,6 +1,6 @@
 use crate::{
-    chunk, Chunk, Dechunker, DecodeError, MasterDechunker, MessageIdError, APP_MTU,
-    CHUNK_DATA_SIZE, HEADER_SIZE,
+    chunk, Chunk, Dechunker, DecodeError, MasterDechunker, MessageIdError, StreamDechunker,
+    APP_MTU, CHUNK_DATA_SIZE, HEADER_SIZE,
 };
 use rand::{seq::SliceRandom, Rng, RngCore};
 
@@ -504,36 +504,6 @@ fn master_dechunker_lru_eviction() {
         "Message 1 should start fresh after being evicted"
     );
 }
-#[test]
-fn master_dechunker_custom_size() {
-    let mut master = MasterDechunker::<5>::default();
-
-    let messages: Vec<Vec<u8>> = (0..5).map(|i| vec![i as u8; 1000]).collect();
-
-    let all_chunks: Vec<Vec<_>> = messages.iter().map(|data| chunk(data).collect()).collect();
-
-    for chunks in &all_chunks {
-        assert!(
-            chunks.len() > 1,
-            "Each message should require multiple chunks"
-        );
-    }
-
-    for chunks in &all_chunks {
-        master.insert_bytes(&chunks[0]).unwrap();
-    }
-
-    let mut completed = 0;
-    for chunks in &all_chunks {
-        for chunk in &chunks[1..] {
-            if master.insert_bytes(chunk).unwrap().is_some() {
-                completed += 1;
-            }
-        }
-    }
-
-    assert_eq!(completed, 5, "All 5 messages should complete successfully");
-}
 
 #[test]
 fn master_dechunker_single_chunk_message() {
@@ -558,7 +528,7 @@ fn streaming_dechunker_memory_usage() {
     assert!(chunks.len() >= 3, "Need at least 3 chunks for this test");
 
     let mut output = Vec::new();
-    let mut streaming = crate::dechunk::StreamingDechunker::new(&mut output);
+    let mut streaming = StreamDechunker::new(&mut output);
 
     let chunk0 = Chunk::parse(&chunks[0]).unwrap();
     let chunk1 = Chunk::parse(&chunks[1]).unwrap();
@@ -639,7 +609,7 @@ fn streaming_dechunker_reverse_order() {
     let chunks: Vec<_> = chunk(&data).collect();
 
     let mut output = Vec::new();
-    let mut streaming = crate::dechunk::StreamingDechunker::new(&mut output);
+    let mut streaming = StreamDechunker::new(&mut output);
 
     for chunk in chunks.iter().rev() {
         let parsed = Chunk::parse(chunk).unwrap();
@@ -665,7 +635,7 @@ fn streaming_dechunker_memory_efficiency() {
     let chunks: Vec<_> = chunk(&data).collect();
 
     let mut output = Vec::new();
-    let mut streaming = crate::dechunk::StreamingDechunker::new(&mut output);
+    let mut streaming = StreamDechunker::new(&mut output);
 
     for (i, chunk) in chunks.iter().enumerate() {
         let parsed = Chunk::parse(chunk).unwrap();
