@@ -1,6 +1,6 @@
 use crate::{Header, CHUNK_DATA_SIZE, HEADER_SIZE};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Copy, Clone, thiserror::Error)]
 pub enum DecodeError {
     #[error("chunk too small, expected at least {}", HEADER_SIZE)]
     HeaderTooSmall,
@@ -205,5 +205,64 @@ impl Dechunker {
         }
 
         Some(result)
+    }
+}
+
+#[derive(Debug, Copy, Clone, thiserror::Error)]
+pub enum InsertBytesError {
+    #[error(transparent)]
+    Parse(#[from] DecodeError),
+    #[error("no slots found")]
+    NoSlots,
+}
+
+pub struct MasterDechunker<const N: usize = 10> {
+    pub dechunkers: [Option<Dechunker>; N],
+}
+
+impl<const N: usize> Default for MasterDechunker<N> {
+    fn default() -> Self {
+        Self {
+            dechunkers: std::array::from_fn(|_| None),
+        }
+    }
+}
+
+impl<const N: usize> MasterDechunker<N> {
+    pub fn insert_bytes(&mut self, data: &[u8]) -> Result<Option<Vec<u8>>, InsertBytesError> {
+        let chunk = Chunk::parse(data)?;
+        let message_id = chunk.header.message_id;
+
+        for decoder_slot in &mut self.dechunkers {
+            if let Some(decoder) = decoder_slot {
+                if decoder.message_id() == Some(message_id) {
+                    // Safe: message IDs match
+                    decoder.insert_chunk(chunk).unwrap();
+
+                    return if decoder.is_complete() {
+                        Ok(decoder_slot.take().unwrap().data())
+                    } else {
+                        Ok(None)
+                    };
+                }
+            }
+        }
+
+        let empty_slot = self
+            .dechunkers
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(InsertBytesError::NoSlots)?;
+
+        let mut decoder = Dechunker::new();
+        // Safe: new decoder, no ID conflict
+        decoder.insert_chunk(chunk).unwrap();
+
+        if decoder.is_complete() {
+            Ok(decoder.data())
+        } else {
+            *empty_slot = Some(decoder);
+            Ok(None)
+        }
     }
 }

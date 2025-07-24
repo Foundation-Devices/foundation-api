@@ -1,5 +1,5 @@
 use crate::{
-    chunk, Chunk, Dechunker, DecodeError, MessageIdError, APP_MTU, CHUNK_DATA_SIZE, HEADER_SIZE,
+    chunk, Chunk, Dechunker, DecodeError, InsertBytesError, MasterDechunker, MessageIdError, APP_MTU, CHUNK_DATA_SIZE, HEADER_SIZE,
 };
 use rand::{seq::SliceRandom, Rng, RngCore};
 
@@ -392,4 +392,134 @@ fn insert_duplicate_chunks() {
     }
 
     assert_eq!(dechunker.data(), Some(data.to_vec()));
+}
+
+#[test]
+fn master_dechunker_basic() {
+    let data = b"Test data for master dechunker";
+    let chunks: Vec<_> = chunk(data).collect();
+
+    let mut master = MasterDechunker::<10>::default();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let result = master.insert_bytes(chunk).unwrap();
+
+        if i == chunks.len() - 1 {
+            assert_eq!(result, Some(data.to_vec()), "Last chunk should return completed data");
+        } else {
+            assert_eq!(result, None, "Intermediate chunks should return None");
+        }
+    }
+}
+
+#[test]
+fn master_dechunker_multiple_messages() {
+    let data1 = b"First message data";
+    let data2 = b"Second message data";
+    let data3 = b"Third message data";
+
+    let chunks1: Vec<_> = chunk(data1).collect();
+    let chunks2: Vec<_> = chunk(data2).collect();
+    let chunks3: Vec<_> = chunk(data3).collect();
+
+    let mut master = MasterDechunker::<3>::default();
+
+    let mut all_chunks = Vec::new();
+    for i in 0..chunks1.len().max(chunks2.len()).max(chunks3.len()) {
+        if i < chunks1.len() {
+            all_chunks.push((1, &chunks1[i]));
+        }
+        if i < chunks2.len() {
+            all_chunks.push((2, &chunks2[i]));
+        }
+        if i < chunks3.len() {
+            all_chunks.push((3, &chunks3[i]));
+        }
+    }
+
+    let mut completed = Vec::new();
+
+    for (msg_id, chunk) in all_chunks {
+        if let Some(data) = master.insert_bytes(chunk).unwrap() {
+            completed.push((msg_id, data));
+        }
+    }
+
+    assert_eq!(completed.len(), 3, "All three messages should complete");
+
+    for (msg_id, data) in completed {
+        match msg_id {
+            1 => assert_eq!(data, data1.to_vec(), "Message 1 data should match"),
+            2 => assert_eq!(data, data2.to_vec(), "Message 2 data should match"),
+            3 => assert_eq!(data, data3.to_vec(), "Message 3 data should match"),
+            _ => panic!("Unexpected message ID: {}", msg_id),
+        }
+    }
+}
+
+#[test]
+fn master_dechunker_slot_exhaustion() {
+    let mut master = MasterDechunker::<2>::default();
+    
+    let data1 = vec![1u8; 1000];
+    let data2 = vec![2u8; 1000];
+    let data3 = vec![3u8; 1000];
+    
+    let chunks1: Vec<_> = chunk(&data1).collect();
+    let chunks2: Vec<_> = chunk(&data2).collect();
+    let chunks3: Vec<_> = chunk(&data3).collect();
+    
+    assert!(chunks1.len() > 1, "Message 1 should require multiple chunks");
+    assert!(chunks2.len() > 1, "Message 2 should require multiple chunks");
+    assert!(chunks3.len() > 1, "Message 3 should require multiple chunks");
+    
+    master.insert_bytes(&chunks1[0]).unwrap();
+    master.insert_bytes(&chunks2[0]).unwrap();
+    
+    let result = master.insert_bytes(&chunks3[0]);
+    assert!(matches!(result, Err(InsertBytesError::NoSlots)), "Third message should fail with NoSlots error");
+}
+#[test]
+fn master_dechunker_custom_size() {
+    let mut master = MasterDechunker::<5>::default();
+    
+    let messages: Vec<Vec<u8>> = (0..5)
+        .map(|i| vec![i as u8; 1000])
+        .collect();
+    
+    let all_chunks: Vec<Vec<_>> = messages
+        .iter()
+        .map(|data| chunk(data).collect())
+        .collect();
+    
+    for chunks in &all_chunks {
+        assert!(chunks.len() > 1, "Each message should require multiple chunks");
+    }
+    
+    for chunks in &all_chunks {
+        master.insert_bytes(&chunks[0]).unwrap();
+    }
+    
+    let mut completed = 0;
+    for chunks in &all_chunks {
+        for chunk in &chunks[1..] {
+            if let Some(_) = master.insert_bytes(chunk).unwrap() {
+                completed += 1;
+            }
+        }
+    }
+    
+    assert_eq!(completed, 5, "All 5 messages should complete successfully");
+}
+
+#[test]
+fn master_dechunker_single_chunk_message() {
+    let data = b"Small";
+    let chunks: Vec<_> = chunk(data).collect();
+    assert_eq!(chunks.len(), 1, "Small message should be single chunk");
+    
+    let mut master = MasterDechunker::<10>::default();
+    let result = master.insert_bytes(&chunks[0]).unwrap();
+    
+    assert_eq!(result, Some(data.to_vec()), "Single chunk message should complete immediately");
 }
