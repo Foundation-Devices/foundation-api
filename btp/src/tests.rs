@@ -1,5 +1,6 @@
 use crate::{
-    chunk, Chunk, Dechunker, DecodeError, InsertBytesError, MasterDechunker, MessageIdError, APP_MTU, CHUNK_DATA_SIZE, HEADER_SIZE,
+    chunk, Chunk, Dechunker, DecodeError, InsertBytesError, MasterDechunker, MessageIdError,
+    APP_MTU, CHUNK_DATA_SIZE, HEADER_SIZE,
 };
 use rand::{seq::SliceRandom, Rng, RngCore};
 
@@ -405,7 +406,11 @@ fn master_dechunker_basic() {
         let result = master.insert_bytes(chunk).unwrap();
 
         if i == chunks.len() - 1 {
-            assert_eq!(result, Some(data.to_vec()), "Last chunk should return completed data");
+            assert_eq!(
+                result,
+                Some(data.to_vec()),
+                "Last chunk should return completed data"
+            );
         } else {
             assert_eq!(result, None, "Intermediate chunks should return None");
         }
@@ -460,46 +465,56 @@ fn master_dechunker_multiple_messages() {
 #[test]
 fn master_dechunker_slot_exhaustion() {
     let mut master = MasterDechunker::<2>::default();
-    
+
     let data1 = vec![1u8; 1000];
     let data2 = vec![2u8; 1000];
     let data3 = vec![3u8; 1000];
-    
+
     let chunks1: Vec<_> = chunk(&data1).collect();
     let chunks2: Vec<_> = chunk(&data2).collect();
     let chunks3: Vec<_> = chunk(&data3).collect();
-    
-    assert!(chunks1.len() > 1, "Message 1 should require multiple chunks");
-    assert!(chunks2.len() > 1, "Message 2 should require multiple chunks");
-    assert!(chunks3.len() > 1, "Message 3 should require multiple chunks");
-    
+
+    assert!(
+        chunks1.len() > 1,
+        "Message 1 should require multiple chunks"
+    );
+    assert!(
+        chunks2.len() > 1,
+        "Message 2 should require multiple chunks"
+    );
+    assert!(
+        chunks3.len() > 1,
+        "Message 3 should require multiple chunks"
+    );
+
     master.insert_bytes(&chunks1[0]).unwrap();
     master.insert_bytes(&chunks2[0]).unwrap();
-    
+
     let result = master.insert_bytes(&chunks3[0]);
-    assert!(matches!(result, Err(InsertBytesError::NoSlots)), "Third message should fail with NoSlots error");
+    assert!(
+        matches!(result, Err(InsertBytesError::NoSlots)),
+        "Third message should fail with NoSlots error"
+    );
 }
 #[test]
 fn master_dechunker_custom_size() {
     let mut master = MasterDechunker::<5>::default();
-    
-    let messages: Vec<Vec<u8>> = (0..5)
-        .map(|i| vec![i as u8; 1000])
-        .collect();
-    
-    let all_chunks: Vec<Vec<_>> = messages
-        .iter()
-        .map(|data| chunk(data).collect())
-        .collect();
-    
+
+    let messages: Vec<Vec<u8>> = (0..5).map(|i| vec![i as u8; 1000]).collect();
+
+    let all_chunks: Vec<Vec<_>> = messages.iter().map(|data| chunk(data).collect()).collect();
+
     for chunks in &all_chunks {
-        assert!(chunks.len() > 1, "Each message should require multiple chunks");
+        assert!(
+            chunks.len() > 1,
+            "Each message should require multiple chunks"
+        );
     }
-    
+
     for chunks in &all_chunks {
         master.insert_bytes(&chunks[0]).unwrap();
     }
-    
+
     let mut completed = 0;
     for chunks in &all_chunks {
         for chunk in &chunks[1..] {
@@ -508,7 +523,7 @@ fn master_dechunker_custom_size() {
             }
         }
     }
-    
+
     assert_eq!(completed, 5, "All 5 messages should complete successfully");
 }
 
@@ -517,9 +532,13 @@ fn master_dechunker_single_chunk_message() {
     let data = b"Small";
     let chunks: Vec<_> = chunk(data).collect();
     assert_eq!(chunks.len(), 1, "Small message should be single chunk");
-    
+
     let mut master = MasterDechunker::<10>::default();
     let result = master.insert_bytes(&chunks[0]).unwrap();
-    
-    assert_eq!(result, Some(data.to_vec()), "Single chunk message should complete immediately");
+
+    assert_eq!(
+        result,
+        Some(data.to_vec()),
+        "Single chunk message should complete immediately"
+    );
 }
