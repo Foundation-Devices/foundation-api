@@ -1,6 +1,6 @@
 use crate::{
-    chunk, Chunk, Dechunker, DecodeError, InsertBytesError, MasterDechunker, MessageIdError,
-    APP_MTU, CHUNK_DATA_SIZE, HEADER_SIZE,
+    chunk, Chunk, Dechunker, DecodeError, MasterDechunker, MessageIdError, APP_MTU,
+    CHUNK_DATA_SIZE, HEADER_SIZE,
 };
 use rand::{seq::SliceRandom, Rng, RngCore};
 
@@ -463,7 +463,7 @@ fn master_dechunker_multiple_messages() {
 }
 
 #[test]
-fn master_dechunker_slot_exhaustion() {
+fn master_dechunker_lru_eviction() {
     let mut master = MasterDechunker::<2>::default();
 
     let data1 = vec![1u8; 1000];
@@ -490,10 +490,18 @@ fn master_dechunker_slot_exhaustion() {
     master.insert_bytes(&chunks1[0]).unwrap();
     master.insert_bytes(&chunks2[0]).unwrap();
 
-    let result = master.insert_bytes(&chunks3[0]);
-    assert!(
-        matches!(result, Err(InsertBytesError::NoSlots)),
-        "Third message should fail with NoSlots error"
+    master.insert_bytes(&chunks2[1]).unwrap();
+
+    let result = master.insert_bytes(&chunks3[0]).unwrap();
+    assert_eq!(
+        result, None,
+        "Third message should succeed by evicting LRU slot"
+    );
+
+    let result = master.insert_bytes(&chunks1[0]).unwrap();
+    assert_eq!(
+        result, None,
+        "Message 1 should start fresh after being evicted"
     );
 }
 #[test]

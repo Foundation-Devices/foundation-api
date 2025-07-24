@@ -1,6 +1,6 @@
 use crate::{Header, CHUNK_DATA_SIZE, HEADER_SIZE};
 
-#[derive(Debug, Copy, Clone, thiserror::Error)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum DecodeError {
     #[error("chunk too small, expected at least {}", HEADER_SIZE)]
     HeaderTooSmall,
@@ -208,39 +208,40 @@ impl Dechunker {
     }
 }
 
-#[derive(Debug, Copy, Clone, thiserror::Error)]
-pub enum InsertBytesError {
-    #[error(transparent)]
-    Parse(#[from] DecodeError),
-    #[error("no slots found")]
-    NoSlots,
+#[derive(Debug)]
+struct DechunkerSlot {
+    dechunker: Dechunker,
+    last_used: u64,
 }
 
-pub struct MasterDechunker<const N: usize> {
-    pub dechunkers: [Option<Dechunker>; N],
+pub struct MasterDechunker<const N: usize = 10> {
+    dechunkers: [Option<DechunkerSlot>; N],
+    counter: u64,
 }
 
 impl<const N: usize> Default for MasterDechunker<N> {
     fn default() -> Self {
         Self {
             dechunkers: std::array::from_fn(|_| None),
+            counter: 0,
         }
     }
 }
 
 impl<const N: usize> MasterDechunker<N> {
-    pub fn insert_bytes(&mut self, data: &[u8]) -> Result<Option<Vec<u8>>, InsertBytesError> {
+    pub fn insert_bytes(&mut self, data: &[u8]) -> Result<Option<Vec<u8>>, DecodeError> {
         let chunk = Chunk::parse(data)?;
         let message_id = chunk.header.message_id;
 
         for decoder_slot in &mut self.dechunkers {
-            if let Some(decoder) = decoder_slot {
-                if decoder.message_id() == Some(message_id) {
-                    // Safe: message IDs match
-                    decoder.insert_chunk(chunk).unwrap();
+            if let Some(ref mut slot) = decoder_slot {
+                if slot.dechunker.message_id() == Some(message_id) {
+                    self.counter += 1;
+                    slot.last_used = self.counter;
+                    slot.dechunker.insert_chunk(chunk).unwrap();
 
-                    return if decoder.is_complete() {
-                        Ok(decoder_slot.take().unwrap().data())
+                    return if slot.dechunker.is_complete() {
+                        Ok(decoder_slot.take().unwrap().dechunker.data())
                     } else {
                         Ok(None)
                     };
@@ -248,20 +249,33 @@ impl<const N: usize> MasterDechunker<N> {
             }
         }
 
-        let empty_slot = self
-            .dechunkers
-            .iter_mut()
-            .find(|slot| slot.is_none())
-            .ok_or(InsertBytesError::NoSlots)?;
+        let target_slot =
+            if let Some(empty_slot) = self.dechunkers.iter_mut().find(|slot| slot.is_none()) {
+                empty_slot
+            } else {
+                let lru_index = self
+                    .dechunkers
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, slot)| slot.as_ref().map(|s| (i, s.last_used)))
+                    .min_by_key(|(_, last_used)| *last_used)
+                    .map(|(i, _)| i)
+                    .expect("should find slot");
+
+                &mut self.dechunkers[lru_index]
+            };
 
         let mut decoder = Dechunker::new();
-        // Safe: new decoder, no ID conflict
         decoder.insert_chunk(chunk).unwrap();
 
         if decoder.is_complete() {
             Ok(decoder.data())
         } else {
-            *empty_slot = Some(decoder);
+            self.counter += 1;
+            *target_slot = Some(DechunkerSlot {
+                dechunker: decoder,
+                last_used: self.counter,
+            });
             Ok(None)
         }
     }
