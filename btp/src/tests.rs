@@ -1,5 +1,6 @@
 use crate::{
-    chunk, Chunk, Dechunker, DecodeError, MessageIdError, APP_MTU, CHUNK_DATA_SIZE, HEADER_SIZE,
+    chunk, Chunk, Dechunker, DecodeError, MasterDechunker, MessageIdError, StreamDechunker,
+    APP_MTU, CHUNK_DATA_SIZE, HEADER_SIZE,
 };
 use rand::{seq::SliceRandom, Rng, RngCore};
 
@@ -392,4 +393,271 @@ fn insert_duplicate_chunks() {
     }
 
     assert_eq!(dechunker.data(), Some(data.to_vec()));
+}
+
+#[test]
+fn master_dechunker_basic() {
+    let data = b"Test data for master dechunker";
+    let chunks: Vec<_> = chunk(data).collect();
+
+    let mut master = MasterDechunker::<10>::default();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let parsed = Chunk::parse(chunk).unwrap();
+        let result = master.insert_chunk(parsed);
+
+        if i == chunks.len() - 1 {
+            assert_eq!(
+                result,
+                Some(data.to_vec()),
+                "Last chunk should return completed data"
+            );
+        } else {
+            assert_eq!(result, None, "Intermediate chunks should return None");
+        }
+    }
+}
+
+#[test]
+fn master_dechunker_multiple_messages() {
+    let data1 = b"First message data";
+    let data2 = b"Second message data";
+    let data3 = b"Third message data";
+
+    let chunks1: Vec<_> = chunk(data1).collect();
+    let chunks2: Vec<_> = chunk(data2).collect();
+    let chunks3: Vec<_> = chunk(data3).collect();
+
+    let mut master = MasterDechunker::<3>::default();
+
+    let mut all_chunks = Vec::new();
+    for i in 0..chunks1.len().max(chunks2.len()).max(chunks3.len()) {
+        if i < chunks1.len() {
+            all_chunks.push((1, &chunks1[i]));
+        }
+        if i < chunks2.len() {
+            all_chunks.push((2, &chunks2[i]));
+        }
+        if i < chunks3.len() {
+            all_chunks.push((3, &chunks3[i]));
+        }
+    }
+
+    let mut completed = Vec::new();
+
+    for (msg_id, chunk) in all_chunks {
+        let parsed = Chunk::parse(chunk).unwrap();
+        if let Some(data) = master.insert_chunk(parsed) {
+            completed.push((msg_id, data));
+        }
+    }
+
+    assert_eq!(completed.len(), 3, "All three messages should complete");
+
+    for (msg_id, data) in completed {
+        match msg_id {
+            1 => assert_eq!(data, data1.to_vec(), "Message 1 data should match"),
+            2 => assert_eq!(data, data2.to_vec(), "Message 2 data should match"),
+            3 => assert_eq!(data, data3.to_vec(), "Message 3 data should match"),
+            _ => panic!("Unexpected message ID: {msg_id}"),
+        }
+    }
+}
+
+#[test]
+fn master_dechunker_lru_eviction() {
+    let mut master = MasterDechunker::<2>::default();
+
+    let data1 = vec![1u8; 1000];
+    let data2 = vec![2u8; 1000];
+    let data3 = vec![3u8; 1000];
+
+    let chunks1: Vec<_> = chunk(&data1).collect();
+    let chunks2: Vec<_> = chunk(&data2).collect();
+    let chunks3: Vec<_> = chunk(&data3).collect();
+
+    assert!(
+        chunks1.len() > 1,
+        "Message 1 should require multiple chunks"
+    );
+    assert!(
+        chunks2.len() > 1,
+        "Message 2 should require multiple chunks"
+    );
+    assert!(
+        chunks3.len() > 1,
+        "Message 3 should require multiple chunks"
+    );
+
+    let parsed1_0 = Chunk::parse(&chunks1[0]).unwrap();
+    let parsed2_0 = Chunk::parse(&chunks2[0]).unwrap();
+    let parsed2_1 = Chunk::parse(&chunks2[1]).unwrap();
+    let parsed3_0 = Chunk::parse(&chunks3[0]).unwrap();
+
+    master.insert_chunk(parsed1_0);
+    master.insert_chunk(parsed2_0);
+
+    master.insert_chunk(parsed2_1);
+
+    let result = master.insert_chunk(parsed3_0);
+    assert_eq!(
+        result, None,
+        "Third message should succeed by evicting LRU slot"
+    );
+
+    let parsed1_0_again = Chunk::parse(&chunks1[0]).unwrap();
+    let result = master.insert_chunk(parsed1_0_again);
+    assert_eq!(
+        result, None,
+        "Message 1 should start fresh after being evicted"
+    );
+}
+
+#[test]
+fn master_dechunker_single_chunk_message() {
+    let data = b"Small";
+    let chunks: Vec<_> = chunk(data).collect();
+    assert_eq!(chunks.len(), 1, "Small message should be single chunk");
+
+    let mut master = MasterDechunker::<10>::default();
+    let parsed = Chunk::parse(&chunks[0]).unwrap();
+    let result = master.insert_chunk(parsed);
+
+    assert_eq!(
+        result,
+        Some(data.to_vec()),
+        "Single chunk message should complete immediately"
+    );
+}
+#[test]
+fn streaming_dechunker_memory_usage() {
+    let data = vec![42u8; 5000];
+    let chunks: Vec<_> = chunk(&data).collect();
+
+    assert!(chunks.len() >= 3, "Need at least 3 chunks for this test");
+
+    let mut output = Vec::new();
+    let mut streaming = StreamDechunker::new(&mut output);
+
+    let chunk0 = Chunk::parse(&chunks[0]).unwrap();
+    let chunk1 = Chunk::parse(&chunks[1]).unwrap();
+    let chunk2 = Chunk::parse(&chunks[2]).unwrap();
+
+    let complete = streaming.insert_chunk(chunk0).unwrap();
+    assert!(!complete, "Should not be complete after first chunk");
+    assert_eq!(
+        streaming.bytes_written(),
+        chunk0.header.data_len as u64,
+        "Chunk 0 should be written immediately"
+    );
+
+    let chunks_in_memory = streaming.chunks.iter().filter(|c| c.is_some()).count();
+    assert_eq!(
+        chunks_in_memory, 0,
+        "Chunk 0 should be freed from memory after writing"
+    );
+
+    let bytes_before = streaming.bytes_written();
+    let complete = streaming.insert_chunk(chunk2).unwrap();
+    assert!(!complete, "Should not be complete");
+    assert_eq!(
+        streaming.bytes_written(),
+        bytes_before,
+        "Chunk 2 should not be written yet (out of order)"
+    );
+
+    let chunks_in_memory = streaming.chunks.iter().filter(|c| c.is_some()).count();
+    assert_eq!(chunks_in_memory, 1, "Chunk 2 should be buffered in memory");
+    assert!(
+        streaming.chunks[2].is_some(),
+        "Chunk 2 should be at index 2"
+    );
+
+    let bytes_before = streaming.bytes_written();
+    let _complete = streaming.insert_chunk(chunk1).unwrap();
+
+    let expected_bytes =
+        bytes_before + chunk1.header.data_len as u64 + chunk2.header.data_len as u64;
+    assert_eq!(
+        streaming.bytes_written(),
+        expected_bytes,
+        "Both chunk 1 and 2 should be written"
+    );
+
+    let chunks_in_memory = streaming.chunks.iter().filter(|c| c.is_some()).count();
+    assert_eq!(
+        chunks_in_memory, 0,
+        "All written chunks should be freed from memory"
+    );
+
+    for chunk in &chunks[3..] {
+        let parsed = Chunk::parse(chunk).unwrap();
+        streaming.insert_chunk(parsed).unwrap();
+    }
+
+    assert!(streaming.is_complete(), "Message should be complete");
+    assert_eq!(
+        streaming.bytes_written(),
+        data.len() as u64,
+        "All bytes should be written"
+    );
+
+    let chunks_in_memory = streaming.chunks.iter().filter(|c| c.is_some()).count();
+    assert_eq!(
+        chunks_in_memory, 0,
+        "All chunks should be freed from memory when complete"
+    );
+
+    let output = streaming.into_writer();
+    assert_eq!(*output, data, "Output should match original data");
+}
+
+#[test]
+fn streaming_dechunker_reverse_order() {
+    let data = vec![1u8; 2000];
+    let chunks: Vec<_> = chunk(&data).collect();
+
+    let mut output = Vec::new();
+    let mut streaming = StreamDechunker::new(&mut output);
+
+    for chunk in chunks.iter().rev() {
+        let parsed = Chunk::parse(chunk).unwrap();
+        streaming.insert_chunk(parsed).unwrap();
+    }
+
+    assert_eq!(
+        streaming.bytes_written(),
+        data.len() as u64,
+        "All data should be written after last chunk"
+    );
+
+    let output = streaming.into_writer();
+    assert_eq!(
+        *output, data,
+        "Output should match despite reverse insertion order"
+    );
+}
+
+#[test]
+fn streaming_dechunker_memory_efficiency() {
+    let data = vec![7u8; 10000];
+    let chunks: Vec<_> = chunk(&data).collect();
+
+    let mut output = Vec::new();
+    let mut streaming = StreamDechunker::new(&mut output);
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let parsed = Chunk::parse(chunk).unwrap();
+        streaming.insert_chunk(parsed).unwrap();
+
+        let chunks_in_memory = streaming.chunks.iter().filter(|c| c.is_some()).count();
+        assert_eq!(
+            chunks_in_memory, 0,
+            "No chunks should be buffered when inserting in order (iteration {i})"
+        );
+    }
+
+    assert!(streaming.is_complete(), "Should be complete");
+    let output = streaming.into_writer();
+    assert_eq!(*output, data, "Output should match original data");
 }
