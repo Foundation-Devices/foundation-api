@@ -457,7 +457,7 @@ fn master_dechunker_multiple_messages() {
             1 => assert_eq!(data, data1.to_vec(), "Message 1 data should match"),
             2 => assert_eq!(data, data2.to_vec(), "Message 2 data should match"),
             3 => assert_eq!(data, data3.to_vec(), "Message 3 data should match"),
-            _ => panic!("Unexpected message ID: {}", msg_id),
+            _ => panic!("Unexpected message ID: {msg_id}"),
         }
     }
 }
@@ -526,7 +526,7 @@ fn master_dechunker_custom_size() {
     let mut completed = 0;
     for chunks in &all_chunks {
         for chunk in &chunks[1..] {
-            if let Some(_) = master.insert_bytes(chunk).unwrap() {
+            if master.insert_bytes(chunk).unwrap().is_some() {
                 completed += 1;
             }
         }
