@@ -403,7 +403,8 @@ fn master_dechunker_basic() {
     let mut master = MasterDechunker::<10>::default();
 
     for (i, chunk) in chunks.iter().enumerate() {
-        let result = master.insert_bytes(chunk).unwrap();
+        let parsed = Chunk::parse(chunk).unwrap();
+        let result = master.insert_chunk(parsed);
 
         if i == chunks.len() - 1 {
             assert_eq!(
@@ -445,7 +446,8 @@ fn master_dechunker_multiple_messages() {
     let mut completed = Vec::new();
 
     for (msg_id, chunk) in all_chunks {
-        if let Some(data) = master.insert_bytes(chunk).unwrap() {
+        let parsed = Chunk::parse(chunk).unwrap();
+        if let Some(data) = master.insert_chunk(parsed) {
             completed.push((msg_id, data));
         }
     }
@@ -487,18 +489,24 @@ fn master_dechunker_lru_eviction() {
         "Message 3 should require multiple chunks"
     );
 
-    master.insert_bytes(&chunks1[0]).unwrap();
-    master.insert_bytes(&chunks2[0]).unwrap();
+    let parsed1_0 = Chunk::parse(&chunks1[0]).unwrap();
+    let parsed2_0 = Chunk::parse(&chunks2[0]).unwrap();
+    let parsed2_1 = Chunk::parse(&chunks2[1]).unwrap();
+    let parsed3_0 = Chunk::parse(&chunks3[0]).unwrap();
 
-    master.insert_bytes(&chunks2[1]).unwrap();
+    master.insert_chunk(parsed1_0);
+    master.insert_chunk(parsed2_0);
 
-    let result = master.insert_bytes(&chunks3[0]).unwrap();
+    master.insert_chunk(parsed2_1);
+
+    let result = master.insert_chunk(parsed3_0);
     assert_eq!(
         result, None,
         "Third message should succeed by evicting LRU slot"
     );
 
-    let result = master.insert_bytes(&chunks1[0]).unwrap();
+    let parsed1_0_again = Chunk::parse(&chunks1[0]).unwrap();
+    let result = master.insert_chunk(parsed1_0_again);
     assert_eq!(
         result, None,
         "Message 1 should start fresh after being evicted"
@@ -512,7 +520,8 @@ fn master_dechunker_single_chunk_message() {
     assert_eq!(chunks.len(), 1, "Small message should be single chunk");
 
     let mut master = MasterDechunker::<10>::default();
-    let result = master.insert_bytes(&chunks[0]).unwrap();
+    let parsed = Chunk::parse(&chunks[0]).unwrap();
+    let result = master.insert_chunk(parsed);
 
     assert_eq!(
         result,

@@ -230,8 +230,7 @@ impl<const N: usize> Default for MasterDechunker<N> {
 }
 
 impl<const N: usize> MasterDechunker<N> {
-    pub fn insert_bytes(&mut self, data: &[u8]) -> Result<Option<Vec<u8>>, DecodeError> {
-        let chunk = Chunk::parse(data)?;
+    pub fn insert_chunk(&mut self, chunk: Chunk) -> Option<Vec<u8>> {
         let message_id = chunk.header.message_id;
 
         for decoder_slot in &mut self.dechunkers {
@@ -242,9 +241,9 @@ impl<const N: usize> MasterDechunker<N> {
                     slot.dechunker.insert_chunk(chunk).unwrap();
 
                     return if slot.dechunker.is_complete() {
-                        Ok(decoder_slot.take().unwrap().dechunker.data())
+                        decoder_slot.take().unwrap().dechunker.data()
                     } else {
-                        Ok(None)
+                        None
                     };
                 }
             }
@@ -270,14 +269,14 @@ impl<const N: usize> MasterDechunker<N> {
         decoder.insert_chunk(chunk).unwrap();
 
         if decoder.is_complete() {
-            Ok(decoder.data())
+            decoder.data()
         } else {
             self.counter += 1;
             *target_slot = Some(DechunkerSlot {
                 dechunker: decoder,
                 last_used: self.counter,
             });
-            Ok(None)
+            None
         }
     }
 }
