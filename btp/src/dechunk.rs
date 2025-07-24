@@ -1,4 +1,5 @@
 use crate::{Header, CHUNK_DATA_SIZE, HEADER_SIZE};
+use std::io::{self, Write};
 
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum DecodeError {
@@ -97,7 +98,7 @@ struct MessageInfo {
 }
 
 #[derive(Debug, Clone)]
-struct RawChunk {
+pub(crate) struct RawChunk {
     data: [u8; CHUNK_DATA_SIZE],
     len: u8,
 }
@@ -278,5 +279,102 @@ impl<const N: usize> MasterDechunker<N> {
             });
             Ok(None)
         }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StreamingError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    MessageId(#[from] MessageIdError),
+}
+
+pub struct StreamingDechunker<W: Write> {
+    writer: W,
+    pub(crate) chunks: Vec<Option<RawChunk>>,
+    info: Option<MessageInfo>,
+    next_chunk_to_write: u16,
+    bytes_written: u64,
+}
+
+impl<W: Write> StreamingDechunker<W> {
+    pub fn new(writer: W) -> Self {
+        Self {
+            writer,
+            chunks: Vec::new(),
+            info: None,
+            next_chunk_to_write: 0,
+            bytes_written: 0,
+        }
+    }
+
+    pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<bool, StreamingError> {
+        let header = &chunk.header;
+
+        match self.info {
+            None => {
+                self.info = Some(MessageInfo {
+                    message_id: header.message_id,
+                    total_chunks: header.total_chunks,
+                    chunks_received: 0,
+                });
+                self.chunks.resize(header.total_chunks as usize, None);
+            }
+            Some(info) if info.message_id != header.message_id => {
+                return Err(StreamingError::MessageId(MessageIdError {
+                    expected: info.message_id,
+                    actual: header.message_id,
+                }));
+            }
+            _ => {}
+        }
+
+        if self.chunks[header.index as usize].is_none() {
+            self.chunks[header.index as usize] = Some(RawChunk {
+                len: header.data_len,
+                data: chunk.chunk,
+            });
+
+            if let Some(ref mut info) = self.info {
+                info.chunks_received += 1;
+            }
+        }
+
+        while (self.next_chunk_to_write as usize) < self.chunks.len() {
+            if let Some(chunk) = self.chunks[self.next_chunk_to_write as usize].take() {
+                self.writer.write_all(chunk.as_slice())?;
+                self.next_chunk_to_write += 1;
+                self.bytes_written += chunk.len as u64;
+            } else {
+                break;
+            }
+        }
+
+        Ok(self.is_complete())
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.info
+            .map(|info| info.chunks_received == info.total_chunks)
+            .unwrap_or(false)
+    }
+
+    pub fn message_id(&self) -> Option<u16> {
+        self.info.map(|info| info.message_id)
+    }
+
+    pub fn bytes_written(&self) -> u64 {
+        self.bytes_written
+    }
+
+    pub fn progress(&self) -> f32 {
+        self.info
+            .map(|info| info.chunks_received as f32 / info.total_chunks as f32)
+            .unwrap_or(0.0)
+    }
+
+    pub fn into_writer(self) -> W {
+        self.writer
     }
 }
