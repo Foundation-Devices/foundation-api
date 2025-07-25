@@ -1,12 +1,17 @@
 use super::onboarding::OnboardingState;
 use crate::api::raw::RawData;
-use crate::backup::Shard;
+use crate::backup::{
+    BackupShardRequest, BackupShardResponse, RestoreShardRequest, RestoreShardResponse,
+};
 use crate::bitcoin::*;
-use crate::firmware::{FirmwarePayload, FirmwareUpdate};
+use crate::firmware::{
+    FirmwareDownloadRequest, FirmwareDownloadResponse, FirmwareUpdateCheckRequest,
+    FirmwareUpdateCheckResponse, FirmwareUpdateResult,
+};
 use crate::fx::ExchangeRate;
 use crate::pairing::{PairingRequest, PairingResponse};
 use crate::quantum_link::QuantumLink;
-use crate::scv::{SecurityChallengeMessage, SecurityProofMessage};
+use crate::scv::{SecurityChallengeRequest, SecurityChallengeResponse};
 use crate::status::{DeviceStatus, EnvoyStatus};
 use flutter_rust_bridge::frb;
 use minicbor_derive::{Decode, Encode};
@@ -67,31 +72,43 @@ pub enum QuantumLinkMessage {
     #[n(0)]
     ExchangeRate(#[n(0)] ExchangeRate),
     #[n(1)]
-    FirmwareUpdate(#[n(0)] FirmwareUpdate),
+    FirmwareUpdateCheckRequest(#[n(0)] FirmwareUpdateCheckRequest),
     #[n(2)]
-    DeviceStatus(#[n(0)] DeviceStatus),
+    FirmwareUpdateCheckResponse(#[n(0)] FirmwareUpdateCheckResponse),
     #[n(3)]
-    EnvoyStatus(#[n(0)] EnvoyStatus),
+    FirmwareDownloadRequest(#[n(0)] FirmwareDownloadRequest),
     #[n(4)]
-    PairingResponse(#[n(0)] PairingResponse),
+    FirmwareDownloadResponse(#[n(0)] FirmwareDownloadResponse),
     #[n(5)]
-    PairingRequest(#[n(0)] PairingRequest),
+    FirmwareUpdateResult(#[n(0)] FirmwareUpdateResult),
     #[n(6)]
-    OnboardingState(#[n(0)] OnboardingState),
+    DeviceStatus(#[n(0)] DeviceStatus),
     #[n(7)]
-    SignPsbt(#[n(0)] SignPsbt),
+    EnvoyStatus(#[n(0)] EnvoyStatus),
     #[n(8)]
-    AccountUpdate(#[n(0)] AccountUpdate),
+    PairingRequest(#[n(0)] PairingRequest),
     #[n(9)]
-    FirmwarePayload(#[n(0)] FirmwarePayload),
+    PairingResponse(#[n(0)] PairingResponse),
     #[n(10)]
-    BroadcastTransaction(#[n(0)] BroadcastTransaction),
+    OnboardingState(#[n(0)] OnboardingState),
     #[n(11)]
-    SecurityChallengeMessage(#[n(0)] SecurityChallengeMessage),
+    SignPsbt(#[n(0)] SignPsbt),
     #[n(12)]
-    SecurityProofMessage(#[n(0)] SecurityProofMessage),
+    BroadcastTransaction(#[n(0)] BroadcastTransaction),
     #[n(13)]
-    Shard(#[n(0)] Shard),
+    AccountUpdate(#[n(0)] AccountUpdate),
     #[n(14)]
+    SecurityChallengeRequest(#[n(0)] SecurityChallengeRequest),
+    #[n(15)]
+    SecurityChallengeResponse(#[n(0)] SecurityChallengeResponse),
+    #[n(16)]
+    BackupShardRequest(#[n(0)] BackupShardRequest),
+    #[n(17)]
+    BackupShardResponse(#[n(0)] BackupShardResponse),
+    #[n(18)]
+    RestoreShardRequest(#[n(0)] RestoreShardRequest),
+    #[n(19)]
+    RestoreShardResponse(#[n(0)] RestoreShardResponse),
+    #[n(20)]
     RawData(#[n(0)] RawData),
 }

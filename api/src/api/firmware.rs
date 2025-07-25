@@ -4,49 +4,70 @@ use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
 
 #[quantum_link]
-pub struct FirmwareUpdate {
+pub struct FirmwareUpdateCheckRequest {
     #[n(0)]
-    pub version: String,
-    #[n(1)]
-    pub timestamp: u32,
-    #[n(2)]
-    pub changelog: String,
-}
-
-impl FirmwareUpdate {
-    pub fn new(version: String, timestamp: u32, changelog: String) -> Self {
-        Self {
-            version,
-            timestamp,
-            changelog,
-        }
-    }
-
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-
-    pub fn timestamp(&self) -> u32 {
-        self.timestamp
-    }
-
-    pub fn changelog(&self) -> &str {
-        &self.changelog
-    }
+    pub current_version: String,
 }
 
 #[quantum_link]
-pub struct FirmwarePayload {
+pub enum FirmwareUpdateCheckResponse {
     #[n(0)]
-    pub payload: Vec<u8>,
+    Available(#[n(0)] FirmwareUpdateAvailable),
+    #[n(1)]
+    NotAvailable,
 }
 
-impl FirmwarePayload {
-    pub fn new(payload: Vec<u8>) -> Self {
-        Self { payload }
-    }
+#[quantum_link]
+pub struct FirmwareUpdateAvailable {
+    #[n(0)]
+    pub version: String,
+    #[n(1)]
+    pub changelog: String,
+    #[n(2)]
+    pub timestamp: u32,
+    #[n(3)]
+    pub size: u32,
+}
 
-    pub fn payload(&self) -> &Vec<u8> {
-        &self.payload
-    }
+#[quantum_link]
+pub struct FirmwareDownloadRequest {
+    #[n(0)]
+    pub version: String,
+}
+
+#[quantum_link]
+pub enum FirmwareDownloadResponse {
+    #[n(0)]
+    EnvoyDownloadProgress {
+        #[n(0)]
+        progress: f32,
+    },
+    #[n(1)]
+    Start {
+        #[n(0)]
+        total_chunks: u16,
+    },
+    #[n(2)]
+    Chunk(#[n(0)] FirmwareChunk),
+    #[n(3)]
+    Error(#[n(0)] String),
+}
+
+#[quantum_link]
+pub struct FirmwareChunk {
+    #[n(0)]
+    pub index: u16,
+    #[n(1)]
+    pub data: Vec<u8>,
+}
+
+#[quantum_link]
+pub enum FirmwareUpdateResult {
+    #[n(0)]
+    Success {
+        #[n(0)]
+        installed_version: String,
+    },
+    #[n(1)]
+    Error(#[n(0)] String),
 }
