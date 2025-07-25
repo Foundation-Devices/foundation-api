@@ -24,6 +24,8 @@ pub struct FirmwareUpdateAvailable {
     #[n(1)]
     pub changelog: String,
     #[n(2)]
+    pub timestamp: u32,
+    #[n(3)]
     pub size: u32,
 }
 
