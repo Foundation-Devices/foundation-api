@@ -91,9 +91,9 @@ pub enum QuantumLinkMessage {
     OnboardingState(#[n(0)] OnboardingState),
     #[n(11)]
     SignPsbt(#[n(0)] SignPsbt),
-    #[n(13)]
-    BroadcastTransaction(#[n(0)] BroadcastTransaction),
     #[n(12)]
+    BroadcastTransaction(#[n(0)] BroadcastTransaction),
+    #[n(13)]
     AccountUpdate(#[n(0)] AccountUpdate),
     #[n(14)]
     SecurityChallengeRequest(#[n(0)] SecurityChallengeRequest),
