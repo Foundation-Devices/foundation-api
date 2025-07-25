@@ -70,14 +70,14 @@ impl ChallengeResponse {
 }
 
 #[quantum_link]
-pub struct SecurityChallengeMessage {
+pub struct SecurityChallengeRequest {
     #[n(0)]
     pub data: Vec<u8>,
 }
 
-impl SecurityChallengeMessage {
+impl SecurityChallengeRequest {
     pub fn new(data: Vec<u8>) -> Self {
-        SecurityChallengeMessage { data }
+        SecurityChallengeRequest { data }
     }
 
     pub fn data(&self) -> &Vec<u8> {
@@ -86,14 +86,14 @@ impl SecurityChallengeMessage {
 }
 
 #[quantum_link]
-pub struct SecurityProofMessage {
+pub struct SecurityChallengeResponse {
     #[n(0)]
     pub data: Vec<u8>,
 }
 
-impl SecurityProofMessage {
+impl SecurityChallengeResponse {
     pub fn new(data: Vec<u8>) -> Self {
-        SecurityProofMessage { data }
+        SecurityChallengeResponse { data }
     }
 
     pub fn data(&self) -> &Vec<u8> {
