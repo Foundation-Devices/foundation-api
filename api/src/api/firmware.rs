@@ -48,10 +48,7 @@ pub enum FirmwareDownloadResponse {
     #[n(2)]
     Chunk(#[n(0)] FirmwareChunk),
     #[n(3)]
-    Error {
-        #[n(0)]
-        error: String,
-    },
+    Error(#[n(0)] String),
 }
 
 #[quantum_link]
@@ -65,13 +62,10 @@ pub struct FirmwareChunk {
 #[quantum_link]
 pub enum FirmwareUpdateResult {
     #[n(0)]
-    InstallSuccess {
+    Success {
         #[n(0)]
         installed_version: String,
     },
     #[n(1)]
-    InstallFailed {
-        #[n(0)]
-        error: String,
-    },
+    Error(#[n(0)] String),
 }
