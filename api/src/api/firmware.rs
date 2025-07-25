@@ -22,7 +22,7 @@ pub struct FirmwareUpdateAvailable {
     #[n(0)]
     pub version: String,
     #[n(1)]
-    pub total_chunks: u16,
+    pub changelog: String,
     #[n(2)]
     pub size: u32,
 }
@@ -36,8 +36,15 @@ pub struct FirmwareDownloadRequest {
 #[quantum_link]
 pub enum FirmwareDownloadResponse {
     #[n(0)]
-    Chunk(#[n(0)] FirmwareChunk),
+    Start {
+        #[n(0)]
+        total_chunks: u16,
+        #[n(1)]
+        version: String,
+    },
     #[n(1)]
+    Chunk(#[n(0)] FirmwareChunk),
+    #[n(2)]
     Error {
         #[n(0)]
         error: String,
