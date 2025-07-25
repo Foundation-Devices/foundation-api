@@ -36,15 +36,18 @@ pub struct FirmwareDownloadRequest {
 #[quantum_link]
 pub enum FirmwareDownloadResponse {
     #[n(0)]
+    EnvoyDownloadProgress {
+        #[n(0)]
+        progress: f32,
+    },
+    #[n(1)]
     Start {
         #[n(0)]
         total_chunks: u16,
-        #[n(1)]
-        version: String,
     },
-    #[n(1)]
-    Chunk(#[n(0)] FirmwareChunk),
     #[n(2)]
+    Chunk(#[n(0)] FirmwareChunk),
+    #[n(3)]
     Error {
         #[n(0)]
         error: String,
