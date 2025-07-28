@@ -23,7 +23,7 @@ pub enum BackupShardResponse {
 }
 
 #[quantum_link]
-pub struct RestoreShardRequest;
+pub struct RestoreShardRequest {}
 
 #[quantum_link]
 pub enum RestoreShardResponse {
