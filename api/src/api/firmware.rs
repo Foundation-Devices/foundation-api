@@ -3,12 +3,14 @@ use flutter_rust_bridge::frb;
 use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
 
+// From Prime to Envoy
 #[quantum_link]
 pub struct FirmwareUpdateCheckRequest {
     #[n(0)]
     pub current_version: String,
 }
 
+// From Envoy to Prime
 #[quantum_link]
 pub enum FirmwareUpdateCheckResponse {
     #[n(0)]
@@ -27,6 +29,8 @@ pub struct FirmwareUpdateAvailable {
     pub timestamp: u32,
     #[n(3)]
     pub size: u32,
+    #[n(4)]
+    pub diff_count: u8,
 }
 
 #[quantum_link]
@@ -35,6 +39,7 @@ pub struct FirmwareDownloadRequest {
     pub version: String,
 }
 
+// From Envoy to Prime
 #[quantum_link]
 pub enum FirmwareDownloadResponse {
     #[n(0)]
@@ -45,6 +50,8 @@ pub enum FirmwareDownloadResponse {
     #[n(1)]
     Start {
         #[n(0)]
+        diff_index: u8,
+        #[n(1)]
         total_chunks: u16,
     },
     #[n(2)]
@@ -56,8 +63,10 @@ pub enum FirmwareDownloadResponse {
 #[quantum_link]
 pub struct FirmwareChunk {
     #[n(0)]
-    pub index: u16,
+    pub diff_index: u8,
     #[n(1)]
+    pub chunk_index: u16,
+    #[n(2)]
     pub data: Vec<u8>,
 }
 
