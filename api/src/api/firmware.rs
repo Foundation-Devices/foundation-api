@@ -100,6 +100,13 @@ pub struct FirmwareChunk {
     pub data: Vec<u8>,
 }
 
+impl FirmwareChunk {
+    /// Returns true if this is the last chunk in the current patch.
+    pub fn is_last_in_patch(&self) -> bool {
+        self.chunk_index == self.total_chunks - 1
+    }
+}
+
 #[quantum_link]
 pub enum FirmwareUpdateResult {
     #[n(0)]
@@ -178,4 +185,10 @@ fn test_split_update_into_chunks_non_flush() {
             data: vec![10],
         }
     );
+
+    // Test is_last_in_patch method
+    assert!(!chunks[0].is_last_in_patch());
+    assert!(!chunks[1].is_last_in_patch());
+    assert!(!chunks[2].is_last_in_patch());
+    assert!(chunks[3].is_last_in_patch());
 }
