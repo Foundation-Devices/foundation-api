@@ -93,12 +93,10 @@ pub struct FirmwareChunk {
     #[n(0)]
     pub patch_index: u8,
     #[n(1)]
-    pub total_patches: u8,
-    #[n(2)]
     pub chunk_index: u16,
-    #[n(3)]
+    #[n(2)]
     pub total_chunks: u16,
-    #[n(4)]
+    #[n(3)]
     pub data: Vec<u8>,
 }
 
@@ -115,7 +113,6 @@ pub enum FirmwareUpdateResult {
 
 pub fn split_update_into_chunks(
     patch_index: u8,
-    total_patches: u8,
     patch_bytes: &[u8],
     chunk_size: usize,
 ) -> impl Iterator<Item = FirmwareChunk> + '_ {
@@ -125,7 +122,6 @@ pub fn split_update_into_chunks(
         .enumerate()
         .map(move |(chunk_index, chunk_data)| FirmwareChunk {
             patch_index,
-            total_patches,
             chunk_index: chunk_index as u16,
             total_chunks,
             data: chunk_data.to_vec(),
@@ -136,11 +132,10 @@ pub fn split_update_into_chunks(
 fn test_split_update_into_chunks_non_flush() {
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let patch_index = 42;
-    let total_patches = 5;
     let chunk_size = 3;
 
     let chunks: Vec<_> =
-        split_update_into_chunks(patch_index, total_patches, &data, chunk_size).collect();
+        split_update_into_chunks(patch_index, &data, chunk_size).collect();
 
     assert_eq!(chunks.len(), 4);
 
@@ -148,7 +143,6 @@ fn test_split_update_into_chunks_non_flush() {
         chunks[0],
         FirmwareChunk {
             patch_index,
-            total_patches,
             chunk_index: 0,
             total_chunks: 4,
             data: vec![1, 2, 3],
@@ -159,7 +153,6 @@ fn test_split_update_into_chunks_non_flush() {
         chunks[1],
         FirmwareChunk {
             patch_index,
-            total_patches,
             chunk_index: 1,
             total_chunks: 4,
             data: vec![4, 5, 6],
@@ -170,7 +163,6 @@ fn test_split_update_into_chunks_non_flush() {
         chunks[2],
         FirmwareChunk {
             patch_index,
-            total_patches,
             chunk_index: 2,
             total_chunks: 4,
             data: vec![7, 8, 9],
@@ -181,7 +173,6 @@ fn test_split_update_into_chunks_non_flush() {
         chunks[3],
         FirmwareChunk {
             patch_index,
-            total_patches,
             chunk_index: 3,
             total_chunks: 4,
             data: vec![10],
