@@ -28,45 +28,77 @@ pub struct FirmwareUpdateAvailable {
     #[n(2)]
     pub timestamp: u32,
     #[n(3)]
-    pub size: u32,
+    pub total_size: u32,
     #[n(4)]
     pub patch_count: u8,
 }
 
+// From Prime to Envoy
 #[quantum_link]
-pub struct FirmwareDownloadRequest {
+pub struct FirmwareFetchRequest {
     #[n(0)]
-    pub version: String,
+    pub current_version: String,
 }
 
 // From Envoy to Prime
 #[quantum_link]
-pub enum FirmwareDownloadResponse {
+pub enum FirmwareFetchResponse {
+    // there is no update available from the provided prime version
     #[n(0)]
-    EnvoyDownloadProgress {
-        #[n(0)]
-        progress: f32,
-    },
+    UpdateNotAvailable,
+    // envoy has found an update, and is notifying prime
     #[n(1)]
-    Start {
-        #[n(0)]
-        patch_index: u8,
-        #[n(1)]
-        total_chunks: u16,
-    },
+    Started(#[n(0)] FetchStarted),
+    // envoy is downloading the update
     #[n(2)]
-    Chunk(#[n(0)] FirmwareChunk),
+    Download(#[n(0)] DownloadProgress),
+    // envoy is sending a chunk for an update
     #[n(3)]
+    Chunk(#[n(0)] FirmwareChunk),
+    // envoy has sent all the update chunks
+    #[n(4)]
+    Complete(#[n(0)] FetchComplete),
+    // envoy failed to fetch the update
+    #[n(5)]
     Error(#[n(0)] String),
 }
 
 #[quantum_link]
+pub struct FetchStarted {
+    #[n(0)]
+    pub version: String,
+    #[n(1)]
+    pub total_patches: u8,
+    #[n(2)]
+    pub total_size: u32,
+}
+
+#[quantum_link]
+pub struct DownloadProgress {
+    #[n(0)]
+    pub progress: f32,
+}
+
+#[quantum_link]
+pub struct FetchComplete {
+    #[n(0)]
+    pub version: String,
+    #[n(1)]
+    pub total_patches: u8,
+}
+
+#[quantum_link]
+#[derive(PartialEq, Eq)]
 pub struct FirmwareChunk {
     #[n(0)]
     pub patch_index: u8,
     #[n(1)]
-    pub chunk_index: u16,
+    pub total_patches: u8,
     #[n(2)]
+    pub chunk_index: u16,
+    #[n(3)]
+    pub total_chunks: u16,
+    #[n(4)]
     pub data: Vec<u8>,
 }
 
@@ -83,15 +115,19 @@ pub enum FirmwareUpdateResult {
 
 pub fn split_update_into_chunks(
     patch_index: u8,
+    total_patches: u8,
     patch_bytes: &[u8],
     chunk_size: usize,
 ) -> impl Iterator<Item = FirmwareChunk> + '_ {
-    patch_bytes
-        .chunks(chunk_size)
+    let chunks = patch_bytes.chunks(chunk_size);
+    let total_chunks = chunks.len() as u16;
+    chunks
         .enumerate()
         .map(move |(chunk_index, chunk_data)| FirmwareChunk {
             patch_index,
+            total_patches,
             chunk_index: chunk_index as u16,
+            total_chunks,
             data: chunk_data.to_vec(),
         })
 }
@@ -100,25 +136,55 @@ pub fn split_update_into_chunks(
 fn test_split_update_into_chunks_non_flush() {
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let patch_index = 42;
+    let total_patches = 5;
     let chunk_size = 3;
 
-    let chunks: Vec<_> = split_update_into_chunks(patch_index, &data, chunk_size).collect();
+    let chunks: Vec<_> =
+        split_update_into_chunks(patch_index, total_patches, &data, chunk_size).collect();
 
     assert_eq!(chunks.len(), 4);
 
-    assert_eq!(chunks[0].patch_index, 42);
-    assert_eq!(chunks[0].chunk_index, 0);
-    assert_eq!(chunks[0].data, vec![1, 2, 3]);
+    assert_eq!(
+        chunks[0],
+        FirmwareChunk {
+            patch_index,
+            total_patches,
+            chunk_index: 0,
+            total_chunks: 4,
+            data: vec![1, 2, 3],
+        }
+    );
 
-    assert_eq!(chunks[1].patch_index, 42);
-    assert_eq!(chunks[1].chunk_index, 1);
-    assert_eq!(chunks[1].data, vec![4, 5, 6]);
+    assert_eq!(
+        chunks[1],
+        FirmwareChunk {
+            patch_index,
+            total_patches,
+            chunk_index: 1,
+            total_chunks: 4,
+            data: vec![4, 5, 6],
+        }
+    );
 
-    assert_eq!(chunks[2].patch_index, 42);
-    assert_eq!(chunks[2].chunk_index, 2);
-    assert_eq!(chunks[2].data, vec![7, 8, 9]);
+    assert_eq!(
+        chunks[2],
+        FirmwareChunk {
+            patch_index,
+            total_patches,
+            chunk_index: 2,
+            total_chunks: 4,
+            data: vec![7, 8, 9],
+        }
+    );
 
-    assert_eq!(chunks[3].patch_index, 42);
-    assert_eq!(chunks[3].chunk_index, 3);
-    assert_eq!(chunks[3].data, vec![10]);
+    assert_eq!(
+        chunks[3],
+        FirmwareChunk {
+            patch_index,
+            total_patches,
+            chunk_index: 3,
+            total_chunks: 4,
+            data: vec![10],
+        }
+    );
 }
