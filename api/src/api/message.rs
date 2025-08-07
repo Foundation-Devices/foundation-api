@@ -5,7 +5,7 @@ use crate::backup::{
 };
 use crate::bitcoin::*;
 use crate::firmware::{
-    FirmwareFetchRequest, FirmwareFetchResponse, FirmwareUpdateCheckRequest,
+    FirmwareFetchEvent, FirmwareFetchRequest, FirmwareUpdateCheckRequest,
     FirmwareUpdateCheckResponse, FirmwareUpdateResult,
 };
 use crate::fx::ExchangeRate;
@@ -78,7 +78,7 @@ pub enum QuantumLinkMessage {
     #[n(3)]
     FirmwareFetchRequest(#[n(0)] FirmwareFetchRequest),
     #[n(4)]
-    FirmwareFetchResponse(#[n(0)] FirmwareFetchResponse),
+    FirmwareFetchEvent(#[n(0)] FirmwareFetchEvent),
     #[n(5)]
     FirmwareUpdateResult(#[n(0)] FirmwareUpdateResult),
     #[n(6)]

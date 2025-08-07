@@ -42,49 +42,25 @@ pub struct FirmwareFetchRequest {
 
 // From Envoy to Prime
 #[quantum_link]
-pub enum FirmwareFetchResponse {
+pub enum FirmwareFetchEvent {
     // there is no update available from the provided prime version
     #[n(0)]
     UpdateNotAvailable,
-    // envoy has found an update, and is notifying prime
+    // envoy has found an update, and will begin transmission
     #[n(1)]
-    Started(#[n(0)] FetchStarted),
+    Starting(#[n(0)] FirmwareUpdateAvailable),
     // envoy is downloading the update
     #[n(2)]
-    Download(#[n(0)] DownloadProgress),
-    // envoy is sending a chunk for an update
+    Downloading,
+    // envoy is sending a chunk for an update patch
     #[n(3)]
     Chunk(#[n(0)] FirmwareChunk),
-    // envoy has sent all the update chunks
+    // envoy has sent all the update patches
     #[n(4)]
-    Complete(#[n(0)] FetchComplete),
-    // envoy failed to fetch the update
+    Complete,
+    // envoy failed
     #[n(5)]
     Error(#[n(0)] String),
-}
-
-#[quantum_link]
-pub struct FetchStarted {
-    #[n(0)]
-    pub version: String,
-    #[n(1)]
-    pub total_patches: u8,
-    #[n(2)]
-    pub total_size: u32,
-}
-
-#[quantum_link]
-pub struct DownloadProgress {
-    #[n(0)]
-    pub progress: f32,
-}
-
-#[quantum_link]
-pub struct FetchComplete {
-    #[n(0)]
-    pub version: String,
-    #[n(1)]
-    pub total_patches: u8,
 }
 
 #[quantum_link]
@@ -93,18 +69,13 @@ pub struct FirmwareChunk {
     #[n(0)]
     pub patch_index: u8,
     #[n(1)]
-    pub chunk_index: u16,
+    pub total_patches: u8,
     #[n(2)]
-    pub total_chunks: u16,
+    pub chunk_index: u16,
     #[n(3)]
+    pub total_chunks: u16,
+    #[n(4)]
     pub data: Vec<u8>,
-}
-
-impl FirmwareChunk {
-    /// Returns true if this is the last chunk in the current patch.
-    pub fn is_last_in_patch(&self) -> bool {
-        self.chunk_index == self.total_chunks - 1
-    }
 }
 
 #[quantum_link]
@@ -120,6 +91,7 @@ pub enum FirmwareUpdateResult {
 
 pub fn split_update_into_chunks(
     patch_index: u8,
+    total_patches: u8,
     patch_bytes: &[u8],
     chunk_size: usize,
 ) -> impl Iterator<Item = FirmwareChunk> + '_ {
@@ -129,6 +101,7 @@ pub fn split_update_into_chunks(
         .enumerate()
         .map(move |(chunk_index, chunk_data)| FirmwareChunk {
             patch_index,
+            total_patches,
             chunk_index: chunk_index as u16,
             total_chunks,
             data: chunk_data.to_vec(),
@@ -139,10 +112,11 @@ pub fn split_update_into_chunks(
 fn test_split_update_into_chunks_non_flush() {
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let patch_index = 42;
+    let total_patches = 5;
     let chunk_size = 3;
 
     let chunks: Vec<_> =
-        split_update_into_chunks(patch_index, &data, chunk_size).collect();
+        split_update_into_chunks(patch_index, total_patches, &data, chunk_size).collect();
 
     assert_eq!(chunks.len(), 4);
 
@@ -150,6 +124,7 @@ fn test_split_update_into_chunks_non_flush() {
         chunks[0],
         FirmwareChunk {
             patch_index,
+            total_patches,
             chunk_index: 0,
             total_chunks: 4,
             data: vec![1, 2, 3],
@@ -160,6 +135,7 @@ fn test_split_update_into_chunks_non_flush() {
         chunks[1],
         FirmwareChunk {
             patch_index,
+            total_patches,
             chunk_index: 1,
             total_chunks: 4,
             data: vec![4, 5, 6],
@@ -170,6 +146,7 @@ fn test_split_update_into_chunks_non_flush() {
         chunks[2],
         FirmwareChunk {
             patch_index,
+            total_patches,
             chunk_index: 2,
             total_chunks: 4,
             data: vec![7, 8, 9],
@@ -180,15 +157,10 @@ fn test_split_update_into_chunks_non_flush() {
         chunks[3],
         FirmwareChunk {
             patch_index,
+            total_patches,
             chunk_index: 3,
             total_chunks: 4,
             data: vec![10],
         }
     );
-
-    // Test is_last_in_patch method
-    assert!(!chunks[0].is_last_in_patch());
-    assert!(!chunks[1].is_last_in_patch());
-    assert!(!chunks[2].is_last_in_patch());
-    assert!(chunks[3].is_last_in_patch());
 }
