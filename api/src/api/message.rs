@@ -5,13 +5,13 @@ use crate::backup::{
 };
 use crate::bitcoin::*;
 use crate::firmware::{
-    FirmwareDownloadRequest, FirmwareDownloadResponse, FirmwareUpdateCheckRequest,
+    FirmwareFetchEvent, FirmwareFetchRequest, FirmwareUpdateCheckRequest,
     FirmwareUpdateCheckResponse, FirmwareUpdateResult,
 };
 use crate::fx::ExchangeRate;
 use crate::pairing::{PairingRequest, PairingResponse};
 use crate::quantum_link::QuantumLink;
-use crate::scv::{SecurityChallengeRequest, SecurityChallengeResponse};
+use crate::scv::SecurityCheck;
 use crate::status::{DeviceStatus, EnvoyStatus};
 use flutter_rust_bridge::frb;
 use minicbor_derive::{Decode, Encode};
@@ -76,9 +76,9 @@ pub enum QuantumLinkMessage {
     #[n(2)]
     FirmwareUpdateCheckResponse(#[n(0)] FirmwareUpdateCheckResponse),
     #[n(3)]
-    FirmwareDownloadRequest(#[n(0)] FirmwareDownloadRequest),
+    FirmwareFetchRequest(#[n(0)] FirmwareFetchRequest),
     #[n(4)]
-    FirmwareDownloadResponse(#[n(0)] FirmwareDownloadResponse),
+    FirmwareFetchEvent(#[n(0)] FirmwareFetchEvent),
     #[n(5)]
     FirmwareUpdateResult(#[n(0)] FirmwareUpdateResult),
     #[n(6)]
@@ -98,17 +98,15 @@ pub enum QuantumLinkMessage {
     #[n(13)]
     AccountUpdate(#[n(0)] AccountUpdate),
     #[n(14)]
-    SecurityChallengeRequest(#[n(0)] SecurityChallengeRequest),
+    SecurityCheck(#[n(0)] SecurityCheck),
     #[n(15)]
-    SecurityChallengeResponse(#[n(0)] SecurityChallengeResponse),
-    #[n(16)]
     BackupShardRequest(#[n(0)] BackupShardRequest),
-    #[n(17)]
+    #[n(16)]
     BackupShardResponse(#[n(0)] BackupShardResponse),
-    #[n(18)]
+    #[n(17)]
     RestoreShardRequest(#[n(0)] RestoreShardRequest),
-    #[n(19)]
+    #[n(18)]
     RestoreShardResponse(#[n(0)] RestoreShardResponse),
-    #[n(20)]
+    #[n(19)]
     RawData(#[n(0)] RawData),
 }
