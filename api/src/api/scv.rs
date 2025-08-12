@@ -6,97 +6,48 @@ use {
 };
 
 #[quantum_link]
-pub struct Challenge {
+pub enum SecurityCheck {
+    // Envoy to Prime: Initial challenge
     #[n(0)]
-    pub id: String,
+    ChallengeRequest(#[n(0)] ChallengeRequest),
+
+    // Prime to Envoy: Response to the challenge
     #[n(1)]
-    pub signature: String,
+    ChallengeResponse(#[n(0)] ChallengeResponseResult),
+
+    // Envoy to Prime: Verification result
+    // only send if ChallengeResponse was successful
     #[n(2)]
-    pub der_signature: String,
-}
-
-impl Challenge {
-    pub fn new(id: String, signature: String, der_signature: String) -> Self {
-        Challenge {
-            id,
-            signature,
-            der_signature,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn signature(&self) -> &str {
-        &self.signature
-    }
-
-    pub fn der_signature(&self) -> &str {
-        &self.der_signature
-    }
+    VerificationResult(#[n(0)] VerificationResult),
 }
 
 #[quantum_link]
-pub struct ChallengeResponse {
-    #[n(0)]
-    pub challenge_id: String,
-    #[n(1)]
-    pub words: Vec<String>,
-    #[n(2)]
-    pub der_signature: String,
-}
-
-impl ChallengeResponse {
-    pub fn new(challenge_id: String, words: Vec<String>, der_signature: String) -> Self {
-        ChallengeResponse {
-            challenge_id,
-            words,
-            der_signature,
-        }
-    }
-
-    pub fn challenge_id(&self) -> &str {
-        &self.challenge_id
-    }
-
-    pub fn words(&self) -> &Vec<String> {
-        &self.words
-    }
-
-    pub fn der_signature(&self) -> &str {
-        &self.der_signature
-    }
-}
-
-#[quantum_link]
-pub struct SecurityChallengeRequest {
+pub struct ChallengeRequest {
     #[n(0)]
     pub data: Vec<u8>,
 }
 
-impl SecurityChallengeRequest {
-    pub fn new(data: Vec<u8>) -> Self {
-        SecurityChallengeRequest { data }
-    }
-
-    pub fn data(&self) -> &Vec<u8> {
-        &self.data
-    }
+#[quantum_link]
+pub enum ChallengeResponseResult {
+    #[n(0)]
+    Success {
+        #[n(0)]
+        data: Vec<u8>,
+    },
+    #[n(1)]
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
 
 #[quantum_link]
-pub struct SecurityChallengeResponse {
+pub enum VerificationResult {
     #[n(0)]
-    pub data: Vec<u8>,
-}
-
-impl SecurityChallengeResponse {
-    pub fn new(data: Vec<u8>) -> Self {
-        SecurityChallengeResponse { data }
-    }
-
-    pub fn data(&self) -> &Vec<u8> {
-        &self.data
-    }
+    Success,
+    #[n(1)]
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
