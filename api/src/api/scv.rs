@@ -46,7 +46,7 @@ pub enum VerificationResult {
     #[n(0)]
     Success,
     #[n(1)]
-    Failed {
+    Error {
         #[n(0)]
         error: String,
     },
