@@ -1,7 +1,7 @@
 use crate::message::{EnvoyMessage, PassportMessage};
 use anyhow::bail;
 use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID};
-use bc_envelope::prelude::CBOR;
+use bc_envelope::prelude::{CBORCase, CBOR};
 use bc_envelope::{Envelope, EventBehavior, Expression, ExpressionBehavior, Function};
 use bc_xid::XIDDocument;
 use flutter_rust_bridge::frb;
@@ -43,16 +43,13 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     where
         Self: minicbor::Encode<()>,
     {
-        let event: SealedEvent<Expression> = SealedEvent::new(
-            QuantumLink::encode(self),
-            ARID::new(),
-            sender.xid_document.unwrap(),
-        );
+        let event: SealedEvent<Expression> =
+            SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender.xid_document);
         event
             .to_envelope(
                 None,
                 Some(&sender.private_keys.unwrap()),
-                Some(&recipient.xid_document.unwrap()),
+                Some(&recipient.xid_document),
             )
             .unwrap()
     }
@@ -91,24 +88,55 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
 #[frb(opaque)]
 pub struct QuantumLinkIdentity {
     pub private_keys: Option<PrivateKeys>,
-    pub public_keys: Option<PublicKeys>,
-    pub xid_document: Option<XIDDocument>,
+    pub xid_document: XIDDocument,
 }
 
-pub fn generate_identity() -> QuantumLinkIdentity {
-    let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
-    let (encapsulation_private_key, encapsulation_public_key) =
-        EncapsulationScheme::MLKEM512.keypair();
+impl QuantumLinkIdentity {
+    pub fn generate() -> Self {
+        let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
+        let (encapsulation_private_key, encapsulation_public_key) =
+            EncapsulationScheme::MLKEM512.keypair();
 
-    let private_keys = PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
-    let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
+        let private_keys = PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
+        let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
 
-    let xid_document = XIDDocument::new(public_keys.clone());
+        let xid_document = XIDDocument::new(public_keys.clone());
 
-    QuantumLinkIdentity {
-        private_keys: Some(private_keys),
-        public_keys: Some(public_keys),
-        xid_document: Some(xid_document),
+        QuantumLinkIdentity {
+            private_keys: Some(private_keys),
+            xid_document,
+        }
+    }
+
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        let mut map = bc_envelope::prelude::Map::new();
+        map.insert(CBOR::from("xid_document"), self.clone().xid_document);
+        if self.private_keys.is_some() {
+            map.insert(
+                CBOR::from("private_keys"),
+                self.clone().private_keys.unwrap(),
+            );
+        }
+
+        Ok(CBOR::from(map).to_cbor_data())
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        let cbor = CBOR::try_from_data(bytes)
+            .ok()
+            .ok_or_else(|| anyhow::anyhow!("Invalid CBOR"))?;
+        let case = cbor.into_case();
+
+        let CBORCase::Map(map) = case else {
+            return Err(anyhow::anyhow!("Invalid CBOR case"));
+        };
+
+        Ok(QuantumLinkIdentity {
+            xid_document: map
+                .get("xid_document")
+                .ok_or_else(|| anyhow::anyhow!("xid_document not found"))?,
+            private_keys: map.get("private_keys"),
+        })
     }
 }
 
@@ -118,7 +146,7 @@ mod tests {
     use crate::api::quantum_link::QuantumLink;
     use crate::fx::ExchangeRate;
     use crate::message::EnvoyMessage;
-    use crate::quantum_link::generate_identity;
+    use crate::quantum_link::QuantumLinkIdentity;
 
     #[test]
     fn test_encode_decode_quantumlink_message() {
@@ -142,8 +170,8 @@ mod tests {
 
     #[test]
     fn test_seal_unseal_quantumlink_message() {
-        let envoy = generate_identity();
-        let passport = generate_identity();
+        let envoy = QuantumLinkIdentity::generate();
+        let passport = QuantumLinkIdentity::generate();
 
         let fx_rate = ExchangeRate::new("USD", 0.85);
         let original_message = EnvoyMessage {
@@ -165,5 +193,19 @@ mod tests {
 
         // Assert that the original and decoded messages are the same
         assert_eq!(fx_rate.rate(), fx_rate_decoded.rate());
+    }
+
+    #[test]
+    fn test_serialize_ql_identity() {
+        let identity = QuantumLinkIdentity::generate();
+        let bytes = identity.to_bytes().unwrap();
+
+        let deserialized_identity = QuantumLinkIdentity::from_bytes(bytes.as_slice()).unwrap();
+
+        // Assert that the original and decoded messages are the same
+        assert_eq!(
+            identity.private_keys.unwrap(),
+            deserialized_identity.private_keys.unwrap()
+        );
     }
 }

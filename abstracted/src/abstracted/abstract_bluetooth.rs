@@ -25,7 +25,7 @@ pub trait AbstractBluetoothChannel {
         let cbor = envelope.to_cbor_data();
 
         for chunk in chunk(&cbor) {
-            self.send(chunk).await.expect("couldn't send");
+            self.send(chunk).await?;
         }
 
         Ok(())
@@ -33,18 +33,13 @@ pub trait AbstractBluetoothChannel {
 
     async fn receive_envelope(&self, timeout: Duration) -> Result<Envelope> {
         let mut unchunker = Dechunker::new();
-        loop {
+        while !unchunker.is_complete() {
             let bytes = self.receive(timeout).await?;
-            println!("Received {} bytes over BLE", bytes.len());
             unchunker.receive(&bytes)?;
-
-            if unchunker.is_complete() {
-                break;
-            }
         }
 
-        let message = unchunker.data();
-        Envelope::try_from_cbor_data(message.to_owned())
+        let message = unchunker.data().expect("data is complete");
+        Envelope::try_from_cbor_data(message)
     }
 
     async fn send_request_with_id<E, S>(

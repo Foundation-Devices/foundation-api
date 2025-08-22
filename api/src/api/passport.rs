@@ -20,3 +20,11 @@ pub struct PassportFirmwareVersion(#[n(0)] pub String);
 
 #[derive(Debug, Clone, Encode, Decode, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct PassportSerial(#[n(0)] pub String);
+
+#[quantum_link]
+pub enum PassportColor {
+    #[n(0)]
+    Light,
+    #[n(1)]
+    Dark,
+}

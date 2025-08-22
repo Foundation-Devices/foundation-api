@@ -1,162 +1,46 @@
-use consts::APP_MTU;
-use std::collections::HashMap;
+pub use chunk::*;
+pub use dechunk::*;
 
+mod chunk;
+mod dechunk;
+#[cfg(test)]
 mod tests;
 
-// TODO: is it possible to make this dynamic?
-const CBOR_OVERHEAD: usize = 16; // 2 u32 + CBOR bytes header + padding
-const CHUNK_SIZE: usize = APP_MTU - CBOR_OVERHEAD;
+use bytemuck::{Pod, Zeroable};
+use consts::APP_MTU;
 
-pub struct Chunker<'a> {
-    data: &'a [u8],
-    total_chunks: usize,
-    current_chunk: usize,
+pub const HEADER_SIZE: usize = std::mem::size_of::<Header>();
+pub const CHUNK_DATA_SIZE: usize = APP_MTU - HEADER_SIZE;
+
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct Header {
+    pub message_id: u16,
+    pub index: u16,
+    pub total_chunks: u16,
+    pub data_len: u8,
+    pub _padding: u8,
 }
 
-impl Iterator for Chunker<'_> {
-    type Item = [u8; APP_MTU];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current_chunk >= self.total_chunks {
-            return None;
-        }
-
-        let remaining_data = self.data.len() - self.current_chunk * CHUNK_SIZE;
-        let chunk_size = std::cmp::min(remaining_data, CHUNK_SIZE);
-        let chunk = &self.data[self.current_chunk * CHUNK_SIZE..][..chunk_size];
-
-        let mut buffer = [0u8; APP_MTU];
-        let mut encoder = minicbor::Encoder::new(&mut buffer[..]);
-
-        // Encode chunk index (m of n) and data
-        encoder
-            .u32(self.current_chunk as u32)
-            .unwrap()
-            .u32(self.total_chunks as u32)
-            .unwrap(); // m of n
-        encoder.bytes(chunk).unwrap();
-
-        self.current_chunk += 1;
-        Some(buffer)
-    }
-}
-
-pub fn chunk(data: &[u8]) -> Chunker<'_> {
-    let total_chunks = (data.len() as f64 / CHUNK_SIZE as f64).ceil() as usize;
-    Chunker {
-        data,
-        total_chunks,
-        current_chunk: 0,
-    }
-}
-
-#[derive(Default)]
-pub struct Dechunker {
-    data: Vec<u8>,
-    pub seen: u32,
-    is_complete: bool,
-    pub ooo_chunks: HashMap<u32, Vec<u8>>,
-    pub m: u32,
-    pub n: u32,
-}
-
-impl Dechunker {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn is_complete(&self) -> bool {
-        self.is_complete
-    }
-
-    pub fn data(&self) -> &Vec<u8> {
-        &self.data
-    }
-
-    pub fn clear(&mut self) {
-        self.ooo_chunks.clear();
-        self.data.clear();
-        self.seen = 0;
-        self.is_complete = false;
-    }
-    pub fn progress(&self) -> f32 {
-        if self.n == 0 {
-            0.0
-        } else {
-            self.seen.min(self.n) as f32 / self.n as f32
+impl Header {
+    #[inline]
+    fn new(message_id: u16, index: u16, total_chunks: u16, data_len: u8) -> Self {
+        Self {
+            message_id,
+            index,
+            total_chunks,
+            data_len,
+            _padding: 0,
         }
     }
-}
 
-impl Dechunker {
-    pub fn receive(&mut self, data: &[u8]) -> anyhow::Result<Option<&Vec<u8>>> {
-        let mut decoder = minicbor::Decoder::new(data);
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
 
-        let m = decoder.u32().map_err(|_| {
-            self.clear();
-            anyhow::anyhow!("Invalid m value")
-        })?;
-
-        let n = decoder.u32().map_err(|_| {
-            self.clear();
-            anyhow::anyhow!("Invalid n value")
-        })?;
-
-        if n == 0 {
-            self.clear();
-            return Err(anyhow::anyhow!("n cannot be zero"));
-        }
-
-        if m >= n {
-            self.clear();
-            return Err(anyhow::anyhow!("m must be less than n"));
-        }
-
-        self.m = m;
-        self.n = n;
-
-        // Decode chunk data
-        let chunk_data = decoder.bytes().map_err(|_| {
-            self.clear();
-            anyhow::anyhow!("Invalid chunk data")
-        })?;
-
-        // Handle out-of-order chunks first
-        if m != self.seen {
-            self.ooo_chunks.insert(m, chunk_data.to_vec());
-
-            // Try to process any in-order chunks we might have now
-            while !self.ooo_chunks.is_empty() {
-                if let Some(&next_m) = self.ooo_chunks.keys().min() {
-                    if next_m == self.seen {
-                        let data = self.ooo_chunks.remove(&next_m).unwrap();
-                        self.data.extend(data);
-                        self.seen += 1;
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-            return Ok(None);
-        }
-
-        // Handle in-order chunk
-        self.data.extend_from_slice(chunk_data);
-        self.seen += 1;
-
-        // Process any buffered OoO chunks that are now in-order
-        while let Some(data) = self.ooo_chunks.remove(&self.seen) {
-            self.data.extend(data);
-            self.seen += 1;
-        }
-
-        // Check if transfer is complete
-        if self.seen == self.n {
-            self.is_complete = true;
-            return Ok(Some(&self.data));
-        }
-
-        Ok(None)
+    #[inline]
+    fn from_bytes(bytes: &[u8]) -> Option<&Self> {
+        bytemuck::try_from_bytes::<Header>(bytes).ok()
     }
 }

@@ -1,4 +1,5 @@
 use crate::api::quantum_link::QuantumLink;
+use crate::passport::PassportColor;
 use flutter_rust_bridge::frb;
 use quantum_link_macros::quantum_link;
 use {
@@ -14,8 +15,8 @@ pub struct PairingResponse {
     pub passport_firmware_version: PassportFirmwareVersion,
     #[n(2)]
     pub passport_serial: PassportSerial,
-    #[b(3)]
-    pub descriptor: String,
+    #[n(3)]
+    pub passport_color: PassportColor,
 }
 
 #[quantum_link]
