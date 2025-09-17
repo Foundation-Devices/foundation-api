@@ -9,7 +9,7 @@ minicbor = { workspace = true, features = ["std", "derive"] }
 zeroize = { version = "1.8.1", default-features = false, features = [
     "zeroize_derive",
 ] }
-rkyv = { workspace = true, features = ["size_32"], optional = true }
+rkyv = { workspace = true, optional = true }
 
 [features]
 keyos = ["rkyv"]

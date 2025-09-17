@@ -28,7 +28,7 @@ anyhow = "^1.0.0"
 minicbor = { workspace = true, features = ["alloc"] }
 minicbor-derive = { workspace = true }
 bc-xid = "0.5.0"
-rkyv = { workspace = true, features = ["size_32", "alloc"] }
+rkyv = { workspace = true }
 flutter_rust_bridge = "=2.11.1"
 quantum-link-macros = { workspace = true }
 gstp = "0.5.0"
