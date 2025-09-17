@@ -39,4 +39,14 @@ impl Shard {
         hash_input.extend_from_slice(self.data().as_slice());
         hash_input
     }
+
+    /// Returns the encoded shard (official encoding is minicbor)
+    pub fn encode(&self) -> Vec<u8> {
+        minicbor::to_vec(self).unwrap()
+    }
+
+    /// Returns the decoded shard (official encoding is minicbor)
+    pub fn decode(data: &[u8]) -> Result<Shard, minicbor::decode::Error> {
+        minicbor::decode(data)
+    }
 }
