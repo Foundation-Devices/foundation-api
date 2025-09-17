@@ -23,7 +23,10 @@ pub enum BackupShardResponse {
 }
 
 #[quantum_link]
-pub struct RestoreShardRequest {}
+pub struct RestoreShardRequest {
+    #[n(0)]
+    seed_fingerprint: [u8; 32],
+}
 
 #[quantum_link]
 pub enum RestoreShardResponse {
@@ -31,4 +34,6 @@ pub enum RestoreShardResponse {
     Success(#[n(0)] Shard),
     #[n(1)]
     Error(#[n(0)] String),
+    #[n(2)]
+    NotFound(#[n(0)] String),
 }

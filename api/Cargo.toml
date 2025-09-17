@@ -21,14 +21,14 @@ bc-envelope = { version = "0.23.0", default-features = false, features = [
     "salt",
     "signature",
     "sskr",
-    "types"
-]}
+    "types",
+] }
 
 anyhow = "^1.0.0"
-minicbor = { version = "0.24.2", features = ["alloc"] }
-minicbor-derive = "0.15.0"
+minicbor = { workspace = true, features = ["alloc"] }
+minicbor-derive = { workspace = true }
 bc-xid = "0.5.0"
-rkyv = { version = "0.7", default-features = false, features = ["size_32", "alloc"] }
+rkyv = { workspace = true }
 flutter_rust_bridge = "=2.11.1"
 quantum-link-macros = { workspace = true }
 gstp = "0.5.0"
