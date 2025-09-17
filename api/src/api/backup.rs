@@ -25,7 +25,7 @@ pub enum BackupShardResponse {
 #[quantum_link]
 pub struct RestoreShardRequest {
     #[n(0)]
-    seed_fingerprint: [u8; 32],
+    pub seed_fingerprint: [u8; 32],
 }
 
 #[quantum_link]
