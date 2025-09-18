@@ -83,10 +83,22 @@ impl Chunk {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Dechunker {
     chunks: Vec<Option<RawChunk>>,
     info: Option<MessageInfo>,
+}
+
+impl std::fmt::Debug for Dechunker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Dechunker")
+            .field(
+                "chunks",
+                &self.chunks.iter().map(|c| if c.is_some() { 1 } else { 0 }),
+            )
+            .field("info", &self.info)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -208,13 +220,14 @@ impl Dechunker {
     }
 }
 
+#[derive(Debug)]
 pub struct MasterDechunker<const N: usize> {
     dechunkers: [Option<DechunkerSlot>; N],
     counter: u64,
 }
 
 #[derive(Debug)]
-struct DechunkerSlot {
+pub struct DechunkerSlot {
     dechunker: Dechunker,
     last_used: u64,
 }
@@ -229,6 +242,10 @@ impl<const N: usize> Default for MasterDechunker<N> {
 }
 
 impl<const N: usize> MasterDechunker<N> {
+    pub fn dechunkers(&self) -> &[Option<DechunkerSlot>] {
+        &self.dechunkers
+    }
+
     pub fn insert_chunk(&mut self, chunk: Chunk) -> Option<Vec<u8>> {
         let message_id = chunk.header.message_id;
 
