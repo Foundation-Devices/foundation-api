@@ -44,5 +44,5 @@ pub struct MagicBackupEnabledRequest {}
 #[quantum_link]
 pub struct MagicBackupEnabledResponse {
     #[n(0)]
-    enabled: bool,
+    pub enabled: bool,
 }
