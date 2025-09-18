@@ -1,7 +1,8 @@
 use super::onboarding::OnboardingState;
 use crate::api::raw::RawData;
 use crate::backup::{
-    BackupShardRequest, BackupShardResponse, RestoreShardRequest, RestoreShardResponse,
+    BackupShardRequest, BackupShardResponse, MagicBackupEnabledRequest, MagicBackupEnabledResponse,
+    RestoreShardRequest, RestoreShardResponse,
 };
 use crate::bitcoin::*;
 use crate::firmware::{
@@ -100,13 +101,17 @@ pub enum QuantumLinkMessage {
     #[n(14)]
     SecurityCheck(#[n(0)] SecurityCheck),
     #[n(15)]
-    BackupShardRequest(#[n(0)] BackupShardRequest),
+    MagicBackupEnabledRequest(#[n(0)] MagicBackupEnabledRequest),
     #[n(16)]
-    BackupShardResponse(#[n(0)] BackupShardResponse),
+    MagicBackupEnabledResponse(#[n(0)] MagicBackupEnabledResponse),
     #[n(17)]
-    RestoreShardRequest(#[n(0)] RestoreShardRequest),
+    BackupShardRequest(#[n(0)] BackupShardRequest),
     #[n(18)]
-    RestoreShardResponse(#[n(0)] RestoreShardResponse),
+    BackupShardResponse(#[n(0)] BackupShardResponse),
     #[n(19)]
+    RestoreShardRequest(#[n(0)] RestoreShardRequest),
+    #[n(20)]
+    RestoreShardResponse(#[n(0)] RestoreShardResponse),
+    #[n(21)]
     RawData(#[n(0)] RawData),
 }
