@@ -1,4 +1,73 @@
-pub const VERSION_0: u8 = 0;
+use minicbor::{Decode, Decoder, Encode, Encoder};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Shard {
+    V0(ShardV0),
+}
+
+impl<C> Encode<C> for Shard {
+    fn encode<W: minicbor::encode::Write>(
+        &self,
+        e: &mut Encoder<W>,
+        ctx: &mut C,
+    ) -> Result<(), minicbor::encode::Error<W::Error>> {
+        match self {
+            Shard::V0(shard) => {
+                e.u8(ShardV0::VERSION)?;
+                shard.encode(e, ctx)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_nil(&self) -> bool {
+        false
+    }
+}
+
+impl<'b, C> Decode<'b, C> for Shard {
+    fn decode(d: &mut Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
+        let version = d.u8()?;
+        match version {
+            ShardV0::VERSION => Ok(Shard::V0(ShardV0::decode(d, ctx)?)),
+            _ => Err(minicbor::decode::Error::message("Invalid Version")),
+        }
+    }
+}
+
+impl Shard {
+    const FOUNDATION_KEYCARD_PREFIX: &[u8] = b"Foundation KeyCard";
+
+    /// Returns the hash input for the hmac
+    pub fn hmac_input(&self, uid: &[u8]) -> Vec<u8> {
+        // Create the hash input: "Foundation KeyCard" || UID || data
+        let mut hash_input = Vec::new();
+        hash_input.extend_from_slice(Self::FOUNDATION_KEYCARD_PREFIX);
+        hash_input.extend_from_slice(uid);
+        hash_input.extend(self.data());
+        hash_input
+    }
+
+    /// Returns the encoded shard (official encoding is minicbor)
+    pub fn encode(&self) -> Vec<u8> {
+        minicbor::to_vec(self).unwrap()
+    }
+
+    /// Returns the decoded shard (official encoding is minicbor)
+    pub fn decode(data: &[u8]) -> Result<Shard, minicbor::decode::Error> {
+        minicbor::decode(data)
+    }
+}
+
+impl Shard {
+    // Returns the data of the shard without the hmac
+    fn data(&self) -> Vec<u8> {
+        let mut data = self.encode();
+        let data_len = data.len() - 34;
+        data.truncate(data_len);
+        data
+    }
+}
 
 #[derive(
     Debug, Default, Clone, PartialEq, minicbor::Encode, minicbor::Decode, zeroize::ZeroizeOnDrop,
@@ -23,53 +92,8 @@ pub struct ShardV0 {
     pub hmac: [u8; 32],
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Shard {
-    V0(ShardV0),
-}
-
-impl Shard {
-    const FOUNDATION_KEYCARD_PREFIX: &[u8] = b"Foundation KeyCard";
-
-    // Returns the data of the shard without the hmac
-    fn data(&self) -> Vec<u8> {
-        let mut data = self.encode();
-        let data_len = data.len() - 34;
-        data.truncate(data_len);
-        data
-    }
-
-    /// Returns the hash input for the hmac
-    pub fn hmac_input(&self, uid: &[u8]) -> Vec<u8> {
-        // Create the hash input: "Foundation KeyCard" || UID || data
-        let mut hash_input = Vec::new();
-        hash_input.extend_from_slice(Self::FOUNDATION_KEYCARD_PREFIX);
-        hash_input.extend_from_slice(uid);
-        hash_input.extend(self.data());
-        hash_input
-    }
-
-    /// Returns the encoded shard (official encoding is minicbor)
-    pub fn encode(&self) -> Vec<u8> {
-        match self {
-            Shard::V0(shard) => {
-                let mut data = vec![VERSION_0];
-                data.extend(minicbor::to_vec(shard).unwrap());
-                data
-            }
-        }
-    }
-
-    /// Returns the decoded shard (official encoding is minicbor)
-    pub fn decode(data: &[u8]) -> Result<Shard, minicbor::decode::Error> {
-        if data.is_empty() {
-            return Err(minicbor::decode::Error::message("Empty Data"));
-        }
-        match data[0] {
-            VERSION_0 => Ok(Shard::V0(minicbor::decode(&data[1..])?)),
-            _ => Err(minicbor::decode::Error::message("Invalid Version")),
-        }
-    }
+impl ShardV0 {
+    pub const VERSION: u8 = 0;
 }
 
 #[cfg(test)]
