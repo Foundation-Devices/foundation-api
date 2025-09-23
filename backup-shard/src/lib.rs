@@ -1,17 +1,19 @@
-use minicbor::{Decode, Decoder, Encode, Encoder};
-
-#[derive(Debug, Default, Clone, PartialEq, zeroize::ZeroizeOnDrop)]
+#[derive(
+    Debug, Default, Clone, PartialEq, minicbor::Encode, minicbor::Decode, zeroize::ZeroizeOnDrop,
+)]
 #[cfg_attr(
     feature = "keyos",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
 pub struct Shard {
-    shard: ShardVersion,
-    hmac: [u8; 32],
+    #[n(0)]
+    pub shard: ShardVersion,
+    #[cbor(n(1), with = "minicbor::bytes")]
+    pub hmac: [u8; 32],
 }
 
 impl Shard {
-    const FOUNDATION_KEYCARD_PREFIX: &[u8] = b"Foundation KeyCard";
+    pub const FOUNDATION_KEYCARD_PREFIX: &[u8] = b"Foundation KeyCard";
 
     /// Return a new instance of Shard
     pub fn new(
@@ -34,23 +36,23 @@ impl Shard {
     }
 
     /// Get the Device ID from the Shard
-    pub fn device_id(&self) -> [u8; 32] {
+    pub fn device_id(&self) -> &[u8; 32] {
         match &self.shard {
-            ShardVersion::V0(shard) => shard.device_id,
+            ShardVersion::V0(shard) => &shard.device_id,
         }
     }
 
     /// Get the Seed Fingerprint from the Shard
-    pub fn seed_fingerprint(&self) -> [u8; 32] {
+    pub fn seed_fingerprint(&self) -> &[u8; 32] {
         match &self.shard {
-            ShardVersion::V0(shard) => shard.seed_fingerprint,
+            ShardVersion::V0(shard) => &shard.seed_fingerprint,
         }
     }
 
     /// Get the Seed Shamir Share from the Shard
-    pub fn seed_shamir_share(&self) -> Vec<u8> {
+    pub fn seed_shamir_share(&self) -> &[u8] {
         match &self.shard {
-            ShardVersion::V0(shard) => shard.seed_shamir_share.clone(),
+            ShardVersion::V0(shard) => &shard.seed_shamir_share,
         }
     }
 
@@ -69,8 +71,8 @@ impl Shard {
     }
 
     /// Get the HMAC from the Shard
-    pub fn hmac(&self) -> [u8; 32] {
-        self.hmac
+    pub fn hmac(&self) -> &[u8; 32] {
+        &self.hmac
     }
 
     /// Set the HMAC of a Shard
@@ -84,7 +86,7 @@ impl Shard {
         let mut hash_input = Vec::new();
         hash_input.extend_from_slice(Self::FOUNDATION_KEYCARD_PREFIX);
         hash_input.extend_from_slice(uid);
-        hash_input.extend(minicbor::to_vec(&self.shard).unwrap());
+        minicbor::encode(&self.shard, &mut hash_input).unwrap();
         hash_input
     }
 
@@ -99,50 +101,12 @@ impl Shard {
     }
 }
 
-impl<C> Encode<C> for Shard {
-    fn encode<W: minicbor::encode::Write>(
-        &self,
-        e: &mut Encoder<W>,
-        ctx: &mut C,
-    ) -> Result<(), minicbor::encode::Error<W::Error>> {
-        self.shard.encode(e, ctx)?;
-        e.array(32)?;
-        for &b in &self.hmac {
-            e.u8(b)?;
-        }
-        Ok(())
-    }
-
-    fn is_nil(&self) -> bool {
-        false
-    }
-}
-
-impl<'b, C> Decode<'b, C> for Shard {
-    fn decode(d: &mut Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
-        let shard = ShardVersion::decode(d, ctx)?;
-        let len = d
-            .array()?
-            .ok_or_else(|| minicbor::decode::Error::message("expected fixed-size array"))?;
-        if len != 32 {
-            return Err(minicbor::decode::Error::message(
-                "expected array of length 32",
-            ));
-        }
-        let mut hmac = [0u8; 32];
-        for b in &mut hmac {
-            *b = d.u8()?;
-        }
-        Ok(Self { shard, hmac })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, zeroize::ZeroizeOnDrop)]
 #[cfg_attr(
     feature = "keyos",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
-enum ShardVersion {
+pub enum ShardVersion {
     V0(ShardV0),
 }
 
@@ -152,10 +116,10 @@ impl Default for ShardVersion {
     }
 }
 
-impl<C> Encode<C> for ShardVersion {
+impl<C> minicbor::Encode<C> for ShardVersion {
     fn encode<W: minicbor::encode::Write>(
         &self,
-        e: &mut Encoder<W>,
+        e: &mut minicbor::Encoder<W>,
         ctx: &mut C,
     ) -> Result<(), minicbor::encode::Error<W::Error>> {
         match self {
@@ -172,8 +136,8 @@ impl<C> Encode<C> for ShardVersion {
     }
 }
 
-impl<'b, C> Decode<'b, C> for ShardVersion {
-    fn decode(d: &mut Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
+impl<'b, C> minicbor::Decode<'b, C> for ShardVersion {
+    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
         let version = d.u8()?;
         match version {
             ShardV0::VERSION => Ok(ShardVersion::V0(ShardV0::decode(d, ctx)?)),
@@ -189,7 +153,7 @@ impl<'b, C> Decode<'b, C> for ShardVersion {
     feature = "keyos",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
-struct ShardV0 {
+pub struct ShardV0 {
     #[cbor(n(0), with = "minicbor::bytes")]
     pub device_id: [u8; 32],
     #[cbor(n(1), with = "minicbor::bytes")]
@@ -211,7 +175,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn round_trip() {
+    fn v0_round_trip() {
         let shard = Shard {
             shard: ShardVersion::V0(ShardV0 {
                 device_id: [0xAA; 32],
@@ -224,8 +188,35 @@ mod test {
         };
 
         let encoded = shard.encode();
-        println!("Encoded length: {} bytes", encoded.len());
         let decoded = Shard::decode(&encoded).unwrap();
+        assert_eq!(encoded.len(), 113);
         assert_eq!(shard, decoded);
+    }
+
+    #[test]
+    fn hmac_input() {
+        let shard = Shard {
+            shard: ShardVersion::V0(ShardV0 {
+                device_id: [0xAA; 32],
+                seed_fingerprint: [0xBB; 32],
+                seed_shamir_share: vec![1, 2, 3, 4, 5],
+                seed_shamir_share_index: 2,
+                part_of_magic_backup: true,
+            }),
+            hmac: [0xCC; 32],
+        };
+
+        let uid = [44, 55, 66];
+        let expected = {
+            let mut expected = vec![];
+            expected.extend_from_slice(Shard::FOUNDATION_KEYCARD_PREFIX);
+            expected.extend(&uid);
+            expected.extend(&minicbor::to_vec(&shard.shard).unwrap());
+            expected
+        };
+
+        let hmac_input = shard.hmac_input(&uid);
+
+        assert_eq!(hmac_input, expected);
     }
 }
