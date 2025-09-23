@@ -65,8 +65,8 @@ impl<'b, C> Decode<'b, C> for Shard {
             ));
         }
         let mut hmac = [0u8; 32];
-        for i in 0..32 {
-            hmac[i] = d.u8()?;
+        for b in &mut hmac {
+            *b = d.u8()?;
         }
         Ok(Self { shard, hmac })
     }
