@@ -6,8 +6,8 @@ use minicbor::{Decode, Decoder, Encode, Encoder};
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
 pub struct Shard {
-    pub shard: ShardVersion,
-    pub hmac: [u8; 32],
+    shard: ShardVersion,
+    hmac: [u8; 32],
 }
 
 impl Shard {
@@ -33,7 +33,47 @@ impl Shard {
         }
     }
 
-    /// Set the hmac of a Shard
+    /// Get the Device ID from the Shard
+    pub fn device_id(&self) -> [u8; 32] {
+        match &self.shard {
+            ShardVersion::V0(shard) => shard.device_id,
+        }
+    }
+
+    /// Get the Seed Fingerprint from the Shard
+    pub fn seed_fingerprint(&self) -> [u8; 32] {
+        match &self.shard {
+            ShardVersion::V0(shard) => shard.seed_fingerprint,
+        }
+    }
+
+    /// Get the Seed Shamir Share from the Shard
+    pub fn seed_shamir_share(&self) -> Vec<u8> {
+        match &self.shard {
+            ShardVersion::V0(shard) => shard.seed_shamir_share.clone(),
+        }
+    }
+
+    /// Get the Seed Shamir Share Index from the Shard
+    pub fn seed_shamir_share_index(&self) -> usize {
+        match &self.shard {
+            ShardVersion::V0(shard) => shard.seed_shamir_share_index,
+        }
+    }
+
+    /// Is the Shard part of a Magic Backup
+    pub fn part_of_magic_backup(&self) -> bool {
+        match &self.shard {
+            ShardVersion::V0(shard) => shard.part_of_magic_backup,
+        }
+    }
+
+    /// Get the HMAC from the Shard
+    pub fn hmac(&self) -> [u8; 32] {
+        self.hmac
+    }
+
+    /// Set the HMAC of a Shard
     pub fn set_hmac(&mut self, hmac: [u8; 32]) {
         self.hmac = hmac;
     }
@@ -102,7 +142,7 @@ impl<'b, C> Decode<'b, C> for Shard {
     feature = "keyos",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
-pub enum ShardVersion {
+enum ShardVersion {
     V0(ShardV0),
 }
 
@@ -149,7 +189,7 @@ impl<'b, C> Decode<'b, C> for ShardVersion {
     feature = "keyos",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
-pub struct ShardV0 {
+struct ShardV0 {
     #[cbor(n(0), with = "minicbor::bytes")]
     pub device_id: [u8; 32],
     #[cbor(n(1), with = "minicbor::bytes")]
