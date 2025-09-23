@@ -10,6 +10,68 @@ pub struct Shard {
     pub hmac: [u8; 32],
 }
 
+impl Shard {
+    const FOUNDATION_KEYCARD_PREFIX: &[u8] = b"Foundation KeyCard";
+
+    /// Returns the hash input for the hmac
+    pub fn hmac_input(&self, uid: &[u8]) -> Vec<u8> {
+        // Create the hash input: "Foundation KeyCard" || UID || data
+        let mut hash_input = Vec::new();
+        hash_input.extend_from_slice(Self::FOUNDATION_KEYCARD_PREFIX);
+        hash_input.extend_from_slice(uid);
+        hash_input.extend(minicbor::to_vec(&self.shard).unwrap());
+        hash_input
+    }
+
+    /// Returns the encoded shard (official encoding is minicbor)
+    pub fn encode(&self) -> Vec<u8> {
+        minicbor::to_vec(self).unwrap()
+    }
+
+    /// Returns the decoded shard (official encoding is minicbor)
+    pub fn decode(data: &[u8]) -> Result<Shard, minicbor::decode::Error> {
+        minicbor::decode(data)
+    }
+}
+
+impl<C> Encode<C> for Shard {
+    fn encode<W: minicbor::encode::Write>(
+        &self,
+        e: &mut Encoder<W>,
+        ctx: &mut C,
+    ) -> Result<(), minicbor::encode::Error<W::Error>> {
+        self.shard.encode(e, ctx)?;
+        e.array(32)?;
+        for &b in &self.hmac {
+            e.u8(b)?;
+        }
+        Ok(())
+    }
+
+    fn is_nil(&self) -> bool {
+        false
+    }
+}
+
+impl<'b, C> Decode<'b, C> for Shard {
+    fn decode(d: &mut Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
+        let shard = ShardVersion::decode(d, ctx)?;
+        let len = d
+            .array()?
+            .ok_or_else(|| minicbor::decode::Error::message("expected fixed-size array"))?;
+        if len != 32 {
+            return Err(minicbor::decode::Error::message(
+                "expected array of length 32",
+            ));
+        }
+        let mut hmac = [0u8; 32];
+        for i in 0..32 {
+            hmac[i] = d.u8()?;
+        }
+        Ok(Self { shard, hmac })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, zeroize::ZeroizeOnDrop)]
 #[cfg_attr(
     feature = "keyos",
@@ -52,38 +114,6 @@ impl<'b, C> Decode<'b, C> for ShardVersion {
             ShardV0::VERSION => Ok(ShardVersion::V0(ShardV0::decode(d, ctx)?)),
             _ => Err(minicbor::decode::Error::message("Invalid Version")),
         }
-    }
-}
-
-impl Shard {
-    const FOUNDATION_KEYCARD_PREFIX: &[u8] = b"Foundation KeyCard";
-
-    /// Returns the hash input for the hmac
-    pub fn hmac_input(&self, uid: &[u8]) -> Vec<u8> {
-        // Create the hash input: "Foundation KeyCard" || UID || data
-        let mut hash_input = Vec::new();
-        hash_input.extend_from_slice(Self::FOUNDATION_KEYCARD_PREFIX);
-        hash_input.extend_from_slice(uid);
-        hash_input.extend(minicbor::to_vec(&self.shard).unwrap());
-        hash_input
-    }
-
-    /// Returns the encoded shard (official encoding is minicbor)
-    pub fn encode(&self) -> Vec<u8> {
-        let mut v = minicbor::to_vec(&self.shard).unwrap();
-        v.extend_from_slice(&self.hmac);
-        v
-    }
-
-    /// Returns the decoded shard (official encoding is minicbor)
-    pub fn decode(data: &[u8]) -> Result<Shard, minicbor::decode::Error> {
-        if data.len() < 32 {
-            return Err(minicbor::decode::Error::message("invalid length"));
-        }
-        let (data, hmac) = data.split_at(data.len() - 32);
-        let shard: ShardVersion = minicbor::decode(data)?;
-        let hmac: [u8; 32] = hmac.try_into().unwrap();
-        Ok(Shard { shard, hmac })
     }
 }
 
