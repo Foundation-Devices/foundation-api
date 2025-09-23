@@ -13,6 +13,31 @@ pub struct Shard {
 impl Shard {
     const FOUNDATION_KEYCARD_PREFIX: &[u8] = b"Foundation KeyCard";
 
+    /// Return a new instance of Shard
+    pub fn new(
+        device_id: [u8; 32],
+        seed_fingerprint: [u8; 32],
+        seed_shamir_share: Vec<u8>,
+        seed_shamir_share_index: usize,
+        part_of_magic_backup: bool,
+    ) -> Self {
+        Self {
+            shard: ShardVersion::V0(ShardV0 {
+                device_id,
+                seed_fingerprint,
+                seed_shamir_share,
+                seed_shamir_share_index,
+                part_of_magic_backup,
+            }),
+            hmac: [0; 32],
+        }
+    }
+
+    /// Set the hmac of a Shard
+    pub fn set_hmac(&mut self, hmac: [u8; 32]) {
+        self.hmac = hmac;
+    }
+
     /// Returns the hash input for the hmac
     pub fn hmac_input(&self, uid: &[u8]) -> Vec<u8> {
         // Create the hash input: "Foundation KeyCard" || UID || data
