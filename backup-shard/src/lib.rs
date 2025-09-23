@@ -1,16 +1,12 @@
 use minicbor::{Decode, Decoder, Encode, Encoder};
 
-#[derive(
-    Debug, Default, Clone, PartialEq, minicbor::Encode, minicbor::Decode, zeroize::ZeroizeOnDrop,
-)]
+#[derive(Debug, Default, Clone, PartialEq, zeroize::ZeroizeOnDrop)]
 #[cfg_attr(
     feature = "keyos",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
 pub struct Shard {
-    #[n(0)]
     pub shard: ShardVersion,
-    #[cbor(n(1), with = "minicbor::bytes")]
     pub hmac: [u8; 32],
 }
 
@@ -74,12 +70,20 @@ impl Shard {
 
     /// Returns the encoded shard (official encoding is minicbor)
     pub fn encode(&self) -> Vec<u8> {
-        minicbor::to_vec(self).unwrap()
+        let mut v = minicbor::to_vec(&self.shard).unwrap();
+        v.extend_from_slice(&self.hmac);
+        v
     }
 
     /// Returns the decoded shard (official encoding is minicbor)
     pub fn decode(data: &[u8]) -> Result<Shard, minicbor::decode::Error> {
-        minicbor::decode(data)
+        if data.len() < 32 {
+            return Err(minicbor::decode::Error::message("invalid length"));
+        }
+        let (data, hmac) = data.split_at(data.len() - 32);
+        let shard: ShardVersion = minicbor::decode(data)?;
+        let hmac: [u8; 32] = hmac.try_into().unwrap();
+        Ok(Shard { shard, hmac })
     }
 }
 
