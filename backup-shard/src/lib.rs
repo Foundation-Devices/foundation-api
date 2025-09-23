@@ -6,28 +6,78 @@
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
 pub struct Shard {
-    #[cbor(n(0), with = "minicbor::bytes")]
-    pub device_id: [u8; 32],
+    #[n(0)]
+    pub shard: ShardVersion,
     #[cbor(n(1), with = "minicbor::bytes")]
-    pub seed_fingerprint: [u8; 32],
-    #[n(2)]
-    pub seed_shamir_share: Vec<u8>,
-    #[n(3)]
-    pub seed_shamir_share_index: usize,
-    #[n(4)]
-    pub part_of_magic_backup: bool,
-    // make sure it stay the last field in the struct for `data()` method below
-    #[cbor(n(5), with = "minicbor::bytes")]
     pub hmac: [u8; 32],
 }
 
 impl Shard {
-    const FOUNDATION_KEYCARD_PREFIX: &[u8] = b"Foundation KeyCard";
+    pub const FOUNDATION_KEYCARD_PREFIX: &[u8] = b"Foundation KeyCard";
 
-    /// Returns the data of the shard without the hmac
-    pub fn data(&self) -> Vec<u8> {
-        let full_data = minicbor::to_vec(self).unwrap();
-        full_data[..full_data.len() - 34].to_vec()
+    /// Return a new instance of Shard
+    pub fn new(
+        device_id: [u8; 32],
+        seed_fingerprint: [u8; 32],
+        seed_shamir_share: Vec<u8>,
+        seed_shamir_share_index: usize,
+        part_of_magic_backup: bool,
+    ) -> Self {
+        Self {
+            shard: ShardVersion::V0(ShardV0 {
+                device_id,
+                seed_fingerprint,
+                seed_shamir_share,
+                seed_shamir_share_index,
+                part_of_magic_backup,
+            }),
+            hmac: [0; 32],
+        }
+    }
+
+    /// Get the Device ID from the Shard
+    pub fn device_id(&self) -> &[u8; 32] {
+        match &self.shard {
+            ShardVersion::V0(shard) => &shard.device_id,
+        }
+    }
+
+    /// Get the Seed Fingerprint from the Shard
+    pub fn seed_fingerprint(&self) -> &[u8; 32] {
+        match &self.shard {
+            ShardVersion::V0(shard) => &shard.seed_fingerprint,
+        }
+    }
+
+    /// Get the Seed Shamir Share from the Shard
+    pub fn seed_shamir_share(&self) -> &[u8] {
+        match &self.shard {
+            ShardVersion::V0(shard) => &shard.seed_shamir_share,
+        }
+    }
+
+    /// Get the Seed Shamir Share Index from the Shard
+    pub fn seed_shamir_share_index(&self) -> usize {
+        match &self.shard {
+            ShardVersion::V0(shard) => shard.seed_shamir_share_index,
+        }
+    }
+
+    /// Is the Shard part of a Magic Backup
+    pub fn part_of_magic_backup(&self) -> bool {
+        match &self.shard {
+            ShardVersion::V0(shard) => shard.part_of_magic_backup,
+        }
+    }
+
+    /// Get the HMAC from the Shard
+    pub fn hmac(&self) -> &[u8; 32] {
+        &self.hmac
+    }
+
+    /// Set the HMAC of a Shard
+    pub fn set_hmac(&mut self, hmac: [u8; 32]) {
+        self.hmac = hmac;
     }
 
     /// Returns the hash input for the hmac
@@ -36,7 +86,7 @@ impl Shard {
         let mut hash_input = Vec::new();
         hash_input.extend_from_slice(Self::FOUNDATION_KEYCARD_PREFIX);
         hash_input.extend_from_slice(uid);
-        hash_input.extend_from_slice(self.data().as_slice());
+        minicbor::encode(&self.shard, &mut hash_input).unwrap();
         hash_input
     }
 
@@ -48,5 +98,125 @@ impl Shard {
     /// Returns the decoded shard (official encoding is minicbor)
     pub fn decode(data: &[u8]) -> Result<Shard, minicbor::decode::Error> {
         minicbor::decode(data)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, zeroize::ZeroizeOnDrop)]
+#[cfg_attr(
+    feature = "keyos",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum ShardVersion {
+    V0(ShardV0),
+}
+
+impl Default for ShardVersion {
+    fn default() -> Self {
+        ShardVersion::V0(ShardV0::default())
+    }
+}
+
+impl<C> minicbor::Encode<C> for ShardVersion {
+    fn encode<W: minicbor::encode::Write>(
+        &self,
+        e: &mut minicbor::Encoder<W>,
+        ctx: &mut C,
+    ) -> Result<(), minicbor::encode::Error<W::Error>> {
+        match self {
+            ShardVersion::V0(shard) => {
+                e.u8(ShardV0::VERSION)?;
+                shard.encode(e, ctx)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_nil(&self) -> bool {
+        false
+    }
+}
+
+impl<'b, C> minicbor::Decode<'b, C> for ShardVersion {
+    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
+        let version = d.u8()?;
+        match version {
+            ShardV0::VERSION => Ok(ShardVersion::V0(ShardV0::decode(d, ctx)?)),
+            _ => Err(minicbor::decode::Error::message("Invalid Version")),
+        }
+    }
+}
+
+#[derive(
+    Debug, Default, Clone, PartialEq, minicbor::Encode, minicbor::Decode, zeroize::ZeroizeOnDrop,
+)]
+#[cfg_attr(
+    feature = "keyos",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct ShardV0 {
+    #[cbor(n(0), with = "minicbor::bytes")]
+    pub device_id: [u8; 32],
+    #[cbor(n(1), with = "minicbor::bytes")]
+    pub seed_fingerprint: [u8; 32],
+    #[n(2)]
+    pub seed_shamir_share: Vec<u8>,
+    #[n(3)]
+    pub seed_shamir_share_index: usize,
+    #[n(4)]
+    pub part_of_magic_backup: bool,
+}
+
+impl ShardV0 {
+    pub const VERSION: u8 = 0;
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn v0_round_trip() {
+        let shard = Shard {
+            shard: ShardVersion::V0(ShardV0 {
+                device_id: [0xAA; 32],
+                seed_fingerprint: [0xBB; 32],
+                seed_shamir_share: vec![1, 2, 3, 4, 5],
+                seed_shamir_share_index: 2,
+                part_of_magic_backup: true,
+            }),
+            hmac: [0xCC; 32],
+        };
+
+        let encoded = shard.encode();
+        let decoded = Shard::decode(&encoded).unwrap();
+        assert_eq!(encoded.len(), 113);
+        assert_eq!(shard, decoded);
+    }
+
+    #[test]
+    fn hmac_input() {
+        let shard = Shard {
+            shard: ShardVersion::V0(ShardV0 {
+                device_id: [0xAA; 32],
+                seed_fingerprint: [0xBB; 32],
+                seed_shamir_share: vec![1, 2, 3, 4, 5],
+                seed_shamir_share_index: 2,
+                part_of_magic_backup: true,
+            }),
+            hmac: [0xCC; 32],
+        };
+
+        let uid = [44, 55, 66];
+        let expected = {
+            let mut expected = vec![];
+            expected.extend_from_slice(Shard::FOUNDATION_KEYCARD_PREFIX);
+            expected.extend(&uid);
+            expected.extend(&minicbor::to_vec(&shard.shard).unwrap());
+            expected
+        };
+
+        let hmac_input = shard.hmac_input(&uid);
+
+        assert_eq!(hmac_input, expected);
     }
 }
