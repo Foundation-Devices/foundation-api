@@ -20,6 +20,12 @@ pub struct ARIDCache {
     cache: Arc<Mutex<HashMap<ARID, SystemTime>>>,
 }
 
+impl Default for ARIDCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ARIDCache {
     pub fn new() -> Self {
         Self {
@@ -36,7 +42,7 @@ impl ARIDCache {
         self.cleanup_expired(&mut cache);
 
         // Check if ARID already exists (replay attack)
-        if cache.contains_key(&arid) {
+        if cache.contains_key(arid) {
             return true; // Replay attack detected
         }
 
