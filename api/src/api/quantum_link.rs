@@ -31,15 +31,15 @@ impl ARIDCache {
     /// Returns true if this is a replay attack (ARID already exists)
     pub fn check_and_store(&self, arid: &ARID) -> bool {
         let mut cache = self.cache.lock().unwrap();
-        
+
         // Clean up expired entries first
         self.cleanup_expired(&mut cache);
-        
+
         // Check if ARID already exists (replay attack)
         if cache.contains_key(&arid) {
             return true; // Replay attack detected
         }
-        
+
         // Store the new ARID with current timestamp
         cache.insert(arid.clone(), SystemTime::now());
         false // Not a replay attack
@@ -139,13 +139,13 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     {
         let event: SealedEvent<Expression> =
             SealedEvent::try_from_envelope(envelope, None, Some(&Date::now()), private_keys)?;
-        
+
         // Check for replay attack
         let arid = event.id();
         if arid_cache.check_and_store(arid) {
             bail!("Replay attack detected: ARID has been seen before");
         }
-        
+
         let expression = event.content().clone();
         Ok((expression, event.sender().clone()))
     }
@@ -163,7 +163,8 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
         private_keys: &PrivateKeys,
         arid_cache: &ARIDCache,
     ) -> anyhow::Result<(PassportMessage, XIDDocument)> {
-        let (expression, sender) = PassportMessage::unseal_with_replay_check(envelope, private_keys, arid_cache)?;
+        let (expression, sender) =
+            PassportMessage::unseal_with_replay_check(envelope, private_keys, arid_cache)?;
         Ok((PassportMessage::decode(&expression)?, sender))
     }
 
@@ -180,7 +181,8 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
         private_keys: &PrivateKeys,
         arid_cache: &ARIDCache,
     ) -> anyhow::Result<(EnvoyMessage, XIDDocument)> {
-        let (expression, sender) = EnvoyMessage::unseal_with_replay_check(envelope, private_keys, arid_cache)?;
+        let (expression, sender) =
+            EnvoyMessage::unseal_with_replay_check(envelope, private_keys, arid_cache)?;
         Ok((EnvoyMessage::decode(&expression)?, sender))
     }
 }
@@ -247,7 +249,7 @@ mod tests {
     use crate::api::quantum_link::QuantumLink;
     use crate::fx::ExchangeRate;
     use crate::message::EnvoyMessage;
-    use crate::quantum_link::{QuantumLinkIdentity, ARIDCache};
+    use crate::quantum_link::{ARIDCache, QuantumLinkIdentity};
 
     #[test]
     fn test_encode_decode_quantumlink_message() {
@@ -340,7 +342,10 @@ mod tests {
             &arid_cache,
         );
         assert!(result2.is_err());
-        assert!(result2.unwrap_err().to_string().contains("Replay attack detected"));
+        assert!(result2
+            .unwrap_err()
+            .to_string()
+            .contains("Replay attack detected"));
     }
 
     #[test]
@@ -368,12 +373,14 @@ mod tests {
             &envelope1,
             &passport.private_keys.clone().unwrap(),
             &arid_cache,
-        ).unwrap();
+        )
+        .unwrap();
         let _result2 = EnvoyMessage::unseal_envoy_message_with_replay_check(
             &envelope2,
             &passport.private_keys.unwrap(),
             &arid_cache,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Should have 2 ARIDs stored
         assert_eq!(arid_cache.count(), 2);
