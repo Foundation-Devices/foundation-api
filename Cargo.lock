@@ -862,6 +862,7 @@ dependencies = [
  "bc-components",
  "bc-envelope",
  "bc-xid",
+ "dcbor",
  "flutter_rust_bridge",
  "gstp",
  "minicbor 0.24.4",

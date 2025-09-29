@@ -4,8 +4,10 @@ use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureSchem
 use bc_envelope::prelude::{CBORCase, CBOR};
 use bc_envelope::{Envelope, EventBehavior, Expression, ExpressionBehavior, Function};
 use bc_xid::XIDDocument;
+use dcbor::Date;
 use flutter_rust_bridge::frb;
 use gstp::{SealedEvent, SealedEventBehavior};
+use std::time::Duration;
 
 pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
 pub trait QuantumLink<C>: minicbor::Encode<C> {
@@ -43,11 +45,14 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     where
         Self: minicbor::Encode<()>,
     {
+        // Set valid_until to 5 minutes from now
+        let valid_until = Date::with_duration_from_now(Duration::from_secs(300));
+
         let event: SealedEvent<Expression> =
             SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender.xid_document);
         event
             .to_envelope(
-                None,
+                Some(&valid_until),
                 Some(&sender.private_keys.unwrap()),
                 Some(&recipient.xid_document),
             )
@@ -62,7 +67,7 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
         Self: for<'a> minicbor::Decode<'a, ()>,
     {
         let event: SealedEvent<Expression> =
-            SealedEvent::try_from_envelope(envelope, None, None, private_keys)?;
+            SealedEvent::try_from_envelope(envelope, None, Some(&Date::now()), private_keys)?;
         let expression = event.content().clone();
         Ok((expression, event.sender().clone()))
     }

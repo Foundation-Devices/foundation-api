@@ -33,6 +33,7 @@ flutter_rust_bridge = "=2.11.1"
 quantum-link-macros = { workspace = true }
 gstp = "0.5.0"
 bc-components = "0.17.0"
+dcbor = "0.16.5"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
