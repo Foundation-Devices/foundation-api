@@ -862,6 +862,7 @@ dependencies = [
  "bc-components",
  "bc-envelope",
  "bc-xid",
+ "chrono",
  "dcbor",
  "flutter_rust_bridge",
  "gstp",

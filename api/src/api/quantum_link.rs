@@ -1,76 +1,70 @@
-use crate::message::{EnvoyMessage, PassportMessage};
-use anyhow::bail;
-use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID};
-use bc_envelope::prelude::{CBORCase, CBOR};
-use bc_envelope::{Envelope, EventBehavior, Expression, ExpressionBehavior, Function};
-use bc_xid::XIDDocument;
-use dcbor::Date;
-use flutter_rust_bridge::frb;
-use gstp::{SealedEvent, SealedEventBehavior};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use {
+    crate::message::{EnvoyMessage, PassportMessage},
+    anyhow::bail,
+    bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID},
+    bc_envelope::{
+        prelude::{CBORCase, CBOR},
+        Envelope,
+        EventBehavior,
+        Expression,
+        ExpressionBehavior,
+        Function,
+    },
+    bc_xid::XIDDocument,
+    chrono::{DateTime, Utc},
+    dcbor::Date,
+    flutter_rust_bridge::frb,
+    gstp::{SealedEvent, SealedEventBehavior},
+    std::{collections::VecDeque, time::Duration},
+};
 
 pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
 static VALID_UNTIL_DURATION: Duration = Duration::from_secs(60);
 
 /// Storage for tracking received ARIDs to prevent replay attacks
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct ARIDCache {
-    cache: Arc<Mutex<HashMap<ARID, SystemTime>>>,
-}
-
-impl Default for ARIDCache {
-    fn default() -> Self {
-        Self::new()
-    }
+    cache: VecDeque<(ARID, DateTime<Utc>)>,
 }
 
 impl ARIDCache {
     pub fn new() -> Self {
         Self {
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: VecDeque::new(),
         }
     }
 
     /// Check if ARID has been seen before and store it if not
     /// Returns true if this is a replay attack (ARID already exists)
-    pub fn check_and_store(&self, arid: &ARID) -> bool {
-        let mut cache = self.cache.lock().unwrap();
-
+    pub fn check_and_store(
+        &mut self,
+        arid: &ARID,
+        sent_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> bool {
         // Clean up expired entries first
-        self.cleanup_expired(&mut cache);
+        self.cache
+            .retain(|(_, date)| now < (*date + VALID_UNTIL_DURATION));
 
         // Check if ARID already exists (replay attack)
-        if cache.contains_key(arid) {
+        if self.cache.iter().any(|(id, _)| id == arid) {
             return true; // Replay attack detected
         }
 
-        // Store the new ARID with current timestamp
-        cache.insert(arid.clone(), SystemTime::now());
+        if now < (sent_at + VALID_UNTIL_DURATION) {
+            self.cache.push_back((arid.clone(), sent_at));
+        }
         false // Not a replay attack
     }
 
-    /// Remove expired ARIDs from the cache
-    fn cleanup_expired(&self, cache: &mut HashMap<ARID, SystemTime>) {
-        let now = SystemTime::now();
-        cache.retain(|_, timestamp| {
-            now.duration_since(*timestamp)
-                .map(|duration| duration < VALID_UNTIL_DURATION)
-                .unwrap_or(false)
-        });
-    }
-
     /// Get the number of stored ARIDs (for testing/monitoring)
-    pub fn count(&self) -> usize {
-        let cache = self.cache.lock().unwrap();
-        cache.len()
+    pub fn len(&self) -> usize {
+        self.cache.len()
     }
 
     /// Clear all stored ARIDs
-    pub fn clear(&self) {
-        let mut cache = self.cache.lock().unwrap();
-        cache.clear();
+    pub fn clear(&mut self) {
+        self.cache.clear();
     }
 }
 
@@ -112,7 +106,8 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
         let valid_until = Date::with_duration_from_now(VALID_UNTIL_DURATION);
 
         let event: SealedEvent<Expression> =
-            SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender.xid_document);
+            SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender.xid_document)
+                .with_date(&valid_until);
         event
             .to_envelope(
                 Some(&valid_until),
@@ -138,17 +133,19 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     fn unseal_with_replay_check(
         envelope: &Envelope,
         private_keys: &PrivateKeys,
-        arid_cache: &ARIDCache,
+        arid_cache: &mut ARIDCache,
     ) -> anyhow::Result<(Expression, XIDDocument)>
     where
         Self: for<'a> minicbor::Decode<'a, ()>,
     {
+        let now = Utc::now();
         let event: SealedEvent<Expression> =
-            SealedEvent::try_from_envelope(envelope, None, Some(&Date::now()), private_keys)?;
+            SealedEvent::try_from_envelope(envelope, None, Some(&Date::from(now)), private_keys)?;
 
         // Check for replay attack
         let arid = event.id();
-        if arid_cache.check_and_store(arid) {
+        let event_date = event.date().unwrap().datetime();
+        if arid_cache.check_and_store(arid, event_date, now) {
             bail!("Replay attack detected: ARID has been seen before");
         }
 
@@ -167,7 +164,7 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     fn unseal_passport_message_with_replay_check(
         envelope: &Envelope,
         private_keys: &PrivateKeys,
-        arid_cache: &ARIDCache,
+        arid_cache: &mut ARIDCache,
     ) -> anyhow::Result<(PassportMessage, XIDDocument)> {
         let (expression, sender) =
             PassportMessage::unseal_with_replay_check(envelope, private_keys, arid_cache)?;
@@ -185,7 +182,7 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     fn unseal_envoy_message_with_replay_check(
         envelope: &Envelope,
         private_keys: &PrivateKeys,
-        arid_cache: &ARIDCache,
+        arid_cache: &mut ARIDCache,
     ) -> anyhow::Result<(EnvoyMessage, XIDDocument)> {
         let (expression, sender) =
             EnvoyMessage::unseal_with_replay_check(envelope, private_keys, arid_cache)?;
@@ -251,11 +248,12 @@ impl QuantumLinkIdentity {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::message::QuantumLinkMessage;
-    use crate::api::quantum_link::QuantumLink;
-    use crate::fx::ExchangeRate;
-    use crate::message::EnvoyMessage;
-    use crate::quantum_link::{ARIDCache, QuantumLinkIdentity};
+    use crate::{
+        api::{message::QuantumLinkMessage, quantum_link::QuantumLink},
+        fx::ExchangeRate,
+        message::EnvoyMessage,
+        quantum_link::{ARIDCache, QuantumLinkIdentity},
+    };
 
     #[test]
     fn test_encode_decode_quantumlink_message() {
@@ -322,7 +320,7 @@ mod tests {
     fn test_replay_attack_prevention() {
         let envoy = QuantumLinkIdentity::generate();
         let passport = QuantumLinkIdentity::generate();
-        let arid_cache = ARIDCache::new();
+        let mut arid_cache = ARIDCache::new();
 
         let fx_rate = ExchangeRate::new("USD", 0.85);
         let original_message = EnvoyMessage {
@@ -337,7 +335,7 @@ mod tests {
         let result1 = EnvoyMessage::unseal_envoy_message_with_replay_check(
             &envelope,
             &passport.private_keys.clone().unwrap(),
-            &arid_cache,
+            &mut arid_cache,
         );
         assert!(result1.is_ok());
 
@@ -345,7 +343,7 @@ mod tests {
         let result2 = EnvoyMessage::unseal_envoy_message_with_replay_check(
             &envelope,
             &passport.private_keys.unwrap(),
-            &arid_cache,
+            &mut arid_cache,
         );
         assert!(result2.is_err());
         assert!(result2
@@ -356,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_arid_cache_cleanup() {
-        let arid_cache = ARIDCache::new();
+        let mut arid_cache = ARIDCache::new();
         let envoy = QuantumLinkIdentity::generate();
         let passport = QuantumLinkIdentity::generate();
 
@@ -378,21 +376,72 @@ mod tests {
         let _result1 = EnvoyMessage::unseal_envoy_message_with_replay_check(
             &envelope1,
             &passport.private_keys.clone().unwrap(),
-            &arid_cache,
+            &mut arid_cache,
         )
         .unwrap();
         let _result2 = EnvoyMessage::unseal_envoy_message_with_replay_check(
             &envelope2,
             &passport.private_keys.unwrap(),
-            &arid_cache,
+            &mut arid_cache,
         )
         .unwrap();
 
         // Should have 2 ARIDs stored
-        assert_eq!(arid_cache.count(), 2);
+        assert_eq!(arid_cache.len(), 2);
 
         // Clear cache manually to test cleanup
         arid_cache.clear();
-        assert_eq!(arid_cache.count(), 0);
+        assert_eq!(arid_cache.len(), 0);
     }
+}
+
+#[test]
+fn test_time_based_eviction() {
+    let mut cache = ARIDCache::new();
+    let arid1 = ARID::new();
+    let arid2 = ARID::new();
+
+    let expiration = chrono::Duration::from_std(VALID_UNTIL_DURATION).unwrap();
+    let start = chrono::Utc::now();
+
+    cache.check_and_store(&arid1, start, start);
+    assert_eq!(cache.len(), 1);
+
+    // evict the old time
+    // evict the old time by advancing 'now' past expiration
+    let future = start + expiration + chrono::Duration::seconds(1);
+    cache.check_and_store(&arid2, future, future);
+    assert_eq!(cache.len(), 1);
+    assert!(!cache.cache.iter().any(|(id, _)| id == &arid1));
+}
+
+#[test]
+fn test_replay_check() {
+    use crate::{fx::ExchangeRate, message::QuantumLinkMessage};
+
+    let mut arid_cache = ARIDCache::new();
+    let envoy = QuantumLinkIdentity::generate();
+    let passport = QuantumLinkIdentity::generate();
+
+    let fx_rate = ExchangeRate::new("USD", 0.85);
+    let message = EnvoyMessage {
+        message: QuantumLinkMessage::ExchangeRate(fx_rate),
+        timestamp: 123456,
+    };
+
+    let envelope = QuantumLink::seal(&message, envoy.clone(), passport.clone());
+
+    let result1 = EnvoyMessage::unseal_envoy_message_with_replay_check(
+        &envelope,
+        &passport.private_keys.clone().unwrap(),
+        &mut arid_cache,
+    );
+    assert!(result1.is_ok());
+
+    let result2 = EnvoyMessage::unseal_envoy_message_with_replay_check(
+        &envelope,
+        &passport.private_keys.unwrap(),
+        &mut arid_cache,
+    );
+    assert!(result2.is_err());
 }
