@@ -15,7 +15,7 @@ use {
     dcbor::Date,
     flutter_rust_bridge::frb,
     gstp::{SealedEvent, SealedEventBehavior},
-    std::{collections::VecDeque, time::Duration},
+    std::time::Duration,
 };
 
 pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
@@ -24,14 +24,12 @@ static VALID_UNTIL_DURATION: Duration = Duration::from_secs(60);
 /// Storage for tracking received ARIDs to prevent replay attacks
 #[derive(Debug, Default, Clone)]
 pub struct ARIDCache {
-    cache: VecDeque<(ARID, DateTime<Utc>)>,
+    cache: Vec<(ARID, DateTime<Utc>)>,
 }
 
 impl ARIDCache {
     pub fn new() -> Self {
-        Self {
-            cache: VecDeque::new(),
-        }
+        Self { cache: Vec::new() }
     }
 
     /// Check if ARID has been seen before and store it if not
@@ -52,7 +50,7 @@ impl ARIDCache {
         }
 
         if now < (sent_at + VALID_UNTIL_DURATION) {
-            self.cache.push_back((arid.clone(), sent_at));
+            self.cache.push((arid.clone(), sent_at));
         }
         false // Not a replay attack
     }
