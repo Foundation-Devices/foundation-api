@@ -1,6 +1,7 @@
-use consts::APP_MTU;
-
-use crate::{Header, CHUNK_DATA_SIZE, HEADER_SIZE};
+use {
+    crate::{Header, CHUNK_DATA_SIZE, HEADER_SIZE},
+    consts::APP_MTU,
+};
 
 pub struct Chunker<'a> {
     data: &'a [u8],

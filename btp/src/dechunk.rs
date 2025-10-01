@@ -147,7 +147,8 @@ impl Dechunker {
     }
 
     /// Inserts a chunk. Use this for multiple concurrent messages.
-    /// First decode with [`Chunk::decode()`], lookup decoder by message ID, then insert.
+    /// First decode with [`Chunk::decode()`], lookup decoder by message ID,
+    /// then insert.
     pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<(), MessageIdError> {
         let header = &chunk.header;
 
@@ -184,8 +185,9 @@ impl Dechunker {
         Ok(())
     }
 
-    /// Decodes and inserts raw chunk data. Use this for single message at a time.
-    /// For multiple concurrent messages, use [`Chunk::parse()`] then [`Dechunker::insert_chunk()`].
+    /// Decodes and inserts raw chunk data. Use this for single message at a
+    /// time. For multiple concurrent messages, use [`Chunk::parse()`] then
+    /// [`Dechunker::insert_chunk()`].
     pub fn receive(&mut self, data: &[u8]) -> Result<(), ReceiveError> {
         let chunk_with_header = Chunk::decode(data)?;
         self.insert_chunk(chunk_with_header)?;

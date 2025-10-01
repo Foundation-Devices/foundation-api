@@ -1,6 +1,10 @@
-use bc_xid::XIDDocument;
-use gstp::{SealedRequest, SealedResponse};
-use {anyhow::Result, bc_components::ARID, bc_envelope::prelude::*};
+use {
+    anyhow::Result,
+    bc_components::ARID,
+    bc_envelope::prelude::*,
+    bc_xid::XIDDocument,
+    gstp::{SealedRequest, SealedResponse},
+};
 
 pub trait AbstractEnclave {
     // Public key operations
@@ -12,7 +16,8 @@ pub trait AbstractEnclave {
     fn sign(&self, envelope: &Envelope) -> Envelope;
     fn seal_response(&self, envelope: &SealedResponse, recipient: &XIDDocument) -> Envelope;
     fn decrypt(&self, envelope: &Envelope) -> Result<Envelope>;
-    //fn unseal(&self, envelope: &Envelope, sender: &XIDDocument) -> Result<Envelope>;
+    //fn unseal(&self, envelope: &Envelope, sender: &XIDDocument) ->
+    // Result<Envelope>;
     fn self_decrypt(&self, envelope: &Envelope) -> Result<Envelope>;
 
     // Request -> Envelope

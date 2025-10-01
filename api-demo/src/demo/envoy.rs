@@ -1,22 +1,26 @@
-use bc_xid::XIDDocument;
-use foundation_api::api::discovery::Discovery;
-use foundation_api::api::quantum_link::QUANTUM_LINK;
-use foundation_api::quantum_link::QuantumLink;
-
-use foundation_api::api::message::QuantumLinkMessage;
-use foundation_api::fx::ExchangeRate;
-use foundation_api::message::{EnvoyMessage, PassportMessage};
-use foundation_api::pairing::PairingRequest;
-use gstp::{SealedResponse, SealedResponseBehavior};
 use {
     crate::{
-        chapter_title, latency, paint_broadcast, paint_response, sleep, BluetoothChannel, Camera,
+        chapter_title,
+        latency,
+        paint_broadcast,
+        paint_response,
+        sleep,
+        BluetoothChannel,
+        Camera,
         Enclave,
     },
     anyhow::{anyhow, bail, Ok, Result},
     bc_envelope::prelude::*,
-    foundation_abstracted::AbstractBluetoothChannel,
-    foundation_abstracted::SecureTryFrom,
+    bc_xid::XIDDocument,
+    foundation_abstracted::{AbstractBluetoothChannel, SecureTryFrom},
+    foundation_api::{
+        api::{discovery::Discovery, message::QuantumLinkMessage, quantum_link::QUANTUM_LINK},
+        fx::ExchangeRate,
+        message::{EnvoyMessage, PassportMessage},
+        pairing::PairingRequest,
+        quantum_link::QuantumLink,
+    },
+    gstp::{SealedResponse, SealedResponseBehavior},
     std::sync::Arc,
     tokio::{sync::Mutex, task::JoinHandle, time::Duration},
 };
@@ -119,7 +123,8 @@ impl Envoy {
         envelope: Envelope,
         _stop: Arc<Mutex<bool>>,
     ) -> Result<()> {
-        // TODO: Need code here to determine if it's a SealedResponse, SealedRequest or Event
+        // TODO: Need code here to determine if it's a SealedResponse, SealedRequest or
+        // Event
         let response = SealedResponse::secure_try_from(envelope, &self.enclave)?;
         log!("📡 Received: {}", paint_response!(response));
 

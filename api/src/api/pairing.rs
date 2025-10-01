@@ -1,10 +1,14 @@
-use crate::api::quantum_link::QuantumLink;
-use crate::passport::PassportColor;
-use flutter_rust_bridge::frb;
-use quantum_link_macros::quantum_link;
 use {
-    crate::api::passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
+    crate::{
+        api::{
+            passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
+            quantum_link::QuantumLink,
+        },
+        passport::PassportColor,
+    },
+    flutter_rust_bridge::frb,
     minicbor_derive::{Decode, Encode},
+    quantum_link_macros::quantum_link,
 };
 
 #[quantum_link]

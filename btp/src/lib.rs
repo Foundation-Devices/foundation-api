@@ -1,13 +1,14 @@
-pub use chunk::*;
-pub use dechunk::*;
+pub use {chunk::*, dechunk::*};
 
 mod chunk;
 mod dechunk;
 #[cfg(test)]
 mod tests;
 
-use bytemuck::{Pod, Zeroable};
-use consts::APP_MTU;
+use {
+    bytemuck::{Pod, Zeroable},
+    consts::APP_MTU,
+};
 
 pub const HEADER_SIZE: usize = std::mem::size_of::<Header>();
 pub const CHUNK_DATA_SIZE: usize = APP_MTU - HEADER_SIZE;
