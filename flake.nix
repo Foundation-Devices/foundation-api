@@ -31,7 +31,11 @@
         };
       in {
         default = pkgs.mkShellNoCC {
-          packages = [toolchain];
+          packages = with pkgs;
+            [gcc]
+            ++ [
+              toolchain
+            ];
         };
       }
     );
