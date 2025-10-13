@@ -1,32 +1,24 @@
-use {
-    super::onboarding::OnboardingState,
-    crate::{
-        api::raw::RawData,
-        backup::{
-            BackupShardRequest,
-            BackupShardResponse,
-            MagicBackupEnabledRequest,
-            MagicBackupEnabledResponse,
-            RestoreShardRequest,
-            RestoreShardResponse,
-        },
-        bitcoin::*,
-        firmware::{
-            FirmwareFetchEvent,
-            FirmwareFetchRequest,
-            FirmwareUpdateCheckRequest,
-            FirmwareUpdateCheckResponse,
-            FirmwareUpdateResult,
-        },
-        fx::ExchangeRate,
-        pairing::{PairingRequest, PairingResponse},
-        quantum_link::QuantumLink,
-        scv::SecurityCheck,
-        status::{DeviceStatus, EnvoyStatus},
+use flutter_rust_bridge::frb;
+use minicbor_derive::{Decode, Encode};
+use quantum_link_macros::quantum_link;
+
+use super::onboarding::OnboardingState;
+use crate::{
+    api::raw::RawData,
+    backup::{
+        BackupShardRequest, BackupShardResponse, MagicBackupEnabledRequest,
+        MagicBackupEnabledResponse, RestoreShardRequest, RestoreShardResponse,
     },
-    flutter_rust_bridge::frb,
-    minicbor_derive::{Decode, Encode},
-    quantum_link_macros::quantum_link,
+    bitcoin::*,
+    firmware::{
+        FirmwareFetchEvent, FirmwareFetchRequest, FirmwareUpdateCheckRequest,
+        FirmwareUpdateCheckResponse, FirmwareUpdateResult,
+    },
+    fx::ExchangeRate,
+    pairing::{PairingRequest, PairingResponse},
+    quantum_link::QuantumLink,
+    scv::SecurityCheck,
+    status::{DeviceStatus, EnvoyStatus},
 };
 
 #[quantum_link]

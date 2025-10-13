@@ -1,14 +1,11 @@
 #![allow(dead_code)]
 
-use bc_components::{EncapsulationScheme, SignatureScheme};
+use anyhow::Result;
+use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID};
+use bc_envelope::prelude::*;
 use bc_xid::XIDDocument;
+use foundation_abstracted::AbstractEnclave;
 use gstp::{SealedRequest, SealedResponse};
-use {
-    anyhow::Result,
-    bc_components::{PrivateKeys, PublicKeys, ARID},
-    bc_envelope::prelude::*,
-    foundation_abstracted::AbstractEnclave,
-};
 
 #[derive(Debug)]
 pub struct Enclave {
@@ -65,8 +62,8 @@ impl AbstractEnclave for Enclave {
         envelope.decrypt_to_recipient(&self.private_keys)
     }
 
-    // fn unseal(&self, envelope: &Envelope, sender: &XIDDocument) -> Result<Envelope> {
-    //     envelope.unseal(sender, &self.private_key)
+    // fn unseal(&self, envelope: &Envelope, sender: &XIDDocument) ->
+    // Result<Envelope> {     envelope.unseal(sender, &self.private_key)
     // }
 
     fn self_decrypt(&self, envelope: &Envelope) -> Result<Envelope> {
@@ -122,7 +119,9 @@ impl AbstractEnclave for Enclave {
 
 #[cfg(test)]
 pub mod tests {
-    use {super::*, indoc::indoc};
+    use indoc::indoc;
+
+    use super::*;
 
     #[test]
     fn test_sign() {
@@ -171,8 +170,8 @@ pub mod tests {
     //     let enclave1 = Enclave::new();
     //     let enclave2 = Enclave::new();
     //     let envelope = Envelope::new("Hello, World!");
-    //     let signed_and_encrypted = enclave1.seal(&envelope, enclave2.xid_document());
-    //     assert_eq!(
+    //     let signed_and_encrypted = enclave1.seal(&envelope,
+    // enclave2.xid_document());     assert_eq!(
     //         signed_and_encrypted.format(),
     //         (indoc! {
     //             r#"

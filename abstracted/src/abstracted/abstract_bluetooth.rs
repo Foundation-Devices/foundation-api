@@ -1,18 +1,16 @@
-use bc_envelope::prelude::CBOREncodable;
-use bc_envelope::{EnvelopeEncodable, Expression, ResponseBehavior};
-use bc_xid::XIDDocument;
-use gstp::{SealedRequestBehavior, SealedResponseBehavior};
-use {
-    crate::{AbstractEnclave, SecureFrom, SecureTryFrom},
-    anyhow::Result,
-    async_trait::async_trait,
-    bc_components::ARID,
-    bc_envelope::Envelope,
-    gstp::{SealedRequest, SealedResponse},
-    std::time::Duration,
-};
+use std::time::Duration;
 
+use anyhow::Result;
+use async_trait::async_trait;
+use bc_components::ARID;
+use bc_envelope::{
+    prelude::CBOREncodable, Envelope, EnvelopeEncodable, Expression, ResponseBehavior,
+};
+use bc_xid::XIDDocument;
 use btp::{chunk, Dechunker};
+use gstp::{SealedRequest, SealedRequestBehavior, SealedResponse, SealedResponseBehavior};
+
+use crate::{AbstractEnclave, SecureFrom, SecureTryFrom};
 
 #[async_trait]
 pub trait AbstractBluetoothChannel {

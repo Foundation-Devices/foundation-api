@@ -1,8 +1,9 @@
+use rand::{seq::SliceRandom, Rng, RngCore};
+
 use crate::{
     chunk, Chunk, Dechunker, DecodeError, MasterDechunker, MessageIdError, APP_MTU,
     CHUNK_DATA_SIZE, HEADER_SIZE,
 };
-use rand::{seq::SliceRandom, Rng, RngCore};
 
 static TEST_STR: &[u8]= b"
 This is some example data to be chunked.This is some example data to be chunked.This is some example data to be chunked.

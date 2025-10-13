@@ -1,9 +1,8 @@
-use {
-    crate::quantum_link::QuantumLink,
-    flutter_rust_bridge::frb,
-    minicbor_derive::{Decode, Encode},
-    quantum_link_macros::quantum_link,
-};
+use flutter_rust_bridge::frb;
+use minicbor_derive::{Decode, Encode};
+use quantum_link_macros::quantum_link;
+
+use crate::quantum_link::QuantumLink;
 
 // From Prime to Envoy
 #[quantum_link]
