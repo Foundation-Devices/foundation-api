@@ -1,28 +1,22 @@
-use {
-    crate::{
-        chapter_title,
-        latency,
-        paint_broadcast,
-        paint_response,
-        sleep,
-        BluetoothChannel,
-        Camera,
-        Enclave,
-    },
-    anyhow::{anyhow, bail, Ok, Result},
-    bc_envelope::prelude::*,
-    bc_xid::XIDDocument,
-    foundation_abstracted::{AbstractBluetoothChannel, SecureTryFrom},
-    foundation_api::{
-        api::{discovery::Discovery, message::QuantumLinkMessage, quantum_link::QUANTUM_LINK},
-        fx::ExchangeRate,
-        message::{EnvoyMessage, PassportMessage},
-        pairing::PairingRequest,
-        quantum_link::QuantumLink,
-    },
-    gstp::{SealedResponse, SealedResponseBehavior},
-    std::sync::Arc,
-    tokio::{sync::Mutex, task::JoinHandle, time::Duration},
+use std::sync::Arc;
+
+use anyhow::{anyhow, bail, Ok, Result};
+use bc_envelope::prelude::*;
+use bc_xid::XIDDocument;
+use foundation_abstracted::{AbstractBluetoothChannel, SecureTryFrom};
+use foundation_api::{
+    api::{discovery::Discovery, message::QuantumLinkMessage, quantum_link::QUANTUM_LINK},
+    fx::ExchangeRate,
+    message::{EnvoyMessage, PassportMessage},
+    pairing::PairingRequest,
+    quantum_link::QuantumLink,
+};
+use gstp::{SealedResponse, SealedResponseBehavior};
+use tokio::{sync::Mutex, task::JoinHandle, time::Duration};
+
+use crate::{
+    chapter_title, latency, paint_broadcast, paint_response, sleep, BluetoothChannel, Camera,
+    Enclave,
 };
 
 pub const ENVOY_PREFIX: &str = "🔶 Envoy   ";

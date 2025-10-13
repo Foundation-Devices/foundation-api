@@ -1,4 +1,6 @@
-use {proc_macro::TokenStream, quote::quote, syn::DeriveInput};
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::DeriveInput;
 
 #[proc_macro_attribute]
 pub fn quantum_link(_metadata: TokenStream, input: TokenStream) -> TokenStream {

@@ -1,16 +1,8 @@
-use {
-    crate::{
-        chunk,
-        Chunk,
-        Dechunker,
-        DecodeError,
-        MasterDechunker,
-        MessageIdError,
-        APP_MTU,
-        CHUNK_DATA_SIZE,
-        HEADER_SIZE,
-    },
-    rand::{seq::SliceRandom, Rng, RngCore},
+use rand::{seq::SliceRandom, Rng, RngCore};
+
+use crate::{
+    chunk, Chunk, Dechunker, DecodeError, MasterDechunker, MessageIdError, APP_MTU,
+    CHUNK_DATA_SIZE, HEADER_SIZE,
 };
 
 static TEST_STR: &[u8]= b"

@@ -1,10 +1,8 @@
-use {
-    anyhow::Result,
-    bc_components::ARID,
-    bc_envelope::prelude::*,
-    bc_xid::XIDDocument,
-    gstp::{SealedRequest, SealedResponse},
-};
+use anyhow::Result;
+use bc_components::ARID;
+use bc_envelope::prelude::*;
+use bc_xid::XIDDocument;
+use gstp::{SealedRequest, SealedResponse};
 
 pub trait AbstractEnclave {
     // Public key operations

@@ -1,13 +1,11 @@
 #![allow(dead_code)]
 
-use {
-    anyhow::Result,
-    bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID},
-    bc_envelope::prelude::*,
-    bc_xid::XIDDocument,
-    foundation_abstracted::AbstractEnclave,
-    gstp::{SealedRequest, SealedResponse},
-};
+use anyhow::Result;
+use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID};
+use bc_envelope::prelude::*;
+use bc_xid::XIDDocument;
+use foundation_abstracted::AbstractEnclave;
+use gstp::{SealedRequest, SealedResponse};
 
 #[derive(Debug)]
 pub struct Enclave {
@@ -121,7 +119,9 @@ impl AbstractEnclave for Enclave {
 
 #[cfg(test)]
 pub mod tests {
-    use {super::*, indoc::indoc};
+    use indoc::indoc;
+
+    use super::*;
 
     #[test]
     fn test_sign() {

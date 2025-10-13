@@ -1,19 +1,14 @@
-use {
-    crate::message::{EnvoyMessage, PassportMessage},
-    anyhow::bail,
-    bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID},
-    bc_envelope::{
-        prelude::{CBORCase, CBOR},
-        Envelope,
-        EventBehavior,
-        Expression,
-        ExpressionBehavior,
-        Function,
-    },
-    bc_xid::XIDDocument,
-    flutter_rust_bridge::frb,
-    gstp::{SealedEvent, SealedEventBehavior},
+use anyhow::bail;
+use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID};
+use bc_envelope::{
+    prelude::{CBORCase, CBOR},
+    Envelope, EventBehavior, Expression, ExpressionBehavior, Function,
 };
+use bc_xid::XIDDocument;
+use flutter_rust_bridge::frb;
+use gstp::{SealedEvent, SealedEventBehavior};
+
+use crate::message::{EnvoyMessage, PassportMessage};
 
 pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
 pub trait QuantumLink<C>: minicbor::Encode<C> {
