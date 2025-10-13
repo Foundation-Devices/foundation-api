@@ -5,13 +5,16 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    keyos.url = "git+ssh://git@github.com/Foundation-Devices/KeyOS";
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
     self,
     nixpkgs,
-    keyos,
+    fenix,
   }: let
     inherit (nixpkgs) lib;
     forAllSystems = f: lib.genAttrs ["aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux"] f;
@@ -21,15 +24,14 @@
         pkgs = import nixpkgs {
           inherit system;
         };
-        keyosPackages = keyos.packages.${system};
 
-        customPackages = with keyosPackages; [
-          rust-analyzer
-          rust-keyos
-        ];
+        toolchain = fenix.packages.${system}.fromToolchainFile {
+          file = self + "/rust-toolchain.toml";
+          sha256 = "sha256-18J/HvJzns0BwRNsUNkCSoIw7MtAmppPu5jNzuzMvCc=";
+        };
       in {
         default = pkgs.mkShellNoCC {
-          packages = customPackages;
+          packages = [toolchain];
         };
       }
     );
