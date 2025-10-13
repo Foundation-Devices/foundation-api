@@ -1,15 +1,14 @@
-use {
-    anyhow::Result,
-    async_trait::async_trait,
-    foundation_abstracted::AbstractBluetoothChannel,
-    std::sync::Arc,
-    tokio::{
-        sync::{
-            mpsc::{self, Receiver, Sender},
-            Mutex,
-        },
-        time::{self, Duration},
+use std::sync::Arc;
+
+use anyhow::Result;
+use async_trait::async_trait;
+use foundation_abstracted::AbstractBluetoothChannel;
+use tokio::{
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Mutex,
     },
+    time::{self, Duration},
 };
 
 #[derive(Debug)]

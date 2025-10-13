@@ -1,26 +1,26 @@
+use std::sync::Arc;
+
+use anyhow::{bail, Result};
+use bc_envelope::prelude::*;
 use bc_xid::XIDDocument;
-use foundation_api::api::message::QuantumLinkMessage;
-use foundation_api::api::passport::{PassportFirmwareVersion, PassportSerial};
-use foundation_api::api::quantum_link::QuantumLink;
-use foundation_api::api::quantum_link::QUANTUM_LINK;
-use foundation_api::message::EnvoyMessage;
-use foundation_api::pairing::PairingResponse;
-use foundation_api::passport::{PassportColor, PassportModel};
-use gstp::SealedRequest;
-use gstp::SealedRequestBehavior;
-use {
-    super::{BluetoothChannel, Screen},
-    crate::{chapter_title, latency, paint_broadcast, paint_request, Enclave},
-    anyhow::{bail, Result},
-    bc_envelope::prelude::*,
-    foundation_abstracted::AbstractBluetoothChannel,
-    foundation_abstracted::AbstractEnclave,
-    foundation_abstracted::SecureTryFrom,
-    foundation_api::api::discovery::Discovery,
-    foundation_ur::Encoder,
-    std::sync::Arc,
-    tokio::{sync::Mutex, task::JoinHandle, time::Duration},
+use foundation_abstracted::{AbstractBluetoothChannel, AbstractEnclave, SecureTryFrom};
+use foundation_api::{
+    api::{
+        discovery::Discovery,
+        message::QuantumLinkMessage,
+        passport::{PassportFirmwareVersion, PassportSerial},
+        quantum_link::{QuantumLink, QUANTUM_LINK},
+    },
+    message::EnvoyMessage,
+    pairing::PairingResponse,
+    passport::{PassportColor, PassportModel},
 };
+use foundation_ur::Encoder;
+use gstp::{SealedRequest, SealedRequestBehavior};
+use tokio::{sync::Mutex, task::JoinHandle, time::Duration};
+
+use super::{BluetoothChannel, Screen};
+use crate::{chapter_title, latency, paint_broadcast, paint_request, Enclave};
 
 pub const PASSPORT_PREFIX: &str = "🛂 Passport";
 

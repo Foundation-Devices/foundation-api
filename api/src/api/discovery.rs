@@ -1,4 +1,6 @@
-use {anyhow::Result, bc_envelope::prelude::*, bc_xid::XIDDocument};
+use anyhow::Result;
+use bc_envelope::prelude::*;
+use bc_xid::XIDDocument;
 
 // Functions
 pub const DISCOVERY_FUNCTION: Function = Function::new_static_named("discovery");
