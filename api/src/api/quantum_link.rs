@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::bail;
 use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID};
 use bc_envelope::{
@@ -5,13 +7,15 @@ use bc_envelope::{
     Envelope, EventBehavior, Expression, ExpressionBehavior, Function,
 };
 use bc_xid::XIDDocument;
+use chrono::{DateTime, Utc};
+use dcbor::Date;
 use flutter_rust_bridge::frb;
 use gstp::{SealedEvent, SealedEventBehavior};
 
 use crate::message::{EnvoyMessage, PassportMessage};
 
 pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
-static VALID_UNTIL_DURATION: Duration = Duration::from_secs(60);
+pub const EXPIRATION_DURATION: Duration = Duration::from_secs(60);
 
 /// Storage for tracking received ARIDs to prevent replay attacks
 #[derive(Debug, Default, Clone)]
@@ -34,22 +38,26 @@ impl ARIDCache {
     ) -> bool {
         // Clean up expired entries first
         self.cache
-            .retain(|(_, date)| now < (*date + VALID_UNTIL_DURATION));
+            .retain(|(_, date)| now < (*date + EXPIRATION_DURATION));
 
         // Check if ARID already exists (replay attack)
         if self.cache.iter().any(|(id, _)| id == arid) {
             return true; // Replay attack detected
         }
 
-        if now < (sent_at + VALID_UNTIL_DURATION) {
+        if now < (sent_at + EXPIRATION_DURATION) {
             self.cache.push((arid.clone(), sent_at));
         }
         false // Not a replay attack
     }
 
-    /// Get the number of stored ARIDs (for testing/monitoring)
+    /// Get the number of stored ARIDs
     pub fn len(&self) -> usize {
         self.cache.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cache.len() == 0
     }
 
     /// Clear all stored ARIDs
@@ -93,7 +101,7 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
     where
         Self: minicbor::Encode<()>,
     {
-        let valid_until = Date::with_duration_from_now(VALID_UNTIL_DURATION);
+        let valid_until = Date::with_duration_from_now(EXPIRATION_DURATION);
 
         let event: SealedEvent<Expression> =
             SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender.xid_document)
@@ -391,7 +399,7 @@ fn test_time_based_eviction() {
     let arid1 = ARID::new();
     let arid2 = ARID::new();
 
-    let expiration = chrono::Duration::from_std(VALID_UNTIL_DURATION).unwrap();
+    let expiration = chrono::Duration::from_std(EXPIRATION_DURATION).unwrap();
     let start = chrono::Utc::now();
 
     cache.check_and_store(&arid1, start, start);
