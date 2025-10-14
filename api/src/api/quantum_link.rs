@@ -97,21 +97,21 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
         Ok(message)
     }
 
-    fn seal(&self, sender: QuantumLinkIdentity, recipient: QuantumLinkIdentity) -> Envelope
+    fn seal(
+        &self,
+        (sender_pk, sender_xid): (&PrivateKeys, &XIDDocument),
+        recipient: &XIDDocument,
+    ) -> Envelope
     where
         Self: minicbor::Encode<()>,
     {
         let valid_until = Date::with_duration_from_now(EXPIRATION_DURATION);
 
         let event: SealedEvent<Expression> =
-            SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender.xid_document)
+            SealedEvent::new(QuantumLink::encode(self), ARID::new(), sender_xid)
                 .with_date(&valid_until);
         event
-            .to_envelope(
-                Some(&valid_until),
-                Some(&sender.private_keys.unwrap()),
-                Some(&recipient.xid_document),
-            )
+            .to_envelope(Some(&valid_until), Some(sender_pk), Some(recipient))
             .unwrap()
     }
 
@@ -142,7 +142,10 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
 
         // Check for replay attack
         let arid = event.id();
-        let event_date = event.date().unwrap().datetime();
+        let event_date = event
+            .date()
+            .ok_or_else(|| anyhow::anyhow!("event missing date"))?
+            .datetime();
         if arid_cache.check_and_store(arid, event_date, now) {
             bail!("Replay attack detected: ARID has been seen before");
         }
@@ -285,7 +288,11 @@ mod tests {
         };
 
         // Seal the message
-        let envelope = QuantumLink::seal(&original_message, envoy.clone(), passport.clone());
+        let envelope = QuantumLink::seal(
+            &original_message,
+            (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
+            &passport.xid_document,
+        );
 
         // Decode the message
         let decoded_message =
@@ -327,7 +334,11 @@ mod tests {
         };
 
         // Seal the message
-        let envelope = QuantumLink::seal(&original_message, envoy.clone(), passport.clone());
+        let envelope = QuantumLink::seal(
+            &original_message,
+            (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
+            &passport.xid_document,
+        );
 
         // First unseal should succeed
         let result1 = EnvoyMessage::unseal_envoy_message_with_replay_check(
@@ -367,8 +378,17 @@ mod tests {
             timestamp: 123457,
         };
 
-        let envelope1 = QuantumLink::seal(&message1, envoy.clone(), passport.clone());
-        let envelope2 = QuantumLink::seal(&message2, envoy.clone(), passport.clone());
+        let envelope1 = QuantumLink::seal(
+            &message1,
+            (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
+            &passport.xid_document,
+        );
+
+        let envelope2 = QuantumLink::seal(
+            &message2,
+            (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
+            &passport.xid_document,
+        );
 
         // Unseal both messages
         let _result1 = EnvoyMessage::unseal_envoy_message_with_replay_check(
@@ -427,7 +447,11 @@ fn test_replay_check() {
         timestamp: 123456,
     };
 
-    let envelope = QuantumLink::seal(&message, envoy.clone(), passport.clone());
+    let envelope = QuantumLink::seal(
+        &message,
+        (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
+        &passport.xid_document,
+    );
 
     let result1 = EnvoyMessage::unseal_envoy_message_with_replay_check(
         &envelope,
