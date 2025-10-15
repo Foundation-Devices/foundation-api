@@ -45,3 +45,65 @@ pub struct MagicBackupEnabledResponse {
     #[n(0)]
     pub enabled: bool,
 }
+
+pub type ShaHash = [u8; 32];
+
+// restoring the backup
+
+// sent in onboarding by prime once the seed is set
+#[quantum_link]
+pub struct BeginRestoreRequest {
+    #[n(0)]
+    seed_fingerprint: ShaHash,
+}
+
+// reply from envoy
+#[quantum_link]
+pub enum BeginRestoreResponse {
+    #[n(0)]
+    NotFound,
+    #[n(1)]
+    Restoring {
+        #[n(0)]
+        file_paths: Vec<String>,
+    },
+}
+
+#[quantum_link]
+pub struct RestoreFileRequest(#[n(0)] pub String);
+
+// sent from envoy
+#[quantum_link]
+pub struct RestoreFileResponse(#[n(0)] pub MagicBackupFile);
+
+// syncing (know which files to backup incrementally)
+
+// sent from envoy on initial connection post onboarding
+#[quantum_link]
+pub struct BackupSyncRequest {
+    #[n(0)]
+    pub files: Vec<FileId>,
+}
+
+#[quantum_link]
+pub struct FileId {
+    #[n(0)]
+    pub path: String,
+    #[n(1)]
+    pub sha256: ShaHash,
+}
+
+#[quantum_link]
+pub struct BackupFile(#[n(0)] pub MagicBackupFile);
+
+#[quantum_link]
+pub struct MagicBackupFile {
+    #[n(0)]
+    pub file: Vec<u8>,
+    #[n(1)]
+    pub path: String,
+    #[n(2)]
+    pub sha256: ShaHash,
+    #[n(3)]
+    pub seed_fingerprint: ShaHash,
+}
