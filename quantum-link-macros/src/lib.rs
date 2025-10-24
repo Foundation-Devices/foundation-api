@@ -8,9 +8,9 @@ pub fn quantum_link(_metadata: TokenStream, input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #[derive(Clone, Debug)]
-        #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+        #[cfg_attr(feature = "keyos", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
         #[derive(minicbor_derive::Encode, minicbor_derive::Decode)]
-        #[flutter_rust_bridge::frb(non_opaque)]
+        #[cfg_attr(feature = "envoy", flutter_rust_bridge::frb(non_opaque))]
         #input
     };
 

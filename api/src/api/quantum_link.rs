@@ -9,7 +9,6 @@ use bc_envelope::{
 use bc_xid::XIDDocument;
 use chrono::{DateTime, Utc};
 use dcbor::Date;
-use flutter_rust_bridge::frb;
 use gstp::{SealedEvent, SealedEventBehavior};
 
 use crate::message::{EnvoyMessage, PassportMessage};
@@ -191,7 +190,7 @@ pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
 impl<T> QuantumLink for T where T: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {}
 
 #[derive(Debug, Clone)]
-#[frb(opaque)]
+#[cfg_attr(feature = "envoy", flutter_rust_bridge::frb(non_opaque))]
 pub struct QuantumLinkIdentity {
     pub private_keys: Option<PrivateKeys>,
     pub xid_document: XIDDocument,
