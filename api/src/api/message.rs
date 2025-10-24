@@ -1,5 +1,3 @@
-use flutter_rust_bridge::frb;
-use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
 
 use super::onboarding::OnboardingState;
@@ -16,7 +14,6 @@ use crate::{
     },
     fx::ExchangeRate,
     pairing::{PairingRequest, PairingResponse},
-    quantum_link::QuantumLink,
     scv::SecurityCheck,
     status::{DeviceStatus, EnvoyStatus},
 };

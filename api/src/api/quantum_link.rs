@@ -66,11 +66,8 @@ impl ARIDCache {
     }
 }
 
-pub trait QuantumLink<C>: minicbor::Encode<C> {
-    fn encode(&self) -> Expression
-    where
-        Self: minicbor::Encode<()>,
-    {
+pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
+    fn encode(&self) -> Expression {
         let mut buffer: Vec<u8> = Vec::new();
 
         minicbor::encode(self, &mut buffer).unwrap();
@@ -190,6 +187,8 @@ pub trait QuantumLink<C>: minicbor::Encode<C> {
         Ok((EnvoyMessage::decode(&expression)?, sender))
     }
 }
+
+impl<T> QuantumLink for T where T: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {}
 
 #[derive(Debug, Clone)]
 #[frb(opaque)]
