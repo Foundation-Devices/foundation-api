@@ -4,8 +4,9 @@ use super::onboarding::OnboardingState;
 use crate::{
     api::raw::RawData,
     backup::{
-        BackupShardRequest, BackupShardResponse, MagicBackupEnabledRequest,
-        MagicBackupEnabledResponse, RestoreShardRequest, RestoreShardResponse,
+        BackupShardRequest, BackupShardResponse, CreateMagicBackupEvent, CreateMagicBackupResult,
+        MagicBackupEnabledRequest, MagicBackupEnabledResponse, RestoreMagicBackupEvent,
+        RestoreMagicBackupRequest, RestoreShardRequest, RestoreShardResponse,
     },
     bitcoin::*,
     firmware::{
@@ -113,5 +114,13 @@ pub enum QuantumLinkMessage {
     #[n(20)]
     RestoreShardResponse(#[n(0)] RestoreShardResponse),
     #[n(21)]
+    CreateMagicBackupEvent(#[n(0)] CreateMagicBackupEvent),
+    #[n(22)]
+    CreateMagicBackupResult(#[n(0)] CreateMagicBackupResult),
+    #[n(23)]
+    RestoreMagicBackupRequest(#[n(0)] RestoreMagicBackupRequest),
+    #[n(24)]
+    RestoreMagicBackupEvent(#[n(0)] RestoreMagicBackupEvent),
+    #[n(100)]
     RawData(#[n(0)] RawData),
 }
