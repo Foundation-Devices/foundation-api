@@ -53,9 +53,16 @@ pub type SeedFingerprint = [u8; 32];
 pub struct BackupChunk {
     #[n(0)]
     pub chunk_index: u32,
-
     #[n(1)]
+    pub total_chunks: u32,
+    #[n(2)]
     pub data: Vec<u8>,
+}
+
+impl BackupChunk {
+    pub fn is_last(&self) -> bool {
+        self.chunk_index == self.total_chunks - 1
+    }
 }
 
 //
@@ -69,8 +76,6 @@ pub enum CreateMagicBackupEvent {
     Start(#[n(0)] StartMagicBackup),
     #[n(1)]
     Chunk(#[n(0)] BackupChunk),
-    #[n(2)]
-    Done,
 }
 
 #[quantum_link]
@@ -118,9 +123,6 @@ pub enum RestoreMagicBackupEvent {
     Downloading,
     #[n(3)]
     Chunk(#[n(0)] BackupChunk),
-    // envoy has sent all the backup chunks
-    #[n(4)]
-    Complete,
     // envoy failed
     #[n(5)]
     Error(#[n(0)] String),
@@ -131,4 +133,13 @@ pub enum RestoreMagicBackupEvent {
 pub struct BackupMetadata {
     #[n(0)]
     pub total_chunks: u32,
+}
+
+// sent from prime -> envoy
+#[quantum_link]
+pub enum RestoreMagicBackupResult {
+    #[n(0)]
+    Success,
+    #[n(1)]
+    Error(#[n(0)] String),
 }

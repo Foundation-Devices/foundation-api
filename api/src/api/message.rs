@@ -6,7 +6,8 @@ use crate::{
     backup::{
         BackupShardRequest, BackupShardResponse, CreateMagicBackupEvent, CreateMagicBackupResult,
         MagicBackupEnabledRequest, MagicBackupEnabledResponse, RestoreMagicBackupEvent,
-        RestoreMagicBackupRequest, RestoreShardRequest, RestoreShardResponse,
+        RestoreMagicBackupRequest, RestoreMagicBackupResult, RestoreShardRequest,
+        RestoreShardResponse,
     },
     bitcoin::*,
     firmware::{
@@ -121,6 +122,8 @@ pub enum QuantumLinkMessage {
     RestoreMagicBackupRequest(#[n(0)] RestoreMagicBackupRequest),
     #[n(24)]
     RestoreMagicBackupEvent(#[n(0)] RestoreMagicBackupEvent),
+    #[n(25)]
+    RestoreMagicBackupResult(#[n(0)] RestoreMagicBackupResult),
     #[n(100)]
     RawData(#[n(0)] RawData),
 }
