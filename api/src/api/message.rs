@@ -1,13 +1,13 @@
-use flutter_rust_bridge::frb;
-use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
 
 use super::onboarding::OnboardingState;
 use crate::{
     api::raw::RawData,
     backup::{
-        BackupShardRequest, BackupShardResponse, MagicBackupEnabledRequest,
-        MagicBackupEnabledResponse, RestoreShardRequest, RestoreShardResponse,
+        BackupShardRequest, BackupShardResponse, CreateMagicBackupEvent, CreateMagicBackupResult,
+        MagicBackupEnabledRequest, MagicBackupEnabledResponse, RestoreMagicBackupEvent,
+        RestoreMagicBackupRequest, RestoreMagicBackupResult, RestoreShardRequest,
+        RestoreShardResponse,
     },
     bitcoin::*,
     firmware::{
@@ -16,7 +16,6 @@ use crate::{
     },
     fx::ExchangeRate,
     pairing::{PairingRequest, PairingResponse},
-    quantum_link::QuantumLink,
     scv::SecurityCheck,
     status::{DeviceStatus, EnvoyStatus},
 };
@@ -116,5 +115,15 @@ pub enum QuantumLinkMessage {
     #[n(20)]
     RestoreShardResponse(#[n(0)] RestoreShardResponse),
     #[n(21)]
+    CreateMagicBackupEvent(#[n(0)] CreateMagicBackupEvent),
+    #[n(22)]
+    CreateMagicBackupResult(#[n(0)] CreateMagicBackupResult),
+    #[n(23)]
+    RestoreMagicBackupRequest(#[n(0)] RestoreMagicBackupRequest),
+    #[n(24)]
+    RestoreMagicBackupEvent(#[n(0)] RestoreMagicBackupEvent),
+    #[n(25)]
+    RestoreMagicBackupResult(#[n(0)] RestoreMagicBackupResult),
+    #[n(100)]
     RawData(#[n(0)] RawData),
 }

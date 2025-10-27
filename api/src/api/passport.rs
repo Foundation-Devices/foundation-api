@@ -1,8 +1,4 @@
-use flutter_rust_bridge::frb;
-use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
-
-use crate::api::quantum_link::QuantumLink;
 
 #[quantum_link]
 pub enum PassportModel {
@@ -14,10 +10,10 @@ pub enum PassportModel {
     Prime,
 }
 
-#[derive(Debug, Clone, Encode, Decode, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub struct PassportFirmwareVersion(#[n(0)] pub String);
 
-#[derive(Debug, Clone, Encode, Decode, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[quantum_link]
 pub struct PassportSerial(#[n(0)] pub String);
 
 #[quantum_link]

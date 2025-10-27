@@ -1,12 +1,7 @@
-use flutter_rust_bridge::frb;
-use minicbor_derive::{Decode, Encode};
 use quantum_link_macros::quantum_link;
 
 use crate::{
-    api::{
-        passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
-        quantum_link::QuantumLink,
-    },
+    api::passport::{PassportFirmwareVersion, PassportModel, PassportSerial},
     passport::PassportColor,
 };
 
