@@ -129,4 +129,6 @@ pub enum QuantumLinkMessage {
     RestoreMagicBackupResult(#[n(0)] RestoreMagicBackupResult),
     #[n(100)]
     RawData(#[n(0)] RawData),
+    #[n(101)]
+    ApplyPassphrase(#[n(0)] ApplyPassphrase),
 }
