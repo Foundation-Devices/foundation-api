@@ -256,7 +256,11 @@ mod tests {
 
     #[test]
     fn test_encode_decode_quantumlink_message() {
-        let fx_rate = ExchangeRate::new("USD", 0.85);
+        let fx_rate = ExchangeRate {
+            currency_code: String::from("USD"),
+            rate: 0.85,
+            timestamp: 0,
+        };
         let original_message = QuantumLinkMessage::ExchangeRate(fx_rate.clone());
 
         // Encode the message
@@ -271,7 +275,7 @@ mod tests {
         };
 
         // Assert that the original and decoded messages are the same
-        assert_eq!(fx_rate.rate(), fx_rate_decoded.rate());
+        assert_eq!(fx_rate.rate, fx_rate_decoded.rate);
     }
 
     #[test]
@@ -279,7 +283,11 @@ mod tests {
         let envoy = QuantumLinkIdentity::generate();
         let passport = QuantumLinkIdentity::generate();
 
-        let fx_rate = ExchangeRate::new("USD", 0.85);
+        let fx_rate = ExchangeRate {
+            currency_code: String::from("USD"),
+            rate: 0.85,
+            timestamp: 0,
+        };
         let original_message = EnvoyMessage {
             message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
             timestamp: 123456,
@@ -302,7 +310,7 @@ mod tests {
         };
 
         // Assert that the original and decoded messages are the same
-        assert_eq!(fx_rate.rate(), fx_rate_decoded.rate());
+        assert_eq!(fx_rate.rate, fx_rate_decoded.rate);
     }
 
     #[test]
@@ -325,7 +333,11 @@ mod tests {
         let passport = QuantumLinkIdentity::generate();
         let mut arid_cache = ARIDCache::new();
 
-        let fx_rate = ExchangeRate::new("USD", 0.85);
+        let fx_rate = ExchangeRate {
+            currency_code: String::from("USD"),
+            rate: 0.85,
+            timestamp: 0,
+        };
         let original_message = EnvoyMessage {
             message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
             timestamp: 123456,
@@ -366,7 +378,11 @@ mod tests {
         let passport = QuantumLinkIdentity::generate();
 
         // Create and seal multiple messages
-        let fx_rate = ExchangeRate::new("USD", 0.85);
+        let fx_rate = ExchangeRate {
+            currency_code: String::from("USD"),
+            rate: 0.85,
+            timestamp: 0,
+        };
         let message1 = EnvoyMessage {
             message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
             timestamp: 123456,
@@ -439,7 +455,11 @@ fn test_replay_check() {
     let envoy = QuantumLinkIdentity::generate();
     let passport = QuantumLinkIdentity::generate();
 
-    let fx_rate = ExchangeRate::new("USD", 0.85);
+    let fx_rate = ExchangeRate {
+        currency_code: String::from("USD"),
+        rate: 0.85,
+        timestamp: 0,
+    };
     let message = EnvoyMessage {
         message: QuantumLinkMessage::ExchangeRate(fx_rate),
         timestamp: 123456,

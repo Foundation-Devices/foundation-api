@@ -6,21 +6,22 @@ pub struct ExchangeRate {
     pub currency_code: String,
     #[n(1)]
     pub rate: f32,
+    #[n(2)]
+    pub timestamp: u64,
 }
 
-impl ExchangeRate {
-    pub fn new(currency_code: &str, rate: f32) -> Self {
-        Self {
-            currency_code: currency_code.to_string(),
-            rate,
-        }
-    }
+#[quantum_link]
+pub struct ExchangeRateHistory {
+    #[n(0)]
+    pub history: Vec<PricePoint>,
+    #[n(1)]
+    pub currency_code: String,
+}
 
-    pub fn currency_code(&self) -> &str {
-        &self.currency_code
-    }
-
-    pub fn rate(&self) -> f32 {
-        self.rate
-    }
+#[quantum_link]
+pub struct PricePoint {
+    #[n(0)]
+    pub rate: f32,
+    #[n(1)]
+    pub timestamp: u64,
 }

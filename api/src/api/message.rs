@@ -14,7 +14,7 @@ use crate::{
         FirmwareFetchEvent, FirmwareFetchRequest, FirmwareUpdateCheckRequest,
         FirmwareUpdateCheckResponse, FirmwareUpdateResult,
     },
-    fx::ExchangeRate,
+    fx::{ExchangeRate, ExchangeRateHistory},
     pairing::{PairingRequest, PairingResponse},
     scv::SecurityCheck,
     status::{DeviceStatus, EnvoyStatus},
@@ -74,6 +74,9 @@ impl PassportMessage {
 pub enum QuantumLinkMessage {
     #[n(0)]
     ExchangeRate(#[n(0)] ExchangeRate),
+    #[n(26)]
+    ExchangeRateHistory(#[n(0)] ExchangeRateHistory),
+
     #[n(1)]
     FirmwareUpdateCheckRequest(#[n(0)] FirmwareUpdateCheckRequest),
     #[n(2)]
