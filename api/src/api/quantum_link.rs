@@ -190,7 +190,7 @@ pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
 impl<T> QuantumLink for T where T: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {}
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "envoy", flutter_rust_bridge::frb(non_opaque))]
+#[cfg_attr(feature = "envoy", flutter_rust_bridge::frb(opaque))]
 pub struct QuantumLinkIdentity {
     pub private_keys: Option<PrivateKeys>,
     pub xid_document: XIDDocument,
