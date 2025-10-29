@@ -72,7 +72,11 @@ impl Envoy {
         loop {
             chapter_title("💸 Envoy tells Passport the USD exchange rate.");
             let msg = EnvoyMessage::new(
-                QuantumLinkMessage::ExchangeRate(ExchangeRate::new("USD", 65432.21)),
+                QuantumLinkMessage::ExchangeRate(ExchangeRate {
+                    currency_code: String::from("USD"),
+                    rate: 65432.21,
+                    timestamp: 0,
+                }),
                 12345,
             );
 
