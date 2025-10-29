@@ -103,6 +103,8 @@ pub enum QuantumLinkMessage {
     BroadcastTransaction(#[n(0)] BroadcastTransaction),
     #[n(13)]
     AccountUpdate(#[n(0)] AccountUpdate),
+    #[n(27)]
+    ApplyPassphrase(#[n(0)] ApplyPassphrase),
     #[n(14)]
     SecurityCheck(#[n(0)] SecurityCheck),
     #[n(15)]

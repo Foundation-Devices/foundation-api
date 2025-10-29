@@ -23,3 +23,10 @@ pub struct BroadcastTransaction {
     #[n(1)]
     pub psbt: Vec<u8>,
 }
+
+// If None, there's no passphrase, hide passphrased accounts
+#[quantum_link]
+pub struct ApplyPassphrase {
+    #[n(0)]
+    pub fingerprint: Option<String>,
+}
