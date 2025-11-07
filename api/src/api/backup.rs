@@ -78,12 +78,16 @@ pub enum CreateMagicBackupEvent {
     Chunk(#[n(0)] BackupChunk),
 }
 
+type Sha256Hash = [u8; 32];
+
 #[quantum_link]
 pub struct StartMagicBackup {
     #[n(0)]
     pub seed_fingerprint: SeedFingerprint,
     #[n(1)]
     pub total_chunks: u32,
+    #[n(2)]
+    pub hash: Sha256Hash,
 }
 
 // envoy -> prime
@@ -118,13 +122,11 @@ pub enum RestoreMagicBackupEvent {
     // envoy found a backup and is beginning transmission
     #[n(1)]
     Starting(#[n(0)] BackupMetadata),
-    // envoy is downloading the backup
+    // a backup chunk
     #[n(2)]
-    Downloading,
-    #[n(3)]
     Chunk(#[n(0)] BackupChunk),
     // envoy failed
-    #[n(5)]
+    #[n(3)]
     Error(#[n(0)] String),
 }
 
