@@ -187,6 +187,7 @@ impl Passport {
                         passport_serial: PassportSerial("1234-5678".to_owned()),
                         passport_firmware_version: PassportFirmwareVersion("1.0.0".to_owned()),
                         passport_color: PassportColor::Dark,
+                        onboarding_complete: false,
                     })
                     .encode(),
                 );

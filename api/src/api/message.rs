@@ -5,7 +5,8 @@ use crate::{
     api::raw::RawData,
     backup::{
         BackupShardRequest, BackupShardResponse, CreateMagicBackupEvent, CreateMagicBackupResult,
-        MagicBackupEnabledRequest, MagicBackupEnabledResponse, RestoreMagicBackupEvent,
+        EnvoyMagicBackupEnabledRequest, EnvoyMagicBackupEnabledResponse, PrimeMagicBackupEnabled,
+        PrimeMagicBackupStatusRequest, PrimeMagicBackupStatusResponse, RestoreMagicBackupEvent,
         RestoreMagicBackupRequest, RestoreMagicBackupResult, RestoreShardRequest,
         RestoreShardResponse,
     },
@@ -107,28 +108,42 @@ pub enum QuantumLinkMessage {
     ApplyPassphrase(#[n(0)] ApplyPassphrase),
     #[n(14)]
     SecurityCheck(#[n(0)] SecurityCheck),
+
     #[n(15)]
-    MagicBackupEnabledRequest(#[n(0)] MagicBackupEnabledRequest),
+    EnvoyMagicBackupEnabledRequest(#[n(0)] EnvoyMagicBackupEnabledRequest),
     #[n(16)]
-    MagicBackupEnabledResponse(#[n(0)] MagicBackupEnabledResponse),
+    EnvoyMagicBackupEnabledResponse(#[n(0)] EnvoyMagicBackupEnabledResponse),
+
+    #[n(28)]
+    PrimeMagicBackupEnabled(#[n(0)] PrimeMagicBackupEnabled),
+
+    #[n(29)]
+    PrimeMagicBackupStatusRequest(#[n(0)] PrimeMagicBackupStatusRequest),
+    #[n(30)]
+    PrimeMagicBackupStatusResponse(#[n(0)] PrimeMagicBackupStatusResponse),
+
     #[n(17)]
     BackupShardRequest(#[n(0)] BackupShardRequest),
     #[n(18)]
     BackupShardResponse(#[n(0)] BackupShardResponse),
+
     #[n(19)]
     RestoreShardRequest(#[n(0)] RestoreShardRequest),
     #[n(20)]
     RestoreShardResponse(#[n(0)] RestoreShardResponse),
+
     #[n(21)]
     CreateMagicBackupEvent(#[n(0)] CreateMagicBackupEvent),
     #[n(22)]
     CreateMagicBackupResult(#[n(0)] CreateMagicBackupResult),
+
     #[n(23)]
     RestoreMagicBackupRequest(#[n(0)] RestoreMagicBackupRequest),
     #[n(24)]
     RestoreMagicBackupEvent(#[n(0)] RestoreMagicBackupEvent),
     #[n(25)]
     RestoreMagicBackupResult(#[n(0)] RestoreMagicBackupResult),
+
     #[n(100)]
     RawData(#[n(0)] RawData),
 }

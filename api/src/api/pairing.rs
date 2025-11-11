@@ -15,6 +15,8 @@ pub struct PairingResponse {
     pub passport_serial: PassportSerial,
     #[n(3)]
     pub passport_color: PassportColor,
+    #[n(4)]
+    pub onboarding_complete: bool,
 }
 
 #[quantum_link]
