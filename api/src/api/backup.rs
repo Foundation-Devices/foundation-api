@@ -59,7 +59,7 @@ pub struct PrimeMagicBackupStatusRequest {
 #[quantum_link]
 pub struct PrimeMagicBackupStatusResponse {
     #[n(0)]
-    shard_backup_found: bool,
+    pub shard_backup_found: bool,
 }
 
 //
