@@ -34,12 +34,32 @@ pub enum RestoreShardResponse {
 }
 
 #[quantum_link]
-pub struct MagicBackupEnabledRequest {}
+pub struct EnvoyMagicBackupEnabledRequest {}
 
 #[quantum_link]
-pub struct MagicBackupEnabledResponse {
+pub struct EnvoyMagicBackupEnabledResponse {
     #[n(0)]
     pub enabled: bool,
+}
+
+#[quantum_link]
+pub struct PrimeMagicBackupEnabled {
+    #[n(0)]
+    pub enabled: bool,
+    #[n(1)]
+    pub seed_fingerprint: [u8; 32],
+}
+
+#[quantum_link]
+pub struct PrimeMagicBackupStatusRequest {
+    #[n(0)]
+    pub seed_fingerprint: [u8; 32],
+}
+
+#[quantum_link]
+pub struct PrimeMagicBackupStatusResponse {
+    #[n(0)]
+    shard_backup_found: bool,
 }
 
 //
