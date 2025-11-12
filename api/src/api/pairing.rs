@@ -23,4 +23,6 @@ pub struct PairingResponse {
 pub struct PairingRequest {
     #[n(0)]
     pub xid_document: Vec<u8>,
+    #[n(1)]
+    pub device_name: String,
 }
