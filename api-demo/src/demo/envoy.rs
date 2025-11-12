@@ -182,6 +182,7 @@ impl Envoy {
         // we're not paired yet. The other commands use the first paired device.
         let body = QuantumLinkMessage::PairingRequest(PairingRequest {
             xid_document: vec![],
+            device_name: String::new(),
         })
         .encode();
         let response = self
