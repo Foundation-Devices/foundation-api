@@ -71,7 +71,7 @@ pub struct FirmwareChunk {
     pub chunk_index: u16,
     #[n(3)]
     pub total_chunks: u16,
-    #[n(4)]
+    #[cbor(n(4), with = "minicbor::bytes")]
     pub data: Vec<u8>,
 }
 
