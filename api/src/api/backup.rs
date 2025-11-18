@@ -75,7 +75,7 @@ pub struct BackupChunk {
     pub chunk_index: u32,
     #[n(1)]
     pub total_chunks: u32,
-    #[n(2)]
+    #[cbor(n(2), with = "minicbor::bytes")]
     pub data: Vec<u8>,
 }
 

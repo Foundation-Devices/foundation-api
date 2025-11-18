@@ -52,9 +52,6 @@ pub enum FirmwareFetchEvent {
     // envoy is sending a chunk for an update patch
     #[n(3)]
     Chunk(#[n(0)] FirmwareChunk),
-    // envoy has sent all the update patches
-    #[n(4)]
-    Complete,
     // envoy failed
     #[n(5)]
     Error(#[n(0)] String),
@@ -71,8 +68,14 @@ pub struct FirmwareChunk {
     pub chunk_index: u16,
     #[n(3)]
     pub total_chunks: u16,
-    #[n(4)]
+    #[cbor(n(4), with = "minicbor::bytes")]
     pub data: Vec<u8>,
+}
+
+impl FirmwareChunk {
+    pub fn is_last(&self) -> bool {
+        self.patch_index == self.total_patches - 1 && self.chunk_index == self.total_chunks - 1
+    }
 }
 
 #[quantum_link]
