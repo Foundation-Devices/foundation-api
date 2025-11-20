@@ -10,7 +10,6 @@ license = "Proprietary"
 
 [dependencies]
 bc-envelope = { workspace = true }
-anyhow = { workspace = true }
 bc-xid = { workspace = true }
 rkyv = { workspace = true, optional = true }
 flutter_rust_bridge = { version = "=2.11.1", optional = true }
