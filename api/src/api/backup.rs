@@ -14,7 +14,10 @@ pub enum BackupShardResponse {
     #[n(0)]
     Success,
     #[n(1)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
 
 #[quantum_link]
@@ -26,11 +29,14 @@ pub struct RestoreShardRequest {
 #[quantum_link]
 pub enum RestoreShardResponse {
     #[n(0)]
-    Success(#[n(0)] Shard),
+    Success(Shard),
     #[n(1)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
     #[n(2)]
-    NotFound(#[n(0)] String),
+    NotFound,
 }
 
 #[quantum_link]
@@ -91,9 +97,9 @@ impl BackupChunk {
 #[quantum_link]
 pub enum CreateMagicBackupEvent {
     #[n(0)]
-    Start(#[n(0)] StartMagicBackup),
+    Start(StartMagicBackup),
     #[n(1)]
-    Chunk(#[n(0)] BackupChunk),
+    Chunk(BackupChunk),
 }
 
 #[quantum_link]
@@ -114,7 +120,10 @@ pub enum CreateMagicBackupResult {
     #[n(0)]
     Success,
     #[n(1)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
 
 //
@@ -137,13 +146,16 @@ pub enum RestoreMagicBackupEvent {
     NoBackupFound,
     // envoy found a backup and is beginning transmission
     #[n(1)]
-    Starting(#[n(0)] BackupMetadata),
+    Starting(BackupMetadata),
     // a backup chunk
     #[n(2)]
-    Chunk(#[n(0)] BackupChunk),
+    Chunk(BackupChunk),
     // envoy failed
     #[n(3)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
 
 #[quantum_link]
@@ -159,5 +171,8 @@ pub enum RestoreMagicBackupResult {
     #[n(0)]
     Success,
     #[n(1)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }

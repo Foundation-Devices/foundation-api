@@ -4,16 +4,16 @@ use quantum_link_macros::quantum_link;
 pub enum SecurityCheck {
     // Envoy to Prime: Initial challenge
     #[n(0)]
-    ChallengeRequest(#[n(0)] ChallengeRequest),
+    ChallengeRequest(ChallengeRequest),
 
     // Prime to Envoy: Response to the challenge
     #[n(1)]
-    ChallengeResponse(#[n(0)] ChallengeResponseResult),
+    ChallengeResponse(ChallengeResponseResult),
 
     // Envoy to Prime: Verification result
     // only send if ChallengeResponse was successful
     #[n(2)]
-    VerificationResult(#[n(0)] VerificationResult),
+    VerificationResult(VerificationResult),
 }
 
 #[quantum_link]

@@ -74,76 +74,76 @@ impl PassportMessage {
 #[quantum_link]
 pub enum QuantumLinkMessage {
     #[n(0)]
-    ExchangeRate(#[n(0)] ExchangeRate),
+    ExchangeRate(ExchangeRate),
     #[n(26)]
-    ExchangeRateHistory(#[n(0)] ExchangeRateHistory),
+    ExchangeRateHistory(ExchangeRateHistory),
 
     #[n(1)]
-    FirmwareUpdateCheckRequest(#[n(0)] FirmwareUpdateCheckRequest),
+    FirmwareUpdateCheckRequest(FirmwareUpdateCheckRequest),
     #[n(2)]
-    FirmwareUpdateCheckResponse(#[n(0)] FirmwareUpdateCheckResponse),
+    FirmwareUpdateCheckResponse(FirmwareUpdateCheckResponse),
     #[n(3)]
-    FirmwareFetchRequest(#[n(0)] FirmwareFetchRequest),
+    FirmwareFetchRequest(FirmwareFetchRequest),
     #[n(4)]
-    FirmwareFetchEvent(#[n(0)] FirmwareFetchEvent),
+    FirmwareFetchEvent(FirmwareFetchEvent),
     #[n(5)]
-    FirmwareUpdateResult(#[n(0)] FirmwareUpdateResult),
+    FirmwareUpdateResult(FirmwareUpdateResult),
     #[n(6)]
-    DeviceStatus(#[n(0)] DeviceStatus),
+    DeviceStatus(DeviceStatus),
     #[n(7)]
-    EnvoyStatus(#[n(0)] EnvoyStatus),
+    EnvoyStatus(EnvoyStatus),
     #[n(8)]
-    PairingRequest(#[n(0)] PairingRequest),
+    PairingRequest(PairingRequest),
     #[n(9)]
-    PairingResponse(#[n(0)] PairingResponse),
+    PairingResponse(PairingResponse),
     #[n(10)]
-    OnboardingState(#[n(0)] OnboardingState),
+    OnboardingState(OnboardingState),
     #[n(11)]
-    SignPsbt(#[n(0)] SignPsbt),
+    SignPsbt(SignPsbt),
     #[n(12)]
-    BroadcastTransaction(#[n(0)] BroadcastTransaction),
+    BroadcastTransaction(BroadcastTransaction),
     #[n(13)]
-    AccountUpdate(#[n(0)] AccountUpdate),
+    AccountUpdate(AccountUpdate),
     #[n(27)]
-    ApplyPassphrase(#[n(0)] ApplyPassphrase),
+    ApplyPassphrase(ApplyPassphrase),
     #[n(14)]
-    SecurityCheck(#[n(0)] SecurityCheck),
+    SecurityCheck(SecurityCheck),
 
     #[n(15)]
-    EnvoyMagicBackupEnabledRequest(#[n(0)] EnvoyMagicBackupEnabledRequest),
+    EnvoyMagicBackupEnabledRequest(EnvoyMagicBackupEnabledRequest),
     #[n(16)]
-    EnvoyMagicBackupEnabledResponse(#[n(0)] EnvoyMagicBackupEnabledResponse),
+    EnvoyMagicBackupEnabledResponse(EnvoyMagicBackupEnabledResponse),
 
     #[n(28)]
-    PrimeMagicBackupEnabled(#[n(0)] PrimeMagicBackupEnabled),
+    PrimeMagicBackupEnabled(PrimeMagicBackupEnabled),
 
     #[n(29)]
-    PrimeMagicBackupStatusRequest(#[n(0)] PrimeMagicBackupStatusRequest),
+    PrimeMagicBackupStatusRequest(PrimeMagicBackupStatusRequest),
     #[n(30)]
-    PrimeMagicBackupStatusResponse(#[n(0)] PrimeMagicBackupStatusResponse),
+    PrimeMagicBackupStatusResponse(PrimeMagicBackupStatusResponse),
 
     #[n(17)]
-    BackupShardRequest(#[n(0)] BackupShardRequest),
+    BackupShardRequest(BackupShardRequest),
     #[n(18)]
-    BackupShardResponse(#[n(0)] BackupShardResponse),
+    BackupShardResponse(BackupShardResponse),
 
     #[n(19)]
-    RestoreShardRequest(#[n(0)] RestoreShardRequest),
+    RestoreShardRequest(RestoreShardRequest),
     #[n(20)]
-    RestoreShardResponse(#[n(0)] RestoreShardResponse),
+    RestoreShardResponse(RestoreShardResponse),
 
     #[n(21)]
-    CreateMagicBackupEvent(#[n(0)] CreateMagicBackupEvent),
+    CreateMagicBackupEvent(CreateMagicBackupEvent),
     #[n(22)]
-    CreateMagicBackupResult(#[n(0)] CreateMagicBackupResult),
+    CreateMagicBackupResult(CreateMagicBackupResult),
 
     #[n(23)]
-    RestoreMagicBackupRequest(#[n(0)] RestoreMagicBackupRequest),
+    RestoreMagicBackupRequest(RestoreMagicBackupRequest),
     #[n(24)]
-    RestoreMagicBackupEvent(#[n(0)] RestoreMagicBackupEvent),
+    RestoreMagicBackupEvent(RestoreMagicBackupEvent),
     #[n(25)]
-    RestoreMagicBackupResult(#[n(0)] RestoreMagicBackupResult),
+    RestoreMagicBackupResult(RestoreMagicBackupResult),
 
     #[n(100)]
-    RawData(#[n(0)] RawData),
+    RawData(RawData),
 }

@@ -19,37 +19,9 @@ pub fn quantum_link(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Derive macro that generates `Into<dcbor::CBOR>` and `TryFrom<dcbor::CBOR>` implementations.
-///
-/// Uses integer keys for struct fields and enum variants based on `#[n(x)]` attributes.
-///
-/// # Supported types:
-/// - Structs with named fields
-/// - Enums tuple or struct variants:
-///   - `Variant(Type)`
-///   - `Variant { field: Type }`
-///
-/// # Example
-/// ```ignore
-/// #[derive(Cbor)]
-/// pub struct MyStruct {
-///     #[n(0)]
-///     pub field1: String,
-///     #[n(1)]
-///     pub field2: u32,
-/// }
-///
-/// #[derive(Cbor)]
-/// pub enum MyEnum {
-///     #[n(0)]
-///     Tuple(#[n(0)] MyStruct),
-///     #[n(1)]
-///     Struct {
-///         #[n(0)]
-///         value: u8,
-///     },
-/// }
-/// ```
+/// derive macro generates
+/// - From<T> for CBOR
+/// - TryFrom<CBOR> for T
 #[proc_macro_derive(Cbor, attributes(n))]
 pub fn derive_cbor(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -65,54 +37,7 @@ fn derive_cbor_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let (into_impl, try_from_impl) = match &input.data {
-        Data::Struct(data_struct) => match &data_struct.fields {
-            Fields::Named(fields) => {
-                let into_body = generate_struct_into_cbor(&fields.named)?;
-                let try_from_body = generate_struct_try_from_cbor(&fields.named)?;
-                (into_body, try_from_body)
-            }
-            Fields::Unnamed(fields) => {
-                if fields.unnamed.len() != 1 {
-                    return Err(syn::Error::new(
-                        fields.span(),
-                        "only single-field tuple structs (newtypes) are supported",
-                    ));
-                }
-                let field_type = &fields.unnamed.first().unwrap().ty;
-                
-                // Newtype struct: just wrap/unwrap the inner value
-                let into_body = if is_vec_u8(field_type) || is_u8_array(field_type) {
-                    quote! {
-                        dcbor::CBOR::to_byte_string(value.0)
-                    }
-                } else {
-                    quote! {
-                        dcbor::CBOR::from(value.0)
-                    }
-                };
-                
-                let try_from_body = if is_vec_u8(field_type) {
-                    quote! {
-                        Ok(Self(cbor.try_into_byte_string()?.to_vec()))
-                    }
-                } else if is_u8_array(field_type) {
-                    quote! {
-                        let bytes = cbor.try_into_byte_string()?;
-                        Ok(Self(<#field_type>::try_from(bytes.as_ref())
-                            .map_err(|_| dcbor::Error::OutOfRange)?))
-                    }
-                } else {
-                    quote! {
-                        Ok(Self(cbor.try_into()?))
-                    }
-                };
-                
-                (into_body, try_from_body)
-            }
-            Fields::Unit => {
-                return Err(syn::Error::new(name.span(), "unit structs not supported"));
-            }
-        },
+        Data::Struct(data_struct) => generate_struct_impls(&data_struct.fields, name)?,
         Data::Enum(data_enum) => {
             let into_body = generate_enum_into_cbor(name, &data_enum.variants)?;
             let try_from_body = generate_enum_try_from_cbor(&data_enum.variants)?;
@@ -124,6 +49,10 @@ fn derive_cbor_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
                 "unions not supported",
             ));
         }
+    };
+
+    let cbor_marker_impl = quote! {
+        impl #impl_generics crate::CborMarker for #name #ty_generics #where_clause {}
     };
 
     Ok(quote! {
@@ -140,28 +69,39 @@ fn derive_cbor_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
                 #try_from_impl
             }
         }
+
+        #cbor_marker_impl
     })
 }
 
-/// Extract the integer index from `#[n(x)]` attribute
-fn get_field_index(attrs: &[Attribute]) -> Option<u64> {
-    for attr in attrs {
-        if attr.path().is_ident("n") {
-            if let Meta::List(meta_list) = &attr.meta {
-                let tokens = meta_list.tokens.clone();
-                if let Ok(lit) = syn::parse2::<Lit>(tokens) {
-                    if let Lit::Int(lit_int) = lit {
-                        return lit_int.base10_parse().ok();
-                    }
-                }
-            }
+//
+// struct
+//
+
+fn generate_struct_impls(
+    fields: &Fields,
+    name: &syn::Ident,
+) -> syn::Result<(TokenStream2, TokenStream2)> {
+    match fields {
+        Fields::Named(fields) => {
+            let into_body = generate_named_struct_into_cbor(&fields.named)?;
+            let try_from_body = generate_named_struct_try_from_cbor(&fields.named)?;
+            Ok((into_body, try_from_body))
         }
+        Fields::Unnamed(fields) => {
+            if fields.unnamed.len() != 1 {
+                return Err(syn::Error::new(
+                    fields.span(),
+                    "only single-field tuple structs (newtypes) are supported",
+                ));
+            }
+            generate_newtype_struct_impls(fields.unnamed.first().unwrap())
+        }
+        Fields::Unit => Err(syn::Error::new(name.span(), "unit structs not supported")),
     }
-    None
 }
 
-/// Generate the Into<CBOR> implementation body for structs
-fn generate_struct_into_cbor(
+fn generate_named_struct_into_cbor(
     fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
 ) -> syn::Result<TokenStream2> {
     let mut field_insertions = Vec::new();
@@ -172,39 +112,16 @@ fn generate_struct_into_cbor(
         let index = get_field_index(&field.attrs)
             .ok_or_else(|| syn::Error::new(field.span(), "missing #[n(x)] attribute"))?;
 
-        // Handle Option<T>
-        if is_option_type(field_type) {
-            let inner_type = get_option_inner_type(field_type);
-            if let Some(inner) = inner_type {
-                if is_vec_u8(&inner) || is_u8_array(&inner) {
-                    field_insertions.push(quote! {
-                        if let Some(val) = value.#field_name {
-                            map.insert(dcbor::CBOR::from(#index), dcbor::CBOR::to_byte_string(val));
-                        }
-                    });
-                } else {
-                    field_insertions.push(quote! {
-                        if let Some(val) = value.#field_name {
-                            map.insert(dcbor::CBOR::from(#index), dcbor::CBOR::from(val));
-                        }
-                    });
-                }
-            } else {
-                field_insertions.push(quote! {
-                    if let Some(val) = value.#field_name {
-                        map.insert(dcbor::CBOR::from(#index), dcbor::CBOR::from(val));
-                    }
-                });
-            }
-        } else if is_vec_u8(field_type) || is_u8_array(field_type) {
-            // Use byte_string for Vec<u8> and [u8; N]
+        if let Some(inner) = get_option_inner(field_type) {
+            let cbor_value = gen_to_cbor(&inner, quote! { val });
             field_insertions.push(quote! {
-                map.insert(dcbor::CBOR::from(#index), dcbor::CBOR::to_byte_string(value.#field_name));
+                if let Some(val) = value.#field_name {
+                    map.insert(dcbor::CBOR::from(#index), #cbor_value);
+                }
             });
         } else {
-            field_insertions.push(quote! {
-                map.insert(dcbor::CBOR::from(#index), dcbor::CBOR::from(value.#field_name));
-            });
+            let insertion = gen_map_insert(index, field_type, quote! { value.#field_name });
+            field_insertions.push(insertion);
         }
     }
 
@@ -215,26 +132,7 @@ fn generate_struct_into_cbor(
     })
 }
 
-/// Get the inner type of Option<T>
-fn get_option_inner_type(ty: &Type) -> Option<Type> {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "Option" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if args.args.len() == 1 {
-                        if let syn::GenericArgument::Type(inner_type) = &args.args[0] {
-                            return Some(inner_type.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Generate the TryFrom<CBOR> implementation body for structs
-fn generate_struct_try_from_cbor(
+fn generate_named_struct_try_from_cbor(
     fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
 ) -> syn::Result<TokenStream2> {
     let mut field_extractions = Vec::new();
@@ -246,76 +144,15 @@ fn generate_struct_try_from_cbor(
         let index = get_field_index(&field.attrs)
             .ok_or_else(|| syn::Error::new(field.span(), "missing #[n(x)] attribute"))?;
 
-        // Check if the type is Option<T>
-        if is_option_type(field_type) {
-            let inner_type = get_option_inner_type(field_type);
-            if let Some(inner) = inner_type {
-                if is_vec_u8(&inner) {
-                    field_extractions.push(quote! {
-                        let #field_name: #field_type = match map.get::<u64, dcbor::CBOR>(#index) {
-                            Some(field_cbor) => Some(field_cbor.try_into_byte_string()?.to_vec()),
-                            None => None,
-                        };
-                    });
-                } else if is_u8_array(&inner) {
-                    field_extractions.push(quote! {
-                        let #field_name: #field_type = match map.get::<u64, dcbor::CBOR>(#index) {
-                            Some(field_cbor) => {
-                                let bytes = field_cbor.try_into_byte_string()?;
-                                Some(<#inner>::try_from(bytes.as_ref())
-                                    .map_err(|_| dcbor::Error::OutOfRange)?)
-                            },
-                            None => None,
-                        };
-                    });
-                } else {
-                    field_extractions.push(quote! {
-                        let #field_name: #field_type = match map.get::<u64, dcbor::CBOR>(#index) {
-                            Some(field_cbor) => Some(<#inner as TryFrom<dcbor::CBOR>>::try_from(field_cbor)
-                                .map_err(|_| dcbor::Error::WrongType)?),
-                            None => None,
-                        };
-                    });
-                }
-            } else {
-                field_extractions.push(quote! {
-                    let #field_name: #field_type = match map.get::<u64, dcbor::CBOR>(#index) {
-                        Some(field_cbor) => Some(field_cbor.try_into()
-                            .map_err(|_| dcbor::Error::WrongType)?),
-                        None => None,
-                    };
-                });
-            }
-        } else if is_vec_u8(field_type) {
-            field_extractions.push(quote! {
-                let #field_name: #field_type = map
-                    .get::<u64, dcbor::CBOR>(#index)
-                    .ok_or(dcbor::Error::MissingMapKey)?
-                    .try_into_byte_string()?
-                    .to_vec();
-            });
-        } else if is_u8_array(field_type) {
-            field_extractions.push(quote! {
-                let #field_name: #field_type = {
-                    let bytes = map
-                        .get::<u64, dcbor::CBOR>(#index)
-                        .ok_or(dcbor::Error::MissingMapKey)?
-                        .try_into_byte_string()?;
-                    <#field_type>::try_from(bytes.as_ref())
-                        .map_err(|_| dcbor::Error::OutOfRange)?
-                };
-            });
+        let extraction = if let Some(inner) = get_option_inner(field_type) {
+            let value = gen_map_get_optional(index, &inner, quote! { map });
+            quote! { let #field_name: #field_type = #value; }
         } else {
-            // Use explicit TryFrom to avoid Infallible error conversion issues
-            field_extractions.push(quote! {
-                let #field_name: #field_type = <#field_type as TryFrom<dcbor::CBOR>>::try_from(
-                    map
-                        .get::<u64, dcbor::CBOR>(#index)
-                        .ok_or(dcbor::Error::MissingMapKey)?
-                ).map_err(|_| dcbor::Error::WrongType)?;
-            });
-        }
+            let value = gen_map_get_required(index, field_type, quote! { map });
+            quote! { let #field_name: #field_type = #value; }
+        };
 
+        field_extractions.push(extraction);
         field_names.push(field_name);
     }
 
@@ -333,49 +170,42 @@ fn generate_struct_try_from_cbor(
     })
 }
 
-/// Check if a type is Option<T>
-fn is_option_type(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            return segment.ident == "Option";
-        }
+fn generate_newtype_struct_impls(field: &syn::Field) -> syn::Result<(TokenStream2, TokenStream2)> {
+    let field_type = &field.ty;
+
+    if let Some(index) = get_field_index(&field.attrs) {
+        // Has #[n(x)] - serialize as map
+        let cbor_value = gen_to_cbor(field_type, quote! { value.0 });
+        let into_body = quote! {
+            let mut map = dcbor::Map::new();
+            map.insert(dcbor::CBOR::from(#index), #cbor_value);
+            dcbor::CBOR::from(map)
+        };
+
+        let from_value = gen_map_get_required(index, field_type, quote! { map });
+        let try_from_body = quote! {
+            let case = cbor.into_case();
+            let dcbor::CBORCase::Map(map) = case else {
+                return Err(dcbor::Error::WrongType);
+            };
+            Ok(Self(#from_value))
+        };
+
+        Ok((into_body, try_from_body))
+    } else {
+        // No #[n(x)] - direct wrap/unwrap
+        let into_body = gen_to_cbor(field_type, quote! { value.0 });
+        let from_value = gen_from_cbor(field_type, quote! { cbor });
+        let try_from_body = quote! { Ok(Self(#from_value)) };
+
+        Ok((into_body, try_from_body))
     }
-    false
 }
 
-/// Check if a type is Vec<u8>
-fn is_vec_u8(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "Vec" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if args.args.len() == 1 {
-                        if let syn::GenericArgument::Type(Type::Path(inner)) = &args.args[0] {
-                            if let Some(inner_seg) = inner.path.segments.last() {
-                                return inner_seg.ident == "u8";
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    false
-}
+//
+// enum
+//
 
-/// Check if a type is [u8; N]
-fn is_u8_array(ty: &Type) -> bool {
-    if let Type::Array(array) = ty {
-        if let Type::Path(elem_path) = &*array.elem {
-            if let Some(segment) = elem_path.path.segments.last() {
-                return segment.ident == "u8";
-            }
-        }
-    }
-    false
-}
-
-/// Generate the Into<CBOR> implementation body for enums
 fn generate_enum_into_cbor(
     enum_name: &syn::Ident,
     variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
@@ -389,7 +219,6 @@ fn generate_enum_into_cbor(
 
         let arm = match &variant.fields {
             Fields::Unit => {
-                // Unit variant: encode as [index]
                 quote! {
                     #enum_name::#variant_name => {
                         dcbor::CBOR::from(vec![dcbor::CBOR::from(#variant_index)])
@@ -397,59 +226,10 @@ fn generate_enum_into_cbor(
                 }
             }
             Fields::Unnamed(fields) => {
-                if fields.unnamed.len() != 1 {
-                    return Err(syn::Error::new(
-                        fields.span(),
-                        "tuple variants must have exactly one field",
-                    ));
-                }
-                // Tuple variant with single field: encode as [index, field_value]
-                quote! {
-                    #enum_name::#variant_name(inner) => {
-                        dcbor::CBOR::from(vec![
-                            dcbor::CBOR::from(#variant_index),
-                            dcbor::CBOR::from(inner),
-                        ])
-                    }
-                }
+                generate_tuple_variant_into_cbor(enum_name, variant_name, variant_index, fields)?
             }
             Fields::Named(fields) => {
-                // Struct variant: encode as [index, {field_indices...}]
-                let mut field_names = Vec::new();
-                let mut field_insertions = Vec::new();
-
-                for field in &fields.named {
-                    let field_name = field.ident.as_ref().unwrap();
-                    let field_type = &field.ty;
-                    let field_index = get_field_index(&field.attrs).ok_or_else(|| {
-                        syn::Error::new(field.span(), "missing #[n(x)] attribute")
-                    })?;
-
-                    field_names.push(field_name);
-
-                    // Use byte_string for Vec<u8> and [u8; N]
-                    if is_vec_u8(field_type) || is_u8_array(field_type) {
-                        field_insertions.push(quote! {
-                            inner_map.insert(dcbor::CBOR::from(#field_index), dcbor::CBOR::to_byte_string(#field_name));
-                        });
-                    } else {
-                        field_insertions.push(quote! {
-                            inner_map.insert(dcbor::CBOR::from(#field_index), dcbor::CBOR::from(#field_name));
-                        });
-                    }
-                }
-
-                quote! {
-                    #enum_name::#variant_name { #(#field_names),* } => {
-                        let mut inner_map = dcbor::Map::new();
-                        #(#field_insertions)*
-
-                        dcbor::CBOR::from(vec![
-                            dcbor::CBOR::from(#variant_index),
-                            dcbor::CBOR::from(inner_map),
-                        ])
-                    }
-                }
+                generate_struct_variant_into_cbor(enum_name, variant_name, variant_index, fields)?
             }
         };
 
@@ -463,7 +243,79 @@ fn generate_enum_into_cbor(
     })
 }
 
-/// Generate the TryFrom<CBOR> implementation body for enums
+fn generate_tuple_variant_into_cbor(
+    enum_name: &syn::Ident,
+    variant_name: &syn::Ident,
+    variant_index: u64,
+    fields: &syn::FieldsUnnamed,
+) -> syn::Result<TokenStream2> {
+    if fields.unnamed.len() != 1 {
+        return Err(syn::Error::new(
+            fields.span(),
+            "tuple variants must have exactly one field",
+        ));
+    }
+
+    let field = fields.unnamed.first().unwrap();
+    let field_type = &field.ty;
+
+    if get_field_index(&field.attrs).is_some() {
+        return Err(syn::Error::new(
+            field.span(),
+            "tuple variant fields cannot have #[n(x)] attribute; use a struct variant instead",
+        ));
+    }
+
+    Ok(quote! {
+        #enum_name::#variant_name(inner) => {
+            const _: fn() = || {
+                fn assert_cbor_marker<T: crate::CborMarker>() {}
+                assert_cbor_marker::<#field_type>();
+            };
+            dcbor::CBOR::from(vec![
+                dcbor::CBOR::from(#variant_index),
+                dcbor::CBOR::from(inner),
+            ])
+        }
+    })
+}
+
+fn generate_struct_variant_into_cbor(
+    enum_name: &syn::Ident,
+    variant_name: &syn::Ident,
+    variant_index: u64,
+    fields: &syn::FieldsNamed,
+) -> syn::Result<TokenStream2> {
+    let mut field_names = Vec::new();
+    let mut field_insertions = Vec::new();
+
+    for field in &fields.named {
+        let field_name = field.ident.as_ref().unwrap();
+        let field_type = &field.ty;
+        let field_index = get_field_index(&field.attrs)
+            .ok_or_else(|| syn::Error::new(field.span(), "missing #[n(x)] attribute"))?;
+
+        field_names.push(field_name);
+
+        let cbor_value = gen_to_cbor(field_type, quote! { #field_name });
+        field_insertions.push(quote! {
+            inner_map.insert(dcbor::CBOR::from(#field_index), #cbor_value);
+        });
+    }
+
+    Ok(quote! {
+        #enum_name::#variant_name { #(#field_names),* } => {
+            let mut inner_map = dcbor::Map::new();
+            #(#field_insertions)*
+
+            dcbor::CBOR::from(vec![
+                dcbor::CBOR::from(#variant_index),
+                dcbor::CBOR::from(inner_map),
+            ])
+        }
+    })
+}
+
 fn generate_enum_try_from_cbor(
     variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
 ) -> syn::Result<TokenStream2> {
@@ -476,126 +328,13 @@ fn generate_enum_try_from_cbor(
 
         let arm = match &variant.fields {
             Fields::Unit => {
-                quote! {
-                    #variant_index => Ok(Self::#variant_name),
-                }
+                quote! { #variant_index => Ok(Self::#variant_name), }
             }
             Fields::Unnamed(fields) => {
-                if fields.unnamed.len() != 1 {
-                    return Err(syn::Error::new(
-                        fields.span(),
-                        "tuple variants must have exactly one field",
-                    ));
-                }
-                let field_type = &fields.unnamed.first().unwrap().ty;
-
-                quote! {
-                    #variant_index => {
-                        let variant_data = arr.get(1).ok_or(dcbor::Error::WrongType)?;
-                        let inner: #field_type = <#field_type as TryFrom<dcbor::CBOR>>::try_from(variant_data.clone())
-                            .map_err(|_| dcbor::Error::WrongType)?;
-                        Ok(Self::#variant_name(inner))
-                    }
-                }
+                generate_tuple_variant_try_from_cbor(variant_name, variant_index, fields)?
             }
-            Fields::Named(named_fields) => {
-                let mut field_extractions = Vec::new();
-                let mut field_names = Vec::new();
-
-                for field in &named_fields.named {
-                    let field_name = field.ident.as_ref().unwrap();
-                    let field_type = &field.ty;
-                    let field_index = get_field_index(&field.attrs).ok_or_else(|| {
-                        syn::Error::new(field.span(), "missing #[n(x)] attribute")
-                    })?;
-
-                    if is_option_type(field_type) {
-                        let inner_type = get_option_inner_type(field_type);
-                        if let Some(inner) = inner_type {
-                            if is_vec_u8(&inner) {
-                                field_extractions.push(quote! {
-                                    let #field_name: #field_type = match inner_map.get::<u64, dcbor::CBOR>(#field_index) {
-                                        Some(field_cbor) => Some(field_cbor.try_into_byte_string()?.to_vec()),
-                                        None => None,
-                                    };
-                                });
-                            } else if is_u8_array(&inner) {
-                                field_extractions.push(quote! {
-                                    let #field_name: #field_type = match inner_map.get::<u64, dcbor::CBOR>(#field_index) {
-                                        Some(field_cbor) => {
-                                            let bytes = field_cbor.try_into_byte_string()?;
-                                            Some(<#inner>::try_from(bytes.as_ref())
-                                                .map_err(|_| dcbor::Error::OutOfRange)?)
-                                        },
-                                        None => None,
-                                    };
-                                });
-                            } else {
-                                field_extractions.push(quote! {
-                                    let #field_name: #field_type = match inner_map.get::<u64, dcbor::CBOR>(#field_index) {
-                                        Some(field_cbor) => Some(<#inner as TryFrom<dcbor::CBOR>>::try_from(field_cbor)
-                                            .map_err(|_| dcbor::Error::WrongType)?),
-                                        None => None,
-                                    };
-                                });
-                            }
-                        } else {
-                            field_extractions.push(quote! {
-                                let #field_name: #field_type = match inner_map.get::<u64, dcbor::CBOR>(#field_index) {
-                                    Some(field_cbor) => Some(field_cbor.try_into()
-                                        .map_err(|_| dcbor::Error::WrongType)?),
-                                    None => None,
-                                };
-                            });
-                        }
-                    } else if is_vec_u8(field_type) {
-                        field_extractions.push(quote! {
-                            let #field_name: #field_type = inner_map
-                                .get::<u64, dcbor::CBOR>(#field_index)
-                                .ok_or(dcbor::Error::MissingMapKey)?
-                                .try_into_byte_string()?
-                                .to_vec();
-                        });
-                    } else if is_u8_array(field_type) {
-                        field_extractions.push(quote! {
-                            let #field_name: #field_type = {
-                                let bytes = inner_map
-                                    .get::<u64, dcbor::CBOR>(#field_index)
-                                    .ok_or(dcbor::Error::MissingMapKey)?
-                                    .try_into_byte_string()?;
-                                <#field_type>::try_from(bytes.as_ref())
-                                    .map_err(|_| dcbor::Error::OutOfRange)?
-                            };
-                        });
-                    } else {
-                        // Use explicit TryFrom to avoid Infallible error conversion issues
-                        field_extractions.push(quote! {
-                            let #field_name: #field_type = <#field_type as TryFrom<dcbor::CBOR>>::try_from(
-                                inner_map
-                                    .get::<u64, dcbor::CBOR>(#field_index)
-                                    .ok_or(dcbor::Error::MissingMapKey)?
-                            ).map_err(|_| dcbor::Error::WrongType)?;
-                        });
-                    }
-
-                    field_names.push(field_name);
-                }
-
-                quote! {
-                    #variant_index => {
-                        let variant_data = arr.get(1).ok_or(dcbor::Error::WrongType)?;
-                        let inner_case = variant_data.clone().into_case();
-                        let dcbor::CBORCase::Map(inner_map) = inner_case else {
-                            return Err(dcbor::Error::WrongType);
-                        };
-
-                        #(#field_extractions)*
-
-                        Ok(Self::#variant_name {
-                            #(#field_names),*
-                        })
-                    }
-                }
+            Fields::Named(fields) => {
+                generate_struct_variant_try_from_cbor(variant_name, variant_index, fields)?
             }
         };
 
@@ -609,15 +348,207 @@ fn generate_enum_try_from_cbor(
         };
 
         let variant_index: u64 = <u64 as TryFrom<dcbor::CBOR>>::try_from(
-            arr
-                .get(0)
-                .ok_or(dcbor::Error::WrongType)?
-                .clone()
-        ).map_err(|_| dcbor::Error::WrongType)?;
+            arr.get(0).ok_or(dcbor::Error::WrongType)?.clone()
+        )?;
 
         match variant_index {
             #(#variant_arms)*
             _ => Err(dcbor::Error::WrongType),
         }
     })
+}
+
+fn generate_tuple_variant_try_from_cbor(
+    variant_name: &syn::Ident,
+    variant_index: u64,
+    fields: &syn::FieldsUnnamed,
+) -> syn::Result<TokenStream2> {
+    if fields.unnamed.len() != 1 {
+        return Err(syn::Error::new(
+            fields.span(),
+            "tuple variants must have exactly one field",
+        ));
+    }
+
+    let field = fields.unnamed.first().unwrap();
+    let field_type = &field.ty;
+
+    if get_field_index(&field.attrs).is_some() {
+        return Err(syn::Error::new(
+            field.span(),
+            "tuple variant fields cannot have #[n(x)] attribute; use a struct variant instead",
+        ));
+    }
+
+    Ok(quote! {
+        #variant_index => {
+            let variant_data = arr.get(1).ok_or(dcbor::Error::WrongType)?;
+            let inner: #field_type = variant_data.clone().try_into()?;
+            Ok(Self::#variant_name(inner))
+        }
+    })
+}
+
+fn generate_struct_variant_try_from_cbor(
+    variant_name: &syn::Ident,
+    variant_index: u64,
+    fields: &syn::FieldsNamed,
+) -> syn::Result<TokenStream2> {
+    let mut field_extractions = Vec::new();
+    let mut field_names = Vec::new();
+
+    for field in &fields.named {
+        let field_name = field.ident.as_ref().unwrap();
+        let field_type = &field.ty;
+        let field_index = get_field_index(&field.attrs)
+            .ok_or_else(|| syn::Error::new(field.span(), "missing #[n(x)] attribute"))?;
+
+        let extraction = if let Some(inner) = get_option_inner(field_type) {
+            let value = gen_map_get_optional(field_index, &inner, quote! { inner_map });
+            quote! { let #field_name: #field_type = #value; }
+        } else {
+            let value = gen_map_get_required(field_index, field_type, quote! { inner_map });
+            quote! { let #field_name: #field_type = #value; }
+        };
+
+        field_extractions.push(extraction);
+        field_names.push(field_name);
+    }
+
+    Ok(quote! {
+        #variant_index => {
+            let variant_data = arr.get(1).ok_or(dcbor::Error::WrongType)?;
+            let inner_case = variant_data.clone().into_case();
+            let dcbor::CBORCase::Map(inner_map) = inner_case else {
+                return Err(dcbor::Error::WrongType);
+            };
+
+            #(#field_extractions)*
+
+            Ok(Self::#variant_name {
+                #(#field_names),*
+            })
+        }
+    })
+}
+
+//
+// helpers
+//
+
+fn gen_to_cbor(field_type: &Type, value: TokenStream2) -> TokenStream2 {
+    if is_vec_u8(field_type) || is_u8_array(field_type) {
+        quote! { dcbor::CBOR::to_byte_string(#value) }
+    } else {
+        quote! { dcbor::CBOR::from(#value) }
+    }
+}
+
+fn gen_from_cbor(field_type: &Type, cbor: TokenStream2) -> TokenStream2 {
+    if is_vec_u8(field_type) {
+        quote! { #cbor.try_into_byte_string()?.to_vec() }
+    } else if is_u8_array(field_type) {
+        gen_byte_array_from_cbor(field_type, cbor)
+    } else {
+        quote! { #cbor.try_into()? }
+    }
+}
+
+fn gen_byte_array_from_cbor(field_type: &Type, cbor: TokenStream2) -> TokenStream2 {
+    quote! {{
+        let bytes = #cbor.try_into_byte_string()?;
+        <#field_type>::try_from(bytes.as_ref())
+            .map_err(|_| dcbor::Error::OutOfRange)?
+    }}
+}
+
+fn gen_map_insert(index: u64, field_type: &Type, value: TokenStream2) -> TokenStream2 {
+    let cbor_value = gen_to_cbor(field_type, value);
+    quote! {
+        map.insert(dcbor::CBOR::from(#index), #cbor_value);
+    }
+}
+
+fn gen_map_get_required(index: u64, field_type: &Type, map: TokenStream2) -> TokenStream2 {
+    let cbor_expr = quote! {
+        #map.get::<u64, dcbor::CBOR>(#index)
+            .ok_or(dcbor::Error::MissingMapKey)?
+    };
+    gen_from_cbor(field_type, cbor_expr)
+}
+
+fn gen_map_get_optional(index: u64, inner_type: &Type, map: TokenStream2) -> TokenStream2 {
+    let value_expr = if is_vec_u8(inner_type) {
+        quote! { field_cbor.try_into_byte_string()?.to_vec() }
+    } else if is_u8_array(inner_type) {
+        gen_byte_array_from_cbor(inner_type, quote! { field_cbor })
+    } else {
+        quote! { field_cbor.try_into()? }
+    };
+
+    quote! {
+        match #map.get::<u64, dcbor::CBOR>(#index) {
+            Some(field_cbor) => Some(#value_expr),
+            None => None,
+        }
+    }
+}
+
+fn get_field_index(attrs: &[Attribute]) -> Option<u64> {
+    for attr in attrs {
+        if attr.path().is_ident("n") {
+            if let Meta::List(meta_list) = &attr.meta {
+                let tokens = meta_list.tokens.clone();
+                if let Ok(lit) = syn::parse2::<Lit>(tokens) {
+                    if let Lit::Int(lit_int) = lit {
+                        return lit_int.base10_parse().ok();
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_option_inner(ty: &Type) -> Option<Type> {
+    let Type::Path(p) = ty else { return None };
+    let seg = p.path.segments.last().filter(|s| s.ident == "Option")?;
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(inner) = args.args.first()? else {
+        return None;
+    };
+    Some(inner.clone())
+}
+
+fn is_vec_u8(ty: &Type) -> bool {
+    let Type::Path(p) = ty else { return false };
+    let Some(seg) = p.path.segments.last().filter(|s| s.ident == "Vec") else {
+        return false;
+    };
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(Type::Path(inner))) = args.args.first() else {
+        return false;
+    };
+    inner
+        .path
+        .segments
+        .last()
+        .map(|s| s.ident == "u8")
+        .unwrap_or(false)
+}
+
+fn is_u8_array(ty: &Type) -> bool {
+    let Type::Array(array) = ty else { return false };
+    let Type::Path(p) = &*array.elem else {
+        return false;
+    };
+    p.path
+        .segments
+        .last()
+        .map(|s| s.ident == "u8")
+        .unwrap_or(false)
 }

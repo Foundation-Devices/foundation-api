@@ -11,7 +11,7 @@ pub struct FirmwareUpdateCheckRequest {
 #[quantum_link]
 pub enum FirmwareUpdateCheckResponse {
     #[n(0)]
-    Available(#[n(0)] FirmwareUpdateAvailable),
+    Available(FirmwareUpdateAvailable),
     #[n(1)]
     NotAvailable,
 }
@@ -45,16 +45,19 @@ pub enum FirmwareFetchEvent {
     UpdateNotAvailable,
     // envoy has found an update, and will begin transmission
     #[n(1)]
-    Starting(#[n(0)] FirmwareUpdateAvailable),
+    Starting(FirmwareUpdateAvailable),
     // envoy is downloading the update
     #[n(2)]
     Downloading,
     // envoy is sending a chunk for an update patch
     #[n(3)]
-    Chunk(#[n(0)] FirmwareChunk),
+    Chunk(FirmwareChunk),
     // envoy failed
     #[n(5)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
 
 #[quantum_link]
@@ -86,7 +89,10 @@ pub enum FirmwareUpdateResult {
         installed_version: String,
     },
     #[n(1)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
 
 pub fn split_update_into_chunks(
