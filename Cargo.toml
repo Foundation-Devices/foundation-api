@@ -1,9 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-  "abstracted",
   "api",
-  "api-demo",
   "backup-shard",
   "btp",
   "quantum-link-macros",
