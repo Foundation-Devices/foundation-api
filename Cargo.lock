@@ -863,9 +863,9 @@ dependencies = [
  "dcbor",
  "flutter_rust_bridge",
  "gstp",
- "minicbor 0.24.4",
  "quantum-link-macros",
  "rkyv",
+ "thiserror",
 ]
 
 [[package]]

@@ -10,9 +10,8 @@ pub fn quantum_link(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     let input: DeriveInput = syn::parse(input).unwrap();
 
     let expanded = quote! {
-        #[derive(Clone, Debug)]
+        #[derive(Clone, Debug, quantum_link_macros::Cbor)]
         #[cfg_attr(feature = "keyos", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-        #[derive(minicbor::Encode, minicbor::Decode,)]
         #[cfg_attr(feature = "envoy", flutter_rust_bridge::frb(non_opaque))]
         #input
     };
@@ -73,10 +72,42 @@ fn derive_cbor_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
                 (into_body, try_from_body)
             }
             Fields::Unnamed(fields) => {
-                return Err(syn::Error::new(
-                    fields.span(),
-                    "tuple structs not supported",
-                ));
+                if fields.unnamed.len() != 1 {
+                    return Err(syn::Error::new(
+                        fields.span(),
+                        "only single-field tuple structs (newtypes) are supported",
+                    ));
+                }
+                let field_type = &fields.unnamed.first().unwrap().ty;
+                
+                // Newtype struct: just wrap/unwrap the inner value
+                let into_body = if is_vec_u8(field_type) || is_u8_array(field_type) {
+                    quote! {
+                        dcbor::CBOR::to_byte_string(value.0)
+                    }
+                } else {
+                    quote! {
+                        dcbor::CBOR::from(value.0)
+                    }
+                };
+                
+                let try_from_body = if is_vec_u8(field_type) {
+                    quote! {
+                        Ok(Self(cbor.try_into_byte_string()?.to_vec()))
+                    }
+                } else if is_u8_array(field_type) {
+                    quote! {
+                        let bytes = cbor.try_into_byte_string()?;
+                        Ok(Self(<#field_type>::try_from(bytes.as_ref())
+                            .map_err(|_| dcbor::Error::OutOfRange)?))
+                    }
+                } else {
+                    quote! {
+                        Ok(Self(cbor.try_into()?))
+                    }
+                };
+                
+                (into_body, try_from_body)
             }
             Fields::Unit => {
                 return Err(syn::Error::new(name.span(), "unit structs not supported"));
@@ -141,8 +172,32 @@ fn generate_struct_into_cbor(
         let index = get_field_index(&field.attrs)
             .ok_or_else(|| syn::Error::new(field.span(), "missing #[n(x)] attribute"))?;
 
-        // Use byte_string for Vec<u8> and [u8; N]
-        if is_vec_u8(field_type) || is_u8_array(field_type) {
+        // Handle Option<T>
+        if is_option_type(field_type) {
+            let inner_type = get_option_inner_type(field_type);
+            if let Some(inner) = inner_type {
+                if is_vec_u8(&inner) || is_u8_array(&inner) {
+                    field_insertions.push(quote! {
+                        if let Some(val) = value.#field_name {
+                            map.insert(dcbor::CBOR::from(#index), dcbor::CBOR::to_byte_string(val));
+                        }
+                    });
+                } else {
+                    field_insertions.push(quote! {
+                        if let Some(val) = value.#field_name {
+                            map.insert(dcbor::CBOR::from(#index), dcbor::CBOR::from(val));
+                        }
+                    });
+                }
+            } else {
+                field_insertions.push(quote! {
+                    if let Some(val) = value.#field_name {
+                        map.insert(dcbor::CBOR::from(#index), dcbor::CBOR::from(val));
+                    }
+                });
+            }
+        } else if is_vec_u8(field_type) || is_u8_array(field_type) {
+            // Use byte_string for Vec<u8> and [u8; N]
             field_insertions.push(quote! {
                 map.insert(dcbor::CBOR::from(#index), dcbor::CBOR::to_byte_string(value.#field_name));
             });
@@ -160,6 +215,24 @@ fn generate_struct_into_cbor(
     })
 }
 
+/// Get the inner type of Option<T>
+fn get_option_inner_type(ty: &Type) -> Option<Type> {
+    if let Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            if segment.ident == "Option" {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if args.args.len() == 1 {
+                        if let syn::GenericArgument::Type(inner_type) = &args.args[0] {
+                            return Some(inner_type.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Generate the TryFrom<CBOR> implementation body for structs
 fn generate_struct_try_from_cbor(
     fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
@@ -175,12 +248,44 @@ fn generate_struct_try_from_cbor(
 
         // Check if the type is Option<T>
         if is_option_type(field_type) {
-            field_extractions.push(quote! {
-                let #field_name: #field_type = match map.get::<u64, dcbor::CBOR>(#index) {
-                    Some(field_cbor) => Some(field_cbor.try_into()?),
-                    None => None,
-                };
-            });
+            let inner_type = get_option_inner_type(field_type);
+            if let Some(inner) = inner_type {
+                if is_vec_u8(&inner) {
+                    field_extractions.push(quote! {
+                        let #field_name: #field_type = match map.get::<u64, dcbor::CBOR>(#index) {
+                            Some(field_cbor) => Some(field_cbor.try_into_byte_string()?.to_vec()),
+                            None => None,
+                        };
+                    });
+                } else if is_u8_array(&inner) {
+                    field_extractions.push(quote! {
+                        let #field_name: #field_type = match map.get::<u64, dcbor::CBOR>(#index) {
+                            Some(field_cbor) => {
+                                let bytes = field_cbor.try_into_byte_string()?;
+                                Some(<#inner>::try_from(bytes.as_ref())
+                                    .map_err(|_| dcbor::Error::OutOfRange)?)
+                            },
+                            None => None,
+                        };
+                    });
+                } else {
+                    field_extractions.push(quote! {
+                        let #field_name: #field_type = match map.get::<u64, dcbor::CBOR>(#index) {
+                            Some(field_cbor) => Some(<#inner as TryFrom<dcbor::CBOR>>::try_from(field_cbor)
+                                .map_err(|_| dcbor::Error::WrongType)?),
+                            None => None,
+                        };
+                    });
+                }
+            } else {
+                field_extractions.push(quote! {
+                    let #field_name: #field_type = match map.get::<u64, dcbor::CBOR>(#index) {
+                        Some(field_cbor) => Some(field_cbor.try_into()
+                            .map_err(|_| dcbor::Error::WrongType)?),
+                        None => None,
+                    };
+                });
+            }
         } else if is_vec_u8(field_type) {
             field_extractions.push(quote! {
                 let #field_name: #field_type = map
@@ -201,11 +306,13 @@ fn generate_struct_try_from_cbor(
                 };
             });
         } else {
+            // Use explicit TryFrom to avoid Infallible error conversion issues
             field_extractions.push(quote! {
-                let #field_name: #field_type = map
-                    .get::<u64, dcbor::CBOR>(#index)
-                    .ok_or(dcbor::Error::MissingMapKey)?
-                    .try_into()?;
+                let #field_name: #field_type = <#field_type as TryFrom<dcbor::CBOR>>::try_from(
+                    map
+                        .get::<u64, dcbor::CBOR>(#index)
+                        .ok_or(dcbor::Error::MissingMapKey)?
+                ).map_err(|_| dcbor::Error::WrongType)?;
             });
         }
 
@@ -385,7 +492,8 @@ fn generate_enum_try_from_cbor(
                 quote! {
                     #variant_index => {
                         let variant_data = arr.get(1).ok_or(dcbor::Error::WrongType)?;
-                        let inner: #field_type = variant_data.clone().try_into()?;
+                        let inner: #field_type = <#field_type as TryFrom<dcbor::CBOR>>::try_from(variant_data.clone())
+                            .map_err(|_| dcbor::Error::WrongType)?;
                         Ok(Self::#variant_name(inner))
                     }
                 }
@@ -402,12 +510,44 @@ fn generate_enum_try_from_cbor(
                     })?;
 
                     if is_option_type(field_type) {
-                        field_extractions.push(quote! {
-                            let #field_name: #field_type = match inner_map.get::<u64, dcbor::CBOR>(#field_index) {
-                                Some(field_cbor) => Some(field_cbor.try_into()?),
-                                None => None,
-                            };
-                        });
+                        let inner_type = get_option_inner_type(field_type);
+                        if let Some(inner) = inner_type {
+                            if is_vec_u8(&inner) {
+                                field_extractions.push(quote! {
+                                    let #field_name: #field_type = match inner_map.get::<u64, dcbor::CBOR>(#field_index) {
+                                        Some(field_cbor) => Some(field_cbor.try_into_byte_string()?.to_vec()),
+                                        None => None,
+                                    };
+                                });
+                            } else if is_u8_array(&inner) {
+                                field_extractions.push(quote! {
+                                    let #field_name: #field_type = match inner_map.get::<u64, dcbor::CBOR>(#field_index) {
+                                        Some(field_cbor) => {
+                                            let bytes = field_cbor.try_into_byte_string()?;
+                                            Some(<#inner>::try_from(bytes.as_ref())
+                                                .map_err(|_| dcbor::Error::OutOfRange)?)
+                                        },
+                                        None => None,
+                                    };
+                                });
+                            } else {
+                                field_extractions.push(quote! {
+                                    let #field_name: #field_type = match inner_map.get::<u64, dcbor::CBOR>(#field_index) {
+                                        Some(field_cbor) => Some(<#inner as TryFrom<dcbor::CBOR>>::try_from(field_cbor)
+                                            .map_err(|_| dcbor::Error::WrongType)?),
+                                        None => None,
+                                    };
+                                });
+                            }
+                        } else {
+                            field_extractions.push(quote! {
+                                let #field_name: #field_type = match inner_map.get::<u64, dcbor::CBOR>(#field_index) {
+                                    Some(field_cbor) => Some(field_cbor.try_into()
+                                        .map_err(|_| dcbor::Error::WrongType)?),
+                                    None => None,
+                                };
+                            });
+                        }
                     } else if is_vec_u8(field_type) {
                         field_extractions.push(quote! {
                             let #field_name: #field_type = inner_map
@@ -428,11 +568,13 @@ fn generate_enum_try_from_cbor(
                             };
                         });
                     } else {
+                        // Use explicit TryFrom to avoid Infallible error conversion issues
                         field_extractions.push(quote! {
-                            let #field_name: #field_type = inner_map
-                                .get::<u64, dcbor::CBOR>(#field_index)
-                                .ok_or(dcbor::Error::MissingMapKey)?
-                                .try_into()?;
+                            let #field_name: #field_type = <#field_type as TryFrom<dcbor::CBOR>>::try_from(
+                                inner_map
+                                    .get::<u64, dcbor::CBOR>(#field_index)
+                                    .ok_or(dcbor::Error::MissingMapKey)?
+                            ).map_err(|_| dcbor::Error::WrongType)?;
                         });
                     }
 
@@ -466,11 +608,12 @@ fn generate_enum_try_from_cbor(
             return Err(dcbor::Error::WrongType);
         };
 
-        let variant_index: u64 = arr
-            .get(0)
-            .ok_or(dcbor::Error::WrongType)?
-            .clone()
-            .try_into()?;
+        let variant_index: u64 = <u64 as TryFrom<dcbor::CBOR>>::try_from(
+            arr
+                .get(0)
+                .ok_or(dcbor::Error::WrongType)?
+                .clone()
+        ).map_err(|_| dcbor::Error::WrongType)?;
 
         match variant_index {
             #(#variant_arms)*

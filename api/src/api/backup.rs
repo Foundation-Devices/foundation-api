@@ -66,8 +66,6 @@ pub struct PrimeMagicBackupStatusResponse {
 // MAGIC BACKUPS
 //
 
-pub type SeedFingerprint = [u8; 32];
-
 #[quantum_link]
 #[derive(PartialEq, Eq)]
 pub struct BackupChunk {
@@ -75,7 +73,7 @@ pub struct BackupChunk {
     pub chunk_index: u32,
     #[n(1)]
     pub total_chunks: u32,
-    #[cbor(n(2), with = "minicbor::bytes")]
+    #[n(2)]
     pub data: Vec<u8>,
 }
 
@@ -98,16 +96,14 @@ pub enum CreateMagicBackupEvent {
     Chunk(#[n(0)] BackupChunk),
 }
 
-type Sha256Hash = [u8; 32];
-
 #[quantum_link]
 pub struct StartMagicBackup {
     #[n(0)]
-    pub seed_fingerprint: SeedFingerprint,
+    pub seed_fingerprint: [u8; 32],
     #[n(1)]
     pub total_chunks: u32,
     #[n(2)]
-    pub hash: Sha256Hash,
+    pub hash: [u8; 32],
 }
 
 // envoy -> prime
@@ -128,7 +124,7 @@ pub enum CreateMagicBackupResult {
 #[quantum_link]
 pub struct RestoreMagicBackupRequest {
     #[n(0)]
-    pub seed_fingerprint: SeedFingerprint,
+    pub seed_fingerprint: [u8; 32],
     /// if 0, then go from start
     #[n(1)]
     pub resume_from_chunk: u32,

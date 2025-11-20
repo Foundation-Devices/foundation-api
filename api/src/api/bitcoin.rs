@@ -12,7 +12,7 @@ pub struct SignPsbt {
 pub struct AccountUpdate {
     #[n(0)]
     pub account_id: String,
-    #[cbor(n(1), with = "minicbor::bytes")]
+    #[n(1)]
     pub update: Vec<u8>,
 }
 
@@ -20,7 +20,7 @@ pub struct AccountUpdate {
 pub struct BroadcastTransaction {
     #[n(0)]
     pub account_id: String,
-    #[cbor(n(1), with = "minicbor::bytes")]
+    #[n(1)]
     pub psbt: Vec<u8>,
 }
 

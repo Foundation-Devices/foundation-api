@@ -18,7 +18,7 @@ pub enum SecurityCheck {
 
 #[quantum_link]
 pub struct ChallengeRequest {
-    #[cbor(n(0), with = "minicbor::bytes")]
+    #[n(0)]
     pub data: Vec<u8>,
 }
 
@@ -26,7 +26,7 @@ pub struct ChallengeRequest {
 pub enum ChallengeResponseResult {
     #[n(0)]
     Success {
-        #[cbor(n(0), with = "minicbor::bytes")]
+        #[n(0)]
         data: Vec<u8>,
     },
     #[n(1)]

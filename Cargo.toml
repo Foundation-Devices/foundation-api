@@ -1,11 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-  "api",
-  "backup-shard",
-  "btp",
-  "quantum-link-macros",
-]
+members = ["api", "backup-shard", "btp", "quantum-link-macros"]
 
 [workspace.package]
 homepage = "https://github.com/Foundation-Devices/foundation-api"
@@ -21,6 +16,7 @@ rkyv = { version = "0.7", default-features = false, features = [
   "alloc",
 ] }
 dcbor = "0.23.3"
+thiserror = { version = "2" }
 bc-envelope = { version = "0.37.0", default-features = false, features = [
   "multithreaded",
   "attachment",
@@ -40,6 +36,7 @@ bc-xid = "0.16.0"
 gstp = "0.11.0"
 anyhow = "1.0"
 chrono = "0.4"
+
 [patch.crates-io]
 pqcrypto-traits = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
 pqcrypto-mldsa = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
