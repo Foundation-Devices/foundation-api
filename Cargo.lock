@@ -867,7 +867,6 @@ dependencies = [
  "flutter_rust_bridge",
  "gstp",
  "minicbor 0.24.4",
- "minicbor-derive 0.15.3",
  "quantum-link-macros",
  "rkyv",
 ]
@@ -1898,6 +1897,7 @@ dependencies = [
 name = "quantum-link-macros"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
  "quote",
  "syn 2.0.106",
 ]

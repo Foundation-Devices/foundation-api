@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "abstracted",
-    "api",
-    "api-demo",
-    "backup-shard",
-    "btp",
-    "quantum-link-macros",
+  "abstracted",
+  "api",
+  "api-demo",
+  "backup-shard",
+  "btp",
+  "quantum-link-macros",
 ]
 
 [workspace.package]
@@ -17,12 +17,11 @@ btp = { path = "btp" }
 foundation-abstracted = { path = "abstracted" }
 foundation-api = { path = "api" }
 getrandom = { version = "0.2" }
-minicbor = { version = "0.24.2" }
-minicbor-derive = "0.15.0"
+minicbor = { version = "0.24.2", features = ["alloc", "derive"] }
 quantum-link-macros = { path = "quantum-link-macros" }
 rkyv = { version = "0.7", default-features = false, features = [
-    "size_32",
-    "alloc",
+  "size_32",
+  "alloc",
 ] }
 [patch.crates-io]
 pqcrypto-traits = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }

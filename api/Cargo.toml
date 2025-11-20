@@ -10,23 +10,22 @@ license = "Proprietary"
 
 [dependencies]
 bc-envelope = { version = "0.23.0", default-features = false, features = [
-    "multithreaded",
-    "attachment",
-    "compress",
-    "encrypt",
-    "expression",
-    "known_value",
-    "proof",
-    "recipient",
-    "salt",
-    "signature",
-    "sskr",
-    "types",
+  "multithreaded",
+  "attachment",
+  "compress",
+  "encrypt",
+  "expression",
+  "known_value",
+  "proof",
+  "recipient",
+  "salt",
+  "signature",
+  "sskr",
+  "types",
 ] }
 
 anyhow = "^1.0.0"
-minicbor = { workspace = true, features = ["alloc"] }
-minicbor-derive = { workspace = true }
+minicbor = { workspace = true }
 bc-xid = "0.5.0"
 rkyv = { workspace = true, optional = true }
 flutter_rust_bridge = { version = "=2.11.1", optional = true }
