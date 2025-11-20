@@ -12,7 +12,6 @@ homepage = "https://github.com/Foundation-Devices/foundation-api"
 
 [workspace.dependencies]
 btp = { path = "btp" }
-foundation-abstracted = { path = "abstracted" }
 foundation-api = { path = "api" }
 getrandom = { version = "0.2" }
 minicbor = { version = "0.24.2", features = ["alloc", "derive"] }
@@ -21,6 +20,26 @@ rkyv = { version = "0.7", default-features = false, features = [
   "size_32",
   "alloc",
 ] }
+dcbor = "0.23.3"
+bc-envelope = { version = "0.37.0", default-features = false, features = [
+  "multithreaded",
+  "attachment",
+  "compress",
+  "encrypt",
+  "expression",
+  "known_value",
+  "proof",
+  "recipient",
+  "salt",
+  "signature",
+  "sskr",
+  "types",
+] }
+bc-components = "0.28.0"
+bc-xid = "0.16.0"
+gstp = "0.11.0"
+anyhow = "1.0"
+chrono = "0.4"
 [patch.crates-io]
 pqcrypto-traits = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
 pqcrypto-mldsa = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }

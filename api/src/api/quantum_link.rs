@@ -142,7 +142,7 @@ pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
             .date()
             .ok_or_else(|| anyhow::anyhow!("event missing date"))?
             .datetime();
-        if arid_cache.check_and_store(arid, event_date, now) {
+        if arid_cache.check_and_store(&arid, event_date, now) {
             bail!("Replay attack detected: ARID has been seen before");
         }
 
@@ -205,7 +205,7 @@ impl QuantumLinkIdentity {
         let private_keys = PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
         let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
 
-        let xid_document = XIDDocument::new(public_keys.clone());
+        let xid_document = XIDDocument::from(public_keys);
 
         QuantumLinkIdentity {
             private_keys: Some(private_keys),
