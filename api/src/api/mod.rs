@@ -11,3 +11,5 @@ pub mod raw;
 pub mod scv;
 pub mod settings;
 pub mod status;
+#[cfg(test)]
+pub mod tests;
