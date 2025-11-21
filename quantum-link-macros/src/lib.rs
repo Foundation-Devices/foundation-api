@@ -15,7 +15,7 @@ pub fn quantum_link(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     }
 
     let expanded = quote! {
-        #[derive(Clone, Debug, quantum_link_macros::Cbor)]
+        #[derive(Clone, Debug, PartialEq, quantum_link_macros::Cbor)]
         #[cfg_attr(feature = "keyos", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
         #[cfg_attr(feature = "envoy", flutter_rust_bridge::frb(non_opaque))]
         #input

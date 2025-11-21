@@ -76,7 +76,7 @@ pub struct PrimeMagicBackupStatusResponse {
 //
 
 #[quantum_link]
-#[derive(PartialEq, Eq)]
+#[derive(Eq)]
 pub struct BackupChunk {
     #[n(0)]
     pub chunk_index: u32,
@@ -162,7 +162,7 @@ pub enum RestoreMagicBackupEvent {
 }
 
 #[quantum_link]
-#[derive(PartialEq, Eq)]
+#[derive(Eq)]
 pub struct BackupMetadata {
     #[n(0)]
     pub total_chunks: u32,

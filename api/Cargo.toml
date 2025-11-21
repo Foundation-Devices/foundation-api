@@ -20,6 +20,9 @@ dcbor = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+insta = { version = "1.43.2" }
+
 [features]
 keyos = ["rkyv"]
 envoy = ["flutter_rust_bridge"]

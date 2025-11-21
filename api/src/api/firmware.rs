@@ -61,7 +61,7 @@ pub enum FirmwareFetchEvent {
 }
 
 #[quantum_link]
-#[derive(PartialEq, Eq)]
+#[derive(Eq)]
 pub struct FirmwareChunk {
     #[n(0)]
     pub patch_index: u8,

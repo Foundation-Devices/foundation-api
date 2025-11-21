@@ -32,7 +32,7 @@
       in {
         default = pkgs.mkShellNoCC {
           packages = with pkgs;
-            [gcc]
+            [gcc cargo-insta]
             ++ [
               toolchain
             ];
