@@ -82,15 +82,31 @@ impl FirmwareChunk {
 }
 
 #[quantum_link]
-pub enum FirmwareUpdateResult {
+pub enum FirmwareInstallEvent {
     #[n(0)]
+    UpdateVerified,
+    #[n(1)]
+    Installing,
+    #[n(2)]
+    Rebooting,
+    #[n(3)]
     Success {
         #[n(0)]
         installed_version: String,
     },
-    #[n(1)]
+    #[n(4)]
     Error {
         #[n(0)]
         error: String,
+        #[n(1)]
+        stage: InstallErrorStage,
     },
+}
+
+#[quantum_link]
+pub enum InstallErrorStage {
+    #[n(0)]
+    Verify,
+    #[n(1)]
+    Install,
 }
