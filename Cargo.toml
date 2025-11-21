@@ -6,36 +6,27 @@ members = ["api", "backup-shard", "btp", "quantum-link-macros"]
 homepage = "https://github.com/Foundation-Devices/foundation-api"
 
 [workspace.dependencies]
-anyhow = "1.0"
-bc-components = "0.28.0"
-bc-envelope = { version = "0.37.0", default-features = false, features = [
-  "multithreaded",
-  "attachment",
-  "compress",
-  "encrypt",
-  "expression",
-  "known_value",
-  "proof",
-  "recipient",
-  "salt",
-  "signature",
-  "sskr",
-  "types",
-] }
-bc-xid = "0.16.0"
-btp = { path = "btp" }
+# blockchain commons
+bc-components = { version = "0.28.0" }
+bc-envelope = { version = "0.37.0" }
+bc-xid = { version = "0.16.0" }
+dcbor = { version = "0.23.3" }
+gstp = { version = "0.11.0" }
+
 chrono = "0.4"
-dcbor = "0.23.3"
-foundation-api = { path = "api" }
 getrandom = { version = "0.2" }
-gstp = "0.11.0"
 minicbor = { version = "0.24.2", features = ["alloc", "derive"] }
-quantum-link-macros = { path = "quantum-link-macros" }
+thiserror = { version = "2" }
 rkyv = { version = "0.7", default-features = false, features = [
   "size_32",
   "alloc",
 ] }
-thiserror = { version = "2" }
+
+# workspace crates
+btp = { path = "btp" }
+foundation-api = { path = "api" }
+quantum-link-macros = { path = "quantum-link-macros" }
+
 
 [patch.crates-io]
 pqcrypto-traits = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
