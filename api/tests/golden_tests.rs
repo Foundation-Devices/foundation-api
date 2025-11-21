@@ -17,7 +17,7 @@ fn to_hex(message: &QuantumLinkMessage) -> String {
     let bytes = cbor.to_cbor_data();
     bytes
         .iter()
-        .map(|b| format!("{:02x}", b))
+        .map(|b| format!("{b:02x}"))
         .collect::<String>()
 }
 
@@ -46,7 +46,7 @@ macro_rules! assert_golden {
 fn golden_exchange_rate() {
     assert_golden!(QuantumLinkMessage::ExchangeRate(ExchangeRate {
         currency_code: "USD".to_string(),
-        rate: 42000.50,
+        rate: 42_000.5,
         timestamp: 1700000000,
     }));
 }

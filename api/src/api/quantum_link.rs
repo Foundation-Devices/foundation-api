@@ -44,7 +44,7 @@ impl ARIDCache {
         }
 
         if now < (sent_at + EXPIRATION_DURATION) {
-            self.cache.push((arid.clone(), sent_at));
+            self.cache.push((*arid, sent_at));
         }
         false // Not a replay attack
     }
@@ -95,7 +95,7 @@ pub trait QuantumLink: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {
             return Err(QlError::InvalidFunction);
         }
         let envelope = expression.object_for_parameter("ql")?;
-        let cbor = envelope.as_leaf().ok_or_else(|| QlError::NotLeaf)?;
+        let cbor = envelope.as_leaf().ok_or(QlError::NotLeaf)?;
 
         let message = Self::try_from(cbor)?;
         Ok(message)
@@ -137,7 +137,7 @@ pub trait QuantumLink: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {
 
         // Check for replay attack
         let arid = event.id();
-        let event_date = event.date().ok_or_else(|| QlError::MissingDate)?.datetime();
+        let event_date = event.date().ok_or(QlError::MissingDate)?.datetime();
         if arid_cache.check_and_store(&arid, event_date, now) {
             return Err(QlError::ReplayAttack);
         }
@@ -231,9 +231,7 @@ impl QuantumLinkIdentity {
         };
 
         Ok(QuantumLinkIdentity {
-            xid_document: map
-                .get("xid_document")
-                .ok_or_else(|| dcbor::Error::MissingMapKey)?,
+            xid_document: map.get("xid_document").ok_or(dcbor::Error::MissingMapKey)?,
             private_keys: map.get("private_keys"),
         })
     }

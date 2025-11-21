@@ -297,7 +297,7 @@ fn enum_cbor_structure() {
         CBORCase::Array(arr) => {
             assert_eq!(arr.len(), 2);
 
-            let index: u64 = arr.get(0).unwrap().clone().try_into().unwrap();
+            let index: u64 = arr.first().unwrap().clone().try_into().unwrap();
             assert_eq!(index, 0);
         }
         _ => panic!("Expected CBOR array for enum"),
