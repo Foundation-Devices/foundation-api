@@ -155,19 +155,51 @@ fn golden_firmware_fetch_event_error() {
 }
 
 #[test]
+fn golden_firmware_update_result_update_verified() {
+    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+        FirmwareInstallEvent::UpdateVerified,
+    ));
+}
+
+#[test]
+fn golden_firmware_update_result_installing() {
+    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+        FirmwareInstallEvent::Installing,
+    ));
+}
+
+#[test]
+fn golden_firmware_update_result_rebooting() {
+    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+        FirmwareInstallEvent::Rebooting,
+    ));
+}
+
+#[test]
 fn golden_firmware_update_result_success() {
     assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
-        FirmwareUpdateResult::Success {
+        FirmwareInstallEvent::Success {
             installed_version: "2.5.0".to_string(),
         },
     ));
 }
 
 #[test]
-fn golden_firmware_update_result_error() {
+fn golden_firmware_update_result_error_verify() {
     assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
-        FirmwareUpdateResult::Error {
+        FirmwareInstallEvent::Error {
+            error: "Signature verification failed".to_string(),
+            stage: InstallErrorStage::Verify,
+        },
+    ));
+}
+
+#[test]
+fn golden_firmware_update_result_error_install() {
+    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+        FirmwareInstallEvent::Error {
             error: "Installation failed".to_string(),
+            stage: InstallErrorStage::Install,
         },
     ));
 }
@@ -175,9 +207,7 @@ fn golden_firmware_update_result_error() {
 #[test]
 fn golden_device_status() {
     assert_golden!(QuantumLinkMessage::DeviceStatus(DeviceStatus {
-        state: DeviceState::Normal,
         battery_level: 85,
-        ble_signal: -45,
         version: "2.4.0".to_string(),
     }));
 }
@@ -185,9 +215,7 @@ fn golden_device_status() {
 #[test]
 fn golden_device_status_updating() {
     assert_golden!(QuantumLinkMessage::DeviceStatus(DeviceStatus {
-        state: DeviceState::UpdatingFirmware,
         battery_level: 90,
-        ble_signal: -30,
         version: "2.4.0".to_string(),
     }));
 }
@@ -195,7 +223,6 @@ fn golden_device_status_updating() {
 #[test]
 fn golden_envoy_status() {
     assert_golden!(QuantumLinkMessage::EnvoyStatus(EnvoyStatus {
-        state: EnvoyState::Normal,
         version: "1.0.0".to_string(),
     }));
 }
