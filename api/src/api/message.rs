@@ -52,7 +52,7 @@ pub enum QuantumLinkMessage {
     #[n(5)]
     FirmwareFetchEvent(FirmwareFetchEvent),
     #[n(6)]
-    FirmwareUpdateResult(FirmwareInstallEvent),
+    FirmwareInstallEvent(FirmwareInstallEvent),
 
     #[n(7)]
     DeviceStatus(DeviceStatus),

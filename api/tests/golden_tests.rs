@@ -156,28 +156,28 @@ fn golden_firmware_fetch_event_error() {
 
 #[test]
 fn golden_firmware_update_result_update_verified() {
-    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+    assert_golden!(QuantumLinkMessage::FirmwareInstallEvent(
         FirmwareInstallEvent::UpdateVerified,
     ));
 }
 
 #[test]
 fn golden_firmware_update_result_installing() {
-    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+    assert_golden!(QuantumLinkMessage::FirmwareInstallEvent(
         FirmwareInstallEvent::Installing,
     ));
 }
 
 #[test]
 fn golden_firmware_update_result_rebooting() {
-    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+    assert_golden!(QuantumLinkMessage::FirmwareInstallEvent(
         FirmwareInstallEvent::Rebooting,
     ));
 }
 
 #[test]
 fn golden_firmware_update_result_success() {
-    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+    assert_golden!(QuantumLinkMessage::FirmwareInstallEvent(
         FirmwareInstallEvent::Success {
             installed_version: "2.5.0".to_string(),
         },
@@ -186,7 +186,7 @@ fn golden_firmware_update_result_success() {
 
 #[test]
 fn golden_firmware_update_result_error_verify() {
-    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+    assert_golden!(QuantumLinkMessage::FirmwareInstallEvent(
         FirmwareInstallEvent::Error {
             error: "Signature verification failed".to_string(),
             stage: InstallErrorStage::Verify,
@@ -196,7 +196,7 @@ fn golden_firmware_update_result_error_verify() {
 
 #[test]
 fn golden_firmware_update_result_error_install() {
-    assert_golden!(QuantumLinkMessage::FirmwareUpdateResult(
+    assert_golden!(QuantumLinkMessage::FirmwareInstallEvent(
         FirmwareInstallEvent::Error {
             error: "Installation failed".to_string(),
             stage: InstallErrorStage::Install,
