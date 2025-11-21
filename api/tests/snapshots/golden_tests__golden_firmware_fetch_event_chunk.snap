@@ -2,4 +2,4 @@
 source: api/tests/golden_tests.rs
 expression: hex.clone()
 ---
-82048203a50000010302050318640444deadbeef
+82058203a50000010302050318640444deadbeef

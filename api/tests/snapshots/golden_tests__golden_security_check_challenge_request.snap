@@ -2,4 +2,4 @@
 source: api/tests/golden_tests.rs
 expression: hex.clone()
 ---
-820e8200a10044cafebabe
+820b8200a10044cafebabe

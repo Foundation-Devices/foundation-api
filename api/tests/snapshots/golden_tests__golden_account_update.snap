@@ -2,4 +2,4 @@
 source: api/tests/golden_tests.rs
 expression: hex.clone()
 ---
-820da200696163636f756e742d310143010203
+820fa200696163636f756e742d310143010203

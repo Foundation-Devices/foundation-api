@@ -8,7 +8,7 @@
 use dcbor::CBOR;
 use foundation_api::{
     backup::*, bitcoin::*, firmware::*, fx::*, message::*, onboarding::*, pairing::*, passport::*,
-    raw::*, scv::*, status::*,
+    scv::*, status::*,
 };
 
 /// convert a message to hex-encoded CBOR bytes
@@ -511,11 +511,4 @@ fn golden_restore_magic_backup_result_error() {
             error: "Checksum mismatch".to_string(),
         },
     ));
-}
-
-#[test]
-fn golden_raw_data() {
-    assert_golden!(QuantumLinkMessage::RawData(RawData {
-        payload: vec![0xfe, 0xed, 0xfa, 0xce],
-    }));
 }
