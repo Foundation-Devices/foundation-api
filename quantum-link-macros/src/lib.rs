@@ -10,6 +10,10 @@ use syn::{
 pub fn quantum_link(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     let input: DeriveInput = syn::parse(input).unwrap();
 
+    if let Err(e) = validate_visibility(&input) {
+        return e.to_compile_error().into();
+    }
+
     let expanded = quote! {
         #[derive(Clone, Debug, quantum_link_macros::Cbor)]
         #[cfg_attr(feature = "keyos", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
@@ -18,6 +22,42 @@ pub fn quantum_link(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+fn validate_visibility(input: &DeriveInput) -> syn::Result<()> {
+    if !matches!(input.vis, Visibility::Public(_)) {
+        return Err(syn::Error::new(
+            input.ident.span(),
+            "quantum link types must be public",
+        ));
+    }
+    if let Data::Struct(data_struct) = &input.data {
+        match &data_struct.fields {
+            Fields::Named(fields) => {
+                for field in &fields.named {
+                    if !matches!(field.vis, Visibility::Public(_)) {
+                        return Err(syn::Error::new(
+                            field.ident.as_ref().unwrap().span(),
+                            "fields in quantum link structs must be public",
+                        ));
+                    }
+                }
+            }
+            Fields::Unnamed(fields) => {
+                for field in fields.unnamed.iter() {
+                    if !matches!(field.vis, Visibility::Public(_)) {
+                        return Err(syn::Error::new(
+                            field.span(),
+                            "fields in quantum link structs must be public",
+                        ));
+                    }
+                }
+            }
+            Fields::Unit => {}
+        }
+    }
+
+    Ok(())
 }
 
 /// derive macro generates
