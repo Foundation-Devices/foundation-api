@@ -29,40 +29,12 @@ pub struct EnvoyMessage {
     pub timestamp: u32,
 }
 
-impl EnvoyMessage {
-    pub fn new(message: QuantumLinkMessage, timestamp: u32) -> Self {
-        Self { message, timestamp }
-    }
-
-    pub fn message(&self) -> &QuantumLinkMessage {
-        &self.message
-    }
-
-    pub fn timestamp(&self) -> u32 {
-        self.timestamp
-    }
-}
-
 #[quantum_link]
 pub struct PassportMessage {
     #[n(0)]
     pub message: QuantumLinkMessage,
     #[n(1)]
     pub status: DeviceStatus,
-}
-
-impl PassportMessage {
-    pub fn new(message: QuantumLinkMessage, status: DeviceStatus) -> Self {
-        Self { message, status }
-    }
-
-    pub fn message(&self) -> &QuantumLinkMessage {
-        &self.message
-    }
-
-    pub fn status(&self) -> &DeviceStatus {
-        &self.status
-    }
 }
 
 #[quantum_link]
