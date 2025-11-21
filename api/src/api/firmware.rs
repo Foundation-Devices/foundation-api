@@ -106,7 +106,9 @@ pub enum FirmwareInstallEvent {
 #[quantum_link]
 pub enum InstallErrorStage {
     #[n(0)]
-    Verify,
+    Download,
     #[n(1)]
+    Verify,
+    #[n(2)]
     Install,
 }
