@@ -146,7 +146,7 @@ pub struct RestoreMagicBackupRequest {
 pub enum RestoreMagicBackupEvent {
     // there is no backup found from the provided fingerprint
     #[n(0)]
-    NoBackupFound,
+    NotFound,
     // envoy found a backup and is beginning transmission
     #[n(1)]
     Starting(BackupMetadata),

@@ -469,7 +469,7 @@ fn golden_restore_magic_backup_request() {
 #[test]
 fn golden_restore_magic_backup_event_no_backup() {
     assert_golden!(QuantumLinkMessage::RestoreMagicBackupEvent(
-        RestoreMagicBackupEvent::NoBackupFound,
+        RestoreMagicBackupEvent::NotFound,
     ));
 }
 
