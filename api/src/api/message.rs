@@ -11,8 +11,8 @@ use crate::{
     },
     bitcoin::*,
     firmware::{
-        FirmwareFetchEvent, FirmwareFetchRequest, FirmwareUpdateCheckRequest,
-        FirmwareUpdateCheckResponse, FirmwareUpdateResult,
+        FirmwareFetchEvent, FirmwareFetchRequest, FirmwareInstallEvent, FirmwareUpdateCheckRequest,
+        FirmwareUpdateCheckResponse,
     },
     fx::{ExchangeRate, ExchangeRateHistory},
     pairing::{PairingRequest, PairingResponse},
@@ -52,7 +52,7 @@ pub enum QuantumLinkMessage {
     #[n(5)]
     FirmwareFetchEvent(FirmwareFetchEvent),
     #[n(6)]
-    FirmwareUpdateResult(FirmwareUpdateResult),
+    FirmwareUpdateResult(FirmwareInstallEvent),
 
     #[n(7)]
     DeviceStatus(DeviceStatus),
