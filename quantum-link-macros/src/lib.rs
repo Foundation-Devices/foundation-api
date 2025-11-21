@@ -156,6 +156,8 @@ fn generate_struct_impls(
 fn generate_named_struct_into_cbor(
     fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
 ) -> syn::Result<TokenStream2> {
+    check_duplicate_indices(fields)?;
+
     let mut field_insertions = Vec::new();
 
     for field in fields {
@@ -247,6 +249,8 @@ fn generate_enum_into_cbor(
     enum_name: &syn::Ident,
     variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
 ) -> syn::Result<TokenStream2> {
+    check_duplicate_indices(variants)?;
+
     let mut variant_arms = Vec::new();
 
     for variant in variants {
@@ -323,6 +327,8 @@ fn generate_struct_variant_into_cbor(
     variant_index: u64,
     fields: &syn::FieldsNamed,
 ) -> syn::Result<TokenStream2> {
+    check_duplicate_indices(&fields.named)?;
+
     let mut field_names = Vec::new();
     let mut field_insertions = Vec::new();
 
@@ -543,6 +549,43 @@ fn get_field_index(attrs: &[Attribute]) -> Option<u64> {
         }
     }
     None
+}
+
+trait Indexed: Spanned {
+    fn index_attrs(&self) -> &[Attribute];
+}
+
+impl Indexed for syn::Field {
+    fn index_attrs(&self) -> &[Attribute] {
+        &self.attrs
+    }
+}
+
+impl Indexed for syn::Variant {
+    fn index_attrs(&self) -> &[Attribute] {
+        &self.attrs
+    }
+}
+
+fn check_duplicate_indices<'a>(
+    items: impl IntoIterator<Item = &'a (impl Indexed + 'a)>,
+) -> syn::Result<()> {
+    let mut seen: std::collections::HashMap<u64, proc_macro2::Span> =
+        std::collections::HashMap::new();
+
+    for item in items {
+        if let Some(index) = get_field_index(item.index_attrs()) {
+            if let Some(&prev_span) = seen.get(&index) {
+                let mut err =
+                    syn::Error::new(item.span(), format!("duplicate #[n({index})] attribute"));
+                err.combine(syn::Error::new(prev_span, "first use of this index"));
+                return Err(err);
+            }
+            seen.insert(index, item.span());
+        }
+    }
+
+    Ok(())
 }
 
 fn get_option_inner(ty: &Type) -> Option<Type> {
