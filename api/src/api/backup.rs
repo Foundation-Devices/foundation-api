@@ -1,13 +1,13 @@
 use quantum_link_macros::quantum_link;
 
 #[quantum_link]
-pub struct Shard {
-    #[n(0)]
-    pub payload: Vec<u8>,
-}
+pub struct Shard(pub Vec<u8>);
 
 #[quantum_link]
-pub struct BackupShardRequest(#[n(0)] pub Shard);
+pub struct BackupShardRequest {
+    #[n(0)]
+    pub shard: Shard,
+}
 
 #[quantum_link]
 pub enum BackupShardResponse {
@@ -29,7 +29,10 @@ pub struct RestoreShardRequest {
 #[quantum_link]
 pub enum RestoreShardResponse {
     #[n(0)]
-    Success(Shard),
+    Success {
+        #[n(0)]
+        shard: Shard,
+    },
     #[n(1)]
     Error {
         #[n(0)]

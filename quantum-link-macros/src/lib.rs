@@ -2,7 +2,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    parse_macro_input, spanned::Spanned, Attribute, Data, DeriveInput, Fields, Lit, Meta, Type,
+    parse_macro_input, spanned::Spanned, Attribute, Data, DataStruct, DeriveInput, Fields, Lit,
+    Meta, Type, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -51,8 +52,17 @@ fn derive_cbor_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
         }
     };
 
-    let cbor_marker_impl = quote! {
-        impl #impl_generics crate::CborMarker for #name #ty_generics #where_clause {}
+    // only auto-impl for non-tuple structs
+    let cbor_marker_impl = match &input.data {
+        Data::Struct(DataStruct {
+            fields: Fields::Unnamed(_),
+            ..
+        }) => quote! {},
+        _ => {
+            quote! {
+                impl #impl_generics crate::CborMarker for #name #ty_generics #where_clause {}
+            }
+        }
     };
 
     Ok(quote! {
@@ -95,7 +105,9 @@ fn generate_struct_impls(
                     "only single-field tuple structs (newtypes) are supported",
                 ));
             }
-            generate_newtype_struct_impls(fields.unnamed.first().unwrap())
+            let (into_body, try_from_body) =
+                generate_newtype_struct_impls(fields.unnamed.first().unwrap())?;
+            Ok((into_body, try_from_body))
         }
         Fields::Unit => Err(syn::Error::new(name.span(), "unit structs not supported")),
     }
@@ -173,33 +185,18 @@ fn generate_named_struct_try_from_cbor(
 fn generate_newtype_struct_impls(field: &syn::Field) -> syn::Result<(TokenStream2, TokenStream2)> {
     let field_type = &field.ty;
 
-    if let Some(index) = get_field_index(&field.attrs) {
-        // Has #[n(x)] - serialize as map
-        let cbor_value = gen_to_cbor(field_type, quote! { value.0 });
-        let into_body = quote! {
-            let mut map = dcbor::Map::new();
-            map.insert(dcbor::CBOR::from(#index), #cbor_value);
-            dcbor::CBOR::from(map)
-        };
-
-        let from_value = gen_map_get_required(index, field_type, quote! { map });
-        let try_from_body = quote! {
-            let case = cbor.into_case();
-            let dcbor::CBORCase::Map(map) = case else {
-                return Err(dcbor::Error::WrongType);
-            };
-            Ok(Self(#from_value))
-        };
-
-        Ok((into_body, try_from_body))
-    } else {
-        // No #[n(x)] - direct wrap/unwrap
-        let into_body = gen_to_cbor(field_type, quote! { value.0 });
-        let from_value = gen_from_cbor(field_type, quote! { cbor });
-        let try_from_body = quote! { Ok(Self(#from_value)) };
-
-        Ok((into_body, try_from_body))
+    if get_field_index(&field.attrs).is_some() {
+        return Err(syn::Error::new(
+            field.span(),
+            "newtype structs cannot have #[n(x)] attribute; use a named struct instead",
+        ));
     }
+
+    let into_body = gen_to_cbor(field_type, quote! { value.0 });
+    let from_value = gen_from_cbor(field_type, quote! { cbor });
+    let try_from_body = quote! { Ok(Self(#from_value)) };
+
+    Ok((into_body, try_from_body))
 }
 
 //
@@ -499,10 +496,8 @@ fn get_field_index(attrs: &[Attribute]) -> Option<u64> {
         if attr.path().is_ident("n") {
             if let Meta::List(meta_list) = &attr.meta {
                 let tokens = meta_list.tokens.clone();
-                if let Ok(lit) = syn::parse2::<Lit>(tokens) {
-                    if let Lit::Int(lit_int) = lit {
-                        return lit_int.base10_parse().ok();
-                    }
+                if let Ok(Lit::Int(lit_int)) = syn::parse2::<Lit>(tokens) {
+                    return lit_int.base10_parse().ok();
                 }
             }
         }

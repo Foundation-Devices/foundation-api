@@ -354,6 +354,23 @@ fn enum_tuple_vs_struct_encoding() {
 }
 
 #[test]
+fn newtype() {
+    #[derive(Debug, Clone, PartialEq, Cbor)]
+    struct NewType(String);
+
+    let value = NewType(String::from("yes"));
+    let cbor: CBOR = value.clone().into();
+    let case = cbor.clone().into_case();
+
+    match case {
+        CBORCase::Text(_) => {}
+        _ => panic!("invalid case"),
+    }
+
+    assert_eq!(value, NewType::try_from(cbor).unwrap())
+}
+
+#[test]
 fn option_array() {
     #[derive(Debug, Clone, PartialEq, Cbor)]
     struct OptionArray {
@@ -369,8 +386,8 @@ fn option_array() {
         arr: Some(a),
         vec: Some(b.clone()),
     };
-    let cbor: CBOR = value.into();
-    let case = cbor.into_case();
+    let cbor: CBOR = value.clone().into();
+    let case = cbor.clone().into_case();
 
     match case {
         CBORCase::Map(map) => {
@@ -392,4 +409,6 @@ fn option_array() {
         }
         _ => panic!("Expected CBOR array for enum"),
     }
+
+    assert_eq!(value, OptionArray::try_from(cbor).unwrap())
 }
