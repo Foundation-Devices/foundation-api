@@ -1,7 +1,12 @@
 use quantum_link_macros::quantum_link;
 
 #[quantum_link]
+#[repr(transparent)]
 pub struct Shard(pub Vec<u8>);
+
+#[quantum_link]
+#[repr(transparent)]
+pub struct SeedFingerprint(pub [u8; 32]);
 
 #[quantum_link]
 pub struct BackupShardRequest {
@@ -23,7 +28,7 @@ pub enum BackupShardResponse {
 #[quantum_link]
 pub struct RestoreShardRequest {
     #[n(0)]
-    pub seed_fingerprint: [u8; 32],
+    pub seed_fingerprint: SeedFingerprint,
 }
 
 #[quantum_link]
@@ -56,13 +61,13 @@ pub struct PrimeMagicBackupEnabled {
     #[n(0)]
     pub enabled: bool,
     #[n(1)]
-    pub seed_fingerprint: [u8; 32],
+    pub seed_fingerprint: SeedFingerprint,
 }
 
 #[quantum_link]
 pub struct PrimeMagicBackupStatusRequest {
     #[n(0)]
-    pub seed_fingerprint: [u8; 32],
+    pub seed_fingerprint: SeedFingerprint,
 }
 
 #[quantum_link]
@@ -108,7 +113,7 @@ pub enum CreateMagicBackupEvent {
 #[quantum_link]
 pub struct StartMagicBackup {
     #[n(0)]
-    pub seed_fingerprint: [u8; 32],
+    pub seed_fingerprint: SeedFingerprint,
     #[n(1)]
     pub total_chunks: u32,
     #[n(2)]
@@ -136,7 +141,7 @@ pub enum CreateMagicBackupResult {
 #[quantum_link]
 pub struct RestoreMagicBackupRequest {
     #[n(0)]
-    pub seed_fingerprint: [u8; 32],
+    pub seed_fingerprint: SeedFingerprint,
     /// if 0, then go from start
     #[n(1)]
     pub resume_from_chunk: u32,

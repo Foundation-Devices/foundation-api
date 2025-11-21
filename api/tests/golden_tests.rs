@@ -338,7 +338,7 @@ fn golden_prime_magic_backup_enabled() {
     assert_golden!(QuantumLinkMessage::PrimeMagicBackupEnabled(
         PrimeMagicBackupEnabled {
             enabled: true,
-            seed_fingerprint: [0x42; 32],
+            seed_fingerprint: SeedFingerprint([0x42; 32]),
         },
     ));
 }
@@ -347,7 +347,7 @@ fn golden_prime_magic_backup_enabled() {
 fn golden_prime_magic_backup_status_request() {
     assert_golden!(QuantumLinkMessage::PrimeMagicBackupStatusRequest(
         PrimeMagicBackupStatusRequest {
-            seed_fingerprint: [0xab; 32],
+            seed_fingerprint: SeedFingerprint([0xab; 32]),
         },
     ));
 }
@@ -388,7 +388,7 @@ fn golden_backup_shard_response_error() {
 fn golden_restore_shard_request() {
     assert_golden!(QuantumLinkMessage::RestoreShardRequest(
         RestoreShardRequest {
-            seed_fingerprint: [0xcd; 32],
+            seed_fingerprint: SeedFingerprint([0xcd; 32]),
         },
     ));
 }
@@ -422,7 +422,7 @@ fn golden_restore_shard_response_not_found() {
 fn golden_create_magic_backup_event_start() {
     assert_golden!(QuantumLinkMessage::CreateMagicBackupEvent(
         CreateMagicBackupEvent::Start(StartMagicBackup {
-            seed_fingerprint: [0xef; 32],
+            seed_fingerprint: SeedFingerprint([0xef; 32]),
             total_chunks: 100,
             hash: [0xaa; 32],
         }),
@@ -460,7 +460,7 @@ fn golden_create_magic_backup_result_error() {
 fn golden_restore_magic_backup_request() {
     assert_golden!(QuantumLinkMessage::RestoreMagicBackupRequest(
         RestoreMagicBackupRequest {
-            seed_fingerprint: [0xbb; 32],
+            seed_fingerprint: SeedFingerprint([0xbb; 32]),
             resume_from_chunk: 50,
         },
     ));
