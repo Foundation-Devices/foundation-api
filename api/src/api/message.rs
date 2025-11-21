@@ -2,7 +2,6 @@ use quantum_link_macros::quantum_link;
 
 use super::onboarding::OnboardingState;
 use crate::{
-    api::raw::RawData,
     backup::{
         BackupShardRequest, BackupShardResponse, CreateMagicBackupEvent, CreateMagicBackupResult,
         EnvoyMagicBackupEnabledRequest, EnvoyMagicBackupEnabledResponse, PrimeMagicBackupEnabled,
@@ -109,7 +108,4 @@ pub enum QuantumLinkMessage {
     RestoreMagicBackupEvent(RestoreMagicBackupEvent),
     #[n(25)]
     RestoreMagicBackupResult(RestoreMagicBackupResult),
-
-    #[n(100)]
-    RawData(RawData),
 }
