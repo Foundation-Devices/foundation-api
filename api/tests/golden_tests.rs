@@ -15,10 +15,7 @@ use foundation_api::{
 fn to_hex(message: &QuantumLinkMessage) -> String {
     let cbor: CBOR = message.clone().into();
     let bytes = cbor.to_cbor_data();
-    bytes
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>()
+    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
 }
 
 /// decode hex-encoded CBOR bytes back to a message
