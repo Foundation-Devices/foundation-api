@@ -22,12 +22,6 @@ use crate::{
 };
 
 #[quantum_link]
-pub struct RawMessage {
-    #[n(0)]
-    pub payload: Vec<u8>,
-}
-
-#[quantum_link]
 pub struct EnvoyMessage {
     #[n(0)]
     pub message: QuantumLinkMessage,
