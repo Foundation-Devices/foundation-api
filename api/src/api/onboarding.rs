@@ -3,53 +3,45 @@ use quantum_link_macros::quantum_link;
 #[quantum_link]
 pub enum OnboardingState {
     #[n(0)]
-    FirmwareUpdateScreen,
-    #[n(1)]
-    DownloadingUpdate,
-    #[n(2)]
-    ReceivingUpdate,
-    #[n(3)]
-    VeryfyingSignatures,
-    #[n(4)]
-    InstallingUpdate,
-    #[n(5)]
-    Rebooting,
-    #[n(6)]
-    FirmwareUpdated,
-    #[n(7)]
-    SecuringDevice,
-    #[n(8)]
-    DeviceSecured,
-    #[n(9)]
-    WalletCreationScreen,
-    #[n(10)]
-    CreatingWallet,
-    #[n(11)]
-    WalletCreated,
-    #[n(12)]
-    MagicBackupScreen,
-    #[n(13)]
-    CreatingMagicBackup,
-    #[n(14)]
-    MagicBackupCreated,
-    #[n(15)]
-    CreatingManualBackup,
-    #[n(16)]
-    CreatingKeycardBackup,
-    #[n(17)]
-    WritingDownSeedWords,
-    #[n(18)]
-    ConnectingWallet,
-    #[n(19)]
-    WalletConected,
-    #[n(20)]
-    Completed,
-    #[n(21)]
     SecurityChecked,
-    #[n(22)]
-    UpdateAvailable,
-    #[n(23)]
-    UpdateNotAvailable,
-    #[n(24)]
+    #[n(1)]
     SecurityCheckFailed,
+
+    #[n(2)]
+    FirmwareUpdateScreen,
+
+    /// pin
+    #[n(3)]
+    SecuringDevice,
+    /// pin
+    #[n(4)]
+    DeviceSecured,
+
+    #[n(5)]
+    WalletCreationScreen,
+    #[n(6)]
+    CreatingWallet,
+    #[n(7)]
+    WalletCreated,
+
+    #[n(8)]
+    MagicBackupScreen,
+    #[n(9)]
+    CreatingMagicBackup,
+    #[n(10)]
+    MagicBackupCreated,
+
+    #[n(11)]
+    CreatingManualBackup,
+    #[n(12)]
+    CreatingKeycardBackup,
+
+    #[n(13)]
+    WritingDownSeedWords,
+    #[n(14)]
+    ConnectingWallet,
+    #[n(15)]
+    WalletConected,
+    #[n(16)]
+    Completed,
 }

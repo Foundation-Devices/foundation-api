@@ -11,10 +11,10 @@ pub enum PassportModel {
 }
 
 #[quantum_link]
-pub struct PassportFirmwareVersion(#[n(0)] pub String);
+pub struct PassportFirmwareVersion(pub String);
 
 #[quantum_link]
-pub struct PassportSerial(#[n(0)] pub String);
+pub struct PassportSerial(pub String);
 
 #[quantum_link]
 pub enum PassportColor {

@@ -21,7 +21,7 @@ pub struct PairingResponse {
 
 #[quantum_link]
 pub struct PairingRequest {
-    #[cbor(n(0), with = "minicbor::bytes")]
+    #[n(0)]
     pub xid_document: Vec<u8>,
     #[n(1)]
     pub device_name: String,

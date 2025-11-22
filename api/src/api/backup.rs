@@ -1,36 +1,50 @@
 use quantum_link_macros::quantum_link;
 
 #[quantum_link]
-pub struct Shard {
-    #[n(0)]
-    pub payload: Vec<u8>,
-}
+#[repr(transparent)]
+pub struct Shard(pub Vec<u8>);
 
 #[quantum_link]
-pub struct BackupShardRequest(#[n(0)] pub Shard);
+#[repr(transparent)]
+pub struct SeedFingerprint(pub [u8; 32]);
+
+#[quantum_link]
+pub struct BackupShardRequest {
+    #[n(0)]
+    pub shard: Shard,
+}
 
 #[quantum_link]
 pub enum BackupShardResponse {
     #[n(0)]
     Success,
     #[n(1)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
 
 #[quantum_link]
 pub struct RestoreShardRequest {
     #[n(0)]
-    pub seed_fingerprint: [u8; 32],
+    pub seed_fingerprint: SeedFingerprint,
 }
 
 #[quantum_link]
 pub enum RestoreShardResponse {
     #[n(0)]
-    Success(#[n(0)] Shard),
+    Success {
+        #[n(0)]
+        shard: Shard,
+    },
     #[n(1)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
     #[n(2)]
-    NotFound(#[n(0)] String),
+    NotFound,
 }
 
 #[quantum_link]
@@ -47,13 +61,13 @@ pub struct PrimeMagicBackupEnabled {
     #[n(0)]
     pub enabled: bool,
     #[n(1)]
-    pub seed_fingerprint: [u8; 32],
+    pub seed_fingerprint: SeedFingerprint,
 }
 
 #[quantum_link]
 pub struct PrimeMagicBackupStatusRequest {
     #[n(0)]
-    pub seed_fingerprint: [u8; 32],
+    pub seed_fingerprint: SeedFingerprint,
 }
 
 #[quantum_link]
@@ -66,16 +80,14 @@ pub struct PrimeMagicBackupStatusResponse {
 // MAGIC BACKUPS
 //
 
-pub type SeedFingerprint = [u8; 32];
-
 #[quantum_link]
-#[derive(PartialEq, Eq)]
+#[derive(Eq)]
 pub struct BackupChunk {
     #[n(0)]
     pub chunk_index: u32,
     #[n(1)]
     pub total_chunks: u32,
-    #[cbor(n(2), with = "minicbor::bytes")]
+    #[n(2)]
     pub data: Vec<u8>,
 }
 
@@ -93,12 +105,10 @@ impl BackupChunk {
 #[quantum_link]
 pub enum CreateMagicBackupEvent {
     #[n(0)]
-    Start(#[n(0)] StartMagicBackup),
+    Start(StartMagicBackup),
     #[n(1)]
-    Chunk(#[n(0)] BackupChunk),
+    Chunk(BackupChunk),
 }
-
-type Sha256Hash = [u8; 32];
 
 #[quantum_link]
 pub struct StartMagicBackup {
@@ -107,7 +117,7 @@ pub struct StartMagicBackup {
     #[n(1)]
     pub total_chunks: u32,
     #[n(2)]
-    pub hash: Sha256Hash,
+    pub hash: [u8; 32],
 }
 
 // envoy -> prime
@@ -118,7 +128,10 @@ pub enum CreateMagicBackupResult {
     #[n(0)]
     Success,
     #[n(1)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
 
 //
@@ -138,20 +151,23 @@ pub struct RestoreMagicBackupRequest {
 pub enum RestoreMagicBackupEvent {
     // there is no backup found from the provided fingerprint
     #[n(0)]
-    NoBackupFound,
+    NotFound,
     // envoy found a backup and is beginning transmission
     #[n(1)]
-    Starting(#[n(0)] BackupMetadata),
+    Starting(BackupMetadata),
     // a backup chunk
     #[n(2)]
-    Chunk(#[n(0)] BackupChunk),
+    Chunk(BackupChunk),
     // envoy failed
     #[n(3)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }
 
 #[quantum_link]
-#[derive(PartialEq, Eq)]
+#[derive(Eq)]
 pub struct BackupMetadata {
     #[n(0)]
     pub total_chunks: u32,
@@ -163,5 +179,8 @@ pub enum RestoreMagicBackupResult {
     #[n(0)]
     Success,
     #[n(1)]
-    Error(#[n(0)] String),
+    Error {
+        #[n(0)]
+        error: String,
+    },
 }

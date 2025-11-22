@@ -4,21 +4,21 @@ use quantum_link_macros::quantum_link;
 pub enum SecurityCheck {
     // Envoy to Prime: Initial challenge
     #[n(0)]
-    ChallengeRequest(#[n(0)] ChallengeRequest),
+    ChallengeRequest(ChallengeRequest),
 
     // Prime to Envoy: Response to the challenge
     #[n(1)]
-    ChallengeResponse(#[n(0)] ChallengeResponseResult),
+    ChallengeResponse(ChallengeResponseResult),
 
     // Envoy to Prime: Verification result
     // only send if ChallengeResponse was successful
     #[n(2)]
-    VerificationResult(#[n(0)] VerificationResult),
+    VerificationResult(VerificationResult),
 }
 
 #[quantum_link]
 pub struct ChallengeRequest {
-    #[cbor(n(0), with = "minicbor::bytes")]
+    #[n(0)]
     pub data: Vec<u8>,
 }
 
@@ -26,7 +26,7 @@ pub struct ChallengeRequest {
 pub enum ChallengeResponseResult {
     #[n(0)]
     Success {
-        #[cbor(n(0), with = "minicbor::bytes")]
+        #[n(0)]
         data: Vec<u8>,
     },
     #[n(1)]

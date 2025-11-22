@@ -1,0 +1,5 @@
+---
+source: api/tests/golden_tests.rs
+expression: hex.clone()
+---
+82038200a50065322e352e300169427567206669786573021a6553f100031a000fa0000403

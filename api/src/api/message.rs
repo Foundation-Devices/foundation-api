@@ -2,7 +2,6 @@ use quantum_link_macros::quantum_link;
 
 use super::onboarding::OnboardingState;
 use crate::{
-    api::raw::RawData,
     backup::{
         BackupShardRequest, BackupShardResponse, CreateMagicBackupEvent, CreateMagicBackupResult,
         EnvoyMagicBackupEnabledRequest, EnvoyMagicBackupEnabledResponse, PrimeMagicBackupEnabled,
@@ -12,8 +11,8 @@ use crate::{
     },
     bitcoin::*,
     firmware::{
-        FirmwareFetchEvent, FirmwareFetchRequest, FirmwareUpdateCheckRequest,
-        FirmwareUpdateCheckResponse, FirmwareUpdateResult,
+        FirmwareFetchEvent, FirmwareFetchRequest, FirmwareInstallEvent, FirmwareUpdateCheckRequest,
+        FirmwareUpdateCheckResponse,
     },
     fx::{ExchangeRate, ExchangeRateHistory},
     pairing::{PairingRequest, PairingResponse},
@@ -22,31 +21,11 @@ use crate::{
 };
 
 #[quantum_link]
-pub struct RawMessage {
-    #[n(0)]
-    pub payload: Vec<u8>,
-}
-
-#[quantum_link]
 pub struct EnvoyMessage {
     #[n(0)]
     pub message: QuantumLinkMessage,
     #[n(1)]
     pub timestamp: u32,
-}
-
-impl EnvoyMessage {
-    pub fn new(message: QuantumLinkMessage, timestamp: u32) -> Self {
-        Self { message, timestamp }
-    }
-
-    pub fn message(&self) -> &QuantumLinkMessage {
-        &self.message
-    }
-
-    pub fn timestamp(&self) -> u32 {
-        self.timestamp
-    }
 }
 
 #[quantum_link]
@@ -57,93 +36,80 @@ pub struct PassportMessage {
     pub status: DeviceStatus,
 }
 
-impl PassportMessage {
-    pub fn new(message: QuantumLinkMessage, status: DeviceStatus) -> Self {
-        Self { message, status }
-    }
-
-    pub fn message(&self) -> &QuantumLinkMessage {
-        &self.message
-    }
-
-    pub fn status(&self) -> &DeviceStatus {
-        &self.status
-    }
-}
-
 #[quantum_link]
 pub enum QuantumLinkMessage {
     #[n(0)]
-    ExchangeRate(#[n(0)] ExchangeRate),
-    #[n(26)]
-    ExchangeRateHistory(#[n(0)] ExchangeRateHistory),
-
+    ExchangeRate(ExchangeRate),
     #[n(1)]
-    FirmwareUpdateCheckRequest(#[n(0)] FirmwareUpdateCheckRequest),
+    ExchangeRateHistory(ExchangeRateHistory),
+
     #[n(2)]
-    FirmwareUpdateCheckResponse(#[n(0)] FirmwareUpdateCheckResponse),
+    FirmwareUpdateCheckRequest(FirmwareUpdateCheckRequest),
     #[n(3)]
-    FirmwareFetchRequest(#[n(0)] FirmwareFetchRequest),
+    FirmwareUpdateCheckResponse(FirmwareUpdateCheckResponse),
     #[n(4)]
-    FirmwareFetchEvent(#[n(0)] FirmwareFetchEvent),
+    FirmwareFetchRequest(FirmwareFetchRequest),
     #[n(5)]
-    FirmwareUpdateResult(#[n(0)] FirmwareUpdateResult),
+    FirmwareFetchEvent(FirmwareFetchEvent),
     #[n(6)]
-    DeviceStatus(#[n(0)] DeviceStatus),
+    FirmwareInstallEvent(FirmwareInstallEvent),
+
     #[n(7)]
-    EnvoyStatus(#[n(0)] EnvoyStatus),
+    DeviceStatus(DeviceStatus),
     #[n(8)]
-    PairingRequest(#[n(0)] PairingRequest),
+    EnvoyStatus(EnvoyStatus),
+
     #[n(9)]
-    PairingResponse(#[n(0)] PairingResponse),
+    PairingRequest(PairingRequest),
     #[n(10)]
-    OnboardingState(#[n(0)] OnboardingState),
+    PairingResponse(PairingResponse),
+
     #[n(11)]
-    SignPsbt(#[n(0)] SignPsbt),
+    SecurityCheck(SecurityCheck),
     #[n(12)]
-    BroadcastTransaction(#[n(0)] BroadcastTransaction),
+    OnboardingState(OnboardingState),
+
     #[n(13)]
-    AccountUpdate(#[n(0)] AccountUpdate),
-    #[n(27)]
-    ApplyPassphrase(#[n(0)] ApplyPassphrase),
+    SignPsbt(SignPsbt),
     #[n(14)]
-    SecurityCheck(#[n(0)] SecurityCheck),
-
+    BroadcastTransaction(BroadcastTransaction),
     #[n(15)]
-    EnvoyMagicBackupEnabledRequest(#[n(0)] EnvoyMagicBackupEnabledRequest),
+    AccountUpdate(AccountUpdate),
     #[n(16)]
-    EnvoyMagicBackupEnabledResponse(#[n(0)] EnvoyMagicBackupEnabledResponse),
-
-    #[n(28)]
-    PrimeMagicBackupEnabled(#[n(0)] PrimeMagicBackupEnabled),
-
-    #[n(29)]
-    PrimeMagicBackupStatusRequest(#[n(0)] PrimeMagicBackupStatusRequest),
-    #[n(30)]
-    PrimeMagicBackupStatusResponse(#[n(0)] PrimeMagicBackupStatusResponse),
+    ApplyPassphrase(ApplyPassphrase),
 
     #[n(17)]
-    BackupShardRequest(#[n(0)] BackupShardRequest),
+    EnvoyMagicBackupEnabledRequest(EnvoyMagicBackupEnabledRequest),
     #[n(18)]
-    BackupShardResponse(#[n(0)] BackupShardResponse),
+    EnvoyMagicBackupEnabledResponse(EnvoyMagicBackupEnabledResponse),
 
     #[n(19)]
-    RestoreShardRequest(#[n(0)] RestoreShardRequest),
+    PrimeMagicBackupEnabled(PrimeMagicBackupEnabled),
+
     #[n(20)]
-    RestoreShardResponse(#[n(0)] RestoreShardResponse),
-
+    PrimeMagicBackupStatusRequest(PrimeMagicBackupStatusRequest),
     #[n(21)]
-    CreateMagicBackupEvent(#[n(0)] CreateMagicBackupEvent),
+    PrimeMagicBackupStatusResponse(PrimeMagicBackupStatusResponse),
+
     #[n(22)]
-    CreateMagicBackupResult(#[n(0)] CreateMagicBackupResult),
-
+    BackupShardRequest(BackupShardRequest),
     #[n(23)]
-    RestoreMagicBackupRequest(#[n(0)] RestoreMagicBackupRequest),
-    #[n(24)]
-    RestoreMagicBackupEvent(#[n(0)] RestoreMagicBackupEvent),
-    #[n(25)]
-    RestoreMagicBackupResult(#[n(0)] RestoreMagicBackupResult),
+    BackupShardResponse(BackupShardResponse),
 
-    #[n(100)]
-    RawData(#[n(0)] RawData),
+    #[n(24)]
+    RestoreShardRequest(RestoreShardRequest),
+    #[n(25)]
+    RestoreShardResponse(RestoreShardResponse),
+
+    #[n(26)]
+    CreateMagicBackupEvent(CreateMagicBackupEvent),
+    #[n(27)]
+    CreateMagicBackupResult(CreateMagicBackupResult),
+
+    #[n(28)]
+    RestoreMagicBackupRequest(RestoreMagicBackupRequest),
+    #[n(29)]
+    RestoreMagicBackupEvent(RestoreMagicBackupEvent),
+    #[n(30)]
+    RestoreMagicBackupResult(RestoreMagicBackupResult),
 }

@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use anyhow::bail;
 use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID};
 use bc_envelope::{
     prelude::{CBORCase, CBOR},
@@ -45,7 +44,7 @@ impl ARIDCache {
         }
 
         if now < (sent_at + EXPIRATION_DURATION) {
-            self.cache.push((arid.clone(), sent_at));
+            self.cache.push((*arid, sent_at));
         }
         false // Not a replay attack
     }
@@ -65,42 +64,48 @@ impl ARIDCache {
     }
 }
 
-pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
-    fn encode(&self) -> Expression {
-        let mut buffer: Vec<u8> = Vec::new();
+#[derive(Debug, thiserror::Error)]
+pub enum QlError {
+    #[error(transparent)]
+    Cbor(#[from] dcbor::Error),
+    #[error(transparent)]
+    Envelope(#[from] bc_envelope::Error),
+    #[error(transparent)]
+    Gstp(#[from] gstp::Error),
 
-        minicbor::encode(self, &mut buffer).unwrap();
-        let dcbor = CBOR::try_from_data(buffer).unwrap();
+    #[error("envelope did not contain leaf")]
+    NotLeaf,
+    #[error("missing date")]
+    MissingDate,
+    #[error("invalid function")]
+    InvalidFunction,
+    #[error("replay attack")]
+    ReplayAttack,
+}
 
-        let envelope = Envelope::new(dcbor);
+pub trait QuantumLink: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {
+    fn encode(self) -> Expression {
+        let cbor: CBOR = self.into();
+        let envelope = Envelope::new(cbor);
         Expression::new(QUANTUM_LINK).with_parameter("ql", envelope)
     }
 
-    fn decode(expression: &Expression) -> anyhow::Result<Self>
-    where
-        Self: for<'a> minicbor::Decode<'a, ()>,
-    {
-        if expression.function().clone() != QUANTUM_LINK {
-            bail!("Expected QuantumLink function");
+    fn decode(expression: &Expression) -> Result<Self, QlError> {
+        if expression.function() != &QUANTUM_LINK {
+            return Err(QlError::InvalidFunction);
         }
         let envelope = expression.object_for_parameter("ql")?;
-        let raw_data = envelope
-            .as_leaf()
-            .expect("there should be a leaf")
-            .to_cbor_data();
+        let cbor = envelope.as_leaf().ok_or(QlError::NotLeaf)?;
 
-        let message = minicbor::decode(&raw_data).map_err(|e| anyhow::anyhow!(e))?;
+        let message = Self::try_from(cbor)?;
         Ok(message)
     }
 
     fn seal(
-        &self,
+        self,
         (sender_pk, sender_xid): (&PrivateKeys, &XIDDocument),
         recipient: &XIDDocument,
-    ) -> Envelope
-    where
-        Self: minicbor::Encode<()>,
-    {
+    ) -> Envelope {
         let valid_until = Date::with_duration_from_now(EXPIRATION_DURATION);
 
         let event: SealedEvent<Expression> =
@@ -114,10 +119,7 @@ pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
     fn unseal(
         envelope: &Envelope,
         private_keys: &PrivateKeys,
-    ) -> anyhow::Result<(Expression, XIDDocument)>
-    where
-        Self: for<'a> minicbor::Decode<'a, ()>,
-    {
+    ) -> Result<(Expression, XIDDocument), QlError> {
         let event: SealedEvent<Expression> =
             SealedEvent::try_from_envelope(envelope, None, Some(&Date::now()), private_keys)?;
         let expression = event.content().clone();
@@ -128,22 +130,16 @@ pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
         envelope: &Envelope,
         private_keys: &PrivateKeys,
         arid_cache: &mut ARIDCache,
-    ) -> anyhow::Result<(Expression, XIDDocument)>
-    where
-        Self: for<'a> minicbor::Decode<'a, ()>,
-    {
+    ) -> Result<(Expression, XIDDocument), QlError> {
         let now = Utc::now();
         let event: SealedEvent<Expression> =
             SealedEvent::try_from_envelope(envelope, None, Some(&Date::from(now)), private_keys)?;
 
         // Check for replay attack
         let arid = event.id();
-        let event_date = event
-            .date()
-            .ok_or_else(|| anyhow::anyhow!("event missing date"))?
-            .datetime();
-        if arid_cache.check_and_store(arid, event_date, now) {
-            bail!("Replay attack detected: ARID has been seen before");
+        let event_date = event.date().ok_or(QlError::MissingDate)?.datetime();
+        if arid_cache.check_and_store(&arid, event_date, now) {
+            return Err(QlError::ReplayAttack);
         }
 
         let expression = event.content().clone();
@@ -153,7 +149,7 @@ pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
     fn unseal_passport_message(
         envelope: &Envelope,
         private_keys: &PrivateKeys,
-    ) -> anyhow::Result<(PassportMessage, XIDDocument)> {
+    ) -> Result<(PassportMessage, XIDDocument), QlError> {
         let (expression, sender) = PassportMessage::unseal(envelope, private_keys)?;
         Ok((PassportMessage::decode(&expression)?, sender))
     }
@@ -162,7 +158,7 @@ pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
         envelope: &Envelope,
         private_keys: &PrivateKeys,
         arid_cache: &mut ARIDCache,
-    ) -> anyhow::Result<(PassportMessage, XIDDocument)> {
+    ) -> Result<(PassportMessage, XIDDocument), QlError> {
         let (expression, sender) =
             PassportMessage::unseal_with_replay_check(envelope, private_keys, arid_cache)?;
         Ok((PassportMessage::decode(&expression)?, sender))
@@ -171,7 +167,7 @@ pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
     fn unseal_envoy_message(
         envelope: &Envelope,
         private_keys: &PrivateKeys,
-    ) -> anyhow::Result<(EnvoyMessage, XIDDocument)> {
+    ) -> Result<(EnvoyMessage, XIDDocument), QlError> {
         let (expression, sender) = EnvoyMessage::unseal(envelope, private_keys)?;
         Ok((EnvoyMessage::decode(&expression)?, sender))
     }
@@ -180,14 +176,14 @@ pub trait QuantumLink: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {
         envelope: &Envelope,
         private_keys: &PrivateKeys,
         arid_cache: &mut ARIDCache,
-    ) -> anyhow::Result<(EnvoyMessage, XIDDocument)> {
+    ) -> Result<(EnvoyMessage, XIDDocument), QlError> {
         let (expression, sender) =
             EnvoyMessage::unseal_with_replay_check(envelope, private_keys, arid_cache)?;
         Ok((EnvoyMessage::decode(&expression)?, sender))
     }
 }
 
-impl<T> QuantumLink for T where T: minicbor::Encode<()> + for<'a> minicbor::Decode<'a, ()> {}
+impl<T> QuantumLink for T where T: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {}
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "envoy", flutter_rust_bridge::frb(opaque))]
@@ -205,7 +201,7 @@ impl QuantumLinkIdentity {
         let private_keys = PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
         let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
 
-        let xid_document = XIDDocument::new(public_keys.clone());
+        let xid_document = XIDDocument::from(public_keys);
 
         QuantumLinkIdentity {
             private_keys: Some(private_keys),
@@ -213,7 +209,7 @@ impl QuantumLinkIdentity {
         }
     }
 
-    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+    pub fn to_bytes(&self) -> Vec<u8> {
         let mut map = bc_envelope::prelude::Map::new();
         map.insert(CBOR::from("xid_document"), self.clone().xid_document);
         if self.private_keys.is_some() {
@@ -223,23 +219,19 @@ impl QuantumLinkIdentity {
             );
         }
 
-        Ok(CBOR::from(map).to_cbor_data())
+        CBOR::from(map).to_cbor_data()
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
-        let cbor = CBOR::try_from_data(bytes)
-            .ok()
-            .ok_or_else(|| anyhow::anyhow!("Invalid CBOR"))?;
+    pub fn from_bytes(bytes: &[u8]) -> dcbor::Result<Self> {
+        let cbor = CBOR::try_from_data(bytes)?;
         let case = cbor.into_case();
 
         let CBORCase::Map(map) = case else {
-            return Err(anyhow::anyhow!("Invalid CBOR case"));
+            return Err(dcbor::Error::WrongType);
         };
 
         Ok(QuantumLinkIdentity {
-            xid_document: map
-                .get("xid_document")
-                .ok_or_else(|| anyhow::anyhow!("xid_document not found"))?,
+            xid_document: map.get("xid_document").ok_or(dcbor::Error::MissingMapKey)?,
             private_keys: map.get("private_keys"),
         })
     }
@@ -251,7 +243,7 @@ mod tests {
         api::{message::QuantumLinkMessage, quantum_link::QuantumLink},
         fx::ExchangeRate,
         message::EnvoyMessage,
-        quantum_link::{ARIDCache, QuantumLinkIdentity},
+        quantum_link::{ARIDCache, QlError, QuantumLinkIdentity},
     };
 
     #[test]
@@ -264,7 +256,7 @@ mod tests {
         let original_message = QuantumLinkMessage::ExchangeRate(fx_rate.clone());
 
         // Encode the message
-        let expression = QuantumLink::encode(&original_message);
+        let expression = QuantumLink::encode(original_message);
 
         // Decode the message
         let decoded_message = QuantumLink::decode(&expression).unwrap();
@@ -295,7 +287,7 @@ mod tests {
 
         // Seal the message
         let envelope = QuantumLink::seal(
-            &original_message,
+            original_message,
             (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
             &passport.xid_document,
         );
@@ -316,7 +308,7 @@ mod tests {
     #[test]
     fn test_serialize_ql_identity() {
         let identity = QuantumLinkIdentity::generate();
-        let bytes = identity.to_bytes().unwrap();
+        let bytes = identity.to_bytes();
 
         let deserialized_identity = QuantumLinkIdentity::from_bytes(bytes.as_slice()).unwrap();
 
@@ -345,7 +337,7 @@ mod tests {
 
         // Seal the message
         let envelope = QuantumLink::seal(
-            &original_message,
+            original_message,
             (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
             &passport.xid_document,
         );
@@ -364,11 +356,7 @@ mod tests {
             &passport.private_keys.unwrap(),
             &mut arid_cache,
         );
-        assert!(result2.is_err());
-        assert!(result2
-            .unwrap_err()
-            .to_string()
-            .contains("Replay attack detected"));
+        assert!(matches!(result2, Err(QlError::ReplayAttack)));
     }
 
     #[test]
@@ -393,13 +381,13 @@ mod tests {
         };
 
         let envelope1 = QuantumLink::seal(
-            &message1,
+            message1,
             (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
             &passport.xid_document,
         );
 
         let envelope2 = QuantumLink::seal(
-            &message2,
+            message2,
             (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
             &passport.xid_document,
         );
@@ -466,7 +454,7 @@ fn test_replay_check() {
     };
 
     let envelope = QuantumLink::seal(
-        &message,
+        message,
         (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
         &passport.xid_document,
     );
