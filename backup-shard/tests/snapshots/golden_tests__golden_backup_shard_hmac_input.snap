@@ -1,0 +1,5 @@
+---
+source: backup-shard/tests/golden_tests.rs
+expression: hex
+---
+466f756e646174696f6e204b6579436172642c37428200a5005820aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa015820bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02450102030405030204f5
