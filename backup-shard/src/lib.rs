@@ -178,9 +178,7 @@ impl From<ShardVersion> for CBOR {
     fn from(version: ShardVersion) -> Self {
         match version {
             ShardVersion::V0(ref shard) => {
-                let mut array = Vec::new();
-                array.push(CBOR::from(ShardV0::VERSION));
-                array.push(CBOR::from(shard.clone()));
+                let array = vec![CBOR::from(ShardV0::VERSION), CBOR::from(shard.clone())];
                 CBOR::from(array)
             }
         }
@@ -336,7 +334,7 @@ mod test {
                 assert_eq!(shard, decoded_shard);
             }
             Err(e) => {
-                panic!("Decoding failed: {:?}", e);
+                panic!("Decoding failed: {e:?}");
             }
         }
     }
