@@ -9,7 +9,6 @@ readme = "README.md"
 license = "Proprietary"
 
 [dependencies]
-backup-shard = { workspace = true }
 bc-envelope = { workspace = true }
 bc-xid = { workspace = true }
 rkyv = { workspace = true, optional = true }
