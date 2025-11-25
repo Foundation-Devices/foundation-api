@@ -15,7 +15,7 @@ zeroize = { version = "1.8.1", default-features = false, features = [
 rkyv = { workspace = true, optional = true }
 
 [dev-dependencies]
-insta = "1.40"
+insta = { workspace = true }
 
 [features]
 keyos = ["rkyv"]
