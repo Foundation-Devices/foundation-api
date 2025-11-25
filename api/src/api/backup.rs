@@ -1,3 +1,4 @@
+pub use backup_shard::{ShardV0, ShardVersion};
 use quantum_link_macros::quantum_link;
 
 #[quantum_link]

@@ -23,6 +23,7 @@ rkyv = { version = "0.7", default-features = false, features = [
 ] }
 
 # workspace crates
+backup-shard = { path = "backup-shard" }
 btp = { path = "btp" }
 foundation-api = { path = "api" }
 quantum-link-macros = { path = "quantum-link-macros" }
