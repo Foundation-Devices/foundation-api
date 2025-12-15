@@ -539,3 +539,8 @@ fn golden_restore_magic_backup_result_error() {
         },
     ));
 }
+
+#[test]
+fn golden_heartbeat() {
+    assert_golden!(QuantumLinkMessage::Heartbeat(Heartbeat {}))
+}

@@ -13,3 +13,6 @@ pub struct EnvoyStatus {
     #[n(0)]
     pub version: String,
 }
+
+#[quantum_link]
+pub struct Heartbeat {}

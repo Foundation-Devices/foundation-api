@@ -17,7 +17,7 @@ use crate::{
     fx::{ExchangeRate, ExchangeRateHistory},
     pairing::{PairingRequest, PairingResponse},
     scv::SecurityCheck,
-    status::{DeviceStatus, EnvoyStatus},
+    status::{DeviceStatus, EnvoyStatus, Heartbeat},
 };
 
 #[quantum_link]
@@ -112,4 +112,7 @@ pub enum QuantumLinkMessage {
     RestoreMagicBackupEvent(RestoreMagicBackupEvent),
     #[n(30)]
     RestoreMagicBackupResult(RestoreMagicBackupResult),
+
+    #[n(31)]
+    Heartbeat(Heartbeat),
 }
