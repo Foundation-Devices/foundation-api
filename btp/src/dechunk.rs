@@ -245,6 +245,11 @@ impl<const N: usize> MasterDechunker<N> {
     }
 
     pub fn insert_chunk(&mut self, chunk: Chunk) -> Option<Vec<u8>> {
+        let (completed, _evicted) = self.insert_chunk_raw(chunk);
+        completed
+    }
+
+    pub fn insert_chunk_raw(&mut self, chunk: Chunk) -> (Option<Vec<u8>>, Option<DechunkerSlot>) {
         let message_id = chunk.header.message_id;
 
         for decoder_slot in &mut self.dechunkers {
@@ -255,36 +260,40 @@ impl<const N: usize> MasterDechunker<N> {
                     slot.dechunker.insert_chunk(chunk).unwrap();
 
                     return if slot.dechunker.is_complete() {
-                        decoder_slot.take().unwrap().dechunker.data()
+                        let completed = decoder_slot.take().unwrap().dechunker.data();
+                        (completed, None)
                     } else {
-                        None
+                        (None, None)
                     };
                 }
             }
         }
 
-        let target_slot =
+        let (target_slot, evicted) =
             if let Some(empty_slot) = self.dechunkers.iter_mut().find(|slot| slot.is_none()) {
-                empty_slot
+                (empty_slot, None)
             } else {
-                self.dechunkers
+                let slot = self.dechunkers
                     .iter_mut()
                     .min_by_key(|d| d.as_ref().map(|d| d.last_used))
-                    .expect("not empty")
+                    .expect("not empty");
+                
+                let evicted = slot.take();
+                (slot, evicted)
             };
 
         let mut decoder = Dechunker::new();
         decoder.insert_chunk(chunk).unwrap();
 
         if decoder.is_complete() {
-            decoder.data()
+            (decoder.data(), evicted)
         } else {
             self.counter += 1;
             *target_slot = Some(DechunkerSlot {
                 dechunker: decoder,
                 last_used: self.counter,
             });
-            None
+            (None, evicted)
         }
     }
 
