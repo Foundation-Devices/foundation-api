@@ -85,8 +85,8 @@ impl Chunk {
 
 #[derive(Default)]
 pub struct Dechunker {
-    chunks: Vec<Option<RawChunk>>,
-    info: Option<MessageInfo>,
+    pub chunks: Vec<Option<RawChunk>>,
+    pub info: Option<MessageInfo>,
 }
 
 impl std::fmt::Debug for Dechunker {
@@ -102,16 +102,16 @@ impl std::fmt::Debug for Dechunker {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct MessageInfo {
-    message_id: u16,
-    total_chunks: u16,
-    chunks_received: u16,
+pub struct MessageInfo {
+    pub message_id: u16,
+    pub total_chunks: u16,
+    pub chunks_received: u16,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RawChunk {
-    data: [u8; CHUNK_DATA_SIZE],
-    len: u8,
+pub struct RawChunk {
+    pub data: [u8; CHUNK_DATA_SIZE],
+    pub len: u8,
 }
 
 impl RawChunk {
@@ -207,16 +207,12 @@ impl Dechunker {
 
         // unwraps are now ok
 
-        let mut result = Vec::with_capacity(
-            self.chunks
-                .iter()
-                .map(|chunk| chunk.as_ref().unwrap().len as usize)
-                .sum(),
-        );
-
-        for chunk in &self.chunks {
-            result.extend_from_slice(chunk.as_ref().unwrap().as_slice());
-        }
+        let result = self
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.as_ref().unwrap().as_slice())
+            .copied()
+            .collect();
 
         Some(result)
     }
@@ -230,8 +226,8 @@ pub struct MasterDechunker<const N: usize> {
 
 #[derive(Debug)]
 pub struct DechunkerSlot {
-    dechunker: Dechunker,
-    last_used: u64,
+    pub dechunker: Dechunker,
+    pub last_used: u64,
 }
 
 impl<const N: usize> Default for MasterDechunker<N> {
