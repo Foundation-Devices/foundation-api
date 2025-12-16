@@ -1,8 +1,8 @@
 use rand::{seq::SliceRandom, Rng, RngCore};
 
 use crate::{
-    chunk, Chunk, Dechunker, DecodeError, MasterDechunker, MessageIdError, APP_MTU,
-    CHUNK_DATA_SIZE, HEADER_SIZE,
+    chunk, Chunk, Dechunker, DecodeError, MasterDechunker, ReceiveError, APP_MTU, CHUNK_DATA_SIZE,
+    HEADER_SIZE,
 };
 
 static TEST_STR: &[u8]= b"
@@ -333,7 +333,7 @@ fn insert_chunk_wrong_message_id() {
     let result = dechunker.insert_chunk(chunk2);
 
     assert!(
-        matches!(result, Err(MessageIdError { .. })),
+        matches!(result, Err(ReceiveError::MessageId(_))),
         "message id mismatch"
     );
 }

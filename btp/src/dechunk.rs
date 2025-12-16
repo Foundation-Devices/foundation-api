@@ -26,11 +26,21 @@ pub struct MessageIdError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[error("message length: expected {expected}, actual {actual}")]
+pub struct LengthMismatchError {
+    message_id: u16,
+    expected: u16,
+    actual: u16,
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum ReceiveError {
     #[error(transparent)]
     Decode(#[from] DecodeError),
     #[error(transparent)]
     MessageId(#[from] MessageIdError),
+    #[error(transparent)]
+    LengthMismatch(#[from] LengthMismatchError),
 }
 
 #[derive(Clone, Copy)]
@@ -149,7 +159,7 @@ impl Dechunker {
     /// Inserts a chunk. Use this for multiple concurrent messages.
     /// First decode with [`Chunk::decode()`], lookup decoder by message ID,
     /// then insert.
-    pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<(), MessageIdError> {
+    pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<(), ReceiveError> {
         let header = &chunk.header;
 
         match self.info {
@@ -165,7 +175,16 @@ impl Dechunker {
                 return Err(MessageIdError {
                     expected: info.message_id,
                     actual: header.message_id,
-                });
+                }
+                .into());
+            }
+            Some(info) if info.total_chunks != header.total_chunks => {
+                return Err(LengthMismatchError {
+                    message_id: header.message_id,
+                    expected: info.message_id,
+                    actual: header.message_id,
+                }
+                .into());
             }
             _ => {}
         }
@@ -273,11 +292,12 @@ impl<const N: usize> MasterDechunker<N> {
             if let Some(empty_slot) = self.dechunkers.iter_mut().find(|slot| slot.is_none()) {
                 (empty_slot, None)
             } else {
-                let slot = self.dechunkers
+                let slot = self
+                    .dechunkers
                     .iter_mut()
                     .min_by_key(|d| d.as_ref().map(|d| d.last_used))
                     .expect("not empty");
-                
+
                 let evicted = slot.take();
                 (slot, evicted)
             };
