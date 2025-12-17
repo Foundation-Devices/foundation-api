@@ -26,11 +26,21 @@ pub struct MessageIdError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[error("message length: expected {expected}, actual {actual}")]
+pub struct LengthMismatchError {
+    message_id: u16,
+    expected: u16,
+    actual: u16,
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum ReceiveError {
     #[error(transparent)]
     Decode(#[from] DecodeError),
     #[error(transparent)]
     MessageId(#[from] MessageIdError),
+    #[error(transparent)]
+    LengthMismatch(#[from] LengthMismatchError),
 }
 
 #[derive(Clone, Copy)]
@@ -85,8 +95,8 @@ impl Chunk {
 
 #[derive(Default)]
 pub struct Dechunker {
-    chunks: Vec<Option<RawChunk>>,
-    info: Option<MessageInfo>,
+    pub chunks: Vec<Option<RawChunk>>,
+    pub info: Option<MessageInfo>,
 }
 
 impl std::fmt::Debug for Dechunker {
@@ -102,16 +112,16 @@ impl std::fmt::Debug for Dechunker {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct MessageInfo {
-    message_id: u16,
-    total_chunks: u16,
-    chunks_received: u16,
+pub struct MessageInfo {
+    pub message_id: u16,
+    pub total_chunks: u16,
+    pub chunks_received: u16,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RawChunk {
-    data: [u8; CHUNK_DATA_SIZE],
-    len: u8,
+pub struct RawChunk {
+    pub data: [u8; CHUNK_DATA_SIZE],
+    pub len: u8,
 }
 
 impl RawChunk {
@@ -149,7 +159,7 @@ impl Dechunker {
     /// Inserts a chunk. Use this for multiple concurrent messages.
     /// First decode with [`Chunk::decode()`], lookup decoder by message ID,
     /// then insert.
-    pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<(), MessageIdError> {
+    pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<(), ReceiveError> {
         let header = &chunk.header;
 
         match self.info {
@@ -165,7 +175,16 @@ impl Dechunker {
                 return Err(MessageIdError {
                     expected: info.message_id,
                     actual: header.message_id,
-                });
+                }
+                .into());
+            }
+            Some(info) if info.total_chunks != header.total_chunks => {
+                return Err(LengthMismatchError {
+                    message_id: header.message_id,
+                    expected: info.message_id,
+                    actual: header.message_id,
+                }
+                .into());
             }
             _ => {}
         }
@@ -207,16 +226,12 @@ impl Dechunker {
 
         // unwraps are now ok
 
-        let mut result = Vec::with_capacity(
-            self.chunks
-                .iter()
-                .map(|chunk| chunk.as_ref().unwrap().len as usize)
-                .sum(),
-        );
-
-        for chunk in &self.chunks {
-            result.extend_from_slice(chunk.as_ref().unwrap().as_slice());
-        }
+        let result = self
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.as_ref().unwrap().as_slice())
+            .copied()
+            .collect();
 
         Some(result)
     }
@@ -230,8 +245,8 @@ pub struct MasterDechunker<const N: usize> {
 
 #[derive(Debug)]
 pub struct DechunkerSlot {
-    dechunker: Dechunker,
-    last_used: u64,
+    pub dechunker: Dechunker,
+    pub last_used: u64,
 }
 
 impl<const N: usize> Default for MasterDechunker<N> {
@@ -249,6 +264,11 @@ impl<const N: usize> MasterDechunker<N> {
     }
 
     pub fn insert_chunk(&mut self, chunk: Chunk) -> Option<Vec<u8>> {
+        let (completed, _evicted) = self.insert_chunk_raw(chunk);
+        completed
+    }
+
+    pub fn insert_chunk_raw(&mut self, chunk: Chunk) -> (Option<Vec<u8>>, Option<DechunkerSlot>) {
         let message_id = chunk.header.message_id;
 
         for decoder_slot in &mut self.dechunkers {
@@ -259,36 +279,41 @@ impl<const N: usize> MasterDechunker<N> {
                     slot.dechunker.insert_chunk(chunk).unwrap();
 
                     return if slot.dechunker.is_complete() {
-                        decoder_slot.take().unwrap().dechunker.data()
+                        let completed = decoder_slot.take().unwrap().dechunker.data();
+                        (completed, None)
                     } else {
-                        None
+                        (None, None)
                     };
                 }
             }
         }
 
-        let target_slot =
+        let (target_slot, evicted) =
             if let Some(empty_slot) = self.dechunkers.iter_mut().find(|slot| slot.is_none()) {
-                empty_slot
+                (empty_slot, None)
             } else {
-                self.dechunkers
+                let slot = self
+                    .dechunkers
                     .iter_mut()
                     .min_by_key(|d| d.as_ref().map(|d| d.last_used))
-                    .expect("not empty")
+                    .expect("not empty");
+
+                let evicted = slot.take();
+                (slot, evicted)
             };
 
         let mut decoder = Dechunker::new();
         decoder.insert_chunk(chunk).unwrap();
 
         if decoder.is_complete() {
-            decoder.data()
+            (decoder.data(), evicted)
         } else {
             self.counter += 1;
             *target_slot = Some(DechunkerSlot {
                 dechunker: decoder,
                 last_used: self.counter,
             });
-            None
+            (None, evicted)
         }
     }
 
