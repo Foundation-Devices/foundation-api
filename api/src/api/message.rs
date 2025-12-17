@@ -17,7 +17,7 @@ use crate::{
     fx::{ExchangeRate, ExchangeRateHistory},
     pairing::{PairingRequest, PairingResponse},
     scv::SecurityCheck,
-    status::{DeviceStatus, EnvoyStatus, Heartbeat},
+    status::{DeviceStatus, EnvoyStatus, Heartbeat, TimezoneRequest, TimezoneResponse},
 };
 
 #[quantum_link]
@@ -115,4 +115,9 @@ pub enum QuantumLinkMessage {
 
     #[n(31)]
     Heartbeat(Heartbeat),
+
+    #[n(33)]
+    TimezoneRequest(TimezoneRequest),
+    #[n(34)]
+    TimezoneResponse(TimezoneResponse),
 }

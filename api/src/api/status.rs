@@ -16,3 +16,14 @@ pub struct EnvoyStatus {
 
 #[quantum_link]
 pub struct Heartbeat {}
+
+#[quantum_link]
+pub struct TimezoneRequest {}
+
+#[quantum_link]
+pub struct TimezoneResponse {
+    #[n(0)]
+    pub offset_minutes: i32,
+    #[n(1)]
+    pub zone: String,
+}
