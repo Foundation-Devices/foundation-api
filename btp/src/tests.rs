@@ -31,33 +31,6 @@ fn end_to_end() {
 }
 
 #[test]
-fn end_to_end_ooo() {
-    for _ in 0..10 {
-        let mut rng = rand::rng();
-        let size = rng.random_range(50000..200000);
-        let mut data = vec![0u8; size];
-        rng.fill_bytes(&mut data);
-
-        let mut chunks: Vec<_> = chunk(&data).collect();
-        chunks.shuffle(&mut rng);
-
-        let mut dechunker = Dechunker::new();
-
-        for (i, chunk) in chunks.iter().enumerate() {
-            dechunker.receive(chunk.as_ref()).unwrap();
-
-            let expected_progress = (i + 1) as f32 / chunks.len() as f32;
-            assert!(
-                (dechunker.progress() - expected_progress).abs() < 0.01,
-                "Progress should match chunks received"
-            );
-        }
-
-        assert_eq!(dechunker.data(), Some(data));
-    }
-}
-
-#[test]
 fn single_chunk() {
     let data = b"Small data".to_vec();
     let chunks: Vec<_> = chunk(&data).collect();
@@ -158,53 +131,6 @@ fn progress_tracking() {
 }
 
 #[test]
-fn dechunker_decode_duplicate() {
-    let data = b"Test duplicate handling".to_vec();
-    let chunks: Vec<_> = chunk(&data).collect();
-
-    let mut dechunker = Dechunker::new();
-
-    dechunker.receive(&chunks[0]).unwrap();
-    dechunker.receive(&chunks[0]).unwrap();
-    dechunker.receive(&chunks[0]).unwrap();
-
-    assert_eq!(
-        dechunker.data(),
-        Some(data),
-        "Data should be correctly reassembled despite duplicates"
-    );
-}
-
-#[test]
-fn missing_middle_chunk() {
-    let data = vec![1u8; 1000];
-    let chunks: Vec<_> = chunk(&data).collect();
-
-    if chunks.len() < 3 {
-        return;
-    }
-
-    let mut dechunker = Dechunker::new();
-
-    let middle = chunks.len() / 2;
-
-    for (i, chunk) in chunks.iter().enumerate() {
-        if i != middle {
-            dechunker.receive(chunk).unwrap();
-        }
-    }
-
-    assert!(
-        dechunker.data().is_none(),
-        "Message should not complete with middle chunk still missing"
-    );
-
-    dechunker.receive(&chunks[middle]).unwrap();
-
-    assert_eq!(dechunker.data(), Some(data));
-}
-
-#[test]
 fn data_with_zeros() {
     let mut data = vec![0u8; 500];
     data[100] = 1;
@@ -224,19 +150,6 @@ fn data_with_zeros() {
         Some(data),
         "Dechunker should complete successfully with zero-containing data"
     );
-}
-
-#[test]
-fn reverse_order_decoding() {
-    let chunks: Vec<_> = chunk(TEST_STR).collect();
-
-    let mut dechunker = Dechunker::new();
-
-    for chunk in chunks.iter().rev() {
-        dechunker.receive(chunk).unwrap();
-    }
-
-    assert_eq!(dechunker.data(), Some(TEST_STR.to_vec()));
 }
 
 #[test]
@@ -336,64 +249,6 @@ fn insert_chunk_wrong_message_id() {
         matches!(result, Err(ReceiveError::MessageId(_))),
         "message id mismatch"
     );
-}
-
-#[test]
-fn insert_chunk_out_of_order() {
-    let mut rng = rand::rng();
-    let size = rng.random_range(5000..20000);
-    let mut data = vec![0u8; size];
-    rng.fill_bytes(&mut data);
-
-    let mut chunks: Vec<_> = chunk(&data).collect();
-    let original_count = chunks.len();
-
-    chunks.shuffle(&mut rng);
-
-    let mut dechunker = Dechunker::new();
-
-    for (i, chunk) in chunks.iter().enumerate() {
-        let decoded = Chunk::decode(chunk).unwrap();
-        dechunker.insert_chunk(decoded).unwrap();
-
-        let expected_progress = (i + 1) as f32 / original_count as f32;
-        assert!(
-            (dechunker.progress() - expected_progress).abs() < 0.01,
-            "Progress should match chunks inserted"
-        );
-    }
-
-    assert_eq!(
-        dechunker.data(),
-        Some(data),
-        "Data should match after out of order reassembly"
-    );
-}
-
-#[test]
-fn insert_duplicate_chunks() {
-    let data = b"Test duplicate handling";
-    let chunks: Vec<_> = chunk(data).collect();
-
-    let mut dechunker = Dechunker::new();
-
-    let chunk0 = Chunk::decode(&chunks[0]).unwrap();
-
-    dechunker.insert_chunk(chunk0).unwrap();
-    dechunker.insert_chunk(chunk0).unwrap();
-
-    assert_eq!(
-        dechunker.progress(),
-        1.0 / chunks.len() as f32,
-        "Progress should only count unique chunks"
-    );
-
-    for chunk in &chunks[1..] {
-        let decoded = Chunk::decode(chunk).unwrap();
-        dechunker.insert_chunk(decoded).unwrap();
-    }
-
-    assert_eq!(dechunker.data(), Some(data.to_vec()));
 }
 
 #[test]

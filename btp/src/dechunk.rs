@@ -34,6 +34,13 @@ pub struct LengthMismatchError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[error("chunk out of order: expected {expected}, actual {actual}")]
+pub struct OutOfOrderError {
+    expected: u16,
+    actual: u16,
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum ReceiveError {
     #[error(transparent)]
     Decode(#[from] DecodeError),
@@ -41,6 +48,8 @@ pub enum ReceiveError {
     MessageId(#[from] MessageIdError),
     #[error(transparent)]
     LengthMismatch(#[from] LengthMismatchError),
+    #[error(transparent)]
+    OutOfOrder(#[from] OutOfOrderError),
 }
 
 #[derive(Clone, Copy)]
@@ -95,38 +104,15 @@ impl Chunk {
 
 #[derive(Default)]
 pub struct Dechunker {
-    pub chunks: Vec<Option<RawChunk>>,
-    pub info: Option<MessageInfo>,
+    pub data: Vec<u8>,
+    pub last_header: Option<Header>,
 }
 
 impl std::fmt::Debug for Dechunker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Dechunker")
-            .field(
-                "chunks",
-                &self.chunks.iter().map(|c| if c.is_some() { 1 } else { 0 }),
-            )
-            .field("info", &self.info)
+            .field("info", &self.last_header)
             .finish()
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct MessageInfo {
-    pub message_id: u16,
-    pub total_chunks: u16,
-    pub chunks_received: u16,
-}
-
-#[derive(Debug, Clone)]
-pub struct RawChunk {
-    pub data: [u8; CHUNK_DATA_SIZE],
-    pub len: u8,
-}
-
-impl RawChunk {
-    fn as_slice(&self) -> &[u8] {
-        &self.data[..self.len as usize]
     }
 }
 
@@ -138,21 +124,21 @@ impl Dechunker {
 
     /// Returns true if all chunks received
     pub fn is_complete(&self) -> bool {
-        self.info
-            .map(|info| info.chunks_received == info.total_chunks)
+        self.last_header
+            .map(|info| info.index + 1 == info.total_chunks)
             .unwrap_or(false)
     }
 
     /// Clears all chunks and resets state
     pub fn clear(&mut self) {
-        self.chunks.clear();
-        self.info = None;
+        self.data.clear();
+        self.last_header = None;
     }
 
     /// Returns progress as fraction (0.0 to 1.0)
     pub fn progress(&self) -> f32 {
-        self.info
-            .map(|info| info.chunks_received as f32 / info.total_chunks as f32)
+        self.last_header
+            .map(|info| (info.index + 1) as f32 / info.total_chunks as f32)
             .unwrap_or(0.0)
     }
 
@@ -162,44 +148,41 @@ impl Dechunker {
     pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<(), ReceiveError> {
         let header = &chunk.header;
 
-        match self.info {
+        match self.last_header {
+            None if chunk.header.index == 0 => {
+                let len = header.total_chunks as usize * CHUNK_DATA_SIZE;
+                self.data.reserve(len);
+            }
             None => {
-                self.info = Some(MessageInfo {
-                    message_id: header.message_id,
-                    total_chunks: header.total_chunks,
-                    chunks_received: 0,
-                });
-                self.chunks.resize(header.total_chunks as usize, None);
+                Err(OutOfOrderError {
+                    expected: 0,
+                    actual: chunk.header.index,
+                })?;
             }
-            Some(info) if info.message_id != header.message_id => {
-                return Err(MessageIdError {
-                    expected: info.message_id,
+            Some(last) if last.message_id != header.message_id => {
+                Err(MessageIdError {
+                    expected: last.message_id,
                     actual: header.message_id,
-                }
-                .into());
+                })?;
             }
-            Some(info) if info.total_chunks != header.total_chunks => {
-                return Err(LengthMismatchError {
+            Some(last) if last.total_chunks != header.total_chunks => {
+                Err(LengthMismatchError {
                     message_id: header.message_id,
-                    expected: info.message_id,
+                    expected: last.message_id,
                     actual: header.message_id,
-                }
-                .into());
+                })?;
+            }
+            Some(last) if last.index + 1 != chunk.header.index => {
+                Err(OutOfOrderError {
+                    expected: last.index + 1,
+                    actual: chunk.header.index,
+                })?;
             }
             _ => {}
         }
 
-        // store chunk if not already received
-        if self.chunks[header.index as usize].is_none() {
-            self.chunks[header.index as usize] = Some(RawChunk {
-                len: header.data_len,
-                data: chunk.chunk,
-            });
-
-            if let Some(ref mut info) = self.info {
-                info.chunks_received += 1;
-            }
-        }
+        self.last_header = Some(chunk.header);
+        self.data.extend_from_slice(chunk.as_slice());
 
         Ok(())
     }
@@ -215,7 +198,7 @@ impl Dechunker {
 
     /// Returns the message ID if we've received a chunk
     pub fn message_id(&self) -> Option<u16> {
-        self.info.map(|info| info.message_id)
+        self.last_header.map(|info| info.message_id)
     }
 
     /// Returns reassembled data if complete
@@ -224,16 +207,8 @@ impl Dechunker {
             return None;
         }
 
-        // unwraps are now ok
-
-        let result = self
-            .chunks
-            .iter()
-            .flat_map(|chunk| chunk.as_ref().unwrap().as_slice())
-            .copied()
-            .collect();
-
-        Some(result)
+        // todo: use slice
+        Some(self.data.clone())
     }
 }
 
@@ -321,7 +296,7 @@ impl<const N: usize> MasterDechunker<N> {
         self.dechunkers
             .iter()
             .filter_map(|d| d.as_ref())
-            .find(|d| d.dechunker.info.map(|m| m.message_id) == Some(msg_id))
+            .find(|d| d.dechunker.last_header.map(|m| m.message_id) == Some(msg_id))
             .map(|d| &d.dechunker)
     }
 }
