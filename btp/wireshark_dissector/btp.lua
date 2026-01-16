@@ -1,18 +1,15 @@
 -- BTP Protocol Dissector for Wireshark
 -- Dissects the custom BTP chunked protocol over BLE ATT
--- Assumes payload starts with 7-byte lower header (skipped), then 8-byte BTP Header, then data
 
-local btp_proto = Proto("btp_chunk", "BTP Chunk Protocol")
+local btp_proto = Proto("btp_proto", "BTP Protocol Dissector")
 
 -- Define fields for BTP Header
-local f_message_id = ProtoField.uint16("btp_chunk.message_id", "Message ID", base.HEX, nil, 0, "Chunk message identifier")
-local f_index = ProtoField.uint16("btp_chunk.index", "Index", base.DEC, nil, 0, "Current chunk index (0-based)")
-local f_total_chunks = ProtoField.uint16("btp_chunk.total_chunks", "Total Chunks", base.DEC, nil, 0, "Total number of chunks in the message")
-local f_data_len = ProtoField.uint8("btp_chunk.data_len", "Data Length", base.DEC, nil, 0, "Length of valid data in this chunk")
-local f_padding = ProtoField.uint8("btp_chunk.padding", "Padding", base.HEX, nil, 0, "Unused padding byte")
 
--- Field to get BT ATT value
-local btatt_value = Field.new("btatt.value")
+local f_message_id = ProtoField.uint16("btp.message_id", "Message ID", base.HEX, nil, 0, "Chunk message identifier")
+local f_index = ProtoField.uint16("btp.index", "Index", base.DEC, nil, 0, "Current chunk index (0-based)")
+local f_total_chunks = ProtoField.uint16("btp.total_chunks", "Total Chunks", base.DEC, nil, 0, "Total number of chunks in the message")
+local f_data_len = ProtoField.uint8("btp.data_len", "Data Length", base.DEC, nil, 0, "Length of valid data in this chunk")
+local f_padding = ProtoField.uint8("btp.padding", "Padding", base.HEX, nil, 0, "Unused padding byte")
 
 -- Add fields to protocol
 btp_proto.fields = {
@@ -25,25 +22,25 @@ btp_proto.fields = {
 
 -- Dissector function
 function btp_proto.dissector(buffer, pinfo, tree)
-    -- Get the BT ATT value
-    local value = btatt_value()
-    if not value then
+    -- Find BTP header offset in the ATT value
+    local btp_start = -1
+    for i = 0, buffer:len() - 11 do
+        local opcode = buffer(i, 1):uint()
+        local handle = buffer(i+1, 2):le_uint()
+        if (opcode == 0x52 and handle == 0x0010) or (opcode == 0x1b and handle == 0x0012) then
+            btp_start = i + 3
+            break
+        end
+    end
+
+    if btp_start == -1 then
         return
     end
 
-    local buf = value.tvb
-    -- Minimum packet size: 8 (header) + 1 (min data) = 9 bytes
-    if buf:len() < 9 then
-        return
-    end
-
-    -- Minimum packet size: 7 (lower) + 8 (header) + 1 (min data) = 16 bytes
-    if buffer:len() < 16 then
-        return
-    end
+    local buf = buffer(btp_start)
 
     -- Set protocol column
-    pinfo.cols.protocol = "BTP_CHUNK"
+    pinfo.cols.protocol = "BTP"
 
     -- Add BTP subtree
     local btp_tree = tree:add(btp_proto, buf(), "BTP Protocol Data")
