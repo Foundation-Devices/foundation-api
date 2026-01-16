@@ -14,13 +14,23 @@ local f_total_chunks = ProtoField.uint16("btp.total_chunks", "Total Chunks", bas
 local f_data_len = ProtoField.uint8("btp.data_len", "Data Length", base.DEC, nil, 0, "Length of valid data in this chunk")
 local f_padding = ProtoField.uint8("btp.padding", "Padding", base.HEX, nil, 0, "Unused padding byte")
 
--- Add fields to protocol
+-- Define expert info
+local expert_invalid_padding = ProtoExpert.new("btp.invalid_padding", "BTP Padding is not 0", expert.group.PROTOCOL, expert.severity.ERROR)
+local expert_invalid_index = ProtoExpert.new("btp.invalid_index", "BTP Index is not less than Total Chunks", expert.group.PROTOCOL, expert.severity.ERROR)
+local expert_data_len_mismatch = ProtoExpert.new("btp.data_len_mismatch", "BTP Data Length exceeds available buffer", expert.group.PROTOCOL, expert.severity.WARN)
+
+-- Add fields and experts to protocol
 btp_proto.fields = {
     f_message_id,
     f_index,
     f_total_chunks,
     f_data_len,
     f_padding
+}
+btp_proto.experts = {
+    expert_invalid_padding,
+    expert_invalid_index,
+    expert_data_len_mismatch
 }
 
 -- Dissector function
@@ -62,10 +72,34 @@ function btp_proto.dissector(buffer, pinfo, tree)
     header_tree:add(f_data_len, buf(6, 1))
     header_tree:add(f_padding, buf(7, 1))
 
+    -- Read values for checks
+    local index_val = buf(2, 2):le_uint()
+    local total_chunks_val = buf(4, 2):le_uint()
+    local padding_val = buf(7, 1):uint()
+
+    -- Check padding
+    if padding_val ~= 0 then
+        btp_tree:add_proto_expert_info(expert_invalid_padding)
+        pinfo.cols.info:append(" (Invalid Padding)")
+    end
+
+    -- Check index
+    if index_val >= total_chunks_val then
+        btp_tree:add_proto_expert_info(expert_invalid_index)
+        pinfo.cols.info:append(" (Invalid Index)")
+    end
+
     -- Chunk Data (from byte 8 onwards, length as per data_len)
-    local data_len_val = buf(6, 1):uint()
+    local data_len = buf(6, 1):uint()
     local data_start = 8
-    local actual_data_len = math.min(data_len_val, buf:len() - data_start)
+    local available_len = buf:len() - data_start
+    local actual_data_len = math.min(data_len, available_len)
+
+    -- Check data length
+    if data_len > available_len then
+        btp_tree:add_proto_expert_info(expert_data_len_mismatch)
+        pinfo.cols.info:append(" (Data Length Mismatch)")
+    end
 
     if actual_data_len > 0 then
         local data_tree = btp_tree:add(buf(data_start, actual_data_len), "Chunk Data")
