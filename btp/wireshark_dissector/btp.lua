@@ -3,6 +3,9 @@
 
 local btp_proto = Proto("btp_proto", "BTP Protocol Dissector")
 
+-- Field extractor for L2CAP to access reassembled data
+local l2cap_field = Field.new("btl2cap")
+
 -- Define fields for BTP Header
 
 local f_message_id = ProtoField.uint16("btp.message_id", "Message ID", base.HEX, nil, 0, "Chunk message identifier")
@@ -22,6 +25,12 @@ btp_proto.fields = {
 
 -- Dissector function
 function btp_proto.dissector(buffer, pinfo, tree)
+    -- Use reassembled L2CAP data if available to handle fragmentation
+    local fi = l2cap_field()
+    if fi then
+        buffer = fi.tvb
+    end
+
     -- Find BTP header offset in the ATT value
     local btp_start = -1
     for i = 0, buffer:len() - 11 do
