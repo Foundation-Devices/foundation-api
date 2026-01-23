@@ -20,6 +20,9 @@ use crate::{
     status::{DeviceStatus, EnvoyStatus, Heartbeat, TimezoneRequest, TimezoneResponse},
 };
 
+// Bump this every time there is a significant change
+pub const PROTOCOL_VERSION: u8 = 1;
+
 #[quantum_link]
 pub struct EnvoyMessage {
     #[n(0)]
