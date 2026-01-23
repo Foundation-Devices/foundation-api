@@ -240,7 +240,10 @@ impl QuantumLinkIdentity {
 #[cfg(test)]
 mod tests {
     use crate::{
-        api::{message::QuantumLinkMessage, quantum_link::QuantumLink},
+        api::{
+            message::{QuantumLinkMessage, PROTOCOL_VERSION},
+            quantum_link::QuantumLink,
+        },
         fx::ExchangeRate,
         message::EnvoyMessage,
         quantum_link::{ARIDCache, QlError, QuantumLinkIdentity},
@@ -283,6 +286,7 @@ mod tests {
         let original_message = EnvoyMessage {
             message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
             timestamp: 123456,
+            protocol_version: Some(PROTOCOL_VERSION),
         };
 
         // Seal the message
@@ -333,6 +337,7 @@ mod tests {
         let original_message = EnvoyMessage {
             message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
             timestamp: 123456,
+            protocol_version: Some(PROTOCOL_VERSION),
         };
 
         // Seal the message
@@ -374,10 +379,12 @@ mod tests {
         let message1 = EnvoyMessage {
             message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
             timestamp: 123456,
+            protocol_version: Some(PROTOCOL_VERSION),
         };
         let message2 = EnvoyMessage {
             message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
             timestamp: 123457,
+            protocol_version: Some(PROTOCOL_VERSION),
         };
 
         let envelope1 = QuantumLink::seal(
@@ -437,7 +444,10 @@ fn test_time_based_eviction() {
 
 #[test]
 fn test_replay_check() {
-    use crate::{fx::ExchangeRate, message::QuantumLinkMessage};
+    use crate::{
+        fx::ExchangeRate,
+        message::{QuantumLinkMessage, PROTOCOL_VERSION},
+    };
 
     let mut arid_cache = ARIDCache::new();
     let envoy = QuantumLinkIdentity::generate();
@@ -451,6 +461,7 @@ fn test_replay_check() {
     let message = EnvoyMessage {
         message: QuantumLinkMessage::ExchangeRate(fx_rate),
         timestamp: 123456,
+        protocol_version: Some(PROTOCOL_VERSION),
     };
 
     let envelope = QuantumLink::seal(

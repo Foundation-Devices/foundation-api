@@ -20,12 +20,17 @@ use crate::{
     status::{DeviceStatus, EnvoyStatus, Heartbeat, TimezoneRequest, TimezoneResponse},
 };
 
+// Bump this every time there is a significant change
+pub const PROTOCOL_VERSION: u8 = 1;
+
 #[quantum_link]
 pub struct EnvoyMessage {
     #[n(0)]
     pub message: QuantumLinkMessage,
     #[n(1)]
     pub timestamp: u32,
+    #[n(2)]
+    pub protocol_version: Option<u8>, // This being None is implicit v0
 }
 
 #[quantum_link]
@@ -34,6 +39,8 @@ pub struct PassportMessage {
     pub message: QuantumLinkMessage,
     #[n(1)]
     pub status: DeviceStatus,
+    #[n(2)]
+    pub protocol_version: Option<u8>,
 }
 
 #[quantum_link]
