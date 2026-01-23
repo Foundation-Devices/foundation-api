@@ -553,7 +553,22 @@ impl Executor {
 
 #[cfg(test)]
 mod tests {
+    use std::{future::Future, pin::Pin};
+
     use super::*;
+
+    fn run_test<F>(f: F)
+    where
+        F: for<'a> FnOnce(
+            &'a async_executor::LocalExecutor<'static>,
+        ) -> Pin<Box<dyn Future<Output = ()> + 'a>>,
+    {
+        let executor = async_executor::LocalExecutor::<'static>::new();
+        futures_lite::future::block_on(async move {
+            let executor_ref = &executor;
+            executor.run(f(executor_ref)).await;
+        });
+    }
 
     #[derive(Debug, Clone, PartialEq)]
     struct Ping(u64);
@@ -620,87 +635,123 @@ mod tests {
 
     #[test]
     fn request_response_round_trip() {
-        let executor = async_executor::LocalExecutor::new();
-        futures_lite::future::block_on(async {
-            executor
-                .run(async {
-                    let (platform, outbound_rx) = TestPlatform::new(10);
-                    let (mut core, handle) = Executor::new(10);
+        run_test(|executor| {
+            Box::pin(async move {
+                let (platform, outbound_rx) = TestPlatform::new(10);
+                let (mut core, handle) = Executor::new(10);
 
-                    let _executor_task = executor.spawn(async move { core.run(&platform).await });
+                let _executor_task = executor.spawn(async move { core.run(&platform).await });
 
-                    let request_task = executor.spawn({
-                        let handle = handle.clone();
-                        async move { handle.request_response(Ping(7)).await }
-                    });
+                let request_task = executor.spawn({
+                    let handle = handle.clone();
+                    async move { handle.request_response(Ping(7)).await }
+                });
 
-                    let outbound = outbound_rx.recv().await.unwrap();
-                    let frame = Frame::decode(&outbound).unwrap();
-                    assert_eq!(frame.kind, FrameKind::Request);
-                    assert_eq!(frame.api_id, Ping::ID);
+                let outbound = outbound_rx.recv().await.unwrap();
+                let frame = Frame::decode(&outbound).unwrap();
+                assert_eq!(frame.kind, FrameKind::Request);
+                assert_eq!(frame.api_id, Ping::ID);
 
-                    let response_payload = ResponseEnvelope::ok(Pong(9).into()).encode();
-                    let response_frame = Frame {
-                        kind: FrameKind::Response,
-                        api_id: frame.api_id,
-                        msg_id: frame.msg_id,
-                        payload: response_payload,
-                    };
-                    handle.send_incoming(response_frame.encode()).await.unwrap();
+                let response_payload = ResponseEnvelope::ok(Pong(9).into()).encode();
+                let response_frame = Frame {
+                    kind: FrameKind::Response,
+                    api_id: frame.api_id,
+                    msg_id: frame.msg_id,
+                    payload: response_payload,
+                };
+                handle.send_incoming(response_frame.encode()).await.unwrap();
 
-                    let response = request_task.await.unwrap();
-                    assert_eq!(response, Pong(9));
-                })
-                .await;
+                let response = request_task.await.unwrap();
+                assert_eq!(response, Pong(9));
+            })
         });
     }
 
     #[test]
     fn handler_round_trip() {
-        let executor = async_executor::LocalExecutor::new();
-        futures_lite::future::block_on(async {
-            executor
-                .run(async {
-                    let (platform, outbound_rx) = TestPlatform::new(10);
-                    let (mut core, handle) = Executor::new(10);
+        run_test(|executor| {
+            Box::pin(async move {
+                let (platform, outbound_rx) = TestPlatform::new(10);
+                let (mut core, handle) = Executor::new(10);
 
-                    let _executor_task = executor.spawn(async move { core.run(&platform).await });
+                let _executor_task = executor.spawn(async move { core.run(&platform).await });
 
-                    let handler_stream = handle
-                        .register_request_handler::<Ping>(10, default_ping)
-                        .unwrap();
-                    let handler_task = executor.spawn(async move {
-                        if let Some(Ok(request)) = handler_stream.next().await {
-                            request
-                                .response
-                                .respond(Pong(request.message.0 + 1))
-                                .await
-                                .unwrap();
-                        }
-                    });
+                let handler_stream = handle
+                    .register_request_handler::<Ping>(10, default_ping)
+                    .unwrap();
+                let handler_task = executor.spawn(async move {
+                    if let Some(Ok(request)) = handler_stream.next().await {
+                        request
+                            .response
+                            .respond(Pong(request.message.0 + 1))
+                            .await
+                            .unwrap();
+                    }
+                });
 
-                    let request_payload = CBOR::from(Ping(10)).to_cbor_data();
-                    let request_frame = Frame {
-                        kind: FrameKind::Request,
-                        api_id: Ping::ID,
-                        msg_id: 42,
-                        payload: request_payload,
-                    };
-                    handle.send_incoming(request_frame.encode()).await.unwrap();
+                let request_payload = CBOR::from(Ping(10)).to_cbor_data();
+                let request_frame = Frame {
+                    kind: FrameKind::Request,
+                    api_id: Ping::ID,
+                    msg_id: 42,
+                    payload: request_payload,
+                };
+                handle.send_incoming(request_frame.encode()).await.unwrap();
 
-                    let outbound = outbound_rx.recv().await.unwrap();
-                    let frame = Frame::decode(&outbound).unwrap();
-                    assert_eq!(frame.kind, FrameKind::Response);
-                    assert_eq!(frame.api_id, Ping::ID);
-                    assert_eq!(frame.msg_id, 42);
+                let outbound = outbound_rx.recv().await.unwrap();
+                let frame = Frame::decode(&outbound).unwrap();
+                assert_eq!(frame.kind, FrameKind::Response);
+                assert_eq!(frame.api_id, Ping::ID);
+                assert_eq!(frame.msg_id, 42);
 
-                    let response = ResponseEnvelope::decode(&frame.payload).unwrap().unwrap();
-                    let response = Pong::try_from(response).unwrap();
-                    assert_eq!(response, Pong(11));
+                let response = ResponseEnvelope::decode(&frame.payload).unwrap().unwrap();
+                let response = Pong::try_from(response).unwrap();
+                assert_eq!(response, Pong(11));
 
-                    handler_task.await;
-                })
-                .await;
+                handler_task.await;
+            })
+        });
+    }
+
+    #[test]
+    fn handler_drop_sends_default() {
+        run_test(|executor| {
+            Box::pin(async move {
+                let (platform, outbound_rx) = TestPlatform::new(10);
+                let (mut core, handle) = Executor::new(10);
+
+                let _executor_task = executor.spawn(async move { core.run(&platform).await });
+
+                let handler_stream = handle
+                    .register_request_handler::<Ping>(10, default_ping)
+                    .unwrap();
+                let handler_task = executor.spawn(async move {
+                    if let Some(Ok(_request)) = handler_stream.next().await {
+                        // Drop without responding to trigger default.
+                    }
+                });
+
+                let request_payload = CBOR::from(Ping(5)).to_cbor_data();
+                let request_frame = Frame {
+                    kind: FrameKind::Request,
+                    api_id: Ping::ID,
+                    msg_id: 7,
+                    payload: request_payload,
+                };
+                handle.send_incoming(request_frame.encode()).await.unwrap();
+
+                handler_task.await;
+
+                let outbound = outbound_rx.recv().await.unwrap();
+                let frame = Frame::decode(&outbound).unwrap();
+                assert_eq!(frame.kind, FrameKind::Response);
+                assert_eq!(frame.api_id, Ping::ID);
+                assert_eq!(frame.msg_id, 7);
+
+                let response = ResponseEnvelope::decode(&frame.payload).unwrap();
+                let err = response.err().unwrap();
+                assert_eq!(err, QlErrorCode::Cancelled);
+            })
         });
     }
 }
