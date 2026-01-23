@@ -22,11 +22,28 @@ pub trait QlPlatform {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QlErrorCode {
+    /// protocol write failed
     Protocol = 1,
+    /// no handler registered for api request
     UnsupportedApi = 2,
+    /// invalid cbor
     Cbor = 3,
+    /// request timed out
     Timeout = 4,
+    /// request not handled
     Cancelled = 5,
+}
+
+impl From<QlError> for QlErrorCode {
+    fn from(value: QlError) -> Self {
+        match value {
+            QlError::Protocol => QlErrorCode::Protocol,
+            QlError::UnsupportedApi => QlErrorCode::UnsupportedApi,
+            QlError::Cbor => QlErrorCode::Cbor,
+            QlError::Timeout => QlErrorCode::Timeout,
+            QlError::Cancelled => QlErrorCode::Cancelled,
+        }
+    }
 }
 
 impl From<QlErrorCode> for CBOR {
@@ -534,11 +551,10 @@ impl QlExecutor {
                 LoopStep::Event(Err(_)) => break,
                 LoopStep::WriteDone { result, msg_id } => {
                     in_flight = None;
-                    if result.is_err() {
+                    if let Err(e) = result {
                         if let Some(msg_id) = msg_id {
                             if let Some(tx) = self.pending.remove(&msg_id) {
-                                let _ =
-                                    tx.send(ResponseEnvelope::err(QlErrorCode::Protocol).encode());
+                                let _ = tx.send(ResponseEnvelope::err(e.into()).encode());
                             }
                         }
                     }
@@ -567,6 +583,15 @@ mod tests {
         });
     }
 
+    impl RequestResponse for Ping {
+        const ID: u64 = 1;
+        type Response = Pong;
+    }
+
+    fn default_ping() -> Result<Pong, QlErrorCode> {
+        Err(QlErrorCode::Cancelled)
+    }
+
     #[derive(Debug, Clone, PartialEq)]
     struct Ping(u64);
 
@@ -583,15 +608,6 @@ mod tests {
             let value: u64 = cbor.try_into()?;
             Ok(Ping(value))
         }
-    }
-
-    impl RequestResponse for Ping {
-        const ID: u64 = 1;
-        type Response = Pong;
-    }
-
-    fn default_ping() -> Result<Pong, QlErrorCode> {
-        Err(QlErrorCode::Cancelled)
     }
 
     #[derive(Debug, Clone, PartialEq)]
