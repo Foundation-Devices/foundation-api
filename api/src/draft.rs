@@ -3,12 +3,11 @@ use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::Arc,
 };
 
 use async_channel::{Receiver, Sender};
 use dcbor::CBOR;
-use futures_lite::{future, pin};
+use futures_lite::future;
 
 pub trait QlCodec: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {}
 
@@ -16,8 +15,10 @@ impl<T> QlCodec for T where T: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> 
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
+type PlatformFuture<'a> = BoxFuture<'a, Result<(), QlError>>;
+
 pub trait QlPlatform {
-    fn write_bytes<'a>(&'a mut self, data: Vec<u8>) -> BoxFuture<'a, Result<(), QlError>>;
+    fn write_bytes(&self, data: Vec<u8>) -> PlatformFuture<'_>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,11 +345,28 @@ pub struct Executor {
     handlers: HashMap<u64, Sender<InboundRequest>>,
     pending: HashMap<u64, oneshot::Sender<Vec<u8>>>,
     next_msg_id: u64,
-    platform: Box<dyn QlPlatform>,
+}
+
+struct OutboundFrame {
+    msg_id: Option<u64>,
+    data: Vec<u8>,
+}
+
+struct InFlightWrite<'a> {
+    msg_id: Option<u64>,
+    future: PlatformFuture<'a>,
+}
+
+enum LoopStep {
+    Event(Result<ExecutorEvent, async_channel::RecvError>),
+    WriteDone {
+        result: Result<(), QlError>,
+        msg_id: Option<u64>,
+    },
 }
 
 impl Executor {
-    pub fn new(buffer: usize, platform: Box<dyn QlPlatform>) -> (Self, ExecutorHandle) {
+    pub fn new(buffer: usize) -> (Self, ExecutorHandle) {
         let (tx, rx) = async_channel::bounded(buffer);
         (
             Self {
@@ -357,91 +375,151 @@ impl Executor {
                 handlers: HashMap::new(),
                 pending: HashMap::new(),
                 next_msg_id: 1,
-                platform,
             },
             ExecutorHandle { tx },
         )
     }
 
-    pub async fn run(&mut self) {
-        while let Ok(event) = self.rx.recv().await {
-            match event {
-                ExecutorEvent::SendRequest {
-                    api_id,
-                    payload,
-                    respond_to,
-                } => {
-                    let msg_id = self.next_msg_id;
-                    self.next_msg_id = self.next_msg_id.wrapping_add(1);
-                    self.pending.insert(msg_id, respond_to);
-                    let frame = Frame {
-                        kind: FrameKind::Request,
-                        api_id,
-                        msg_id,
-                        payload,
-                    };
-                    if self.platform.write_bytes(frame.encode()).await.is_err() {
-                        if let Some(tx) = self.pending.remove(&msg_id) {
-                            let _ = tx.send(ResponseEnvelope::err(QlErrorCode::Protocol).encode());
-                        }
+    pub async fn run<'a>(&'a mut self, platform: &'a dyn QlPlatform) {
+        let mut outbound: VecDeque<OutboundFrame> = VecDeque::new();
+        let mut in_flight: Option<InFlightWrite<'a>> = None;
+        let mut recv_future: Option<Pin<Box<_>>> = None;
+
+        loop {
+            if in_flight.is_none() {
+                if let Some(frame) = outbound.pop_front() {
+                    in_flight = Some(InFlightWrite {
+                        msg_id: frame.msg_id,
+                        future: platform.write_bytes(frame.data),
+                    });
+                }
+            }
+
+            if recv_future.is_none() {
+                recv_future = Some(Box::pin(self.rx.recv()));
+            }
+
+            let step = future::poll_fn(|cx| {
+                if let Some(in_flight) = in_flight.as_mut() {
+                    if let std::task::Poll::Ready(result) = in_flight.future.as_mut().poll(cx) {
+                        return std::task::Poll::Ready(LoopStep::WriteDone {
+                            result,
+                            msg_id: in_flight.msg_id,
+                        });
                     }
                 }
-                ExecutorEvent::SendResponse {
-                    api_id,
-                    msg_id,
-                    payload,
-                } => {
-                    let frame = Frame {
-                        kind: FrameKind::Response,
+
+                let recv_future = recv_future.as_mut().expect("recv future missing");
+                match recv_future.as_mut().poll(cx) {
+                    std::task::Poll::Ready(event) => std::task::Poll::Ready(LoopStep::Event(event)),
+                    std::task::Poll::Pending => std::task::Poll::Pending,
+                }
+            })
+            .await;
+
+            if matches!(step, LoopStep::Event(_)) {
+                recv_future = None;
+            }
+
+            match step {
+                LoopStep::Event(Ok(event)) => match event {
+                    ExecutorEvent::SendRequest {
+                        api_id,
+                        payload,
+                        respond_to,
+                    } => {
+                        let msg_id = self.next_msg_id;
+                        self.next_msg_id = self.next_msg_id.wrapping_add(1);
+                        self.pending.insert(msg_id, respond_to);
+                        let frame = Frame {
+                            kind: FrameKind::Request,
+                            api_id,
+                            msg_id,
+                            payload,
+                        };
+                        outbound.push_back(OutboundFrame {
+                            msg_id: Some(msg_id),
+                            data: frame.encode(),
+                        });
+                    }
+                    ExecutorEvent::SendResponse {
                         api_id,
                         msg_id,
                         payload,
-                    };
-                    let _ = self.platform.write_bytes(frame.encode()).await;
-                }
-                ExecutorEvent::RegisterHandler { api_id, tx } => {
-                    self.handlers.insert(api_id, tx);
-                }
-                ExecutorEvent::IncomingFrame { data } => {
-                    let frame = match Frame::decode(&data) {
-                        Ok(frame) => frame,
-                        Err(_) => continue,
-                    };
-                    match frame.kind {
-                        FrameKind::Request => {
-                            if let Some(handler) = self.handlers.get(&frame.api_id) {
-                                let result = handler
-                                    .send(InboundRequest {
-                                        api_id: frame.api_id,
-                                        msg_id: frame.msg_id,
-                                        payload: frame.payload,
-                                        events: self.tx.clone(),
-                                    })
-                                    .await;
-                                if result.is_err() {
+                    } => {
+                        let frame = Frame {
+                            kind: FrameKind::Response,
+                            api_id,
+                            msg_id,
+                            payload,
+                        };
+                        outbound.push_back(OutboundFrame {
+                            msg_id: None,
+                            data: frame.encode(),
+                        });
+                    }
+                    ExecutorEvent::RegisterHandler { api_id, tx } => {
+                        self.handlers.insert(api_id, tx);
+                    }
+                    ExecutorEvent::IncomingFrame { data } => {
+                        let frame = match Frame::decode(&data) {
+                            Ok(frame) => frame,
+                            Err(_) => continue,
+                        };
+                        match frame.kind {
+                            FrameKind::Request => {
+                                if let Some(handler) = self.handlers.get(&frame.api_id) {
+                                    let result = handler
+                                        .send(InboundRequest {
+                                            api_id: frame.api_id,
+                                            msg_id: frame.msg_id,
+                                            payload: frame.payload,
+                                            events: self.tx.clone(),
+                                        })
+                                        .await;
+                                    if result.is_err() {
+                                        let response = Frame {
+                                            kind: FrameKind::Response,
+                                            api_id: frame.api_id,
+                                            msg_id: frame.msg_id,
+                                            payload: ResponseEnvelope::err(QlErrorCode::Cancelled)
+                                                .encode(),
+                                        };
+                                        outbound.push_back(OutboundFrame {
+                                            msg_id: None,
+                                            data: response.encode(),
+                                        });
+                                    }
+                                } else {
                                     let response = Frame {
                                         kind: FrameKind::Response,
                                         api_id: frame.api_id,
                                         msg_id: frame.msg_id,
-                                        payload: ResponseEnvelope::err(QlErrorCode::Cancelled)
+                                        payload: ResponseEnvelope::err(QlErrorCode::UnsupportedApi)
                                             .encode(),
                                     };
-                                    let _ = self.platform.write_bytes(response.encode()).await;
+                                    outbound.push_back(OutboundFrame {
+                                        msg_id: None,
+                                        data: response.encode(),
+                                    });
                                 }
-                            } else {
-                                let response = Frame {
-                                    kind: FrameKind::Response,
-                                    api_id: frame.api_id,
-                                    msg_id: frame.msg_id,
-                                    payload: ResponseEnvelope::err(QlErrorCode::UnsupportedApi)
-                                        .encode(),
-                                };
-                                let _ = self.platform.write_bytes(response.encode()).await;
+                            }
+                            FrameKind::Response => {
+                                if let Some(tx) = self.pending.remove(&frame.msg_id) {
+                                    let _ = tx.send(frame.payload);
+                                }
                             }
                         }
-                        FrameKind::Response => {
-                            if let Some(tx) = self.pending.remove(&frame.msg_id) {
-                                let _ = tx.send(frame.payload);
+                    }
+                },
+                LoopStep::Event(Err(_)) => break,
+                LoopStep::WriteDone { result, msg_id } => {
+                    in_flight = None;
+                    if result.is_err() {
+                        if let Some(msg_id) = msg_id {
+                            if let Some(tx) = self.pending.remove(&msg_id) {
+                                let _ =
+                                    tx.send(ResponseEnvelope::err(QlErrorCode::Protocol).encode());
                             }
                         }
                     }
@@ -508,8 +586,9 @@ mod tests {
     }
 
     impl QlPlatform for TestPlatform {
-        fn write_bytes<'a>(&'a mut self, data: Vec<u8>) -> BoxFuture<'a, Result<(), QlError>> {
-            Box::pin(async move { self.tx.send(data).await.map_err(|_| QlError::Cancelled) })
+        fn write_bytes(&self, data: Vec<u8>) -> PlatformFuture<'_> {
+            let tx = self.tx.clone();
+            Box::pin(async move { tx.send(data).await.map_err(|_| QlError::Cancelled) })
         }
     }
 
@@ -520,8 +599,9 @@ mod tests {
             executor
                 .run(async {
                     let (platform, outbound_rx) = TestPlatform::new(10);
-                    let (mut core, handle) = Executor::new(10, Box::new(platform));
-                    let _executor_task = executor.spawn(async move { core.run().await });
+                    let (mut core, handle) = Executor::new(10);
+
+                    let _executor_task = executor.spawn(async move { core.run(&platform).await });
 
                     let request_task = executor.spawn({
                         let handle = handle.clone();
@@ -556,8 +636,9 @@ mod tests {
             executor
                 .run(async {
                     let (platform, outbound_rx) = TestPlatform::new(10);
-                    let (mut core, handle) = Executor::new(10, Box::new(platform));
-                    let _executor_task = executor.spawn(async move { core.run().await });
+                    let (mut core, handle) = Executor::new(10);
+
+                    let _executor_task = executor.spawn(async move { core.run(&platform).await });
 
                     let handler_stream = handle.register_request_handler::<Ping>(10).unwrap();
                     let handler_task = executor.spawn(async move {
