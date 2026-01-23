@@ -405,7 +405,6 @@ impl Executor {
     pub async fn run<'a>(&'a mut self, platform: &'a dyn QlPlatform) {
         let mut outbound: VecDeque<OutboundFrame> = VecDeque::new();
         let mut in_flight: Option<InFlightWrite<'a>> = None;
-        let mut recv_future: Option<Pin<Box<_>>> = None;
 
         loop {
             if in_flight.is_none() {
@@ -417,31 +416,29 @@ impl Executor {
                 }
             }
 
-            if recv_future.is_none() {
-                recv_future = Some(Box::pin(self.rx.recv()));
-            }
+            let step = {
+                let recv_future = self.rx.recv();
+                futures_lite::pin!(recv_future);
 
-            let step = future::poll_fn(|cx| {
-                if let Some(in_flight) = in_flight.as_mut() {
-                    if let std::task::Poll::Ready(result) = in_flight.future.as_mut().poll(cx) {
-                        return std::task::Poll::Ready(LoopStep::WriteDone {
-                            result,
-                            msg_id: in_flight.msg_id,
-                        });
+                future::poll_fn(|cx| {
+                    if let Some(in_flight) = in_flight.as_mut() {
+                        if let std::task::Poll::Ready(result) = in_flight.future.as_mut().poll(cx) {
+                            return std::task::Poll::Ready(LoopStep::WriteDone {
+                                result,
+                                msg_id: in_flight.msg_id,
+                            });
+                        }
                     }
-                }
 
-                let recv_future = recv_future.as_mut().expect("recv future missing");
-                match recv_future.as_mut().poll(cx) {
-                    std::task::Poll::Ready(event) => std::task::Poll::Ready(LoopStep::Event(event)),
-                    std::task::Poll::Pending => std::task::Poll::Pending,
-                }
-            })
-            .await;
-
-            if matches!(step, LoopStep::Event(_)) {
-                recv_future = None;
-            }
+                    match recv_future.as_mut().poll(cx) {
+                        std::task::Poll::Ready(event) => {
+                            std::task::Poll::Ready(LoopStep::Event(event))
+                        }
+                        std::task::Poll::Pending => std::task::Poll::Pending,
+                    }
+                })
+                .await
+            };
 
             match step {
                 LoopStep::Event(Ok(event)) => match event {
