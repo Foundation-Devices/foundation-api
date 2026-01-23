@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    marker::PhantomData,
     pin::Pin,
 };
 
@@ -171,17 +170,18 @@ impl ResponseEnvelope {
 }
 
 #[derive(Debug)]
-pub struct IncomingRequest<M> {
+pub struct IncomingRequest<M: RequestResponse> {
     pub message: M,
     pub response: PendingResponse<M>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PendingResponse<M> {
+#[derive(Debug)]
+pub struct PendingResponse<M: RequestResponse> {
     api_id: u64,
     msg_id: u64,
     events: Sender<ExecutorEvent>,
-    _marker: PhantomData<fn() -> M>,
+    default_response: fn() -> Result<<M as RequestResponse>::Response, QlErrorCode>,
+    responded: bool,
 }
 
 impl<M: RequestResponse> PendingResponse<M> {
@@ -198,7 +198,8 @@ impl<M: RequestResponse> PendingResponse<M> {
         self.respond_raw(ResponseEnvelope::err(code).encode()).await
     }
 
-    async fn respond_raw(self, payload: Vec<u8>) -> Result<(), QlError> {
+    async fn respond_raw(mut self, payload: Vec<u8>) -> Result<(), QlError> {
+        self.responded = true;
         self.events
             .send(ExecutorEvent::SendResponse {
                 api_id: self.api_id,
@@ -210,10 +211,29 @@ impl<M: RequestResponse> PendingResponse<M> {
     }
 }
 
+impl<M: RequestResponse> Drop for PendingResponse<M> {
+    fn drop(&mut self) {
+        if self.responded {
+            return;
+        }
+
+        let payload = match (self.default_response)() {
+            Ok(response) => ResponseEnvelope::ok(response.into()).encode(),
+            Err(code) => ResponseEnvelope::err(code).encode(),
+        };
+
+        let _ = self.events.send_blocking(ExecutorEvent::SendResponse {
+            api_id: self.api_id,
+            msg_id: self.msg_id,
+            payload,
+        });
+    }
+}
+
 #[derive(Debug)]
-pub struct IncomingRequestStream<M> {
+pub struct IncomingRequestStream<M: RequestResponse> {
     rx: Receiver<InboundRequest>,
-    _marker: PhantomData<fn() -> M>,
+    default_response: fn() -> Result<<M as RequestResponse>::Response, QlErrorCode>,
 }
 
 impl<M: RequestResponse> IncomingRequestStream<M> {
@@ -251,7 +271,8 @@ impl<M: RequestResponse> IncomingRequestStream<M> {
             api_id: request.api_id,
             msg_id: request.msg_id,
             events: request.events,
-            _marker: PhantomData,
+            default_response: self.default_response,
+            responded: false,
         };
         Some(Ok(IncomingRequest { message, response }))
     }
@@ -295,6 +316,7 @@ impl ExecutorHandle {
     pub fn register_request_handler<M>(
         &self,
         capacity: usize,
+        default_response: fn() -> Result<M::Response, QlErrorCode>,
     ) -> Result<IncomingRequestStream<M>, QlError>
     where
         M: RequestResponse,
@@ -305,7 +327,7 @@ impl ExecutorHandle {
             .map_err(|_| QlError::Cancelled)?;
         Ok(IncomingRequestStream {
             rx,
-            _marker: PhantomData,
+            default_response,
         })
     }
 
@@ -556,6 +578,10 @@ mod tests {
         type Response = Pong;
     }
 
+    fn default_ping() -> Result<Pong, QlErrorCode> {
+        Err(QlErrorCode::Cancelled)
+    }
+
     #[derive(Debug, Clone, PartialEq)]
     struct Pong(u64);
 
@@ -640,7 +666,9 @@ mod tests {
 
                     let _executor_task = executor.spawn(async move { core.run(&platform).await });
 
-                    let handler_stream = handle.register_request_handler::<Ping>(10).unwrap();
+                    let handler_stream = handle
+                        .register_request_handler::<Ping>(10, default_ping)
+                        .unwrap();
                     let handler_task = executor.spawn(async move {
                         if let Some(Ok(request)) = handler_stream.next().await {
                             request
