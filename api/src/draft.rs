@@ -361,7 +361,7 @@ impl ExecutorHandle {
     }
 }
 
-pub struct Executor {
+pub struct QlExecutor {
     tx: Sender<ExecutorEvent>,
     rx: Receiver<ExecutorEvent>,
     handlers: HashMap<u64, Sender<InboundRequest>>,
@@ -387,7 +387,7 @@ enum LoopStep {
     },
 }
 
-impl Executor {
+impl QlExecutor {
     pub fn new(buffer: usize) -> (Self, ExecutorHandle) {
         let (tx, rx) = async_channel::bounded(buffer);
         (
@@ -635,7 +635,7 @@ mod tests {
         run_test(|executor| {
             Box::pin(async move {
                 let (platform, outbound_rx) = TestPlatform::new(10);
-                let (mut core, handle) = Executor::new(10);
+                let (mut core, handle) = QlExecutor::new(10);
 
                 let _executor_task = executor.spawn(async move { core.run(&platform).await });
 
@@ -669,7 +669,7 @@ mod tests {
         run_test(|executor| {
             Box::pin(async move {
                 let (platform, outbound_rx) = TestPlatform::new(10);
-                let (mut core, handle) = Executor::new(10);
+                let (mut core, handle) = QlExecutor::new(10);
 
                 let _executor_task = executor.spawn(async move { core.run(&platform).await });
 
@@ -715,7 +715,7 @@ mod tests {
         run_test(|executor| {
             Box::pin(async move {
                 let (platform, outbound_rx) = TestPlatform::new(10);
-                let (mut core, handle) = Executor::new(10);
+                let (mut core, handle) = QlExecutor::new(10);
 
                 let _executor_task = executor.spawn(async move { core.run(&platform).await });
 
