@@ -1,0 +1,597 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    sync::Arc,
+};
+
+use async_channel::{Receiver, Sender};
+use dcbor::CBOR;
+use futures_lite::{future, pin};
+
+pub trait QlCodec: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {}
+
+impl<T> QlCodec for T where T: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {}
+
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
+pub trait QlPlatform {
+    fn write_bytes<'a>(&'a mut self, data: Vec<u8>) -> BoxFuture<'a, Result<(), QlError>>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QlErrorCode {
+    Protocol = 1,
+    UnsupportedApi = 2,
+    Cbor = 3,
+    Timeout = 4,
+    Cancelled = 5,
+}
+
+impl From<QlErrorCode> for CBOR {
+    fn from(value: QlErrorCode) -> Self {
+        CBOR::from(value as u64)
+    }
+}
+
+impl TryFrom<CBOR> for QlErrorCode {
+    type Error = dcbor::Error;
+
+    fn try_from(cbor: CBOR) -> Result<Self, Self::Error> {
+        let value: u64 = cbor.try_into()?;
+        match value {
+            1 => Ok(QlErrorCode::Protocol),
+            2 => Ok(QlErrorCode::UnsupportedApi),
+            3 => Ok(QlErrorCode::Cbor),
+            4 => Ok(QlErrorCode::Timeout),
+            5 => Ok(QlErrorCode::Cancelled),
+            _ => Err("unknown error code".into()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum QlError {
+    Protocol,
+    UnsupportedApi,
+    Cbor,
+    Timeout,
+    Cancelled,
+}
+
+impl From<QlErrorCode> for QlError {
+    fn from(value: QlErrorCode) -> Self {
+        match value {
+            QlErrorCode::Protocol => QlError::Protocol,
+            QlErrorCode::UnsupportedApi => QlError::UnsupportedApi,
+            QlErrorCode::Cbor => QlError::Cbor,
+            QlErrorCode::Timeout => QlError::Timeout,
+            QlErrorCode::Cancelled => QlError::Cancelled,
+        }
+    }
+}
+
+pub trait RequestResponse: QlCodec {
+    const ID: u64;
+    type Response: QlCodec;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameKind {
+    Request = 0,
+    Response = 1,
+}
+
+impl TryFrom<u8> for FrameKind {
+    type Error = QlError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(FrameKind::Request),
+            1 => Ok(FrameKind::Response),
+            _ => Err(QlError::Protocol),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Frame {
+    pub kind: FrameKind,
+    pub api_id: u64,
+    pub msg_id: u64,
+    pub payload: Vec<u8>,
+}
+
+impl Frame {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(1 + 8 + 8 + self.payload.len());
+        data.push(self.kind as u8);
+        data.extend_from_slice(&self.api_id.to_le_bytes());
+        data.extend_from_slice(&self.msg_id.to_le_bytes());
+        data.extend_from_slice(&self.payload);
+        data
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self, QlError> {
+        if data.len() < 17 {
+            return Err(QlError::Protocol);
+        }
+        let kind = FrameKind::try_from(data[0])?;
+        let api_id = u64::from_le_bytes(data[1..9].try_into().map_err(|_| QlError::Protocol)?);
+        let msg_id = u64::from_le_bytes(data[9..17].try_into().map_err(|_| QlError::Protocol)?);
+        let payload = data[17..].to_vec();
+        Ok(Self {
+            kind,
+            api_id,
+            msg_id,
+            payload,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResponseEnvelope {
+    ok: bool,
+    value: CBOR,
+}
+
+impl ResponseEnvelope {
+    fn ok(value: CBOR) -> Self {
+        Self { ok: true, value }
+    }
+
+    fn err(code: QlErrorCode) -> Self {
+        Self {
+            ok: false,
+            value: code.into(),
+        }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let data = vec![CBOR::from(self.ok), self.value.clone()];
+        CBOR::from(data).to_cbor_data()
+    }
+
+    fn decode(data: &[u8]) -> Result<Result<CBOR, QlErrorCode>, QlError> {
+        let cbor = CBOR::try_from_data(data).map_err(|_| QlError::Cbor)?;
+        let array = cbor.try_into_array().map_err(|_| QlError::Cbor)?;
+        if array.len() != 2 {
+            return Err(QlError::Protocol);
+        }
+        let ok: bool = array[0].clone().try_into().map_err(|_| QlError::Cbor)?;
+        if ok {
+            Ok(Ok(array[1].clone()))
+        } else {
+            let code: QlErrorCode = array[1].clone().try_into().map_err(|_| QlError::Cbor)?;
+            Ok(Err(code))
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct IncomingRequest<M> {
+    pub message: M,
+    pub response: PendingResponse<M>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingResponse<M> {
+    api_id: u64,
+    msg_id: u64,
+    events: Sender<ExecutorEvent>,
+    _marker: PhantomData<fn() -> M>,
+}
+
+impl<M: RequestResponse> PendingResponse<M> {
+    pub fn msg_id(&self) -> u64 {
+        self.msg_id
+    }
+
+    pub async fn respond(self, response: M::Response) -> Result<(), QlError> {
+        self.respond_raw(ResponseEnvelope::ok(response.into()).encode())
+            .await
+    }
+
+    pub async fn respond_error(self, code: QlErrorCode) -> Result<(), QlError> {
+        self.respond_raw(ResponseEnvelope::err(code).encode()).await
+    }
+
+    async fn respond_raw(self, payload: Vec<u8>) -> Result<(), QlError> {
+        self.events
+            .send(ExecutorEvent::SendResponse {
+                api_id: self.api_id,
+                msg_id: self.msg_id,
+                payload,
+            })
+            .await
+            .map_err(|_| QlError::Cancelled)
+    }
+}
+
+#[derive(Debug)]
+pub struct IncomingRequestStream<M> {
+    rx: Receiver<InboundRequest>,
+    _marker: PhantomData<fn() -> M>,
+}
+
+impl<M: RequestResponse> IncomingRequestStream<M> {
+    pub async fn next(&self) -> Option<Result<IncomingRequest<M>, QlError>> {
+        let request = self.rx.recv().await.ok()?;
+        let cbor = match CBOR::try_from_data(&request.payload) {
+            Ok(cbor) => cbor,
+            Err(_) => {
+                let _ = request
+                    .events
+                    .send(ExecutorEvent::SendResponse {
+                        api_id: request.api_id,
+                        msg_id: request.msg_id,
+                        payload: ResponseEnvelope::err(QlErrorCode::Cbor).encode(),
+                    })
+                    .await;
+                return Some(Err(QlError::Cbor));
+            }
+        };
+        let message = match M::try_from(cbor) {
+            Ok(message) => message,
+            Err(_) => {
+                let _ = request
+                    .events
+                    .send(ExecutorEvent::SendResponse {
+                        api_id: request.api_id,
+                        msg_id: request.msg_id,
+                        payload: ResponseEnvelope::err(QlErrorCode::Cbor).encode(),
+                    })
+                    .await;
+                return Some(Err(QlError::Cbor));
+            }
+        };
+        let response = PendingResponse {
+            api_id: request.api_id,
+            msg_id: request.msg_id,
+            events: request.events,
+            _marker: PhantomData,
+        };
+        Some(Ok(IncomingRequest { message, response }))
+    }
+}
+
+#[derive(Debug)]
+struct InboundRequest {
+    api_id: u64,
+    msg_id: u64,
+    payload: Vec<u8>,
+    events: Sender<ExecutorEvent>,
+}
+
+#[derive(Debug)]
+enum ExecutorEvent {
+    SendRequest {
+        api_id: u64,
+        payload: Vec<u8>,
+        respond_to: oneshot::Sender<Vec<u8>>,
+    },
+    SendResponse {
+        api_id: u64,
+        msg_id: u64,
+        payload: Vec<u8>,
+    },
+    RegisterHandler {
+        api_id: u64,
+        tx: Sender<InboundRequest>,
+    },
+    IncomingFrame {
+        data: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecutorHandle {
+    tx: Sender<ExecutorEvent>,
+}
+
+impl ExecutorHandle {
+    pub fn register_request_handler<M>(
+        &self,
+        capacity: usize,
+    ) -> Result<IncomingRequestStream<M>, QlError>
+    where
+        M: RequestResponse,
+    {
+        let (tx, rx) = async_channel::bounded(capacity);
+        self.tx
+            .send_blocking(ExecutorEvent::RegisterHandler { api_id: M::ID, tx })
+            .map_err(|_| QlError::Cancelled)?;
+        Ok(IncomingRequestStream {
+            rx,
+            _marker: PhantomData,
+        })
+    }
+
+    pub async fn request_response<M>(&self, msg: M) -> Result<M::Response, QlError>
+    where
+        M: RequestResponse,
+    {
+        let payload = msg.into().to_cbor_data();
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(ExecutorEvent::SendRequest {
+                api_id: M::ID,
+                payload,
+                respond_to: tx,
+            })
+            .await
+            .map_err(|_| QlError::Cancelled)?;
+        let payload = rx.await.map_err(|_| QlError::Cancelled)?;
+        let response = ResponseEnvelope::decode(&payload)?;
+        match response {
+            Ok(cbor) => M::Response::try_from(cbor).map_err(|_| QlError::Cbor),
+            Err(code) => Err(code.into()),
+        }
+    }
+
+    pub async fn send_incoming(&self, data: Vec<u8>) -> Result<(), QlError> {
+        self.tx
+            .send(ExecutorEvent::IncomingFrame { data })
+            .await
+            .map_err(|_| QlError::Cancelled)
+    }
+}
+
+pub struct Executor {
+    tx: Sender<ExecutorEvent>,
+    rx: Receiver<ExecutorEvent>,
+    handlers: HashMap<u64, Sender<InboundRequest>>,
+    pending: HashMap<u64, oneshot::Sender<Vec<u8>>>,
+    next_msg_id: u64,
+    platform: Box<dyn QlPlatform>,
+}
+
+impl Executor {
+    pub fn new(buffer: usize, platform: Box<dyn QlPlatform>) -> (Self, ExecutorHandle) {
+        let (tx, rx) = async_channel::bounded(buffer);
+        (
+            Self {
+                tx: tx.clone(),
+                rx,
+                handlers: HashMap::new(),
+                pending: HashMap::new(),
+                next_msg_id: 1,
+                platform,
+            },
+            ExecutorHandle { tx },
+        )
+    }
+
+    pub async fn run(&mut self) {
+        while let Ok(event) = self.rx.recv().await {
+            match event {
+                ExecutorEvent::SendRequest {
+                    api_id,
+                    payload,
+                    respond_to,
+                } => {
+                    let msg_id = self.next_msg_id;
+                    self.next_msg_id = self.next_msg_id.wrapping_add(1);
+                    self.pending.insert(msg_id, respond_to);
+                    let frame = Frame {
+                        kind: FrameKind::Request,
+                        api_id,
+                        msg_id,
+                        payload,
+                    };
+                    if self.platform.write_bytes(frame.encode()).await.is_err() {
+                        if let Some(tx) = self.pending.remove(&msg_id) {
+                            let _ = tx.send(ResponseEnvelope::err(QlErrorCode::Protocol).encode());
+                        }
+                    }
+                }
+                ExecutorEvent::SendResponse {
+                    api_id,
+                    msg_id,
+                    payload,
+                } => {
+                    let frame = Frame {
+                        kind: FrameKind::Response,
+                        api_id,
+                        msg_id,
+                        payload,
+                    };
+                    let _ = self.platform.write_bytes(frame.encode()).await;
+                }
+                ExecutorEvent::RegisterHandler { api_id, tx } => {
+                    self.handlers.insert(api_id, tx);
+                }
+                ExecutorEvent::IncomingFrame { data } => {
+                    let frame = match Frame::decode(&data) {
+                        Ok(frame) => frame,
+                        Err(_) => continue,
+                    };
+                    match frame.kind {
+                        FrameKind::Request => {
+                            if let Some(handler) = self.handlers.get(&frame.api_id) {
+                                let result = handler
+                                    .send(InboundRequest {
+                                        api_id: frame.api_id,
+                                        msg_id: frame.msg_id,
+                                        payload: frame.payload,
+                                        events: self.tx.clone(),
+                                    })
+                                    .await;
+                                if result.is_err() {
+                                    let response = Frame {
+                                        kind: FrameKind::Response,
+                                        api_id: frame.api_id,
+                                        msg_id: frame.msg_id,
+                                        payload: ResponseEnvelope::err(QlErrorCode::Cancelled)
+                                            .encode(),
+                                    };
+                                    let _ = self.platform.write_bytes(response.encode()).await;
+                                }
+                            } else {
+                                let response = Frame {
+                                    kind: FrameKind::Response,
+                                    api_id: frame.api_id,
+                                    msg_id: frame.msg_id,
+                                    payload: ResponseEnvelope::err(QlErrorCode::UnsupportedApi)
+                                        .encode(),
+                                };
+                                let _ = self.platform.write_bytes(response.encode()).await;
+                            }
+                        }
+                        FrameKind::Response => {
+                            if let Some(tx) = self.pending.remove(&frame.msg_id) {
+                                let _ = tx.send(frame.payload);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Ping(u64);
+
+    impl From<Ping> for CBOR {
+        fn from(value: Ping) -> Self {
+            CBOR::from(value.0)
+        }
+    }
+
+    impl TryFrom<CBOR> for Ping {
+        type Error = dcbor::Error;
+
+        fn try_from(cbor: CBOR) -> Result<Self, Self::Error> {
+            let value: u64 = cbor.try_into()?;
+            Ok(Ping(value))
+        }
+    }
+
+    impl RequestResponse for Ping {
+        const ID: u64 = 1;
+        type Response = Pong;
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Pong(u64);
+
+    impl From<Pong> for CBOR {
+        fn from(value: Pong) -> Self {
+            CBOR::from(value.0)
+        }
+    }
+
+    impl TryFrom<CBOR> for Pong {
+        type Error = dcbor::Error;
+
+        fn try_from(cbor: CBOR) -> Result<Self, Self::Error> {
+            let value: u64 = cbor.try_into()?;
+            Ok(Pong(value))
+        }
+    }
+
+    struct TestPlatform {
+        tx: Sender<Vec<u8>>,
+    }
+
+    impl TestPlatform {
+        fn new(buffer: usize) -> (Self, Receiver<Vec<u8>>) {
+            let (tx, rx) = async_channel::bounded(buffer);
+            (Self { tx }, rx)
+        }
+    }
+
+    impl QlPlatform for TestPlatform {
+        fn write_bytes<'a>(&'a mut self, data: Vec<u8>) -> BoxFuture<'a, Result<(), QlError>> {
+            Box::pin(async move { self.tx.send(data).await.map_err(|_| QlError::Cancelled) })
+        }
+    }
+
+    #[test]
+    fn request_response_round_trip() {
+        let executor = async_executor::LocalExecutor::new();
+        futures_lite::future::block_on(async {
+            executor
+                .run(async {
+                    let (platform, outbound_rx) = TestPlatform::new(10);
+                    let (mut core, handle) = Executor::new(10, Box::new(platform));
+                    let _executor_task = executor.spawn(async move { core.run().await });
+
+                    let request_task = executor.spawn({
+                        let handle = handle.clone();
+                        async move { handle.request_response(Ping(7)).await }
+                    });
+
+                    let outbound = outbound_rx.recv().await.unwrap();
+                    let frame = Frame::decode(&outbound).unwrap();
+                    assert_eq!(frame.kind, FrameKind::Request);
+                    assert_eq!(frame.api_id, Ping::ID);
+
+                    let response_payload = ResponseEnvelope::ok(Pong(9).into()).encode();
+                    let response_frame = Frame {
+                        kind: FrameKind::Response,
+                        api_id: frame.api_id,
+                        msg_id: frame.msg_id,
+                        payload: response_payload,
+                    };
+                    handle.send_incoming(response_frame.encode()).await.unwrap();
+
+                    let response = request_task.await.unwrap();
+                    assert_eq!(response, Pong(9));
+                })
+                .await;
+        });
+    }
+
+    #[test]
+    fn handler_round_trip() {
+        let executor = async_executor::LocalExecutor::new();
+        futures_lite::future::block_on(async {
+            executor
+                .run(async {
+                    let (platform, outbound_rx) = TestPlatform::new(10);
+                    let (mut core, handle) = Executor::new(10, Box::new(platform));
+                    let _executor_task = executor.spawn(async move { core.run().await });
+
+                    let handler_stream = handle.register_request_handler::<Ping>(10).unwrap();
+                    let handler_task = executor.spawn(async move {
+                        if let Some(Ok(request)) = handler_stream.next().await {
+                            request
+                                .response
+                                .respond(Pong(request.message.0 + 1))
+                                .await
+                                .unwrap();
+                        }
+                    });
+
+                    let request_payload = CBOR::from(Ping(10)).to_cbor_data();
+                    let request_frame = Frame {
+                        kind: FrameKind::Request,
+                        api_id: Ping::ID,
+                        msg_id: 42,
+                        payload: request_payload,
+                    };
+                    handle.send_incoming(request_frame.encode()).await.unwrap();
+
+                    let outbound = outbound_rx.recv().await.unwrap();
+                    let frame = Frame::decode(&outbound).unwrap();
+                    assert_eq!(frame.kind, FrameKind::Response);
+                    assert_eq!(frame.api_id, Ping::ID);
+                    assert_eq!(frame.msg_id, 42);
+
+                    let response = ResponseEnvelope::decode(&frame.payload).unwrap().unwrap();
+                    let response = Pong::try_from(response).unwrap();
+                    assert_eq!(response, Pong(11));
+
+                    handler_task.await;
+                })
+                .await;
+        });
+    }
+}
