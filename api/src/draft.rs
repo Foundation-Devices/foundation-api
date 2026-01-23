@@ -1,8 +1,10 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    cmp::{Ordering, Reverse},
+    collections::{BinaryHeap, HashMap, VecDeque},
     future::Future,
     pin::Pin,
     task::{Context, Poll},
+    time::{Duration, Instant},
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
@@ -14,6 +16,7 @@ pub type PlatformFuture<'a> = Pin<Box<dyn Future<Output = Result<(), QlError>> +
 
 pub trait QlPlatform {
     fn write_message(&self, message: OutboundMessage) -> PlatformFuture<'_>;
+    fn sleep_ms(&self, ms: u64) -> PlatformFuture<'_>;
 }
 
 #[derive(Debug)]
@@ -21,6 +24,7 @@ pub enum QlError {
     Cancelled,
     Protocol,
     SendFailed,
+    Timeout,
 }
 
 #[derive(Debug)]
@@ -33,6 +37,22 @@ pub enum OutboundMessage {
 pub enum IncomingMessage {
     Request(SealedRequest),
     Response(SealedResponse),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RequestConfig {
+    pub timeout: Option<Duration>,
+}
+
+impl Default for RequestConfig {
+    fn default() -> Self {
+        Self { timeout: None }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExecutorConfig {
+    pub default_timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -118,6 +138,7 @@ enum ExecutorEvent {
     SendRequest {
         request: SealedRequest,
         respond_to: oneshot::Sender<Result<SealedResponse, QlError>>,
+        config: RequestConfig,
     },
     SendResponse {
         response: SealedResponse,
@@ -133,12 +154,17 @@ pub struct ExecutorHandle {
 }
 
 impl ExecutorHandle {
-    pub async fn request(&self, request: SealedRequest) -> Result<SealedResponse, QlError> {
+    pub async fn request(
+        &self,
+        request: SealedRequest,
+        config: RequestConfig,
+    ) -> Result<SealedResponse, QlError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(ExecutorEvent::SendRequest {
                 request,
                 respond_to: tx,
+                config,
             })
             .await
             .map_err(|_| QlError::Cancelled)?;
@@ -157,13 +183,50 @@ pub struct Executor {
     rx: Receiver<ExecutorEvent>,
     tx: WeakSender<ExecutorEvent>,
     platform: Box<dyn QlPlatform>,
-    pending: HashMap<ARID, oneshot::Sender<Result<SealedResponse, QlError>>>,
+    config: ExecutorConfig,
     incoming: Sender<InboundRequest>,
+}
+
+struct ExecutorState<'a> {
+    pending: HashMap<ARID, PendingEntry>,
+    timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
+    outbound: VecDeque<OutboundMessage>,
+    in_flight: Option<InFlightWrite<'a>>,
 }
 
 struct InFlightWrite<'a> {
     id: Option<ARID>,
     future: PlatformFuture<'a>,
+}
+
+struct PendingEntry {
+    tx: oneshot::Sender<Result<SealedResponse, QlError>>,
+}
+
+#[derive(Debug, Clone)]
+struct TimeoutEntry {
+    deadline: Instant,
+    id: ARID,
+}
+
+impl PartialEq for TimeoutEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline
+    }
+}
+
+impl Eq for TimeoutEntry {}
+
+impl PartialOrd for TimeoutEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TimeoutEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.deadline.cmp(&other.deadline)
+    }
 }
 
 enum LoopStep {
@@ -172,10 +235,14 @@ enum LoopStep {
         id: Option<ARID>,
         result: Result<(), QlError>,
     },
+    Timeout,
 }
 
 impl Executor {
-    pub fn new(platform: Box<dyn QlPlatform>) -> (Self, ExecutorHandle, IncomingRequestStream) {
+    pub fn new(
+        platform: Box<dyn QlPlatform>,
+        config: ExecutorConfig,
+    ) -> (Self, ExecutorHandle, IncomingRequestStream) {
         let (tx, rx) = async_channel::unbounded();
         let (incoming_tx, incoming_rx) = async_channel::unbounded();
         (
@@ -183,7 +250,7 @@ impl Executor {
                 rx,
                 tx: tx.downgrade(),
                 platform,
-                pending: HashMap::new(),
+                config,
                 incoming: incoming_tx,
             },
             ExecutorHandle { tx },
@@ -192,17 +259,23 @@ impl Executor {
     }
 
     pub async fn run<'a>(&'a mut self) {
-        let mut outbound: VecDeque<OutboundMessage> = VecDeque::new();
-        let mut in_flight: Option<InFlightWrite<'a>> = None;
+        let mut state = ExecutorState {
+            pending: HashMap::new(),
+            timeouts: BinaryHeap::new(),
+            outbound: VecDeque::new(),
+            in_flight: None,
+        };
 
         loop {
-            if in_flight.is_none() {
-                if let Some(message) = outbound.pop_front() {
+            Self::process_timeouts(&mut state);
+
+            if state.in_flight.is_none() {
+                if let Some(message) = state.outbound.pop_front() {
                     let id = match &message {
                         OutboundMessage::Request(request) => Some(request.id()),
                         OutboundMessage::Response(response) => response.id(),
                     };
-                    in_flight = Some(InFlightWrite {
+                    state.in_flight = Some(InFlightWrite {
                         id,
                         future: self.platform.write_message(message),
                     });
@@ -213,21 +286,28 @@ impl Executor {
                 let recv_future = self.rx.recv();
                 futures_lite::pin!(recv_future);
 
+                let mut sleep_future = Self::next_timeout_sleep(&state)
+                    .map(|duration| self.platform.sleep_ms(duration.as_millis() as u64));
+
                 futures_lite::future::poll_fn(|cx| {
-                    if let Some(in_flight) = in_flight.as_mut() {
-                        if let std::task::Poll::Ready(result) = in_flight.future.as_mut().poll(cx) {
-                            return std::task::Poll::Ready(LoopStep::WriteDone {
+                    if let Some(in_flight) = state.in_flight.as_mut() {
+                        if let Poll::Ready(result) = in_flight.future.as_mut().poll(cx) {
+                            return Poll::Ready(LoopStep::WriteDone {
                                 id: in_flight.id,
                                 result,
                             });
                         }
                     }
 
-                    match recv_future.as_mut().poll(cx) {
-                        std::task::Poll::Ready(event) => {
-                            std::task::Poll::Ready(LoopStep::Event(event))
+                    if let Some(sleep_future) = sleep_future.as_mut() {
+                        if let Poll::Ready(_result) = sleep_future.as_mut().poll(cx) {
+                            return Poll::Ready(LoopStep::Timeout);
                         }
-                        std::task::Poll::Pending => std::task::Poll::Pending,
+                    }
+
+                    match recv_future.as_mut().poll(cx) {
+                        Poll::Ready(event) => Poll::Ready(LoopStep::Event(event)),
+                        Poll::Pending => Poll::Pending,
                     }
                 })
                 .await
@@ -238,20 +318,30 @@ impl Executor {
                     ExecutorEvent::SendRequest {
                         request,
                         respond_to,
+                        config,
                     } => {
+                        let effective_timeout =
+                            config.timeout.unwrap_or(self.config.default_timeout);
+                        if effective_timeout.is_zero() {
+                            let _ = respond_to.send(Err(QlError::Timeout));
+                            continue;
+                        }
                         let id = request.id();
-                        self.pending.insert(id, respond_to);
-                        outbound.push_back(OutboundMessage::Request(request));
+                        let deadline = Instant::now() + effective_timeout;
+                        state.pending.insert(id, PendingEntry { tx: respond_to });
+                        state.timeouts.push(Reverse(TimeoutEntry { deadline, id }));
+                        state.outbound.push_back(OutboundMessage::Request(request));
                     }
                     ExecutorEvent::SendResponse { response } => {
-                        outbound.push_back(OutboundMessage::Response(response));
+                        state
+                            .outbound
+                            .push_back(OutboundMessage::Response(response));
                     }
                     ExecutorEvent::Incoming { message } => match message {
                         IncomingMessage::Response(response) => {
-                            // all responses must have an id
                             if let Some(id) = response.id() {
-                                if let Some(tx) = self.pending.remove(&id) {
-                                    let _ = tx.send(Ok(response));
+                                if let Some(entry) = state.pending.remove(&id) {
+                                    let _ = entry.tx.send(Ok(response));
                                 }
                             }
                         }
@@ -263,16 +353,41 @@ impl Executor {
                 },
                 LoopStep::Event(Err(_)) => break,
                 LoopStep::WriteDone { id, result } => {
-                    in_flight = None;
+                    state.in_flight = None;
                     if let Err(e) = result {
                         if let Some(id) = id {
-                            if let Some(tx) = self.pending.remove(&id) {
-                                let _ = tx.send(Err(e));
+                            if let Some(entry) = state.pending.remove(&id) {
+                                let _ = entry.tx.send(Err(e));
                             }
                         }
                     }
                 }
+                LoopStep::Timeout => {
+                    Self::process_timeouts(&mut state);
+                }
             }
         }
+    }
+
+    fn process_timeouts(state: &mut ExecutorState<'_>) {
+        let now = Instant::now();
+        while let Some(Reverse(entry)) = state.timeouts.peek().cloned() {
+            if entry.deadline > now {
+                break;
+            }
+            state.timeouts.pop();
+            if !state.pending.contains_key(&entry.id) {
+                continue;
+            }
+            if let Some(pending) = state.pending.remove(&entry.id) {
+                let _ = pending.tx.send(Err(QlError::Timeout));
+            }
+        }
+    }
+
+    fn next_timeout_sleep(state: &ExecutorState<'_>) -> Option<Duration> {
+        let Reverse(entry) = state.timeouts.peek()?.clone();
+        let now = Instant::now();
+        Some(entry.deadline.saturating_duration_since(now))
     }
 }

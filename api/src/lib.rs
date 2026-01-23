@@ -1,7 +1,6 @@
 pub mod api;
 pub use api::*;
 pub mod draft;
-pub mod wip;
 
 /// Marker trait for types that have a Cbor derive (structs and enums, not primitives).
 /// This is used to enforce that enum tuple variants wrap Cbor-derived types.
