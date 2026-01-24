@@ -179,10 +179,10 @@ impl ExecutorHandle {
     }
 }
 
-pub struct Executor {
+pub struct Executor<P> {
+    platform: P,
     rx: Receiver<ExecutorEvent>,
     tx: WeakSender<ExecutorEvent>,
-    platform: Box<dyn QlPlatform>,
     config: ExecutorConfig,
     incoming: Sender<InboundRequest>,
 }
@@ -238,9 +238,12 @@ enum LoopStep {
     Timeout,
 }
 
-impl Executor {
+impl<P> Executor<P>
+where
+    P: QlPlatform,
+{
     pub fn new(
-        platform: Box<dyn QlPlatform>,
+        platform: P,
         config: ExecutorConfig,
     ) -> (Self, ExecutorHandle, IncomingRequestStream) {
         let (tx, rx) = async_channel::unbounded();
@@ -389,5 +392,107 @@ impl Executor {
         let Reverse(entry) = state.timeouts.peek()?.clone();
         let now = Instant::now();
         Some(entry.deadline.saturating_duration_since(now))
+    }
+}
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::quantum_link::QuantumLinkIdentity;
+
+    struct TestPlatform {
+        tx: Sender<OutboundMessage>,
+    }
+
+    impl TestPlatform {
+        fn new() -> (Self, Receiver<OutboundMessage>) {
+            let (tx, rx) = async_channel::unbounded();
+            (Self { tx }, rx)
+        }
+    }
+
+    impl QlPlatform for TestPlatform {
+        fn write_message(&self, message: OutboundMessage) -> PlatformFuture<'_> {
+            let tx = self.tx.clone();
+            Box::pin(async move { tx.send(message).await.map_err(|_| QlError::Cancelled) })
+        }
+
+        fn sleep_ms(&self, ms: u64) -> PlatformFuture<'_> {
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_response_round_trip() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (platform, outbound_rx) = TestPlatform::new();
+                let config = ExecutorConfig {
+                    default_timeout: Duration::from_millis(50),
+                };
+                let (mut core, handle, _incoming) = Executor::new(platform, config);
+                tokio::task::spawn_local(async move { core.run().await });
+
+                let requester = QuantumLinkIdentity::generate();
+                let responder = QuantumLinkIdentity::generate();
+                let id = ARID::new();
+                let request = SealedRequest::new("ping", id, &requester.xid_document);
+
+                let response_task = tokio::task::spawn_local({
+                    let handle = handle.clone();
+                    async move { handle.request(request, RequestConfig::default()).await }
+                });
+
+                let outbound = outbound_rx.recv().await.expect("no outbound request");
+                match outbound {
+                    OutboundMessage::Request(outbound_request) => {
+                        assert_eq!(outbound_request.id(), id);
+                    }
+                    OutboundMessage::Response(_) => panic!("unexpected response outbound"),
+                }
+
+                let response = SealedResponse::new_success(id, &responder.xid_document);
+                handle
+                    .send_incoming(IncomingMessage::Response(response))
+                    .await
+                    .unwrap();
+
+                let response = response_task.await.unwrap().unwrap();
+                assert_eq!(response.id(), Some(id));
+                assert!(response.is_ok());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_timeout_returns_error() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (platform, _outbound_rx) = TestPlatform::new();
+                let config = ExecutorConfig {
+                    default_timeout: Duration::from_millis(5),
+                };
+                let (mut core, handle, _incoming) = Executor::new(platform, config);
+                tokio::task::spawn_local(async move { core.run().await });
+
+                let requester = QuantumLinkIdentity::generate();
+                let id = ARID::new();
+                let request = SealedRequest::new("timeout", id, &requester.xid_document);
+                let result = handle
+                    .request(
+                        request,
+                        RequestConfig {
+                            timeout: Some(Duration::from_millis(1)),
+                        },
+                    )
+                    .await;
+
+                assert!(matches!(result, Err(QlError::Timeout)));
+            })
+            .await;
     }
 }
