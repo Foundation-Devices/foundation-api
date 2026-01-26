@@ -29,6 +29,13 @@ pub struct QlHeader {
     pub valid_until: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct EncodeQlConfig {
+    pub signing_key: SigningPublicKey,
+    pub recipient: XID,
+    pub valid_for: Duration,
+}
+
 impl QlHeader {
     pub fn sender_xid(&self) -> XID {
         XID::new(&self.signing_key)
@@ -96,9 +103,7 @@ pub struct QlMessage {
 pub fn encode_ql_message(
     kind: MessageKind,
     id: ARID,
-    signing_key: SigningPublicKey,
-    recipient: XID,
-    valid_for: Duration,
+    config: EncodeQlConfig,
     payload: Envelope,
     signer: &dyn Signer,
 ) -> Vec<u8> {
@@ -109,9 +114,9 @@ pub fn encode_ql_message(
     let header = QlHeader {
         kind,
         id,
-        signing_key,
-        recipient,
-        valid_until: now.saturating_add(valid_for.as_secs()),
+        signing_key: config.signing_key,
+        recipient: config.recipient,
+        valid_until: now.saturating_add(config.valid_for.as_secs()),
     };
     let header_cbor = CBOR::from(header);
     let header_envelope = Envelope::new(header_cbor);
@@ -210,9 +215,11 @@ mod tests {
         let bytes = encode_ql_message(
             MessageKind::Request,
             header_id,
-            signing_key.clone(),
-            recipient_xid,
-            Duration::from_secs(60),
+            EncodeQlConfig {
+                signing_key: signing_key.clone(),
+                recipient: recipient_xid,
+                valid_for: Duration::from_secs(60),
+            },
             encrypted_payload.clone(),
             signer,
         );

@@ -8,14 +8,17 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::ARID;
-use bc_envelope::{RequestBehavior, ResponseBehavior};
-use gstp::{SealedRequest, SealedResponse};
+use bc_components::{Signer, ARID, XID};
+use bc_envelope::Envelope;
+
+use crate::envelope_wire::{
+    decode_ql_message, encode_ql_message, EncodeQlConfig, MessageKind, QlMessage,
+};
 
 pub type PlatformFuture<'a> = Pin<Box<dyn Future<Output = Result<(), QlError>> + 'a>>;
 
 pub trait QlPlatform {
-    fn write_message(&self, message: OutboundMessage) -> PlatformFuture<'_>;
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_>;
     fn sleep_ms(&self, ms: u64) -> PlatformFuture<'_>;
 }
 
@@ -25,18 +28,7 @@ pub enum QlError {
     Protocol,
     SendFailed,
     Timeout,
-}
-
-#[derive(Debug)]
-pub enum OutboundMessage {
-    Request(SealedRequest),
-    Response(SealedResponse),
-}
-
-#[derive(Debug)]
-pub enum IncomingMessage {
-    Request(SealedRequest),
-    Response(SealedResponse),
+    Decode(crate::envelope_wire::DecodeError),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,13 +49,14 @@ pub struct ExecutorConfig {
 
 #[derive(Debug)]
 pub struct IncomingRequest {
-    pub request: SealedRequest,
+    pub message: QlMessage,
     pub respond_to: Responder,
 }
 
 #[derive(Debug, Clone)]
 pub struct Responder {
     id: ARID,
+    recipient: XID,
     tx: Sender<ExecutorEvent>,
 }
 
@@ -72,12 +65,26 @@ impl Responder {
         self.id
     }
 
-    pub async fn respond(self, response: SealedResponse) -> Result<(), QlError> {
-        if response.id() != Some(self.id) {
-            return Err(QlError::Protocol);
-        }
+    pub async fn respond(
+        self,
+        payload: Envelope,
+        config: EncodeQlConfig,
+        signer: &dyn Signer,
+    ) -> Result<(), QlError> {
+        assert_eq!(config.recipient, self.recipient, "not same recipient");
+        let bytes = encode_ql_message(
+            MessageKind::Response,
+            self.id,
+            EncodeQlConfig {
+                signing_key: config.signing_key,
+                recipient: self.recipient,
+                valid_for: config.valid_for,
+            },
+            payload,
+            signer,
+        );
         self.tx
-            .send(ExecutorEvent::SendResponse { response })
+            .send(ExecutorEvent::SendResponse { bytes })
             .await
             .map_err(|_| QlError::Cancelled)
     }
@@ -92,11 +99,12 @@ impl IncomingRequestStream {
     pub async fn next(&mut self) -> Result<IncomingRequest, QlError> {
         let request = self.rx.recv().await.map_err(|_| QlError::Cancelled)?;
         let responder = Responder {
-            id: request.request.id(),
+            id: request.message.header.id,
+            recipient: request.message.header.sender_xid(),
             tx: request.tx,
         };
         Ok(IncomingRequest {
-            request: request.request,
+            message: request.message,
             respond_to: responder,
         })
     }
@@ -113,11 +121,12 @@ impl futures_lite::Stream for IncomingRequestStream {
         match rx.poll_next(cx) {
             Poll::Ready(Some(request)) => {
                 let responder = Responder {
-                    id: request.request.id(),
+                    id: request.message.header.id,
+                    recipient: request.message.header.sender_xid(),
                     tx: request.tx,
                 };
                 Poll::Ready(Some(Ok(IncomingRequest {
-                    request: request.request,
+                    message: request.message,
                     respond_to: responder,
                 })))
             }
@@ -129,22 +138,23 @@ impl futures_lite::Stream for IncomingRequestStream {
 
 #[derive(Debug)]
 struct InboundRequest {
-    request: SealedRequest,
+    message: QlMessage,
     tx: Sender<ExecutorEvent>,
 }
 
 #[derive(Debug)]
 enum ExecutorEvent {
     SendRequest {
-        request: SealedRequest,
-        respond_to: oneshot::Sender<Result<SealedResponse, QlError>>,
+        id: ARID,
+        bytes: Vec<u8>,
+        respond_to: oneshot::Sender<Result<QlMessage, QlError>>,
         config: RequestConfig,
     },
     SendResponse {
-        response: SealedResponse,
+        bytes: Vec<u8>,
     },
     Incoming {
-        message: IncomingMessage,
+        message: QlMessage,
     },
 }
 
@@ -156,22 +166,28 @@ pub struct ExecutorHandle {
 impl ExecutorHandle {
     pub async fn request(
         &self,
-        request: SealedRequest,
-        config: RequestConfig,
-    ) -> Result<SealedResponse, QlError> {
+        payload: Envelope,
+        encode_config: EncodeQlConfig,
+        signer: &dyn Signer,
+        request_config: RequestConfig,
+    ) -> Result<QlMessage, QlError> {
+        let id = ARID::new();
+        let bytes = encode_ql_message(MessageKind::Request, id, encode_config, payload, signer);
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(ExecutorEvent::SendRequest {
-                request,
+                id,
+                bytes,
                 respond_to: tx,
-                config,
+                config: request_config,
             })
             .await
             .map_err(|_| QlError::Cancelled)?;
         rx.await.map_err(|_| QlError::Cancelled)?
     }
 
-    pub async fn send_incoming(&self, message: IncomingMessage) -> Result<(), QlError> {
+    pub async fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
+        let message = decode_ql_message(&bytes).map_err(QlError::Decode)?;
         self.tx
             .send(ExecutorEvent::Incoming { message })
             .await
@@ -190,8 +206,13 @@ pub struct Executor<P> {
 struct ExecutorState<'a> {
     pending: HashMap<ARID, PendingEntry>,
     timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
-    outbound: VecDeque<OutboundMessage>,
+    outbound: VecDeque<OutboundBytes>,
     in_flight: Option<InFlightWrite<'a>>,
+}
+
+struct OutboundBytes {
+    id: Option<ARID>,
+    bytes: Vec<u8>,
 }
 
 struct InFlightWrite<'a> {
@@ -200,7 +221,7 @@ struct InFlightWrite<'a> {
 }
 
 struct PendingEntry {
-    tx: oneshot::Sender<Result<SealedResponse, QlError>>,
+    tx: oneshot::Sender<Result<QlMessage, QlError>>,
 }
 
 #[derive(Debug, Clone)]
@@ -274,13 +295,9 @@ where
 
             if state.in_flight.is_none() {
                 if let Some(message) = state.outbound.pop_front() {
-                    let id = match &message {
-                        OutboundMessage::Request(request) => Some(request.id()),
-                        OutboundMessage::Response(response) => response.id(),
-                    };
                     state.in_flight = Some(InFlightWrite {
-                        id,
-                        future: self.platform.write_message(message),
+                        id: message.id,
+                        future: self.platform.write_message(message.bytes),
                     });
                 }
             }
@@ -319,7 +336,8 @@ where
             match step {
                 LoopStep::Event(Ok(event)) => match event {
                     ExecutorEvent::SendRequest {
-                        request,
+                        id,
+                        bytes,
                         respond_to,
                         config,
                     } => {
@@ -329,29 +347,28 @@ where
                             let _ = respond_to.send(Err(QlError::Timeout));
                             continue;
                         }
-                        let id = request.id();
                         let deadline = Instant::now() + effective_timeout;
                         state.pending.insert(id, PendingEntry { tx: respond_to });
                         state.timeouts.push(Reverse(TimeoutEntry { deadline, id }));
-                        state.outbound.push_back(OutboundMessage::Request(request));
+                        state.outbound.push_back(OutboundBytes {
+                            id: Some(id),
+                            bytes,
+                        });
                     }
-                    ExecutorEvent::SendResponse { response } => {
-                        state
-                            .outbound
-                            .push_back(OutboundMessage::Response(response));
+                    ExecutorEvent::SendResponse { bytes } => {
+                        state.outbound.push_back(OutboundBytes { id: None, bytes });
                     }
-                    ExecutorEvent::Incoming { message } => match message {
-                        IncomingMessage::Response(response) => {
-                            if let Some(id) = response.id() {
-                                if let Some(entry) = state.pending.remove(&id) {
-                                    let _ = entry.tx.send(Ok(response));
-                                }
+                    ExecutorEvent::Incoming { message } => match message.header.kind {
+                        MessageKind::Response => {
+                            if let Some(entry) = state.pending.remove(&message.header.id) {
+                                let _ = entry.tx.send(Ok(message));
                             }
                         }
-                        IncomingMessage::Request(request) => {
+                        MessageKind::Request => {
                             let Some(tx) = self.tx.upgrade() else { return };
-                            let _ = self.incoming.send(InboundRequest { request, tx }).await;
+                            let _ = self.incoming.send(InboundRequest { message, tx }).await;
                         }
+                        MessageKind::Event => {}
                     },
                 },
                 LoopStep::Event(Err(_)) => break,
@@ -400,18 +417,18 @@ mod test {
     use crate::quantum_link::QuantumLinkIdentity;
 
     struct TestPlatform {
-        tx: Sender<OutboundMessage>,
+        tx: Sender<Vec<u8>>,
     }
 
     impl TestPlatform {
-        fn new() -> (Self, Receiver<OutboundMessage>) {
+        fn new() -> (Self, Receiver<Vec<u8>>) {
             let (tx, rx) = async_channel::unbounded();
             (Self { tx }, rx)
         }
     }
 
     impl QlPlatform for TestPlatform {
-        fn write_message(&self, message: OutboundMessage) -> PlatformFuture<'_> {
+        fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_> {
             let tx = self.tx.clone();
             Box::pin(async move { tx.send(message).await.map_err(|_| QlError::Cancelled) })
         }
@@ -438,31 +455,73 @@ mod test {
 
                 let requester = QuantumLinkIdentity::generate();
                 let responder = QuantumLinkIdentity::generate();
-                let id = ARID::new();
-                let request = SealedRequest::new("ping", id, &requester.xid_document);
+                let recipient_xid: XID = responder.xid_document.clone().into();
+                let signing_key = requester
+                    .xid_document
+                    .verification_key()
+                    .expect("missing signing key")
+                    .clone();
+                let signer = requester.private_keys.clone().expect("missing signer");
+                let payload = Envelope::new("ping");
+                let encrypted_payload = payload.encrypt_to_recipient(
+                    responder
+                        .xid_document
+                        .encryption_key()
+                        .expect("missing encryption key"),
+                );
 
                 let response_task = tokio::task::spawn_local({
                     let handle = handle.clone();
-                    async move { handle.request(request, RequestConfig::default()).await }
+                    async move {
+                        handle
+                            .request(
+                                encrypted_payload,
+                                EncodeQlConfig {
+                                    signing_key,
+                                    recipient: recipient_xid,
+                                    valid_for: Duration::from_secs(60),
+                                },
+                                &signer,
+                                RequestConfig::default(),
+                            )
+                            .await
+                    }
                 });
 
                 let outbound = outbound_rx.recv().await.expect("no outbound request");
-                match outbound {
-                    OutboundMessage::Request(outbound_request) => {
-                        assert_eq!(outbound_request.id(), id);
-                    }
-                    OutboundMessage::Response(_) => panic!("unexpected response outbound"),
-                }
+                let outbound_message = decode_ql_message(&outbound).expect("decode outbound");
+                assert_eq!(outbound_message.header.kind, MessageKind::Request);
+                let request_id = outbound_message.header.id;
 
-                let response = SealedResponse::new_success(id, &responder.xid_document);
-                handle
-                    .send_incoming(IncomingMessage::Response(response))
-                    .await
-                    .unwrap();
+                let response_signing_key = responder
+                    .xid_document
+                    .verification_key()
+                    .expect("missing signing key")
+                    .clone();
+                let response_signer = responder.private_keys.as_ref().expect("missing signer");
+                let response_payload = Envelope::new("pong");
+                let response_encrypted = response_payload.encrypt_to_recipient(
+                    requester
+                        .xid_document
+                        .encryption_key()
+                        .expect("missing encryption key"),
+                );
+                let response_bytes = encode_ql_message(
+                    MessageKind::Response,
+                    request_id,
+                    EncodeQlConfig {
+                        signing_key: response_signing_key,
+                        recipient: outbound_message.header.sender_xid(),
+                        valid_for: Duration::from_secs(60),
+                    },
+                    response_encrypted,
+                    response_signer,
+                );
+                handle.send_incoming(response_bytes).await.unwrap();
 
                 let response = response_task.await.unwrap().unwrap();
-                assert_eq!(response.id(), Some(id));
-                assert!(response.is_ok());
+                assert_eq!(response.header.kind, MessageKind::Response);
+                assert_eq!(response.header.id, request_id);
             })
             .await;
     }
@@ -480,11 +539,29 @@ mod test {
                 tokio::task::spawn_local(async move { core.run().await });
 
                 let requester = QuantumLinkIdentity::generate();
-                let id = ARID::new();
-                let request = SealedRequest::new("timeout", id, &requester.xid_document);
+                let recipient_xid: XID = requester.xid_document.clone().into();
+                let signing_key = requester
+                    .xid_document
+                    .verification_key()
+                    .expect("missing signing key")
+                    .clone();
+                let signer = requester.private_keys.clone().expect("missing signer");
+                let payload = Envelope::new("timeout");
+                let encrypted_payload = payload.encrypt_to_recipient(
+                    requester
+                        .xid_document
+                        .encryption_key()
+                        .expect("missing encryption key"),
+                );
                 let result = handle
                     .request(
-                        request,
+                        encrypted_payload,
+                        EncodeQlConfig {
+                            signing_key,
+                            recipient: recipient_xid,
+                            valid_for: Duration::from_secs(60),
+                        },
+                        &signer,
                         RequestConfig {
                             timeout: Some(Duration::from_millis(1)),
                         },
