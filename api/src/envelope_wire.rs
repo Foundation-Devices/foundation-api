@@ -18,12 +18,18 @@ pub enum MessageKind {
     Event,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct QlHeader {
     pub kind: MessageKind,
     pub id: ARID,
-    pub sender: XID,
+    pub signing_key: SigningPublicKey,
     pub recipient: XID,
+}
+
+impl QlHeader {
+    pub fn sender_xid(&self) -> XID {
+        XID::new(&self.signing_key)
+    }
 }
 
 impl From<QlHeader> for dcbor::CBOR {
@@ -31,7 +37,7 @@ impl From<QlHeader> for dcbor::CBOR {
         dcbor::CBOR::from(vec![
             dcbor::CBOR::from(value.kind),
             dcbor::CBOR::from(value.id),
-            dcbor::CBOR::from(value.sender),
+            dcbor::CBOR::from(value.signing_key.clone()),
             dcbor::CBOR::from(value.recipient),
         ])
     }
@@ -47,12 +53,12 @@ impl TryFrom<CBOR> for QlHeader {
         }
         let kind = MessageKind::try_from(array[0].clone())?;
         let id: ARID = array[1].clone().try_into()?;
-        let sender: XID = array[2].clone().try_into()?;
+        let signing_key: SigningPublicKey = array[2].clone().try_into()?;
         let recipient: XID = array[3].clone().try_into()?;
         Ok(Self {
             kind,
             id,
-            sender,
+            signing_key,
             recipient,
         })
     }
@@ -66,8 +72,6 @@ pub enum DecodeError {
     InvalidField(KnownValue),
     #[error("unknown message kind")]
     UnknownKind,
-    #[error("unknown signer")]
-    UnknownSigner,
     #[error(transparent)]
     Envelope(#[from] bc_envelope::Error),
     #[error(transparent)]
@@ -91,16 +95,12 @@ pub fn encode_ql_message(header: QlHeader, payload: Envelope, signer: &dyn Signe
     envelope.to_cbor_data()
 }
 
-pub fn decode_ql_message(
-    bytes: &[u8],
-    resolver: impl Fn(&XID) -> Option<SigningPublicKey>,
-) -> Result<QlMessage, DecodeError> {
+pub fn decode_ql_message(bytes: &[u8]) -> Result<QlMessage, DecodeError> {
     let cbor = dcbor::CBOR::try_from_data(bytes)?;
     let outer = Envelope::try_from_cbor(cbor)?;
     let unverified = outer.try_unwrap().unwrap_or_else(|_| outer.clone());
     let sender_header = extract_header(&unverified)?;
-    let verifier = resolver(&sender_header.sender).ok_or(DecodeError::UnknownSigner)?;
-    let decrypted = outer.verify(&verifier)?;
+    let decrypted = outer.verify(&sender_header.signing_key)?;
 
     let header = extract_header(&decrypted)?;
 
@@ -154,15 +154,19 @@ mod tests {
     use crate::api::quantum_link::QuantumLinkIdentity;
 
     #[test]
-    fn decode_header_without_payload_decryption() {
+    fn round_trip() {
         let sender = QuantumLinkIdentity::generate();
         let recipient = QuantumLinkIdentity::generate();
-        let sender_xid: XID = sender.xid_document.clone().into();
         let recipient_xid: XID = recipient.xid_document.clone().into();
+        let signing_key = sender
+            .xid_document
+            .verification_key()
+            .expect("missing signing public key")
+            .clone();
         let header = QlHeader {
             kind: MessageKind::Request,
             id: ARID::new(),
-            sender: sender_xid,
+            signing_key: signing_key.clone(),
             recipient: recipient_xid,
         };
 
@@ -174,20 +178,8 @@ mod tests {
         let encrypted_payload = payload.encrypt_to_recipient(encryption_key);
 
         let signer = sender.private_keys.as_ref().expect("missing signer");
-        let verifier = sender
-            .xid_document
-            .verification_key()
-            .expect("missing signing public key")
-            .clone();
-        let bytes = encode_ql_message(header, encrypted_payload.clone(), signer);
-        let decoded = decode_ql_message(&bytes, |xid| {
-            if *xid == sender_xid {
-                Some(verifier.clone())
-            } else {
-                None
-            }
-        })
-        .expect("decode failed");
+        let bytes = encode_ql_message(header.clone(), encrypted_payload.clone(), signer);
+        let decoded = decode_ql_message(&bytes).expect("decode failed");
 
         assert_eq!(decoded.header.kind, header.kind);
         assert_eq!(decoded.header.id, header.id);
@@ -196,5 +188,11 @@ mod tests {
             EnvelopeCase::Encrypted(_) => {}
             _ => panic!("payload should remain encrypted"),
         }
+    }
+
+    #[test]
+    fn header_size() {
+        let size = std::mem::size_of::<QlHeader>();
+        assert_eq!(size, 232);
     }
 }
