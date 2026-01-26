@@ -12,7 +12,7 @@ use bc_components::{Signer, ARID, XID};
 use bc_envelope::Envelope;
 
 use crate::envelope_wire::{
-    decode_ql_message, encode_ql_message, EncodeQlConfig, MessageKind, QlMessage,
+    decode_ql_message, encode_ql_message, DecodeErrContext, EncodeQlConfig, MessageKind, QlMessage,
 };
 
 pub type PlatformFuture<'a> = Pin<Box<dyn Future<Output = Result<(), QlError>> + 'a>>;
@@ -156,6 +156,9 @@ enum ExecutorEvent {
     Incoming {
         message: QlMessage,
     },
+    IncomingDecodeError {
+        context: DecodeErrContext,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -187,11 +190,20 @@ impl ExecutorHandle {
     }
 
     pub async fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
-        let message = decode_ql_message(&bytes).map_err(QlError::Decode)?;
-        self.tx
-            .send(ExecutorEvent::Incoming { message })
-            .await
-            .map_err(|_| QlError::Cancelled)
+        match decode_ql_message(&bytes) {
+            Ok(message) => self
+                .tx
+                .send(ExecutorEvent::Incoming { message })
+                .await
+                .map_err(|_| QlError::Cancelled),
+            Err(context) => {
+                let _ = self
+                    .tx
+                    .send(ExecutorEvent::IncomingDecodeError { context })
+                    .await;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -370,6 +382,16 @@ where
                         }
                         MessageKind::Event => {}
                     },
+                    ExecutorEvent::IncomingDecodeError { context } => {
+                        let Some(header) = context.header else {
+                            continue;
+                        };
+                        if header.kind == MessageKind::Response {
+                            if let Some(entry) = state.pending.remove(&header.id) {
+                                let _ = entry.tx.send(Err(QlError::Decode(context.error)));
+                            }
+                        }
+                    }
                 },
                 LoopStep::Event(Err(_)) => break,
                 LoopStep::WriteDone { id, result } => {
@@ -396,9 +418,6 @@ where
                 break;
             }
             state.timeouts.pop();
-            if !state.pending.contains_key(&entry.id) {
-                continue;
-            }
             if let Some(pending) = state.pending.remove(&entry.id) {
                 let _ = pending.tx.send(Err(QlError::Timeout));
             }
@@ -406,7 +425,7 @@ where
     }
 
     fn next_timeout_sleep(state: &ExecutorState<'_>) -> Option<Duration> {
-        let Reverse(entry) = state.timeouts.peek()?.clone();
+        let Reverse(entry) = state.timeouts.peek()?;
         let now = Instant::now();
         Some(entry.deadline.saturating_duration_since(now))
     }

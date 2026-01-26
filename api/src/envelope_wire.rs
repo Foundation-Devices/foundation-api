@@ -93,10 +93,17 @@ pub enum DecodeError {
     Cbor(#[from] dcbor::Error),
 }
 
+#[derive(Debug)]
+pub struct DecodeErrContext {
+    pub error: DecodeError,
+    pub header: Option<QlHeader>,
+}
+
 #[derive(Debug, Clone)]
 pub struct QlMessage {
+    /// public header with message routing details
     pub header: QlHeader,
-    /// Encrypted payload envelope (opaque to the executor).
+    /// encrypted payload envelope (opaque to the executor)
     pub payload: Envelope,
 }
 
@@ -127,25 +134,49 @@ pub fn encode_ql_message(
     envelope.to_cbor_data()
 }
 
-pub fn decode_ql_message(bytes: &[u8]) -> Result<QlMessage, DecodeError> {
-    let cbor = dcbor::CBOR::try_from_data(bytes)?;
-    let outer = Envelope::try_from_cbor(cbor)?;
+pub fn decode_ql_message(bytes: &[u8]) -> Result<QlMessage, DecodeErrContext> {
+    let cbor = dcbor::CBOR::try_from_data(bytes).map_err(|error| DecodeErrContext {
+        error: DecodeError::Cbor(error),
+        header: None,
+    })?;
+    let outer = Envelope::try_from_cbor(cbor).map_err(|error| DecodeErrContext {
+        error: DecodeError::Cbor(error),
+        header: None,
+    })?;
     let unverified = outer.try_unwrap().unwrap_or_else(|_| outer.clone());
-    let sender_header = extract_header(&unverified)?;
+    let header_unverified = extract_header(&unverified).ok();
+    let sender_header = header_unverified.clone().ok_or_else(|| DecodeErrContext {
+        error: DecodeError::InvalidField(known::HEADER),
+        header: None,
+    })?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     if now > sender_header.valid_until {
-        return Err(DecodeError::Expired);
+        return Err(DecodeErrContext {
+            error: DecodeError::Expired,
+            header: header_unverified,
+        });
     }
-    let decrypted = outer.verify(&sender_header.signing_key)?;
+    let decrypted = outer
+        .verify(&sender_header.signing_key)
+        .map_err(|error| DecodeErrContext {
+            error: DecodeError::Envelope(error),
+            header: header_unverified.clone(),
+        })?;
 
-    let header = extract_header(&decrypted)?;
+    let header = extract_header(&decrypted).map_err(|error| DecodeErrContext {
+        error,
+        header: header_unverified.clone(),
+    })?;
 
     let payload: Envelope = decrypted
         .object_for_predicate(known::PAYLOAD)
-        .map_err(|_| DecodeError::InvalidField(known::PAYLOAD))?;
+        .map_err(|_| DecodeErrContext {
+            error: DecodeError::InvalidField(known::PAYLOAD),
+            header: Some(header.clone()),
+        })?;
 
     Ok(QlMessage { header, payload })
 }
