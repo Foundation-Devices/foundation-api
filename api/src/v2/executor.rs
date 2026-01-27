@@ -76,7 +76,7 @@ impl Responder {
         self.id
     }
 
-    pub async fn respond(
+    pub fn respond(
         self,
         payload: Envelope,
         signing_key: SigningPublicKey,
@@ -95,8 +95,7 @@ impl Responder {
             signer,
         );
         self.tx
-            .send(ExecutorEvent::SendResponse { bytes })
-            .await
+            .send_blocking(ExecutorEvent::SendResponse { bytes })
             .map_err(|_| QlError::Cancelled)
     }
 }
