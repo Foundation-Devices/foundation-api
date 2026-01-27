@@ -74,7 +74,7 @@ pub trait RouterPlatform {
     fn decrypt_payload(&self, payload: Envelope) -> Result<CBOR, RouterError>;
     fn lookup_recipient(&self, recipient: XID) -> Option<&EncapsulationPublicKey>;
     fn signing_key(&self) -> &SigningPublicKey;
-    fn response_valid_for(&self) -> Duration;
+    fn message_expiration(&self) -> Duration;
     fn signer(&self) -> &dyn Signer;
     fn handle_error(&self, e: RouterError);
 

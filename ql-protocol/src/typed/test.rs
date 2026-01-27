@@ -133,7 +133,7 @@ impl RouterPlatform for TestRouterPlatform {
         &self.identity.signing_public_key
     }
 
-    fn response_valid_for(&self) -> Duration {
+    fn message_expiration(&self) -> Duration {
         Duration::from_secs(60)
     }
 
@@ -250,12 +250,7 @@ async fn typed_round_trip() {
             assert_eq!(event_value, 7);
 
             let response = client_typed
-                .request(
-                    Ping(41),
-                    recipient,
-                    RequestConfig::default(),
-                    Duration::from_secs(60),
-                )
+                .request(Ping(41), recipient, RequestConfig::default())
                 .await
                 .expect("response");
             assert_eq!(response, Pong(42));

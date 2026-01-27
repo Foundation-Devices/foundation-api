@@ -66,7 +66,6 @@ impl TypedExecutorHandle {
         message: M,
         recipient: XID,
         request_config: RequestConfig,
-        valid_for: Duration,
     ) -> Response<M::Response>
     where
         M: RequestResponse,
@@ -83,7 +82,7 @@ impl TypedExecutorHandle {
                     EncodeQlConfig {
                         signing_key: platform.signing_key().clone(),
                         recipient,
-                        valid_for,
+                        valid_for: platform.message_expiration(),
                     },
                     request_config,
                     platform.signer(),

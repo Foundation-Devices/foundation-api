@@ -56,7 +56,7 @@ where
         responder.respond(
             envelope,
             self.platform.signing_key().clone(),
-            self.platform.response_valid_for(),
+            self.platform.message_expiration(),
             self.platform.signer(),
         )?;
         Ok(())
