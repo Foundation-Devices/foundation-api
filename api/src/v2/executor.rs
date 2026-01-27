@@ -2,7 +2,7 @@ use std::{
     cmp::{Ordering, Reverse},
     collections::{BinaryHeap, HashMap, VecDeque},
     future::Future,
-    pin::Pin,
+    pin::{pin, Pin},
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -154,14 +154,28 @@ pub struct ExecutorHandle {
     tx: Sender<ExecutorEvent>,
 }
 
+pub struct ExecutorResponse {
+    rx: oneshot::Receiver<Result<QlMessage, QlError>>,
+}
+
+impl std::future::Future for ExecutorResponse {
+    type Output = Result<QlMessage, QlError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        pin!(&mut self.rx)
+            .poll(cx)
+            .map(|result| result.unwrap_or(Err(QlError::Cancelled)))
+    }
+}
+
 impl ExecutorHandle {
-    pub async fn request(
+    pub fn request(
         &self,
         payload: Envelope,
         encode_config: EncodeQlConfig,
         request_config: RequestConfig,
         signer: &dyn Signer,
-    ) -> Result<QlMessage, QlError> {
+    ) -> ExecutorResponse {
         let id = ARID::new();
         let bytes = encode_ql_message(MessageKind::Request, id, encode_config, payload, signer);
         let (tx, rx) = oneshot::channel();
@@ -172,21 +186,21 @@ impl ExecutorHandle {
                 respond_to: tx,
                 config: request_config,
             })
-            .map_err(|_| QlError::Cancelled)?;
-        rx.await.map_err(|_| QlError::Cancelled)?
+            .unwrap();
+        ExecutorResponse { rx }
     }
 
-    pub async fn send_event(
+    pub fn send_event(
         &self,
         payload: Envelope,
         encode_config: EncodeQlConfig,
         signer: &dyn Signer,
-    ) -> Result<(), QlError> {
+    ) {
+        let tx = self.tx.clone();
         let id = ARID::new();
         let bytes = encode_ql_message(MessageKind::Event, id, encode_config, payload, signer);
-        self.tx
-            .send_blocking(ExecutorEvent::SendEvent { bytes })
-            .map_err(|_| QlError::Cancelled)
+        tx.send_blocking(ExecutorEvent::SendEvent { bytes })
+            .unwrap();
     }
 
     pub fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
