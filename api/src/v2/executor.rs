@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::{Signer, ARID, XID};
+use bc_components::{Signer, SigningPublicKey, ARID, XID};
 use bc_envelope::Envelope;
 
 use super::wire::{
@@ -79,17 +79,17 @@ impl Responder {
     pub async fn respond(
         self,
         payload: Envelope,
-        config: EncodeQlConfig,
+        signing_key: SigningPublicKey,
+        valid_for: Duration,
         signer: &dyn Signer,
     ) -> Result<(), QlError> {
-        assert_eq!(config.recipient, self.recipient, "not same recipient");
         let bytes = encode_ql_message(
             MessageKind::Response,
             self.id,
             EncodeQlConfig {
-                signing_key: config.signing_key,
+                signing_key,
                 recipient: self.recipient,
-                valid_for: config.valid_for,
+                valid_for,
             },
             payload,
             signer,
