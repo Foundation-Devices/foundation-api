@@ -171,8 +171,8 @@ impl ExecutorHandle {
         &self,
         payload: Envelope,
         encode_config: EncodeQlConfig,
-        signer: &dyn Signer,
         request_config: RequestConfig,
+        signer: &dyn Signer,
     ) -> Result<QlMessage, QlError> {
         let id = ARID::new();
         let bytes = encode_ql_message(MessageKind::Request, id, encode_config, payload, signer);
@@ -500,8 +500,8 @@ mod test {
                                     recipient: recipient_xid,
                                     valid_for: Duration::from_secs(60),
                                 },
-                                &signer,
                                 RequestConfig::default(),
+                                &signer,
                             )
                             .await
                     }
@@ -580,10 +580,10 @@ mod test {
                             recipient: recipient_xid,
                             valid_for: Duration::from_secs(60),
                         },
-                        &signer,
                         RequestConfig {
                             timeout: Some(Duration::from_millis(1)),
                         },
+                        &signer,
                     )
                     .await;
 
@@ -632,10 +632,10 @@ mod test {
                                     recipient: recipient_xid,
                                     valid_for: Duration::from_secs(60),
                                 },
-                                &signer,
                                 RequestConfig {
                                     timeout: Some(Duration::from_secs(3)),
                                 },
+                                &signer,
                             )
                             .await
                     }
