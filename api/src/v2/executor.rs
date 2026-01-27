@@ -8,11 +8,16 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::{Signer, ARID, XID};
+use bc_components::{ARID, Signer, XID};
 use bc_envelope::Envelope;
 
-use crate::envelope_wire::{
-    decode_ql_message, encode_ql_message, DecodeErrContext, EncodeQlConfig, MessageKind, QlMessage,
+use super::wire::{
+    decode_ql_message,
+    encode_ql_message,
+    DecodeErrContext,
+    EncodeQlConfig,
+    MessageKind,
+    QlMessage,
 };
 
 pub type PlatformFuture<'a> = Pin<Box<dyn Future<Output = Result<(), QlError>> + 'a>>;
@@ -28,7 +33,7 @@ pub enum QlError {
     Protocol,
     SendFailed,
     Timeout,
-    Decode(crate::envelope_wire::DecodeError),
+    Decode(super::wire::DecodeError),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -429,6 +434,7 @@ where
         Some(entry.deadline.saturating_duration_since(now))
     }
 }
+
 #[cfg(test)]
 mod test {
     use super::*;
