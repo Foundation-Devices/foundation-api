@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     marker::PhantomData,
-    pin::{pin, Pin},
+    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -21,9 +21,16 @@ pub struct TypedExecutorHandle {
 }
 
 pub struct Response<T> {
-    inner: ExecutorResponse,
-    platform: Arc<dyn RouterPlatform>,
+    inner: ResponseInner,
     _type: PhantomData<fn() -> T>,
+}
+
+enum ResponseInner {
+    Err(Option<RouterError>),
+    Ok {
+        response: ExecutorResponse,
+        platform: Arc<dyn RouterPlatform>,
+    },
 }
 
 impl<T> Future for Response<T>
@@ -33,12 +40,21 @@ where
     type Output = Result<T, RouterError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        pin!(&mut self.inner).poll(cx).map(|response| {
-            let response = response?;
-            let decrypted = self.platform.decrypt_payload(response.payload)?;
-            let message = T::try_from(decrypted)?;
-            Ok(message)
-        })
+        match &mut self.inner {
+            ResponseInner::Err(e) => {
+                let e = e.take();
+                let e = e.unwrap_or(RouterError::Send(crate::v2::QlError::Cancelled));
+                Poll::Ready(Err(e))
+            }
+            ResponseInner::Ok { response, platform } => {
+                Pin::new(response).poll(cx).map(|response| {
+                    let response = response?;
+                    let decrypted = platform.decrypt_payload(response.payload)?;
+                    let message = T::try_from(decrypted)?;
+                    Ok(message)
+                })
+            }
+        }
     }
 }
 
@@ -58,25 +74,32 @@ impl TypedExecutorHandle {
         M: RequestResponse,
     {
         let platform = self.platform.clone();
-        let handle = self.handle.clone();
         let payload = TypedPayload {
             message_id: M::ID,
             payload: message.into(),
         };
-        let encrypted = platform.encrypt_payload(payload.into(), recipient);
-        let inner = handle.request(
-            encrypted,
-            EncodeQlConfig {
-                signing_key: platform.signing_key(),
-                recipient,
-                valid_for,
-            },
-            request_config,
-            platform.signer(),
-        );
+        let inner = match platform.encrypt_payload_or_fail(recipient, payload.into()) {
+            Ok(encrypted) => {
+                let response = self.handle.request(
+                    encrypted,
+                    EncodeQlConfig {
+                        signing_key: platform.signing_key().clone(),
+                        recipient,
+                        valid_for,
+                    },
+                    request_config,
+                    platform.signer(),
+                );
+
+                ResponseInner::Ok {
+                    response,
+                    platform: self.platform.clone(),
+                }
+            }
+            Err(e) => ResponseInner::Err(Some(e)),
+        };
         Response {
             inner,
-            platform,
             _type: Default::default(),
         }
     }
@@ -96,11 +119,11 @@ impl TypedExecutorHandle {
             message_id: M::ID,
             payload: message.into(),
         };
-        let encrypted = platform.encrypt_payload(payload.into(), recipient);
+        let encrypted = platform.encrypt_payload_or_fail(recipient, payload.into())?;
         handle.send_event(
             encrypted,
             EncodeQlConfig {
-                signing_key: platform.signing_key(),
+                signing_key: platform.signing_key().clone(),
                 recipient,
                 valid_for,
             },

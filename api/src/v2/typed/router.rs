@@ -4,7 +4,7 @@ use bc_components::XID;
 use bc_envelope::Envelope;
 
 use super::{Event, QlCodec, RequestResponse, RouterError, RouterPlatform, TypedPayload};
-use crate::v2::{HandlerEvent, InboundEvent, InboundRequest, QlHeader, Responder};
+use crate::v2::{HandlerEvent, QlHeader, Responder};
 
 pub trait RequestHandler<M>
 where
@@ -50,10 +50,12 @@ where
     fn respond_inner(&mut self, response: R) -> Result<(), RouterError> {
         let responder = self.responder.take().unwrap();
         let payload = response.into();
-        let envelope = self.platform.encrypt_payload(payload, self.recipient);
+        let envelope = self
+            .platform
+            .encrypt_payload_or_fail(self.recipient, payload)?;
         responder.respond(
             envelope,
-            self.platform.signing_key(),
+            self.platform.signing_key().clone(),
             self.platform.response_valid_for(),
             self.platform.signer(),
         )?;
@@ -158,18 +160,6 @@ impl<S> Router<S> {
             .get(&message_id)
             .ok_or(RouterError::MissingHandler(message_id))?;
         handler(state, event, self.platform.clone())
-    }
-
-    pub fn handle_request(
-        &self,
-        state: &mut S,
-        request: InboundRequest,
-    ) -> Result<(), RouterError> {
-        self.handle(state, HandlerEvent::Request(request))
-    }
-
-    pub fn handle_event(&self, state: &mut S, event: InboundEvent) -> Result<(), RouterError> {
-        self.handle(state, HandlerEvent::Event(event))
     }
 }
 

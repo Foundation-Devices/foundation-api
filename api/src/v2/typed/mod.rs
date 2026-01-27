@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bc_components::{Signer, SigningPublicKey, XID};
+use bc_components::{EncapsulationPublicKey, Signer, SigningPublicKey, XID};
 use bc_envelope::Envelope;
 use dcbor::CBOR;
 
@@ -55,6 +55,7 @@ pub enum RouterError {
     Decode(dcbor::Error),
     MissingHandler(u64),
     Send(QlError),
+    UnknownRecipient(XID),
 }
 
 impl From<dcbor::Error> for RouterError {
@@ -71,14 +72,28 @@ impl From<QlError> for RouterError {
 
 pub trait RouterPlatform {
     fn decrypt_payload(&self, payload: Envelope) -> Result<CBOR, RouterError>;
-    fn encrypt_payload(&self, payload: CBOR, recipient: XID) -> Envelope;
-    fn signing_key(&self) -> SigningPublicKey;
+    fn lookup_recipient(&self, recipient: XID) -> Option<&EncapsulationPublicKey>;
+    fn signing_key(&self) -> &SigningPublicKey;
     fn response_valid_for(&self) -> Duration;
     fn signer(&self) -> &dyn Signer;
     fn handle_error(&self, e: RouterError);
+
+    fn encrypt_payload_or_fail(
+        &self,
+        recipient: XID,
+        payload: CBOR,
+    ) -> Result<Envelope, RouterError> {
+        let pubkey = self
+            .lookup_recipient(recipient)
+            .ok_or_else(|| RouterError::UnknownRecipient(recipient))?;
+        Ok(Envelope::new(payload).encrypt_to_recipient(pubkey))
+    }
 }
 
 pub use handle::TypedExecutorHandle;
 pub use router::{
     EventHandler, RequestHandler, Router, RouterBuilder, TypedRequest, TypedResponder,
 };
+
+#[cfg(test)]
+mod test;
