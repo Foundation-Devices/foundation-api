@@ -4,7 +4,17 @@ use bc_components::{Signer, SigningPublicKey, XID};
 use bc_envelope::Envelope;
 use dcbor::CBOR;
 
-use crate::v2::{HandlerEvent, InboundEvent, InboundRequest, QlError, QlHeader, Responder};
+use crate::v2::{
+    EncodeQlConfig,
+    ExecutorHandle,
+    HandlerEvent,
+    InboundEvent,
+    InboundRequest,
+    QlError,
+    QlHeader,
+    RequestConfig,
+    Responder,
+};
 
 pub trait QlCodec: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> + Sized {}
 
@@ -107,6 +117,83 @@ where
     platform: Arc<dyn RouterPlatform>,
     recipient: XID,
     default: fn() -> R,
+}
+
+#[derive(Clone)]
+pub struct TypedExecutorHandle {
+    handle: ExecutorHandle,
+    platform: Arc<dyn RouterPlatform>,
+}
+
+impl TypedExecutorHandle {
+    pub fn new(handle: ExecutorHandle, platform: Arc<dyn RouterPlatform>) -> Self {
+        Self { handle, platform }
+    }
+
+    pub fn handle(&self) -> &ExecutorHandle {
+        &self.handle
+    }
+
+    pub async fn request<M>(
+        &self,
+        message: M,
+        recipient: XID,
+        request_config: RequestConfig,
+        valid_for: Duration,
+    ) -> Result<M::Response, RouterError>
+    where
+        M: RequestResponse,
+    {
+        let payload = TypedPayload {
+            message_id: M::ID,
+            payload: message.into(),
+        };
+        let encrypted = self.platform.encrypt_payload(payload.into(), recipient)?;
+        let response = self
+            .handle
+            .request(
+                encrypted,
+                EncodeQlConfig {
+                    signing_key: self.platform.signing_key(),
+                    recipient,
+                    valid_for,
+                },
+                request_config,
+                self.platform.signer(),
+            )
+            .await?;
+        let decrypted = self.platform.decrypt_payload(response.payload)?;
+        let message = M::Response::try_from(decrypted)?;
+        Ok(message)
+    }
+
+    pub async fn send_event<M>(
+        &self,
+        message: M,
+        recipient: XID,
+        valid_for: Duration,
+    ) -> Result<(), RouterError>
+    where
+        M: Event,
+    {
+        let payload = TypedPayload {
+            message_id: M::ID,
+            payload: message.into(),
+        };
+        let encrypted = self.platform.encrypt_payload(payload.into(), recipient)?;
+        self.handle
+            .send_event(
+                encrypted,
+                EncodeQlConfig {
+                    signing_key: self.platform.signing_key(),
+                    recipient,
+                    valid_for,
+                },
+                self.platform.signer(),
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 impl<R> TypedResponder<R>

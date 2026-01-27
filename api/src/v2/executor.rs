@@ -135,6 +135,9 @@ enum ExecutorEvent {
         respond_to: oneshot::Sender<Result<QlMessage, QlError>>,
         config: RequestConfig,
     },
+    SendEvent {
+        bytes: Vec<u8>,
+    },
     SendResponse {
         bytes: Vec<u8>,
     },
@@ -163,29 +166,39 @@ impl ExecutorHandle {
         let bytes = encode_ql_message(MessageKind::Request, id, encode_config, payload, signer);
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(ExecutorEvent::SendRequest {
+            .send_blocking(ExecutorEvent::SendRequest {
                 id,
                 bytes,
                 respond_to: tx,
                 config: request_config,
             })
-            .await
             .map_err(|_| QlError::Cancelled)?;
         rx.await.map_err(|_| QlError::Cancelled)?
     }
 
-    pub async fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
+    pub async fn send_event(
+        &self,
+        payload: Envelope,
+        encode_config: EncodeQlConfig,
+        signer: &dyn Signer,
+    ) -> Result<(), QlError> {
+        let id = ARID::new();
+        let bytes = encode_ql_message(MessageKind::Event, id, encode_config, payload, signer);
+        self.tx
+            .send_blocking(ExecutorEvent::SendEvent { bytes })
+            .map_err(|_| QlError::Cancelled)
+    }
+
+    pub fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
         match decode_ql_message(&bytes) {
             Ok(message) => self
                 .tx
-                .send(ExecutorEvent::Incoming { message })
-                .await
+                .send_blocking(ExecutorEvent::Incoming { message })
                 .map_err(|_| QlError::Cancelled),
             Err(context) => {
                 let _ = self
                     .tx
-                    .send(ExecutorEvent::IncomingDecodeError { context })
-                    .await;
+                    .send_blocking(ExecutorEvent::IncomingDecodeError { context });
                 Ok(())
             }
         }
@@ -348,6 +361,9 @@ where
                             id: Some(id),
                             bytes,
                         });
+                    }
+                    ExecutorEvent::SendEvent { bytes } => {
+                        state.outbound.push_back(OutboundBytes { id: None, bytes });
                     }
                     ExecutorEvent::SendResponse { bytes } => {
                         state.outbound.push_back(OutboundBytes { id: None, bytes });
@@ -534,7 +550,7 @@ mod test {
                     response_encrypted,
                     response_signer,
                 );
-                handle.send_incoming(response_bytes).await.unwrap();
+                handle.send_incoming(response_bytes).unwrap();
 
                 let response = response_task.await.unwrap().unwrap();
                 assert_eq!(response.header.kind, MessageKind::Response);
@@ -631,7 +647,7 @@ mod test {
                     &signer,
                 );
 
-                handle.send_incoming(event_bytes).await.unwrap();
+                handle.send_incoming(event_bytes).unwrap();
 
                 let event = handler_stream.next().await.unwrap();
                 match event {
@@ -723,7 +739,7 @@ mod test {
                     response_signer,
                 );
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                handle.send_incoming(response_bytes).await.unwrap();
+                handle.send_incoming(response_bytes).unwrap();
 
                 let response = response_task.await.unwrap();
                 assert!(matches!(response, Err(QlError::Decode(_))));

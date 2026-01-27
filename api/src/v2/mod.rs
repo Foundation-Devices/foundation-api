@@ -24,6 +24,7 @@ pub use typed::{
     RouterHandler,
     RouterPlatform,
     TypedPayload,
+    TypedExecutorHandle,
     TypedRequest,
     TypedResponder,
 };
