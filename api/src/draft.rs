@@ -19,7 +19,7 @@ pub type PlatformFuture<'a> = Pin<Box<dyn Future<Output = Result<(), QlError>> +
 
 pub trait QlPlatform {
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_>;
-    fn sleep_ms(&self, ms: u64) -> PlatformFuture<'_>;
+    fn sleep(&self, duration: Duration) -> PlatformFuture<'_>;
 }
 
 #[derive(Debug)]
@@ -301,8 +301,8 @@ where
                 let recv_future = self.rx.recv();
                 futures_lite::pin!(recv_future);
 
-                let mut sleep_future = Self::next_timeout_sleep(&state)
-                    .map(|duration| self.platform.sleep_ms(duration.as_millis() as u64));
+                let mut sleep_future =
+                    Self::next_timeout_sleep(&state).map(|duration| self.platform.sleep(duration));
 
                 futures_lite::future::poll_fn(|cx| {
                     if let Some(in_flight) = state.in_flight.as_mut() {
@@ -451,9 +451,9 @@ mod test {
             Box::pin(async move { tx.send(message).await.map_err(|_| QlError::Cancelled) })
         }
 
-        fn sleep_ms(&self, ms: u64) -> PlatformFuture<'_> {
+        fn sleep(&self, duration: Duration) -> PlatformFuture<'_> {
             Box::pin(async move {
-                tokio::time::sleep(Duration::from_millis(ms)).await;
+                tokio::time::sleep(duration).await;
                 Ok(())
             })
         }
