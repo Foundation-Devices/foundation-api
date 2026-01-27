@@ -1,40 +1,18 @@
 use std::{sync::Arc, time::Duration};
 
 use async_channel::{Receiver, Sender};
-use bc_components::{
-    EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, Signer,
-    SigningPublicKey, XIDProvider, XID,
-};
+use bc_components::{EncapsulationPublicKey, Signer, SigningPublicKey, XID};
 use bc_envelope::Envelope;
-use bc_xid::XIDDocument;
 use dcbor::CBOR;
 
 use super::{
     Event, EventHandler, RequestHandler, RequestResponse, Router, RouterPlatform,
     TypedExecutorHandle, TypedRequest,
 };
-use crate::{Executor, ExecutorConfig, PlatformFuture, QlError, QlPlatform, RequestConfig};
-
-#[derive(Debug, Clone)]
-struct TestIdentity {
-    private_keys: PrivateKeys,
-    xid_document: XIDDocument,
-}
-
-impl TestIdentity {
-    fn generate() -> Self {
-        let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
-        let (encapsulation_private_key, encapsulation_public_key) =
-            EncapsulationScheme::MLKEM512.keypair();
-        let private_keys = PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
-        let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
-        let xid_document = XIDDocument::from(public_keys);
-        Self {
-            private_keys,
-            xid_document,
-        }
-    }
-}
+use crate::{
+    test_identity::TestIdentity, Executor, ExecutorConfig, PlatformFuture, QlError, QlPlatform,
+    RequestConfig,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Ping(u64);
@@ -123,16 +101,16 @@ impl QlPlatform for TestPlatform {
 
 struct TestRouterPlatform {
     identity: TestIdentity,
-    peer: XIDDocument,
+    peer: EncapsulationPublicKey,
 }
 
 impl TestRouterPlatform {
-    fn new(identity: TestIdentity, peer: XIDDocument) -> Self {
+    fn new(identity: TestIdentity, peer: EncapsulationPublicKey) -> Self {
         Self { identity, peer }
     }
 
     fn xid(&self) -> XID {
-        XIDProvider::xid(&self.identity.xid_document)
+        self.identity.xid
     }
 }
 
@@ -148,11 +126,11 @@ impl RouterPlatform for TestRouterPlatform {
     }
 
     fn lookup_recipient(&self, _recipient: XID) -> Option<&bc_components::EncapsulationPublicKey> {
-        self.peer.encryption_key()
+        Some(&self.peer)
     }
 
     fn signing_key(&self) -> &SigningPublicKey {
-        self.identity.xid_document.verification_key().unwrap()
+        &self.identity.signing_public_key
     }
 
     fn response_valid_for(&self) -> Duration {
@@ -230,11 +208,11 @@ async fn typed_round_trip() {
             let server_identity = TestIdentity::generate();
             let client_platform = Arc::new(TestRouterPlatform::new(
                 client_identity.clone(),
-                server_identity.xid_document.clone(),
+                server_identity.encapsulation_public_key.clone(),
             ));
             let server_platform = Arc::new(TestRouterPlatform::new(
                 server_identity.clone(),
-                client_identity.xid_document.clone(),
+                client_identity.encapsulation_public_key.clone(),
             ));
             let recipient = server_platform.xid();
 

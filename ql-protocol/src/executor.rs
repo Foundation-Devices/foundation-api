@@ -462,30 +462,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme};
-    use bc_xid::XIDDocument;
-
-    #[derive(Debug, Clone)]
-    struct TestIdentity {
-        private_keys: PrivateKeys,
-        xid_document: XIDDocument,
-    }
-
-    impl TestIdentity {
-        fn generate() -> Self {
-            let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
-            let (encapsulation_private_key, encapsulation_public_key) =
-                EncapsulationScheme::MLKEM512.keypair();
-            let private_keys =
-                PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
-            let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
-            let xid_document = XIDDocument::from(public_keys);
-            Self {
-                private_keys,
-                xid_document,
-            }
-        }
-    }
+    use crate::test_identity::TestIdentity;
 
     struct TestPlatform {
         tx: Sender<Vec<u8>>,
@@ -525,19 +502,12 @@ mod test {
 
                 let requester = TestIdentity::generate();
                 let responder = TestIdentity::generate();
-                let recipient_xid: XID = responder.xid_document.clone().into();
-                let signing_key = requester
-                    .xid_document
-                    .verification_key()
-                    .expect("missing signing key")
-                    .clone();
+                let recipient_xid = responder.xid;
+                let signing_key = requester.signing_public_key.clone();
                 let signer = requester.private_keys.clone();
                 let payload = Envelope::new("ping");
                 let encrypted_payload = payload.encrypt_to_recipient(
-                    responder
-                        .xid_document
-                        .encryption_key()
-                        .expect("missing encryption key"),
+                    &responder.encapsulation_public_key,
                 );
 
                 let response_task = tokio::task::spawn_local({
@@ -563,18 +533,11 @@ mod test {
                 assert_eq!(outbound_message.header.kind, MessageKind::Request);
                 let request_id = outbound_message.header.id;
 
-                let response_signing_key = responder
-                    .xid_document
-                    .verification_key()
-                    .expect("missing signing key")
-                    .clone();
+                let response_signing_key = responder.signing_public_key.clone();
                 let response_signer = responder.private_keys.clone();
                 let response_payload = Envelope::new("pong");
                 let response_encrypted = response_payload.encrypt_to_recipient(
-                    requester
-                        .xid_document
-                        .encryption_key()
-                        .expect("missing encryption key"),
+                    &requester.encapsulation_public_key,
                 );
                 let response_bytes = encode_ql_message(
                     MessageKind::Response,
@@ -609,19 +572,12 @@ mod test {
                 tokio::task::spawn_local(async move { core.run().await });
 
                 let requester = TestIdentity::generate();
-                let recipient_xid: XID = requester.xid_document.clone().into();
-                let signing_key = requester
-                    .xid_document
-                    .verification_key()
-                    .expect("missing signing key")
-                    .clone();
+                let recipient_xid = requester.xid;
+                let signing_key = requester.signing_public_key.clone();
                 let signer = requester.private_keys.clone();
                 let payload = Envelope::new("timeout");
                 let encrypted_payload = payload.encrypt_to_recipient(
-                    requester
-                        .xid_document
-                        .encryption_key()
-                        .expect("missing encryption key"),
+                    &requester.encapsulation_public_key,
                 );
                 let result = handle
                     .request(
@@ -657,19 +613,12 @@ mod test {
 
                 let sender = TestIdentity::generate();
                 let recipient = TestIdentity::generate();
-                let recipient_xid: XID = recipient.xid_document.clone().into();
-                let signing_key = sender
-                    .xid_document
-                    .verification_key()
-                    .expect("missing signing key")
-                    .clone();
+                let recipient_xid = recipient.xid;
+                let signing_key = sender.signing_public_key.clone();
                 let signer = sender.private_keys.clone();
                 let payload = Envelope::new("event");
                 let encrypted_payload = payload.encrypt_to_recipient(
-                    recipient
-                        .xid_document
-                        .encryption_key()
-                        .expect("missing encryption key"),
+                    &recipient.encapsulation_public_key,
                 );
                 let event_id = ARID::new();
                 let event_bytes = encode_ql_message(
@@ -712,19 +661,12 @@ mod test {
 
                 let requester = TestIdentity::generate();
                 let responder = TestIdentity::generate();
-                let recipient_xid: XID = responder.xid_document.clone().into();
-                let signing_key = requester
-                    .xid_document
-                    .verification_key()
-                    .expect("missing signing key")
-                    .clone();
+                let recipient_xid = responder.xid;
+                let signing_key = requester.signing_public_key.clone();
                 let signer = requester.private_keys.clone();
                 let payload = Envelope::new("ping");
                 let encrypted_payload = payload.encrypt_to_recipient(
-                    responder
-                        .xid_document
-                        .encryption_key()
-                        .expect("missing encryption key"),
+                    &responder.encapsulation_public_key,
                 );
 
                 let response_task = tokio::task::spawn_local({
@@ -751,18 +693,11 @@ mod test {
                 let outbound_message = decode_ql_message(&outbound).expect("decode outbound");
                 let request_id = outbound_message.header.id;
 
-                let response_signing_key = responder
-                    .xid_document
-                    .verification_key()
-                    .expect("missing signing key")
-                    .clone();
+                let response_signing_key = responder.signing_public_key.clone();
                 let response_signer = responder.private_keys.clone();
                 let response_payload = Envelope::new("pong");
                 let response_encrypted = response_payload.encrypt_to_recipient(
-                    requester
-                        .xid_document
-                        .encryption_key()
-                        .expect("missing encryption key"),
+                    &requester.encapsulation_public_key,
                 );
                 let response_bytes = encode_ql_message(
                     MessageKind::Response,

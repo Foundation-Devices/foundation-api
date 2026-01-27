@@ -220,51 +220,19 @@ impl From<MessageKind> for CBOR {
 
 #[cfg(test)]
 mod tests {
-    use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme};
-    use bc_xid::XIDDocument;
-
     use super::*;
-
-    #[derive(Debug, Clone)]
-    struct TestIdentity {
-        private_keys: PrivateKeys,
-        xid_document: XIDDocument,
-    }
-
-    impl TestIdentity {
-        fn generate() -> Self {
-            let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
-            let (encapsulation_private_key, encapsulation_public_key) =
-                EncapsulationScheme::MLKEM512.keypair();
-            let private_keys =
-                PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
-            let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
-            let xid_document = XIDDocument::from(public_keys);
-            Self {
-                private_keys,
-                xid_document,
-            }
-        }
-    }
+    use crate::test_identity::TestIdentity;
 
     #[test]
     fn round_trip() {
         let sender = TestIdentity::generate();
         let recipient = TestIdentity::generate();
-        let recipient_xid: XID = recipient.xid_document.clone().into();
-        let signing_key = sender
-            .xid_document
-            .verification_key()
-            .expect("missing signing public key")
-            .clone();
+        let recipient_xid = recipient.xid;
+        let signing_key = sender.signing_public_key.clone();
         let header_id = ARID::new();
 
         let payload = Envelope::new("secret");
-        let encryption_key = recipient
-            .xid_document
-            .encryption_key()
-            .expect("missing encryption key");
-        let encrypted_payload = payload.encrypt_to_recipient(encryption_key);
+        let encrypted_payload = payload.encrypt_to_recipient(&recipient.encapsulation_public_key);
 
         let signer = sender.private_keys.clone();
         let bytes = encode_ql_message(

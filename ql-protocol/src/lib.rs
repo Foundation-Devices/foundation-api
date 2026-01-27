@@ -2,6 +2,9 @@ pub mod executor;
 pub mod typed;
 pub mod wire;
 
+#[cfg(test)]
+mod test_identity;
+
 pub use executor::{
     Executor, ExecutorConfig, ExecutorHandle, HandlerEvent, HandlerStream, InboundEvent,
     InboundRequest, PlatformFuture, QlError, QlPlatform, RequestConfig, Responder,
