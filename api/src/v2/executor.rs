@@ -8,23 +8,18 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::{ARID, Signer, XID};
+use bc_components::{Signer, ARID, XID};
 use bc_envelope::Envelope;
 
 use super::wire::{
-    decode_ql_message,
-    encode_ql_message,
-    DecodeErrContext,
-    EncodeQlConfig,
-    MessageKind,
-    QlMessage,
+    decode_ql_message, encode_ql_message, DecodeErrContext, EncodeQlConfig, MessageKind, QlMessage,
 };
 
-pub type PlatformFuture<'a> = Pin<Box<dyn Future<Output = Result<(), QlError>> + 'a>>;
+pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 pub trait QlPlatform {
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_>;
-    fn sleep(&self, duration: Duration) -> PlatformFuture<'_>;
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
+    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
 }
 
 #[derive(Debug)]
@@ -220,7 +215,7 @@ struct OutboundBytes {
 
 struct InFlightWrite<'a> {
     id: Option<ARID>,
-    future: PlatformFuture<'a>,
+    future: PlatformFuture<'a, Result<(), QlError>>,
 }
 
 struct PendingEntry {
@@ -452,15 +447,14 @@ mod test {
     }
 
     impl QlPlatform for TestPlatform {
-        fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_> {
+        fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
             let tx = self.tx.clone();
             Box::pin(async move { tx.send(message).await.map_err(|_| QlError::Cancelled) })
         }
 
-        fn sleep(&self, duration: Duration) -> PlatformFuture<'_> {
+        fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
             Box::pin(async move {
                 tokio::time::sleep(duration).await;
-                Ok(())
             })
         }
     }
