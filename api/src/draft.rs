@@ -48,9 +48,20 @@ pub struct ExecutorConfig {
 }
 
 #[derive(Debug)]
-pub struct IncomingRequest {
+pub struct InboundRequest {
     pub message: QlMessage,
     pub respond_to: Responder,
+}
+
+#[derive(Debug)]
+pub struct InboundEvent {
+    pub message: QlMessage,
+}
+
+#[derive(Debug)]
+pub enum HandlerEvent {
+    Request(InboundRequest),
+    Event(InboundEvent),
 }
 
 #[derive(Debug, Clone)]
@@ -91,27 +102,18 @@ impl Responder {
 }
 
 #[derive(Debug)]
-pub struct IncomingRequestStream {
-    rx: Receiver<InboundRequest>,
+pub struct HandlerStream {
+    rx: Receiver<HandlerEvent>,
 }
 
-impl IncomingRequestStream {
-    pub async fn next(&mut self) -> Result<IncomingRequest, QlError> {
-        let request = self.rx.recv().await.map_err(|_| QlError::Cancelled)?;
-        let responder = Responder {
-            id: request.message.header.id,
-            recipient: request.message.header.sender_xid(),
-            tx: request.tx,
-        };
-        Ok(IncomingRequest {
-            message: request.message,
-            respond_to: responder,
-        })
+impl HandlerStream {
+    pub async fn next(&mut self) -> Result<HandlerEvent, QlError> {
+        self.rx.recv().await.map_err(|_| QlError::Cancelled)
     }
 }
 
-impl futures_lite::Stream for IncomingRequestStream {
-    type Item = Result<IncomingRequest, QlError>;
+impl futures_lite::Stream for HandlerStream {
+    type Item = Result<HandlerEvent, QlError>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -119,27 +121,11 @@ impl futures_lite::Stream for IncomingRequestStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         let rx = unsafe { self.as_mut().map_unchecked_mut(|s| &mut s.rx) };
         match rx.poll_next(cx) {
-            Poll::Ready(Some(request)) => {
-                let responder = Responder {
-                    id: request.message.header.id,
-                    recipient: request.message.header.sender_xid(),
-                    tx: request.tx,
-                };
-                Poll::Ready(Some(Ok(IncomingRequest {
-                    message: request.message,
-                    respond_to: responder,
-                })))
-            }
+            Poll::Ready(Some(event)) => Poll::Ready(Some(Ok(event))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
     }
-}
-
-#[derive(Debug)]
-struct InboundRequest {
-    message: QlMessage,
-    tx: Sender<ExecutorEvent>,
 }
 
 #[derive(Debug)]
@@ -212,7 +198,7 @@ pub struct Executor<P> {
     rx: Receiver<ExecutorEvent>,
     tx: WeakSender<ExecutorEvent>,
     config: ExecutorConfig,
-    incoming: Sender<InboundRequest>,
+    incoming: Sender<HandlerEvent>,
 }
 
 struct ExecutorState<'a> {
@@ -275,10 +261,7 @@ impl<P> Executor<P>
 where
     P: QlPlatform,
 {
-    pub fn new(
-        platform: P,
-        config: ExecutorConfig,
-    ) -> (Self, ExecutorHandle, IncomingRequestStream) {
+    pub fn new(platform: P, config: ExecutorConfig) -> (Self, ExecutorHandle, HandlerStream) {
         let (tx, rx) = async_channel::unbounded();
         let (incoming_tx, incoming_rx) = async_channel::unbounded();
         (
@@ -290,7 +273,7 @@ where
                 incoming: incoming_tx,
             },
             ExecutorHandle { tx },
-            IncomingRequestStream { rx: incoming_rx },
+            HandlerStream { rx: incoming_rx },
         )
     }
 
@@ -378,9 +361,25 @@ where
                         }
                         MessageKind::Request => {
                             let Some(tx) = self.tx.upgrade() else { return };
-                            let _ = self.incoming.send(InboundRequest { message, tx }).await;
+                            let responder = Responder {
+                                id: message.header.id,
+                                recipient: message.header.sender_xid(),
+                                tx,
+                            };
+                            let _ = self
+                                .incoming
+                                .send(HandlerEvent::Request(InboundRequest {
+                                    message,
+                                    respond_to: responder,
+                                }))
+                                .await;
                         }
-                        MessageKind::Event => {}
+                        MessageKind::Event => {
+                            let _ = self
+                                .incoming
+                                .send(HandlerEvent::Event(InboundEvent { message }))
+                                .await;
+                        }
                     },
                     ExecutorEvent::IncomingDecodeError { context } => {
                         let Some(header) = context.header else {
@@ -588,6 +587,61 @@ mod test {
                     .await;
 
                 assert!(matches!(result, Err(QlError::Timeout)));
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn event_is_forwarded() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (platform, _outbound_rx) = TestPlatform::new();
+                let config = ExecutorConfig {
+                    default_timeout: Duration::from_secs(1),
+                };
+                let (mut core, handle, mut handler_stream) = Executor::new(platform, config);
+                tokio::task::spawn_local(async move { core.run().await });
+
+                let sender = QuantumLinkIdentity::generate();
+                let recipient = QuantumLinkIdentity::generate();
+                let recipient_xid: XID = recipient.xid_document.clone().into();
+                let signing_key = sender
+                    .xid_document
+                    .verification_key()
+                    .expect("missing signing key")
+                    .clone();
+                let signer = sender.private_keys.clone().expect("missing signer");
+                let payload = Envelope::new("event");
+                let encrypted_payload = payload.encrypt_to_recipient(
+                    recipient
+                        .xid_document
+                        .encryption_key()
+                        .expect("missing encryption key"),
+                );
+                let event_id = ARID::new();
+                let event_bytes = encode_ql_message(
+                    MessageKind::Event,
+                    event_id,
+                    EncodeQlConfig {
+                        signing_key,
+                        recipient: recipient_xid,
+                        valid_for: Duration::from_secs(60),
+                    },
+                    encrypted_payload,
+                    &signer,
+                );
+
+                handle.send_incoming(event_bytes).await.unwrap();
+
+                let event = handler_stream.next().await.unwrap();
+                match event {
+                    HandlerEvent::Event(event) => {
+                        assert_eq!(event.message.header.kind, MessageKind::Event);
+                        assert_eq!(event.message.header.id, event_id);
+                    }
+                    HandlerEvent::Request(_) => panic!("unexpected request"),
+                }
             })
             .await;
     }
