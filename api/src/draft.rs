@@ -591,4 +591,90 @@ mod test {
             })
             .await;
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn expired_response_returns_error() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (platform, outbound_rx) = TestPlatform::new();
+                let config = ExecutorConfig {
+                    default_timeout: Duration::from_secs(2),
+                };
+                let (mut core, handle, _incoming) = Executor::new(platform, config);
+                tokio::task::spawn_local(async move { core.run().await });
+
+                let requester = QuantumLinkIdentity::generate();
+                let responder = QuantumLinkIdentity::generate();
+                let recipient_xid: XID = responder.xid_document.clone().into();
+                let signing_key = requester
+                    .xid_document
+                    .verification_key()
+                    .expect("missing signing key")
+                    .clone();
+                let signer = requester.private_keys.clone().expect("missing signer");
+                let payload = Envelope::new("ping");
+                let encrypted_payload = payload.encrypt_to_recipient(
+                    responder
+                        .xid_document
+                        .encryption_key()
+                        .expect("missing encryption key"),
+                );
+
+                let response_task = tokio::task::spawn_local({
+                    let handle = handle.clone();
+                    async move {
+                        handle
+                            .request(
+                                encrypted_payload,
+                                EncodeQlConfig {
+                                    signing_key,
+                                    recipient: recipient_xid,
+                                    valid_for: Duration::from_secs(60),
+                                },
+                                &signer,
+                                RequestConfig {
+                                    timeout: Some(Duration::from_secs(3)),
+                                },
+                            )
+                            .await
+                    }
+                });
+
+                let outbound = outbound_rx.recv().await.expect("no outbound request");
+                let outbound_message = decode_ql_message(&outbound).expect("decode outbound");
+                let request_id = outbound_message.header.id;
+
+                let response_signing_key = responder
+                    .xid_document
+                    .verification_key()
+                    .expect("missing signing key")
+                    .clone();
+                let response_signer = responder.private_keys.as_ref().expect("missing signer");
+                let response_payload = Envelope::new("pong");
+                let response_encrypted = response_payload.encrypt_to_recipient(
+                    requester
+                        .xid_document
+                        .encryption_key()
+                        .expect("missing encryption key"),
+                );
+                let response_bytes = encode_ql_message(
+                    MessageKind::Response,
+                    request_id,
+                    EncodeQlConfig {
+                        signing_key: response_signing_key,
+                        recipient: outbound_message.header.sender_xid(),
+                        valid_for: Duration::from_secs(0),
+                    },
+                    response_encrypted,
+                    response_signer,
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                handle.send_incoming(response_bytes).await.unwrap();
+
+                let response = response_task.await.unwrap();
+                assert!(matches!(response, Err(QlError::Decode(_))));
+            })
+            .await;
+    }
 }
