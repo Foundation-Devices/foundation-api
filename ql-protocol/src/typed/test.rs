@@ -1,7 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
 use async_channel::{Receiver, Sender};
-use bc_components::{Signer, SigningPublicKey, XIDProvider, XID};
+use bc_components::{
+    EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, Signer,
+    SigningPublicKey, XIDProvider, XID,
+};
 use bc_envelope::Envelope;
 use bc_xid::XIDDocument;
 use dcbor::CBOR;
@@ -10,10 +13,28 @@ use super::{
     Event, EventHandler, RequestHandler, RequestResponse, Router, RouterPlatform,
     TypedExecutorHandle, TypedRequest,
 };
-use crate::{
-    quantum_link::QuantumLinkIdentity,
-    v2::{Executor, ExecutorConfig, PlatformFuture, QlError, QlPlatform, RequestConfig},
-};
+use crate::{Executor, ExecutorConfig, PlatformFuture, QlError, QlPlatform, RequestConfig};
+
+#[derive(Debug, Clone)]
+struct TestIdentity {
+    private_keys: PrivateKeys,
+    xid_document: XIDDocument,
+}
+
+impl TestIdentity {
+    fn generate() -> Self {
+        let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
+        let (encapsulation_private_key, encapsulation_public_key) =
+            EncapsulationScheme::MLKEM512.keypair();
+        let private_keys = PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
+        let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
+        let xid_document = XIDDocument::from(public_keys);
+        Self {
+            private_keys,
+            xid_document,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Ping(u64);
@@ -101,12 +122,12 @@ impl QlPlatform for TestPlatform {
 }
 
 struct TestRouterPlatform {
-    identity: QuantumLinkIdentity,
+    identity: TestIdentity,
     peer: XIDDocument,
 }
 
 impl TestRouterPlatform {
-    fn new(identity: QuantumLinkIdentity, peer: XIDDocument) -> Self {
+    fn new(identity: TestIdentity, peer: XIDDocument) -> Self {
         Self { identity, peer }
     }
 
@@ -117,7 +138,7 @@ impl TestRouterPlatform {
 
 impl RouterPlatform for TestRouterPlatform {
     fn decrypt_payload(&self, payload: Envelope) -> Result<CBOR, super::RouterError> {
-        let private_keys = self.identity.private_keys.as_ref().unwrap();
+        let private_keys = &self.identity.private_keys;
         let decrypted = payload
             .decrypt_to_recipient(private_keys)
             .map_err(|error| super::RouterError::Decode(error.into()))?;
@@ -139,7 +160,7 @@ impl RouterPlatform for TestRouterPlatform {
     }
 
     fn signer(&self) -> &dyn Signer {
-        self.identity.private_keys.as_ref().expect("missing signer")
+        &self.identity.private_keys
     }
 
     fn handle_error(&self, _e: super::RouterError) {}
@@ -205,8 +226,8 @@ async fn typed_round_trip() {
                 }
             });
 
-            let client_identity = QuantumLinkIdentity::generate();
-            let server_identity = QuantumLinkIdentity::generate();
+            let client_identity = TestIdentity::generate();
+            let server_identity = TestIdentity::generate();
             let client_platform = Arc::new(TestRouterPlatform::new(
                 client_identity.clone(),
                 server_identity.xid_document.clone(),

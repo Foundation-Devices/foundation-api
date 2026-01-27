@@ -10,9 +10,7 @@ use std::{
 use bc_components::XID;
 
 use super::{Event, RequestResponse, RouterError, RouterPlatform, TypedPayload};
-use crate::v2::{
-    executor::ExecutorResponse, EncodeQlConfig, ExecutorHandle, QlCodec, RequestConfig,
-};
+use crate::{executor::ExecutorResponse, EncodeQlConfig, ExecutorHandle, QlCodec, RequestConfig};
 
 #[derive(Clone)]
 pub struct TypedExecutorHandle {
@@ -43,7 +41,7 @@ where
         match &mut self.inner {
             ResponseInner::Err(e) => {
                 let e = e.take();
-                let e = e.unwrap_or(RouterError::Send(crate::v2::QlError::Cancelled));
+                let e = e.unwrap_or(RouterError::Send(crate::QlError::Cancelled));
                 Poll::Ready(Err(e))
             }
             ResponseInner::Ok { response, platform } => {

@@ -19,13 +19,9 @@ bc-components = { workspace = true }
 dcbor = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
-oneshot = { version = "0.1.11" }
-async-channel = { version = "2.5" }
-futures-lite = { version = "2.5" }
 
 [dev-dependencies]
 insta = { workspace = true }
-tokio = { version = "1", features = ["rt", "time", "macros"] }
 
 [features]
 keyos = ["rkyv"]

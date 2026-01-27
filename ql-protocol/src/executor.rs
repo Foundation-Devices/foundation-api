@@ -462,7 +462,30 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::quantum_link::QuantumLinkIdentity;
+    use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme};
+    use bc_xid::XIDDocument;
+
+    #[derive(Debug, Clone)]
+    struct TestIdentity {
+        private_keys: PrivateKeys,
+        xid_document: XIDDocument,
+    }
+
+    impl TestIdentity {
+        fn generate() -> Self {
+            let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
+            let (encapsulation_private_key, encapsulation_public_key) =
+                EncapsulationScheme::MLKEM512.keypair();
+            let private_keys =
+                PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
+            let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
+            let xid_document = XIDDocument::from(public_keys);
+            Self {
+                private_keys,
+                xid_document,
+            }
+        }
+    }
 
     struct TestPlatform {
         tx: Sender<Vec<u8>>,
@@ -500,15 +523,15 @@ mod test {
                 let (mut core, handle, _incoming) = Executor::new(platform, config);
                 tokio::task::spawn_local(async move { core.run().await });
 
-                let requester = QuantumLinkIdentity::generate();
-                let responder = QuantumLinkIdentity::generate();
+                let requester = TestIdentity::generate();
+                let responder = TestIdentity::generate();
                 let recipient_xid: XID = responder.xid_document.clone().into();
                 let signing_key = requester
                     .xid_document
                     .verification_key()
                     .expect("missing signing key")
                     .clone();
-                let signer = requester.private_keys.clone().expect("missing signer");
+                let signer = requester.private_keys.clone();
                 let payload = Envelope::new("ping");
                 let encrypted_payload = payload.encrypt_to_recipient(
                     responder
@@ -545,7 +568,7 @@ mod test {
                     .verification_key()
                     .expect("missing signing key")
                     .clone();
-                let response_signer = responder.private_keys.as_ref().expect("missing signer");
+                let response_signer = responder.private_keys.clone();
                 let response_payload = Envelope::new("pong");
                 let response_encrypted = response_payload.encrypt_to_recipient(
                     requester
@@ -562,7 +585,7 @@ mod test {
                         valid_for: Duration::from_secs(60),
                     },
                     response_encrypted,
-                    response_signer,
+                    &response_signer,
                 );
                 handle.send_incoming(response_bytes).unwrap();
 
@@ -585,14 +608,14 @@ mod test {
                 let (mut core, handle, _incoming) = Executor::new(platform, config);
                 tokio::task::spawn_local(async move { core.run().await });
 
-                let requester = QuantumLinkIdentity::generate();
+                let requester = TestIdentity::generate();
                 let recipient_xid: XID = requester.xid_document.clone().into();
                 let signing_key = requester
                     .xid_document
                     .verification_key()
                     .expect("missing signing key")
                     .clone();
-                let signer = requester.private_keys.clone().expect("missing signer");
+                let signer = requester.private_keys.clone();
                 let payload = Envelope::new("timeout");
                 let encrypted_payload = payload.encrypt_to_recipient(
                     requester
@@ -632,15 +655,15 @@ mod test {
                 let (mut core, handle, mut handler_stream) = Executor::new(platform, config);
                 tokio::task::spawn_local(async move { core.run().await });
 
-                let sender = QuantumLinkIdentity::generate();
-                let recipient = QuantumLinkIdentity::generate();
+                let sender = TestIdentity::generate();
+                let recipient = TestIdentity::generate();
                 let recipient_xid: XID = recipient.xid_document.clone().into();
                 let signing_key = sender
                     .xid_document
                     .verification_key()
                     .expect("missing signing key")
                     .clone();
-                let signer = sender.private_keys.clone().expect("missing signer");
+                let signer = sender.private_keys.clone();
                 let payload = Envelope::new("event");
                 let encrypted_payload = payload.encrypt_to_recipient(
                     recipient
@@ -687,15 +710,15 @@ mod test {
                 let (mut core, handle, _incoming) = Executor::new(platform, config);
                 tokio::task::spawn_local(async move { core.run().await });
 
-                let requester = QuantumLinkIdentity::generate();
-                let responder = QuantumLinkIdentity::generate();
+                let requester = TestIdentity::generate();
+                let responder = TestIdentity::generate();
                 let recipient_xid: XID = responder.xid_document.clone().into();
                 let signing_key = requester
                     .xid_document
                     .verification_key()
                     .expect("missing signing key")
                     .clone();
-                let signer = requester.private_keys.clone().expect("missing signer");
+                let signer = requester.private_keys.clone();
                 let payload = Envelope::new("ping");
                 let encrypted_payload = payload.encrypt_to_recipient(
                     responder
@@ -733,7 +756,7 @@ mod test {
                     .verification_key()
                     .expect("missing signing key")
                     .clone();
-                let response_signer = responder.private_keys.as_ref().expect("missing signer");
+                let response_signer = responder.private_keys.clone();
                 let response_payload = Envelope::new("pong");
                 let response_encrypted = response_payload.encrypt_to_recipient(
                     requester
@@ -750,7 +773,7 @@ mod test {
                         valid_for: Duration::from_secs(0),
                     },
                     response_encrypted,
-                    response_signer,
+                    &response_signer,
                 );
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 handle.send_incoming(response_bytes).unwrap();

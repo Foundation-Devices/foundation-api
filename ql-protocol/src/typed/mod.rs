@@ -4,7 +4,7 @@ use bc_components::{EncapsulationPublicKey, Signer, SigningPublicKey, XID};
 use bc_envelope::Envelope;
 use dcbor::CBOR;
 
-use crate::v2::QlError;
+use crate::QlError;
 
 pub mod handle;
 pub mod router;

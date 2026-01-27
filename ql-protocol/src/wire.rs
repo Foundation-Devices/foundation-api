@@ -220,13 +220,37 @@ impl From<MessageKind> for CBOR {
 
 #[cfg(test)]
 mod tests {
+    use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme};
+    use bc_xid::XIDDocument;
+
     use super::*;
-    use crate::api::quantum_link::QuantumLinkIdentity;
+
+    #[derive(Debug, Clone)]
+    struct TestIdentity {
+        private_keys: PrivateKeys,
+        xid_document: XIDDocument,
+    }
+
+    impl TestIdentity {
+        fn generate() -> Self {
+            let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
+            let (encapsulation_private_key, encapsulation_public_key) =
+                EncapsulationScheme::MLKEM512.keypair();
+            let private_keys =
+                PrivateKeys::with_keys(signing_private_key, encapsulation_private_key);
+            let public_keys = PublicKeys::new(signing_public_key, encapsulation_public_key);
+            let xid_document = XIDDocument::from(public_keys);
+            Self {
+                private_keys,
+                xid_document,
+            }
+        }
+    }
 
     #[test]
     fn round_trip() {
-        let sender = QuantumLinkIdentity::generate();
-        let recipient = QuantumLinkIdentity::generate();
+        let sender = TestIdentity::generate();
+        let recipient = TestIdentity::generate();
         let recipient_xid: XID = recipient.xid_document.clone().into();
         let signing_key = sender
             .xid_document
@@ -242,7 +266,7 @@ mod tests {
             .expect("missing encryption key");
         let encrypted_payload = payload.encrypt_to_recipient(encryption_key);
 
-        let signer = sender.private_keys.as_ref().expect("missing signer");
+        let signer = sender.private_keys.clone();
         let bytes = encode_ql_message(
             MessageKind::Request,
             header_id,
@@ -252,7 +276,7 @@ mod tests {
                 valid_for: Duration::from_secs(60),
             },
             encrypted_payload.clone(),
-            signer,
+            &signer,
         );
         let decoded = decode_ql_message(&bytes).expect("decode failed");
 

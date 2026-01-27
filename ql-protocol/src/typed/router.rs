@@ -4,7 +4,7 @@ use bc_components::XID;
 use bc_envelope::Envelope;
 
 use super::{Event, QlCodec, RequestResponse, RouterError, RouterPlatform, TypedPayload};
-use crate::v2::{HandlerEvent, QlHeader, Responder};
+use crate::{HandlerEvent, QlHeader, Responder};
 
 pub trait RequestHandler<M>
 where

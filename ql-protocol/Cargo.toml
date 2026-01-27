@@ -1,0 +1,19 @@
+[package]
+name = "ql-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Quantum Link protocol primitives."
+license = "Proprietary"
+
+[dependencies]
+async-channel = { version = "2.5" }
+bc-components = { version = "0.28.0", default-features = false, features = ["pqcrypto"] }
+bc-envelope = { version = "0.37.0", default-features = false }
+bc-xid = { version = "0.16.0", default-features = false }
+dcbor = { version = "0.23.3" }
+futures-lite = { version = "2.5" }
+oneshot = { version = "0.1.11" }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "time", "macros"] }

@@ -934,21 +934,17 @@ dependencies = [
 name = "foundation-api"
 version = "2.0.0"
 dependencies = [
- "async-channel",
  "bc-components",
  "bc-envelope",
  "bc-xid",
  "chrono",
  "dcbor",
  "flutter_rust_bridge",
- "futures-lite",
  "gstp",
  "insta",
- "oneshot",
  "quantum-link-macros",
  "rkyv",
  "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -1945,6 +1941,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
+]
+
+[[package]]
+name = "ql-protocol"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "bc-components",
+ "bc-envelope",
+ "bc-xid",
+ "dcbor",
+ "futures-lite",
+ "oneshot",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
