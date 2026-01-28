@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_channel::{Receiver, Sender};
@@ -16,8 +16,8 @@ use super::{
     RequestResponse, Router,
 };
 use crate::{
-    test_identity::TestIdentity, Executor, ExecutorConfig, ExecutorError, ExecutorPlatform,
-    PlatformFuture, RequestConfig,
+    encode_ql_message, EncodeQlConfig, Executor, ExecutorConfig, ExecutorError, ExecutorPlatform,
+    MessageKind, PlatformFuture, QlError, QlHeader, RequestConfig, test_identity::TestIdentity,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,6 +305,87 @@ async fn typed_round_trip() {
                 .await
                 .expect("response");
             assert_eq!(response, Pong(42));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reset_cancels_pending_request() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (client_platform, client_outbound) = TestPlatform::new();
+            let config = ExecutorConfig {
+                default_timeout: Duration::from_secs(1),
+            };
+            let (mut client_core, client_handle, _client_incoming) =
+                Executor::new(client_platform, config);
+            tokio::task::spawn_local(async move { client_core.run().await });
+
+            let client_identity = TestIdentity::generate();
+            let server_identity = TestIdentity::generate();
+            let client_platform = Arc::new(TestRouterPlatform::new(
+                client_identity.clone(),
+                server_identity.encapsulation_public_key.clone(),
+                server_identity.signing_public_key.clone(),
+            ));
+            let recipient = XID::new(&server_identity.signing_public_key);
+            let client_typed = QlExecutorHandle::new(client_handle.clone(), client_platform);
+
+            let request_task = tokio::task::spawn_local(async move {
+                client_typed
+                    .request(Ping(123), recipient, RequestConfig::default())
+                    .await
+            });
+
+            let _ = client_outbound.recv().await.expect("outbound request");
+
+            let id = bc_components::ARID::new();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            let valid_until = now.saturating_add(60);
+            let (session_key, kem_ct) = client_identity
+                .encapsulation_public_key
+                .encapsulate_new_shared_secret();
+            let header = QlHeader {
+                kind: MessageKind::SessionReset,
+                id,
+                sender: server_identity.xid,
+                recipient: client_identity.xid,
+                valid_until,
+                kem_ct: Some(kem_ct.clone()),
+                signature: None,
+            };
+            let aad = header.aad_data();
+            let payload_bytes = CBOR::null().to_cbor_data();
+            let encrypted = session_key.encrypt(
+                payload_bytes,
+                Some(aad),
+                None::<bc_components::Nonce>,
+            );
+            let reset_bytes = encode_ql_message(
+                MessageKind::SessionReset,
+                id,
+                EncodeQlConfig {
+                    sender: server_identity.xid,
+                    recipient: client_identity.xid,
+                    valid_until,
+                    kem_ct: Some(kem_ct),
+                    sign_header: true,
+                },
+                encrypted,
+                &server_identity.private_keys,
+            );
+
+            client_handle.send_incoming(reset_bytes).unwrap();
+
+            let result = request_task.await.unwrap();
+            match result {
+                Err(QlError::Send(ExecutorError::SessionReset)) => {}
+                other => panic!("unexpected result: {other:?}"),
+            }
         })
         .await;
 }
