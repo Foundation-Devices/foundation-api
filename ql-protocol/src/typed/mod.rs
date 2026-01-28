@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use bc_components::{
-    EncapsulationCiphertext, EncapsulationPrivateKey, EncapsulationPublicKey,
-    EncryptedMessage, Signer, SigningPublicKey, SymmetricKey, XID,
+    EncapsulationCiphertext, EncapsulationPrivateKey, EncapsulationPublicKey, EncryptedMessage,
+    Signer, SigningPublicKey, SymmetricKey, XID,
 };
 use dcbor::CBOR;
 
@@ -109,8 +109,10 @@ pub trait RouterPlatform {
         if payload.aad() != header_aad {
             return Err(RouterError::InvalidPayload);
         }
-        let plaintext = key.decrypt(payload).map_err(|_| RouterError::InvalidPayload)?;
-        CBOR::try_from_data(plaintext).map_err(RouterError::Decode)
+        let plaintext = key
+            .decrypt(payload)
+            .map_err(|_| RouterError::InvalidPayload)?;
+        Ok(CBOR::try_from_data(plaintext)?)
     }
 }
 

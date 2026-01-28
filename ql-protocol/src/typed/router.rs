@@ -1,9 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use bc_components::{Verifier, XID};
+use dcbor::CBOR;
 
 use super::{Event, QlCodec, RequestResponse, RouterError, RouterPlatform, TypedPayload};
-use crate::{EncodeQlConfig, HandlerEvent, MessageKind, QlHeader, QlHeaderUnsigned, Responder};
+use crate::{
+    EncodeQlConfig, ExecutorHandle, HandlerEvent, MessageKind, QlHeader, QlHeaderUnsigned,
+    Responder,
+};
 
 pub trait RequestHandler<M>
 where
@@ -103,6 +107,10 @@ enum RouterEvent {
         payload: TypedPayload,
         responder: Responder,
     },
+    SessionReset {
+        #[allow(dead_code)]
+        header: QlHeader,
+    },
 }
 
 impl RouterEvent {
@@ -110,6 +118,7 @@ impl RouterEvent {
         match self {
             RouterEvent::Event { payload, .. } => payload.message_id,
             RouterEvent::Request { payload, .. } => payload.message_id,
+            RouterEvent::SessionReset { .. } => 0,
         }
     }
 }
@@ -118,48 +127,49 @@ pub struct RouterBuilder<S> {
     handlers: HashMap<u64, RouterHandler<S>>,
 }
 
-impl<S> Default for RouterBuilder<S> {
-    fn default() -> Self {
+impl<S> RouterBuilder<S> {
+    pub fn new() -> Self {
         Self {
             handlers: HashMap::new(),
         }
     }
-}
 
-impl<S> RouterBuilder<S> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn add_request_handler<M>(mut self) -> Self
+    pub fn add_request_handler<M>(self) -> Self
     where
         M: RequestResponse,
         S: RequestHandler<M>,
     {
-        self.handlers.insert(M::ID, handle_request::<M, S>);
-        self
+        self.add_handler(M::ID, handle_request::<M, S>)
     }
 
-    pub fn add_event_handler<M>(mut self) -> Self
+    pub fn add_event_handler<M>(self) -> Self
     where
         M: Event,
         S: EventHandler<M>,
     {
-        self.handlers.insert(M::ID, handle_event::<M, S>);
-        self
+        self.add_handler(M::ID, handle_event::<M, S>)
     }
 
-    pub fn build(self, platform: Arc<dyn RouterPlatform>) -> Router<S> {
+    pub fn build(self, platform: Arc<dyn RouterPlatform>, executor: ExecutorHandle) -> Router<S> {
         Router {
             platform,
             handlers: self.handlers,
+            executor,
         }
+    }
+
+    fn add_handler(mut self, id: u64, handler: RouterHandler<S>) -> Self {
+        if self.handlers.insert(id, handler).is_some() {
+            panic!("duplicate message_id {id}")
+        }
+        self
     }
 }
 
 pub struct Router<S> {
     platform: Arc<dyn RouterPlatform>,
     handlers: HashMap<u64, RouterHandler<S>>,
+    executor: ExecutorHandle,
 }
 
 impl<S> Router<S> {
@@ -168,13 +178,76 @@ impl<S> Router<S> {
     }
 
     pub fn handle(&self, state: &mut S, event: HandlerEvent) -> Result<(), RouterError> {
-        let event = decrypt_event(event, self.platform.as_ref())?;
-        let message_id = event.message_id();
-        let handler = self
-            .handlers
-            .get(&message_id)
-            .ok_or(RouterError::MissingHandler(message_id))?;
-        handler(state, event, self.platform.clone())
+        let sender = match &event {
+            HandlerEvent::Request(request) => &request.message.header,
+            HandlerEvent::Event(event) => &event.message.header,
+        };
+        let sender = sender.sender;
+        let event = match decrypt_event(event, self.platform.as_ref()) {
+            Ok(event) => event,
+            Err(error) => {
+                if matches!(
+                    error,
+                    RouterError::MissingSession(_) | RouterError::InvalidPayload
+                ) {
+                    let _ = self.send_session_reset(sender);
+                }
+                return Err(error);
+            }
+        };
+        match event {
+            RouterEvent::SessionReset { .. } => Ok(()),
+            RouterEvent::Event { .. } | RouterEvent::Request { .. } => {
+                let message_id = event.message_id();
+                let handler = self
+                    .handlers
+                    .get(&message_id)
+                    .ok_or(RouterError::MissingHandler(message_id))?;
+                handler(state, event, self.platform.clone())
+            }
+        }
+    }
+}
+
+impl<S> Router<S> {
+    fn send_session_reset(&self, recipient: XID) -> Result<(), RouterError> {
+        let executor = self.executor.clone();
+        let recipient_key = self
+            .platform
+            .lookup_recipient(recipient)
+            .ok_or(RouterError::UnknownRecipient(recipient))?;
+        let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
+        self.platform.store_session(recipient, session_key.clone());
+
+        let now = now_secs();
+        let valid_until = now.saturating_add(self.platform.message_expiration().as_secs());
+        let id = bc_components::ARID::new();
+        let header_unsigned = QlHeaderUnsigned {
+            kind: MessageKind::SessionReset,
+            id,
+            sender: self.platform.sender_xid(),
+            recipient,
+            valid_until,
+            kem_ct: Some(kem_ct.clone()),
+        };
+        let aad = header_unsigned.aad_data();
+        let payload_bytes = CBOR::null().to_cbor_data();
+        let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
+        let config = EncodeQlConfig {
+            sender: self.platform.sender_xid(),
+            recipient,
+            valid_until,
+            kem_ct: Some(kem_ct),
+            sign_header: true,
+        };
+        executor.send_message(
+            MessageKind::SessionReset,
+            id,
+            encrypted,
+            config,
+            self.platform.signer(),
+        );
+        Ok(())
     }
 }
 
@@ -194,6 +267,7 @@ where
             responder,
         } => (header, payload, responder),
         RouterEvent::Event { .. } => unreachable!("expected request event"),
+        RouterEvent::SessionReset { .. } => unreachable!("expected request event"),
     };
     let message = M::try_from(payload.payload)?;
     let responder = TypedResponder {
@@ -218,6 +292,7 @@ where
     let payload = match event {
         RouterEvent::Event { payload, .. } => payload,
         RouterEvent::Request { .. } => unreachable!("expected event"),
+        RouterEvent::SessionReset { .. } => unreachable!("expected event"),
     };
     let message = M::try_from(payload.payload)?;
     state.handle(message);
@@ -241,12 +316,25 @@ fn decrypt_event(
         }
         HandlerEvent::Event(event) => {
             verify_header(platform, &event.message.header)?;
-            let payload =
-                extract_typed_payload(platform, &event.message.header, event.message.payload)?;
-            Ok(RouterEvent::Event {
-                header: event.message.header,
-                payload,
-            })
+            match event.message.header.kind {
+                MessageKind::SessionReset => {
+                    extract_reset_payload(platform, &event.message.header, event.message.payload)?;
+                    Ok(RouterEvent::SessionReset {
+                        header: event.message.header,
+                    })
+                }
+                _ => {
+                    let payload = extract_typed_payload(
+                        platform,
+                        &event.message.header,
+                        event.message.payload,
+                    )?;
+                    Ok(RouterEvent::Event {
+                        header: event.message.header,
+                        payload,
+                    })
+                }
+            }
         }
     }
 }
@@ -285,6 +373,21 @@ fn extract_typed_payload(
     };
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
     TypedPayload::try_from(decrypted).map_err(RouterError::Decode)
+}
+
+fn extract_reset_payload(
+    platform: &dyn RouterPlatform,
+    header: &QlHeader,
+    payload: bc_components::EncryptedMessage,
+) -> Result<(), RouterError> {
+    let kem_ct = header.kem_ct.as_ref().ok_or(RouterError::InvalidPayload)?;
+    let session_key = platform.decapsulate_shared_secret(kem_ct)?;
+    platform.store_session(header.sender, session_key.clone());
+    let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
+    if !decrypted.is_null() {
+        return Err(RouterError::InvalidPayload);
+    }
+    Ok(())
 }
 
 fn now_secs() -> u64 {

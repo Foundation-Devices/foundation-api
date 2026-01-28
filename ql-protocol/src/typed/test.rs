@@ -1,12 +1,16 @@
-use std::{collections::HashMap, sync::{Arc, Mutex}, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use async_channel::{Receiver, Sender};
-use oneshot;
 use bc_components::{
     Decrypter, EncapsulationPrivateKey, EncapsulationPublicKey, Signer, SigningPublicKey,
     SymmetricKey, XID,
 };
 use dcbor::CBOR;
+use oneshot;
 
 use super::{
     Event, EventHandler, RequestHandler, RequestResponse, Router, RouterPlatform,
@@ -247,7 +251,7 @@ async fn typed_round_trip() {
             let router = Router::builder()
                 .add_request_handler::<Ping>()
                 .add_event_handler::<Notice>()
-                .build(server_platform.clone());
+                .build(server_platform.clone(), server_handle.clone());
 
             let (event_tx, event_rx) = oneshot::channel();
             let mut state = TestState {

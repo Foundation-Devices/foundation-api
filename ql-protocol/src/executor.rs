@@ -201,6 +201,20 @@ impl ExecutorHandle {
             .unwrap();
     }
 
+    pub fn send_message(
+        &self,
+        kind: MessageKind,
+        id: ARID,
+        payload: EncryptedMessage,
+        encode_config: EncodeQlConfig,
+        signer: &dyn Signer,
+    ) {
+        let tx = self.tx.clone();
+        let bytes = encode_ql_message(kind, id, encode_config, payload, signer);
+        tx.send_blocking(ExecutorEvent::SendEvent { bytes })
+            .unwrap();
+    }
+
     pub fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
         match decode_ql_message(&bytes) {
             Ok(message) => self
@@ -401,7 +415,7 @@ where
                                 }))
                                 .await;
                         }
-                        MessageKind::Event => {
+                        MessageKind::Event | MessageKind::SessionReset => {
                             let _ = self
                                 .incoming
                                 .send(HandlerEvent::Event(InboundEvent { message }))
@@ -459,9 +473,11 @@ where
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use bc_components::{Nonce, SymmetricKey};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    use bc_components::{Nonce, SymmetricKey};
+
+    use super::*;
     use crate::test_identity::TestIdentity;
 
     struct TestPlatform {
@@ -497,11 +513,7 @@ mod test {
 
     fn encrypt_payload(data: &str) -> EncryptedMessage {
         let key = SymmetricKey::new();
-        key.encrypt(
-            data.as_bytes(),
-            None::<Vec<u8>>,
-            None::<Nonce>,
-        )
+        key.encrypt(data.as_bytes(), None::<Vec<u8>>, None::<Nonce>)
     }
 
     fn encode_config(sender: XID, recipient: XID, valid_until: u64) -> EncodeQlConfig {
@@ -630,11 +642,7 @@ mod test {
                 let event_bytes = encode_ql_message(
                     MessageKind::Event,
                     event_id,
-                    encode_config(
-                        sender.xid,
-                        recipient_xid,
-                        now_secs().saturating_add(60),
-                    ),
+                    encode_config(sender.xid, recipient_xid, now_secs().saturating_add(60)),
                     payload,
                     &sender.private_keys,
                 );
@@ -699,11 +707,7 @@ mod test {
                 let response_bytes = encode_ql_message(
                     MessageKind::Response,
                     request_id,
-                    encode_config(
-                        responder.xid,
-                        outbound_message.header.sender,
-                        0,
-                    ),
+                    encode_config(responder.xid, outbound_message.header.sender, 0),
                     response_payload,
                     &responder.private_keys,
                 );
