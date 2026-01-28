@@ -151,12 +151,6 @@ pub struct RuntimeConfig {
     pub default_timeout: Duration,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ReplyToken {
-    pub id: ARID,
-    pub recipient: XID,
-}
-
 #[derive(Debug, Clone)]
 pub struct DecryptedMessage {
     pub header: QlHeader,
@@ -215,14 +209,7 @@ impl Responder {
                 kind: MessageKind::Nack,
             })
             .map_err(|_| RuntimeError::Cancelled)
-    }
-
-    pub fn token(&self) -> ReplyToken {
-        ReplyToken {
-            id: self.id,
-            recipient: self.recipient,
-        }
-    }
+e   }
 }
 
 #[derive(Debug)]

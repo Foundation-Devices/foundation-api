@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     runtime::{HandlerEvent, Responder, RuntimeError},
-    wire::{Nack, QlPayload},
+    wire::Nack,
     Event, QlCodec, RequestResponse,
 };
 
@@ -80,17 +80,7 @@ pub enum RouterError {
     Runtime(#[from] RuntimeError),
 }
 
-type RouterHandler<S> = fn(&mut S, RouterEvent) -> Result<(), RouterError>;
-
-enum RouterEvent {
-    Event {
-        payload: QlPayload,
-    },
-    Request {
-        payload: QlPayload,
-        responder: Responder,
-    },
-}
+type RouterHandler<S> = fn(&mut S, HandlerEvent) -> Result<(), RouterError>;
 
 pub struct RouterBuilder<S> {
     handlers: HashMap<u64, RouterHandler<S>>,
@@ -156,13 +146,7 @@ impl<S> Router<S> {
                         return Ok(());
                     }
                 };
-                handler(
-                    &mut self.state,
-                    RouterEvent::Request {
-                        payload: request.message.payload,
-                        responder: request.respond_to,
-                    },
-                )
+                handler(&mut self.state, HandlerEvent::Request(request))
             }
             HandlerEvent::Event(event) => {
                 let message_id = event.message.payload.message_id;
@@ -170,25 +154,20 @@ impl<S> Router<S> {
                     .handlers
                     .get(&message_id)
                     .ok_or(RouterError::MissingHandler(message_id))?;
-                handler(
-                    &mut self.state,
-                    RouterEvent::Event {
-                        payload: event.message.payload,
-                    },
-                )
+                handler(&mut self.state, HandlerEvent::Event(event))
             }
         }
     }
 }
 
-fn handle_request<M, S>(state: &mut S, event: RouterEvent) -> Result<(), RouterError>
+fn handle_request<M, S>(state: &mut S, event: HandlerEvent) -> Result<(), RouterError>
 where
     M: RequestResponse,
     S: RequestHandler<M>,
 {
     let (payload, responder) = match event {
-        RouterEvent::Request { payload, responder } => (payload, responder),
-        RouterEvent::Event { .. } => unreachable!("expected request"),
+        HandlerEvent::Request(request) => (request.message.payload, request.respond_to),
+        HandlerEvent::Event(_) => unreachable!("expected request"),
     };
     let message = match M::try_from(payload.payload) {
         Ok(message) => message,
@@ -205,14 +184,14 @@ where
     Ok(())
 }
 
-fn handle_event<M, S>(state: &mut S, event: RouterEvent) -> Result<(), RouterError>
+fn handle_event<M, S>(state: &mut S, event: HandlerEvent) -> Result<(), RouterError>
 where
     M: Event,
     S: EventHandler<M>,
 {
     let payload = match event {
-        RouterEvent::Event { payload } => payload,
-        RouterEvent::Request { .. } => unreachable!("expected event"),
+        HandlerEvent::Event(event) => event.message.payload,
+        HandlerEvent::Request(_) => unreachable!("expected event"),
     };
     let message = M::try_from(payload.payload)?;
     state.handle(message);
