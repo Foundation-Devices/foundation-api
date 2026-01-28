@@ -1,10 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bc_components::XID;
-use bc_envelope::Envelope;
+use bc_components::{Verifier, XID};
 
 use super::{Event, QlCodec, RequestResponse, RouterError, RouterPlatform, TypedPayload};
-use crate::{HandlerEvent, QlHeader, Responder};
+use crate::{EncodeQlConfig, HandlerEvent, MessageKind, QlHeader, QlHeaderUnsigned, Responder};
 
 pub trait RequestHandler<M>
 where
@@ -50,15 +49,31 @@ where
     fn respond_inner(&mut self, response: R) -> Result<(), RouterError> {
         let responder = self.responder.take().unwrap();
         let payload = response.into();
-        let envelope = self
+        let session_key = self
             .platform
-            .encrypt_payload_or_fail(self.recipient, payload)?;
-        responder.respond(
-            envelope,
-            self.platform.signing_key().clone(),
-            self.platform.message_expiration(),
-            self.platform.signer(),
-        )?;
+            .session_for_peer(self.recipient)
+            .ok_or(RouterError::MissingSession(self.recipient))?;
+        let now = now_secs();
+        let valid_until = now.saturating_add(self.platform.message_expiration().as_secs());
+        let header_unsigned = QlHeaderUnsigned {
+            kind: MessageKind::Response,
+            id: responder.id(),
+            sender: self.platform.sender_xid(),
+            recipient: self.recipient,
+            valid_until,
+            kem_ct: None,
+        };
+        let aad = header_unsigned.aad_data();
+        let payload_bytes = dcbor::CBOR::from(payload).to_cbor_data();
+        let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
+        let config = EncodeQlConfig {
+            sender: self.platform.sender_xid(),
+            recipient: self.recipient,
+            valid_until,
+            kem_ct: None,
+            sign_header: false,
+        };
+        responder.respond(encrypted, config, self.platform.signer())?;
         Ok(())
     }
 }
@@ -184,7 +199,7 @@ where
     let responder = TypedResponder {
         responder: Some(responder),
         platform,
-        recipient: header.sender_xid(),
+        recipient: header.sender,
         default: S::default_response,
     };
     state.handle(TypedRequest { message, responder });
@@ -215,7 +230,9 @@ fn decrypt_event(
 ) -> Result<RouterEvent, RouterError> {
     match event {
         HandlerEvent::Request(request) => {
-            let payload = extract_typed_payload(platform, request.message.payload)?;
+            verify_header(platform, &request.message.header)?;
+            let payload =
+                extract_typed_payload(platform, &request.message.header, request.message.payload)?;
             Ok(RouterEvent::Request {
                 header: request.message.header,
                 payload,
@@ -223,7 +240,9 @@ fn decrypt_event(
             })
         }
         HandlerEvent::Event(event) => {
-            let payload = extract_typed_payload(platform, event.message.payload)?;
+            verify_header(platform, &event.message.header)?;
+            let payload =
+                extract_typed_payload(platform, &event.message.header, event.message.payload)?;
             Ok(RouterEvent::Event {
                 header: event.message.header,
                 payload,
@@ -232,10 +251,47 @@ fn decrypt_event(
     }
 }
 
+fn verify_header(platform: &dyn RouterPlatform, header: &QlHeader) -> Result<(), RouterError> {
+    if header.kem_ct.is_none() {
+        return Ok(());
+    }
+    let signature = header
+        .signature
+        .as_ref()
+        .ok_or(RouterError::InvalidSignature)?;
+    let signing_key = platform
+        .lookup_signing_key(header.sender)
+        .ok_or(RouterError::UnknownSender(header.sender))?;
+    if signing_key.verify(signature, &header.unsigned().aad_data()) {
+        Ok(())
+    } else {
+        Err(RouterError::InvalidSignature)
+    }
+}
+
 fn extract_typed_payload(
     platform: &dyn RouterPlatform,
-    payload: Envelope,
+    header: &QlHeader,
+    payload: bc_components::EncryptedMessage,
 ) -> Result<TypedPayload, RouterError> {
-    let decrypted = platform.decrypt_payload(payload)?;
+    let session_key = if let Some(kem_ct) = &header.kem_ct {
+        let key = platform.decapsulate_shared_secret(kem_ct)?;
+        platform.store_session(header.sender, key.clone());
+        key
+    } else {
+        platform
+            .session_for_peer(header.sender)
+            .ok_or(RouterError::MissingSession(header.sender))?
+    };
+    let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
     TypedPayload::try_from(decrypted).map_err(RouterError::Decode)
+}
+
+fn now_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }

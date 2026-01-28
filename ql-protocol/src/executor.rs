@@ -8,8 +8,7 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::{Signer, SigningPublicKey, ARID, XID};
-use bc_envelope::Envelope;
+use bc_components::{EncryptedMessage, Signer, ARID, XID};
 
 use super::wire::{
     decode_ql_message, encode_ql_message, DecodeErrContext, EncodeQlConfig, MessageKind, QlMessage,
@@ -76,21 +75,20 @@ impl Responder {
         self.id
     }
 
+    pub fn recipient(&self) -> XID {
+        self.recipient
+    }
+
     pub fn respond(
         self,
-        payload: Envelope,
-        signing_key: SigningPublicKey,
-        valid_for: Duration,
+        payload: EncryptedMessage,
+        encode_config: EncodeQlConfig,
         signer: &dyn Signer,
     ) -> Result<(), QlError> {
         let bytes = encode_ql_message(
             MessageKind::Response,
             self.id,
-            EncodeQlConfig {
-                signing_key,
-                recipient: self.recipient,
-                valid_for,
-            },
+            encode_config,
             payload,
             signer,
         );
@@ -171,12 +169,12 @@ impl std::future::Future for ExecutorResponse {
 impl ExecutorHandle {
     pub fn request(
         &self,
-        payload: Envelope,
+        id: ARID,
+        payload: EncryptedMessage,
         encode_config: EncodeQlConfig,
         request_config: RequestConfig,
         signer: &dyn Signer,
     ) -> ExecutorResponse {
-        let id = ARID::new();
         let bytes = encode_ql_message(MessageKind::Request, id, encode_config, payload, signer);
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -192,12 +190,12 @@ impl ExecutorHandle {
 
     pub fn send_event(
         &self,
-        payload: Envelope,
+        id: ARID,
+        payload: EncryptedMessage,
         encode_config: EncodeQlConfig,
         signer: &dyn Signer,
     ) {
         let tx = self.tx.clone();
-        let id = ARID::new();
         let bytes = encode_ql_message(MessageKind::Event, id, encode_config, payload, signer);
         tx.send_blocking(ExecutorEvent::SendEvent { bytes })
             .unwrap();
@@ -392,7 +390,7 @@ where
                             let Some(tx) = self.tx.upgrade() else { return };
                             let responder = Responder {
                                 id: message.header.id,
-                                recipient: message.header.sender_xid(),
+                                recipient: message.header.sender,
                                 tx,
                             };
                             let _ = self
@@ -462,6 +460,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use bc_components::{Nonce, SymmetricKey};
+    use std::time::{SystemTime, UNIX_EPOCH};
     use crate::test_identity::TestIdentity;
 
     struct TestPlatform {
@@ -488,6 +488,32 @@ mod test {
         }
     }
 
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    }
+
+    fn encrypt_payload(data: &str) -> EncryptedMessage {
+        let key = SymmetricKey::new();
+        key.encrypt(
+            data.as_bytes(),
+            None::<Vec<u8>>,
+            None::<Nonce>,
+        )
+    }
+
+    fn encode_config(sender: XID, recipient: XID, valid_until: u64) -> EncodeQlConfig {
+        EncodeQlConfig {
+            sender,
+            recipient,
+            valid_until,
+            kem_ct: None,
+            sign_header: false,
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn request_response_round_trip() {
         let local = tokio::task::LocalSet::new();
@@ -503,24 +529,20 @@ mod test {
                 let requester = TestIdentity::generate();
                 let responder = TestIdentity::generate();
                 let recipient_xid = responder.xid;
-                let signing_key = requester.signing_public_key.clone();
-                let signer = requester.private_keys.clone();
-                let payload = Envelope::new("ping");
-                let encrypted_payload = payload.encrypt_to_recipient(
-                    &responder.encapsulation_public_key,
-                );
+                let valid_until = now_secs().saturating_add(60);
+                let payload = encrypt_payload("ping");
+                let request_id = ARID::new();
 
                 let response_task = tokio::task::spawn_local({
                     let handle = handle.clone();
+                    let signer = requester.private_keys.clone();
+                    let config = encode_config(requester.xid, recipient_xid, valid_until);
                     async move {
                         handle
                             .request(
-                                encrypted_payload,
-                                EncodeQlConfig {
-                                    signing_key,
-                                    recipient: recipient_xid,
-                                    valid_for: Duration::from_secs(60),
-                                },
+                                request_id,
+                                payload,
+                                config,
                                 RequestConfig::default(),
                                 &signer,
                             )
@@ -533,22 +555,17 @@ mod test {
                 assert_eq!(outbound_message.header.kind, MessageKind::Request);
                 let request_id = outbound_message.header.id;
 
-                let response_signing_key = responder.signing_public_key.clone();
-                let response_signer = responder.private_keys.clone();
-                let response_payload = Envelope::new("pong");
-                let response_encrypted = response_payload.encrypt_to_recipient(
-                    &requester.encapsulation_public_key,
-                );
+                let response_payload = encrypt_payload("pong");
                 let response_bytes = encode_ql_message(
                     MessageKind::Response,
                     request_id,
-                    EncodeQlConfig {
-                        signing_key: response_signing_key,
-                        recipient: outbound_message.header.sender_xid(),
-                        valid_for: Duration::from_secs(60),
-                    },
-                    response_encrypted,
-                    &response_signer,
+                    encode_config(
+                        responder.xid,
+                        outbound_message.header.sender,
+                        now_secs().saturating_add(60),
+                    ),
+                    response_payload,
+                    &responder.private_keys,
                 );
                 handle.send_incoming(response_bytes).unwrap();
 
@@ -573,24 +590,18 @@ mod test {
 
                 let requester = TestIdentity::generate();
                 let recipient_xid = requester.xid;
-                let signing_key = requester.signing_public_key.clone();
-                let signer = requester.private_keys.clone();
-                let payload = Envelope::new("timeout");
-                let encrypted_payload = payload.encrypt_to_recipient(
-                    &requester.encapsulation_public_key,
-                );
+                let valid_until = now_secs().saturating_add(60);
+                let payload = encrypt_payload("timeout");
+                let request_id = ARID::new();
                 let result = handle
                     .request(
-                        encrypted_payload,
-                        EncodeQlConfig {
-                            signing_key,
-                            recipient: recipient_xid,
-                            valid_for: Duration::from_secs(60),
-                        },
+                        request_id,
+                        payload,
+                        encode_config(requester.xid, recipient_xid, valid_until),
                         RequestConfig {
                             timeout: Some(Duration::from_millis(1)),
                         },
-                        &signer,
+                        &requester.private_keys,
                     )
                     .await;
 
@@ -614,23 +625,18 @@ mod test {
                 let sender = TestIdentity::generate();
                 let recipient = TestIdentity::generate();
                 let recipient_xid = recipient.xid;
-                let signing_key = sender.signing_public_key.clone();
-                let signer = sender.private_keys.clone();
-                let payload = Envelope::new("event");
-                let encrypted_payload = payload.encrypt_to_recipient(
-                    &recipient.encapsulation_public_key,
-                );
                 let event_id = ARID::new();
+                let payload = encrypt_payload("event");
                 let event_bytes = encode_ql_message(
                     MessageKind::Event,
                     event_id,
-                    EncodeQlConfig {
-                        signing_key,
-                        recipient: recipient_xid,
-                        valid_for: Duration::from_secs(60),
-                    },
-                    encrypted_payload,
-                    &signer,
+                    encode_config(
+                        sender.xid,
+                        recipient_xid,
+                        now_secs().saturating_add(60),
+                    ),
+                    payload,
+                    &sender.private_keys,
                 );
 
                 handle.send_incoming(event_bytes).unwrap();
@@ -662,24 +668,20 @@ mod test {
                 let requester = TestIdentity::generate();
                 let responder = TestIdentity::generate();
                 let recipient_xid = responder.xid;
-                let signing_key = requester.signing_public_key.clone();
-                let signer = requester.private_keys.clone();
-                let payload = Envelope::new("ping");
-                let encrypted_payload = payload.encrypt_to_recipient(
-                    &responder.encapsulation_public_key,
-                );
+                let valid_until = now_secs().saturating_add(60);
+                let payload = encrypt_payload("ping");
+                let request_id = ARID::new();
 
                 let response_task = tokio::task::spawn_local({
                     let handle = handle.clone();
+                    let signer = requester.private_keys.clone();
+                    let config = encode_config(requester.xid, recipient_xid, valid_until);
                     async move {
                         handle
                             .request(
-                                encrypted_payload,
-                                EncodeQlConfig {
-                                    signing_key,
-                                    recipient: recipient_xid,
-                                    valid_for: Duration::from_secs(60),
-                                },
+                                request_id,
+                                payload,
+                                config,
                                 RequestConfig {
                                     timeout: Some(Duration::from_secs(3)),
                                 },
@@ -693,22 +695,17 @@ mod test {
                 let outbound_message = decode_ql_message(&outbound).expect("decode outbound");
                 let request_id = outbound_message.header.id;
 
-                let response_signing_key = responder.signing_public_key.clone();
-                let response_signer = responder.private_keys.clone();
-                let response_payload = Envelope::new("pong");
-                let response_encrypted = response_payload.encrypt_to_recipient(
-                    &requester.encapsulation_public_key,
-                );
+                let response_payload = encrypt_payload("pong");
                 let response_bytes = encode_ql_message(
                     MessageKind::Response,
                     request_id,
-                    EncodeQlConfig {
-                        signing_key: response_signing_key,
-                        recipient: outbound_message.header.sender_xid(),
-                        valid_for: Duration::from_secs(0),
-                    },
-                    response_encrypted,
-                    &response_signer,
+                    encode_config(
+                        responder.xid,
+                        outbound_message.header.sender,
+                        0,
+                    ),
+                    response_payload,
+                    &responder.private_keys,
                 );
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 handle.send_incoming(response_bytes).unwrap();

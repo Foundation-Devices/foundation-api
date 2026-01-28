@@ -1,7 +1,9 @@
 use std::time::Duration;
 
-use bc_components::{EncapsulationPublicKey, Signer, SigningPublicKey, XID};
-use bc_envelope::Envelope;
+use bc_components::{
+    EncapsulationCiphertext, EncapsulationPrivateKey, EncapsulationPublicKey,
+    EncryptedMessage, Signer, SigningPublicKey, SymmetricKey, XID,
+};
 use dcbor::CBOR;
 
 use crate::QlError;
@@ -53,9 +55,13 @@ impl TryFrom<CBOR> for TypedPayload {
 #[derive(Debug)]
 pub enum RouterError {
     Decode(dcbor::Error),
+    InvalidPayload,
+    InvalidSignature,
     MissingHandler(u64),
+    MissingSession(XID),
     Send(QlError),
     UnknownRecipient(XID),
+    UnknownSender(XID),
 }
 
 impl From<dcbor::Error> for RouterError {
@@ -71,22 +77,40 @@ impl From<QlError> for RouterError {
 }
 
 pub trait RouterPlatform {
-    fn decrypt_payload(&self, payload: Envelope) -> Result<CBOR, RouterError>;
     fn lookup_recipient(&self, recipient: XID) -> Option<&EncapsulationPublicKey>;
+    fn lookup_signing_key(&self, sender: XID) -> Option<&SigningPublicKey>;
+    fn session_for_peer(&self, peer: XID) -> Option<SymmetricKey>;
+    fn store_session(&self, peer: XID, key: SymmetricKey);
+    fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
     fn signing_key(&self) -> &SigningPublicKey;
     fn message_expiration(&self) -> Duration;
     fn signer(&self) -> &dyn Signer;
     fn handle_error(&self, e: RouterError);
 
-    fn encrypt_payload_or_fail(
+    fn sender_xid(&self) -> XID {
+        XID::new(self.signing_key())
+    }
+
+    fn decapsulate_shared_secret(
         &self,
-        recipient: XID,
-        payload: CBOR,
-    ) -> Result<Envelope, RouterError> {
-        let pubkey = self
-            .lookup_recipient(recipient)
-            .ok_or_else(|| RouterError::UnknownRecipient(recipient))?;
-        Ok(Envelope::new(payload).encrypt_to_recipient(pubkey))
+        ciphertext: &EncapsulationCiphertext,
+    ) -> Result<SymmetricKey, RouterError> {
+        self.encapsulation_private_key()
+            .decapsulate_shared_secret(ciphertext)
+            .map_err(|_| RouterError::InvalidPayload)
+    }
+
+    fn decrypt_message(
+        &self,
+        key: &SymmetricKey,
+        header_aad: &[u8],
+        payload: &EncryptedMessage,
+    ) -> Result<CBOR, RouterError> {
+        if payload.aad() != header_aad {
+            return Err(RouterError::InvalidPayload);
+        }
+        let plaintext = key.decrypt(payload).map_err(|_| RouterError::InvalidPayload)?;
+        CBOR::try_from_data(plaintext).map_err(RouterError::Decode)
     }
 }
 

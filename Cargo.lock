@@ -1949,7 +1949,6 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "bc-components",
- "bc-envelope",
  "dcbor",
  "futures-lite",
  "oneshot",

@@ -10,11 +10,6 @@ async-channel = { version = "2.5" }
 bc-components = { version = "0.28.0", default-features = false, features = [
   "pqcrypto",
 ] }
-bc-envelope = { version = "0.37.0", default-features = false, features = [
-  "encrypt",
-  "recipient",
-  "signature",
-] }
 dcbor = { version = "0.23.3" }
 futures-lite = { version = "2.5" }
 oneshot = { version = "0.1.11" }

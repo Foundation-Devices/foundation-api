@@ -1,8 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::{Arc, Mutex}, time::Duration};
 
 use async_channel::{Receiver, Sender};
-use bc_components::{EncapsulationPublicKey, Signer, SigningPublicKey, XID};
-use bc_envelope::Envelope;
+use oneshot;
+use bc_components::{
+    Decrypter, EncapsulationPrivateKey, EncapsulationPublicKey, Signer, SigningPublicKey,
+    SymmetricKey, XID,
+};
 use dcbor::CBOR;
 
 use super::{
@@ -102,11 +105,22 @@ impl QlPlatform for TestPlatform {
 struct TestRouterPlatform {
     identity: TestIdentity,
     peer: EncapsulationPublicKey,
+    peer_signing_key: SigningPublicKey,
+    sessions: Mutex<HashMap<XID, SymmetricKey>>,
 }
 
 impl TestRouterPlatform {
-    fn new(identity: TestIdentity, peer: EncapsulationPublicKey) -> Self {
-        Self { identity, peer }
+    fn new(
+        identity: TestIdentity,
+        peer: EncapsulationPublicKey,
+        peer_signing_key: SigningPublicKey,
+    ) -> Self {
+        Self {
+            identity,
+            peer,
+            peer_signing_key,
+            sessions: Mutex::new(HashMap::new()),
+        }
     }
 
     fn xid(&self) -> XID {
@@ -115,18 +129,30 @@ impl TestRouterPlatform {
 }
 
 impl RouterPlatform for TestRouterPlatform {
-    fn decrypt_payload(&self, payload: Envelope) -> Result<CBOR, super::RouterError> {
-        let private_keys = &self.identity.private_keys;
-        let decrypted = payload
-            .decrypt_to_recipient(private_keys)
-            .map_err(|error| super::RouterError::Decode(error.into()))?;
-        decrypted
-            .as_leaf()
-            .ok_or_else(|| super::RouterError::Decode(dcbor::Error::msg("expected leaf payload")))
+    fn lookup_recipient(&self, _recipient: XID) -> Option<&EncapsulationPublicKey> {
+        Some(&self.peer)
     }
 
-    fn lookup_recipient(&self, _recipient: XID) -> Option<&bc_components::EncapsulationPublicKey> {
-        Some(&self.peer)
+    fn lookup_signing_key(&self, sender: XID) -> Option<&SigningPublicKey> {
+        if sender == XID::new(&self.peer_signing_key) {
+            Some(&self.peer_signing_key)
+        } else {
+            None
+        }
+    }
+
+    fn session_for_peer(&self, peer: XID) -> Option<SymmetricKey> {
+        self.sessions.lock().ok()?.get(&peer).cloned()
+    }
+
+    fn store_session(&self, peer: XID, key: SymmetricKey) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.insert(peer, key);
+        }
+    }
+
+    fn encapsulation_private_key(&self) -> EncapsulationPrivateKey {
+        self.identity.private_keys.encapsulation_private_key()
     }
 
     fn signing_key(&self) -> &SigningPublicKey {
@@ -209,10 +235,12 @@ async fn typed_round_trip() {
             let client_platform = Arc::new(TestRouterPlatform::new(
                 client_identity.clone(),
                 server_identity.encapsulation_public_key.clone(),
+                server_identity.signing_public_key.clone(),
             ));
             let server_platform = Arc::new(TestRouterPlatform::new(
                 server_identity.clone(),
                 client_identity.encapsulation_public_key.clone(),
+                client_identity.signing_public_key.clone(),
             ));
             let recipient = server_platform.xid();
 
