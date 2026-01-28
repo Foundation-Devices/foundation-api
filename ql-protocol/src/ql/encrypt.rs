@@ -21,28 +21,18 @@ pub(crate) fn encrypt_payload_for_recipient(
         None => create_session(peer)?,
     };
     let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
-    let header_unsigned = QlHeader {
+    Ok(encrypt_payload_with_header(
         kind,
-        id: message_id,
-        sender: platform.sender_xid(),
+        message_id,
+        platform.sender_xid(),
         recipient,
         valid_until,
-        kem_ct: kem_ct.clone(),
-        signature: None,
-    };
-    let aad = header_unsigned.aad_data();
-    let payload_bytes = payload.to_cbor_data();
-    let encrypted = session_key.encrypt(
-        payload_bytes,
-        Some(aad.clone()),
-        None::<bc_components::Nonce>,
-    );
-    let signature = sign_header(platform.signer(), &aad, should_sign_header);
-    let header = QlHeader {
-        signature,
-        ..header_unsigned
-    };
-    Ok((header, encrypted))
+        kem_ct,
+        should_sign_header,
+        platform.signer(),
+        &session_key,
+        payload,
+    ))
 }
 
 pub(crate) fn encrypt_response(
@@ -54,26 +44,25 @@ pub(crate) fn encrypt_response(
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let session_key = peer.session().ok_or(QlError::MissingSession(recipient))?;
     let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
-    let header_unsigned = QlHeader {
-        kind: MessageKind::Response,
-        id: message_id,
-        sender: platform.sender_xid(),
+    Ok(encrypt_payload_with_header(
+        MessageKind::Response,
+        message_id,
+        platform.sender_xid(),
         recipient,
         valid_until,
-        kem_ct: None,
-        signature: None,
-    };
-    let aad = header_unsigned.aad_data();
-    let payload_bytes = payload.to_cbor_data();
-    let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-    Ok((header_unsigned, encrypted))
+        None,
+        false,
+        platform.signer(),
+        &session_key,
+        payload,
+    ))
 }
 
 pub(crate) fn verify_header(platform: &dyn QlPlatform, header: &QlHeader) -> Result<(), QlError> {
     ensure_not_expired(header)?;
     if header.kem_ct.is_none() {
         return Ok(());
-    };
+    }
     let signature = header.signature.as_ref().ok_or(QlError::InvalidSignature)?;
     let peer = platform.lookup_peer_or_fail(header.sender)?;
     let signing_key = peer.signing_pub_key();
@@ -135,6 +124,42 @@ fn sign_header(
     }
 }
 
+fn encrypt_payload_with_header(
+    kind: MessageKind,
+    message_id: ARID,
+    sender: XID,
+    recipient: XID,
+    valid_until: u64,
+    kem_ct: Option<EncapsulationCiphertext>,
+    should_sign_header: bool,
+    signer: &dyn Signer,
+    session_key: &SymmetricKey,
+    payload: CBOR,
+) -> (QlHeader, EncryptedMessage) {
+    let header_unsigned = QlHeader {
+        kind,
+        id: message_id,
+        sender,
+        recipient,
+        valid_until,
+        kem_ct: kem_ct.clone(),
+        signature: None,
+    };
+    let aad = header_unsigned.aad_data();
+    let payload_bytes = payload.to_cbor_data();
+    let encrypted = session_key.encrypt(
+        payload_bytes,
+        Some(aad.clone()),
+        None::<bc_components::Nonce>,
+    );
+    let signature = sign_header(signer, &aad, should_sign_header);
+    let header = QlHeader {
+        signature,
+        ..header_unsigned
+    };
+    (header, encrypted)
+}
+
 fn create_session(
     peer: &dyn QlPeer,
 ) -> Result<(SymmetricKey, Option<EncapsulationCiphertext>, bool), QlError> {
@@ -148,4 +173,65 @@ fn create_session(
 pub(crate) fn encrypt_test_payload(data: &[u8]) -> EncryptedMessage {
     let key = SymmetricKey::new();
     key.encrypt(data, None::<Vec<u8>>, None::<bc_components::Nonce>)
+}
+
+#[cfg(test)]
+mod tests {
+    use bc_components::ARID;
+    use dcbor::CBOR;
+
+    use super::*;
+    use crate::{encode_ql_message, test_identity::TestIdentity};
+
+    #[test]
+    fn message_size_without_session() {
+        let sender = TestIdentity::generate();
+        let recipient = TestIdentity::generate();
+        let (session_key, kem_ct) = recipient
+            .encapsulation_public_key
+            .encapsulate_new_shared_secret();
+        let (header, encrypted) = encrypt_payload_with_header(
+            MessageKind::Request,
+            ARID::new(),
+            sender.xid,
+            recipient.xid,
+            123,
+            Some(kem_ct),
+            true,
+            &sender.private_keys,
+            &session_key,
+            CBOR::from("size"),
+        );
+
+        let bytes = encode_ql_message(header.clone(), encrypted);
+        println!("message size without session: {} bytes", bytes.len());
+        assert!(header.kem_ct.is_some());
+        assert!(header.signature.is_some());
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn message_size_with_session() {
+        let sender = TestIdentity::generate();
+        let recipient = TestIdentity::generate();
+        let session_key = SymmetricKey::new();
+        let (header, encrypted) = encrypt_payload_with_header(
+            MessageKind::Request,
+            ARID::new(),
+            sender.xid,
+            recipient.xid,
+            123,
+            None,
+            false,
+            &sender.private_keys,
+            &session_key,
+            CBOR::from("size"),
+        );
+
+        let bytes = encode_ql_message(header.clone(), encrypted);
+        println!("message size with session: {} bytes", bytes.len());
+        assert!(header.kem_ct.is_none());
+        assert!(header.signature.is_none());
+        assert!(!bytes.is_empty());
+    }
 }
