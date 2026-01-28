@@ -15,15 +15,7 @@ use bc_components::{
 use dcbor::CBOR;
 use thiserror::Error;
 
-use crate::{
-    wire::{
-        decode_ql_message, decrypt_pairing_payload, encode_ql_message, encrypt_pairing_request,
-        encrypt_payload_for_recipient, encrypt_response, extract_payload, extract_reset_payload,
-        now_secs, session_key_for_header, sign_reset_header, verify_header, DecodeError,
-        MessageKind, Nack, QlHeader, QlMessage, QlPayload,
-    },
-    Event, QlCodec, RequestResponse,
-};
+use crate::{wire::*, Event, QlCodec, RequestResponse};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -209,7 +201,7 @@ impl Responder {
                 kind: MessageKind::Nack,
             })
             .map_err(|_| RuntimeError::Cancelled)
-e   }
+    }
 }
 
 #[derive(Debug)]
@@ -359,6 +351,30 @@ impl RuntimeHandle {
                 payload: message.into(),
             })
             .map_err(|_| RuntimeError::Cancelled)
+    }
+
+    pub fn send_event_with_ack<M>(
+        &self,
+        message: M,
+        recipient: XID,
+        config: RequestConfig,
+    ) -> Response<Ack>
+    where
+        M: Event,
+    {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send_blocking(RuntimeEvent::SendRequest {
+            id: ARID::new(),
+            recipient,
+            message_id: M::ID,
+            payload: message.into(),
+            respond_to: tx,
+            config,
+        });
+        Response {
+            rx,
+            _type: Default::default(),
+        }
     }
 
     pub fn send_pairing_request(

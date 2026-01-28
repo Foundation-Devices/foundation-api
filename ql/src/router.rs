@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     runtime::{HandlerEvent, Responder, RuntimeError},
-    wire::Nack,
+    wire::{Ack, Nack},
     Event, QlCodec, RequestResponse,
 };
 
@@ -167,7 +167,7 @@ where
 {
     let (payload, responder) = match event {
         HandlerEvent::Request(request) => (request.message.payload, request.respond_to),
-        HandlerEvent::Event(_) => unreachable!("expected request"),
+        HandlerEvent::Event(_) => return Err(RouterError::Runtime(RuntimeError::InvalidPayload)),
     };
     let message = match M::try_from(payload.payload) {
         Ok(message) => message,
@@ -189,11 +189,22 @@ where
     M: Event,
     S: EventHandler<M>,
 {
-    let payload = match event {
-        HandlerEvent::Event(event) => event.message.payload,
-        HandlerEvent::Request(_) => unreachable!("expected event"),
+    let (payload, responder) = match event {
+        HandlerEvent::Event(event) => (event.message.payload, None),
+        HandlerEvent::Request(request) => (request.message.payload, Some(request.respond_to)),
     };
-    let message = M::try_from(payload.payload)?;
+    let message = match M::try_from(payload.payload) {
+        Ok(message) => message,
+        Err(error) => {
+            if let Some(responder) = responder {
+                let _ = responder.respond_nack(Nack::InvalidPayload);
+            }
+            return Err(RouterError::Decode(error));
+        }
+    };
     state.handle(message);
+    if let Some(responder) = responder {
+        responder.respond(Ack)?;
+    }
     Ok(())
 }
