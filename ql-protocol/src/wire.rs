@@ -11,6 +11,7 @@ pub enum MessageKind {
     Event,
     SessionReset,
     Pairing,
+    Nack,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +175,7 @@ impl TryFrom<CBOR> for MessageKind {
             3 => Ok(MessageKind::Event),
             4 => Ok(MessageKind::SessionReset),
             5 => Ok(MessageKind::Pairing),
+            6 => Ok(MessageKind::Nack),
             _ => Err(dcbor::Error::msg("unknown message kind")),
         }
     }
@@ -187,6 +189,7 @@ impl From<MessageKind> for CBOR {
             MessageKind::Event => 3,
             MessageKind::SessionReset => 4,
             MessageKind::Pairing => 5,
+            MessageKind::Nack => 6,
         };
         CBOR::from(kind)
     }

@@ -8,7 +8,7 @@ pub use executor::{
     HandlerStream, InboundEvent, InboundRequest, PlatformFuture, RequestConfig, Responder,
 };
 pub use ql::{
-    Event, EventHandler, QlCodec, QlError, QlExecutorHandle, QlPayload, QlPeer, QlPlatform,
+    Event, EventHandler, Nack, QlCodec, QlError, QlExecutorHandle, QlPayload, QlPeer, QlPlatform,
     QlRequest, QlResponder, RequestHandler, RequestResponse, Router, RouterBuilder,
 };
 pub use wire::{

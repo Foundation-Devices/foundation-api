@@ -1,10 +1,10 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-use bc_components::XID;
+use bc_components::{ARID, XID};
 use dcbor::CBOR;
 
 use super::{
-    encrypt, Event, HandshakeKind, PendingHandshake, QlCodec, QlError, QlPayload, QlPeer,
+    encrypt, Event, HandshakeKind, Nack, PendingHandshake, QlCodec, QlError, QlPayload, QlPeer,
     QlPlatform, RequestResponse, ResetOrigin,
 };
 use crate::{ExecutorHandle, HandlerEvent, MessageKind, QlHeader, QlMessage, Responder};
@@ -202,13 +202,42 @@ where
         };
         match event {
             RouterEvent::SessionReset { .. } => Ok(()),
-            RouterEvent::Event { .. } | RouterEvent::Request { .. } => {
+            RouterEvent::Event { .. } => {
                 let message_id = event.message_id();
                 let handler = self
                     .handlers
                     .get(&message_id)
                     .ok_or(QlError::MissingHandler(message_id))?;
                 handler(state, event, self.platform.clone())
+            }
+            RouterEvent::Request {
+                header,
+                payload,
+                responder,
+            } => {
+                let message_id = payload.message_id;
+                let handler = match self.handlers.get(&message_id) {
+                    Some(handler) => handler,
+                    None => {
+                        let _ = send_nack(
+                            self.platform.as_ref(),
+                            responder,
+                            header.sender,
+                            header.id,
+                            Nack::UnknownMessage,
+                        );
+                        return Err(QlError::MissingHandler(message_id));
+                    }
+                };
+                handler(
+                    state,
+                    RouterEvent::Request {
+                        header,
+                        payload,
+                        responder,
+                    },
+                    self.platform.clone(),
+                )
             }
         }
     }
@@ -289,7 +318,19 @@ where
         RouterEvent::Event { .. } => unreachable!("expected request event"),
         RouterEvent::SessionReset { .. } => unreachable!("expected request event"),
     };
-    let message = M::try_from(payload.payload)?;
+    let message = match M::try_from(payload.payload) {
+        Ok(message) => message,
+        Err(error) => {
+            let _ = send_nack(
+                platform.as_ref(),
+                responder,
+                header.sender,
+                header.id,
+                Nack::InvalidPayload,
+            );
+            return Err(QlError::Decode(error));
+        }
+    };
     let responder = QlResponder {
         responder: Some(responder),
         platform,
@@ -405,5 +446,31 @@ where
     if !decrypted.is_null() {
         return Err(QlError::InvalidPayload);
     }
+    Ok(())
+}
+
+fn send_nack<P>(
+    platform: &P,
+    responder: Responder,
+    recipient: XID,
+    request_id: ARID,
+    reason: Nack,
+) -> Result<(), QlError>
+where
+    P: QlPlatform,
+{
+    let nack = reason;
+    let (header, encrypted) = match encrypt::encrypt_response_with_kind(
+        platform,
+        recipient,
+        request_id,
+        dcbor::CBOR::from(nack),
+        MessageKind::Nack,
+    ) {
+        Ok(result) => result,
+        Err(QlError::MissingSession(_)) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    responder.respond(header, encrypted)?;
     Ok(())
 }

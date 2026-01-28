@@ -12,7 +12,7 @@ use dcbor::CBOR;
 use oneshot;
 
 use super::{
-    encrypt, Event, EventHandler, QlExecutorHandle, QlPayload, QlPeer, QlPlatform, QlRequest,
+    encrypt, Event, EventHandler, Nack, QlExecutorHandle, QlPayload, QlPeer, QlPlatform, QlRequest,
     RequestHandler, RequestResponse, ResetOrigin, Router,
 };
 use crate::{
@@ -29,6 +29,12 @@ struct Pong(u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Notice(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnknownRequest(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BadPing;
 
 impl From<Ping> for CBOR {
     fn from(value: Ping) -> Self {
@@ -75,8 +81,47 @@ impl TryFrom<CBOR> for Notice {
     }
 }
 
+impl From<UnknownRequest> for CBOR {
+    fn from(value: UnknownRequest) -> Self {
+        CBOR::from(value.0)
+    }
+}
+
+impl TryFrom<CBOR> for UnknownRequest {
+    type Error = dcbor::Error;
+
+    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
+        let value: u64 = value.try_into()?;
+        Ok(Self(value))
+    }
+}
+
+impl From<BadPing> for CBOR {
+    fn from(_: BadPing) -> Self {
+        CBOR::from("bad")
+    }
+}
+
+impl TryFrom<CBOR> for BadPing {
+    type Error = dcbor::Error;
+
+    fn try_from(_: CBOR) -> Result<Self, Self::Error> {
+        Ok(Self)
+    }
+}
+
 impl RequestResponse for Ping {
     const ID: u64 = 100;
+    type Response = Pong;
+}
+
+impl RequestResponse for UnknownRequest {
+    const ID: u64 = 101;
+    type Response = Pong;
+}
+
+impl RequestResponse for BadPing {
+    const ID: u64 = Ping::ID;
     type Response = Pong;
 }
 
@@ -399,6 +444,174 @@ async fn typed_round_trip() {
                 .await
                 .expect("response");
             assert_eq!(response, Pong(42));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nack_unknown_message_is_returned() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (client_platform, client_outbound) = TestPlatform::new();
+            let (server_platform, server_outbound) = TestPlatform::new();
+            let config = ExecutorConfig {
+                default_timeout: Duration::from_secs(1),
+            };
+
+            let (mut client_core, client_handle, _client_incoming) =
+                Executor::new(client_platform, config);
+            let (mut server_core, server_handle, mut server_incoming) =
+                Executor::new(server_platform, config);
+
+            tokio::task::spawn_local(async move { client_core.run().await });
+            tokio::task::spawn_local(async move { server_core.run().await });
+
+            tokio::task::spawn_local({
+                let server_handle = server_handle.clone();
+                async move {
+                    while let Ok(bytes) = client_outbound.recv().await {
+                        server_handle.send_incoming(bytes).unwrap();
+                    }
+                }
+            });
+
+            tokio::task::spawn_local({
+                let client_handle = client_handle.clone();
+                async move {
+                    while let Ok(bytes) = server_outbound.recv().await {
+                        client_handle.send_incoming(bytes).unwrap();
+                    }
+                }
+            });
+
+            let client_identity = QlIdentity::generate();
+            let server_identity = QlIdentity::generate();
+            let client_platform = Arc::new(TestRouterPlatform::new(
+                client_identity.clone(),
+                server_identity.encapsulation_public_key.clone(),
+                server_identity.signing_public_key.clone(),
+            ));
+            let server_platform = Arc::new(TestRouterPlatform::new(
+                server_identity.clone(),
+                client_identity.encapsulation_public_key.clone(),
+                client_identity.signing_public_key.clone(),
+            ));
+            let recipient = server_platform.xid();
+
+            let router = Router::builder(server_handle.clone())
+                .add_request_handler::<Ping>()
+                .build(server_platform.clone());
+
+            let mut state = TestState { event_tx: None };
+            tokio::task::spawn_local({
+                let server_platform = server_platform.clone();
+                async move {
+                    loop {
+                        let event = match server_incoming.next().await {
+                            Ok(event) => event,
+                            Err(_) => break,
+                        };
+                        if let Err(err) = router.handle(&mut state, event) {
+                            server_platform.handle_error(err);
+                        }
+                    }
+                }
+            });
+
+            let client_typed = QlExecutorHandle::new(client_handle, client_platform);
+            let result = client_typed
+                .request(UnknownRequest(11), recipient, RequestConfig::default())
+                .await;
+
+            assert!(matches!(
+                result,
+                Err(QlError::Nack(nack)) if nack == Nack::UnknownMessage
+            ));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nack_invalid_payload_is_returned() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (client_platform, client_outbound) = TestPlatform::new();
+            let (server_platform, server_outbound) = TestPlatform::new();
+            let config = ExecutorConfig {
+                default_timeout: Duration::from_secs(1),
+            };
+
+            let (mut client_core, client_handle, _client_incoming) =
+                Executor::new(client_platform, config);
+            let (mut server_core, server_handle, mut server_incoming) =
+                Executor::new(server_platform, config);
+
+            tokio::task::spawn_local(async move { client_core.run().await });
+            tokio::task::spawn_local(async move { server_core.run().await });
+
+            tokio::task::spawn_local({
+                let server_handle = server_handle.clone();
+                async move {
+                    while let Ok(bytes) = client_outbound.recv().await {
+                        server_handle.send_incoming(bytes).unwrap();
+                    }
+                }
+            });
+
+            tokio::task::spawn_local({
+                let client_handle = client_handle.clone();
+                async move {
+                    while let Ok(bytes) = server_outbound.recv().await {
+                        client_handle.send_incoming(bytes).unwrap();
+                    }
+                }
+            });
+
+            let client_identity = QlIdentity::generate();
+            let server_identity = QlIdentity::generate();
+            let client_platform = Arc::new(TestRouterPlatform::new(
+                client_identity.clone(),
+                server_identity.encapsulation_public_key.clone(),
+                server_identity.signing_public_key.clone(),
+            ));
+            let server_platform = Arc::new(TestRouterPlatform::new(
+                server_identity.clone(),
+                client_identity.encapsulation_public_key.clone(),
+                client_identity.signing_public_key.clone(),
+            ));
+            let recipient = server_platform.xid();
+
+            let router = Router::builder(server_handle.clone())
+                .add_request_handler::<Ping>()
+                .build(server_platform.clone());
+
+            let mut state = TestState { event_tx: None };
+            tokio::task::spawn_local({
+                let server_platform = server_platform.clone();
+                async move {
+                    loop {
+                        let event = match server_incoming.next().await {
+                            Ok(event) => event,
+                            Err(_) => break,
+                        };
+                        if let Err(err) = router.handle(&mut state, event) {
+                            server_platform.handle_error(err);
+                        }
+                    }
+                }
+            });
+
+            let client_typed = QlExecutorHandle::new(client_handle, client_platform);
+            let result = client_typed
+                .request(BadPing, recipient, RequestConfig::default())
+                .await;
+
+            assert!(matches!(
+                result,
+                Err(QlError::Nack(nack)) if nack == Nack::InvalidPayload
+            ));
         })
         .await;
 }

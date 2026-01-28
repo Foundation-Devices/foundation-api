@@ -31,6 +31,13 @@ pub struct QlPayload {
     pub payload: CBOR,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nack {
+    Unknown,
+    UnknownMessage,
+    InvalidPayload,
+}
+
 impl From<QlPayload> for CBOR {
     fn from(value: QlPayload) -> Self {
         CBOR::from(vec![CBOR::from(value.message_id), value.payload])
@@ -51,6 +58,27 @@ impl TryFrom<CBOR> for QlPayload {
     }
 }
 
+impl From<Nack> for CBOR {
+    fn from(value: Nack) -> Self {
+        let value = match value {
+            Nack::Unknown => 0,
+            Nack::UnknownMessage => 1,
+            Nack::InvalidPayload => 2,
+        };
+        CBOR::from(value)
+    }
+}
+
+impl From<CBOR> for Nack {
+    fn from(value: CBOR) -> Self {
+        match u8::try_from(value).unwrap_or_default() {
+            1 => Nack::UnknownMessage,
+            2 => Nack::InvalidPayload,
+            _ => Nack::Unknown,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum QlError {
     Decode(dcbor::Error),
@@ -59,6 +87,7 @@ pub enum QlError {
     InvalidSignature,
     MissingHandler(u64),
     MissingSession(XID),
+    Nack(Nack),
     SessionInitCollision,
     Send(ExecutorError),
     UnknownPeer(XID),

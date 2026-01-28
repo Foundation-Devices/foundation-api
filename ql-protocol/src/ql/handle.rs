@@ -9,7 +9,7 @@ use std::{
 
 use bc_components::{EncapsulationPublicKey, SigningPublicKey, ARID, XID};
 
-use super::{encrypt, Event, QlError, QlPayload, QlPeer, QlPlatform, RequestResponse};
+use super::{encrypt, Event, Nack, QlError, QlPayload, QlPeer, QlPlatform, RequestResponse};
 use crate::{executor::ExecutorResponse, ExecutorHandle, MessageKind, QlCodec, RequestConfig};
 
 #[derive(Clone)]
@@ -70,6 +70,13 @@ where
                         &response.payload,
                     )?;
                     peer.set_pending_handshake(None);
+                    if response.header.kind == MessageKind::Nack {
+                        let nack = Nack::from(decrypted);
+                        return Err(QlError::Nack(nack));
+                    }
+                    if response.header.kind != MessageKind::Response {
+                        return Err(QlError::InvalidPayload);
+                    }
                     let message = T::try_from(decrypted)?;
                     Ok(message)
                 })

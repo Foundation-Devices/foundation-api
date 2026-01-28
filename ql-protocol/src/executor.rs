@@ -382,7 +382,7 @@ where
                         state.outbound.push_back(OutboundBytes { id: None, bytes });
                     }
                     ExecutorEvent::Incoming { message } => match message.header.kind {
-                        MessageKind::Response => {
+                        MessageKind::Response | MessageKind::Nack => {
                             if let Some(entry) = state.pending.remove(&message.header.id) {
                                 let _ = entry.tx.send(Ok(message));
                             }

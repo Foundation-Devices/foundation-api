@@ -51,11 +51,30 @@ pub(crate) fn encrypt_response<P>(
 where
     P: QlPlatform,
 {
+    encrypt_response_with_kind(
+        platform,
+        recipient,
+        message_id,
+        payload,
+        MessageKind::Response,
+    )
+}
+
+pub(crate) fn encrypt_response_with_kind<P>(
+    platform: &P,
+    recipient: XID,
+    message_id: ARID,
+    payload: CBOR,
+    kind: MessageKind,
+) -> Result<(QlHeader, EncryptedMessage), QlError>
+where
+    P: QlPlatform,
+{
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let session_key = peer.session().ok_or(QlError::MissingSession(recipient))?;
     let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
     Ok(encrypt_payload_with_header(
-        MessageKind::Response,
+        kind,
         message_id,
         platform.xid(),
         recipient,
