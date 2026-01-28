@@ -160,13 +160,10 @@ where
     P: QlPlatform,
 {
     platform: P,
-    pending: HashMap<ARID, PendingEntry>,
     timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     outbound: VecDeque<OutboundItem>,
     config: QlCoreConfig,
 }
-
-struct PendingEntry;
 
 #[derive(Debug, Clone)]
 struct TimeoutEntry {
@@ -201,7 +198,6 @@ where
     pub fn new(platform: P, config: QlCoreConfig) -> Self {
         Self {
             platform,
-            pending: HashMap::new(),
             timeouts: BinaryHeap::new(),
             outbound: VecDeque::new(),
             config,
@@ -242,7 +238,6 @@ where
             return Err(QlError::Send(ExecutorError::Timeout));
         }
         let deadline = Instant::now() + effective_timeout;
-        self.pending.insert(message_id, PendingEntry);
         self.timeouts.push(Reverse(TimeoutEntry {
             deadline,
             id: message_id,
@@ -331,26 +326,6 @@ where
             bytes,
         });
         Ok(())
-    }
-
-    pub fn report_send_result(
-        &mut self,
-        id: ARID,
-        result: Result<(), ExecutorError>,
-    ) -> Option<CoreOutput> {
-        match result {
-            Ok(()) => None,
-            Err(error) => {
-                if self.pending.remove(&id).is_some() {
-                    Some(CoreOutput::RequestFailed {
-                        id,
-                        error: QlError::Send(error),
-                    })
-                } else {
-                    None
-                }
-            }
-        }
     }
 
     pub fn handle_incoming(&mut self, bytes: Vec<u8>) -> Option<CoreOutput> {
@@ -466,12 +441,10 @@ where
                 break;
             }
             self.timeouts.pop();
-            if self.pending.remove(&entry.id).is_some() {
-                output.push(CoreOutput::RequestFailed {
-                    id: entry.id,
-                    error: QlError::Send(ExecutorError::Timeout),
-                });
-            }
+            output.push(CoreOutput::RequestFailed {
+                id: entry.id,
+                error: QlError::Send(ExecutorError::Timeout),
+            });
         }
         output
     }
@@ -545,11 +518,9 @@ where
                     });
                 }
             };
+        self.timeouts.retain(|e| e.0.id != header.id);
         if let Ok(peer) = self.platform.lookup_peer_or_fail(header.sender) {
             peer.set_pending_handshake(None);
-        }
-        if self.pending.remove(&header.id).is_none() {
-            return None;
         }
         if header.kind == MessageKind::Nack {
             let nack = Nack::try_from(decrypted).unwrap_or(Nack::Unknown);
