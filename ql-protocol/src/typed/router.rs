@@ -4,10 +4,7 @@ use bc_components::{Verifier, XID};
 use dcbor::CBOR;
 
 use super::{Event, QlCodec, RequestResponse, RouterError, RouterPlatform, TypedPayload};
-use crate::{
-    EncodeQlConfig, ExecutorHandle, HandlerEvent, MessageKind, QlHeader, QlHeaderUnsigned,
-    Responder,
-};
+use crate::{EncodeQlConfig, ExecutorHandle, HandlerEvent, MessageKind, QlHeader, Responder};
 
 pub trait RequestHandler<M>
 where
@@ -59,13 +56,14 @@ where
             .ok_or(RouterError::MissingSession(self.recipient))?;
         let now = now_secs();
         let valid_until = now.saturating_add(self.platform.message_expiration().as_secs());
-        let header_unsigned = QlHeaderUnsigned {
+        let header_unsigned = QlHeader {
             kind: MessageKind::Response,
             id: responder.id(),
             sender: self.platform.sender_xid(),
             recipient: self.recipient,
             valid_until,
             kem_ct: None,
+            signature: None,
         };
         let aad = header_unsigned.aad_data();
         let payload_bytes = dcbor::CBOR::from(payload).to_cbor_data();
@@ -222,13 +220,14 @@ impl<S> Router<S> {
         let now = now_secs();
         let valid_until = now.saturating_add(self.platform.message_expiration().as_secs());
         let id = bc_components::ARID::new();
-        let header_unsigned = QlHeaderUnsigned {
+        let header_unsigned = QlHeader {
             kind: MessageKind::SessionReset,
             id,
             sender: self.platform.sender_xid(),
             recipient,
             valid_until,
             kem_ct: Some(kem_ct.clone()),
+            signature: None,
         };
         let aad = header_unsigned.aad_data();
         let payload_bytes = CBOR::null().to_cbor_data();
@@ -350,7 +349,7 @@ fn verify_header(platform: &dyn RouterPlatform, header: &QlHeader) -> Result<(),
     let signing_key = platform
         .lookup_signing_key(header.sender)
         .ok_or(RouterError::UnknownSender(header.sender))?;
-    if signing_key.verify(signature, &header.unsigned().aad_data()) {
+    if signing_key.verify(signature, &header.aad_data()) {
         Ok(())
     } else {
         Err(RouterError::InvalidSignature)

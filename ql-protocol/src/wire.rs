@@ -4,6 +4,8 @@ use bc_components::{EncapsulationCiphertext, EncryptedMessage, Signature, Signer
 use dcbor::CBOR;
 use thiserror::Error;
 
+use crate::cbor::{cbor_array, option_from_cbor, option_to_cbor};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     Request,
@@ -24,16 +26,6 @@ pub struct QlHeader {
 }
 
 #[derive(Debug, Clone)]
-pub struct QlHeaderUnsigned {
-    pub kind: MessageKind,
-    pub id: ARID,
-    pub sender: XID,
-    pub recipient: XID,
-    pub valid_until: u64,
-    pub kem_ct: Option<EncapsulationCiphertext>,
-}
-
-#[derive(Debug, Clone)]
 pub struct EncodeQlConfig {
     pub sender: XID,
     pub recipient: XID,
@@ -43,52 +35,30 @@ pub struct EncodeQlConfig {
 }
 
 impl QlHeader {
-    pub fn unsigned(&self) -> QlHeaderUnsigned {
-        QlHeaderUnsigned {
-            kind: self.kind,
-            id: self.id,
-            sender: self.sender,
-            recipient: self.recipient,
-            valid_until: self.valid_until,
-            kem_ct: self.kem_ct.clone(),
-        }
-    }
-
     pub fn aad_data(&self) -> Vec<u8> {
-        CBOR::from(self.unsigned()).to_cbor_data()
-    }
-}
-
-impl QlHeaderUnsigned {
-    pub fn aad_data(&self) -> Vec<u8> {
-        CBOR::from(self.clone()).to_cbor_data()
+        header_cbor_unsigned(
+            self.kind,
+            self.id,
+            self.sender,
+            self.recipient,
+            self.valid_until,
+            self.kem_ct.clone(),
+        )
+        .to_cbor_data()
     }
 }
 
 impl From<QlHeader> for dcbor::CBOR {
     fn from(value: QlHeader) -> Self {
-        dcbor::CBOR::from(vec![
-            dcbor::CBOR::from(value.kind),
-            dcbor::CBOR::from(value.id),
-            dcbor::CBOR::from(value.sender),
-            dcbor::CBOR::from(value.recipient),
-            dcbor::CBOR::from(value.valid_until),
-            option_to_cbor(value.kem_ct),
-            option_to_cbor(value.signature),
-        ])
-    }
-}
-
-impl From<QlHeaderUnsigned> for dcbor::CBOR {
-    fn from(value: QlHeaderUnsigned) -> Self {
-        dcbor::CBOR::from(vec![
-            dcbor::CBOR::from(value.kind),
-            dcbor::CBOR::from(value.id),
-            dcbor::CBOR::from(value.sender),
-            dcbor::CBOR::from(value.recipient),
-            dcbor::CBOR::from(value.valid_until),
-            option_to_cbor(value.kem_ct),
-        ])
+        header_cbor(
+            value.kind,
+            value.id,
+            value.sender,
+            value.recipient,
+            value.valid_until,
+            value.kem_ct,
+            value.signature,
+        )
     }
 }
 
@@ -97,16 +67,15 @@ impl TryFrom<CBOR> for QlHeader {
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let array = value.try_into_array()?;
-        if array.len() != 7 {
-            return Err(dcbor::Error::msg("invalid header length"));
-        }
-        let kind = MessageKind::try_from(array[0].clone())?;
-        let id: ARID = array[1].clone().try_into()?;
-        let sender: XID = array[2].clone().try_into()?;
-        let recipient: XID = array[3].clone().try_into()?;
-        let valid_until: u64 = array[4].clone().try_into()?;
-        let kem_ct: Option<EncapsulationCiphertext> = option_from_cbor(array[5].clone())?;
-        let signature: Option<Signature> = option_from_cbor(array[6].clone())?;
+        let [kind_cbor, id_cbor, sender_cbor, recipient_cbor, valid_until_cbor, kem_ct_cbor, signature_cbor] =
+            cbor_array::<7>(array)?;
+        let kind = kind_cbor.try_into()?;
+        let id = id_cbor.try_into()?;
+        let sender = sender_cbor.try_into()?;
+        let recipient = recipient_cbor.try_into()?;
+        let valid_until = valid_until_cbor.try_into()?;
+        let kem_ct = option_from_cbor(kem_ct_cbor)?;
+        let signature = option_from_cbor(signature_cbor)?;
         Ok(Self {
             kind,
             id,
@@ -119,28 +88,46 @@ impl TryFrom<CBOR> for QlHeader {
     }
 }
 
-fn option_to_cbor<T>(value: Option<T>) -> CBOR
-where
-    T: Into<CBOR>,
-{
-    value.map(Into::into).unwrap_or_else(CBOR::null)
+fn header_cbor(
+    kind: MessageKind,
+    id: ARID,
+    sender: XID,
+    recipient: XID,
+    valid_until: u64,
+    kem_ct: Option<EncapsulationCiphertext>,
+    signature: Option<Signature>,
+) -> CBOR {
+    CBOR::from(vec![
+        CBOR::from(kind),
+        CBOR::from(id),
+        CBOR::from(sender),
+        CBOR::from(recipient),
+        CBOR::from(valid_until),
+        option_to_cbor(kem_ct),
+        option_to_cbor(signature),
+    ])
 }
 
-fn option_from_cbor<T>(value: CBOR) -> dcbor::Result<Option<T>>
-where
-    T: TryFrom<CBOR, Error = dcbor::Error>,
-{
-    if value.is_null() {
-        Ok(None)
-    } else {
-        Ok(Some(value.try_into()?))
-    }
+fn header_cbor_unsigned(
+    kind: MessageKind,
+    id: ARID,
+    sender: XID,
+    recipient: XID,
+    valid_until: u64,
+    kem_ct: Option<EncapsulationCiphertext>,
+) -> CBOR {
+    CBOR::from(vec![
+        CBOR::from(kind),
+        CBOR::from(id),
+        CBOR::from(sender),
+        CBOR::from(recipient),
+        CBOR::from(valid_until),
+        option_to_cbor(kem_ct),
+    ])
 }
 
 #[derive(Debug, Error)]
 pub enum DecodeError {
-    #[error("invalid message encoding")]
-    InvalidEncoding,
     #[error("message expired")]
     Expired,
     #[error(transparent)]
@@ -166,20 +153,17 @@ pub fn encode_ql_message(
     payload: EncryptedMessage,
     signer: &dyn Signer,
 ) -> Vec<u8> {
-    let header_unsigned = QlHeaderUnsigned {
+    let signing_data = header_cbor_unsigned(
         kind,
         id,
-        sender: config.sender,
-        recipient: config.recipient,
-        valid_until: config.valid_until,
-        kem_ct: config.kem_ct.clone(),
-    };
+        config.sender,
+        config.recipient,
+        config.valid_until,
+        config.kem_ct.clone(),
+    )
+    .to_cbor_data();
     let signature = if config.sign_header {
-        Some(
-            signer
-                .sign(&header_unsigned.aad_data())
-                .expect("failed to sign header"),
-        )
+        Some(signer.sign(&signing_data).expect("failed to sign header"))
     } else {
         None
     };
@@ -205,13 +189,11 @@ pub fn decode_ql_message(bytes: &[u8]) -> Result<QlMessage, DecodeErrContext> {
         error: DecodeError::Cbor(error),
         header: None,
     })?;
-    if array.len() != 2 {
-        return Err(DecodeErrContext {
-            error: DecodeError::InvalidEncoding,
-            header: None,
-        });
-    }
-    let header = QlHeader::try_from(array[0].clone()).map_err(|error| DecodeErrContext {
+    let [header_cbor, payload_cbor] = cbor_array::<2>(array).map_err(|error| DecodeErrContext {
+        error: DecodeError::Cbor(error),
+        header: None,
+    })?;
+    let header = QlHeader::try_from(header_cbor).map_err(|error| DecodeErrContext {
         error: DecodeError::Cbor(error),
         header: None,
     })?;
@@ -225,14 +207,10 @@ pub fn decode_ql_message(bytes: &[u8]) -> Result<QlMessage, DecodeErrContext> {
             header: Some(header),
         });
     }
-    let payload: EncryptedMessage =
-        array[1]
-            .clone()
-            .try_into()
-            .map_err(|error| DecodeErrContext {
-                error: DecodeError::Cbor(error),
-                header: Some(header.clone()),
-            })?;
+    let payload: EncryptedMessage = payload_cbor.try_into().map_err(|error| DecodeErrContext {
+        error: DecodeError::Cbor(error),
+        header: Some(header.clone()),
+    })?;
     Ok(QlMessage { header, payload })
 }
 
@@ -285,13 +263,14 @@ mod tests {
         let (session_key, kem_ct) = recipient
             .encapsulation_public_key
             .encapsulate_new_shared_secret();
-        let header_unsigned = QlHeaderUnsigned {
+        let header_unsigned = QlHeader {
             kind: MessageKind::Request,
             id: header_id,
             sender: sender_xid,
             recipient: recipient_xid,
             valid_until,
             kem_ct: Some(kem_ct.clone()),
+            signature: None,
         };
         let payload = CBOR::from("secret");
         let payload_bytes = payload.to_cbor_data();
@@ -321,7 +300,7 @@ mod tests {
         assert_eq!(decoded.header.recipient, recipient_xid);
         assert_eq!(decoded.header.sender, sender_xid);
 
-        let signing_data = decoded.header.unsigned().aad_data();
+        let signing_data = decoded.header.aad_data();
         let signature = decoded.header.signature.as_ref().expect("signature");
         assert!(sender.signing_public_key.verify(signature, &signing_data));
 
@@ -352,13 +331,14 @@ mod tests {
         let (session_key, kem_ct) = recipient
             .encapsulation_public_key
             .encapsulate_new_shared_secret();
-        let header_unsigned = QlHeaderUnsigned {
+        let header_unsigned = QlHeader {
             kind: MessageKind::Request,
             id: header_id,
             sender: sender_xid,
             recipient: recipient_xid,
             valid_until,
             kem_ct: Some(kem_ct.clone()),
+            signature: None,
         };
         let payload = CBOR::from("size");
         let payload_bytes = payload.to_cbor_data();
@@ -401,13 +381,14 @@ mod tests {
         let (session_key, _kem_ct) = recipient
             .encapsulation_public_key
             .encapsulate_new_shared_secret();
-        let header_unsigned = QlHeaderUnsigned {
+        let header_unsigned = QlHeader {
             kind: MessageKind::Request,
             id: header_id,
             sender: sender_xid,
             recipient: recipient_xid,
             valid_until,
             kem_ct: None,
+            signature: None,
         };
         let payload = CBOR::from("steady");
         let payload_bytes = payload.to_cbor_data();

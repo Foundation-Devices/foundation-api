@@ -11,8 +11,8 @@ use bc_components::{EncapsulationCiphertext, ARID, XID};
 
 use super::{Event, RequestResponse, RouterError, RouterPlatform, TypedPayload};
 use crate::{
-    executor::ExecutorResponse, EncodeQlConfig, ExecutorHandle, MessageKind, QlCodec,
-    QlHeaderUnsigned, RequestConfig,
+    executor::ExecutorResponse, EncodeQlConfig, ExecutorHandle, MessageKind, QlCodec, QlHeader,
+    RequestConfig,
 };
 
 #[derive(Clone)]
@@ -152,13 +152,14 @@ impl TypedExecutorHandle {
             None => self.create_session(recipient)?,
         };
         let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
-        let header_unsigned = QlHeaderUnsigned {
+        let header_unsigned = QlHeader {
             kind,
             id: message_id,
             sender: platform.sender_xid(),
             recipient,
             valid_until,
             kem_ct: kem_ct.clone(),
+            signature: None,
         };
         let aad = header_unsigned.aad_data();
         let payload_bytes = payload.to_cbor_data();

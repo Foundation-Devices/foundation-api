@@ -15,5 +15,6 @@ pub use typed::{
 };
 pub use wire::{
     decode_ql_message, encode_ql_message, DecodeErrContext, DecodeError, EncodeQlConfig,
-    MessageKind, QlHeader, QlHeaderUnsigned, QlMessage,
+    MessageKind, QlHeader, QlMessage,
 };
+pub mod cbor;

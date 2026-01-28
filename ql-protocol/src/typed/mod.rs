@@ -6,7 +6,7 @@ use bc_components::{
 };
 use dcbor::CBOR;
 
-use crate::QlError;
+use crate::{cbor::cbor_array, QlError};
 
 pub mod handle;
 pub mod router;
@@ -41,13 +41,11 @@ impl TryFrom<CBOR> for TypedPayload {
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let array = value.try_into_array()?;
-        if array.len() != 2 {
-            return Err(dcbor::Error::msg("invalid typed payload length"));
-        }
-        let message_id: u64 = array[0].clone().try_into()?;
+        let [message_id, payload] = cbor_array::<2>(array)?;
+        let message_id = message_id.try_into()?;
         Ok(Self {
             message_id,
-            payload: array[1].clone(),
+            payload,
         })
     }
 }
