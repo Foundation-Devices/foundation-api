@@ -128,7 +128,9 @@ pub trait QlPlatform {
         if payload.aad() != header_aad {
             return Err(RuntimeError::InvalidPayload);
         }
-        let plaintext = key.decrypt(payload).map_err(|_| RuntimeError::InvalidPayload)?;
+        let plaintext = key
+            .decrypt(payload)
+            .map_err(|_| RuntimeError::InvalidPayload)?;
         Ok(CBOR::try_from_data(plaintext)?)
     }
 }
@@ -237,10 +239,7 @@ impl HandlerStream {
 impl futures_lite::Stream for HandlerStream {
     type Item = Result<HandlerEvent, RuntimeError>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let rx = unsafe { self.as_mut().map_unchecked_mut(|s| &mut s.rx) };
         match rx.poll_next(cx) {
             Poll::Ready(Some(event)) => Poll::Ready(Some(Ok(event))),
@@ -422,7 +421,10 @@ struct InFlightWrite {
 
 enum LoopStep {
     Event(Result<RuntimeEvent, async_channel::RecvError>),
-    WriteDone { id: Option<ARID>, result: Result<(), RuntimeError> },
+    WriteDone {
+        id: Option<ARID>,
+        result: Result<(), RuntimeError>,
+    },
     Timeout,
 }
 
@@ -461,7 +463,9 @@ where
                     let future = self.platform.write_message(message.bytes);
                     state.in_flight = Some(InFlightWrite {
                         id: message.id,
-                        future: unsafe { std::mem::transmute::<_, PlatformFuture<'static, _>>(future) },
+                        future: unsafe {
+                            std::mem::transmute::<_, PlatformFuture<'static, _>>(future)
+                        },
                     });
                 }
             }
@@ -470,8 +474,8 @@ where
                 let recv_future = self.rx.recv();
                 futures_lite::pin!(recv_future);
 
-                let mut sleep_future =
-                    Self::next_timeout_sleep(&state.timeouts).map(|duration| self.platform.sleep(duration));
+                let mut sleep_future = Self::next_timeout_sleep(&state.timeouts)
+                    .map(|duration| self.platform.sleep(duration));
 
                 futures_lite::future::poll_fn(|cx| {
                     if let Some(in_flight) = state.in_flight.as_mut() {
@@ -526,19 +530,19 @@ where
                             ql_payload.into(),
                         ) {
                             Ok((header, encrypted)) => {
-                        state.pending.insert(
-                            id,
-                            PendingEntry { tx: respond_to },
-                        );
-                        state.timeouts.push(Reverse(TimeoutEntry { deadline, id }));
-                        let bytes = encode_ql_message(header, encrypted);
-                        state.outbound.push_back(OutboundBytes { id: Some(id), bytes });
-                    }
-                    Err(error) => {
-                        let _ = state.pending.remove(&id);
-                        let _ = respond_to.send(Err(error));
-                    }
-                }
+                                state.pending.insert(id, PendingEntry { tx: respond_to });
+                                state.timeouts.push(Reverse(TimeoutEntry { deadline, id }));
+                                let bytes = encode_ql_message(header, encrypted);
+                                state.outbound.push_back(OutboundBytes {
+                                    id: Some(id),
+                                    bytes,
+                                });
+                            }
+                            Err(error) => {
+                                let _ = state.pending.remove(&id);
+                                let _ = respond_to.send(Err(error));
+                            }
+                        }
                     }
                     RuntimeEvent::SendEvent {
                         recipient,
@@ -568,21 +572,13 @@ where
                         recipient,
                         payload,
                         kind,
-                    } => {
-                        match encrypt_response(
-                            &self.platform,
-                            recipient,
-                            id,
-                            payload,
-                            kind,
-                        ) {
-                            Ok((header, encrypted)) => {
-                                let bytes = encode_ql_message(header, encrypted);
-                                state.outbound.push_back(OutboundBytes { id: None, bytes });
-                            }
-                            Err(error) => self.platform.handle_error(error),
+                    } => match encrypt_response(&self.platform, recipient, id, payload, kind) {
+                        Ok((header, encrypted)) => {
+                            let bytes = encode_ql_message(header, encrypted);
+                            state.outbound.push_back(OutboundBytes { id: None, bytes });
                         }
-                    }
+                        Err(error) => self.platform.handle_error(error),
+                    },
                     RuntimeEvent::SendPairing {
                         recipient_signing_key,
                         recipient_encapsulation_key,
@@ -651,7 +647,8 @@ where
             return;
         }
 
-        if message.header.kind == MessageKind::Response || message.header.kind == MessageKind::Nack {
+        if message.header.kind == MessageKind::Response || message.header.kind == MessageKind::Nack
+        {
             self.handle_response_message(state, message);
             return;
         }
@@ -663,52 +660,64 @@ where
 
         match message.header.kind {
             MessageKind::Request => {
-                let payload = match extract_payload(&self.platform, &message.header, message.payload) {
-                    Ok(payload) => payload,
-                    Err(error) => {
-                        if matches!(error, RuntimeError::InvalidPayload | RuntimeError::MissingSession(_)) {
-                            let _ = self.send_session_reset(state, message.header.sender);
+                let payload =
+                    match extract_payload(&self.platform, &message.header, message.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            if matches!(
+                                error,
+                                RuntimeError::InvalidPayload | RuntimeError::MissingSession(_)
+                            ) {
+                                let _ = self.send_session_reset(state, message.header.sender);
+                            }
+                            if matches!(error, RuntimeError::Decode(_)) {
+                                let _ = self.send_nack(
+                                    state,
+                                    message.header.sender,
+                                    message.header.id,
+                                    Nack::InvalidPayload,
+                                );
+                            }
+                            return;
                         }
-                        if matches!(error, RuntimeError::Decode(_)) {
-                            let _ = self.send_nack(
-                                state,
-                                message.header.sender,
-                                message.header.id,
-                                Nack::InvalidPayload,
-                            );
-                        }
-                        return;
-                    }
-                };
+                    };
                 let responder = Responder {
                     id: message.header.id,
                     recipient: message.header.sender,
                     tx: self.tx.upgrade().unwrap(),
                 };
-                let _ = self.incoming.send_blocking(HandlerEvent::Request(InboundRequest {
-                    message: DecryptedMessage {
-                        header: message.header,
-                        payload,
-                    },
-                    respond_to: responder,
-                }));
+                let _ = self
+                    .incoming
+                    .send_blocking(HandlerEvent::Request(InboundRequest {
+                        message: DecryptedMessage {
+                            header: message.header,
+                            payload,
+                        },
+                        respond_to: responder,
+                    }));
             }
             MessageKind::Event => {
-                let payload = match extract_payload(&self.platform, &message.header, message.payload) {
-                    Ok(payload) => payload,
-                    Err(error) => {
-                        if matches!(error, RuntimeError::InvalidPayload | RuntimeError::MissingSession(_)) {
-                            let _ = self.send_session_reset(state, message.header.sender);
+                let payload =
+                    match extract_payload(&self.platform, &message.header, message.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            if matches!(
+                                error,
+                                RuntimeError::InvalidPayload | RuntimeError::MissingSession(_)
+                            ) {
+                                let _ = self.send_session_reset(state, message.header.sender);
+                            }
+                            return;
                         }
-                        return;
-                    }
-                };
-                let _ = self.incoming.send_blocking(HandlerEvent::Event(InboundEvent {
-                    message: DecryptedMessage {
-                        header: message.header,
-                        payload,
-                    },
-                }));
+                    };
+                let _ = self
+                    .incoming
+                    .send_blocking(HandlerEvent::Event(InboundEvent {
+                        message: DecryptedMessage {
+                            header: message.header,
+                            payload,
+                        },
+                    }));
             }
             MessageKind::SessionReset => {
                 let _ = extract_reset_payload(&self.platform, &message.header, message.payload);
@@ -740,16 +749,17 @@ where
                 return;
             }
         };
-        let decrypted = match self
-            .platform
-            .decrypt_message(&session_key, &header.aad_data(), &message.payload)
-        {
-            Ok(payload) => payload,
-            Err(error) => {
-                let _ = entry.tx.send(Err(error));
-                return;
-            }
-        };
+        let decrypted =
+            match self
+                .platform
+                .decrypt_message(&session_key, &header.aad_data(), &message.payload)
+            {
+                Ok(payload) => payload,
+                Err(error) => {
+                    let _ = entry.tx.send(Err(error));
+                    return;
+                }
+            };
         peer.set_pending_handshake(None);
         if header.kind == MessageKind::Nack {
             let nack = Nack::try_from(decrypted).unwrap_or(Nack::Unknown);
