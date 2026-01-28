@@ -16,9 +16,9 @@ use super::{
     RequestResponse, ResetOrigin, Router,
 };
 use crate::{
-    decode_ql_message, encode_ql_message, EncodeQlConfig, Executor, ExecutorConfig,
-    ExecutorError, ExecutorPlatform, HandlerEvent, InboundEvent, MessageKind, PlatformFuture,
-    QlError, QlHeader, QlMessage, RequestConfig, test_identity::TestIdentity,
+    decode_ql_message, encode_ql_message, test_identity::TestIdentity, EncodeQlConfig, Executor,
+    ExecutorConfig, ExecutorError, ExecutorPlatform, HandlerEvent, InboundEvent, MessageKind,
+    PlatformFuture, QlError, QlHeader, QlMessage, RequestConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,11 +267,7 @@ fn build_reset_message(
     };
     let aad = header.aad_data();
     let payload_bytes = CBOR::null().to_cbor_data();
-    let encrypted = session_key.encrypt(
-        payload_bytes,
-        Some(aad),
-        None::<bc_components::Nonce>,
-    );
+    let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
     let bytes = encode_ql_message(
         MessageKind::SessionReset,
         id,
@@ -563,6 +559,76 @@ async fn reset_from_higher_xid_is_accepted_without_pending() {
                 lower_platform.pending_reset().map(|state| state.origin),
                 Some(ResetOrigin::Peer)
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reset_with_invalid_signature_is_rejected() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (platform, _outbound) = TestPlatform::new();
+            let config = ExecutorConfig {
+                default_timeout: Duration::from_secs(1),
+            };
+            let (_core, handle, _incoming) = Executor::new(platform, config);
+
+            let client_identity = TestIdentity::generate();
+            let server_identity = TestIdentity::generate();
+            let router_platform = Arc::new(TestRouterPlatform::new(
+                client_identity.clone(),
+                server_identity.encapsulation_public_key.clone(),
+                server_identity.signing_public_key.clone(),
+            ));
+            let router = Router::builder(handle).build(router_platform.clone());
+
+            let id = bc_components::ARID::new();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            let valid_until = now.saturating_add(60);
+            let (session_key, kem_ct) = client_identity
+                .encapsulation_public_key
+                .encapsulate_new_shared_secret();
+            let header = QlHeader {
+                kind: MessageKind::SessionReset,
+                id,
+                sender: server_identity.xid,
+                recipient: client_identity.xid,
+                valid_until,
+                kem_ct: Some(kem_ct.clone()),
+                signature: None,
+            };
+            let aad = header.aad_data();
+            let payload_bytes = CBOR::null().to_cbor_data();
+            let encrypted =
+                session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
+            let mut reset_message = decode_ql_message(&encode_ql_message(
+                MessageKind::SessionReset,
+                id,
+                EncodeQlConfig {
+                    sender: server_identity.xid,
+                    recipient: client_identity.xid,
+                    valid_until,
+                    kem_ct: Some(kem_ct),
+                    sign_header: true,
+                },
+                encrypted,
+                &server_identity.private_keys,
+            ))
+            .expect("decode reset");
+            reset_message.header.kind = MessageKind::Request;
+
+            let result = router.handle(
+                &mut TestState { event_tx: None },
+                HandlerEvent::Event(InboundEvent {
+                    message: reset_message,
+                }),
+            );
+
+            assert!(matches!(result, Err(QlError::InvalidSignature)));
         })
         .await;
 }
