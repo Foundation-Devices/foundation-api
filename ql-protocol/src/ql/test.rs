@@ -240,18 +240,11 @@ impl QlPlatform for TestRouterPlatform {
         _signing_pub_key: SigningPublicKey,
         _encapsulation_pub_key: EncapsulationPublicKey,
         _session: SymmetricKey,
-    ) -> Result<(), super::QlError> {
-        let mut guard = self
-            .peer
-            .lock()
-            .map_err(|_| super::QlError::InvalidPayload)?;
-        if guard.is_some() {
-            return Err(super::QlError::InvalidPayload);
-        }
+    ) {
+        let mut guard = self.peer.lock().unwrap();
         let peer = Arc::new(TestPeer::new(_encapsulation_pub_key, _signing_pub_key));
         peer.store_session(_session);
         *guard = Some(peer);
-        Ok(())
     }
 }
 

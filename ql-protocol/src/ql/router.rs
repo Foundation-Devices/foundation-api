@@ -265,7 +265,8 @@ where
             payload.signing_pub_key,
             payload.encapsulation_pub_key,
             session_key,
-        )
+        );
+        Ok(())
     }
 }
 

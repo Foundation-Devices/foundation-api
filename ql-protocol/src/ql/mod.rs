@@ -147,7 +147,7 @@ pub trait QlPlatform {
         signing_pub_key: SigningPublicKey,
         encapsulation_pub_key: EncapsulationPublicKey,
         session: SymmetricKey,
-    ) -> Result<(), QlError>;
+    );
 
     fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
     fn encapsulation_public_key(&self) -> EncapsulationPublicKey;
