@@ -8,13 +8,13 @@ use dcbor::CBOR;
 
 use crate::{cbor::cbor_array, ExecutorError};
 
+pub(crate) mod encrypt;
 pub mod handle;
 pub mod router;
-pub(crate) mod encrypt;
 
-pub trait QlCodec: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> + Sized {}
+pub trait QlCodec: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {}
 
-impl<T> QlCodec for T where T: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> + Sized {}
+impl<T> QlCodec for T where T: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {}
 
 pub trait RequestResponse: QlCodec {
     const ID: u64;
