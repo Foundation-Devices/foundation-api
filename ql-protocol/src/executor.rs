@@ -25,6 +25,7 @@ pub trait QlPlatform {
 pub enum QlError {
     Cancelled,
     Protocol,
+    SessionReset,
     SendFailed,
     Timeout,
     Decode(super::wire::DecodeError),
@@ -129,6 +130,7 @@ impl futures_lite::Stream for HandlerStream {
 enum ExecutorEvent {
     SendRequest {
         id: ARID,
+        recipient: XID,
         bytes: Vec<u8>,
         respond_to: oneshot::Sender<Result<QlMessage, QlError>>,
         config: RequestConfig,
@@ -175,6 +177,7 @@ impl ExecutorHandle {
         request_config: RequestConfig,
         signer: &dyn Signer,
     ) -> ExecutorResponse {
+        let recipient = encode_config.recipient;
         let bytes = encode_ql_message(MessageKind::Request, id, encode_config, payload, signer);
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -182,6 +185,7 @@ impl ExecutorHandle {
                 id,
                 bytes,
                 respond_to: tx,
+                recipient,
                 config: request_config,
             })
             .unwrap();
@@ -258,6 +262,7 @@ struct InFlightWrite<'a> {
 
 struct PendingEntry {
     tx: oneshot::Sender<Result<QlMessage, QlError>>,
+    recipient: XID,
 }
 
 #[derive(Debug, Clone)]
@@ -372,6 +377,7 @@ where
                         id,
                         bytes,
                         respond_to,
+                        recipient,
                         config,
                     } => {
                         let effective_timeout =
@@ -381,7 +387,13 @@ where
                             continue;
                         }
                         let deadline = Instant::now() + effective_timeout;
-                        state.pending.insert(id, PendingEntry { tx: respond_to });
+                        state.pending.insert(
+                            id,
+                            PendingEntry {
+                                tx: respond_to,
+                                recipient,
+                            },
+                        );
                         state.timeouts.push(Reverse(TimeoutEntry { deadline, id }));
                         state.outbound.push_back(OutboundBytes {
                             id: Some(id),
@@ -415,7 +427,14 @@ where
                                 }))
                                 .await;
                         }
-                        MessageKind::Event | MessageKind::SessionReset => {
+                        MessageKind::SessionReset => {
+                            Self::cancel_pending_for_sender(&mut state, message.header.sender);
+                            let _ = self
+                                .incoming
+                                .send(HandlerEvent::Event(InboundEvent { message }))
+                                .await;
+                        }
+                        MessageKind::Event => {
                             let _ = self
                                 .incoming
                                 .send(HandlerEvent::Event(InboundEvent { message }))
@@ -461,6 +480,15 @@ where
             if let Some(pending) = state.pending.remove(&entry.id) {
                 let _ = pending.tx.send(Err(QlError::Timeout));
             }
+        }
+    }
+
+    fn cancel_pending_for_sender(state: &mut ExecutorState<'_>, sender: XID) {
+        for (_id, entry) in state
+            .pending
+            .extract_if(|_, entry| entry.recipient == sender)
+        {
+            let _ = entry.tx.send(Err(QlError::SessionReset));
         }
     }
 
