@@ -12,8 +12,8 @@ use dcbor::CBOR;
 use oneshot;
 
 use super::{
-    Event, EventHandler, QlExecutorHandle, QlPeer, QlPlatform, QlRequest, RequestHandler,
-    RequestResponse, ResetOrigin, Router,
+    encrypt, Event, EventHandler, QlExecutorHandle, QlPayload, QlPeer, QlPlatform, QlRequest,
+    RequestHandler, RequestResponse, ResetOrigin, Router,
 };
 use crate::{
     decode_ql_message, encode_ql_message, test_identity::TestIdentity, Executor, ExecutorConfig,
@@ -109,7 +109,7 @@ struct TestPeer {
     encapsulation_public_key: EncapsulationPublicKey,
     signing_public_key: SigningPublicKey,
     session: Mutex<Option<SymmetricKey>>,
-    pending_reset: Mutex<Option<super::QlResetState>>,
+    pending_handshake: Mutex<Option<super::PendingHandshake>>,
 }
 
 impl TestPeer {
@@ -121,7 +121,7 @@ impl TestPeer {
             encapsulation_public_key,
             signing_public_key,
             session: Mutex::new(None),
-            pending_reset: Mutex::new(None),
+            pending_handshake: Mutex::new(None),
         }
     }
 }
@@ -145,19 +145,13 @@ impl QlPeer for TestPeer {
         }
     }
 
-    fn pending_reset(&self) -> Option<super::QlResetState> {
-        self.pending_reset.lock().ok().and_then(|guard| *guard)
+    fn pending_handshake(&self) -> Option<super::PendingHandshake> {
+        self.pending_handshake.lock().ok().and_then(|guard| *guard)
     }
 
-    fn set_pending_reset(&self, origin: ResetOrigin, id: bc_components::ARID) {
-        if let Ok(mut guard) = self.pending_reset.lock() {
-            *guard = Some(super::QlResetState { origin, id });
-        }
-    }
-
-    fn clear_pending_reset(&self) {
-        if let Ok(mut guard) = self.pending_reset.lock() {
-            *guard = None;
+    fn set_pending_handshake(&self, handshake: Option<super::PendingHandshake>) {
+        if let Ok(mut guard) = self.pending_handshake.lock() {
+            *guard = handshake;
         }
     }
 }
@@ -183,12 +177,12 @@ impl TestRouterPlatform {
         self.identity.xid
     }
 
-    fn pending_reset(&self) -> Option<super::QlResetState> {
-        self.peer.pending_reset()
+    fn pending_handshake(&self) -> Option<super::PendingHandshake> {
+        self.peer.pending_handshake()
     }
 
-    fn set_pending_reset(&self, origin: ResetOrigin, id: bc_components::ARID) {
-        self.peer.set_pending_reset(origin, id);
+    fn set_pending_handshake(&self, handshake: Option<super::PendingHandshake>) {
+        self.peer.set_pending_handshake(handshake);
     }
 }
 
@@ -483,6 +477,115 @@ async fn reset_cancels_pending_request() {
         .await;
 }
 
+#[test]
+fn simultaneous_session_init_resolves() {
+    fn expect_missing_handler(result: Result<(), QlError>) {
+        assert!(matches!(result, Err(QlError::MissingHandler(_))));
+    }
+
+    fn build_event_message(
+        platform: &Arc<TestRouterPlatform>,
+        recipient: XID,
+        notice: Notice,
+    ) -> QlMessage {
+        let payload = QlPayload {
+            message_id: Notice::ID,
+            payload: notice.into(),
+        };
+        let (header, encrypted) = encrypt::encrypt_payload_for_recipient(
+            platform.as_ref(),
+            recipient,
+            MessageKind::Event,
+            bc_components::ARID::new(),
+            payload.into(),
+        )
+        .expect("encrypt event");
+        decode_ql_message(&encode_ql_message(header, encrypted)).expect("decode event")
+    }
+
+    let (client_platform, _client_outbound) = TestPlatform::new();
+    let (server_platform, _server_outbound) = TestPlatform::new();
+    let config = ExecutorConfig {
+        default_timeout: Duration::from_secs(1),
+    };
+    let (_client_core, client_handle, _client_incoming) =
+        Executor::new(client_platform, config);
+    let (_server_core, server_handle, _server_incoming) =
+        Executor::new(server_platform, config);
+
+    let client_identity = TestIdentity::generate();
+    let server_identity = TestIdentity::generate();
+    let client_router_platform = Arc::new(TestRouterPlatform::new(
+        client_identity.clone(),
+        server_identity.encapsulation_public_key.clone(),
+        server_identity.signing_public_key.clone(),
+    ));
+    let server_router_platform = Arc::new(TestRouterPlatform::new(
+        server_identity.clone(),
+        client_identity.encapsulation_public_key.clone(),
+        client_identity.signing_public_key.clone(),
+    ));
+
+    let client_router = Router::builder(client_handle).build(client_router_platform.clone());
+    let server_router = Router::builder(server_handle).build(server_router_platform.clone());
+
+    let from_client = build_event_message(
+        &client_router_platform,
+        server_router_platform.xid(),
+        Notice(1),
+    );
+    let from_server = build_event_message(
+        &server_router_platform,
+        client_router_platform.xid(),
+        Notice(2),
+    );
+
+    let server_result = server_router.handle(
+        &mut TestState { event_tx: None },
+        HandlerEvent::Event(InboundEvent {
+            message: from_client,
+        }),
+    );
+    let client_result = client_router.handle(
+        &mut TestState { event_tx: None },
+        HandlerEvent::Event(InboundEvent {
+            message: from_server,
+        }),
+    );
+
+    if client_router_platform.xid() < server_router_platform.xid() {
+        assert!(matches!(client_result, Err(QlError::SessionInitCollision)));
+        expect_missing_handler(server_result);
+    } else {
+        assert!(matches!(server_result, Err(QlError::SessionInitCollision)));
+        expect_missing_handler(client_result);
+    }
+
+    let follow_up_from_client = build_event_message(
+        &client_router_platform,
+        server_router_platform.xid(),
+        Notice(3),
+    );
+    let follow_up_from_server = build_event_message(
+        &server_router_platform,
+        client_router_platform.xid(),
+        Notice(4),
+    );
+
+    expect_missing_handler(server_router.handle(
+        &mut TestState { event_tx: None },
+        HandlerEvent::Event(InboundEvent {
+            message: follow_up_from_client,
+        }),
+    ));
+    expect_missing_handler(client_router.handle(
+        &mut TestState { event_tx: None },
+        HandlerEvent::Event(InboundEvent {
+            message: follow_up_from_server,
+        }),
+    ));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn reset_collision_prefers_lower_xid() {
     let local = tokio::task::LocalSet::new();
@@ -522,8 +625,16 @@ async fn reset_collision_prefers_lower_xid() {
 
             let lower_reset_id = bc_components::ARID::new();
             let higher_reset_id = bc_components::ARID::new();
-            lower_platform.set_pending_reset(ResetOrigin::Local, lower_reset_id);
-            higher_platform.set_pending_reset(ResetOrigin::Local, higher_reset_id);
+            lower_platform.set_pending_handshake(Some(super::PendingHandshake {
+                kind: super::HandshakeKind::SessionReset,
+                origin: ResetOrigin::Local,
+                id: lower_reset_id,
+            }));
+            higher_platform.set_pending_handshake(Some(super::PendingHandshake {
+                kind: super::HandshakeKind::SessionReset,
+                origin: ResetOrigin::Local,
+                id: higher_reset_id,
+            }));
 
             let reset_from_lower =
                 build_reset_message(&lower_identity, &higher_identity, lower_reset_id);
@@ -548,11 +659,11 @@ async fn reset_collision_prefers_lower_xid() {
                 .unwrap();
 
             assert_eq!(
-                lower_platform.pending_reset().map(|state| state.origin),
+                lower_platform.pending_handshake().map(|state| state.origin),
                 Some(ResetOrigin::Local)
             );
             assert_eq!(
-                higher_platform.pending_reset().map(|state| state.origin),
+                higher_platform.pending_handshake().map(|state| state.origin),
                 Some(ResetOrigin::Peer)
             );
         })
@@ -602,7 +713,7 @@ async fn reset_from_higher_xid_is_accepted_without_pending() {
                 .unwrap();
 
             assert_eq!(
-                lower_platform.pending_reset().map(|state| state.origin),
+                lower_platform.pending_handshake().map(|state| state.origin),
                 Some(ResetOrigin::Peer)
             );
         })

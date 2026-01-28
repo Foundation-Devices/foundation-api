@@ -1,11 +1,14 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    cmp::Ordering,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use bc_components::{
     EncapsulationCiphertext, EncryptedMessage, Signature, Signer, SymmetricKey, Verifier, ARID, XID,
 };
 use dcbor::CBOR;
 
-use super::{QlError, QlPeer, QlPlatform};
+use super::{HandshakeKind, PendingHandshake, QlError, QlPeer, QlPlatform, ResetOrigin};
 use crate::{MessageKind, QlHeader};
 
 pub(crate) fn encrypt_payload_for_recipient(
@@ -18,13 +21,13 @@ pub(crate) fn encrypt_payload_for_recipient(
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let (session_key, kem_ct, should_sign_header) = match peer.session() {
         Some(session_key) => (session_key, None, false),
-        None => create_session(peer)?,
+        None => create_session(peer, message_id)?,
     };
     let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
     Ok(encrypt_payload_with_header(
         kind,
         message_id,
-        platform.sender_xid(),
+        platform.xid(),
         recipient,
         valid_until,
         kem_ct,
@@ -47,7 +50,7 @@ pub(crate) fn encrypt_response(
     Ok(encrypt_payload_with_header(
         MessageKind::Response,
         message_id,
-        platform.sender_xid(),
+        platform.xid(),
         recipient,
         valid_until,
         None,
@@ -89,6 +92,14 @@ pub(crate) fn session_key_for_header(
     header: &QlHeader,
 ) -> Result<SymmetricKey, QlError> {
     if let Some(kem_ct) = &header.kem_ct {
+        if let Some(pending) = peer.pending_handshake() {
+            if pending.kind == HandshakeKind::SessionInit && pending.origin == ResetOrigin::Local {
+                let cmp = handshake_cmp((platform.xid(), pending.id), (header.sender, header.id));
+                if cmp != Ordering::Less {
+                    return Err(QlError::SessionInitCollision);
+                }
+            }
+        }
         let key = platform.decapsulate_shared_secret(kem_ct)?;
         peer.store_session(key.clone());
         Ok(key)
@@ -162,11 +173,24 @@ fn encrypt_payload_with_header(
 
 fn create_session(
     peer: &dyn QlPeer,
+    message_id: ARID,
 ) -> Result<(SymmetricKey, Option<EncapsulationCiphertext>, bool), QlError> {
     let recipient_key = peer.encapsulation_pub_key();
     let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
     peer.store_session(session_key.clone());
+    peer.set_pending_handshake(Some(PendingHandshake {
+        kind: HandshakeKind::SessionInit,
+        origin: ResetOrigin::Local,
+        id: message_id,
+    }));
     Ok((session_key, Some(kem_ct), true))
+}
+
+pub(crate) fn handshake_cmp(local: (XID, ARID), peer: (XID, ARID)) -> Ordering {
+    match peer.0.cmp(&local.0) {
+        Ordering::Equal => peer.1.data().cmp(local.1.data()),
+        order => order,
+    }
 }
 
 #[cfg(test)]

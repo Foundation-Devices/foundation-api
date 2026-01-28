@@ -1,10 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bc_components::{ARID, XID};
+use bc_components::XID;
 use dcbor::CBOR;
 
 use super::{
-    encrypt, Event, QlCodec, QlError, QlPayload, QlPlatform, RequestResponse, ResetOrigin,
+    encrypt, Event, HandshakeKind, PendingHandshake, QlCodec, QlError, QlPayload, QlPlatform,
+    RequestResponse, ResetOrigin,
 };
 use crate::{ExecutorHandle, HandlerEvent, MessageKind, QlHeader, Responder};
 
@@ -200,11 +201,15 @@ impl<S> Router<S> {
         let now = encrypt::now_secs();
         let valid_until = now.saturating_add(self.platform.message_expiration().as_secs());
         let id = bc_components::ARID::new();
-        peer.set_pending_reset(super::ResetOrigin::Local, id);
+        peer.set_pending_handshake(Some(PendingHandshake {
+            kind: HandshakeKind::SessionReset,
+            origin: super::ResetOrigin::Local,
+            id,
+        }));
         let header_unsigned = QlHeader {
             kind: MessageKind::SessionReset,
             id,
-            sender: self.platform.sender_xid(),
+            sender: self.platform.xid(),
             recipient,
             valid_until,
             kem_ct: Some(kem_ct.clone()),
@@ -316,7 +321,7 @@ fn extract_typed_payload(
     let peer = platform.lookup_peer_or_fail(header.sender)?;
     let session_key = encrypt::session_key_for_header(platform, peer, header)?;
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
-    peer.clear_pending_reset();
+    peer.set_pending_handshake(None);
     QlPayload::try_from(decrypted).map_err(QlError::Decode)
 }
 
@@ -326,9 +331,10 @@ fn extract_reset_payload(
     payload: bc_components::EncryptedMessage,
 ) -> Result<(), QlError> {
     let peer = platform.lookup_peer_or_fail(header.sender)?;
-    if let Some(pending) = peer.pending_reset() {
-        if pending.origin == ResetOrigin::Local {
-            let cmp = reset_cmp(header.sender, header.id, platform.sender_xid(), pending.id);
+    if let Some(pending) = peer.pending_handshake() {
+        if pending.kind == HandshakeKind::SessionReset && pending.origin == ResetOrigin::Local {
+            let cmp =
+                encrypt::handshake_cmp((platform.xid(), pending.id), (header.sender, header.id));
             if cmp != std::cmp::Ordering::Less {
                 return Ok(());
             }
@@ -337,22 +343,14 @@ fn extract_reset_payload(
     let kem_ct = header.kem_ct.as_ref().ok_or(QlError::InvalidPayload)?;
     let session_key = platform.decapsulate_shared_secret(kem_ct)?;
     peer.store_session(session_key.clone());
-    peer.set_pending_reset(ResetOrigin::Peer, header.id);
+    peer.set_pending_handshake(Some(PendingHandshake {
+        kind: HandshakeKind::SessionReset,
+        origin: ResetOrigin::Peer,
+        id: header.id,
+    }));
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
     if !decrypted.is_null() {
         return Err(QlError::InvalidPayload);
     }
     Ok(())
-}
-
-fn reset_cmp(
-    sender: XID,
-    sender_id: ARID,
-    local_origin: XID,
-    local_id: ARID,
-) -> std::cmp::Ordering {
-    match sender.cmp(&local_origin) {
-        std::cmp::Ordering::Equal => sender_id.data().cmp(local_id.data()),
-        order => order,
-    }
 }

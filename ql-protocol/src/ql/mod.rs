@@ -59,6 +59,7 @@ pub enum QlError {
     InvalidSignature,
     MissingHandler(u64),
     MissingSession(XID),
+    SessionInitCollision,
     Send(ExecutorError),
     UnknownPeer(XID),
 }
@@ -75,16 +76,23 @@ impl From<ExecutorError> for QlError {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct QlResetState {
-    pub origin: ResetOrigin,
-    pub id: ARID,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetOrigin {
     Local,
     Peer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandshakeKind {
+    SessionInit,
+    SessionReset,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PendingHandshake {
+    pub kind: HandshakeKind,
+    pub origin: ResetOrigin,
+    pub id: ARID,
 }
 
 pub trait QlPeer {
@@ -92,9 +100,8 @@ pub trait QlPeer {
     fn signing_pub_key(&self) -> &SigningPublicKey;
     fn session(&self) -> Option<SymmetricKey>;
     fn store_session(&self, key: SymmetricKey);
-    fn pending_reset(&self) -> Option<QlResetState>;
-    fn set_pending_reset(&self, origin: ResetOrigin, id: ARID);
-    fn clear_pending_reset(&self);
+    fn pending_handshake(&self) -> Option<PendingHandshake>;
+    fn set_pending_handshake(&self, handshake: Option<PendingHandshake>);
 }
 
 pub trait QlPlatform {
@@ -110,7 +117,7 @@ pub trait QlPlatform {
     fn signer(&self) -> &dyn Signer;
     fn handle_error(&self, e: QlError);
 
-    fn sender_xid(&self) -> XID {
+    fn xid(&self) -> XID {
         XID::new(self.signing_key())
     }
 

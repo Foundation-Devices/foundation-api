@@ -56,6 +56,7 @@ where
                         &response.header.aad_data(),
                         &response.payload,
                     )?;
+                    peer.set_pending_handshake(None);
                     let message = T::try_from(decrypted)?;
                     Ok(message)
                 })
