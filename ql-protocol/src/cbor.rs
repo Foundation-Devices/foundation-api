@@ -5,8 +5,6 @@ pub fn cbor_array<const N: usize>(array: Vec<CBOR>) -> dcbor::Result<[CBOR; N]> 
         return Err(dcbor::Error::msg("invalid array length"));
     }
     array
-        .into_iter()
-        .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| dcbor::Error::msg("invalid array length"))
 }
