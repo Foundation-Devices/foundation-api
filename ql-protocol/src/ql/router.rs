@@ -100,16 +100,6 @@ enum RouterEvent {
     },
 }
 
-impl RouterEvent {
-    fn message_id(&self) -> u64 {
-        match self {
-            RouterEvent::Event { payload, .. } => payload.message_id,
-            RouterEvent::Request { payload, .. } => payload.message_id,
-            RouterEvent::SessionReset { .. } => 0,
-        }
-    }
-}
-
 pub struct RouterBuilder<S, P>
 where
     P: QlPlatform,
@@ -202,8 +192,8 @@ where
         };
         match event {
             RouterEvent::SessionReset { .. } => Ok(()),
-            RouterEvent::Event { .. } => {
-                let message_id = event.message_id();
+            RouterEvent::Event { ref payload, .. } => {
+                let message_id = payload.message_id;
                 let handler = self
                     .handlers
                     .get(&message_id)
