@@ -1,5 +1,5 @@
 pub mod executor;
-pub mod typed;
+pub mod ql;
 pub mod wire;
 
 #[cfg(test)]
@@ -7,11 +7,11 @@ mod test_identity;
 
 pub use executor::{
     Executor, ExecutorConfig, ExecutorHandle, HandlerEvent, HandlerStream, InboundEvent,
-    InboundRequest, PlatformFuture, QlError, QlPlatform, RequestConfig, Responder,
+    InboundRequest, PlatformFuture, QlError, ExecutorPlatform, RequestConfig, Responder,
 };
-pub use typed::{
+pub use ql::{
     Event, EventHandler, QlCodec, RequestHandler, RequestResponse, Router, RouterBuilder,
-    RouterError, TypedExecutorHandle, TypedPayload, TypedRequest, TypedResponder,
+    RouterError, QlPlatform, QlExecutorHandle, QlPayload, QlRequest, QlResponder,
 };
 pub use wire::{
     decode_ql_message, encode_ql_message, DecodeErrContext, DecodeError, EncodeQlConfig,

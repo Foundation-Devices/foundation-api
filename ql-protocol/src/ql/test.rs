@@ -13,12 +13,12 @@ use dcbor::CBOR;
 use oneshot;
 
 use super::{
-    Event, EventHandler, RequestHandler, RequestResponse, Router, RouterPlatform,
-    TypedExecutorHandle, TypedRequest,
+    Event, EventHandler, RequestHandler, RequestResponse, QlExecutorHandle, QlPlatform, Router,
+    QlRequest,
 };
 use crate::{
-    test_identity::TestIdentity, Executor, ExecutorConfig, PlatformFuture, QlError, QlPlatform,
-    RequestConfig,
+    test_identity::TestIdentity, Executor, ExecutorConfig, ExecutorPlatform, PlatformFuture,
+    QlError, RequestConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +95,7 @@ impl TestPlatform {
     }
 }
 
-impl QlPlatform for TestPlatform {
+impl ExecutorPlatform for TestPlatform {
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let tx = self.tx.clone();
         Box::pin(async move { tx.send(message).await.map_err(|_| QlError::Cancelled) })
@@ -132,7 +132,7 @@ impl TestRouterPlatform {
     }
 }
 
-impl RouterPlatform for TestRouterPlatform {
+impl QlPlatform for TestRouterPlatform {
     fn lookup_recipient(&self, _recipient: XID) -> Option<&EncapsulationPublicKey> {
         Some(&self.peer)
     }
@@ -179,7 +179,7 @@ struct TestState {
 }
 
 impl RequestHandler<Ping> for TestState {
-    fn handle(&mut self, request: TypedRequest<Ping>) {
+    fn handle(&mut self, request: QlRequest<Ping>) {
         let response = Pong(request.message.0 + 1);
         let _ = request.responder.respond(response);
     }
@@ -248,10 +248,10 @@ async fn typed_round_trip() {
             ));
             let recipient = server_platform.xid();
 
-            let router = Router::builder()
+            let router = Router::builder(server_handle.clone())
                 .add_request_handler::<Ping>()
                 .add_event_handler::<Notice>()
-                .build(server_platform.clone(), server_handle.clone());
+                .build(server_platform.clone());
 
             let (event_tx, event_rx) = oneshot::channel();
             let mut state = TestState {
@@ -273,7 +273,7 @@ async fn typed_round_trip() {
                 }
             });
 
-            let client_typed = TypedExecutorHandle::new(client_handle, client_platform);
+            let client_typed = QlExecutorHandle::new(client_handle, client_platform);
 
             client_typed
                 .send_event(Notice(7), recipient, Duration::from_secs(60))

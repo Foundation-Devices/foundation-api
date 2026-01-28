@@ -9,16 +9,16 @@ use std::{
 
 use bc_components::{EncapsulationCiphertext, ARID, XID};
 
-use super::{Event, RequestResponse, RouterError, RouterPlatform, TypedPayload};
+use super::{Event, QlPayload, QlPlatform, RequestResponse, RouterError};
 use crate::{
     executor::ExecutorResponse, EncodeQlConfig, ExecutorHandle, MessageKind, QlCodec, QlHeader,
     RequestConfig,
 };
 
 #[derive(Clone)]
-pub struct TypedExecutorHandle {
+pub struct QlExecutorHandle {
     handle: ExecutorHandle,
-    platform: Arc<dyn RouterPlatform>,
+    platform: Arc<dyn QlPlatform>,
 }
 
 pub struct Response<T> {
@@ -30,7 +30,7 @@ enum ResponseInner {
     Err(Option<RouterError>),
     Ok {
         response: ExecutorResponse,
-        platform: Arc<dyn RouterPlatform>,
+        platform: Arc<dyn QlPlatform>,
     },
 }
 
@@ -66,8 +66,8 @@ where
     }
 }
 
-impl TypedExecutorHandle {
-    pub fn new(handle: ExecutorHandle, platform: Arc<dyn RouterPlatform>) -> Self {
+impl QlExecutorHandle {
+    pub fn new(handle: ExecutorHandle, platform: Arc<dyn QlPlatform>) -> Self {
         Self { handle, platform }
     }
 
@@ -81,7 +81,7 @@ impl TypedExecutorHandle {
         M: RequestResponse,
     {
         let platform = self.platform.clone();
-        let payload = TypedPayload {
+        let payload = QlPayload {
             message_id: M::ID,
             payload: message.into(),
         };
@@ -123,7 +123,7 @@ impl TypedExecutorHandle {
     where
         M: Event,
     {
-        let payload = TypedPayload {
+        let payload = QlPayload {
             message_id: M::ID,
             payload: message.into(),
         };

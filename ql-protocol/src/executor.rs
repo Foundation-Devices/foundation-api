@@ -16,7 +16,7 @@ use super::wire::{
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
-pub trait QlPlatform {
+pub trait ExecutorPlatform {
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
 }
@@ -302,7 +302,7 @@ enum LoopStep {
 
 impl<P> Executor<P>
 where
-    P: QlPlatform,
+    P: ExecutorPlatform,
 {
     pub fn new(platform: P, config: ExecutorConfig) -> (Self, ExecutorHandle, HandlerStream) {
         let (tx, rx) = async_channel::unbounded();
@@ -519,7 +519,7 @@ mod test {
         }
     }
 
-    impl QlPlatform for TestPlatform {
+    impl ExecutorPlatform for TestPlatform {
         fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
             let tx = self.tx.clone();
             Box::pin(async move { tx.send(message).await.map_err(|_| QlError::Cancelled) })

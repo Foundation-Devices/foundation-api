@@ -25,18 +25,18 @@ pub trait Event: QlCodec {
 }
 
 #[derive(Debug, Clone)]
-pub struct TypedPayload {
+pub struct QlPayload {
     pub message_id: u64,
     pub payload: CBOR,
 }
 
-impl From<TypedPayload> for CBOR {
-    fn from(value: TypedPayload) -> Self {
+impl From<QlPayload> for CBOR {
+    fn from(value: QlPayload) -> Self {
         CBOR::from(vec![CBOR::from(value.message_id), value.payload])
     }
 }
 
-impl TryFrom<CBOR> for TypedPayload {
+impl TryFrom<CBOR> for QlPayload {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
@@ -74,7 +74,7 @@ impl From<QlError> for RouterError {
     }
 }
 
-pub trait RouterPlatform {
+pub trait QlPlatform {
     fn lookup_recipient(&self, recipient: XID) -> Option<&EncapsulationPublicKey>;
     fn lookup_signing_key(&self, sender: XID) -> Option<&SigningPublicKey>;
     fn session_for_peer(&self, peer: XID) -> Option<SymmetricKey>;
@@ -114,9 +114,9 @@ pub trait RouterPlatform {
     }
 }
 
-pub use handle::TypedExecutorHandle;
+pub use handle::QlExecutorHandle;
 pub use router::{
-    EventHandler, RequestHandler, Router, RouterBuilder, TypedRequest, TypedResponder,
+    EventHandler, RequestHandler, Router, RouterBuilder, QlRequest, QlResponder,
 };
 
 #[cfg(test)]

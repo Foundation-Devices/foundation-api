@@ -3,14 +3,14 @@ use std::{collections::HashMap, sync::Arc};
 use bc_components::{Verifier, XID};
 use dcbor::CBOR;
 
-use super::{Event, QlCodec, RequestResponse, RouterError, RouterPlatform, TypedPayload};
+use super::{Event, QlCodec, QlPayload, QlPlatform, RequestResponse, RouterError};
 use crate::{EncodeQlConfig, ExecutorHandle, HandlerEvent, MessageKind, QlHeader, Responder};
 
 pub trait RequestHandler<M>
 where
     M: RequestResponse,
 {
-    fn handle(&mut self, request: TypedRequest<M>);
+    fn handle(&mut self, request: QlRequest<M>);
     fn default_response() -> M::Response;
 }
 
@@ -21,25 +21,25 @@ where
     fn handle(&mut self, event: M);
 }
 
-pub struct TypedRequest<M>
+pub struct QlRequest<M>
 where
     M: RequestResponse,
 {
     pub message: M,
-    pub responder: TypedResponder<M::Response>,
+    pub responder: QlResponder<M::Response>,
 }
 
-pub struct TypedResponder<R>
+pub struct QlResponder<R>
 where
     R: QlCodec,
 {
     responder: Option<Responder>,
-    platform: Arc<dyn RouterPlatform>,
+    platform: Arc<dyn QlPlatform>,
     recipient: XID,
     default: fn() -> R,
 }
 
-impl<R> TypedResponder<R>
+impl<R> QlResponder<R>
 where
     R: QlCodec,
 {
@@ -80,7 +80,7 @@ where
     }
 }
 
-impl<R> Drop for TypedResponder<R>
+impl<R> Drop for QlResponder<R>
 where
     R: QlCodec,
 {
@@ -92,17 +92,17 @@ where
     }
 }
 
-type RouterHandler<S> = fn(&mut S, RouterEvent, Arc<dyn RouterPlatform>) -> Result<(), RouterError>;
+type RouterHandler<S> = fn(&mut S, RouterEvent, Arc<dyn QlPlatform>) -> Result<(), RouterError>;
 
 enum RouterEvent {
     Event {
         #[allow(unused)]
         header: QlHeader,
-        payload: TypedPayload,
+        payload: QlPayload,
     },
     Request {
         header: QlHeader,
-        payload: TypedPayload,
+        payload: QlPayload,
         responder: Responder,
     },
     SessionReset {
@@ -123,12 +123,14 @@ impl RouterEvent {
 
 pub struct RouterBuilder<S> {
     handlers: HashMap<u64, RouterHandler<S>>,
+    executor: ExecutorHandle,
 }
 
 impl<S> RouterBuilder<S> {
-    pub fn new() -> Self {
+    pub fn new(executor: ExecutorHandle) -> Self {
         Self {
             handlers: HashMap::new(),
+            executor,
         }
     }
 
@@ -148,11 +150,11 @@ impl<S> RouterBuilder<S> {
         self.add_handler(M::ID, handle_event::<M, S>)
     }
 
-    pub fn build(self, platform: Arc<dyn RouterPlatform>, executor: ExecutorHandle) -> Router<S> {
+    pub fn build(self, platform: Arc<dyn QlPlatform>) -> Router<S> {
         Router {
             platform,
             handlers: self.handlers,
-            executor,
+            executor: self.executor,
         }
     }
 
@@ -165,14 +167,14 @@ impl<S> RouterBuilder<S> {
 }
 
 pub struct Router<S> {
-    platform: Arc<dyn RouterPlatform>,
+    platform: Arc<dyn QlPlatform>,
     handlers: HashMap<u64, RouterHandler<S>>,
     executor: ExecutorHandle,
 }
 
 impl<S> Router<S> {
-    pub fn builder() -> RouterBuilder<S> {
-        RouterBuilder::new()
+    pub fn builder(executor: ExecutorHandle) -> RouterBuilder<S> {
+        RouterBuilder::new(executor)
     }
 
     pub fn handle(&self, state: &mut S, event: HandlerEvent) -> Result<(), RouterError> {
@@ -253,7 +255,7 @@ impl<S> Router<S> {
 fn handle_request<M, S>(
     state: &mut S,
     event: RouterEvent,
-    platform: Arc<dyn RouterPlatform>,
+    platform: Arc<dyn QlPlatform>,
 ) -> Result<(), RouterError>
 where
     M: RequestResponse,
@@ -269,20 +271,20 @@ where
         RouterEvent::SessionReset { .. } => unreachable!("expected request event"),
     };
     let message = M::try_from(payload.payload)?;
-    let responder = TypedResponder {
+    let responder = QlResponder {
         responder: Some(responder),
         platform,
         recipient: header.sender,
         default: S::default_response,
     };
-    state.handle(TypedRequest { message, responder });
+    state.handle(QlRequest { message, responder });
     Ok(())
 }
 
 fn handle_event<M, S>(
     state: &mut S,
     event: RouterEvent,
-    _platform: Arc<dyn RouterPlatform>,
+    _platform: Arc<dyn QlPlatform>,
 ) -> Result<(), RouterError>
 where
     M: Event,
@@ -300,7 +302,7 @@ where
 
 fn decrypt_event(
     event: HandlerEvent,
-    platform: &dyn RouterPlatform,
+    platform: &dyn QlPlatform,
 ) -> Result<RouterEvent, RouterError> {
     match event {
         HandlerEvent::Request(request) => {
@@ -338,7 +340,7 @@ fn decrypt_event(
     }
 }
 
-fn verify_header(platform: &dyn RouterPlatform, header: &QlHeader) -> Result<(), RouterError> {
+fn verify_header(platform: &dyn QlPlatform, header: &QlHeader) -> Result<(), RouterError> {
     if header.kem_ct.is_none() {
         return Ok(());
     }
@@ -357,10 +359,10 @@ fn verify_header(platform: &dyn RouterPlatform, header: &QlHeader) -> Result<(),
 }
 
 fn extract_typed_payload(
-    platform: &dyn RouterPlatform,
+    platform: &dyn QlPlatform,
     header: &QlHeader,
     payload: bc_components::EncryptedMessage,
-) -> Result<TypedPayload, RouterError> {
+) -> Result<QlPayload, RouterError> {
     let session_key = if let Some(kem_ct) = &header.kem_ct {
         let key = platform.decapsulate_shared_secret(kem_ct)?;
         platform.store_session(header.sender, key.clone());
@@ -371,11 +373,11 @@ fn extract_typed_payload(
             .ok_or(RouterError::MissingSession(header.sender))?
     };
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
-    TypedPayload::try_from(decrypted).map_err(RouterError::Decode)
+    QlPayload::try_from(decrypted).map_err(RouterError::Decode)
 }
 
 fn extract_reset_payload(
-    platform: &dyn RouterPlatform,
+    platform: &dyn QlPlatform,
     header: &QlHeader,
     payload: bc_components::EncryptedMessage,
 ) -> Result<(), RouterError> {
