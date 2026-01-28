@@ -9,7 +9,7 @@ use std::{
 
 use bc_components::{EncapsulationCiphertext, ARID, XID};
 
-use super::{Event, QlPayload, QlPlatform, RequestResponse, RouterError};
+use super::{Event, QlError, QlPayload, QlPlatform, RequestResponse};
 use crate::{
     executor::ExecutorResponse, EncodeQlConfig, ExecutorHandle, MessageKind, QlCodec, QlHeader,
     RequestConfig,
@@ -27,7 +27,7 @@ pub struct Response<T> {
 }
 
 enum ResponseInner {
-    Err(Option<RouterError>),
+    Err(Option<QlError>),
     Ok {
         response: ExecutorResponse,
         platform: Arc<dyn QlPlatform>,
@@ -38,21 +38,22 @@ impl<T> Future for Response<T>
 where
     T: QlCodec,
 {
-    type Output = Result<T, RouterError>;
+    type Output = Result<T, QlError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match &mut self.inner {
             ResponseInner::Err(e) => {
                 let e = e.take();
-                let e = e.unwrap_or(RouterError::Send(crate::QlError::Cancelled));
+                let e = e.unwrap_or(QlError::Send(crate::ExecutorError::Cancelled));
                 Poll::Ready(Err(e))
             }
             ResponseInner::Ok { response, platform } => {
                 Pin::new(response).poll(cx).map(|response| {
                     let response = response?;
-                    let session_key = platform
-                        .session_for_peer(response.header.sender)
-                        .ok_or(RouterError::MissingSession(response.header.sender))?;
+                    let peer = platform.lookup_peer_or_fail(response.header.sender)?;
+                    let session_key = peer
+                        .session()
+                        .ok_or(QlError::MissingSession(response.header.sender))?;
                     let decrypted = platform.decrypt_message(
                         &session_key,
                         &response.header.aad_data(),
@@ -119,7 +120,7 @@ impl QlExecutorHandle {
         message: M,
         recipient: XID,
         _valid_for: Duration,
-    ) -> Result<(), RouterError>
+    ) -> Result<(), QlError>
     where
         M: Event,
     {
@@ -145,11 +146,12 @@ impl QlExecutorHandle {
         kind: MessageKind,
         message_id: ARID,
         payload: dcbor::CBOR,
-    ) -> Result<(bc_components::EncryptedMessage, EncodeQlConfig), RouterError> {
+    ) -> Result<(bc_components::EncryptedMessage, EncodeQlConfig), QlError> {
         let platform = self.platform.as_ref();
-        let (session_key, kem_ct, sign_header) = match platform.session_for_peer(recipient) {
+        let peer = platform.lookup_peer_or_fail(recipient)?;
+        let (session_key, kem_ct, sign_header) = match peer.session() {
             Some(session_key) => (session_key, None, false),
-            None => self.create_session(recipient)?,
+            None => self.create_session(peer)?,
         };
         let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
         let header_unsigned = QlHeader {
@@ -176,21 +178,18 @@ impl QlExecutorHandle {
 
     fn create_session(
         &self,
-        recipient: XID,
+        peer: &dyn super::QlPeer,
     ) -> Result<
         (
             bc_components::SymmetricKey,
             Option<EncapsulationCiphertext>,
             bool,
         ),
-        RouterError,
+        QlError,
     > {
-        let platform = self.platform.as_ref();
-        let recipient_key = platform
-            .lookup_recipient(recipient)
-            .ok_or(RouterError::UnknownRecipient(recipient))?;
+        let recipient_key = peer.encapsulation_pub_key();
         let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
-        platform.store_session(recipient, session_key.clone());
+        peer.store_session(session_key.clone());
         Ok((session_key, Some(kem_ct), true))
     }
 }

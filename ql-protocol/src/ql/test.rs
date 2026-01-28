@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -13,12 +12,12 @@ use dcbor::CBOR;
 use oneshot;
 
 use super::{
-    Event, EventHandler, RequestHandler, RequestResponse, QlExecutorHandle, QlPlatform, Router,
-    QlRequest,
+    Event, EventHandler, QlExecutorHandle, QlPeer, QlPlatform, QlRequest, RequestHandler,
+    RequestResponse, Router,
 };
 use crate::{
-    test_identity::TestIdentity, Executor, ExecutorConfig, ExecutorPlatform, PlatformFuture,
-    QlError, RequestConfig,
+    test_identity::TestIdentity, Executor, ExecutorConfig, ExecutorError, ExecutorPlatform,
+    PlatformFuture, RequestConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,21 +95,57 @@ impl TestPlatform {
 }
 
 impl ExecutorPlatform for TestPlatform {
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), ExecutorError>> {
         let tx = self.tx.clone();
-        Box::pin(async move { tx.send(message).await.map_err(|_| QlError::Cancelled) })
+        Box::pin(async move { tx.send(message).await.map_err(|_| ExecutorError::Cancelled) })
+    }
+    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
+        Box::pin(tokio::time::sleep(duration))
+    }
+}
+
+struct TestPeer {
+    encapsulation_public_key: EncapsulationPublicKey,
+    signing_public_key: SigningPublicKey,
+    session: Mutex<Option<SymmetricKey>>,
+}
+
+impl TestPeer {
+    fn new(
+        encapsulation_public_key: EncapsulationPublicKey,
+        signing_public_key: SigningPublicKey,
+    ) -> Self {
+        Self {
+            encapsulation_public_key,
+            signing_public_key,
+            session: Mutex::new(None),
+        }
+    }
+}
+
+impl QlPeer for TestPeer {
+    fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey {
+        &self.encapsulation_public_key
     }
 
-    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
-        Box::pin(async move { tokio::time::sleep(duration).await })
+    fn signing_pub_key(&self) -> &SigningPublicKey {
+        &self.signing_public_key
+    }
+
+    fn session(&self) -> Option<SymmetricKey> {
+        self.session.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    fn store_session(&self, key: SymmetricKey) {
+        if let Ok(mut guard) = self.session.lock() {
+            *guard = Some(key);
+        }
     }
 }
 
 struct TestRouterPlatform {
     identity: TestIdentity,
-    peer: EncapsulationPublicKey,
-    peer_signing_key: SigningPublicKey,
-    sessions: Mutex<HashMap<XID, SymmetricKey>>,
+    peer: TestPeer,
 }
 
 impl TestRouterPlatform {
@@ -121,9 +156,7 @@ impl TestRouterPlatform {
     ) -> Self {
         Self {
             identity,
-            peer,
-            peer_signing_key,
-            sessions: Mutex::new(HashMap::new()),
+            peer: TestPeer::new(peer, peer_signing_key),
         }
     }
 
@@ -133,25 +166,11 @@ impl TestRouterPlatform {
 }
 
 impl QlPlatform for TestRouterPlatform {
-    fn lookup_recipient(&self, _recipient: XID) -> Option<&EncapsulationPublicKey> {
-        Some(&self.peer)
-    }
-
-    fn lookup_signing_key(&self, sender: XID) -> Option<&SigningPublicKey> {
-        if sender == XID::new(&self.peer_signing_key) {
-            Some(&self.peer_signing_key)
+    fn lookup_peer(&self, peer: XID) -> Option<&dyn QlPeer> {
+        if peer == XID::new(&self.peer.signing_public_key) {
+            Some(&self.peer)
         } else {
             None
-        }
-    }
-
-    fn session_for_peer(&self, peer: XID) -> Option<SymmetricKey> {
-        self.sessions.lock().ok()?.get(&peer).cloned()
-    }
-
-    fn store_session(&self, peer: XID, key: SymmetricKey) {
-        if let Ok(mut sessions) = self.sessions.lock() {
-            sessions.insert(peer, key);
         }
     }
 
@@ -171,7 +190,7 @@ impl QlPlatform for TestRouterPlatform {
         &self.identity.private_keys
     }
 
-    fn handle_error(&self, _e: super::RouterError) {}
+    fn handle_error(&self, _e: super::QlError) {}
 }
 
 struct TestState {

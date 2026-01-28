@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use bc_components::{Verifier, XID};
 use dcbor::CBOR;
 
-use super::{Event, QlCodec, QlPayload, QlPlatform, RequestResponse, RouterError};
+use super::{Event, QlCodec, QlError, QlPayload, QlPlatform, RequestResponse};
 use crate::{EncodeQlConfig, ExecutorHandle, HandlerEvent, MessageKind, QlHeader, Responder};
 
 pub trait RequestHandler<M>
@@ -43,17 +43,17 @@ impl<R> QlResponder<R>
 where
     R: QlCodec,
 {
-    pub fn respond(mut self, response: R) -> Result<(), RouterError> {
+    pub fn respond(mut self, response: R) -> Result<(), QlError> {
         self.respond_inner(response)
     }
 
-    fn respond_inner(&mut self, response: R) -> Result<(), RouterError> {
+    fn respond_inner(&mut self, response: R) -> Result<(), QlError> {
         let responder = self.responder.take().unwrap();
         let payload = response.into();
-        let session_key = self
-            .platform
-            .session_for_peer(self.recipient)
-            .ok_or(RouterError::MissingSession(self.recipient))?;
+        let peer = self.platform.lookup_peer_or_fail(self.recipient)?;
+        let session_key = peer
+            .session()
+            .ok_or(QlError::MissingSession(self.recipient))?;
         let now = now_secs();
         let valid_until = now.saturating_add(self.platform.message_expiration().as_secs());
         let header_unsigned = QlHeader {
@@ -92,7 +92,7 @@ where
     }
 }
 
-type RouterHandler<S> = fn(&mut S, RouterEvent, Arc<dyn QlPlatform>) -> Result<(), RouterError>;
+type RouterHandler<S> = fn(&mut S, RouterEvent, Arc<dyn QlPlatform>) -> Result<(), QlError>;
 
 enum RouterEvent {
     Event {
@@ -177,7 +177,7 @@ impl<S> Router<S> {
         RouterBuilder::new(executor)
     }
 
-    pub fn handle(&self, state: &mut S, event: HandlerEvent) -> Result<(), RouterError> {
+    pub fn handle(&self, state: &mut S, event: HandlerEvent) -> Result<(), QlError> {
         let sender = match &event {
             HandlerEvent::Request(request) => &request.message.header,
             HandlerEvent::Event(event) => &event.message.header,
@@ -186,10 +186,7 @@ impl<S> Router<S> {
         let event = match decrypt_event(event, self.platform.as_ref()) {
             Ok(event) => event,
             Err(error) => {
-                if matches!(
-                    error,
-                    RouterError::MissingSession(_) | RouterError::InvalidPayload
-                ) {
+                if matches!(error, QlError::MissingSession(_) | QlError::InvalidPayload) {
                     let _ = self.send_session_reset(sender);
                 }
                 return Err(error);
@@ -202,7 +199,7 @@ impl<S> Router<S> {
                 let handler = self
                     .handlers
                     .get(&message_id)
-                    .ok_or(RouterError::MissingHandler(message_id))?;
+                    .ok_or(QlError::MissingHandler(message_id))?;
                 handler(state, event, self.platform.clone())
             }
         }
@@ -210,14 +207,12 @@ impl<S> Router<S> {
 }
 
 impl<S> Router<S> {
-    fn send_session_reset(&self, recipient: XID) -> Result<(), RouterError> {
+    fn send_session_reset(&self, recipient: XID) -> Result<(), QlError> {
         let executor = self.executor.clone();
-        let recipient_key = self
-            .platform
-            .lookup_recipient(recipient)
-            .ok_or(RouterError::UnknownRecipient(recipient))?;
+        let peer = self.platform.lookup_peer_or_fail(recipient)?;
+        let recipient_key = peer.encapsulation_pub_key();
         let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
-        self.platform.store_session(recipient, session_key.clone());
+        peer.store_session(session_key.clone());
 
         let now = now_secs();
         let valid_until = now.saturating_add(self.platform.message_expiration().as_secs());
@@ -256,7 +251,7 @@ fn handle_request<M, S>(
     state: &mut S,
     event: RouterEvent,
     platform: Arc<dyn QlPlatform>,
-) -> Result<(), RouterError>
+) -> Result<(), QlError>
 where
     M: RequestResponse,
     S: RequestHandler<M>,
@@ -285,7 +280,7 @@ fn handle_event<M, S>(
     state: &mut S,
     event: RouterEvent,
     _platform: Arc<dyn QlPlatform>,
-) -> Result<(), RouterError>
+) -> Result<(), QlError>
 where
     M: Event,
     S: EventHandler<M>,
@@ -300,10 +295,7 @@ where
     Ok(())
 }
 
-fn decrypt_event(
-    event: HandlerEvent,
-    platform: &dyn QlPlatform,
-) -> Result<RouterEvent, RouterError> {
+fn decrypt_event(event: HandlerEvent, platform: &dyn QlPlatform) -> Result<RouterEvent, QlError> {
     match event {
         HandlerEvent::Request(request) => {
             verify_header(platform, &request.message.header)?;
@@ -340,21 +332,17 @@ fn decrypt_event(
     }
 }
 
-fn verify_header(platform: &dyn QlPlatform, header: &QlHeader) -> Result<(), RouterError> {
+fn verify_header(platform: &dyn QlPlatform, header: &QlHeader) -> Result<(), QlError> {
     if header.kem_ct.is_none() {
         return Ok(());
     }
-    let signature = header
-        .signature
-        .as_ref()
-        .ok_or(RouterError::InvalidSignature)?;
-    let signing_key = platform
-        .lookup_signing_key(header.sender)
-        .ok_or(RouterError::UnknownSender(header.sender))?;
+    let signature = header.signature.as_ref().ok_or(QlError::InvalidSignature)?;
+    let peer = platform.lookup_peer_or_fail(header.sender)?;
+    let signing_key = peer.signing_pub_key();
     if signing_key.verify(signature, &header.aad_data()) {
         Ok(())
     } else {
-        Err(RouterError::InvalidSignature)
+        Err(QlError::InvalidSignature)
     }
 }
 
@@ -362,31 +350,33 @@ fn extract_typed_payload(
     platform: &dyn QlPlatform,
     header: &QlHeader,
     payload: bc_components::EncryptedMessage,
-) -> Result<QlPayload, RouterError> {
+) -> Result<QlPayload, QlError> {
     let session_key = if let Some(kem_ct) = &header.kem_ct {
         let key = platform.decapsulate_shared_secret(kem_ct)?;
-        platform.store_session(header.sender, key.clone());
+        let peer = platform.lookup_peer_or_fail(header.sender)?;
+        peer.store_session(key.clone());
         key
     } else {
-        platform
-            .session_for_peer(header.sender)
-            .ok_or(RouterError::MissingSession(header.sender))?
+        let peer = platform.lookup_peer_or_fail(header.sender)?;
+        peer.session()
+            .ok_or(QlError::MissingSession(header.sender))?
     };
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
-    QlPayload::try_from(decrypted).map_err(RouterError::Decode)
+    QlPayload::try_from(decrypted).map_err(QlError::Decode)
 }
 
 fn extract_reset_payload(
     platform: &dyn QlPlatform,
     header: &QlHeader,
     payload: bc_components::EncryptedMessage,
-) -> Result<(), RouterError> {
-    let kem_ct = header.kem_ct.as_ref().ok_or(RouterError::InvalidPayload)?;
+) -> Result<(), QlError> {
+    let kem_ct = header.kem_ct.as_ref().ok_or(QlError::InvalidPayload)?;
     let session_key = platform.decapsulate_shared_secret(kem_ct)?;
-    platform.store_session(header.sender, session_key.clone());
+    let peer = platform.lookup_peer_or_fail(header.sender)?;
+    peer.store_session(session_key.clone());
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
     if !decrypted.is_null() {
-        return Err(RouterError::InvalidPayload);
+        return Err(QlError::InvalidPayload);
     }
     Ok(())
 }

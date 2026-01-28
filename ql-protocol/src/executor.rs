@@ -17,12 +17,12 @@ use super::wire::{
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 pub trait ExecutorPlatform {
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), ExecutorError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
 }
 
 #[derive(Debug)]
-pub enum QlError {
+pub enum ExecutorError {
     Cancelled,
     Protocol,
     SessionReset,
@@ -85,7 +85,7 @@ impl Responder {
         payload: EncryptedMessage,
         encode_config: EncodeQlConfig,
         signer: &dyn Signer,
-    ) -> Result<(), QlError> {
+    ) -> Result<(), ExecutorError> {
         let bytes = encode_ql_message(
             MessageKind::Response,
             self.id,
@@ -95,7 +95,7 @@ impl Responder {
         );
         self.tx
             .send_blocking(ExecutorEvent::SendResponse { bytes })
-            .map_err(|_| QlError::Cancelled)
+            .map_err(|_| ExecutorError::Cancelled)
     }
 }
 
@@ -105,13 +105,13 @@ pub struct HandlerStream {
 }
 
 impl HandlerStream {
-    pub async fn next(&mut self) -> Result<HandlerEvent, QlError> {
-        self.rx.recv().await.map_err(|_| QlError::Cancelled)
+    pub async fn next(&mut self) -> Result<HandlerEvent, ExecutorError> {
+        self.rx.recv().await.map_err(|_| ExecutorError::Cancelled)
     }
 }
 
 impl futures_lite::Stream for HandlerStream {
-    type Item = Result<HandlerEvent, QlError>;
+    type Item = Result<HandlerEvent, ExecutorError>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -132,7 +132,7 @@ enum ExecutorEvent {
         id: ARID,
         recipient: XID,
         bytes: Vec<u8>,
-        respond_to: oneshot::Sender<Result<QlMessage, QlError>>,
+        respond_to: oneshot::Sender<Result<QlMessage, ExecutorError>>,
         config: RequestConfig,
     },
     SendEvent {
@@ -155,16 +155,16 @@ pub struct ExecutorHandle {
 }
 
 pub struct ExecutorResponse {
-    rx: oneshot::Receiver<Result<QlMessage, QlError>>,
+    rx: oneshot::Receiver<Result<QlMessage, ExecutorError>>,
 }
 
 impl std::future::Future for ExecutorResponse {
-    type Output = Result<QlMessage, QlError>;
+    type Output = Result<QlMessage, ExecutorError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         pin!(&mut self.rx)
             .poll(cx)
-            .map(|result| result.unwrap_or(Err(QlError::Cancelled)))
+            .map(|result| result.unwrap_or(Err(ExecutorError::Cancelled)))
     }
 }
 
@@ -219,12 +219,12 @@ impl ExecutorHandle {
             .unwrap();
     }
 
-    pub fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
+    pub fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), ExecutorError> {
         match decode_ql_message(&bytes) {
             Ok(message) => self
                 .tx
                 .send_blocking(ExecutorEvent::Incoming { message })
-                .map_err(|_| QlError::Cancelled),
+                .map_err(|_| ExecutorError::Cancelled),
             Err(context) => {
                 let _ = self
                     .tx
@@ -257,11 +257,11 @@ struct OutboundBytes {
 
 struct InFlightWrite<'a> {
     id: Option<ARID>,
-    future: PlatformFuture<'a, Result<(), QlError>>,
+    future: PlatformFuture<'a, Result<(), ExecutorError>>,
 }
 
 struct PendingEntry {
-    tx: oneshot::Sender<Result<QlMessage, QlError>>,
+    tx: oneshot::Sender<Result<QlMessage, ExecutorError>>,
     recipient: XID,
 }
 
@@ -295,7 +295,7 @@ enum LoopStep {
     Event(Result<ExecutorEvent, async_channel::RecvError>),
     WriteDone {
         id: Option<ARID>,
-        result: Result<(), QlError>,
+        result: Result<(), ExecutorError>,
     },
     Timeout,
 }
@@ -383,7 +383,7 @@ where
                         let effective_timeout =
                             config.timeout.unwrap_or(self.config.default_timeout);
                         if effective_timeout.is_zero() {
-                            let _ = respond_to.send(Err(QlError::Timeout));
+                            let _ = respond_to.send(Err(ExecutorError::Timeout));
                             continue;
                         }
                         let deadline = Instant::now() + effective_timeout;
@@ -447,7 +447,7 @@ where
                         };
                         if header.kind == MessageKind::Response {
                             if let Some(entry) = state.pending.remove(&header.id) {
-                                let _ = entry.tx.send(Err(QlError::Decode(context.error)));
+                                let _ = entry.tx.send(Err(ExecutorError::Decode(context.error)));
                             }
                         }
                     }
@@ -478,7 +478,7 @@ where
             }
             state.timeouts.pop();
             if let Some(pending) = state.pending.remove(&entry.id) {
-                let _ = pending.tx.send(Err(QlError::Timeout));
+                let _ = pending.tx.send(Err(ExecutorError::Timeout));
             }
         }
     }
@@ -488,7 +488,7 @@ where
             .pending
             .extract_if(|_, entry| entry.recipient == sender)
         {
-            let _ = entry.tx.send(Err(QlError::SessionReset));
+            let _ = entry.tx.send(Err(ExecutorError::SessionReset));
         }
     }
 
@@ -520,9 +520,9 @@ mod test {
     }
 
     impl ExecutorPlatform for TestPlatform {
-        fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
+        fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), ExecutorError>> {
             let tx = self.tx.clone();
-            Box::pin(async move { tx.send(message).await.map_err(|_| QlError::Cancelled) })
+            Box::pin(async move { tx.send(message).await.map_err(|_| ExecutorError::Cancelled) })
         }
 
         fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
@@ -645,7 +645,7 @@ mod test {
                     )
                     .await;
 
-                assert!(matches!(result, Err(QlError::Timeout)));
+                assert!(matches!(result, Err(ExecutorError::Timeout)));
             })
             .await;
     }
@@ -743,7 +743,7 @@ mod test {
                 handle.send_incoming(response_bytes).unwrap();
 
                 let response = response_task.await.unwrap();
-                assert!(matches!(response, Err(QlError::Decode(_))));
+                assert!(matches!(response, Err(ExecutorError::Decode(_))));
             })
             .await;
     }

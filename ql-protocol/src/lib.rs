@@ -6,12 +6,12 @@ pub mod wire;
 mod test_identity;
 
 pub use executor::{
-    Executor, ExecutorConfig, ExecutorHandle, HandlerEvent, HandlerStream, InboundEvent,
-    InboundRequest, PlatformFuture, QlError, ExecutorPlatform, RequestConfig, Responder,
+    Executor, ExecutorConfig, ExecutorError, ExecutorHandle, ExecutorPlatform, HandlerEvent,
+    HandlerStream, InboundEvent, InboundRequest, PlatformFuture, RequestConfig, Responder,
 };
 pub use ql::{
-    Event, EventHandler, QlCodec, RequestHandler, RequestResponse, Router, RouterBuilder,
-    RouterError, QlPlatform, QlExecutorHandle, QlPayload, QlRequest, QlResponder,
+    Event, EventHandler, QlCodec, QlExecutorHandle, QlPayload, QlPeer, QlPlatform, QlRequest,
+    QlResponder, RequestHandler, RequestResponse, Router, RouterBuilder, QlError,
 };
 pub use wire::{
     decode_ql_message, encode_ql_message, DecodeErrContext, DecodeError, EncodeQlConfig,

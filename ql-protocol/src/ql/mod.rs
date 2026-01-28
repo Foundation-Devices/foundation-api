@@ -6,7 +6,7 @@ use bc_components::{
 };
 use dcbor::CBOR;
 
-use crate::{cbor::cbor_array, QlError};
+use crate::{cbor::cbor_array, ExecutorError};
 
 pub mod handle;
 pub mod router;
@@ -51,39 +51,47 @@ impl TryFrom<CBOR> for QlPayload {
 }
 
 #[derive(Debug)]
-pub enum RouterError {
+pub enum QlError {
     Decode(dcbor::Error),
     InvalidPayload,
     InvalidSignature,
     MissingHandler(u64),
     MissingSession(XID),
-    Send(QlError),
-    UnknownRecipient(XID),
-    UnknownSender(XID),
+    Send(ExecutorError),
+    UnknownPeer(XID),
 }
 
-impl From<dcbor::Error> for RouterError {
+impl From<dcbor::Error> for QlError {
     fn from(error: dcbor::Error) -> Self {
         Self::Decode(error)
     }
 }
 
-impl From<QlError> for RouterError {
-    fn from(error: QlError) -> Self {
+impl From<ExecutorError> for QlError {
+    fn from(error: ExecutorError) -> Self {
         Self::Send(error)
     }
 }
 
+pub trait QlPeer {
+    fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey;
+    fn signing_pub_key(&self) -> &SigningPublicKey;
+    fn session(&self) -> Option<SymmetricKey>;
+    fn store_session(&self, key: SymmetricKey);
+}
+
 pub trait QlPlatform {
-    fn lookup_recipient(&self, recipient: XID) -> Option<&EncapsulationPublicKey>;
-    fn lookup_signing_key(&self, sender: XID) -> Option<&SigningPublicKey>;
-    fn session_for_peer(&self, peer: XID) -> Option<SymmetricKey>;
-    fn store_session(&self, peer: XID, key: SymmetricKey);
+    fn lookup_peer(&self, peer: XID) -> Option<&dyn QlPeer>;
+    fn lookup_peer_or_fail(&self, peer: XID) -> Result<&dyn QlPeer, QlError> {
+        self.lookup_peer(peer)
+            .ok_or_else(|| QlError::UnknownPeer(peer))
+    }
+
     fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
     fn signing_key(&self) -> &SigningPublicKey;
     fn message_expiration(&self) -> Duration;
     fn signer(&self) -> &dyn Signer;
-    fn handle_error(&self, e: RouterError);
+    fn handle_error(&self, e: QlError);
 
     fn sender_xid(&self) -> XID {
         XID::new(self.signing_key())
@@ -92,10 +100,10 @@ pub trait QlPlatform {
     fn decapsulate_shared_secret(
         &self,
         ciphertext: &EncapsulationCiphertext,
-    ) -> Result<SymmetricKey, RouterError> {
+    ) -> Result<SymmetricKey, QlError> {
         self.encapsulation_private_key()
             .decapsulate_shared_secret(ciphertext)
-            .map_err(|_| RouterError::InvalidPayload)
+            .map_err(|_| QlError::InvalidPayload)
     }
 
     fn decrypt_message(
@@ -103,21 +111,17 @@ pub trait QlPlatform {
         key: &SymmetricKey,
         header_aad: &[u8],
         payload: &EncryptedMessage,
-    ) -> Result<CBOR, RouterError> {
+    ) -> Result<CBOR, QlError> {
         if payload.aad() != header_aad {
-            return Err(RouterError::InvalidPayload);
+            return Err(QlError::InvalidPayload);
         }
-        let plaintext = key
-            .decrypt(payload)
-            .map_err(|_| RouterError::InvalidPayload)?;
+        let plaintext = key.decrypt(payload).map_err(|_| QlError::InvalidPayload)?;
         Ok(CBOR::try_from_data(plaintext)?)
     }
 }
 
 pub use handle::QlExecutorHandle;
-pub use router::{
-    EventHandler, RequestHandler, Router, RouterBuilder, QlRequest, QlResponder,
-};
+pub use router::{EventHandler, QlRequest, QlResponder, RequestHandler, Router, RouterBuilder};
 
 #[cfg(test)]
 mod test;
