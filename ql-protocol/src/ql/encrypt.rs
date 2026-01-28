@@ -12,17 +12,20 @@ use dcbor::CBOR;
 use super::{HandshakeKind, PendingHandshake, QlError, QlPeer, QlPlatform, ResetOrigin};
 use crate::{cbor::cbor_array, MessageKind, QlHeader};
 
-pub(crate) fn encrypt_payload_for_recipient(
-    platform: &dyn QlPlatform,
+pub(crate) fn encrypt_payload_for_recipient<P>(
+    platform: &P,
     recipient: XID,
     kind: MessageKind,
     message_id: ARID,
     payload: CBOR,
-) -> Result<(QlHeader, EncryptedMessage), QlError> {
+) -> Result<(QlHeader, EncryptedMessage), QlError>
+where
+    P: QlPlatform,
+{
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let (session_key, kem_ct, should_sign_header) = match peer.session() {
         Some(session_key) => (session_key, None, false),
-        None => create_session(peer, message_id)?,
+        None => create_session(&peer, message_id)?,
     };
     let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
     Ok(encrypt_payload_with_header(
@@ -39,12 +42,15 @@ pub(crate) fn encrypt_payload_for_recipient(
     ))
 }
 
-pub(crate) fn encrypt_response(
-    platform: &dyn QlPlatform,
+pub(crate) fn encrypt_response<P>(
+    platform: &P,
     recipient: XID,
     message_id: ARID,
     payload: CBOR,
-) -> Result<(QlHeader, EncryptedMessage), QlError> {
+) -> Result<(QlHeader, EncryptedMessage), QlError>
+where
+    P: QlPlatform,
+{
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let session_key = peer.session().ok_or(QlError::MissingSession(recipient))?;
     let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
@@ -62,11 +68,14 @@ pub(crate) fn encrypt_response(
     ))
 }
 
-pub(crate) fn encrypt_pairing_request(
-    platform: &dyn QlPlatform,
+pub(crate) fn encrypt_pairing_request<P>(
+    platform: &P,
     recipient_signing_key: &SigningPublicKey,
     recipient_encapsulation_key: &EncapsulationPublicKey,
-) -> Result<(QlHeader, EncryptedMessage), QlError> {
+) -> Result<(QlHeader, EncryptedMessage), QlError>
+where
+    P: QlPlatform,
+{
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
     let recipient = XID::new(recipient_signing_key);
     let message_id = ARID::new();
@@ -101,11 +110,14 @@ pub(crate) fn encrypt_pairing_request(
     Ok((header, encrypted))
 }
 
-pub(crate) fn decrypt_pairing_payload(
-    platform: &dyn QlPlatform,
+pub(crate) fn decrypt_pairing_payload<P>(
+    platform: &P,
     header: &QlHeader,
     payload: &EncryptedMessage,
-) -> Result<(PairingPayload, SymmetricKey), QlError> {
+) -> Result<(PairingPayload, SymmetricKey), QlError>
+where
+    P: QlPlatform,
+{
     ensure_not_expired(header)?;
     let kem_ct = header.kem_ct.as_ref().ok_or(QlError::InvalidPayload)?;
     let session_key = platform.decapsulate_shared_secret(kem_ct)?;
@@ -126,7 +138,10 @@ pub(crate) fn decrypt_pairing_payload(
     }
 }
 
-pub(crate) fn verify_header(platform: &dyn QlPlatform, header: &QlHeader) -> Result<(), QlError> {
+pub(crate) fn verify_header<P>(platform: &P, header: &QlHeader) -> Result<(), QlError>
+where
+    P: QlPlatform,
+{
     ensure_not_expired(header)?;
     if header.kem_ct.is_none() {
         return Ok(());
@@ -151,11 +166,14 @@ pub(crate) fn ensure_not_expired(header: &QlHeader) -> Result<(), QlError> {
     }
 }
 
-pub(crate) fn session_key_for_header(
-    platform: &dyn QlPlatform,
-    peer: &dyn QlPeer,
+pub(crate) fn session_key_for_header<P>(
+    platform: &P,
+    peer: &P::Peer,
     header: &QlHeader,
-) -> Result<SymmetricKey, QlError> {
+) -> Result<SymmetricKey, QlError>
+where
+    P: QlPlatform,
+{
     if let Some(kem_ct) = &header.kem_ct {
         if let Some(pending) = peer.pending_handshake() {
             if pending.kind == HandshakeKind::SessionInit && pending.origin == ResetOrigin::Local {
@@ -268,7 +286,7 @@ impl TryFrom<CBOR> for PairingPayload {
 }
 
 fn create_session(
-    peer: &dyn QlPeer,
+    peer: &impl QlPeer,
     message_id: ARID,
 ) -> Result<(SymmetricKey, Option<EncapsulationCiphertext>, bool), QlError> {
     let recipient_key = peer.encapsulation_pub_key();

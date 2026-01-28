@@ -9,31 +9,41 @@ use std::{
 
 use bc_components::{EncapsulationPublicKey, SigningPublicKey, ARID, XID};
 
-use super::{encrypt, Event, QlError, QlPayload, QlPlatform, RequestResponse};
+use super::{encrypt, Event, QlError, QlPayload, QlPeer, QlPlatform, RequestResponse};
 use crate::{executor::ExecutorResponse, ExecutorHandle, MessageKind, QlCodec, RequestConfig};
 
 #[derive(Clone)]
-pub struct QlExecutorHandle {
+pub struct QlExecutorHandle<P>
+where
+    P: QlPlatform,
+{
     handle: ExecutorHandle,
-    platform: Arc<dyn QlPlatform>,
+    platform: Arc<P>,
 }
 
-pub struct Response<T> {
-    inner: ResponseInner,
+pub struct Response<T, P>
+where
+    P: QlPlatform,
+{
+    inner: ResponseInner<P>,
     _type: PhantomData<fn() -> T>,
 }
 
-enum ResponseInner {
+enum ResponseInner<P>
+where
+    P: QlPlatform,
+{
     Err(Option<QlError>),
     Ok {
         response: ExecutorResponse,
-        platform: Arc<dyn QlPlatform>,
+        platform: Arc<P>,
     },
 }
 
-impl<T> Future for Response<T>
+impl<T, P> Future for Response<T, P>
 where
     T: QlCodec,
+    P: QlPlatform,
 {
     type Output = Result<T, QlError>;
 
@@ -49,8 +59,11 @@ where
                     let response = response?;
                     encrypt::verify_header(platform.as_ref(), &response.header)?;
                     let peer = platform.lookup_peer_or_fail(response.header.sender)?;
-                    let session_key =
-                        encrypt::session_key_for_header(platform.as_ref(), peer, &response.header)?;
+                    let session_key = encrypt::session_key_for_header(
+                        platform.as_ref(),
+                        &peer,
+                        &response.header,
+                    )?;
                     let decrypted = platform.decrypt_message(
                         &session_key,
                         &response.header.aad_data(),
@@ -65,8 +78,11 @@ where
     }
 }
 
-impl QlExecutorHandle {
-    pub fn new(handle: ExecutorHandle, platform: Arc<dyn QlPlatform>) -> Self {
+impl<P> QlExecutorHandle<P>
+where
+    P: QlPlatform,
+{
+    pub fn new(handle: ExecutorHandle, platform: Arc<P>) -> Self {
         Self { handle, platform }
     }
 
@@ -75,7 +91,7 @@ impl QlExecutorHandle {
         message: M,
         recipient: XID,
         request_config: RequestConfig,
-    ) -> Response<M::Response>
+    ) -> Response<M::Response, P>
     where
         M: RequestResponse,
     {

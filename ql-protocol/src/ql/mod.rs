@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use bc_components::{
     EncapsulationCiphertext, EncapsulationPrivateKey, EncapsulationPublicKey, EncryptedMessage,
@@ -104,16 +104,50 @@ pub trait QlPeer {
     fn set_pending_handshake(&self, handshake: Option<PendingHandshake>);
 }
 
-pub trait Test {
-    fn lookup_peer(&self, peer: XID) -> Option<impl QlPeer>;
+impl<T> QlPeer for Arc<T>
+where
+    T: QlPeer + ?Sized,
+{
+    fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey {
+        (**self).encapsulation_pub_key()
+    }
+
+    fn signing_pub_key(&self) -> &SigningPublicKey {
+        (**self).signing_pub_key()
+    }
+
+    fn session(&self) -> Option<SymmetricKey> {
+        (**self).session()
+    }
+
+    fn store_session(&self, key: SymmetricKey) {
+        (**self).store_session(key)
+    }
+
+    fn pending_handshake(&self) -> Option<PendingHandshake> {
+        (**self).pending_handshake()
+    }
+
+    fn set_pending_handshake(&self, handshake: Option<PendingHandshake>) {
+        (**self).set_pending_handshake(handshake)
+    }
 }
 
 pub trait QlPlatform {
-    fn lookup_peer(&self, peer: XID) -> Option<&dyn QlPeer>;
-    fn lookup_peer_or_fail(&self, peer: XID) -> Result<&dyn QlPeer, QlError> {
+    type Peer: QlPeer;
+
+    fn lookup_peer(&self, peer: XID) -> Option<Self::Peer>;
+    fn lookup_peer_or_fail(&self, peer: XID) -> Result<Self::Peer, QlError> {
         self.lookup_peer(peer)
             .ok_or_else(|| QlError::UnknownPeer(peer))
     }
+
+    fn store_peer(
+        &self,
+        signing_pub_key: SigningPublicKey,
+        encapsulation_pub_key: EncapsulationPublicKey,
+        session: SymmetricKey,
+    ) -> Result<(), QlError>;
 
     fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
     fn encapsulation_public_key(&self) -> EncapsulationPublicKey;
@@ -121,12 +155,6 @@ pub trait QlPlatform {
     fn message_expiration(&self) -> Duration;
     fn signer(&self) -> &dyn Signer;
     fn handle_error(&self, e: QlError);
-    fn store_peer(
-        &self,
-        signing_pub_key: SigningPublicKey,
-        encapsulation_pub_key: EncapsulationPublicKey,
-        session: SymmetricKey,
-    ) -> Result<(), QlError>;
 
     fn xid(&self) -> XID {
         XID::new(self.signing_key())

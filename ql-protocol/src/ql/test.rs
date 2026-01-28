@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -136,29 +136,27 @@ impl QlPeer for TestPeer {
     }
 
     fn session(&self) -> Option<SymmetricKey> {
-        self.session.lock().ok().and_then(|guard| guard.clone())
+        self.session.lock().unwrap().clone()
     }
 
     fn store_session(&self, key: SymmetricKey) {
-        if let Ok(mut guard) = self.session.lock() {
-            *guard = Some(key);
-        }
+        let mut guard = self.session.lock().unwrap();
+        *guard = Some(key);
     }
 
     fn pending_handshake(&self) -> Option<super::PendingHandshake> {
-        self.pending_handshake.lock().ok().and_then(|guard| *guard)
+        *self.pending_handshake.lock().unwrap()
     }
 
     fn set_pending_handshake(&self, handshake: Option<super::PendingHandshake>) {
-        if let Ok(mut guard) = self.pending_handshake.lock() {
-            *guard = handshake;
-        }
+        let mut guard = self.pending_handshake.lock().unwrap();
+        *guard = handshake;
     }
 }
 
 struct TestRouterPlatform {
     identity: TestIdentity,
-    peer: OnceLock<Arc<TestPeer>>,
+    peer: Mutex<Option<Arc<TestPeer>>>,
 }
 
 impl TestRouterPlatform {
@@ -167,20 +165,16 @@ impl TestRouterPlatform {
         peer: EncapsulationPublicKey,
         peer_signing_key: SigningPublicKey,
     ) -> Self {
-        let platform = Self {
+        Self {
             identity,
-            peer: OnceLock::new(),
-        };
-        let _ = platform
-            .peer
-            .set(Arc::new(TestPeer::new(peer, peer_signing_key)));
-        platform
+            peer: Mutex::new(Some(Arc::new(TestPeer::new(peer, peer_signing_key)))),
+        }
     }
 
     fn new_unpaired(identity: TestIdentity) -> Self {
         Self {
             identity,
-            peer: OnceLock::new(),
+            peer: Mutex::new(None),
         }
     }
 
@@ -189,11 +183,17 @@ impl TestRouterPlatform {
     }
 
     fn pending_handshake(&self) -> Option<super::PendingHandshake> {
-        self.peer.get().and_then(|peer| peer.pending_handshake())
+        self.peer
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().and_then(|peer| peer.pending_handshake()))
     }
 
     fn set_pending_handshake(&self, handshake: Option<super::PendingHandshake>) {
-        let Some(peer) = self.peer.get() else {
+        let Ok(guard) = self.peer.lock() else {
+            return;
+        };
+        let Some(peer) = guard.as_ref() else {
             return;
         };
         peer.set_pending_handshake(handshake);
@@ -201,10 +201,13 @@ impl TestRouterPlatform {
 }
 
 impl QlPlatform for TestRouterPlatform {
-    fn lookup_peer(&self, peer: XID) -> Option<&dyn QlPeer> {
-        let stored = self.peer.get()?;
+    type Peer = Arc<TestPeer>;
+
+    fn lookup_peer(&self, peer: XID) -> Option<Self::Peer> {
+        let guard = self.peer.lock().ok()?;
+        let stored = guard.as_ref()?;
         if peer == XID::new(&stored.signing_public_key) {
-            Some(stored.as_ref())
+            Some(stored.clone())
         } else {
             None
         }
@@ -238,11 +241,17 @@ impl QlPlatform for TestRouterPlatform {
         _encapsulation_pub_key: EncapsulationPublicKey,
         _session: SymmetricKey,
     ) -> Result<(), super::QlError> {
-        let peer = TestPeer::new(_encapsulation_pub_key, _signing_pub_key);
+        let mut guard = self
+            .peer
+            .lock()
+            .map_err(|_| super::QlError::InvalidPayload)?;
+        if guard.is_some() {
+            return Err(super::QlError::InvalidPayload);
+        }
+        let peer = Arc::new(TestPeer::new(_encapsulation_pub_key, _signing_pub_key));
         peer.store_session(_session);
-        self.peer
-            .set(Arc::new(peer))
-            .map_err(|_| super::QlError::InvalidPayload)
+        *guard = Some(peer);
+        Ok(())
     }
 }
 
@@ -250,8 +259,8 @@ struct TestState {
     event_tx: Option<oneshot::Sender<u64>>,
 }
 
-impl RequestHandler<Ping> for TestState {
-    fn handle(&mut self, request: QlRequest<Ping>) {
+impl RequestHandler<Ping, TestRouterPlatform> for TestState {
+    fn handle(&mut self, request: QlRequest<Ping, TestRouterPlatform>) {
         let response = Pong(request.message.0 + 1);
         let _ = request.responder.respond(response);
     }
@@ -540,10 +549,8 @@ fn simultaneous_session_init_resolves() {
     let config = ExecutorConfig {
         default_timeout: Duration::from_secs(1),
     };
-    let (_client_core, client_handle, _client_incoming) =
-        Executor::new(client_platform, config);
-    let (_server_core, server_handle, _server_incoming) =
-        Executor::new(server_platform, config);
+    let (_client_core, client_handle, _client_incoming) = Executor::new(client_platform, config);
+    let (_server_core, server_handle, _server_incoming) = Executor::new(server_platform, config);
 
     let client_identity = TestIdentity::generate();
     let server_identity = TestIdentity::generate();
@@ -646,8 +653,8 @@ fn pairing_request_stores_peer() {
         &recipient_identity.encapsulation_public_key,
     )
     .expect("encrypt pairing request");
-    let message = decode_ql_message(&encode_ql_message(header, encrypted))
-        .expect("decode pairing request");
+    let message =
+        decode_ql_message(&encode_ql_message(header, encrypted)).expect("decode pairing request");
 
     router
         .handle(
@@ -739,7 +746,9 @@ async fn reset_collision_prefers_lower_xid() {
                 Some(ResetOrigin::Local)
             );
             assert_eq!(
-                higher_platform.pending_handshake().map(|state| state.origin),
+                higher_platform
+                    .pending_handshake()
+                    .map(|state| state.origin),
                 Some(ResetOrigin::Peer)
             );
         })

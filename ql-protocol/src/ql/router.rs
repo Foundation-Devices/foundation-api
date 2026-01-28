@@ -1,19 +1,20 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use bc_components::XID;
 use dcbor::CBOR;
 
 use super::{
-    encrypt, Event, HandshakeKind, PendingHandshake, QlCodec, QlError, QlPayload, QlPlatform,
-    RequestResponse, ResetOrigin,
+    encrypt, Event, HandshakeKind, PendingHandshake, QlCodec, QlError, QlPayload, QlPeer,
+    QlPlatform, RequestResponse, ResetOrigin,
 };
 use crate::{ExecutorHandle, HandlerEvent, MessageKind, QlHeader, QlMessage, Responder};
 
-pub trait RequestHandler<M>
+pub trait RequestHandler<M, P>
 where
     M: RequestResponse,
+    P: QlPlatform,
 {
-    fn handle(&mut self, request: QlRequest<M>);
+    fn handle(&mut self, request: QlRequest<M, P>);
     fn default_response() -> M::Response;
 }
 
@@ -24,27 +25,30 @@ where
     fn handle(&mut self, event: M);
 }
 
-pub struct QlRequest<M>
+pub struct QlRequest<M, P>
 where
     M: RequestResponse,
+    P: QlPlatform,
 {
     pub message: M,
-    pub responder: QlResponder<M::Response>,
+    pub responder: QlResponder<M::Response, P>,
 }
 
-pub struct QlResponder<R>
+pub struct QlResponder<R, P>
 where
     R: QlCodec,
+    P: QlPlatform,
 {
     responder: Option<Responder>,
-    platform: Arc<dyn QlPlatform>,
+    platform: Arc<P>,
     recipient: XID,
     default: fn() -> R,
 }
 
-impl<R> QlResponder<R>
+impl<R, P> QlResponder<R, P>
 where
     R: QlCodec,
+    P: QlPlatform,
 {
     pub fn respond(mut self, response: R) -> Result<(), QlError> {
         self.respond_inner(response)
@@ -64,9 +68,10 @@ where
     }
 }
 
-impl<R> Drop for QlResponder<R>
+impl<R, P> Drop for QlResponder<R, P>
 where
     R: QlCodec,
+    P: QlPlatform,
 {
     fn drop(&mut self) {
         if self.responder.is_some() {
@@ -76,7 +81,7 @@ where
     }
 }
 
-type RouterHandler<S> = fn(&mut S, RouterEvent, Arc<dyn QlPlatform>) -> Result<(), QlError>;
+type RouterHandler<S, P> = fn(&mut S, RouterEvent, Arc<P>) -> Result<(), QlError>;
 
 enum RouterEvent {
     Event {
@@ -105,25 +110,33 @@ impl RouterEvent {
     }
 }
 
-pub struct RouterBuilder<S> {
-    handlers: HashMap<u64, RouterHandler<S>>,
+pub struct RouterBuilder<S, P>
+where
+    P: QlPlatform,
+{
+    handlers: HashMap<u64, RouterHandler<S, P>>,
     executor: ExecutorHandle,
+    _marker: PhantomData<P>,
 }
 
-impl<S> RouterBuilder<S> {
+impl<S, P> RouterBuilder<S, P>
+where
+    P: QlPlatform,
+{
     pub fn new(executor: ExecutorHandle) -> Self {
         Self {
             handlers: HashMap::new(),
             executor,
+            _marker: PhantomData,
         }
     }
 
     pub fn add_request_handler<M>(self) -> Self
     where
         M: RequestResponse,
-        S: RequestHandler<M>,
+        S: RequestHandler<M, P>,
     {
-        self.add_handler(M::ID, handle_request::<M, S>)
+        self.add_handler(M::ID, handle_request::<M, S, P>)
     }
 
     pub fn add_event_handler<M>(self) -> Self
@@ -131,10 +144,10 @@ impl<S> RouterBuilder<S> {
         M: Event,
         S: EventHandler<M>,
     {
-        self.add_handler(M::ID, handle_event::<M, S>)
+        self.add_handler(M::ID, handle_event::<M, S, P>)
     }
 
-    pub fn build(self, platform: Arc<dyn QlPlatform>) -> Router<S> {
+    pub fn build(self, platform: Arc<P>) -> Router<S, P> {
         Router {
             platform,
             handlers: self.handlers,
@@ -142,7 +155,7 @@ impl<S> RouterBuilder<S> {
         }
     }
 
-    fn add_handler(mut self, id: u64, handler: RouterHandler<S>) -> Self {
+    fn add_handler(mut self, id: u64, handler: RouterHandler<S, P>) -> Self {
         if self.handlers.insert(id, handler).is_some() {
             panic!("duplicate message_id {id}")
         }
@@ -150,14 +163,20 @@ impl<S> RouterBuilder<S> {
     }
 }
 
-pub struct Router<S> {
-    platform: Arc<dyn QlPlatform>,
-    handlers: HashMap<u64, RouterHandler<S>>,
+pub struct Router<S, P>
+where
+    P: QlPlatform,
+{
+    platform: Arc<P>,
+    handlers: HashMap<u64, RouterHandler<S, P>>,
     executor: ExecutorHandle,
 }
 
-impl<S> Router<S> {
-    pub fn builder(executor: ExecutorHandle) -> RouterBuilder<S> {
+impl<S, P> Router<S, P>
+where
+    P: QlPlatform,
+{
+    pub fn builder(executor: ExecutorHandle) -> RouterBuilder<S, P> {
         RouterBuilder::new(executor)
     }
 
@@ -195,7 +214,10 @@ impl<S> Router<S> {
     }
 }
 
-impl<S> Router<S> {
+impl<S, P> Router<S, P>
+where
+    P: QlPlatform,
+{
     fn send_session_reset(&self, recipient: XID) -> Result<(), QlError> {
         let executor = self.executor.clone();
         let peer = self.platform.lookup_peer_or_fail(recipient)?;
@@ -247,14 +269,15 @@ impl<S> Router<S> {
     }
 }
 
-fn handle_request<M, S>(
+fn handle_request<M, S, P>(
     state: &mut S,
     event: RouterEvent,
-    platform: Arc<dyn QlPlatform>,
+    platform: Arc<P>,
 ) -> Result<(), QlError>
 where
     M: RequestResponse,
-    S: RequestHandler<M>,
+    S: RequestHandler<M, P>,
+    P: QlPlatform,
 {
     let (header, payload, responder) = match event {
         RouterEvent::Request {
@@ -276,14 +299,15 @@ where
     Ok(())
 }
 
-fn handle_event<M, S>(
+fn handle_event<M, S, P>(
     state: &mut S,
     event: RouterEvent,
-    _platform: Arc<dyn QlPlatform>,
+    _platform: Arc<P>,
 ) -> Result<(), QlError>
 where
     M: Event,
     S: EventHandler<M>,
+    P: QlPlatform,
 {
     let payload = match event {
         RouterEvent::Event { payload, .. } => payload,
@@ -295,7 +319,10 @@ where
     Ok(())
 }
 
-fn decrypt_event(event: HandlerEvent, platform: &dyn QlPlatform) -> Result<RouterEvent, QlError> {
+fn decrypt_event<P>(event: HandlerEvent, platform: &P) -> Result<RouterEvent, QlError>
+where
+    P: QlPlatform,
+{
     match event {
         HandlerEvent::Request(request) => {
             encrypt::verify_header(platform, &request.message.header)?;
@@ -332,23 +359,29 @@ fn decrypt_event(event: HandlerEvent, platform: &dyn QlPlatform) -> Result<Route
     }
 }
 
-fn extract_typed_payload(
-    platform: &dyn QlPlatform,
+fn extract_typed_payload<P>(
+    platform: &P,
     header: &QlHeader,
     payload: bc_components::EncryptedMessage,
-) -> Result<QlPayload, QlError> {
+) -> Result<QlPayload, QlError>
+where
+    P: QlPlatform,
+{
     let peer = platform.lookup_peer_or_fail(header.sender)?;
-    let session_key = encrypt::session_key_for_header(platform, peer, header)?;
+    let session_key = encrypt::session_key_for_header(platform, &peer, header)?;
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
     peer.set_pending_handshake(None);
     QlPayload::try_from(decrypted).map_err(QlError::Decode)
 }
 
-fn extract_reset_payload(
-    platform: &dyn QlPlatform,
+fn extract_reset_payload<P>(
+    platform: &P,
     header: &QlHeader,
     payload: bc_components::EncryptedMessage,
-) -> Result<(), QlError> {
+) -> Result<(), QlError>
+where
+    P: QlPlatform,
+{
     let peer = platform.lookup_peer_or_fail(header.sender)?;
     if let Some(pending) = peer.pending_handshake() {
         if pending.kind == HandshakeKind::SessionReset && pending.origin == ResetOrigin::Local {
