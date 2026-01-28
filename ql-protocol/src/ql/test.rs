@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -158,7 +158,7 @@ impl QlPeer for TestPeer {
 
 struct TestRouterPlatform {
     identity: TestIdentity,
-    peer: TestPeer,
+    peer: OnceLock<Arc<TestPeer>>,
 }
 
 impl TestRouterPlatform {
@@ -167,9 +167,20 @@ impl TestRouterPlatform {
         peer: EncapsulationPublicKey,
         peer_signing_key: SigningPublicKey,
     ) -> Self {
+        let platform = Self {
+            identity,
+            peer: OnceLock::new(),
+        };
+        let _ = platform
+            .peer
+            .set(Arc::new(TestPeer::new(peer, peer_signing_key)));
+        platform
+    }
+
+    fn new_unpaired(identity: TestIdentity) -> Self {
         Self {
             identity,
-            peer: TestPeer::new(peer, peer_signing_key),
+            peer: OnceLock::new(),
         }
     }
 
@@ -178,18 +189,22 @@ impl TestRouterPlatform {
     }
 
     fn pending_handshake(&self) -> Option<super::PendingHandshake> {
-        self.peer.pending_handshake()
+        self.peer.get().and_then(|peer| peer.pending_handshake())
     }
 
     fn set_pending_handshake(&self, handshake: Option<super::PendingHandshake>) {
-        self.peer.set_pending_handshake(handshake);
+        let Some(peer) = self.peer.get() else {
+            return;
+        };
+        peer.set_pending_handshake(handshake);
     }
 }
 
 impl QlPlatform for TestRouterPlatform {
     fn lookup_peer(&self, peer: XID) -> Option<&dyn QlPeer> {
-        if peer == XID::new(&self.peer.signing_public_key) {
-            Some(&self.peer)
+        let stored = self.peer.get()?;
+        if peer == XID::new(&stored.signing_public_key) {
+            Some(stored.as_ref())
         } else {
             None
         }
@@ -197,6 +212,10 @@ impl QlPlatform for TestRouterPlatform {
 
     fn encapsulation_private_key(&self) -> EncapsulationPrivateKey {
         self.identity.private_keys.encapsulation_private_key()
+    }
+
+    fn encapsulation_public_key(&self) -> EncapsulationPublicKey {
+        self.identity.encapsulation_public_key.clone()
     }
 
     fn signing_key(&self) -> &SigningPublicKey {
@@ -212,6 +231,19 @@ impl QlPlatform for TestRouterPlatform {
     }
 
     fn handle_error(&self, _e: super::QlError) {}
+
+    fn store_peer(
+        &self,
+        _signing_pub_key: SigningPublicKey,
+        _encapsulation_pub_key: EncapsulationPublicKey,
+        _session: SymmetricKey,
+    ) -> Result<(), super::QlError> {
+        let peer = TestPeer::new(_encapsulation_pub_key, _signing_pub_key);
+        peer.store_session(_session);
+        self.peer
+            .set(Arc::new(peer))
+            .map_err(|_| super::QlError::InvalidPayload)
+    }
 }
 
 struct TestState {
@@ -584,6 +616,50 @@ fn simultaneous_session_init_resolves() {
             message: follow_up_from_server,
         }),
     ));
+}
+
+#[test]
+fn pairing_request_stores_peer() {
+    let (platform, _outbound) = TestPlatform::new();
+    let config = ExecutorConfig {
+        default_timeout: Duration::from_secs(1),
+    };
+    let (_core, handle, _incoming) = Executor::new(platform, config);
+
+    let sender_identity = TestIdentity::generate();
+    let recipient_identity = TestIdentity::generate();
+    let sender_platform = Arc::new(TestRouterPlatform::new(
+        sender_identity.clone(),
+        recipient_identity.encapsulation_public_key.clone(),
+        recipient_identity.signing_public_key.clone(),
+    ));
+    let recipient_platform = Arc::new(TestRouterPlatform::new_unpaired(recipient_identity.clone()));
+    let router = Router::builder(handle).build(recipient_platform.clone());
+
+    assert!(recipient_platform
+        .lookup_peer(sender_identity.xid)
+        .is_none());
+
+    let (header, encrypted) = encrypt::encrypt_pairing_request(
+        sender_platform.as_ref(),
+        &recipient_identity.signing_public_key,
+        &recipient_identity.encapsulation_public_key,
+    )
+    .expect("encrypt pairing request");
+    let message = decode_ql_message(&encode_ql_message(header, encrypted))
+        .expect("decode pairing request");
+
+    router
+        .handle(
+            &mut TestState { event_tx: None },
+            HandlerEvent::Event(InboundEvent { message }),
+        )
+        .expect("pairing handled");
+
+    let peer = recipient_platform
+        .lookup_peer(sender_identity.xid)
+        .expect("peer stored");
+    assert!(peer.session().is_some());
 }
 
 #[tokio::test(flavor = "current_thread")]

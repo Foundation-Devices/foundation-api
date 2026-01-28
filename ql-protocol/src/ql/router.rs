@@ -7,7 +7,7 @@ use super::{
     encrypt, Event, HandshakeKind, PendingHandshake, QlCodec, QlError, QlPayload, QlPlatform,
     RequestResponse, ResetOrigin,
 };
-use crate::{ExecutorHandle, HandlerEvent, MessageKind, QlHeader, Responder};
+use crate::{ExecutorHandle, HandlerEvent, MessageKind, QlHeader, QlMessage, Responder};
 
 pub trait RequestHandler<M>
 where
@@ -162,6 +162,11 @@ impl<S> Router<S> {
     }
 
     pub fn handle(&self, state: &mut S, event: HandlerEvent) -> Result<(), QlError> {
+        if let HandlerEvent::Event(event) = &event {
+            if event.message.header.kind == MessageKind::Pairing {
+                return self.handle_pairing_event(event.message.clone());
+            }
+        }
         let sender = match &event {
             HandlerEvent::Request(request) => &request.message.header,
             HandlerEvent::Event(event) => &event.message.header,
@@ -225,6 +230,20 @@ impl<S> Router<S> {
         };
         executor.send_message(header, encrypted);
         Ok(())
+    }
+
+    fn handle_pairing_event(&self, message: QlMessage) -> Result<(), QlError> {
+        let header = &message.header;
+        if header.recipient != self.platform.xid() {
+            return Err(QlError::InvalidPayload);
+        }
+        let (payload, session_key) =
+            encrypt::decrypt_pairing_payload(self.platform.as_ref(), header, &message.payload)?;
+        self.platform.store_peer(
+            payload.signing_pub_key,
+            payload.encapsulation_pub_key,
+            session_key,
+        )
     }
 }
 

@@ -421,7 +421,7 @@ where
                                 .send(HandlerEvent::Event(InboundEvent { message }))
                                 .await;
                         }
-                        MessageKind::Event => {
+                        MessageKind::Event | MessageKind::Pairing => {
                             let _ = self
                                 .incoming
                                 .send(HandlerEvent::Event(InboundEvent { message }))

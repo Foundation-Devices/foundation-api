@@ -4,12 +4,13 @@ use std::{
 };
 
 use bc_components::{
-    EncapsulationCiphertext, EncryptedMessage, Signature, Signer, SymmetricKey, Verifier, ARID, XID,
+    EncapsulationCiphertext, EncapsulationPublicKey, EncryptedMessage, Signature, Signer,
+    SigningPublicKey, SymmetricKey, Verifier, ARID, XID,
 };
 use dcbor::CBOR;
 
 use super::{HandshakeKind, PendingHandshake, QlError, QlPeer, QlPlatform, ResetOrigin};
-use crate::{MessageKind, QlHeader};
+use crate::{cbor::cbor_array, MessageKind, QlHeader};
 
 pub(crate) fn encrypt_payload_for_recipient(
     platform: &dyn QlPlatform,
@@ -59,6 +60,70 @@ pub(crate) fn encrypt_response(
         &session_key,
         payload,
     ))
+}
+
+pub(crate) fn encrypt_pairing_request(
+    platform: &dyn QlPlatform,
+    recipient_signing_key: &SigningPublicKey,
+    recipient_encapsulation_key: &EncapsulationPublicKey,
+) -> Result<(QlHeader, EncryptedMessage), QlError> {
+    let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
+    let recipient = XID::new(recipient_signing_key);
+    let message_id = ARID::new();
+    let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
+    let header = QlHeader {
+        kind: MessageKind::Pairing,
+        id: message_id,
+        sender: platform.xid(),
+        recipient,
+        valid_until,
+        kem_ct: Some(kem_ct),
+        signature: None,
+    };
+    let signing_pub_key = platform.signing_key().clone();
+    let encapsulation_pub_key = platform.encapsulation_public_key();
+    let proof_data = pairing_proof_data(&header, &signing_pub_key, &encapsulation_pub_key);
+    let proof = platform
+        .signer()
+        .sign(&proof_data)
+        .expect("failed to sign pairing payload");
+    let payload = PairingPayload {
+        signing_pub_key,
+        encapsulation_pub_key,
+        proof,
+    };
+    let payload_bytes = CBOR::from(payload).to_cbor_data();
+    let encrypted = session_key.encrypt(
+        payload_bytes,
+        Some(header.aad_data()),
+        None::<bc_components::Nonce>,
+    );
+    Ok((header, encrypted))
+}
+
+pub(crate) fn decrypt_pairing_payload(
+    platform: &dyn QlPlatform,
+    header: &QlHeader,
+    payload: &EncryptedMessage,
+) -> Result<(PairingPayload, SymmetricKey), QlError> {
+    ensure_not_expired(header)?;
+    let kem_ct = header.kem_ct.as_ref().ok_or(QlError::InvalidPayload)?;
+    let session_key = platform.decapsulate_shared_secret(kem_ct)?;
+    let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), payload)?;
+    let pairing = PairingPayload::try_from(decrypted).map_err(QlError::Decode)?;
+    if XID::new(&pairing.signing_pub_key) != header.sender {
+        return Err(QlError::InvalidPayload);
+    }
+    let proof_data = pairing_proof_data(
+        header,
+        &pairing.signing_pub_key,
+        &pairing.encapsulation_pub_key,
+    );
+    if pairing.signing_pub_key.verify(&pairing.proof, &proof_data) {
+        Ok((pairing, session_key))
+    } else {
+        Err(QlError::InvalidSignature)
+    }
 }
 
 pub(crate) fn verify_header(platform: &dyn QlPlatform, header: &QlHeader) -> Result<(), QlError> {
@@ -171,6 +236,37 @@ fn encrypt_payload_with_header(
     (header, encrypted)
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PairingPayload {
+    pub signing_pub_key: SigningPublicKey,
+    pub encapsulation_pub_key: EncapsulationPublicKey,
+    pub proof: Signature,
+}
+
+impl From<PairingPayload> for CBOR {
+    fn from(value: PairingPayload) -> Self {
+        CBOR::from(vec![
+            CBOR::from(value.signing_pub_key),
+            CBOR::from(value.encapsulation_pub_key),
+            CBOR::from(value.proof),
+        ])
+    }
+}
+
+impl TryFrom<CBOR> for PairingPayload {
+    type Error = dcbor::Error;
+
+    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
+        let array = value.try_into_array()?;
+        let [signing_pub_key, encapsulation_pub_key, proof] = cbor_array::<3>(array)?;
+        Ok(Self {
+            signing_pub_key: signing_pub_key.try_into()?,
+            encapsulation_pub_key: encapsulation_pub_key.try_into()?,
+            proof: proof.try_into()?,
+        })
+    }
+}
+
 fn create_session(
     peer: &dyn QlPeer,
     message_id: ARID,
@@ -191,6 +287,19 @@ pub(crate) fn handshake_cmp(local: (XID, ARID), peer: (XID, ARID)) -> Ordering {
         Ordering::Equal => peer.1.data().cmp(local.1.data()),
         order => order,
     }
+}
+
+fn pairing_proof_data(
+    header: &QlHeader,
+    signing_pub_key: &SigningPublicKey,
+    encapsulation_pub_key: &EncapsulationPublicKey,
+) -> Vec<u8> {
+    CBOR::from(vec![
+        CBOR::from(header.aad_data()),
+        CBOR::from(signing_pub_key.clone()),
+        CBOR::from(encapsulation_pub_key.clone()),
+    ])
+    .to_cbor_data()
 }
 
 #[cfg(test)]

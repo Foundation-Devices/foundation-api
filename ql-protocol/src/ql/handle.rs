@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use bc_components::{ARID, XID};
+use bc_components::{EncapsulationPublicKey, SigningPublicKey, ARID, XID};
 
 use super::{encrypt, Event, QlError, QlPayload, QlPlatform, RequestResponse};
 use crate::{executor::ExecutorResponse, ExecutorHandle, MessageKind, QlCodec, RequestConfig};
@@ -130,6 +130,20 @@ impl QlExecutorHandle {
             payload.into(),
         )?;
         self.handle.send_event(header, encrypted);
+        Ok(())
+    }
+
+    pub fn send_pairing_request(
+        &self,
+        recipient_signing_key: &SigningPublicKey,
+        recipient_encapsulation_key: &EncapsulationPublicKey,
+    ) -> Result<(), QlError> {
+        let (header, encrypted) = encrypt::encrypt_pairing_request(
+            self.platform.as_ref(),
+            recipient_signing_key,
+            recipient_encapsulation_key,
+        )?;
+        self.handle.send_message(header, encrypted);
         Ok(())
     }
 }

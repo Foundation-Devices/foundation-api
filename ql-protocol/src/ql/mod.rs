@@ -104,6 +104,10 @@ pub trait QlPeer {
     fn set_pending_handshake(&self, handshake: Option<PendingHandshake>);
 }
 
+pub trait Test {
+    fn lookup_peer(&self, peer: XID) -> Option<impl QlPeer>;
+}
+
 pub trait QlPlatform {
     fn lookup_peer(&self, peer: XID) -> Option<&dyn QlPeer>;
     fn lookup_peer_or_fail(&self, peer: XID) -> Result<&dyn QlPeer, QlError> {
@@ -112,10 +116,17 @@ pub trait QlPlatform {
     }
 
     fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
+    fn encapsulation_public_key(&self) -> EncapsulationPublicKey;
     fn signing_key(&self) -> &SigningPublicKey;
     fn message_expiration(&self) -> Duration;
     fn signer(&self) -> &dyn Signer;
     fn handle_error(&self, e: QlError);
+    fn store_peer(
+        &self,
+        signing_pub_key: SigningPublicKey,
+        encapsulation_pub_key: EncapsulationPublicKey,
+        session: SymmetricKey,
+    ) -> Result<(), QlError>;
 
     fn xid(&self) -> XID {
         XID::new(self.signing_key())
