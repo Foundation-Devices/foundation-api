@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use bc_components::{
     EncapsulationCiphertext, EncapsulationPrivateKey, EncapsulationPublicKey, EncryptedMessage,
-    Signer, SigningPublicKey, SymmetricKey, XID,
+    Signer, SigningPublicKey, SymmetricKey, ARID, XID,
 };
 use dcbor::CBOR;
 
@@ -73,11 +73,26 @@ impl From<ExecutorError> for QlError {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct QlResetState {
+    pub origin: ResetOrigin,
+    pub id: ARID,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetOrigin {
+    Local,
+    Peer,
+}
+
 pub trait QlPeer {
     fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey;
     fn signing_pub_key(&self) -> &SigningPublicKey;
     fn session(&self) -> Option<SymmetricKey>;
     fn store_session(&self, key: SymmetricKey);
+    fn pending_reset(&self) -> Option<QlResetState>;
+    fn set_pending_reset(&self, origin: ResetOrigin, id: ARID);
+    fn clear_pending_reset(&self);
 }
 
 pub trait QlPlatform {

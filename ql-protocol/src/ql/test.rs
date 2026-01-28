@@ -13,11 +13,12 @@ use oneshot;
 
 use super::{
     Event, EventHandler, QlExecutorHandle, QlPeer, QlPlatform, QlRequest, RequestHandler,
-    RequestResponse, Router,
+    RequestResponse, ResetOrigin, Router,
 };
 use crate::{
-    encode_ql_message, EncodeQlConfig, Executor, ExecutorConfig, ExecutorError, ExecutorPlatform,
-    MessageKind, PlatformFuture, QlError, QlHeader, RequestConfig, test_identity::TestIdentity,
+    decode_ql_message, encode_ql_message, EncodeQlConfig, Executor, ExecutorConfig,
+    ExecutorError, ExecutorPlatform, HandlerEvent, InboundEvent, MessageKind, PlatformFuture,
+    QlError, QlHeader, QlMessage, RequestConfig, test_identity::TestIdentity,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +109,7 @@ struct TestPeer {
     encapsulation_public_key: EncapsulationPublicKey,
     signing_public_key: SigningPublicKey,
     session: Mutex<Option<SymmetricKey>>,
+    pending_reset: Mutex<Option<super::QlResetState>>,
 }
 
 impl TestPeer {
@@ -119,6 +121,7 @@ impl TestPeer {
             encapsulation_public_key,
             signing_public_key,
             session: Mutex::new(None),
+            pending_reset: Mutex::new(None),
         }
     }
 }
@@ -139,6 +142,22 @@ impl QlPeer for TestPeer {
     fn store_session(&self, key: SymmetricKey) {
         if let Ok(mut guard) = self.session.lock() {
             *guard = Some(key);
+        }
+    }
+
+    fn pending_reset(&self) -> Option<super::QlResetState> {
+        self.pending_reset.lock().ok().and_then(|guard| *guard)
+    }
+
+    fn set_pending_reset(&self, origin: ResetOrigin, id: bc_components::ARID) {
+        if let Ok(mut guard) = self.pending_reset.lock() {
+            *guard = Some(super::QlResetState { origin, id });
+        }
+    }
+
+    fn clear_pending_reset(&self) {
+        if let Ok(mut guard) = self.pending_reset.lock() {
+            *guard = None;
         }
     }
 }
@@ -162,6 +181,14 @@ impl TestRouterPlatform {
 
     fn xid(&self) -> XID {
         self.identity.xid
+    }
+
+    fn pending_reset(&self) -> Option<super::QlResetState> {
+        self.peer.pending_reset()
+    }
+
+    fn set_pending_reset(&self, origin: ResetOrigin, id: bc_components::ARID) {
+        self.peer.set_pending_reset(origin, id);
     }
 }
 
@@ -214,6 +241,51 @@ impl EventHandler<Notice> for TestState {
             let _ = tx.send(event.0);
         }
     }
+}
+
+fn build_reset_message(
+    sender: &TestIdentity,
+    recipient: &TestIdentity,
+    id: bc_components::ARID,
+) -> QlMessage {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let valid_until = now.saturating_add(60);
+    let (session_key, kem_ct) = recipient
+        .encapsulation_public_key
+        .encapsulate_new_shared_secret();
+    let header = QlHeader {
+        kind: MessageKind::SessionReset,
+        id,
+        sender: sender.xid,
+        recipient: recipient.xid,
+        valid_until,
+        kem_ct: Some(kem_ct.clone()),
+        signature: None,
+    };
+    let aad = header.aad_data();
+    let payload_bytes = CBOR::null().to_cbor_data();
+    let encrypted = session_key.encrypt(
+        payload_bytes,
+        Some(aad),
+        None::<bc_components::Nonce>,
+    );
+    let bytes = encode_ql_message(
+        MessageKind::SessionReset,
+        id,
+        EncodeQlConfig {
+            sender: sender.xid,
+            recipient: recipient.xid,
+            valid_until,
+            kem_ct: Some(kem_ct),
+            sign_header: true,
+        },
+        encrypted,
+        &sender.private_keys,
+    );
+    decode_ql_message(&bytes).expect("decode reset")
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -340,45 +412,24 @@ async fn reset_cancels_pending_request() {
 
             let _ = client_outbound.recv().await.expect("outbound request");
 
-            let id = bc_components::ARID::new();
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_secs())
-                .unwrap_or(0);
-            let valid_until = now.saturating_add(60);
-            let (session_key, kem_ct) = client_identity
-                .encapsulation_public_key
-                .encapsulate_new_shared_secret();
-            let header = QlHeader {
-                kind: MessageKind::SessionReset,
-                id,
-                sender: server_identity.xid,
-                recipient: client_identity.xid,
-                valid_until,
-                kem_ct: Some(kem_ct.clone()),
-                signature: None,
-            };
-            let aad = header.aad_data();
-            let payload_bytes = CBOR::null().to_cbor_data();
-            let encrypted = session_key.encrypt(
-                payload_bytes,
-                Some(aad),
-                None::<bc_components::Nonce>,
+            let reset_message = build_reset_message(
+                &server_identity,
+                &client_identity,
+                bc_components::ARID::new(),
             );
             let reset_bytes = encode_ql_message(
-                MessageKind::SessionReset,
-                id,
+                reset_message.header.kind,
+                reset_message.header.id,
                 EncodeQlConfig {
-                    sender: server_identity.xid,
-                    recipient: client_identity.xid,
-                    valid_until,
-                    kem_ct: Some(kem_ct),
-                    sign_header: true,
+                    sender: reset_message.header.sender,
+                    recipient: reset_message.header.recipient,
+                    valid_until: reset_message.header.valid_until,
+                    kem_ct: reset_message.header.kem_ct.clone(),
+                    sign_header: reset_message.header.signature.is_some(),
                 },
-                encrypted,
+                reset_message.payload,
                 &server_identity.private_keys,
             );
-
             client_handle.send_incoming(reset_bytes).unwrap();
 
             let result = request_task.await.unwrap();
@@ -386,6 +437,132 @@ async fn reset_cancels_pending_request() {
                 Err(QlError::Send(ExecutorError::SessionReset)) => {}
                 other => panic!("unexpected result: {other:?}"),
             }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reset_collision_prefers_lower_xid() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (client_platform, _client_outbound) = TestPlatform::new();
+            let (server_platform, _server_outbound) = TestPlatform::new();
+            let config = ExecutorConfig {
+                default_timeout: Duration::from_secs(1),
+            };
+            let (_client_core, client_handle, _client_incoming) =
+                Executor::new(client_platform, config);
+            let (_server_core, server_handle, _server_incoming) =
+                Executor::new(server_platform, config);
+
+            let client_identity = TestIdentity::generate();
+            let server_identity = TestIdentity::generate();
+            let (lower_identity, higher_identity) = if client_identity.xid < server_identity.xid {
+                (client_identity.clone(), server_identity.clone())
+            } else {
+                (server_identity.clone(), client_identity.clone())
+            };
+
+            let lower_platform = Arc::new(TestRouterPlatform::new(
+                lower_identity.clone(),
+                higher_identity.encapsulation_public_key.clone(),
+                higher_identity.signing_public_key.clone(),
+            ));
+            let higher_platform = Arc::new(TestRouterPlatform::new(
+                higher_identity.clone(),
+                lower_identity.encapsulation_public_key.clone(),
+                lower_identity.signing_public_key.clone(),
+            ));
+
+            let lower_router = Router::builder(client_handle).build(lower_platform.clone());
+            let higher_router = Router::builder(server_handle).build(higher_platform.clone());
+
+            let lower_reset_id = bc_components::ARID::new();
+            let higher_reset_id = bc_components::ARID::new();
+            lower_platform.set_pending_reset(ResetOrigin::Local, lower_reset_id);
+            higher_platform.set_pending_reset(ResetOrigin::Local, higher_reset_id);
+
+            let reset_from_lower =
+                build_reset_message(&lower_identity, &higher_identity, lower_reset_id);
+            let reset_from_higher =
+                build_reset_message(&higher_identity, &lower_identity, higher_reset_id);
+
+            lower_router
+                .handle(
+                    &mut TestState { event_tx: None },
+                    HandlerEvent::Event(InboundEvent {
+                        message: reset_from_higher,
+                    }),
+                )
+                .unwrap();
+            higher_router
+                .handle(
+                    &mut TestState { event_tx: None },
+                    HandlerEvent::Event(InboundEvent {
+                        message: reset_from_lower,
+                    }),
+                )
+                .unwrap();
+
+            assert_eq!(
+                lower_platform.pending_reset().map(|state| state.origin),
+                Some(ResetOrigin::Local)
+            );
+            assert_eq!(
+                higher_platform.pending_reset().map(|state| state.origin),
+                Some(ResetOrigin::Peer)
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reset_from_higher_xid_is_accepted_without_pending() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (platform, _outbound) = TestPlatform::new();
+            let config = ExecutorConfig {
+                default_timeout: Duration::from_secs(1),
+            };
+            let (_core, handle, _incoming) = Executor::new(platform, config);
+
+            let client_identity = TestIdentity::generate();
+            let server_identity = TestIdentity::generate();
+            let (lower_identity, higher_identity) = if client_identity.xid < server_identity.xid {
+                (client_identity.clone(), server_identity.clone())
+            } else {
+                (server_identity.clone(), client_identity.clone())
+            };
+
+            let lower_platform = Arc::new(TestRouterPlatform::new(
+                lower_identity.clone(),
+                higher_identity.encapsulation_public_key.clone(),
+                higher_identity.signing_public_key.clone(),
+            ));
+
+            let lower_router = Router::builder(handle).build(lower_platform.clone());
+
+            let reset_from_higher = build_reset_message(
+                &higher_identity,
+                &lower_identity,
+                bc_components::ARID::new(),
+            );
+
+            lower_router
+                .handle(
+                    &mut TestState { event_tx: None },
+                    HandlerEvent::Event(InboundEvent {
+                        message: reset_from_higher,
+                    }),
+                )
+                .unwrap();
+
+            assert_eq!(
+                lower_platform.pending_reset().map(|state| state.origin),
+                Some(ResetOrigin::Peer)
+            );
         })
         .await;
 }
