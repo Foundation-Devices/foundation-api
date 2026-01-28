@@ -13,9 +13,8 @@ use bc_components::{
     Nonce, Signer, SigningPublicKey, SymmetricKey, ARID, XID,
 };
 use dcbor::CBOR;
-use thiserror::Error;
 
-use crate::{wire::*, Event, QlCodec, RequestResponse};
+use crate::{wire::*, Event, QlCodec, QlError, RequestResponse};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -38,34 +37,6 @@ pub struct PendingHandshake {
     pub id: ARID,
 }
 
-#[derive(Debug, Error)]
-pub enum RuntimeError {
-    #[error(transparent)]
-    Decode(#[from] dcbor::Error),
-    #[error("message expired")]
-    Expired,
-    #[error("invalid payload")]
-    InvalidPayload,
-    #[error("invalid signature")]
-    InvalidSignature,
-    #[error("missing session for {0}")]
-    MissingSession(XID),
-    #[error("unknown peer {0}")]
-    UnknownPeer(XID),
-    #[error("session init collision")]
-    SessionInitCollision,
-    #[error("session reset")]
-    SessionReset,
-    #[error("timeout")]
-    Timeout,
-    #[error("send failed")]
-    SendFailed,
-    #[error("nack {0:?}")]
-    Nack(Nack),
-    #[error("cancelled")]
-    Cancelled,
-}
-
 pub trait QlPeer {
     fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey;
     fn signing_pub_key(&self) -> &SigningPublicKey;
@@ -77,9 +48,9 @@ pub trait QlPeer {
 
 pub trait QlPlatform {
     fn lookup_peer(&self, peer: XID) -> Option<&dyn QlPeer>;
-    fn lookup_peer_or_fail(&self, peer: XID) -> Result<&dyn QlPeer, RuntimeError> {
+    fn lookup_peer_or_fail(&self, peer: XID) -> Result<&dyn QlPeer, QlError> {
         self.lookup_peer(peer)
-            .ok_or_else(|| RuntimeError::UnknownPeer(peer))
+            .ok_or_else(|| QlError::UnknownPeer(peer))
     }
 
     fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
@@ -87,15 +58,15 @@ pub trait QlPlatform {
     fn signing_key(&self) -> &SigningPublicKey;
     fn message_expiration(&self) -> Duration;
     fn signer(&self) -> &dyn Signer;
-    fn handle_error(&self, e: RuntimeError);
+    fn handle_error(&self, e: QlError);
     fn store_peer(
         &self,
         signing_pub_key: SigningPublicKey,
         encapsulation_pub_key: EncapsulationPublicKey,
         session: SymmetricKey,
-    ) -> Result<(), RuntimeError>;
+    ) -> Result<(), QlError>;
 
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), RuntimeError>>;
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
 
     fn xid(&self) -> XID {
@@ -105,10 +76,10 @@ pub trait QlPlatform {
     fn decapsulate_shared_secret(
         &self,
         ciphertext: &EncapsulationCiphertext,
-    ) -> Result<SymmetricKey, RuntimeError> {
+    ) -> Result<SymmetricKey, QlError> {
         self.encapsulation_private_key()
             .decapsulate_shared_secret(ciphertext)
-            .map_err(|_| RuntimeError::InvalidPayload)
+            .map_err(|_| QlError::InvalidPayload)
     }
 
     fn decrypt_message(
@@ -116,13 +87,11 @@ pub trait QlPlatform {
         key: &SymmetricKey,
         header_aad: &[u8],
         payload: &EncryptedMessage,
-    ) -> Result<CBOR, RuntimeError> {
+    ) -> Result<CBOR, QlError> {
         if payload.aad() != header_aad {
-            return Err(RuntimeError::InvalidPayload);
+            return Err(QlError::InvalidPayload);
         }
-        let plaintext = key
-            .decrypt(payload)
-            .map_err(|_| RuntimeError::InvalidPayload)?;
+        let plaintext = key.decrypt(payload).map_err(|_| QlError::InvalidPayload)?;
         Ok(CBOR::try_from_data(plaintext)?)
     }
 }
@@ -174,14 +143,14 @@ pub struct Responder {
 }
 
 impl Responder {
-    pub fn respond<R>(self, response: R) -> Result<(), RuntimeError>
+    pub fn respond<R>(self, response: R) -> Result<(), QlError>
     where
         R: QlCodec,
     {
         self.respond_raw(response.into())
     }
 
-    pub fn respond_raw(self, payload: CBOR) -> Result<(), RuntimeError> {
+    pub fn respond_raw(self, payload: CBOR) -> Result<(), QlError> {
         self.tx
             .send_blocking(RuntimeEvent::SendResponse {
                 id: self.id,
@@ -189,10 +158,10 @@ impl Responder {
                 payload,
                 kind: MessageKind::Response,
             })
-            .map_err(|_| RuntimeError::Cancelled)
+            .map_err(|_| QlError::Cancelled)
     }
 
-    pub fn respond_nack(self, reason: Nack) -> Result<(), RuntimeError> {
+    pub fn respond_nack(self, reason: Nack) -> Result<(), QlError> {
         self.tx
             .send_blocking(RuntimeEvent::SendResponse {
                 id: self.id,
@@ -200,7 +169,7 @@ impl Responder {
                 payload: CBOR::from(reason),
                 kind: MessageKind::Nack,
             })
-            .map_err(|_| RuntimeError::Cancelled)
+            .map_err(|_| QlError::Cancelled)
     }
 }
 
@@ -210,13 +179,13 @@ pub struct HandlerStream {
 }
 
 impl HandlerStream {
-    pub async fn next(&mut self) -> Result<HandlerEvent, RuntimeError> {
-        self.rx.recv().await.map_err(|_| RuntimeError::Cancelled)
+    pub async fn next(&mut self) -> Result<HandlerEvent, QlError> {
+        self.rx.recv().await.map_err(|_| QlError::Cancelled)
     }
 }
 
 impl futures_lite::Stream for HandlerStream {
-    type Item = Result<HandlerEvent, RuntimeError>;
+    type Item = Result<HandlerEvent, QlError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let rx = unsafe { self.as_mut().map_unchecked_mut(|s| &mut s.rx) };
@@ -230,7 +199,7 @@ impl futures_lite::Stream for HandlerStream {
 
 #[derive(Debug)]
 struct PendingEntry {
-    tx: oneshot::Sender<Result<CBOR, RuntimeError>>,
+    tx: oneshot::Sender<Result<CBOR, QlError>>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,7 +234,7 @@ enum RuntimeEvent {
         recipient: XID,
         message_id: u64,
         payload: CBOR,
-        respond_to: oneshot::Sender<Result<CBOR, RuntimeError>>,
+        respond_to: oneshot::Sender<Result<CBOR, QlError>>,
         config: RequestConfig,
     },
     SendEvent {
@@ -294,7 +263,7 @@ pub struct RuntimeHandle {
 }
 
 pub struct Response<T> {
-    rx: oneshot::Receiver<Result<CBOR, RuntimeError>>,
+    rx: oneshot::Receiver<Result<CBOR, QlError>>,
     _type: std::marker::PhantomData<fn() -> T>,
 }
 
@@ -302,11 +271,11 @@ impl<T> Future for Response<T>
 where
     T: QlCodec,
 {
-    type Output = Result<T, RuntimeError>;
+    type Output = Result<T, QlError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         pin!(&mut self.rx).poll(cx).map(|result| {
-            let result = result.unwrap_or(Err(RuntimeError::Cancelled));
+            let result = result.unwrap_or(Err(QlError::Cancelled));
             match result {
                 Ok(payload) => Ok(T::try_from(payload)?),
                 Err(error) => Err(error),
@@ -340,7 +309,7 @@ impl RuntimeHandle {
         }
     }
 
-    pub fn send_event<M>(&self, message: M, recipient: XID) -> Result<(), RuntimeError>
+    pub fn send_event<M>(&self, message: M, recipient: XID) -> Result<(), QlError>
     where
         M: Event,
     {
@@ -350,7 +319,7 @@ impl RuntimeHandle {
                 message_id: M::ID,
                 payload: message.into(),
             })
-            .map_err(|_| RuntimeError::Cancelled)
+            .map_err(|_| QlError::Cancelled)
     }
 
     pub fn send_event_with_ack<M>(
@@ -381,19 +350,19 @@ impl RuntimeHandle {
         &self,
         recipient_signing_key: SigningPublicKey,
         recipient_encapsulation_key: EncapsulationPublicKey,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), QlError> {
         self.tx
             .send_blocking(RuntimeEvent::SendPairing {
                 recipient_signing_key,
                 recipient_encapsulation_key,
             })
-            .map_err(|_| RuntimeError::Cancelled)
+            .map_err(|_| QlError::Cancelled)
     }
 
-    pub fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), RuntimeError> {
+    pub fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
         self.tx
             .send_blocking(RuntimeEvent::Incoming { bytes })
-            .map_err(|_| RuntimeError::Cancelled)
+            .map_err(|_| QlError::Cancelled)
     }
 }
 
@@ -419,14 +388,14 @@ struct OutboundBytes {
 
 struct InFlightWrite {
     id: Option<ARID>,
-    future: PlatformFuture<'static, Result<(), RuntimeError>>,
+    future: PlatformFuture<'static, Result<(), QlError>>,
 }
 
 enum LoopStep {
     Event(Result<RuntimeEvent, async_channel::RecvError>),
     WriteDone {
         id: Option<ARID>,
-        result: Result<(), RuntimeError>,
+        result: Result<(), QlError>,
     },
     Timeout,
 }
@@ -517,7 +486,7 @@ where
                         let effective_timeout =
                             config.timeout.unwrap_or(self.config.default_timeout);
                         if effective_timeout.is_zero() {
-                            let _ = respond_to.send(Err(RuntimeError::Timeout));
+                            let _ = respond_to.send(Err(QlError::Timeout));
                             continue;
                         }
                         let deadline = Instant::now() + effective_timeout;
@@ -627,7 +596,7 @@ where
                 if let Some(header) = context.header {
                     if header.kind == MessageKind::Response || header.kind == MessageKind::Nack {
                         if let Some(entry) = state.pending.remove(&header.id) {
-                            let _ = entry.tx.send(Err(RuntimeError::Decode(match context.error {
+                            let _ = entry.tx.send(Err(QlError::Decode(match context.error {
                                 DecodeError::Cbor(error) => error,
                             })));
                         }
@@ -667,13 +636,11 @@ where
                     match extract_payload(&self.platform, &message.header, message.payload) {
                         Ok(payload) => payload,
                         Err(error) => {
-                            if matches!(
-                                error,
-                                RuntimeError::InvalidPayload | RuntimeError::MissingSession(_)
-                            ) {
+                            if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_))
+                            {
                                 let _ = self.send_session_reset(state, message.header.sender);
                             }
-                            if matches!(error, RuntimeError::Decode(_)) {
+                            if matches!(error, QlError::Decode(_)) {
                                 let _ = self.send_nack(
                                     state,
                                     message.header.sender,
@@ -704,10 +671,8 @@ where
                     match extract_payload(&self.platform, &message.header, message.payload) {
                         Ok(payload) => payload,
                         Err(error) => {
-                            if matches!(
-                                error,
-                                RuntimeError::InvalidPayload | RuntimeError::MissingSession(_)
-                            ) {
+                            if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_))
+                            {
                                 let _ = self.send_session_reset(state, message.header.sender);
                             }
                             return;
@@ -766,7 +731,7 @@ where
         peer.set_pending_handshake(None);
         if header.kind == MessageKind::Nack {
             let nack = Nack::try_from(decrypted).unwrap_or(Nack::Unknown);
-            let _ = entry.tx.send(Err(RuntimeError::Nack(nack)));
+            let _ = entry.tx.send(Err(QlError::Nack(nack)));
         } else {
             let _ = entry.tx.send(Ok(decrypted));
         }
@@ -776,7 +741,7 @@ where
         &mut self,
         state: &mut RuntimeState,
         recipient: XID,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), QlError> {
         let peer = self.platform.lookup_peer_or_fail(recipient)?;
         let recipient_key = peer.encapsulation_pub_key();
         let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
@@ -817,7 +782,7 @@ where
         recipient: XID,
         id: ARID,
         reason: Nack,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), QlError> {
         let (header, encrypted) = match encrypt_response(
             &self.platform,
             recipient,
@@ -826,7 +791,7 @@ where
             MessageKind::Nack,
         ) {
             Ok(result) => result,
-            Err(RuntimeError::MissingSession(_)) => return Ok(()),
+            Err(QlError::MissingSession(_)) => return Ok(()),
             Err(error) => return Err(error),
         };
         let bytes = encode_ql_message(header, encrypted);
@@ -845,7 +810,7 @@ where
             }
             timeouts.pop();
             if let Some(pending) = pending.remove(&entry.id) {
-                let _ = pending.tx.send(Err(RuntimeError::Timeout));
+                let _ = pending.tx.send(Err(QlError::Timeout));
             }
         }
     }

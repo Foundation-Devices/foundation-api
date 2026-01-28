@@ -10,8 +10,9 @@ use bc_components::{
 use dcbor::CBOR;
 use thiserror::Error;
 
-use crate::runtime::{
-    HandshakeKind, PendingHandshake, QlPeer, QlPlatform, ResetOrigin, RuntimeError,
+use crate::{
+    runtime::{HandshakeKind, PendingHandshake, QlPeer, QlPlatform, ResetOrigin},
+    QlError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,7 +252,7 @@ pub(crate) fn encrypt_payload_for_recipient(
     kind: MessageKind,
     message_id: ARID,
     payload: CBOR,
-) -> Result<(QlHeader, EncryptedMessage), RuntimeError> {
+) -> Result<(QlHeader, EncryptedMessage), QlError> {
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let (session_key, kem_ct, should_sign_header) = match peer.session() {
         Some(session_key) => (session_key, None, false),
@@ -284,11 +285,9 @@ pub(crate) fn encrypt_response(
     message_id: ARID,
     payload: CBOR,
     kind: MessageKind,
-) -> Result<(QlHeader, EncryptedMessage), RuntimeError> {
+) -> Result<(QlHeader, EncryptedMessage), QlError> {
     let peer = platform.lookup_peer_or_fail(recipient)?;
-    let session_key = peer
-        .session()
-        .ok_or(RuntimeError::MissingSession(recipient))?;
+    let session_key = peer.session().ok_or(QlError::MissingSession(recipient))?;
     let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
     let header_unsigned = QlHeader {
         kind,
@@ -309,7 +308,7 @@ pub(crate) fn encrypt_pairing_request(
     platform: &dyn QlPlatform,
     recipient_signing_key: &SigningPublicKey,
     recipient_encapsulation_key: &EncapsulationPublicKey,
-) -> Result<(QlHeader, EncryptedMessage), RuntimeError> {
+) -> Result<(QlHeader, EncryptedMessage), QlError> {
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
     let recipient = XID::new(recipient_signing_key);
     let message_id = ARID::new();
@@ -344,14 +343,14 @@ pub(crate) fn decrypt_pairing_payload(
     platform: &dyn QlPlatform,
     header: &QlHeader,
     payload: &EncryptedMessage,
-) -> Result<(PairingPayload, SymmetricKey), RuntimeError> {
+) -> Result<(PairingPayload, SymmetricKey), QlError> {
     ensure_not_expired(header)?;
-    let kem_ct = header.kem_ct.as_ref().ok_or(RuntimeError::InvalidPayload)?;
+    let kem_ct = header.kem_ct.as_ref().ok_or(QlError::InvalidPayload)?;
     let session_key = platform.decapsulate_shared_secret(kem_ct)?;
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), payload)?;
-    let pairing = PairingPayload::try_from(decrypted).map_err(RuntimeError::Decode)?;
+    let pairing = PairingPayload::try_from(decrypted).map_err(QlError::Decode)?;
     if XID::new(&pairing.signing_pub_key) != header.sender {
-        return Err(RuntimeError::InvalidPayload);
+        return Err(QlError::InvalidPayload);
     }
     let proof_data = pairing_proof_data(
         header,
@@ -361,28 +360,22 @@ pub(crate) fn decrypt_pairing_payload(
     if pairing.signing_pub_key.verify(&pairing.proof, &proof_data) {
         Ok((pairing, session_key))
     } else {
-        Err(RuntimeError::InvalidSignature)
+        Err(QlError::InvalidSignature)
     }
 }
 
-pub(crate) fn verify_header(
-    platform: &dyn QlPlatform,
-    header: &QlHeader,
-) -> Result<(), RuntimeError> {
+pub(crate) fn verify_header(platform: &dyn QlPlatform, header: &QlHeader) -> Result<(), QlError> {
     ensure_not_expired(header)?;
     if header.kem_ct.is_none() {
         return Ok(());
     }
-    let signature = header
-        .signature
-        .as_ref()
-        .ok_or(RuntimeError::InvalidSignature)?;
+    let signature = header.signature.as_ref().ok_or(QlError::InvalidSignature)?;
     let peer = platform.lookup_peer_or_fail(header.sender)?;
     let signing_key = peer.signing_pub_key();
     if signing_key.verify(signature, &header.aad_data()) {
         Ok(())
     } else {
-        Err(RuntimeError::InvalidSignature)
+        Err(QlError::InvalidSignature)
     }
 }
 
@@ -390,13 +383,13 @@ pub(crate) fn session_key_for_header(
     platform: &dyn QlPlatform,
     peer: &dyn QlPeer,
     header: &QlHeader,
-) -> Result<SymmetricKey, RuntimeError> {
+) -> Result<SymmetricKey, QlError> {
     if let Some(kem_ct) = &header.kem_ct {
         if let Some(pending) = peer.pending_handshake() {
             if pending.kind == HandshakeKind::SessionInit && pending.origin == ResetOrigin::Local {
                 let cmp = handshake_cmp((platform.xid(), pending.id), (header.sender, header.id));
                 if cmp != Ordering::Less {
-                    return Err(RuntimeError::SessionInitCollision);
+                    return Err(QlError::SessionInitCollision);
                 }
             }
         }
@@ -404,8 +397,7 @@ pub(crate) fn session_key_for_header(
         peer.store_session(key.clone());
         Ok(key)
     } else {
-        peer.session()
-            .ok_or(RuntimeError::MissingSession(header.sender))
+        peer.session().ok_or(QlError::MissingSession(header.sender))
     }
 }
 
@@ -413,19 +405,19 @@ pub(crate) fn extract_payload(
     platform: &dyn QlPlatform,
     header: &QlHeader,
     payload: EncryptedMessage,
-) -> Result<QlPayload, RuntimeError> {
+) -> Result<QlPayload, QlError> {
     let peer = platform.lookup_peer_or_fail(header.sender)?;
     let session_key = session_key_for_header(platform, peer, header)?;
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
     peer.set_pending_handshake(None);
-    QlPayload::try_from(decrypted).map_err(RuntimeError::Decode)
+    QlPayload::try_from(decrypted).map_err(QlError::Decode)
 }
 
 pub(crate) fn extract_reset_payload(
     platform: &dyn QlPlatform,
     header: &QlHeader,
     payload: EncryptedMessage,
-) -> Result<(), RuntimeError> {
+) -> Result<(), QlError> {
     let peer = platform.lookup_peer_or_fail(header.sender)?;
     if let Some(pending) = peer.pending_handshake() {
         if pending.kind == HandshakeKind::SessionReset && pending.origin == ResetOrigin::Local {
@@ -435,7 +427,7 @@ pub(crate) fn extract_reset_payload(
             }
         }
     }
-    let kem_ct = header.kem_ct.as_ref().ok_or(RuntimeError::InvalidPayload)?;
+    let kem_ct = header.kem_ct.as_ref().ok_or(QlError::InvalidPayload)?;
     let session_key = platform.decapsulate_shared_secret(kem_ct)?;
     peer.store_session(session_key.clone());
     peer.set_pending_handshake(Some(PendingHandshake {
@@ -445,7 +437,7 @@ pub(crate) fn extract_reset_payload(
     }));
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
     if !decrypted.is_null() {
-        return Err(RuntimeError::InvalidPayload);
+        return Err(QlError::InvalidPayload);
     }
     Ok(())
 }
@@ -476,7 +468,7 @@ fn sign_header(signer: &dyn Signer, signing_data: &[u8], sign_header: bool) -> O
 fn create_session(
     peer: &dyn QlPeer,
     message_id: ARID,
-) -> Result<(SymmetricKey, Option<EncapsulationCiphertext>, bool), RuntimeError> {
+) -> Result<(SymmetricKey, Option<EncapsulationCiphertext>, bool), QlError> {
     let recipient_key = peer.encapsulation_pub_key();
     let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
     peer.store_session(session_key.clone());
@@ -495,10 +487,10 @@ fn handshake_cmp(local: (XID, ARID), peer: (XID, ARID)) -> Ordering {
     }
 }
 
-fn ensure_not_expired(header: &QlHeader) -> Result<(), RuntimeError> {
+fn ensure_not_expired(header: &QlHeader) -> Result<(), QlError> {
     let now = now_secs();
     if now > header.valid_until {
-        Err(RuntimeError::Expired)
+        Err(QlError::Expired)
     } else {
         Ok(())
     }

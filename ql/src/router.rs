@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::{
-    runtime::{HandlerEvent, Responder, RuntimeError},
+    runtime::{HandlerEvent, Responder},
     wire::{Ack, Nack},
-    Event, QlCodec, RequestResponse,
+    Event, QlCodec, QlError, RequestResponse,
 };
 
 pub trait RequestHandler<M>
@@ -43,16 +43,16 @@ impl<R> QlResponder<R>
 where
     R: QlCodec,
 {
-    pub fn respond(mut self, response: R) -> Result<(), RuntimeError> {
+    pub fn respond(mut self, response: R) -> Result<(), QlError> {
         self.respond_inner(response)
     }
 
-    pub fn respond_nack(mut self, reason: Nack) -> Result<(), RuntimeError> {
+    pub fn respond_nack(mut self, reason: Nack) -> Result<(), QlError> {
         let responder = self.responder.take().unwrap();
         responder.respond_nack(reason)
     }
 
-    fn respond_inner(&mut self, response: R) -> Result<(), RuntimeError> {
+    fn respond_inner(&mut self, response: R) -> Result<(), QlError> {
         let responder = self.responder.take().unwrap();
         responder.respond(response)
     }
@@ -77,7 +77,7 @@ pub enum RouterError {
     #[error("missing handler {0}")]
     MissingHandler(u64),
     #[error(transparent)]
-    Runtime(#[from] RuntimeError),
+    Runtime(#[from] QlError),
 }
 
 type RouterHandler<S> = fn(&mut S, HandlerEvent) -> Result<(), RouterError>;
@@ -167,7 +167,7 @@ where
 {
     let (payload, responder) = match event {
         HandlerEvent::Request(request) => (request.message.payload, request.respond_to),
-        HandlerEvent::Event(_) => return Err(RouterError::Runtime(RuntimeError::InvalidPayload)),
+        HandlerEvent::Event(_) => return Err(RouterError::Runtime(QlError::InvalidPayload)),
     };
     let message = match M::try_from(payload.payload) {
         Ok(message) => message,
