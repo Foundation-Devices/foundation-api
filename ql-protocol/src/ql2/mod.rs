@@ -88,6 +88,12 @@ pub struct ReplyToken {
     pub recipient: XID,
 }
 
+#[derive(Debug)]
+pub struct OutboundItem {
+    pub id: ARID,
+    pub bytes: Vec<u8>,
+}
+
 pub trait QlPeer {
     fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey;
     fn signing_pub_key(&self) -> &SigningPublicKey;
@@ -156,7 +162,7 @@ where
     platform: P,
     pending: HashMap<ARID, PendingEntry>,
     timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
-    outbound: VecDeque<Vec<u8>>,
+    outbound: VecDeque<OutboundItem>,
     config: QlCoreConfig,
 }
 
@@ -224,7 +230,10 @@ where
             payload.into(),
         )?;
         let bytes = encode_ql_message(header, encrypted);
-        self.outbound.push_back(bytes);
+        self.outbound.push_back(OutboundItem {
+            id: message_id,
+            bytes,
+        });
 
         let effective_timeout = request_config
             .timeout
@@ -258,7 +267,10 @@ where
             payload.into(),
         )?;
         let bytes = encode_ql_message(header, encrypted);
-        self.outbound.push_back(bytes);
+        self.outbound.push_back(OutboundItem {
+            id: message_id,
+            bytes,
+        });
         Ok(())
     }
 
@@ -272,12 +284,16 @@ where
             recipient_signing_key,
             recipient_encapsulation_key,
         )?;
+        let message_id = header.id;
         let bytes = encode_ql_message(header, encrypted);
-        self.outbound.push_back(bytes);
+        self.outbound.push_back(OutboundItem {
+            id: message_id,
+            bytes,
+        });
         Ok(())
     }
 
-    pub fn next_outbound(&mut self) -> Option<Vec<u8>> {
+    pub fn next_outbound(&mut self) -> Option<OutboundItem> {
         self.outbound.pop_front()
     }
 
@@ -290,7 +306,10 @@ where
             MessageKind::Response,
         )?;
         let bytes = encode_ql_message(header, encrypted);
-        self.outbound.push_back(bytes);
+        self.outbound.push_back(OutboundItem {
+            id: token.id,
+            bytes,
+        });
         Ok(())
     }
 
@@ -307,8 +326,31 @@ where
             Err(error) => return Err(error),
         };
         let bytes = encode_ql_message(header, encrypted);
-        self.outbound.push_back(bytes);
+        self.outbound.push_back(OutboundItem {
+            id: token.id,
+            bytes,
+        });
         Ok(())
+    }
+
+    pub fn report_send_result(
+        &mut self,
+        id: ARID,
+        result: Result<(), ExecutorError>,
+    ) -> Option<CoreOutput> {
+        match result {
+            Ok(()) => None,
+            Err(error) => {
+                if self.pending.remove(&id).is_some() {
+                    Some(CoreOutput::RequestFailed {
+                        id,
+                        error: QlError::Send(error),
+                    })
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     pub fn handle_incoming(&mut self, bytes: Vec<u8>) -> Option<CoreOutput> {
@@ -469,7 +511,7 @@ where
             ..header_unsigned
         };
         let bytes = encode_ql_message(header, encrypted);
-        self.outbound.push_back(bytes);
+        self.outbound.push_back(OutboundItem { id, bytes });
         Ok(())
     }
 
