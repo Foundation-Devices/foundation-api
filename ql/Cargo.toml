@@ -1,0 +1,14 @@
+[package]
+name = "ql"
+version = "0.1.0"
+edition = "2021"
+description = "Quantum Link runtime"
+license = "Proprietary"
+
+[dependencies]
+async-channel = { version = "2.5" }
+bc-components = { workspace = true, default-features = false, features = ["pqcrypto"] }
+dcbor = { workspace = true }
+futures-lite = { version = "2.5" }
+oneshot = { version = "0.1.11" }
+thiserror = { workspace = true }

@@ -1944,6 +1944,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ql"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "bc-components",
+ "dcbor",
+ "futures-lite",
+ "oneshot",
+ "thiserror",
+]
+
+[[package]]
 name = "ql-protocol"
 version = "0.1.0"
 dependencies = [
