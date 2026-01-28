@@ -16,9 +16,9 @@ use super::{
     RequestResponse, ResetOrigin, Router,
 };
 use crate::{
-    decode_ql_message, encode_ql_message, test_identity::TestIdentity, EncodeQlConfig, Executor,
-    ExecutorConfig, ExecutorError, ExecutorPlatform, HandlerEvent, InboundEvent, MessageKind,
-    PlatformFuture, QlError, QlHeader, QlMessage, RequestConfig,
+    decode_ql_message, encode_ql_message, test_identity::TestIdentity, Executor, ExecutorConfig,
+    ExecutorError, ExecutorPlatform, HandlerEvent, InboundEvent, MessageKind, PlatformFuture,
+    QlError, QlHeader, QlMessage, RequestConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,22 +265,20 @@ fn build_reset_message(
         kem_ct: Some(kem_ct.clone()),
         signature: None,
     };
+    let signature = Some(
+        sender
+            .private_keys
+            .sign(&header.aad_data())
+            .expect("sign reset header"),
+    );
+    let header = QlHeader {
+        signature,
+        ..header
+    };
     let aad = header.aad_data();
     let payload_bytes = CBOR::null().to_cbor_data();
     let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-    let bytes = encode_ql_message(
-        MessageKind::SessionReset,
-        id,
-        EncodeQlConfig {
-            sender: sender.xid,
-            recipient: recipient.xid,
-            valid_until,
-            kem_ct: Some(kem_ct),
-            sign_header: true,
-        },
-        encrypted,
-        &sender.private_keys,
-    );
+    let bytes = encode_ql_message(header, encrypted);
     decode_ql_message(&bytes).expect("decode reset")
 }
 
@@ -378,6 +376,66 @@ async fn typed_round_trip() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn expired_response_is_rejected() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (platform, outbound_rx) = TestPlatform::new();
+            let config = ExecutorConfig {
+                default_timeout: Duration::from_secs(2),
+            };
+            let (mut core, handle, _incoming) = Executor::new(platform, config);
+            tokio::task::spawn_local(async move { core.run().await });
+
+            let requester = TestIdentity::generate();
+            let responder = TestIdentity::generate();
+            let requester_platform = Arc::new(TestRouterPlatform::new(
+                requester.clone(),
+                responder.encapsulation_public_key.clone(),
+                responder.signing_public_key.clone(),
+            ));
+            let recipient = XID::new(&responder.signing_public_key);
+            let client = QlExecutorHandle::new(handle.clone(), requester_platform.clone());
+
+            let response_task = tokio::task::spawn_local(async move {
+                client
+                    .request(Ping(5), recipient, RequestConfig::default())
+                    .await
+            });
+
+            let outbound = outbound_rx.recv().await.expect("no outbound request");
+            let outbound_message = decode_ql_message(&outbound).expect("decode outbound");
+
+            let session_key = requester_platform
+                .lookup_peer(recipient)
+                .expect("peer")
+                .session()
+                .expect("session");
+            let header = QlHeader {
+                kind: MessageKind::Response,
+                id: outbound_message.header.id,
+                sender: responder.xid,
+                recipient: outbound_message.header.sender,
+                valid_until: 0,
+                kem_ct: None,
+                signature: None,
+            };
+            let payload = CBOR::from(6);
+            let encrypted = session_key.encrypt(
+                payload.to_cbor_data(),
+                Some(header.aad_data()),
+                None::<bc_components::Nonce>,
+            );
+            let response_bytes = encode_ql_message(header, encrypted);
+            handle.send_incoming(response_bytes).unwrap();
+
+            let response = response_task.await.unwrap();
+            assert!(matches!(response, Err(QlError::Expired)));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn reset_cancels_pending_request() {
     let local = tokio::task::LocalSet::new();
     local
@@ -413,19 +471,7 @@ async fn reset_cancels_pending_request() {
                 &client_identity,
                 bc_components::ARID::new(),
             );
-            let reset_bytes = encode_ql_message(
-                reset_message.header.kind,
-                reset_message.header.id,
-                EncodeQlConfig {
-                    sender: reset_message.header.sender,
-                    recipient: reset_message.header.recipient,
-                    valid_until: reset_message.header.valid_until,
-                    kem_ct: reset_message.header.kem_ct.clone(),
-                    sign_header: reset_message.header.signature.is_some(),
-                },
-                reset_message.payload,
-                &server_identity.private_keys,
-            );
+            let reset_bytes = encode_ql_message(reset_message.header, reset_message.payload);
             client_handle.send_incoming(reset_bytes).unwrap();
 
             let result = request_task.await.unwrap();
@@ -601,24 +647,22 @@ async fn reset_with_invalid_signature_is_rejected() {
                 kem_ct: Some(kem_ct.clone()),
                 signature: None,
             };
+            let signature = Some(
+                server_identity
+                    .private_keys
+                    .sign(&header.aad_data())
+                    .expect("sign reset header"),
+            );
+            let header = QlHeader {
+                signature,
+                ..header
+            };
             let aad = header.aad_data();
             let payload_bytes = CBOR::null().to_cbor_data();
             let encrypted =
                 session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-            let mut reset_message = decode_ql_message(&encode_ql_message(
-                MessageKind::SessionReset,
-                id,
-                EncodeQlConfig {
-                    sender: server_identity.xid,
-                    recipient: client_identity.xid,
-                    valid_until,
-                    kem_ct: Some(kem_ct),
-                    sign_header: true,
-                },
-                encrypted,
-                &server_identity.private_keys,
-            ))
-            .expect("decode reset");
+            let mut reset_message =
+                decode_ql_message(&encode_ql_message(header, encrypted)).expect("decode reset");
             reset_message.header.kind = MessageKind::Request;
 
             let result = router.handle(

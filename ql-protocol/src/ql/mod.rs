@@ -10,6 +10,7 @@ use crate::{cbor::cbor_array, ExecutorError};
 
 pub mod handle;
 pub mod router;
+pub(crate) mod encrypt;
 
 pub trait QlCodec: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> + Sized {}
 
@@ -53,6 +54,7 @@ impl TryFrom<CBOR> for QlPayload {
 #[derive(Debug)]
 pub enum QlError {
     Decode(dcbor::Error),
+    Expired,
     InvalidPayload,
     InvalidSignature,
     MissingHandler(u64),

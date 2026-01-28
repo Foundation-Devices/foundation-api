@@ -8,10 +8,10 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::{EncryptedMessage, Signer, ARID, XID};
+use bc_components::{EncryptedMessage, ARID, XID};
 
 use super::wire::{
-    decode_ql_message, encode_ql_message, DecodeErrContext, EncodeQlConfig, MessageKind, QlMessage,
+    decode_ql_message, encode_ql_message, DecodeErrContext, MessageKind, QlHeader, QlMessage,
 };
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -82,17 +82,10 @@ impl Responder {
 
     pub fn respond(
         self,
+        header: QlHeader,
         payload: EncryptedMessage,
-        encode_config: EncodeQlConfig,
-        signer: &dyn Signer,
     ) -> Result<(), ExecutorError> {
-        let bytes = encode_ql_message(
-            MessageKind::Response,
-            self.id,
-            encode_config,
-            payload,
-            signer,
-        );
+        let bytes = encode_ql_message(header, payload);
         self.tx
             .send_blocking(ExecutorEvent::SendResponse { bytes })
             .map_err(|_| ExecutorError::Cancelled)
@@ -171,14 +164,13 @@ impl std::future::Future for ExecutorResponse {
 impl ExecutorHandle {
     pub fn request(
         &self,
-        id: ARID,
+        header: QlHeader,
         payload: EncryptedMessage,
-        encode_config: EncodeQlConfig,
         request_config: RequestConfig,
-        signer: &dyn Signer,
     ) -> ExecutorResponse {
-        let recipient = encode_config.recipient;
-        let bytes = encode_ql_message(MessageKind::Request, id, encode_config, payload, signer);
+        let recipient = header.recipient;
+        let id = header.id;
+        let bytes = encode_ql_message(header, payload);
         let (tx, rx) = oneshot::channel();
         self.tx
             .send_blocking(ExecutorEvent::SendRequest {
@@ -194,27 +186,22 @@ impl ExecutorHandle {
 
     pub fn send_event(
         &self,
-        id: ARID,
+        header: QlHeader,
         payload: EncryptedMessage,
-        encode_config: EncodeQlConfig,
-        signer: &dyn Signer,
     ) {
         let tx = self.tx.clone();
-        let bytes = encode_ql_message(MessageKind::Event, id, encode_config, payload, signer);
+        let bytes = encode_ql_message(header, payload);
         tx.send_blocking(ExecutorEvent::SendEvent { bytes })
             .unwrap();
     }
 
     pub fn send_message(
         &self,
-        kind: MessageKind,
-        id: ARID,
+        header: QlHeader,
         payload: EncryptedMessage,
-        encode_config: EncodeQlConfig,
-        signer: &dyn Signer,
     ) {
         let tx = self.tx.clone();
-        let bytes = encode_ql_message(kind, id, encode_config, payload, signer);
+        let bytes = encode_ql_message(header, payload);
         tx.send_blocking(ExecutorEvent::SendEvent { bytes })
             .unwrap();
     }
@@ -503,9 +490,8 @@ where
 mod test {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use bc_components::{Nonce, SymmetricKey};
-
     use super::*;
+    use crate::ql::encrypt;
     use crate::test_identity::TestIdentity;
 
     struct TestPlatform {
@@ -539,18 +525,21 @@ mod test {
             .unwrap_or(0)
     }
 
-    fn encrypt_payload(data: &str) -> EncryptedMessage {
-        let key = SymmetricKey::new();
-        key.encrypt(data.as_bytes(), None::<Vec<u8>>, None::<Nonce>)
-    }
-
-    fn encode_config(sender: XID, recipient: XID, valid_until: u64) -> EncodeQlConfig {
-        EncodeQlConfig {
+    fn build_header(
+        kind: MessageKind,
+        id: ARID,
+        sender: XID,
+        recipient: XID,
+        valid_until: u64,
+    ) -> QlHeader {
+        QlHeader {
+            kind,
+            id,
             sender,
             recipient,
             valid_until,
             kem_ct: None,
-            sign_header: false,
+            signature: None,
         }
     }
 
@@ -570,43 +559,34 @@ mod test {
                 let responder = TestIdentity::generate();
                 let recipient_xid = responder.xid;
                 let valid_until = now_secs().saturating_add(60);
-                let payload = encrypt_payload("ping");
+                let payload = encrypt::encrypt_test_payload(b"ping");
                 let request_id = ARID::new();
+                let request_header =
+                    build_header(MessageKind::Request, request_id, requester.xid, recipient_xid, valid_until);
 
                 let response_task = tokio::task::spawn_local({
                     let handle = handle.clone();
-                    let signer = requester.private_keys.clone();
-                    let config = encode_config(requester.xid, recipient_xid, valid_until);
-                    async move {
-                        handle
-                            .request(
-                                request_id,
-                                payload,
-                                config,
-                                RequestConfig::default(),
-                                &signer,
-                            )
-                            .await
-                    }
-                });
+                        async move {
+                            handle
+                                .request(request_header, payload, RequestConfig::default())
+                                .await
+                        }
+                    });
 
                 let outbound = outbound_rx.recv().await.expect("no outbound request");
                 let outbound_message = decode_ql_message(&outbound).expect("decode outbound");
                 assert_eq!(outbound_message.header.kind, MessageKind::Request);
                 let request_id = outbound_message.header.id;
 
-                let response_payload = encrypt_payload("pong");
-                let response_bytes = encode_ql_message(
+                let response_payload = encrypt::encrypt_test_payload(b"pong");
+                let response_header = build_header(
                     MessageKind::Response,
                     request_id,
-                    encode_config(
-                        responder.xid,
-                        outbound_message.header.sender,
-                        now_secs().saturating_add(60),
-                    ),
-                    response_payload,
-                    &responder.private_keys,
+                    responder.xid,
+                    outbound_message.header.sender,
+                    now_secs().saturating_add(60),
                 );
+                let response_bytes = encode_ql_message(response_header, response_payload);
                 handle.send_incoming(response_bytes).unwrap();
 
                 let response = response_task.await.unwrap().unwrap();
@@ -631,17 +611,17 @@ mod test {
                 let requester = TestIdentity::generate();
                 let recipient_xid = requester.xid;
                 let valid_until = now_secs().saturating_add(60);
-                let payload = encrypt_payload("timeout");
+                let payload = encrypt::encrypt_test_payload(b"timeout");
                 let request_id = ARID::new();
+                let request_header =
+                    build_header(MessageKind::Request, request_id, requester.xid, recipient_xid, valid_until);
                 let result = handle
                     .request(
-                        request_id,
+                        request_header,
                         payload,
-                        encode_config(requester.xid, recipient_xid, valid_until),
                         RequestConfig {
                             timeout: Some(Duration::from_millis(1)),
                         },
-                        &requester.private_keys,
                     )
                     .await;
 
@@ -666,14 +646,15 @@ mod test {
                 let recipient = TestIdentity::generate();
                 let recipient_xid = recipient.xid;
                 let event_id = ARID::new();
-                let payload = encrypt_payload("event");
-                let event_bytes = encode_ql_message(
+                let payload = encrypt::encrypt_test_payload(b"event");
+                let event_header = build_header(
                     MessageKind::Event,
                     event_id,
-                    encode_config(sender.xid, recipient_xid, now_secs().saturating_add(60)),
-                    payload,
-                    &sender.private_keys,
+                    sender.xid,
+                    recipient_xid,
+                    now_secs().saturating_add(60),
                 );
+                let event_bytes = encode_ql_message(event_header, payload);
 
                 handle.send_incoming(event_bytes).unwrap();
 
@@ -689,62 +670,4 @@ mod test {
             .await;
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn expired_response_returns_error() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (platform, outbound_rx) = TestPlatform::new();
-                let config = ExecutorConfig {
-                    default_timeout: Duration::from_secs(2),
-                };
-                let (mut core, handle, _incoming) = Executor::new(platform, config);
-                tokio::task::spawn_local(async move { core.run().await });
-
-                let requester = TestIdentity::generate();
-                let responder = TestIdentity::generate();
-                let recipient_xid = responder.xid;
-                let valid_until = now_secs().saturating_add(60);
-                let payload = encrypt_payload("ping");
-                let request_id = ARID::new();
-
-                let response_task = tokio::task::spawn_local({
-                    let handle = handle.clone();
-                    let signer = requester.private_keys.clone();
-                    let config = encode_config(requester.xid, recipient_xid, valid_until);
-                    async move {
-                        handle
-                            .request(
-                                request_id,
-                                payload,
-                                config,
-                                RequestConfig {
-                                    timeout: Some(Duration::from_secs(3)),
-                                },
-                                &signer,
-                            )
-                            .await
-                    }
-                });
-
-                let outbound = outbound_rx.recv().await.expect("no outbound request");
-                let outbound_message = decode_ql_message(&outbound).expect("decode outbound");
-                let request_id = outbound_message.header.id;
-
-                let response_payload = encrypt_payload("pong");
-                let response_bytes = encode_ql_message(
-                    MessageKind::Response,
-                    request_id,
-                    encode_config(responder.xid, outbound_message.header.sender, 0),
-                    response_payload,
-                    &responder.private_keys,
-                );
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                handle.send_incoming(response_bytes).unwrap();
-
-                let response = response_task.await.unwrap();
-                assert!(matches!(response, Err(ExecutorError::Decode(_))));
-            })
-            .await;
-    }
 }

@@ -1,6 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use bc_components::{EncapsulationCiphertext, EncryptedMessage, Signature, Signer, ARID, XID};
+use bc_components::{EncapsulationCiphertext, EncryptedMessage, Signature, ARID, XID};
 use dcbor::CBOR;
 use thiserror::Error;
 
@@ -23,15 +21,6 @@ pub struct QlHeader {
     pub valid_until: u64,
     pub kem_ct: Option<EncapsulationCiphertext>,
     pub signature: Option<Signature>,
-}
-
-#[derive(Debug, Clone)]
-pub struct EncodeQlConfig {
-    pub sender: XID,
-    pub recipient: XID,
-    pub valid_until: u64,
-    pub kem_ct: Option<EncapsulationCiphertext>,
-    pub sign_header: bool,
 }
 
 impl QlHeader {
@@ -128,8 +117,6 @@ fn header_cbor_unsigned(
 
 #[derive(Debug, Error)]
 pub enum DecodeError {
-    #[error("message expired")]
-    Expired,
     #[error(transparent)]
     Cbor(#[from] dcbor::Error),
 }
@@ -146,36 +133,7 @@ pub struct QlMessage {
     pub payload: EncryptedMessage,
 }
 
-pub fn encode_ql_message(
-    kind: MessageKind,
-    id: ARID,
-    config: EncodeQlConfig,
-    payload: EncryptedMessage,
-    signer: &dyn Signer,
-) -> Vec<u8> {
-    let signing_data = header_cbor_unsigned(
-        kind,
-        id,
-        config.sender,
-        config.recipient,
-        config.valid_until,
-        config.kem_ct.clone(),
-    )
-    .to_cbor_data();
-    let signature = if config.sign_header {
-        Some(signer.sign(&signing_data).expect("failed to sign header"))
-    } else {
-        None
-    };
-    let header = QlHeader {
-        kind,
-        id,
-        sender: config.sender,
-        recipient: config.recipient,
-        valid_until: config.valid_until,
-        kem_ct: config.kem_ct,
-        signature,
-    };
+pub fn encode_ql_message(header: QlHeader, payload: EncryptedMessage) -> Vec<u8> {
     let cbor = CBOR::from(vec![CBOR::from(header), CBOR::from(payload)]);
     cbor.to_cbor_data()
 }
@@ -197,16 +155,6 @@ pub fn decode_ql_message(bytes: &[u8]) -> Result<QlMessage, DecodeErrContext> {
         error: DecodeError::Cbor(error),
         header: None,
     })?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    if now > header.valid_until {
-        return Err(DecodeErrContext {
-            error: DecodeError::Expired,
-            header: Some(header),
-        });
-    }
     let payload: EncryptedMessage = payload_cbor.try_into().map_err(|error| DecodeErrContext {
         error: DecodeError::Cbor(error),
         header: Some(header.clone()),
@@ -243,7 +191,7 @@ impl From<MessageKind> for CBOR {
 
 #[cfg(test)]
 mod tests {
-    use bc_components::Verifier;
+    use bc_components::SymmetricKey;
 
     use super::*;
     use crate::test_identity::TestIdentity;
@@ -255,133 +203,8 @@ mod tests {
         let recipient_xid = recipient.xid;
         let sender_xid = sender.xid;
         let header_id = ARID::new();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        let valid_until = now.saturating_add(60);
-        let (session_key, kem_ct) = recipient
-            .encapsulation_public_key
-            .encapsulate_new_shared_secret();
-        let header_unsigned = QlHeader {
-            kind: MessageKind::Request,
-            id: header_id,
-            sender: sender_xid,
-            recipient: recipient_xid,
-            valid_until,
-            kem_ct: Some(kem_ct.clone()),
-            signature: None,
-        };
-        let payload = CBOR::from("secret");
-        let payload_bytes = payload.to_cbor_data();
-        let encrypted_payload = session_key.encrypt(
-            payload_bytes,
-            Some(header_unsigned.aad_data()),
-            None::<bc_components::Nonce>,
-        );
-
-        let bytes = encode_ql_message(
-            MessageKind::Request,
-            header_id,
-            EncodeQlConfig {
-                sender: sender_xid,
-                recipient: recipient_xid,
-                valid_until,
-                kem_ct: Some(kem_ct),
-                sign_header: true,
-            },
-            encrypted_payload,
-            &sender.private_keys,
-        );
-        let decoded = decode_ql_message(&bytes).expect("decode failed");
-
-        assert_eq!(decoded.header.kind, MessageKind::Request);
-        assert_eq!(decoded.header.id, header_id);
-        assert_eq!(decoded.header.recipient, recipient_xid);
-        assert_eq!(decoded.header.sender, sender_xid);
-
-        let signing_data = decoded.header.aad_data();
-        let signature = decoded.header.signature.as_ref().expect("signature");
-        assert!(sender.signing_public_key.verify(signature, &signing_data));
-
-        let decrypted = session_key.decrypt(&decoded.payload).expect("decrypt");
-        let decrypted_cbor = CBOR::try_from_data(decrypted).expect("cbor");
-        assert_eq!(decrypted_cbor, payload);
-    }
-
-    #[test]
-    fn header_size() {
-        let size = std::mem::size_of::<QlHeader>();
-        println!("header size: {} bytes", size);
-        assert!(size > 0);
-    }
-
-    #[test]
-    fn encoded_message_size() {
-        let sender = TestIdentity::generate();
-        let recipient = TestIdentity::generate();
-        let recipient_xid = recipient.xid;
-        let sender_xid = sender.xid;
-        let header_id = ARID::new();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        let valid_until = now.saturating_add(60);
-        let (session_key, kem_ct) = recipient
-            .encapsulation_public_key
-            .encapsulate_new_shared_secret();
-        let header_unsigned = QlHeader {
-            kind: MessageKind::Request,
-            id: header_id,
-            sender: sender_xid,
-            recipient: recipient_xid,
-            valid_until,
-            kem_ct: Some(kem_ct.clone()),
-            signature: None,
-        };
-        let payload = CBOR::from("size");
-        let payload_bytes = payload.to_cbor_data();
-        let encrypted_payload = session_key.encrypt(
-            payload_bytes,
-            Some(header_unsigned.aad_data()),
-            None::<bc_components::Nonce>,
-        );
-
-        let bytes = encode_ql_message(
-            MessageKind::Request,
-            header_id,
-            EncodeQlConfig {
-                sender: sender_xid,
-                recipient: recipient_xid,
-                valid_until,
-                kem_ct: Some(kem_ct),
-                sign_header: true,
-            },
-            encrypted_payload,
-            &sender.private_keys,
-        );
-
-        println!("encoded message size: {} bytes", bytes.len());
-        assert!(!bytes.is_empty());
-    }
-
-    #[test]
-    fn steady_state_message_size() {
-        let sender = TestIdentity::generate();
-        let recipient = TestIdentity::generate();
-        let recipient_xid = recipient.xid;
-        let sender_xid = sender.xid;
-        let header_id = ARID::new();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        let valid_until = now.saturating_add(60);
-        let (session_key, _kem_ct) = recipient
-            .encapsulation_public_key
-            .encapsulate_new_shared_secret();
-        let header_unsigned = QlHeader {
+        let valid_until = 123;
+        let header = QlHeader {
             kind: MessageKind::Request,
             id: header_id,
             sender: sender_xid,
@@ -390,29 +213,23 @@ mod tests {
             kem_ct: None,
             signature: None,
         };
-        let payload = CBOR::from("steady");
+        let payload = CBOR::from("secret");
         let payload_bytes = payload.to_cbor_data();
-        let encrypted_payload = session_key.encrypt(
+        let encrypted_payload = SymmetricKey::new().encrypt(
             payload_bytes,
-            Some(header_unsigned.aad_data()),
+            None::<Vec<u8>>,
             None::<bc_components::Nonce>,
         );
 
-        let bytes = encode_ql_message(
-            MessageKind::Request,
-            header_id,
-            EncodeQlConfig {
-                sender: sender_xid,
-                recipient: recipient_xid,
-                valid_until,
-                kem_ct: None,
-                sign_header: false,
-            },
-            encrypted_payload,
-            &sender.private_keys,
-        );
+        let bytes = encode_ql_message(header.clone(), encrypted_payload);
+        let decoded = decode_ql_message(&bytes).expect("decode failed");
 
-        println!("steady-state message size: {} bytes", bytes.len());
-        assert!(!bytes.is_empty());
+        assert_eq!(decoded.header.kind, MessageKind::Request);
+        assert_eq!(decoded.header.id, header_id);
+        assert_eq!(decoded.header.recipient, recipient_xid);
+        assert_eq!(decoded.header.sender, sender_xid);
+
+        let reencoded = encode_ql_message(decoded.header, decoded.payload);
+        assert_eq!(reencoded, bytes);
     }
 }

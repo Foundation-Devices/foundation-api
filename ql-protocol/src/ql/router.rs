@@ -1,10 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bc_components::{Verifier, ARID, XID};
+use bc_components::{ARID, XID};
 use dcbor::CBOR;
 
-use super::{Event, QlCodec, QlError, QlPayload, QlPlatform, RequestResponse, ResetOrigin};
-use crate::{EncodeQlConfig, ExecutorHandle, HandlerEvent, MessageKind, QlHeader, Responder};
+use super::{
+    encrypt, Event, QlCodec, QlError, QlPayload, QlPlatform, RequestResponse, ResetOrigin,
+};
+use crate::{ExecutorHandle, HandlerEvent, MessageKind, QlHeader, Responder};
 
 pub trait RequestHandler<M>
 where
@@ -50,32 +52,13 @@ where
     fn respond_inner(&mut self, response: R) -> Result<(), QlError> {
         let responder = self.responder.take().unwrap();
         let payload = response.into();
-        let peer = self.platform.lookup_peer_or_fail(self.recipient)?;
-        let session_key = peer
-            .session()
-            .ok_or(QlError::MissingSession(self.recipient))?;
-        let now = now_secs();
-        let valid_until = now.saturating_add(self.platform.message_expiration().as_secs());
-        let header_unsigned = QlHeader {
-            kind: MessageKind::Response,
-            id: responder.id(),
-            sender: self.platform.sender_xid(),
-            recipient: self.recipient,
-            valid_until,
-            kem_ct: None,
-            signature: None,
-        };
-        let aad = header_unsigned.aad_data();
-        let payload_bytes = dcbor::CBOR::from(payload).to_cbor_data();
-        let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-        let config = EncodeQlConfig {
-            sender: self.platform.sender_xid(),
-            recipient: self.recipient,
-            valid_until,
-            kem_ct: None,
-            sign_header: false,
-        };
-        responder.respond(encrypted, config, self.platform.signer())?;
+        let (header, encrypted) = encrypt::encrypt_response(
+            self.platform.as_ref(),
+            self.recipient,
+            responder.id(),
+            dcbor::CBOR::from(payload),
+        )?;
+        responder.respond(header, encrypted)?;
         Ok(())
     }
 }
@@ -214,7 +197,7 @@ impl<S> Router<S> {
         let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
         peer.store_session(session_key.clone());
 
-        let now = now_secs();
+        let now = encrypt::now_secs();
         let valid_until = now.saturating_add(self.platform.message_expiration().as_secs());
         let id = bc_components::ARID::new();
         peer.set_pending_reset(super::ResetOrigin::Local, id);
@@ -230,20 +213,12 @@ impl<S> Router<S> {
         let aad = header_unsigned.aad_data();
         let payload_bytes = CBOR::null().to_cbor_data();
         let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-        let config = EncodeQlConfig {
-            sender: self.platform.sender_xid(),
-            recipient,
-            valid_until,
-            kem_ct: Some(kem_ct),
-            sign_header: true,
+        let signature = encrypt::sign_reset_header(self.platform.signer(), &header_unsigned);
+        let header = QlHeader {
+            signature,
+            ..header_unsigned
         };
-        executor.send_message(
-            MessageKind::SessionReset,
-            id,
-            encrypted,
-            config,
-            self.platform.signer(),
-        );
+        executor.send_message(header, encrypted);
         Ok(())
     }
 }
@@ -299,7 +274,7 @@ where
 fn decrypt_event(event: HandlerEvent, platform: &dyn QlPlatform) -> Result<RouterEvent, QlError> {
     match event {
         HandlerEvent::Request(request) => {
-            verify_header(platform, &request.message.header)?;
+            encrypt::verify_header(platform, &request.message.header)?;
             let payload =
                 extract_typed_payload(platform, &request.message.header, request.message.payload)?;
             Ok(RouterEvent::Request {
@@ -309,7 +284,7 @@ fn decrypt_event(event: HandlerEvent, platform: &dyn QlPlatform) -> Result<Route
             })
         }
         HandlerEvent::Event(event) => {
-            verify_header(platform, &event.message.header)?;
+            encrypt::verify_header(platform, &event.message.header)?;
             match event.message.header.kind {
                 MessageKind::SessionReset => {
                     extract_reset_payload(platform, &event.message.header, event.message.payload)?;
@@ -333,34 +308,13 @@ fn decrypt_event(event: HandlerEvent, platform: &dyn QlPlatform) -> Result<Route
     }
 }
 
-fn verify_header(platform: &dyn QlPlatform, header: &QlHeader) -> Result<(), QlError> {
-    if header.kem_ct.is_none() {
-        return Ok(());
-    }
-    let signature = header.signature.as_ref().ok_or(QlError::InvalidSignature)?;
-    let peer = platform.lookup_peer_or_fail(header.sender)?;
-    let signing_key = peer.signing_pub_key();
-    if signing_key.verify(signature, &header.aad_data()) {
-        Ok(())
-    } else {
-        Err(QlError::InvalidSignature)
-    }
-}
-
 fn extract_typed_payload(
     platform: &dyn QlPlatform,
     header: &QlHeader,
     payload: bc_components::EncryptedMessage,
 ) -> Result<QlPayload, QlError> {
     let peer = platform.lookup_peer_or_fail(header.sender)?;
-    let session_key = if let Some(kem_ct) = &header.kem_ct {
-        let key = platform.decapsulate_shared_secret(kem_ct)?;
-        peer.store_session(key.clone());
-        key
-    } else {
-        peer.session()
-            .ok_or(QlError::MissingSession(header.sender))?
-    };
+    let session_key = encrypt::session_key_for_header(platform, peer, header)?;
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
     peer.clear_pending_reset();
     QlPayload::try_from(decrypted).map_err(QlError::Decode)
@@ -401,13 +355,4 @@ fn reset_cmp(
         std::cmp::Ordering::Equal => sender_id.data().cmp(local_id.data()),
         order => order,
     }
-}
-
-fn now_secs() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }

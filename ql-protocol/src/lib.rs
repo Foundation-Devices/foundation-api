@@ -14,7 +14,7 @@ pub use ql::{
     QlResponder, RequestHandler, RequestResponse, Router, RouterBuilder, QlError,
 };
 pub use wire::{
-    decode_ql_message, encode_ql_message, DecodeErrContext, DecodeError, EncodeQlConfig,
-    MessageKind, QlHeader, QlMessage,
+    decode_ql_message, encode_ql_message, DecodeErrContext, DecodeError, MessageKind, QlHeader,
+    QlMessage,
 };
 pub mod cbor;

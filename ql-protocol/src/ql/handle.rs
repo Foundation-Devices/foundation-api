@@ -4,16 +4,13 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
-use bc_components::{EncapsulationCiphertext, ARID, XID};
+use bc_components::{ARID, XID};
 
-use super::{Event, QlError, QlPayload, QlPlatform, RequestResponse};
-use crate::{
-    executor::ExecutorResponse, EncodeQlConfig, ExecutorHandle, MessageKind, QlCodec, QlHeader,
-    RequestConfig,
-};
+use super::{encrypt, Event, QlError, QlPayload, QlPlatform, RequestResponse};
+use crate::{executor::ExecutorResponse, ExecutorHandle, MessageKind, QlCodec, RequestConfig};
 
 #[derive(Clone)]
 pub struct QlExecutorHandle {
@@ -50,10 +47,10 @@ where
             ResponseInner::Ok { response, platform } => {
                 Pin::new(response).poll(cx).map(|response| {
                     let response = response?;
+                    encrypt::verify_header(platform.as_ref(), &response.header)?;
                     let peer = platform.lookup_peer_or_fail(response.header.sender)?;
-                    let session_key = peer
-                        .session()
-                        .ok_or(QlError::MissingSession(response.header.sender))?;
+                    let session_key =
+                        encrypt::session_key_for_header(platform.as_ref(), peer, &response.header)?;
                     let decrypted = platform.decrypt_message(
                         &session_key,
                         &response.header.aad_data(),
@@ -87,20 +84,15 @@ impl QlExecutorHandle {
             payload: message.into(),
         };
         let message_id = ARID::new();
-        let inner = match self.encrypt_payload_for_recipient(
+        let inner = match encrypt::encrypt_payload_for_recipient(
+            platform.as_ref(),
             recipient,
             MessageKind::Request,
             message_id,
             payload.into(),
         ) {
-            Ok((encrypted, config)) => {
-                let response = self.handle.request(
-                    message_id,
-                    encrypted,
-                    config,
-                    request_config,
-                    platform.signer(),
-                );
+            Ok((header, encrypted)) => {
+                let response = self.handle.request(header, encrypted, request_config);
 
                 ResponseInner::Ok {
                     response,
@@ -129,74 +121,14 @@ impl QlExecutorHandle {
             payload: message.into(),
         };
         let message_id = ARID::new();
-        let (encrypted, config) = self.encrypt_payload_for_recipient(
+        let (header, encrypted) = encrypt::encrypt_payload_for_recipient(
+            self.platform.as_ref(),
             recipient,
             MessageKind::Event,
             message_id,
             payload.into(),
         )?;
-        self.handle
-            .send_event(message_id, encrypted, config, self.platform.signer());
+        self.handle.send_event(header, encrypted);
         Ok(())
     }
-
-    fn encrypt_payload_for_recipient(
-        &self,
-        recipient: XID,
-        kind: MessageKind,
-        message_id: ARID,
-        payload: dcbor::CBOR,
-    ) -> Result<(bc_components::EncryptedMessage, EncodeQlConfig), QlError> {
-        let platform = self.platform.as_ref();
-        let peer = platform.lookup_peer_or_fail(recipient)?;
-        let (session_key, kem_ct, sign_header) = match peer.session() {
-            Some(session_key) => (session_key, None, false),
-            None => self.create_session(peer)?,
-        };
-        let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
-        let header_unsigned = QlHeader {
-            kind,
-            id: message_id,
-            sender: platform.sender_xid(),
-            recipient,
-            valid_until,
-            kem_ct: kem_ct.clone(),
-            signature: None,
-        };
-        let aad = header_unsigned.aad_data();
-        let payload_bytes = payload.to_cbor_data();
-        let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-        let config = EncodeQlConfig {
-            sender: platform.sender_xid(),
-            recipient,
-            valid_until,
-            kem_ct,
-            sign_header,
-        };
-        Ok((encrypted, config))
-    }
-
-    fn create_session(
-        &self,
-        peer: &dyn super::QlPeer,
-    ) -> Result<
-        (
-            bc_components::SymmetricKey,
-            Option<EncapsulationCiphertext>,
-            bool,
-        ),
-        QlError,
-    > {
-        let recipient_key = peer.encapsulation_pub_key();
-        let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
-        peer.store_session(session_key.clone());
-        Ok((session_key, Some(kem_ct), true))
-    }
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
