@@ -4,15 +4,15 @@ use bc_components::{
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct TestIdentity {
-    pub(crate) private_keys: PrivateKeys,
-    pub(crate) signing_public_key: SigningPublicKey,
-    pub(crate) encapsulation_public_key: EncapsulationPublicKey,
-    pub(crate) xid: XID,
+pub struct QlIdentity {
+    pub private_keys: PrivateKeys,
+    pub signing_public_key: SigningPublicKey,
+    pub encapsulation_public_key: EncapsulationPublicKey,
+    pub xid: XID,
 }
 
-impl TestIdentity {
-    pub(crate) fn generate() -> Self {
+impl QlIdentity {
+    pub fn generate() -> Self {
         let (signing_private_key, signing_public_key) = SignatureScheme::MLDSA44.keypair();
         let (encapsulation_private_key, encapsulation_public_key) =
             EncapsulationScheme::MLKEM512.keypair();

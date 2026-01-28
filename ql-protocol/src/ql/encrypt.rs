@@ -332,12 +332,12 @@ mod tests {
     use dcbor::CBOR;
 
     use super::*;
-    use crate::{encode_ql_message, test_identity::TestIdentity};
+    use crate::{encode_ql_message, identity::QlIdentity};
 
     #[test]
     fn message_size_without_session() {
-        let sender = TestIdentity::generate();
-        let recipient = TestIdentity::generate();
+        let sender = QlIdentity::generate();
+        let recipient = QlIdentity::generate();
         let (session_key, kem_ct) = recipient
             .encapsulation_public_key
             .encapsulate_new_shared_secret();
@@ -363,8 +363,8 @@ mod tests {
 
     #[test]
     fn message_size_with_session() {
-        let sender = TestIdentity::generate();
-        let recipient = TestIdentity::generate();
+        let sender = QlIdentity::generate();
+        let recipient = QlIdentity::generate();
         let session_key = SymmetricKey::new();
         let (header, encrypted) = encrypt_payload_with_header(
             MessageKind::Request,

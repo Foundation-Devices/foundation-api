@@ -16,7 +16,7 @@ use super::{
     RequestHandler, RequestResponse, ResetOrigin, Router,
 };
 use crate::{
-    decode_ql_message, encode_ql_message, test_identity::TestIdentity, Executor, ExecutorConfig,
+    decode_ql_message, encode_ql_message, identity::QlIdentity, Executor, ExecutorConfig,
     ExecutorError, ExecutorPlatform, HandlerEvent, InboundEvent, MessageKind, PlatformFuture,
     QlError, QlHeader, QlMessage, RequestConfig,
 };
@@ -155,13 +155,13 @@ impl QlPeer for TestPeer {
 }
 
 struct TestRouterPlatform {
-    identity: TestIdentity,
+    identity: QlIdentity,
     peer: Mutex<Option<Arc<TestPeer>>>,
 }
 
 impl TestRouterPlatform {
     fn new(
-        identity: TestIdentity,
+        identity: QlIdentity,
         peer: EncapsulationPublicKey,
         peer_signing_key: SigningPublicKey,
     ) -> Self {
@@ -171,7 +171,7 @@ impl TestRouterPlatform {
         }
     }
 
-    fn new_unpaired(identity: TestIdentity) -> Self {
+    fn new_unpaired(identity: QlIdentity) -> Self {
         Self {
             identity,
             peer: Mutex::new(None),
@@ -272,8 +272,8 @@ impl EventHandler<Notice> for TestState {
 }
 
 fn build_reset_message(
-    sender: &TestIdentity,
-    recipient: &TestIdentity,
+    sender: &QlIdentity,
+    recipient: &QlIdentity,
     id: bc_components::ARID,
 ) -> QlMessage {
     let now = SystemTime::now()
@@ -347,8 +347,8 @@ async fn typed_round_trip() {
                 }
             });
 
-            let client_identity = TestIdentity::generate();
-            let server_identity = TestIdentity::generate();
+            let client_identity = QlIdentity::generate();
+            let server_identity = QlIdentity::generate();
             let client_platform = Arc::new(TestRouterPlatform::new(
                 client_identity.clone(),
                 server_identity.encapsulation_public_key.clone(),
@@ -415,8 +415,8 @@ async fn expired_response_is_rejected() {
             let (mut core, handle, _incoming) = Executor::new(platform, config);
             tokio::task::spawn_local(async move { core.run().await });
 
-            let requester = TestIdentity::generate();
-            let responder = TestIdentity::generate();
+            let requester = QlIdentity::generate();
+            let responder = QlIdentity::generate();
             let requester_platform = Arc::new(TestRouterPlatform::new(
                 requester.clone(),
                 responder.encapsulation_public_key.clone(),
@@ -476,8 +476,8 @@ async fn reset_cancels_pending_request() {
                 Executor::new(client_platform, config);
             tokio::task::spawn_local(async move { client_core.run().await });
 
-            let client_identity = TestIdentity::generate();
-            let server_identity = TestIdentity::generate();
+            let client_identity = QlIdentity::generate();
+            let server_identity = QlIdentity::generate();
             let client_platform = Arc::new(TestRouterPlatform::new(
                 client_identity.clone(),
                 server_identity.encapsulation_public_key.clone(),
@@ -545,8 +545,8 @@ fn simultaneous_session_init_resolves() {
     let (_client_core, client_handle, _client_incoming) = Executor::new(client_platform, config);
     let (_server_core, server_handle, _server_incoming) = Executor::new(server_platform, config);
 
-    let client_identity = TestIdentity::generate();
-    let server_identity = TestIdentity::generate();
+    let client_identity = QlIdentity::generate();
+    let server_identity = QlIdentity::generate();
     let client_router_platform = Arc::new(TestRouterPlatform::new(
         client_identity.clone(),
         server_identity.encapsulation_public_key.clone(),
@@ -626,8 +626,8 @@ fn pairing_request_stores_peer() {
     };
     let (_core, handle, _incoming) = Executor::new(platform, config);
 
-    let sender_identity = TestIdentity::generate();
-    let recipient_identity = TestIdentity::generate();
+    let sender_identity = QlIdentity::generate();
+    let recipient_identity = QlIdentity::generate();
     let sender_platform = Arc::new(TestRouterPlatform::new(
         sender_identity.clone(),
         recipient_identity.encapsulation_public_key.clone(),
@@ -677,8 +677,8 @@ async fn reset_collision_prefers_lower_xid() {
             let (_server_core, server_handle, _server_incoming) =
                 Executor::new(server_platform, config);
 
-            let client_identity = TestIdentity::generate();
-            let server_identity = TestIdentity::generate();
+            let client_identity = QlIdentity::generate();
+            let server_identity = QlIdentity::generate();
             let (lower_identity, higher_identity) = if client_identity.xid < server_identity.xid {
                 (client_identity.clone(), server_identity.clone())
             } else {
@@ -759,8 +759,8 @@ async fn reset_from_higher_xid_is_accepted_without_pending() {
             };
             let (_core, handle, _incoming) = Executor::new(platform, config);
 
-            let client_identity = TestIdentity::generate();
-            let server_identity = TestIdentity::generate();
+            let client_identity = QlIdentity::generate();
+            let server_identity = QlIdentity::generate();
             let (lower_identity, higher_identity) = if client_identity.xid < server_identity.xid {
                 (client_identity.clone(), server_identity.clone())
             } else {
@@ -809,8 +809,8 @@ async fn reset_with_invalid_signature_is_rejected() {
             };
             let (_core, handle, _incoming) = Executor::new(platform, config);
 
-            let client_identity = TestIdentity::generate();
-            let server_identity = TestIdentity::generate();
+            let client_identity = QlIdentity::generate();
+            let server_identity = QlIdentity::generate();
             let router_platform = Arc::new(TestRouterPlatform::new(
                 client_identity.clone(),
                 server_identity.encapsulation_public_key.clone(),

@@ -80,11 +80,7 @@ impl Responder {
         self.recipient
     }
 
-    pub fn respond(
-        self,
-        header: QlHeader,
-        payload: EncryptedMessage,
-    ) -> Result<(), ExecutorError> {
+    pub fn respond(self, header: QlHeader, payload: EncryptedMessage) -> Result<(), ExecutorError> {
         let bytes = encode_ql_message(header, payload);
         self.tx
             .send_blocking(ExecutorEvent::SendResponse { bytes })
@@ -184,22 +180,14 @@ impl ExecutorHandle {
         ExecutorResponse { rx }
     }
 
-    pub fn send_event(
-        &self,
-        header: QlHeader,
-        payload: EncryptedMessage,
-    ) {
+    pub fn send_event(&self, header: QlHeader, payload: EncryptedMessage) {
         let tx = self.tx.clone();
         let bytes = encode_ql_message(header, payload);
         tx.send_blocking(ExecutorEvent::SendEvent { bytes })
             .unwrap();
     }
 
-    pub fn send_message(
-        &self,
-        header: QlHeader,
-        payload: EncryptedMessage,
-    ) {
+    pub fn send_message(&self, header: QlHeader, payload: EncryptedMessage) {
         let tx = self.tx.clone();
         let bytes = encode_ql_message(header, payload);
         tx.send_blocking(ExecutorEvent::SendEvent { bytes })
@@ -491,8 +479,7 @@ mod test {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::ql::encrypt;
-    use crate::test_identity::TestIdentity;
+    use crate::{identity::QlIdentity, ql::encrypt};
 
     struct TestPlatform {
         tx: Sender<Vec<u8>>,
@@ -555,23 +542,28 @@ mod test {
                 let (mut core, handle, _incoming) = Executor::new(platform, config);
                 tokio::task::spawn_local(async move { core.run().await });
 
-                let requester = TestIdentity::generate();
-                let responder = TestIdentity::generate();
+                let requester = QlIdentity::generate();
+                let responder = QlIdentity::generate();
                 let recipient_xid = responder.xid;
                 let valid_until = now_secs().saturating_add(60);
                 let payload = encrypt::encrypt_test_payload(b"ping");
                 let request_id = ARID::new();
-                let request_header =
-                    build_header(MessageKind::Request, request_id, requester.xid, recipient_xid, valid_until);
+                let request_header = build_header(
+                    MessageKind::Request,
+                    request_id,
+                    requester.xid,
+                    recipient_xid,
+                    valid_until,
+                );
 
                 let response_task = tokio::task::spawn_local({
                     let handle = handle.clone();
-                        async move {
-                            handle
-                                .request(request_header, payload, RequestConfig::default())
-                                .await
-                        }
-                    });
+                    async move {
+                        handle
+                            .request(request_header, payload, RequestConfig::default())
+                            .await
+                    }
+                });
 
                 let outbound = outbound_rx.recv().await.expect("no outbound request");
                 let outbound_message = decode_ql_message(&outbound).expect("decode outbound");
@@ -608,13 +600,18 @@ mod test {
                 let (mut core, handle, _incoming) = Executor::new(platform, config);
                 tokio::task::spawn_local(async move { core.run().await });
 
-                let requester = TestIdentity::generate();
+                let requester = QlIdentity::generate();
                 let recipient_xid = requester.xid;
                 let valid_until = now_secs().saturating_add(60);
                 let payload = encrypt::encrypt_test_payload(b"timeout");
                 let request_id = ARID::new();
-                let request_header =
-                    build_header(MessageKind::Request, request_id, requester.xid, recipient_xid, valid_until);
+                let request_header = build_header(
+                    MessageKind::Request,
+                    request_id,
+                    requester.xid,
+                    recipient_xid,
+                    valid_until,
+                );
                 let result = handle
                     .request(
                         request_header,
@@ -642,8 +639,8 @@ mod test {
                 let (mut core, handle, mut handler_stream) = Executor::new(platform, config);
                 tokio::task::spawn_local(async move { core.run().await });
 
-                let sender = TestIdentity::generate();
-                let recipient = TestIdentity::generate();
+                let sender = QlIdentity::generate();
+                let recipient = QlIdentity::generate();
                 let recipient_xid = recipient.xid;
                 let event_id = ARID::new();
                 let payload = encrypt::encrypt_test_payload(b"event");
@@ -669,5 +666,4 @@ mod test {
             })
             .await;
     }
-
 }

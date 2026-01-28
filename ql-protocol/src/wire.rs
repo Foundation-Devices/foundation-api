@@ -197,12 +197,12 @@ mod tests {
     use bc_components::SymmetricKey;
 
     use super::*;
-    use crate::test_identity::TestIdentity;
+    use crate::identity::QlIdentity;
 
     #[test]
     fn round_trip() {
-        let sender = TestIdentity::generate();
-        let recipient = TestIdentity::generate();
+        let sender = QlIdentity::generate();
+        let recipient = QlIdentity::generate();
         let recipient_xid = recipient.xid;
         let sender_xid = sender.xid;
         let header_id = ARID::new();
