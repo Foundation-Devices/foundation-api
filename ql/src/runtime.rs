@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::{EncapsulationPublicKey, Nonce, SigningPublicKey, ARID, XID};
+use bc_components::{EncapsulationPublicKey, EncryptedMessage, Nonce, SigningPublicKey, ARID, XID};
 use dcbor::CBOR;
 
 use crate::{
@@ -48,8 +48,8 @@ pub enum HandlerEvent {
 
 #[derive(Debug, Clone)]
 pub struct DecryptedMessage {
-    pub header: QlHeader,
-    pub payload: QlPayload,
+    pub header: QlDetails,
+    pub payload: CBOR,
 }
 
 #[derive(Debug)]
@@ -337,16 +337,14 @@ where
                             continue;
                         }
                         let deadline = Instant::now() + effective_timeout;
-                        let ql_payload = QlPayload {
-                            message_id,
-                            payload,
-                        };
+                        let ql_payload = payload;
                         match encrypt_payload_for_recipient(
                             &self.platform,
                             recipient,
                             MessageKind::Request,
                             id,
-                            ql_payload.into(),
+                            message_id,
+                            ql_payload,
                             self.config.message_expiration,
                         ) {
                             Ok((header, encrypted)) => {
@@ -378,16 +376,14 @@ where
                         message_id,
                         payload,
                     } => {
-                        let ql_payload = QlPayload {
-                            message_id,
-                            payload,
-                        };
+                        let ql_payload = payload;
                         match encrypt_payload_for_recipient(
                             &self.platform,
                             recipient,
                             MessageKind::Event,
                             ARID::new(),
-                            ql_payload.into(),
+                            message_id,
+                            ql_payload,
                             self.config.message_expiration,
                         ) {
                             Ok((header, encrypted)) => {
@@ -459,115 +455,94 @@ where
     fn handle_incoming_bytes(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
         let message = match decode_ql_message(&bytes) {
             Ok(message) => message,
-            Err(context) => {
-                if let Some(header) = context.header {
-                    if header.kind == MessageKind::Response || header.kind == MessageKind::Nack {
-                        if let Some(entry) = state.pending.remove(&header.id) {
-                            let _ = entry.tx.send(Err(QlError::Decode(match context.error {
-                                DecodeError::Cbor(error) => error,
-                            })));
-                        }
-                    }
-                }
+            Err(_context) => {
                 return;
             }
         };
+        let QlMessage { header, payload } = message;
 
-        if message.header.kind == MessageKind::Pairing {
+        if header.kind == MessageKind::Pairing {
             if let Ok((payload, session_key)) =
-                decrypt_pairing_payload(&self.platform, &message.header, &message.payload)
+                decrypt_pairing_payload(&self.platform, &header, &payload)
             {
                 self.platform.store_peer(
                     payload.signing_pub_key,
                     payload.encapsulation_pub_key,
                     session_key,
                 );
-                self.record_activity(state, message.header.sender);
+                self.record_activity(state, header.sender);
             }
             return;
         }
 
-        if message.header.kind == MessageKind::Response || message.header.kind == MessageKind::Nack
-        {
-            self.handle_response_message(state, message);
+        if header.kind == MessageKind::Response || header.kind == MessageKind::Nack {
+            self.handle_response_message(state, header, payload);
             return;
         }
 
-        if let Err(error) = verify_header(&self.platform, &message.header) {
-            self.platform.handle_error(error);
-            return;
-        }
-
-        match message.header.kind {
+        match header.kind {
             MessageKind::Request => {
-                let payload =
-                    match extract_payload(&self.platform, &message.header, message.payload) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_))
-                            {
-                                let _ = self.send_session_reset(state, message.header.sender);
-                            }
-                            if matches!(error, QlError::Decode(_)) {
-                                let _ = self.send_nack(
-                                    state,
-                                    message.header.sender,
-                                    message.header.id,
-                                    Nack::InvalidPayload,
-                                );
-                            }
-                            return;
+                let sender = header.sender;
+                let has_kem_ct = header.kem_ct.is_some();
+                let (details, payload) = match extract_envelope(&self.platform, header, payload) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_)) {
+                            let _ = self.send_session_reset(state, sender);
                         }
-                    };
-                if message.header.kem_ct.is_some() {
-                    self.mark_connecting(state, message.header.sender);
+                        return;
+                    }
+                };
+                if has_kem_ct {
+                    self.mark_connecting(state, sender);
                 }
-                self.record_activity(state, message.header.sender);
+                self.record_activity(state, sender);
                 let responder = Responder {
-                    id: message.header.id,
-                    recipient: message.header.sender,
+                    id: details.id,
+                    recipient: details.sender,
                     tx: self.tx.upgrade().unwrap(),
                 };
                 let _ = self
                     .incoming
                     .send_blocking(HandlerEvent::Request(InboundRequest {
                         message: DecryptedMessage {
-                            header: message.header,
+                            header: details,
                             payload,
                         },
                         respond_to: responder,
                     }));
             }
             MessageKind::Event => {
-                let payload =
-                    match extract_payload(&self.platform, &message.header, message.payload) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_))
-                            {
-                                let _ = self.send_session_reset(state, message.header.sender);
-                            }
-                            return;
+                let sender = header.sender;
+                let has_kem_ct = header.kem_ct.is_some();
+                let (details, payload) = match extract_envelope(&self.platform, header, payload) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_)) {
+                            let _ = self.send_session_reset(state, sender);
                         }
-                    };
-                if message.header.kem_ct.is_some() {
-                    self.mark_connecting(state, message.header.sender);
+                        return;
+                    }
+                };
+                if has_kem_ct {
+                    self.mark_connecting(state, sender);
                 }
-                self.record_activity(state, message.header.sender);
+                self.record_activity(state, sender);
                 let _ = self
                     .incoming
                     .send_blocking(HandlerEvent::Event(InboundEvent {
                         message: DecryptedMessage {
-                            header: message.header,
+                            header: details,
                             payload,
                         },
                     }));
             }
             MessageKind::SessionReset => {
-                match extract_reset_payload(&self.platform, &message.header, message.payload) {
+                let sender = header.sender;
+                match extract_reset_payload(&self.platform, header, payload) {
                     Ok(()) => {
-                        let sender = message.header.sender;
                         self.mark_connecting(state, sender);
+                        self.record_activity(state, sender);
                         let reset_entries = state
                             .pending
                             .extract_if(|_id, entry| entry.recipient == sender);
@@ -579,61 +554,60 @@ where
                 }
             }
             MessageKind::Heartbeat => {
-                self.handle_heartbeat_message(state, message);
+                self.handle_heartbeat_message(state, header, payload);
             }
             MessageKind::Pairing | MessageKind::Response | MessageKind::Nack => {}
         }
     }
 
-    fn handle_response_message(&self, state: &mut RuntimeState, message: QlMessage) {
-        let header = message.header.clone();
-        let Some(entry) = state.pending.remove(&header.id) else {
-            return;
-        };
-        let decrypted = (|| -> Result<CBOR, QlError> {
-            verify_header(&self.platform, &header)?;
-            if header.kem_ct.is_some() {
-                self.mark_connecting(state, header.sender);
-            }
-            let peer = self.platform.lookup_peer_or_fail(header.sender)?;
-            let session_key = session_key_for_header(&self.platform, &peer, &header)?;
-            let decrypted = self.platform.decrypt_message(
-                &session_key,
-                &header.aad_data(),
-                &message.payload,
-            )?;
-            peer.set_pending_handshake(None);
-            Ok(decrypted)
-        })();
+    fn handle_response_message(
+        &self,
+        state: &mut RuntimeState,
+        header: QlHeader,
+        payload: EncryptedMessage,
+    ) {
+        let has_kem_ct = header.kem_ct.is_some();
+        let sender = header.sender;
+        let kind = header.kind;
+        let decrypted = extract_response_payload(&self.platform, header, payload);
         match decrypted {
-            Ok(decrypted) => {
-                self.record_activity(state, header.sender);
-                if header.kind == MessageKind::Nack {
+            Ok((details, decrypted)) => {
+                let Some(entry) = state.pending.remove(&details.id) else {
+                    return;
+                };
+                if has_kem_ct {
+                    self.mark_connecting(state, sender);
+                }
+                self.record_activity(state, sender);
+                if kind == MessageKind::Nack {
                     let nack = Nack::try_from(decrypted).unwrap_or(Nack::Unknown);
                     let _ = entry.tx.send(Err(QlError::Nack(nack)));
                 } else {
                     let _ = entry.tx.send(Ok(decrypted));
                 }
             }
-            Err(error) => {
-                let _ = entry.tx.send(Err(error));
-            }
+            Err(_error) => {}
         }
     }
 
-    fn handle_heartbeat_message(&self, state: &mut RuntimeState, message: QlMessage) {
-        let sender = message.header.sender;
-        let heartbeat_id = message.header.id;
-        let should_respond = !self.is_pending_heartbeat(state, sender, heartbeat_id);
-        let result = extract_heartbeat_payload(&self.platform, &message.header, message.payload);
+    fn handle_heartbeat_message(
+        &self,
+        state: &mut RuntimeState,
+        header: QlHeader,
+        payload: EncryptedMessage,
+    ) {
+        let sender = header.sender;
+        let has_kem_ct = header.kem_ct.is_some();
+        let result = extract_heartbeat_payload(&self.platform, header, payload);
         match result {
-            Ok(()) => {
-                if message.header.kem_ct.is_some() {
+            Ok(details) => {
+                let should_respond = !self.is_pending_heartbeat(state, sender, details.id);
+                if has_kem_ct {
                     self.mark_connecting(state, sender);
                 }
                 self.record_activity(state, sender);
                 if should_respond {
-                    if let Err(error) = self.send_heartbeat_message(state, sender, heartbeat_id) {
+                    if let Err(error) = self.send_heartbeat_message(state, sender, details.id) {
                         self.platform.handle_error(error);
                     }
                 }
@@ -648,11 +622,7 @@ where
         }
     }
 
-    fn send_session_reset(
-        &self,
-        state: &mut RuntimeState,
-        recipient: XID,
-    ) -> Result<(), QlError> {
+    fn send_session_reset(&self, state: &mut RuntimeState, recipient: XID) -> Result<(), QlError> {
         let (session_key, kem_ct, id) = {
             let peer = self.platform.lookup_peer_or_fail(recipient)?;
             let recipient_key = peer.encapsulation_pub_key().clone();
@@ -671,15 +641,19 @@ where
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
         let header_unsigned = QlHeader {
             kind: MessageKind::SessionReset,
-            id,
             sender: self.platform.xid(),
             recipient,
-            valid_until,
             kem_ct: Some(kem_ct.clone()),
             signature: None,
         };
+        let envelope = QlEnvelope {
+            id,
+            valid_until,
+            message_id: 0,
+            payload: CBOR::null(),
+        };
         let aad = header_unsigned.aad_data();
-        let payload_bytes = CBOR::null().to_cbor_data();
+        let payload_bytes = CBOR::from(envelope).to_cbor_data();
         let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<Nonce>);
         let signature = sign_reset_header(self.platform.signer(), &header_unsigned);
         let header = QlHeader {

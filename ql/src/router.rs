@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::{
-    runtime::{HandlerEvent, Responder},
+    runtime::{DecryptedMessage, HandlerEvent, InboundEvent, InboundRequest, Responder},
     wire::{Ack, Nack},
     Event, QlCodec, QlError, RequestResponse,
 };
@@ -138,7 +138,8 @@ impl<S> Router<S> {
     pub fn handle(&mut self, event: HandlerEvent) -> Result<(), RouterError> {
         match event {
             HandlerEvent::Request(request) => {
-                let message_id = request.message.payload.message_id;
+                let message_id = request.message.header.message_id;
+                let payload = request.message.payload;
                 let handler = match self.handlers.get(&message_id) {
                     Some(handler) => handler,
                     None => {
@@ -146,15 +147,33 @@ impl<S> Router<S> {
                         return Ok(());
                     }
                 };
-                handler(&mut self.state, HandlerEvent::Request(request))
+                handler(
+                    &mut self.state,
+                    HandlerEvent::Request(InboundRequest {
+                        message: DecryptedMessage {
+                            header: request.message.header,
+                            payload,
+                        },
+                        respond_to: request.respond_to,
+                    }),
+                )
             }
             HandlerEvent::Event(event) => {
-                let message_id = event.message.payload.message_id;
+                let message_id = event.message.header.message_id;
+                let payload = event.message.payload;
                 let handler = self
                     .handlers
                     .get(&message_id)
                     .ok_or(RouterError::MissingHandler(message_id))?;
-                handler(&mut self.state, HandlerEvent::Event(event))
+                handler(
+                    &mut self.state,
+                    HandlerEvent::Event(InboundEvent {
+                        message: DecryptedMessage {
+                            header: event.message.header,
+                            payload,
+                        },
+                    }),
+                )
             }
         }
     }
@@ -169,7 +188,7 @@ where
         HandlerEvent::Request(request) => (request.message.payload, request.respond_to),
         HandlerEvent::Event(_) => return Err(RouterError::Runtime(QlError::InvalidPayload)),
     };
-    let message = match M::try_from(payload.payload) {
+    let message = match M::try_from(payload) {
         Ok(message) => message,
         Err(error) => {
             let _ = responder.respond_nack(Nack::InvalidPayload);
@@ -193,7 +212,7 @@ where
         HandlerEvent::Event(event) => (event.message.payload, None),
         HandlerEvent::Request(request) => (request.message.payload, Some(request.respond_to)),
     };
-    let message = match M::try_from(payload.payload) {
+    let message = match M::try_from(payload) {
         Ok(message) => message,
         Err(error) => {
             if let Some(responder) = responder {

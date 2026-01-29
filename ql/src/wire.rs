@@ -29,18 +29,28 @@ pub enum Nack {
 #[derive(Debug, Clone)]
 pub struct QlHeader {
     pub kind: MessageKind,
-    pub id: ARID,
     pub sender: XID,
     pub recipient: XID,
-    pub valid_until: u64,
     pub kem_ct: Option<EncapsulationCiphertext>,
     pub signature: Option<Signature>,
 }
 
 #[derive(Debug, Clone)]
-pub struct QlPayload {
+pub struct QlEnvelope {
+    pub id: ARID,
+    pub valid_until: u64,
     pub message_id: u64,
     pub payload: CBOR,
+}
+
+#[derive(Debug, Clone)]
+pub struct QlDetails {
+    pub kind: MessageKind,
+    pub id: ARID,
+    pub message_id: u64,
+    pub sender: XID,
+    pub recipient: XID,
+    pub valid_until: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -51,15 +61,8 @@ pub struct QlMessage {
 
 impl QlHeader {
     pub fn aad_data(&self) -> Vec<u8> {
-        header_cbor_unsigned(
-            self.kind,
-            self.id,
-            self.sender,
-            self.recipient,
-            self.valid_until,
-            self.kem_ct.clone(),
-        )
-        .to_cbor_data()
+        header_cbor_unsigned(self.kind, self.sender, self.recipient, self.kem_ct.clone())
+            .to_cbor_data()
     }
 }
 
@@ -67,10 +70,8 @@ impl From<QlHeader> for CBOR {
     fn from(value: QlHeader) -> Self {
         header_cbor(
             value.kind,
-            value.id,
             value.sender,
             value.recipient,
-            value.valid_until,
             value.kem_ct,
             value.signature,
         )
@@ -82,44 +83,59 @@ impl TryFrom<CBOR> for QlHeader {
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let array = value.try_into_array()?;
-        let [kind_cbor, id_cbor, sender_cbor, recipient_cbor, valid_until_cbor, kem_ct_cbor, signature_cbor] =
-            cbor_array::<7>(array)?;
+        let [kind_cbor, sender_cbor, recipient_cbor, kem_ct_cbor, signature_cbor] =
+            cbor_array::<5>(array)?;
         let kind = kind_cbor.try_into()?;
-        let id = id_cbor.try_into()?;
         let sender = sender_cbor.try_into()?;
         let recipient = recipient_cbor.try_into()?;
-        let valid_until = valid_until_cbor.try_into()?;
         let kem_ct = option_from_cbor(kem_ct_cbor)?;
         let signature = option_from_cbor(signature_cbor)?;
         Ok(Self {
             kind,
-            id,
             sender,
             recipient,
-            valid_until,
             kem_ct,
             signature,
         })
     }
 }
 
-impl From<QlPayload> for CBOR {
-    fn from(value: QlPayload) -> Self {
-        CBOR::from(vec![CBOR::from(value.message_id), value.payload])
+impl From<QlEnvelope> for CBOR {
+    fn from(value: QlEnvelope) -> Self {
+        CBOR::from(vec![
+            CBOR::from(value.id),
+            CBOR::from(value.valid_until),
+            CBOR::from(value.message_id),
+            value.payload,
+        ])
     }
 }
 
-impl TryFrom<CBOR> for QlPayload {
+impl TryFrom<CBOR> for QlEnvelope {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let array = value.try_into_array()?;
-        let [message_id, payload] = cbor_array::<2>(array)?;
-        let message_id = message_id.try_into()?;
+        let [id_cbor, valid_until_cbor, message_id_cbor, payload] = cbor_array::<4>(array)?;
         Ok(Self {
-            message_id,
+            id: id_cbor.try_into()?,
+            valid_until: valid_until_cbor.try_into()?,
+            message_id: message_id_cbor.try_into()?,
             payload,
         })
+    }
+}
+
+impl QlDetails {
+    pub fn from_parts(header: &QlHeader, envelope: &QlEnvelope) -> Self {
+        Self {
+            kind: header.kind,
+            id: envelope.id,
+            message_id: envelope.message_id,
+            sender: header.sender,
+            recipient: header.recipient,
+            valid_until: envelope.valid_until,
+        }
     }
 }
 
@@ -299,19 +315,15 @@ fn cbor_array<const N: usize>(array: Vec<CBOR>) -> Result<[CBOR; N], dcbor::Erro
 
 fn header_cbor(
     kind: MessageKind,
-    id: ARID,
     sender: XID,
     recipient: XID,
-    valid_until: u64,
     kem_ct: Option<EncapsulationCiphertext>,
     signature: Option<Signature>,
 ) -> CBOR {
     CBOR::from(vec![
         CBOR::from(kind),
-        CBOR::from(id),
         CBOR::from(sender),
         CBOR::from(recipient),
-        CBOR::from(valid_until),
         option_to_cbor(kem_ct),
         option_to_cbor(signature),
     ])
@@ -319,18 +331,14 @@ fn header_cbor(
 
 fn header_cbor_unsigned(
     kind: MessageKind,
-    id: ARID,
     sender: XID,
     recipient: XID,
-    valid_until: u64,
     kem_ct: Option<EncapsulationCiphertext>,
 ) -> CBOR {
     CBOR::from(vec![
         CBOR::from(kind),
-        CBOR::from(id),
         CBOR::from(sender),
         CBOR::from(recipient),
-        CBOR::from(valid_until),
         option_to_cbor(kem_ct),
     ])
 }
