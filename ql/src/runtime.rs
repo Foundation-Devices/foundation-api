@@ -3,6 +3,7 @@ use std::{
     collections::{BinaryHeap, HashMap, VecDeque},
     future::Future,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -46,9 +47,42 @@ pub trait QlPeer {
     fn set_pending_handshake(&self, handshake: Option<PendingHandshake>);
 }
 
+impl<T> QlPeer for Arc<T>
+where
+    T: QlPeer + ?Sized,
+{
+    fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey {
+        (**self).encapsulation_pub_key()
+    }
+
+    fn signing_pub_key(&self) -> &SigningPublicKey {
+        (**self).signing_pub_key()
+    }
+
+    fn session(&self) -> Option<SymmetricKey> {
+        (**self).session()
+    }
+
+    fn store_session(&self, key: SymmetricKey) {
+        (**self).store_session(key)
+    }
+
+    fn pending_handshake(&self) -> Option<PendingHandshake> {
+        (**self).pending_handshake()
+    }
+
+    fn set_pending_handshake(&self, handshake: Option<PendingHandshake>) {
+        (**self).set_pending_handshake(handshake)
+    }
+}
+
 pub trait QlPlatform {
-    fn lookup_peer(&self, peer: XID) -> Option<&dyn QlPeer>;
-    fn lookup_peer_or_fail(&self, peer: XID) -> Result<&dyn QlPeer, QlError> {
+    type Peer<'a>: QlPeer + 'a
+    where
+        Self: 'a;
+
+    fn lookup_peer(&self, peer: XID) -> Option<Self::Peer<'_>>;
+    fn lookup_peer_or_fail(&self, peer: XID) -> Result<Self::Peer<'_>, QlError> {
         self.lookup_peer(peer)
             .ok_or_else(|| QlError::UnknownPeer(peer))
     }
@@ -613,7 +647,7 @@ where
                 return;
             }
         };
-        let session_key = match session_key_for_header(&self.platform, peer, &header) {
+        let session_key = match session_key_for_header(&self.platform, &peer, &header) {
             Ok(key) => key,
             Err(error) => {
                 let _ = entry.tx.send(Err(error));

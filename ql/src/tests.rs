@@ -137,7 +137,7 @@ struct TestPlatform {
 
 struct TestPlatformInner {
     identity: QlIdentity,
-    peer: Mutex<Option<Box<TestPeer>>>,
+    peer: Mutex<Option<Arc<TestPeer>>>,
     tx: Sender<Vec<u8>>,
     errors: Mutex<Vec<QlError>>,
 }
@@ -151,7 +151,7 @@ impl TestPlatform {
         let (tx, rx) = async_channel::unbounded();
         let inner = TestPlatformInner {
             identity,
-            peer: Mutex::new(Some(Box::new(TestPeer::new(peer, peer_signing_key)))),
+            peer: Mutex::new(Some(Arc::new(TestPeer::new(peer, peer_signing_key)))),
             tx,
             errors: Mutex::new(Vec::new()),
         };
@@ -203,14 +203,17 @@ impl TestPlatform {
 }
 
 impl QlPlatform for TestPlatform {
-    fn lookup_peer(&self, peer: XID) -> Option<&dyn QlPeer> {
+    type Peer<'a> = Arc<TestPeer>
+    where
+        Self: 'a;
+
+    fn lookup_peer(&self, peer: XID) -> Option<Self::Peer<'_>> {
         let guard = self.inner.peer.lock().ok()?;
         let stored = guard.as_ref()?;
         if peer != XID::new(&stored.signing_public_key) {
             return None;
         }
-        let ptr = stored.as_ref() as *const TestPeer;
-        Some(unsafe { &*ptr })
+        Some(Arc::clone(stored))
     }
 
     fn encapsulation_private_key(&self) -> EncapsulationPrivateKey {
@@ -245,7 +248,7 @@ impl QlPlatform for TestPlatform {
         encapsulation_pub_key: EncapsulationPublicKey,
         session: SymmetricKey,
     ) {
-        let peer = Box::new(TestPeer::new(encapsulation_pub_key, signing_pub_key));
+        let peer = Arc::new(TestPeer::new(encapsulation_pub_key, signing_pub_key));
         peer.store_session(session);
         let mut guard = self.inner.peer.lock().unwrap();
         *guard = Some(peer);
