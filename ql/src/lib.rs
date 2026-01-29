@@ -26,7 +26,7 @@ pub enum QlError {
     #[error(transparent)]
     Decode(#[from] dcbor::Error),
     #[error("message expired")]
-    Expired,
+    Expired(bc_components::ARID),
     #[error("invalid payload")]
     InvalidPayload,
     #[error("invalid signature")]

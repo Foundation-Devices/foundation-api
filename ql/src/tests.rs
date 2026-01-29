@@ -655,9 +655,9 @@ async fn heartbeat_sends_and_receives() {
             let pending_index = statuses.iter().position(|(peer, status)| {
                 *peer == recipient && *status == PeerStatus::HeartbeatPending
             });
-            let connected_index = statuses.iter().rposition(|(peer, status)| {
-                *peer == recipient && *status == PeerStatus::Connected
-            });
+            let connected_index = statuses
+                .iter()
+                .rposition(|(peer, status)| *peer == recipient && *status == PeerStatus::Connected);
             assert!(matches!(
                 (pending_index, connected_index),
                 (Some(pending), Some(connected)) if pending < connected
@@ -1123,7 +1123,7 @@ async fn expired_response_is_rejected() {
             handle.send_incoming(response_bytes).unwrap();
 
             let response = response_task.await.unwrap();
-            assert!(matches!(response, Err(QlError::Expired)));
+            assert!(matches!(response, Err(QlError::Expired(_))));
         })
         .await;
 }

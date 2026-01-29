@@ -502,6 +502,10 @@ where
                 let _ = self.send_session_reset(state, sender);
                 return;
             }
+            Err(QlError::Expired(id)) => {
+                let _ = self.send_nack(state, sender, id, Nack::Expired);
+                return;
+            }
             Err(e) => {
                 self.platform.handle_error(e);
                 return;

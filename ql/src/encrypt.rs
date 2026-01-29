@@ -136,7 +136,7 @@ pub(crate) fn decrypt_pairing_payload(
     let session_key = platform.decapsulate_shared_secret(kem_ct)?;
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), payload)?;
     let envelope = QlEnvelope::try_from(decrypted).map_err(QlError::Decode)?;
-    ensure_not_expired(envelope.valid_until)?;
+    ensure_not_expired(envelope.id, envelope.valid_until)?;
     let pairing = PairingPayload::try_from(envelope.payload).map_err(QlError::Decode)?;
     if XID::new(&pairing.signing_pub_key) != header.sender {
         return Err(QlError::InvalidPayload);
@@ -189,7 +189,7 @@ pub(crate) fn extract_reset_payload(
     verify_header(platform, &header)?;
     let peer = platform.lookup_peer_or_fail(header.sender)?;
     let (envelope, session_key) = decrypt_envelope(platform, &peer, &header, &payload)?;
-    ensure_not_expired(envelope.valid_until)?;
+    ensure_not_expired(envelope.id, envelope.valid_until)?;
     if let Some(pending) = peer.pending_handshake() {
         if pending.kind == HandshakeKind::SessionReset && pending.origin == ResetOrigin::Local {
             let cmp = handshake_cmp((platform.xid(), pending.id), (header.sender, envelope.id));
@@ -272,10 +272,10 @@ fn handshake_cmp(local: (XID, ARID), peer: (XID, ARID)) -> Ordering {
     }
 }
 
-fn ensure_not_expired(valid_until: u64) -> Result<(), QlError> {
+fn ensure_not_expired(id: ARID, valid_until: u64) -> Result<(), QlError> {
     let now = now_secs();
     if now > valid_until {
-        Err(QlError::Expired)
+        Err(QlError::Expired(id))
     } else {
         Ok(())
     }
@@ -289,7 +289,7 @@ pub(crate) fn extract_envelope(
     verify_header(platform, &header)?;
     let peer = platform.lookup_peer_or_fail(header.sender)?;
     let (envelope, session_key) = decrypt_envelope(platform, &peer, &header, &payload)?;
-    ensure_not_expired(envelope.valid_until)?;
+    ensure_not_expired(envelope.id, envelope.valid_until)?;
     if header.kem_ct.is_some() {
         ensure_session_init_order(platform, &peer, header.sender, envelope.id)?;
         peer.store_session(session_key.clone());

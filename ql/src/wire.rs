@@ -24,6 +24,7 @@ pub enum Nack {
     Unknown,
     UnknownMessage,
     InvalidPayload,
+    Expired,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +197,7 @@ impl From<Nack> for CBOR {
             Nack::Unknown => 0,
             Nack::UnknownMessage => 1,
             Nack::InvalidPayload => 2,
+            Nack::Expired => 3,
         };
         CBOR::from(value)
     }
@@ -207,6 +209,7 @@ impl From<CBOR> for Nack {
         match value {
             1 => Nack::UnknownMessage,
             2 => Nack::InvalidPayload,
+            3 => Nack::Expired,
             _ => Nack::Unknown,
         }
     }
