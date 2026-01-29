@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, time::Duration};
 
 use bc_components::{
     EncapsulationCiphertext, EncapsulationPublicKey, EncryptedMessage, Nonce, Signature, Signer,
@@ -18,13 +18,14 @@ pub(crate) fn encrypt_payload_for_recipient(
     kind: MessageKind,
     message_id: ARID,
     payload: CBOR,
+    expiration: Duration,
 ) -> Result<(QlHeader, EncryptedMessage), QlError> {
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let (session_key, kem_ct, should_sign_header) = match peer.session() {
         Some(session_key) => (session_key, None, false),
         None => create_session(&peer, message_id),
     };
-    let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
+    let valid_until = now_secs().saturating_add(expiration.as_secs());
     let header_unsigned = QlHeader {
         kind,
         id: message_id,
@@ -51,10 +52,11 @@ pub(crate) fn encrypt_response(
     message_id: ARID,
     payload: CBOR,
     kind: MessageKind,
+    expiration: Duration,
 ) -> Result<(QlHeader, EncryptedMessage), QlError> {
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let session_key = peer.session().ok_or(QlError::MissingSession(recipient))?;
-    let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
+    let valid_until = now_secs().saturating_add(expiration.as_secs());
     let header_unsigned = QlHeader {
         kind,
         id: message_id,
@@ -74,11 +76,12 @@ pub(crate) fn encrypt_pairing_request(
     platform: &impl QlPlatform,
     recipient_signing_key: &SigningPublicKey,
     recipient_encapsulation_key: &EncapsulationPublicKey,
+    expiration: Duration,
 ) -> (QlHeader, EncryptedMessage) {
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
     let recipient = XID::new(recipient_signing_key);
     let message_id = ARID::new();
-    let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
+    let valid_until = now_secs().saturating_add(expiration.as_secs());
     let header = QlHeader {
         kind: MessageKind::Pairing,
         id: message_id,

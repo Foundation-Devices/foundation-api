@@ -64,7 +64,6 @@ pub trait QlPlatform {
     fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
     fn encapsulation_public_key(&self) -> EncapsulationPublicKey;
     fn signing_key(&self) -> &SigningPublicKey;
-    fn message_expiration(&self) -> Duration;
     fn signer(&self) -> &dyn Signer;
 
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;

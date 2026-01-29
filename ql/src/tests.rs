@@ -231,10 +231,6 @@ impl QlPlatform for TestPlatform {
         &self.inner.identity.signing_public_key
     }
 
-    fn message_expiration(&self) -> Duration {
-        Duration::from_secs(60)
-    }
-
     fn signer(&self) -> &dyn Signer {
         &self.inner.identity.private_keys
     }
@@ -397,6 +393,7 @@ async fn typed_round_trip() {
             );
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(1),
+                message_expiration: Duration::from_secs(60),
             };
 
             let (mut client_core, client_handle, _client_incoming) =
@@ -480,6 +477,7 @@ async fn event_with_ack_round_trip() {
             );
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(1),
+                message_expiration: Duration::from_secs(60),
             };
 
             let (mut client_core, client_handle, _client_incoming) =
@@ -553,6 +551,7 @@ async fn nack_unknown_message_is_returned() {
             );
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(1),
+                message_expiration: Duration::from_secs(60),
             };
 
             let (mut client_core, client_handle, _client_incoming) =
@@ -630,6 +629,7 @@ async fn nack_invalid_payload_is_returned() {
             );
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(1),
+                message_expiration: Duration::from_secs(60),
             };
 
             let (mut client_core, client_handle, _client_incoming) =
@@ -702,6 +702,7 @@ async fn expired_response_is_rejected() {
             );
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(2),
+                message_expiration: Duration::from_secs(60),
             };
             let (mut core, handle, _incoming) = Runtime::new(platform.clone(), config);
             tokio::task::spawn_local(async move { core.run().await });
@@ -760,6 +761,7 @@ async fn reset_cancels_pending_request() {
             );
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(1),
+                message_expiration: Duration::from_secs(60),
             };
             let (mut client_core, client_handle, _client_incoming) =
                 Runtime::new(client_platform.clone(), config);
@@ -810,6 +812,7 @@ fn simultaneous_session_init_resolves() {
             MessageKind::Event,
             message_id,
             payload.into(),
+            Duration::from_secs(60),
         )
         .expect("encrypt event")
     }
@@ -894,6 +897,7 @@ async fn pairing_request_stores_peer() {
                 TestPlatform::new_unpaired(recipient_identity.clone());
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(1),
+                message_expiration: Duration::from_secs(60),
             };
             let (mut core, handle, _incoming) = Runtime::new(recipient_platform.clone(), config);
 
@@ -905,6 +909,7 @@ async fn pairing_request_stores_peer() {
                 &sender_platform,
                 &recipient_identity.signing_public_key,
                 &recipient_identity.encapsulation_public_key,
+                config.message_expiration,
             );
             let message = decode_ql_message(&encode_ql_message(header, encrypted))
                 .expect("decode pairing request");
@@ -948,6 +953,7 @@ async fn reset_collision_prefers_lower_xid() {
 
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(1),
+                message_expiration: Duration::from_secs(60),
             };
             let (mut lower_core, lower_handle, _lower_incoming) =
                 Runtime::new(lower_platform.clone(), config);
@@ -1025,6 +1031,7 @@ async fn reset_from_higher_xid_is_accepted_without_pending() {
 
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(1),
+                message_expiration: Duration::from_secs(60),
             };
             let (mut lower_core, lower_handle, _lower_incoming) =
                 Runtime::new(lower_platform.clone(), config);
@@ -1067,6 +1074,7 @@ async fn reset_with_invalid_signature_is_rejected() {
             );
             let config = RuntimeConfig {
                 default_timeout: Duration::from_secs(1),
+                message_expiration: Duration::from_secs(60),
             };
             let (mut core, handle, _incoming) = Runtime::new(platform.clone(), config);
             tokio::task::spawn_local(async move { core.run().await });

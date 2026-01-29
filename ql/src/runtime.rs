@@ -22,20 +22,15 @@ use crate::{
     QlCodec, QlError,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RequestConfig {
     pub timeout: Option<Duration>,
-}
-
-impl Default for RequestConfig {
-    fn default() -> Self {
-        Self { timeout: None }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
     pub default_timeout: Duration,
+    pub message_expiration: Duration,
 }
 
 #[derive(Debug)]
@@ -317,6 +312,7 @@ where
                             MessageKind::Request,
                             id,
                             ql_payload.into(),
+                            self.config.message_expiration,
                         ) {
                             Ok((header, encrypted)) => {
                                 state.pending.insert(
@@ -354,6 +350,7 @@ where
                             MessageKind::Event,
                             ARID::new(),
                             ql_payload.into(),
+                            self.config.message_expiration,
                         ) {
                             Ok((header, encrypted)) => {
                                 let bytes = encode_ql_message(header, encrypted);
@@ -367,7 +364,14 @@ where
                         recipient,
                         payload,
                         kind,
-                    } => match encrypt_response(&self.platform, recipient, id, payload, kind) {
+                    } => match encrypt_response(
+                        &self.platform,
+                        recipient,
+                        id,
+                        payload,
+                        kind,
+                        self.config.message_expiration,
+                    ) {
                         Ok((header, encrypted)) => {
                             let bytes = encode_ql_message(header, encrypted);
                             state.outbound.push_back(OutboundBytes { id: None, bytes });
@@ -382,6 +386,7 @@ where
                             &self.platform,
                             &recipient_signing_key,
                             &recipient_encapsulation_key,
+                            self.config.message_expiration,
                         );
                         let bytes = encode_ql_message(header, encrypted);
                         state.outbound.push_back(OutboundBytes { id: None, bytes });
@@ -582,7 +587,7 @@ where
             id,
         }));
 
-        let valid_until = now_secs().saturating_add(self.platform.message_expiration().as_secs());
+        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
         let header_unsigned = QlHeader {
             kind: MessageKind::SessionReset,
             id,
@@ -618,6 +623,7 @@ where
             id,
             CBOR::from(reason),
             MessageKind::Nack,
+            self.config.message_expiration,
         ) {
             Ok(result) => result,
             Err(QlError::MissingSession(_)) => return Ok(()),
