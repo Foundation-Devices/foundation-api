@@ -594,48 +594,34 @@ where
         let Some(entry) = state.pending.remove(&header.id) else {
             return;
         };
-        if let Err(error) = verify_header(&self.platform, &header) {
-            let _ = entry.tx.send(Err(error));
-            return;
-        }
-        if header.kem_ct.is_some() {
-            self.mark_connecting(state, header.sender);
-        }
-        let decrypted = {
-            let peer = match self.platform.lookup_peer_or_fail(header.sender) {
-                Ok(peer) => peer,
-                Err(error) => {
-                    let _ = entry.tx.send(Err(error));
-                    return;
-                }
-            };
-            let session_key = match session_key_for_header(&self.platform, &peer, &header) {
-                Ok(key) => key,
-                Err(error) => {
-                    let _ = entry.tx.send(Err(error));
-                    return;
-                }
-            };
-            let decrypted = match self.platform.decrypt_message(
+        let decrypted = (|| -> Result<CBOR, QlError> {
+            verify_header(&self.platform, &header)?;
+            if header.kem_ct.is_some() {
+                self.mark_connecting(state, header.sender);
+            }
+            let peer = self.platform.lookup_peer_or_fail(header.sender)?;
+            let session_key = session_key_for_header(&self.platform, &peer, &header)?;
+            let decrypted = self.platform.decrypt_message(
                 &session_key,
                 &header.aad_data(),
                 &message.payload,
-            ) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    let _ = entry.tx.send(Err(error));
-                    return;
-                }
-            };
+            )?;
             peer.set_pending_handshake(None);
-            decrypted
-        };
-        self.record_activity(state, header.sender);
-        if header.kind == MessageKind::Nack {
-            let nack = Nack::try_from(decrypted).unwrap_or(Nack::Unknown);
-            let _ = entry.tx.send(Err(QlError::Nack(nack)));
-        } else {
-            let _ = entry.tx.send(Ok(decrypted));
+            Ok(decrypted)
+        })();
+        match decrypted {
+            Ok(decrypted) => {
+                self.record_activity(state, header.sender);
+                if header.kind == MessageKind::Nack {
+                    let nack = Nack::try_from(decrypted).unwrap_or(Nack::Unknown);
+                    let _ = entry.tx.send(Err(QlError::Nack(nack)));
+                } else {
+                    let _ = entry.tx.send(Ok(decrypted));
+                }
+            }
+            Err(error) => {
+                let _ = entry.tx.send(Err(error));
+            }
         }
     }
 
@@ -659,9 +645,9 @@ where
             Err(error) => {
                 if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_)) {
                     let _ = self.send_session_reset(state, sender);
-                    return;
+                } else {
+                    self.platform.handle_error(error);
                 }
-                self.platform.handle_error(error);
             }
         }
     }
@@ -716,18 +702,14 @@ where
         id: ARID,
         reason: Nack,
     ) -> Result<(), QlError> {
-        let (header, encrypted) = match encrypt_response(
+        let (header, encrypted) = encrypt_response(
             &self.platform,
             recipient,
             id,
             CBOR::from(reason),
             MessageKind::Nack,
             self.config.message_expiration,
-        ) {
-            Ok(result) => result,
-            Err(QlError::MissingSession(_)) => return Ok(()),
-            Err(error) => return Err(error),
-        };
+        )?;
         let bytes = encode_ql_message(header, encrypted);
         state.outbound.push_back(OutboundBytes { id: None, bytes });
         Ok(())
