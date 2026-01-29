@@ -864,11 +864,11 @@ async fn expired_response_is_rejected() {
 
         let recipient = XID::new(&responder.signing_public_key);
         let request_handle = handle.clone();
-        let response_task = tokio::task::spawn_local(async move {
-            request_handle
-                .request(Ping(5), recipient, RequestConfig::default())
-                .await
-        });
+        let response_task = tokio::task::spawn_local(request_handle.request(
+            Ping(5),
+            recipient,
+            RequestConfig::default(),
+        ));
 
         let outbound = outbound_rx.recv().await.expect("no outbound request");
 
@@ -907,16 +907,25 @@ async fn expired_response_is_rejected() {
             Some(header.aad_data()),
             None::<bc_components::Nonce>,
         );
-        handle.send_incoming(encrypted.to_cbor_data()).unwrap();
+        let message = QlMessage {
+            header,
+            payload: encrypted,
+        };
+        handle
+            .send_incoming(CBOR::from(message).to_cbor_data())
+            .unwrap();
 
         let response = response_task.await.unwrap();
-        assert!(matches!(
-            response,
-            Err(QlError::Nack {
-                id: _,
-                nack: Nack::Expired
-            })
-        ));
+        assert!(
+            matches!(
+                response,
+                Err(QlError::Nack {
+                    id: _,
+                    nack: Nack::Expired
+                })
+            ),
+            "{response:?}"
+        );
     })
     .await;
 }

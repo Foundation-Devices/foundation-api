@@ -478,6 +478,7 @@ where
         }
 
         let sender = header.sender;
+        let kind = header.kind;
 
         let (details, payload) = match extract_envelope(&self.platform, header, payload) {
             Ok(result) => result,
@@ -486,6 +487,9 @@ where
                 return;
             }
             Err(QlError::Nack { nack, id }) => {
+                if matches!(kind, MessageKind::Response | MessageKind::Nack) {
+                    self.resolve_pending_nack(state, id, nack);
+                }
                 let _ = self.send_nack(state, sender, id, nack);
                 return;
             }
@@ -515,17 +519,20 @@ where
     }
 
     fn handle_response_message(&self, state: &mut RuntimeState, details: QlDetails, payload: CBOR) {
-        let Some(entry) = state.pending.remove(&details.id) else {
-            return;
-        };
         if details.kind == MessageKind::Nack {
             let nack = Nack::from(payload);
-            let _ = entry.tx.send(Err(QlError::Nack {
-                id: details.id,
-                nack,
-            }));
+            self.resolve_pending_nack(state, details.id, nack);
         } else {
+            let Some(entry) = state.pending.remove(&details.id) else {
+                return;
+            };
             let _ = entry.tx.send(Ok(payload));
+        }
+    }
+
+    fn resolve_pending_nack(&self, state: &mut RuntimeState, id: ARID, nack: Nack) {
+        if let Some(entry) = state.pending.remove(&id) {
+            let _ = entry.tx.send(Err(QlError::Nack { id, nack }));
         }
     }
 
