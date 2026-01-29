@@ -1,5 +1,3 @@
-use dcbor::CBOR;
-
 mod encrypt;
 pub mod handle;
 pub mod identity;
@@ -8,9 +6,8 @@ pub mod router;
 pub mod runtime;
 pub mod wire;
 
-pub trait QlCodec: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> + Sized {}
-
-impl<T> QlCodec for T where T: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> + Sized {}
+pub trait QlCodec: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}
+impl<T> QlCodec for T where T: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}
 
 pub trait RequestResponse: QlCodec {
     const ID: u64;
