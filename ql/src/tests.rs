@@ -14,7 +14,7 @@ use oneshot;
 use crate::{
     encrypt::*,
     identity::QlIdentity,
-    platform::{PlatformFuture, QlPeer, QlPlatform},
+    platform::{PlatformFuture, QlPeer, QlPlatform, QlPlatformExt},
     router::{EventHandler, QlRequest, RequestHandler, Router},
     runtime::{RequestConfig, ResetOrigin, Runtime, RuntimeConfig},
     wire::*,

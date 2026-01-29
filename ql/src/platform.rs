@@ -54,10 +54,6 @@ pub trait QlPlatform {
         Self: 'a;
 
     fn lookup_peer(&self, peer: XID) -> Option<Self::Peer<'_>>;
-    fn lookup_peer_or_fail(&self, peer: XID) -> Result<Self::Peer<'_>, QlError> {
-        self.lookup_peer(peer)
-            .ok_or_else(|| QlError::UnknownPeer(peer))
-    }
     fn store_peer(
         &self,
         signing_pub_key: SigningPublicKey,
@@ -74,6 +70,13 @@ pub trait QlPlatform {
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
     fn handle_error(&self, e: QlError);
+}
+
+pub(crate) trait QlPlatformExt: QlPlatform {
+    fn lookup_peer_or_fail(&self, peer: XID) -> Result<Self::Peer<'_>, QlError> {
+        self.lookup_peer(peer)
+            .ok_or_else(|| QlError::UnknownPeer(peer))
+    }
 
     fn xid(&self) -> XID {
         XID::new(self.signing_key())
@@ -101,3 +104,5 @@ pub trait QlPlatform {
         Ok(CBOR::try_from_data(plaintext)?)
     }
 }
+
+impl<T> QlPlatformExt for T where T: QlPlatform {}

@@ -14,7 +14,7 @@ use dcbor::CBOR;
 use crate::{
     encrypt::*,
     handle::RuntimeHandle,
-    platform::{PlatformFuture, QlPeer, QlPlatform},
+    platform::{PlatformFuture, QlPeer, QlPlatform, QlPlatformExt},
     wire::*,
     QlCodec, QlError,
 };
