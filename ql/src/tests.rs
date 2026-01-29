@@ -459,6 +459,79 @@ async fn typed_round_trip() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn event_with_ack_round_trip() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let client_identity = QlIdentity::generate();
+            let server_identity = QlIdentity::generate();
+            let (client_platform, client_outbound) = TestPlatform::new(
+                client_identity.clone(),
+                server_identity.encapsulation_public_key.clone(),
+                server_identity.signing_public_key.clone(),
+            );
+            let (server_platform, server_outbound) = TestPlatform::new(
+                server_identity.clone(),
+                client_identity.encapsulation_public_key.clone(),
+                client_identity.signing_public_key.clone(),
+            );
+            let config = RuntimeConfig {
+                default_timeout: Duration::from_secs(1),
+            };
+
+            let (mut client_core, client_handle, _client_incoming) =
+                Runtime::new(client_platform.clone(), config);
+            let (mut server_core, server_handle, mut server_incoming) =
+                Runtime::new(server_platform.clone(), config);
+
+            tokio::task::spawn_local(async move { client_core.run().await });
+            tokio::task::spawn_local(async move { server_core.run().await });
+
+            tokio::task::spawn_local({
+                let server_handle = server_handle.clone();
+                async move {
+                    while let Ok(bytes) = client_outbound.recv().await {
+                        server_handle.send_incoming(bytes).unwrap();
+                    }
+                }
+            });
+
+            tokio::task::spawn_local({
+                let client_handle = client_handle.clone();
+                async move {
+                    while let Ok(bytes) = server_outbound.recv().await {
+                        client_handle.send_incoming(bytes).unwrap();
+                    }
+                }
+            });
+
+            let router = Router::builder()
+                .add_event_handler::<Notice>()
+                .build(TestState { event_tx: None });
+
+            tokio::task::spawn_local({
+                let mut router = router;
+                async move {
+                    loop {
+                        let event = match server_incoming.next().await {
+                            Ok(event) => event,
+                            Err(_) => break,
+                        };
+                        let _ = router.handle(event);
+                    }
+                }
+            });
+
+            let recipient = server_platform.xid();
+            client_handle
+                .send_event_with_ack(Notice(99), recipient, RequestConfig::default())
+                .await
+                .expect("event ack");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn nack_unknown_message_is_returned() {
     let local = tokio::task::LocalSet::new();
     local
