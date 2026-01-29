@@ -276,11 +276,8 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         pin!(&mut self.rx).poll(cx).map(|result| {
-            let result = result.unwrap_or(Err(QlError::Cancelled));
-            match result {
-                Ok(payload) => Ok(T::try_from(payload)?),
-                Err(error) => Err(error),
-            }
+            let payload = result.unwrap_or(Err(QlError::Cancelled))?;
+            Ok(T::try_from(payload)?)
         })
     }
 }
