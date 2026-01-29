@@ -10,6 +10,30 @@ use crate::QlError;
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
+pub trait QlPlatform {
+    type Peer<'a>: QlPeer + 'a
+    where
+        Self: 'a;
+
+    fn lookup_peer(&self, peer: XID) -> Option<Self::Peer<'_>>;
+    fn store_peer(
+        &self,
+        signing_pub_key: SigningPublicKey,
+        encapsulation_pub_key: EncapsulationPublicKey,
+        session: SymmetricKey,
+    );
+
+    fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
+    fn encapsulation_public_key(&self) -> EncapsulationPublicKey;
+    fn signing_key(&self) -> &SigningPublicKey;
+    fn signer(&self) -> &dyn Signer;
+
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
+    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
+    fn handle_error(&self, e: QlError);
+    fn handle_peer_status(&self, peer: XID, status: PeerStatus);
+}
+
 pub trait QlPeer {
     fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey;
     fn signing_pub_key(&self) -> &SigningPublicKey;
@@ -46,30 +70,6 @@ where
     fn set_pending_handshake(&self, handshake: Option<PendingHandshake>) {
         (**self).set_pending_handshake(handshake)
     }
-}
-
-pub trait QlPlatform {
-    type Peer<'a>: QlPeer + 'a
-    where
-        Self: 'a;
-
-    fn lookup_peer(&self, peer: XID) -> Option<Self::Peer<'_>>;
-    fn store_peer(
-        &self,
-        signing_pub_key: SigningPublicKey,
-        encapsulation_pub_key: EncapsulationPublicKey,
-        session: SymmetricKey,
-    );
-
-    fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
-    fn encapsulation_public_key(&self) -> EncapsulationPublicKey;
-    fn signing_key(&self) -> &SigningPublicKey;
-    fn signer(&self) -> &dyn Signer;
-
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
-    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
-    fn handle_error(&self, e: QlError);
-    fn handle_peer_status(&self, peer: XID, status: PeerStatus);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
