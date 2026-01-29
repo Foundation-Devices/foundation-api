@@ -12,3 +12,6 @@ dcbor = { workspace = true }
 futures-lite = { version = "2.5" }
 oneshot = { version = "0.1.11" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1.44", features = ["macros", "rt", "time"] }

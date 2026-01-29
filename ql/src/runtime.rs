@@ -200,6 +200,7 @@ impl futures_lite::Stream for HandlerStream {
 #[derive(Debug)]
 struct PendingEntry {
     tx: oneshot::Sender<Result<CBOR, QlError>>,
+    recipient: XID,
 }
 
 #[derive(Debug, Clone)]
@@ -502,7 +503,13 @@ where
                             ql_payload.into(),
                         ) {
                             Ok((header, encrypted)) => {
-                                state.pending.insert(id, PendingEntry { tx: respond_to });
+                                state.pending.insert(
+                                    id,
+                                    PendingEntry {
+                                        tx: respond_to,
+                                        recipient,
+                                    },
+                                );
                                 state.timeouts.push(Reverse(TimeoutEntry { deadline, id }));
                                 let bytes = encode_ql_message(header, encrypted);
                                 state.outbound.push_back(OutboundBytes {
@@ -688,7 +695,18 @@ where
                     }));
             }
             MessageKind::SessionReset => {
-                let _ = extract_reset_payload(&self.platform, &message.header, message.payload);
+                match extract_reset_payload(&self.platform, &message.header, message.payload) {
+                    Ok(()) => {
+                        let sender = message.header.sender;
+                        let reset_entries = state
+                            .pending
+                            .extract_if(|_id, entry| entry.recipient == sender);
+                        for (_id, entry) in reset_entries {
+                            let _ = entry.tx.send(Err(QlError::SessionReset));
+                        }
+                    }
+                    Err(error) => self.platform.handle_error(error),
+                }
             }
             MessageKind::Pairing | MessageKind::Response | MessageKind::Nack => {}
         }

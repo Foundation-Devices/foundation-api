@@ -1,5 +1,6 @@
 use dcbor::CBOR;
 
+pub mod identity;
 pub mod router;
 pub mod runtime;
 pub mod wire;
@@ -44,3 +45,6 @@ pub enum QlError {
     #[error("cancelled")]
     Cancelled,
 }
+
+#[cfg(test)]
+mod tests;
