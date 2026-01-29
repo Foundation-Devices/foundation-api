@@ -40,9 +40,13 @@ pub enum ChallengeResponseResult {
 pub enum VerificationResult {
     #[n(0)]
     Success,
+    // Error due to Envoy not being able to perform the verification
     #[n(1)]
     Error {
         #[n(0)]
         error: String,
     },
+    // Actual failure indicating device has been tampered with
+    #[n(2)]
+    Failure,
 }
