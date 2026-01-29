@@ -2,11 +2,11 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use bc_components::{
     EncapsulationCiphertext, EncapsulationPrivateKey, EncapsulationPublicKey, EncryptedMessage,
-    Signer, SigningPublicKey, SymmetricKey, ARID, XID,
+    Signer, SigningPublicKey, SymmetricKey, XID,
 };
 use dcbor::CBOR;
 
-use crate::QlError;
+use crate::{MessageId, QlError};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -96,7 +96,7 @@ pub enum HandshakeKind {
 pub struct PendingHandshake {
     pub kind: HandshakeKind,
     pub origin: ResetOrigin,
-    pub id: ARID,
+    pub id: MessageId,
 }
 
 pub(crate) trait QlPlatformExt: QlPlatform {

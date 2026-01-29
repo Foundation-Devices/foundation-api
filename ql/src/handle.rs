@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_channel::Sender;
-use bc_components::{EncapsulationPublicKey, SigningPublicKey, ARID, XID};
+use bc_components::{EncapsulationPublicKey, SigningPublicKey, XID};
 use dcbor::CBOR;
 
 use crate::{
@@ -51,9 +51,8 @@ impl RuntimeHandle {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send_blocking(RuntimeEvent::SendRequest {
-                id: ARID::new(),
                 recipient,
-                message_id: M::ID,
+                route_id: M::ID,
                 payload: message.into(),
                 respond_to: tx,
                 config,
@@ -72,7 +71,7 @@ impl RuntimeHandle {
         self.tx
             .send_blocking(RuntimeEvent::SendEvent {
                 recipient,
-                message_id: M::ID,
+                route_id: M::ID,
                 payload: message.into(),
             })
             .map_err(|_| QlError::Cancelled)
@@ -89,9 +88,8 @@ impl RuntimeHandle {
     {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send_blocking(RuntimeEvent::SendRequest {
-            id: ARID::new(),
             recipient,
-            message_id: M::ID,
+            route_id: M::ID,
             payload: message.into(),
             respond_to: tx,
             config,

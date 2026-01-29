@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{
     runtime::{DecryptedMessage, HandlerEvent, InboundEvent, InboundRequest, Responder},
     wire::{Ack, Nack},
-    Event, QlCodec, QlError, RequestResponse,
+    Event, QlCodec, QlError, RequestResponse, RouteId,
 };
 
 pub trait RequestHandler<M>
@@ -75,7 +75,7 @@ pub enum RouterError {
     #[error(transparent)]
     Decode(#[from] dcbor::Error),
     #[error("missing handler {0}")]
-    MissingHandler(u64),
+    MissingHandler(RouteId),
     #[error(transparent)]
     Runtime(#[from] QlError),
 }
@@ -83,7 +83,7 @@ pub enum RouterError {
 type RouterHandler<S> = fn(&mut S, HandlerEvent) -> Result<(), RouterError>;
 
 pub struct RouterBuilder<S> {
-    handlers: HashMap<u64, RouterHandler<S>>,
+    handlers: HashMap<RouteId, RouterHandler<S>>,
 }
 
 impl<S> RouterBuilder<S> {
@@ -117,7 +117,7 @@ impl<S> RouterBuilder<S> {
         }
     }
 
-    fn add_handler(mut self, id: u64, handler: RouterHandler<S>) -> Self {
+    fn add_handler(mut self, id: RouteId, handler: RouterHandler<S>) -> Self {
         if self.handlers.insert(id, handler).is_some() {
             panic!("duplicate message_id {id}");
         }
@@ -127,7 +127,7 @@ impl<S> RouterBuilder<S> {
 
 pub struct Router<S> {
     state: S,
-    handlers: HashMap<u64, RouterHandler<S>>,
+    handlers: HashMap<RouteId, RouterHandler<S>>,
 }
 
 impl<S> Router<S> {
@@ -138,7 +138,7 @@ impl<S> Router<S> {
     pub fn handle(&mut self, event: HandlerEvent) -> Result<(), RouterError> {
         match event {
             HandlerEvent::Request(request) => {
-                let message_id = request.message.header.message_id;
+                let message_id = request.message.header.route_id;
                 let payload = request.message.payload;
                 let handler = match self.handlers.get(&message_id) {
                     Some(handler) => handler,
@@ -159,7 +159,7 @@ impl<S> Router<S> {
                 )
             }
             HandlerEvent::Event(event) => {
-                let message_id = event.message.header.message_id;
+                let message_id = event.message.header.route_id;
                 let payload = event.message.payload;
                 let handler = self
                     .handlers

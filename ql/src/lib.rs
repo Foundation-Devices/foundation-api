@@ -1,21 +1,24 @@
 mod encrypt;
 pub mod handle;
+mod id;
 pub mod identity;
 pub mod platform;
 pub mod router;
 pub mod runtime;
 pub mod wire;
 
+pub use id::*;
+
 pub trait QlCodec: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}
 impl<T> QlCodec for T where T: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}
 
 pub trait RequestResponse: QlCodec {
-    const ID: u64;
+    const ID: RouteId;
     type Response: QlCodec;
 }
 
 pub trait Event: QlCodec {
-    const ID: u64;
+    const ID: RouteId;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,10 +42,7 @@ pub enum QlError {
     #[error("send failed")]
     SendFailed,
     #[error("nack {nack:?}")]
-    Nack {
-        id: bc_components::ARID,
-        nack: wire::Nack,
-    },
+    Nack { id: MessageId, nack: wire::Nack },
     #[error("cancelled")]
     Cancelled,
 }

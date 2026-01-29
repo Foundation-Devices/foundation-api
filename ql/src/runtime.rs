@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::{EncapsulationPublicKey, Nonce, SigningPublicKey, ARID, XID};
+use bc_components::{EncapsulationPublicKey, Nonce, SigningPublicKey, XID};
 use dcbor::{CBOREncodable, CBOR};
 
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
         QlPlatformExt, ResetOrigin,
     },
     wire::*,
-    QlCodec, QlError,
+    MessageId, QlCodec, QlError, RouteId,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -65,7 +65,7 @@ pub struct InboundEvent {
 
 #[derive(Debug, Clone)]
 pub struct Responder {
-    id: ARID,
+    id: MessageId,
     recipient: XID,
     tx: Sender<RuntimeEvent>,
 }
@@ -130,7 +130,7 @@ struct PendingEntry {
 #[derive(Debug, Clone)]
 struct TimeoutEntry {
     deadline: Instant,
-    id: ARID,
+    id: MessageId,
 }
 
 impl PartialEq for TimeoutEntry {
@@ -155,20 +155,19 @@ impl Ord for TimeoutEntry {
 
 pub(crate) enum RuntimeEvent {
     SendRequest {
-        id: ARID,
         recipient: XID,
-        message_id: u64,
+        route_id: RouteId,
         payload: CBOR,
         respond_to: oneshot::Sender<Result<CBOR, QlError>>,
         config: RequestConfig,
     },
     SendEvent {
         recipient: XID,
-        message_id: u64,
+        route_id: RouteId,
         payload: CBOR,
     },
     SendResponse {
-        id: ARID,
+        id: MessageId,
         recipient: XID,
         payload: CBOR,
         kind: MessageKind,
@@ -191,25 +190,34 @@ pub struct Runtime<P> {
 }
 
 struct RuntimeState {
-    pending: HashMap<ARID, PendingEntry>,
+    pending: HashMap<MessageId, PendingEntry>,
     timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     outbound: VecDeque<OutboundBytes>,
     keepalive: Vec<PeerKeepAlive>,
+    next_message_id: u64,
+}
+
+impl RuntimeState {
+    fn next_id(&mut self) -> MessageId {
+        let id = self.next_message_id;
+        self.next_message_id = id.wrapping_add(1);
+        MessageId::new(id)
+    }
 }
 
 struct OutboundBytes {
-    id: Option<ARID>,
+    id: Option<MessageId>,
     bytes: Vec<u8>,
 }
 
 struct InFlightWrite<'a> {
-    id: Option<ARID>,
+    id: Option<MessageId>,
     future: PlatformFuture<'a, Result<(), QlError>>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct PendingHeartbeat {
-    id: ARID,
+    id: MessageId,
     deadline: Instant,
 }
 
@@ -237,7 +245,7 @@ impl PeerKeepAlive {
 enum LoopStep {
     Event(RuntimeEvent),
     WriteDone {
-        id: Option<ARID>,
+        id: Option<MessageId>,
         result: Result<(), QlError>,
     },
     Timeout,
@@ -270,6 +278,7 @@ where
             timeouts: BinaryHeap::new(),
             outbound: VecDeque::new(),
             keepalive: Vec::new(),
+            next_message_id: 1,
         };
         let mut in_flight: Option<InFlightWrite<'_>> = None;
         loop {
@@ -323,13 +332,13 @@ where
                 LoopStep::Quit => break,
                 LoopStep::Event(event) => match event {
                     RuntimeEvent::SendRequest {
-                        id,
                         recipient,
-                        message_id,
+                        route_id,
                         payload,
                         respond_to,
                         config,
                     } => {
+                        let id = state.next_id();
                         let effective_timeout =
                             config.timeout.unwrap_or(self.config.default_timeout);
                         if effective_timeout.is_zero() {
@@ -343,7 +352,7 @@ where
                             recipient,
                             MessageKind::Request,
                             id,
-                            message_id,
+                            route_id,
                             ql_payload,
                             self.config.message_expiration,
                         ) {
@@ -366,16 +375,17 @@ where
                     }
                     RuntimeEvent::SendEvent {
                         recipient,
-                        message_id,
+                        route_id,
                         payload,
                     } => {
                         let ql_payload = payload;
+                        let id = state.next_id();
                         match encrypt_payload_for_recipient(
                             &self.platform,
                             recipient,
                             MessageKind::Event,
-                            ARID::new(),
-                            message_id,
+                            id,
+                            route_id,
                             ql_payload,
                             self.config.message_expiration,
                         ) {
@@ -407,10 +417,12 @@ where
                         recipient_signing_key,
                         recipient_encapsulation_key,
                     } => {
+                        let message_id = state.next_id();
                         let message = encrypt_pairing_request(
                             &self.platform,
                             &recipient_signing_key,
                             &recipient_encapsulation_key,
+                            message_id,
                             self.config.message_expiration,
                         );
                         self.queue_outbound(&mut state, None, message);
@@ -521,16 +533,16 @@ where
     fn handle_response_message(&self, state: &mut RuntimeState, details: QlDetails, payload: CBOR) {
         if details.kind == MessageKind::Nack {
             let nack = Nack::from(payload);
-            self.resolve_pending_nack(state, details.id, nack);
+            self.resolve_pending_nack(state, details.message_id, nack);
         } else {
-            let Some(entry) = state.pending.remove(&details.id) else {
+            let Some(entry) = state.pending.remove(&details.message_id) else {
                 return;
             };
             let _ = entry.tx.send(Ok(payload));
         }
     }
 
-    fn resolve_pending_nack(&self, state: &mut RuntimeState, id: ARID, nack: Nack) {
+    fn resolve_pending_nack(&self, state: &mut RuntimeState, id: MessageId, nack: Nack) {
         if let Some(entry) = state.pending.remove(&id) {
             let _ = entry.tx.send(Err(QlError::Nack { id, nack }));
         }
@@ -552,10 +564,12 @@ where
             .iter()
             .find(|entry| entry.peer == details.sender)
             .and_then(|entry| entry.pending_heartbeat)
-            .map_or(false, |pending| pending.id == details.id);
+            .map_or(false, |pending| pending.id == details.message_id);
 
         if !is_response {
-            if let Err(error) = self.send_heartbeat_message(state, details.sender, details.id) {
+            if let Err(error) =
+                self.send_heartbeat_message(state, details.sender, details.message_id)
+            {
                 self.platform.handle_error(error);
             }
         }
@@ -565,7 +579,7 @@ where
         match details.kind {
             MessageKind::Request => {
                 let responder = Responder {
-                    id: details.id,
+                    id: details.message_id,
                     recipient: details.sender,
                     tx: self.tx.upgrade().unwrap(),
                 };
@@ -593,7 +607,7 @@ where
         }
     }
 
-    fn queue_outbound(&self, state: &mut RuntimeState, id: Option<ARID>, message: QlMessage) {
+    fn queue_outbound(&self, state: &mut RuntimeState, id: Option<MessageId>, message: QlMessage) {
         if message.header.kem_ct.is_some() {
             let recipient = message.header.recipient;
             let entry = self.keepalive_entry_mut(state, recipient);
@@ -610,7 +624,7 @@ where
             let peer = self.platform.lookup_peer_or_fail(recipient)?;
             let recipient_key = peer.encapsulation_pub_key().clone();
             let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
-            let id = ARID::new();
+            let id = state.next_id();
             peer.store_session(session_key.clone());
             peer.set_pending_handshake(Some(PendingHandshake {
                 kind: HandshakeKind::SessionReset,
@@ -629,9 +643,9 @@ where
             signature: None,
         };
         let envelope = QlEnvelope {
-            id,
+            message_id: id,
             valid_until,
-            message_id: 0,
+            route_id: RouteId::new(0),
             payload: CBOR::null(),
         };
         let aad = header_unsigned.aad_data();
@@ -654,7 +668,7 @@ where
         &self,
         state: &mut RuntimeState,
         recipient: XID,
-        id: ARID,
+        id: MessageId,
         reason: Nack,
     ) -> Result<(), QlError> {
         let message = encrypt_response(
@@ -713,7 +727,7 @@ where
         &self,
         state: &mut RuntimeState,
         recipient: XID,
-        id: ARID,
+        id: MessageId,
     ) -> Result<bool, QlError> {
         let message = match encrypt_response(
             &self.platform,
@@ -772,7 +786,7 @@ where
         }
 
         for peer in send_targets {
-            let heartbeat_id = ARID::new();
+            let heartbeat_id = state.next_id();
             let heartbeat_deadline = now + config.timeout;
             let send_result = self.send_heartbeat_message(state, peer, heartbeat_id);
             let entry = self.keepalive_entry_mut(state, peer);

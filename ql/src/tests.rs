@@ -1,6 +1,9 @@
 use std::{
     future::Future,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        Arc, Mutex,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,8 +26,14 @@ use crate::{
     router::{EventHandler, QlRequest, RequestHandler, Router},
     runtime::{HandlerStream, KeepAliveConfig, RequestConfig, Runtime, RuntimeConfig},
     wire::*,
-    Event, QlError, RequestResponse,
+    Event, MessageId, QlError, RequestResponse, RouteId,
 };
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_id() -> MessageId {
+    MessageId::new(NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Ping(u64);
@@ -116,22 +125,22 @@ impl TryFrom<CBOR> for BadPing {
 }
 
 impl RequestResponse for Ping {
-    const ID: u64 = 100;
+    const ID: RouteId = RouteId::new(100);
     type Response = Pong;
 }
 
 impl RequestResponse for UnknownRequest {
-    const ID: u64 = 101;
+    const ID: RouteId = RouteId::new(101);
     type Response = Pong;
 }
 
 impl RequestResponse for BadPing {
-    const ID: u64 = Ping::ID;
+    const ID: RouteId = Ping::ID;
     type Response = Pong;
 }
 
 impl Event for Notice {
-    const ID: u64 = 200;
+    const ID: RouteId = RouteId::new(200);
 }
 
 #[derive(Clone)]
@@ -466,11 +475,7 @@ impl RuntimePair {
     }
 }
 
-fn build_reset_message(
-    sender: &QlIdentity,
-    recipient: &QlIdentity,
-    id: bc_components::ARID,
-) -> QlMessage {
+fn build_reset_message(sender: &QlIdentity, recipient: &QlIdentity, id: MessageId) -> QlMessage {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -498,9 +503,9 @@ fn build_reset_message(
     };
     let aad = header.aad_data();
     let envelope = QlEnvelope {
-        id,
+        message_id: id,
         valid_until,
-        message_id: 0,
+        route_id: RouteId::new(0),
         payload: CBOR::null(),
     };
     let payload_bytes = CBOR::from(envelope).to_cbor_data();
@@ -747,7 +752,7 @@ async fn responds_to_heartbeat_without_keepalive() {
                                     &message.header,
                                     &message.payload,
                                 ) {
-                                    let _ = heartbeat_tx.send(envelope.id).await;
+                                    let _ = heartbeat_tx.send(envelope.message_id).await;
                                 }
                             }
                         }
@@ -770,7 +775,7 @@ async fn responds_to_heartbeat_without_keepalive() {
             .expect("response");
         assert_eq!(response, Pong(51));
 
-        let heartbeat_id = bc_components::ARID::new();
+        let heartbeat_id = next_id();
         let message = encrypt_response(
             &pair.client_platform,
             recipient,
@@ -897,9 +902,9 @@ async fn expired_response_is_rejected() {
             signature: None,
         };
         let envelope = QlEnvelope {
-            id: envelope.id,
+            message_id: envelope.message_id,
             valid_until: 0,
-            message_id: 0,
+            route_id: RouteId::new(0),
             payload: CBOR::from(6),
         };
         let encrypted = session_key.encrypt(
@@ -955,11 +960,7 @@ async fn reset_cancels_pending_request() {
 
         let _ = client_outbound.recv().await.expect("outbound request");
 
-        let reset_message = build_reset_message(
-            &server_identity,
-            &client_identity,
-            bc_components::ARID::new(),
-        );
+        let reset_message = build_reset_message(&server_identity, &client_identity, next_id());
         client_handle
             .send_incoming(reset_message.to_cbor_data())
             .unwrap();
@@ -979,7 +980,7 @@ fn simultaneous_session_init_resolves() {
         platform: &TestPlatform,
         recipient: XID,
         notice: Notice,
-        message_id: bc_components::ARID,
+        message_id: MessageId,
     ) -> QlMessage {
         let payload = notice.into();
         encrypt_payload_for_recipient(
@@ -1011,13 +1012,13 @@ fn simultaneous_session_init_resolves() {
         &client_platform,
         server_platform.xid(),
         Notice(1),
-        bc_components::ARID::new(),
+        next_id(),
     );
     let server_message = build_event_message(
         &server_platform,
         client_platform.xid(),
         Notice(2),
-        bc_components::ARID::new(),
+        next_id(),
     );
 
     let server_result = extract_envelope(
@@ -1043,13 +1044,13 @@ fn simultaneous_session_init_resolves() {
         &client_platform,
         server_platform.xid(),
         Notice(3),
-        bc_components::ARID::new(),
+        next_id(),
     );
     let follow_up_server = build_event_message(
         &server_platform,
         client_platform.xid(),
         Notice(4),
-        bc_components::ARID::new(),
+        next_id(),
     );
 
     assert!(extract_envelope(
@@ -1089,6 +1090,7 @@ async fn pairing_request_stores_peer() {
             &sender_platform,
             &recipient_identity.signing_public_key,
             &recipient_identity.encapsulation_public_key,
+            next_id(),
             config.message_expiration,
         );
         let bytes = message.to_cbor_data();
@@ -1136,8 +1138,8 @@ async fn reset_collision_prefers_lower_xid() {
         tokio::task::spawn_local(async move { lower_core.run().await });
         tokio::task::spawn_local(async move { higher_core.run().await });
 
-        let lower_reset_id = bc_components::ARID::new();
-        let higher_reset_id = bc_components::ARID::new();
+        let lower_reset_id = next_id();
+        let higher_reset_id = next_id();
         lower_platform.set_pending_handshake(Some(PendingHandshake {
             kind: HandshakeKind::SessionReset,
             origin: ResetOrigin::Local,
@@ -1199,11 +1201,7 @@ async fn reset_from_higher_xid_is_accepted_without_pending() {
             Runtime::new(lower_platform.clone(), config);
         tokio::task::spawn_local(async move { lower_core.run().await });
 
-        let reset_from_higher = build_reset_message(
-            &higher_identity,
-            &lower_identity,
-            bc_components::ARID::new(),
-        );
+        let reset_from_higher = build_reset_message(&higher_identity, &lower_identity, next_id());
 
         lower_handle
             .send_incoming(reset_from_higher.to_cbor_data())
@@ -1233,7 +1231,7 @@ async fn reset_with_invalid_signature_is_rejected() {
         let (mut core, handle, _incoming) = Runtime::new(platform.clone(), config);
         tokio::task::spawn_local(async move { core.run().await });
 
-        let id = bc_components::ARID::new();
+        let id = next_id();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs())
@@ -1261,9 +1259,9 @@ async fn reset_with_invalid_signature_is_rejected() {
         };
         let aad = header.aad_data();
         let envelope = QlEnvelope {
-            id,
+            message_id: id,
             valid_until,
-            message_id: 0,
+            route_id: RouteId::new(0),
             payload: CBOR::null(),
         };
         let payload_bytes = CBOR::from(envelope).to_cbor_data();

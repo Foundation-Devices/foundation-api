@@ -1,8 +1,10 @@
 use bc_components::{
     EncapsulationCiphertext, EncapsulationPublicKey, EncryptedMessage, Signature, SigningPublicKey,
-    ARID, XID,
+    XID,
 };
 use dcbor::CBOR;
+
+use crate::{MessageId, RouteId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
@@ -37,17 +39,17 @@ pub struct QlHeader {
 
 #[derive(Debug, Clone)]
 pub struct QlEnvelope {
-    pub id: ARID,
+    pub message_id: MessageId,
     pub valid_until: u64,
-    pub message_id: u64,
+    pub route_id: RouteId,
     pub payload: CBOR,
 }
 
 #[derive(Debug, Clone)]
 pub struct QlDetails {
     pub kind: MessageKind,
-    pub id: ARID,
-    pub message_id: u64,
+    pub message_id: MessageId,
+    pub route_id: RouteId,
     pub sender: XID,
     pub recipient: XID,
     pub valid_until: u64,
@@ -121,9 +123,9 @@ impl TryFrom<CBOR> for QlHeader {
 impl From<QlEnvelope> for CBOR {
     fn from(value: QlEnvelope) -> Self {
         CBOR::from(vec![
-            CBOR::from(value.id),
-            CBOR::from(value.valid_until),
             CBOR::from(value.message_id),
+            CBOR::from(value.valid_until),
+            CBOR::from(value.route_id),
             value.payload,
         ])
     }
@@ -136,9 +138,9 @@ impl TryFrom<CBOR> for QlEnvelope {
         let array = value.try_into_array()?;
         let [id_cbor, valid_until_cbor, message_id_cbor, payload] = cbor_array::<4>(array)?;
         Ok(Self {
-            id: id_cbor.try_into()?,
+            message_id: id_cbor.try_into()?,
             valid_until: valid_until_cbor.try_into()?,
-            message_id: message_id_cbor.try_into()?,
+            route_id: message_id_cbor.try_into()?,
             payload,
         })
     }
@@ -148,8 +150,8 @@ impl QlDetails {
     pub fn from_parts(header: &QlHeader, envelope: &QlEnvelope) -> Self {
         Self {
             kind: header.kind,
-            id: envelope.id,
             message_id: envelope.message_id,
+            route_id: envelope.route_id,
             sender: header.sender,
             recipient: header.recipient,
             valid_until: envelope.valid_until,
