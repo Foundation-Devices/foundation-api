@@ -52,13 +52,6 @@ pub trait QlPlatform {
         self.lookup_peer(peer)
             .ok_or_else(|| QlError::UnknownPeer(peer))
     }
-
-    fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
-    fn encapsulation_public_key(&self) -> EncapsulationPublicKey;
-    fn signing_key(&self) -> &SigningPublicKey;
-    fn message_expiration(&self) -> Duration;
-    fn signer(&self) -> &dyn Signer;
-    fn handle_error(&self, e: QlError);
     fn store_peer(
         &self,
         signing_pub_key: SigningPublicKey,
@@ -66,8 +59,15 @@ pub trait QlPlatform {
         session: SymmetricKey,
     );
 
+    fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
+    fn encapsulation_public_key(&self) -> EncapsulationPublicKey;
+    fn signing_key(&self) -> &SigningPublicKey;
+    fn message_expiration(&self) -> Duration;
+    fn signer(&self) -> &dyn Signer;
+
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
+    fn handle_error(&self, e: QlError);
 
     fn xid(&self) -> XID {
         XID::new(self.signing_key())
