@@ -1,5 +1,6 @@
 use dcbor::CBOR;
 
+mod encrypt;
 pub mod handle;
 pub mod identity;
 pub mod router;

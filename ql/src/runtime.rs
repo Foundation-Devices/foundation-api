@@ -14,7 +14,7 @@ use bc_components::{
 };
 use dcbor::CBOR;
 
-use crate::{handle::RuntimeHandle, wire::*, QlCodec, QlError};
+use crate::{encrypt::*, handle::RuntimeHandle, wire::*, QlCodec, QlError};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 

@@ -12,15 +12,13 @@ use dcbor::CBOR;
 use oneshot;
 
 use crate::{
+    encrypt::*,
     identity::QlIdentity,
     router::{EventHandler, QlRequest, RequestHandler, Router},
     runtime::{
         PlatformFuture, QlPeer, QlPlatform, RequestConfig, ResetOrigin, Runtime, RuntimeConfig,
     },
-    wire::{
-        decode_ql_message, encode_ql_message, encrypt_pairing_request,
-        encrypt_payload_for_recipient, MessageKind, Nack, QlHeader, QlMessage, QlPayload,
-    },
+    wire::*,
     Event, QlError, RequestResponse,
 };
 
@@ -836,10 +834,8 @@ fn simultaneous_session_init_resolves() {
         bc_components::ARID::new(),
     );
 
-    let server_result =
-        crate::wire::extract_payload(&server_platform, &client_header, client_encrypted);
-    let client_result =
-        crate::wire::extract_payload(&client_platform, &server_header, server_encrypted);
+    let server_result = extract_payload(&server_platform, &client_header, client_encrypted);
+    let client_result = extract_payload(&client_platform, &server_header, server_encrypted);
 
     if client_platform.xid() < server_platform.xid() {
         assert!(matches!(client_result, Err(QlError::SessionInitCollision)));
@@ -862,13 +858,13 @@ fn simultaneous_session_init_resolves() {
         bc_components::ARID::new(),
     );
 
-    assert!(crate::wire::extract_payload(
+    assert!(extract_payload(
         &server_platform,
         &follow_up_client_header,
         follow_up_client_encrypted
     )
     .is_ok());
-    assert!(crate::wire::extract_payload(
+    assert!(extract_payload(
         &client_platform,
         &follow_up_server_header,
         follow_up_server_encrypted
