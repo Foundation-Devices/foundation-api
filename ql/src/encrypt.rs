@@ -181,14 +181,6 @@ pub(crate) fn session_key_for_header(
     }
 }
 
-pub(crate) fn extract_response_payload(
-    platform: &impl QlPlatform,
-    header: QlHeader,
-    payload: EncryptedMessage,
-) -> Result<(QlDetails, CBOR), QlError> {
-    extract_envelope(platform, header, payload)
-}
-
 pub(crate) fn extract_reset_payload(
     platform: &impl QlPlatform,
     header: QlHeader,
@@ -216,19 +208,6 @@ pub(crate) fn extract_reset_payload(
         return Err(QlError::InvalidPayload);
     }
     Ok(())
-}
-
-pub(crate) fn extract_heartbeat_payload(
-    platform: &impl QlPlatform,
-    header: QlHeader,
-    payload: EncryptedMessage,
-) -> Result<QlDetails, QlError> {
-    let (details, payload) = extract_envelope(platform, header, payload)?;
-    if payload.is_null() {
-        Ok(details)
-    } else {
-        Err(QlError::InvalidPayload)
-    }
 }
 
 pub(crate) fn sign_reset_header(

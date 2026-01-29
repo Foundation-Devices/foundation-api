@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::{EncapsulationPublicKey, EncryptedMessage, Nonce, SigningPublicKey, ARID, XID};
+use bc_components::{EncapsulationPublicKey, Nonce, SigningPublicKey, ARID, XID};
 use dcbor::CBOR;
 
 use crate::{
@@ -475,28 +475,105 @@ where
             return;
         }
 
-        if header.kind == MessageKind::Response || header.kind == MessageKind::Nack {
-            self.handle_response_message(state, header, payload);
+        if header.kind == MessageKind::SessionReset {
+            let sender = header.sender;
+            match extract_reset_payload(&self.platform, header, payload) {
+                Ok(()) => {
+                    self.mark_connecting(state, sender);
+                    self.record_activity(state, sender);
+                    let reset_entries = state
+                        .pending
+                        .extract_if(|_id, entry| entry.recipient == sender);
+                    for (_id, entry) in reset_entries {
+                        let _ = entry.tx.send(Err(QlError::SessionReset));
+                    }
+                }
+                Err(error) => self.platform.handle_error(error),
+            }
             return;
         }
 
-        match header.kind {
-            MessageKind::Request => {
-                let sender = header.sender;
-                let has_kem_ct = header.kem_ct.is_some();
-                let (details, payload) = match extract_envelope(&self.platform, header, payload) {
-                    Ok(result) => result,
-                    Err(error) => {
-                        if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_)) {
-                            let _ = self.send_session_reset(state, sender);
-                        }
-                        return;
-                    }
-                };
+        let sender = header.sender;
+        let has_kem_ct = header.kem_ct.is_some();
+        let kind = header.kind;
+        let (details, payload) = match extract_envelope(&self.platform, header, payload) {
+            Ok(result) => result,
+            Err(QlError::InvalidPayload) | Err(QlError::MissingSession(_)) => {
+                let _ = self.send_session_reset(state, sender);
+                return;
+            }
+            Err(e) => {
+                self.platform.handle_error(e);
+                return;
+            }
+        };
+
+        match kind {
+            MessageKind::Request | MessageKind::Event => {
                 if has_kem_ct {
                     self.mark_connecting(state, sender);
                 }
                 self.record_activity(state, sender);
+                self.dispatch_decrypted_message(details, payload);
+            }
+            MessageKind::Heartbeat => {
+                self.handle_heartbeat_message(state, details, payload, has_kem_ct);
+            }
+            MessageKind::Response | MessageKind::Nack => {
+                self.handle_response_message(state, details, payload, has_kem_ct);
+            }
+            MessageKind::Pairing | MessageKind::SessionReset => {}
+        }
+    }
+
+    fn handle_response_message(
+        &self,
+        state: &mut RuntimeState,
+        details: QlDetails,
+        payload: CBOR,
+        has_kem_ct: bool,
+    ) {
+        let Some(entry) = state.pending.remove(&details.id) else {
+            return;
+        };
+        if has_kem_ct {
+            self.mark_connecting(state, details.sender);
+        }
+        self.record_activity(state, details.sender);
+        if details.kind == MessageKind::Nack {
+            let nack = Nack::try_from(payload).unwrap_or(Nack::Unknown);
+            let _ = entry.tx.send(Err(QlError::Nack(nack)));
+        } else {
+            let _ = entry.tx.send(Ok(payload));
+        }
+    }
+
+    fn handle_heartbeat_message(
+        &self,
+        state: &mut RuntimeState,
+        details: QlDetails,
+        payload: CBOR,
+        has_kem_ct: bool,
+    ) {
+        if !payload.is_null() {
+            let _ = self.send_session_reset(state, details.sender);
+            return;
+        }
+        let should_respond = !self.is_pending_heartbeat(state, details.sender, details.id);
+        if has_kem_ct {
+            self.mark_connecting(state, details.sender);
+        }
+        self.record_activity(state, details.sender);
+        if should_respond {
+            if let Err(error) = self.send_heartbeat_message(state, details.sender, details.id) {
+                self.platform.handle_error(error);
+            }
+        }
+    }
+
+    fn dispatch_decrypted_message(&self, details: QlDetails, payload: CBOR) {
+        match details.kind {
+            MessageKind::Request => {
                 let responder = Responder {
                     id: details.id,
                     recipient: details.sender,
@@ -513,21 +590,6 @@ where
                     }));
             }
             MessageKind::Event => {
-                let sender = header.sender;
-                let has_kem_ct = header.kem_ct.is_some();
-                let (details, payload) = match extract_envelope(&self.platform, header, payload) {
-                    Ok(result) => result,
-                    Err(error) => {
-                        if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_)) {
-                            let _ = self.send_session_reset(state, sender);
-                        }
-                        return;
-                    }
-                };
-                if has_kem_ct {
-                    self.mark_connecting(state, sender);
-                }
-                self.record_activity(state, sender);
                 let _ = self
                     .incoming
                     .send_blocking(HandlerEvent::Event(InboundEvent {
@@ -537,88 +599,7 @@ where
                         },
                     }));
             }
-            MessageKind::SessionReset => {
-                let sender = header.sender;
-                match extract_reset_payload(&self.platform, header, payload) {
-                    Ok(()) => {
-                        self.mark_connecting(state, sender);
-                        self.record_activity(state, sender);
-                        let reset_entries = state
-                            .pending
-                            .extract_if(|_id, entry| entry.recipient == sender);
-                        for (_id, entry) in reset_entries {
-                            let _ = entry.tx.send(Err(QlError::SessionReset));
-                        }
-                    }
-                    Err(error) => self.platform.handle_error(error),
-                }
-            }
-            MessageKind::Heartbeat => {
-                self.handle_heartbeat_message(state, header, payload);
-            }
-            MessageKind::Pairing | MessageKind::Response | MessageKind::Nack => {}
-        }
-    }
-
-    fn handle_response_message(
-        &self,
-        state: &mut RuntimeState,
-        header: QlHeader,
-        payload: EncryptedMessage,
-    ) {
-        let has_kem_ct = header.kem_ct.is_some();
-        let sender = header.sender;
-        let kind = header.kind;
-        let decrypted = extract_response_payload(&self.platform, header, payload);
-        match decrypted {
-            Ok((details, decrypted)) => {
-                let Some(entry) = state.pending.remove(&details.id) else {
-                    return;
-                };
-                if has_kem_ct {
-                    self.mark_connecting(state, sender);
-                }
-                self.record_activity(state, sender);
-                if kind == MessageKind::Nack {
-                    let nack = Nack::try_from(decrypted).unwrap_or(Nack::Unknown);
-                    let _ = entry.tx.send(Err(QlError::Nack(nack)));
-                } else {
-                    let _ = entry.tx.send(Ok(decrypted));
-                }
-            }
-            Err(_error) => {}
-        }
-    }
-
-    fn handle_heartbeat_message(
-        &self,
-        state: &mut RuntimeState,
-        header: QlHeader,
-        payload: EncryptedMessage,
-    ) {
-        let sender = header.sender;
-        let has_kem_ct = header.kem_ct.is_some();
-        let result = extract_heartbeat_payload(&self.platform, header, payload);
-        match result {
-            Ok(details) => {
-                let should_respond = !self.is_pending_heartbeat(state, sender, details.id);
-                if has_kem_ct {
-                    self.mark_connecting(state, sender);
-                }
-                self.record_activity(state, sender);
-                if should_respond {
-                    if let Err(error) = self.send_heartbeat_message(state, sender, details.id) {
-                        self.platform.handle_error(error);
-                    }
-                }
-            }
-            Err(error) => {
-                if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_)) {
-                    let _ = self.send_session_reset(state, sender);
-                } else {
-                    self.platform.handle_error(error);
-                }
-            }
+            _ => {}
         }
     }
 
