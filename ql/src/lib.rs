@@ -3,6 +3,7 @@ use dcbor::CBOR;
 mod encrypt;
 pub mod handle;
 pub mod identity;
+pub mod platform;
 pub mod router;
 pub mod runtime;
 pub mod wire;

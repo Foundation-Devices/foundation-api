@@ -7,7 +7,8 @@ use bc_components::{
 use dcbor::CBOR;
 
 use crate::{
-    runtime::{HandshakeKind, PendingHandshake, QlPeer, QlPlatform, ResetOrigin},
+    platform::{QlPeer, QlPlatform},
+    runtime::{HandshakeKind, PendingHandshake, ResetOrigin},
     wire::{MessageKind, PairingPayload, QlHeader, QlPayload},
     QlError,
 };
