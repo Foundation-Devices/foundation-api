@@ -485,8 +485,8 @@ where
                 let _ = self.send_session_reset(state, sender);
                 return;
             }
-            Err(QlError::Expired(id)) => {
-                let _ = self.send_nack(state, sender, id, Nack::Expired);
+            Err(QlError::Nack { nack, id }) => {
+                let _ = self.send_nack(state, sender, id, nack);
                 return;
             }
             Err(e) => {
@@ -520,7 +520,10 @@ where
         };
         if details.kind == MessageKind::Nack {
             let nack = Nack::from(payload);
-            let _ = entry.tx.send(Err(QlError::Nack(nack)));
+            let _ = entry.tx.send(Err(QlError::Nack {
+                id: details.id,
+                nack,
+            }));
         } else {
             let _ = entry.tx.send(Ok(payload));
         }

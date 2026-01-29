@@ -811,7 +811,10 @@ async fn nack_unknown_message_is_returned() {
 
         assert!(matches!(
             result,
-            Err(QlError::Nack(nack)) if nack == Nack::UnknownMessage
+            Err(QlError::Nack {
+                id: _,
+                nack: Nack::UnknownMessage
+            })
         ));
     })
     .await;
@@ -836,7 +839,7 @@ async fn nack_invalid_payload_is_returned() {
 
         assert!(matches!(
             result,
-            Err(QlError::Nack(nack)) if nack == Nack::InvalidPayload
+            Err(QlError::Nack{ nack, .. }) if nack == Nack::InvalidPayload
         ));
     })
     .await;
@@ -907,7 +910,13 @@ async fn expired_response_is_rejected() {
         handle.send_incoming(encrypted.to_cbor_data()).unwrap();
 
         let response = response_task.await.unwrap();
-        assert!(matches!(response, Err(QlError::Expired(_))));
+        assert!(matches!(
+            response,
+            Err(QlError::Nack {
+                id: _,
+                nack: Nack::Expired
+            })
+        ));
     })
     .await;
 }
@@ -1131,7 +1140,8 @@ async fn reset_collision_prefers_lower_xid() {
             id: higher_reset_id,
         }));
 
-        let reset_from_lower = build_reset_message(&lower_identity, &higher_identity, lower_reset_id);
+        let reset_from_lower =
+            build_reset_message(&lower_identity, &higher_identity, lower_reset_id);
         let reset_from_higher =
             build_reset_message(&higher_identity, &lower_identity, higher_reset_id);
 

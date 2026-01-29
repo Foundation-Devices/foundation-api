@@ -8,7 +8,7 @@ use dcbor::CBOR;
 
 use crate::{
     platform::{HandshakeKind, PendingHandshake, QlPeer, QlPlatform, QlPlatformExt, ResetOrigin},
-    wire::{MessageKind, PairingPayload, QlDetails, QlEnvelope, QlHeader, QlMessage},
+    wire::{MessageKind, Nack, PairingPayload, QlDetails, QlEnvelope, QlHeader, QlMessage},
     QlError,
 };
 
@@ -284,7 +284,10 @@ fn handshake_cmp(local: (XID, ARID), peer: (XID, ARID)) -> Ordering {
 fn ensure_not_expired(id: ARID, valid_until: u64) -> Result<(), QlError> {
     let now = now_secs();
     if now > valid_until {
-        Err(QlError::Expired(id))
+        Err(QlError::Nack {
+            id,
+            nack: Nack::Expired,
+        })
     } else {
         Ok(())
     }
@@ -316,7 +319,7 @@ pub(crate) fn decrypt_envelope(
 ) -> Result<(QlEnvelope, SymmetricKey), QlError> {
     let session_key = session_key_for_header(platform, peer, header)?;
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), payload)?;
-    let envelope = QlEnvelope::try_from(decrypted).map_err(QlError::Decode)?;
+    let envelope = QlEnvelope::try_from(decrypted)?;
     Ok((envelope, session_key))
 }
 

@@ -22,8 +22,6 @@ pub trait Event: QlCodec {
 pub enum QlError {
     #[error(transparent)]
     Decode(#[from] dcbor::Error),
-    #[error("message expired")]
-    Expired(bc_components::ARID),
     #[error("invalid payload")]
     InvalidPayload,
     #[error("invalid signature")]
@@ -40,8 +38,11 @@ pub enum QlError {
     Timeout,
     #[error("send failed")]
     SendFailed,
-    #[error("nack {0:?}")]
-    Nack(wire::Nack),
+    #[error("nack {nack:?}")]
+    Nack {
+        id: bc_components::ARID,
+        nack: wire::Nack,
+    },
     #[error("cancelled")]
     Cancelled,
 }
