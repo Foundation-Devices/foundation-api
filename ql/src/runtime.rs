@@ -194,7 +194,6 @@ struct RuntimeState {
     pending: HashMap<ARID, PendingEntry>,
     timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     outbound: VecDeque<OutboundBytes>,
-    in_flight: Option<InFlightWrite>,
     keepalive: Vec<PeerKeepAlive>,
 }
 
@@ -203,9 +202,9 @@ struct OutboundBytes {
     bytes: Vec<u8>,
 }
 
-struct InFlightWrite {
+struct InFlightWrite<'a> {
     id: Option<ARID>,
-    future: PlatformFuture<'static, Result<(), QlError>>,
+    future: PlatformFuture<'a, Result<(), QlError>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -270,21 +269,18 @@ where
             pending: HashMap::new(),
             timeouts: BinaryHeap::new(),
             outbound: VecDeque::new(),
-            in_flight: None,
             keepalive: Vec::new(),
         };
+        let mut in_flight: Option<InFlightWrite<'_>> = None;
         loop {
             self.process_request_timeouts(&mut state);
             self.process_keepalives(&mut state);
 
-            if state.in_flight.is_none() {
+            if in_flight.is_none() {
                 if let Some(message) = state.outbound.pop_front() {
-                    let future = self.platform.write_message(message.bytes);
-                    state.in_flight = Some(InFlightWrite {
+                    in_flight = Some(InFlightWrite {
                         id: message.id,
-                        future: unsafe {
-                            std::mem::transmute::<_, PlatformFuture<'static, _>>(future)
-                        },
+                        future: self.platform.write_message(message.bytes),
                     });
                 }
             }
@@ -299,7 +295,7 @@ where
                 let mut sleep_future = sleep_duration.map(|duration| self.platform.sleep(duration));
 
                 futures_lite::future::poll_fn(|cx| {
-                    if let Some(in_flight) = state.in_flight.as_mut() {
+                    if let Some(in_flight) = in_flight.as_mut() {
                         if let Poll::Ready(result) = in_flight.future.as_mut().poll(cx) {
                             return Poll::Ready(LoopStep::WriteDone {
                                 id: in_flight.id,
@@ -443,7 +439,7 @@ where
                     }
                 },
                 LoopStep::WriteDone { id, result } => {
-                    state.in_flight = None;
+                    in_flight = None;
                     if let Err(error) = result {
                         if let Some(id) = id {
                             if let Some(entry) = state.pending.remove(&id) {
@@ -460,7 +456,7 @@ where
         }
     }
 
-    fn handle_incoming_bytes(&mut self, state: &mut RuntimeState, bytes: Vec<u8>) {
+    fn handle_incoming_bytes(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
         let message = match decode_ql_message(&bytes) {
             Ok(message) => message,
             Err(context) => {
@@ -589,7 +585,7 @@ where
         }
     }
 
-    fn handle_response_message(&mut self, state: &mut RuntimeState, message: QlMessage) {
+    fn handle_response_message(&self, state: &mut RuntimeState, message: QlMessage) {
         let header = message.header.clone();
         let Some(entry) = state.pending.remove(&header.id) else {
             return;
@@ -625,7 +621,7 @@ where
         }
     }
 
-    fn handle_heartbeat_message(&mut self, state: &mut RuntimeState, message: QlMessage) {
+    fn handle_heartbeat_message(&self, state: &mut RuntimeState, message: QlMessage) {
         let sender = message.header.sender;
         let heartbeat_id = message.header.id;
         let should_respond = !self.is_pending_heartbeat(state, sender, heartbeat_id);
@@ -653,7 +649,7 @@ where
     }
 
     fn send_session_reset(
-        &mut self,
+        &self,
         state: &mut RuntimeState,
         recipient: XID,
     ) -> Result<(), QlError> {
@@ -696,7 +692,7 @@ where
     }
 
     fn send_nack(
-        &mut self,
+        &self,
         state: &mut RuntimeState,
         recipient: XID,
         id: ARID,
@@ -721,7 +717,7 @@ where
             .filter(|config| !config.interval.is_zero() && !config.timeout.is_zero())
     }
 
-    fn update_peer_status(&mut self, entry: &mut PeerKeepAlive, peer: XID, status: PeerStatus) {
+    fn update_peer_status(&self, entry: &mut PeerKeepAlive, peer: XID, status: PeerStatus) {
         if entry.status != Some(status) {
             self.platform.handle_peer_status(peer, status);
             entry.status = Some(status);
@@ -729,7 +725,7 @@ where
     }
 
     fn keepalive_entry_mut<'a>(
-        &mut self,
+        &self,
         state: &'a mut RuntimeState,
         peer: XID,
     ) -> &'a mut PeerKeepAlive {
@@ -741,14 +737,14 @@ where
         &mut state.keepalive[index]
     }
 
-    fn mark_connecting(&mut self, state: &mut RuntimeState, peer: XID) {
+    fn mark_connecting(&self, state: &mut RuntimeState, peer: XID) {
         let entry = self.keepalive_entry_mut(state, peer);
         entry.pending_heartbeat = None;
         entry.next_heartbeat_at = None;
         self.update_peer_status(entry, peer, PeerStatus::Connecting);
     }
 
-    fn record_activity(&mut self, state: &mut RuntimeState, peer: XID) {
+    fn record_activity(&self, state: &mut RuntimeState, peer: XID) {
         let now = Instant::now();
         let entry = self.keepalive_entry_mut(state, peer);
         entry.last_activity = Some(now);
@@ -772,7 +768,7 @@ where
     }
 
     fn send_heartbeat_message(
-        &mut self,
+        &self,
         state: &mut RuntimeState,
         recipient: XID,
         id: ARID,
@@ -794,7 +790,7 @@ where
         Ok(true)
     }
 
-    fn process_request_timeouts(&mut self, state: &mut RuntimeState) {
+    fn process_request_timeouts(&self, state: &mut RuntimeState) {
         let now = Instant::now();
         while let Some(Reverse(entry)) = state.timeouts.peek().cloned() {
             if entry.deadline > now {
@@ -807,7 +803,7 @@ where
         }
     }
 
-    fn process_keepalives(&mut self, state: &mut RuntimeState) {
+    fn process_keepalives(&self, state: &mut RuntimeState) {
         let Some(config) = self.keep_alive_config() else {
             return;
         };
