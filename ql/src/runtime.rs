@@ -563,12 +563,19 @@ where
             let _ = self.send_session_reset(state, details.sender);
             return;
         }
-        let should_respond = !self.is_pending_heartbeat(state, details.sender, details.id);
         if has_kem_ct {
             self.mark_connecting(state, details.sender);
         }
+
+        let is_response = state
+            .keepalive
+            .iter()
+            .find(|entry| entry.peer == details.sender)
+            .and_then(|entry| entry.pending_heartbeat)
+            .map_or(false, |pending| pending.id == details.id);
+
         self.record_activity(state, details.sender);
-        if should_respond {
+        if !is_response {
             if let Err(error) = self.send_heartbeat_message(state, details.sender, details.id) {
                 self.platform.handle_error(error);
             }
@@ -715,15 +722,6 @@ where
         } else {
             entry.next_heartbeat_at = None;
         }
-    }
-
-    fn is_pending_heartbeat(&self, state: &RuntimeState, peer: XID, id: ARID) -> bool {
-        state
-            .keepalive
-            .iter()
-            .find(|entry| entry.peer == peer)
-            .and_then(|entry| entry.pending_heartbeat)
-            .map_or(false, |pending| pending.id == id)
     }
 
     fn send_heartbeat_message(
