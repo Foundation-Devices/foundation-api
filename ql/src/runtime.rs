@@ -14,29 +14,13 @@ use dcbor::CBOR;
 use crate::{
     encrypt::*,
     handle::RuntimeHandle,
-    platform::{PlatformFuture, QlPeer, QlPlatform, QlPlatformExt},
+    platform::{
+        HandshakeKind, PendingHandshake, PlatformFuture, QlPeer, QlPlatform, QlPlatformExt,
+        ResetOrigin,
+    },
     wire::*,
     QlCodec, QlError,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResetOrigin {
-    Local,
-    Peer,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandshakeKind {
-    SessionInit,
-    SessionReset,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PendingHandshake {
-    pub kind: HandshakeKind,
-    pub origin: ResetOrigin,
-    pub id: ARID,
-}
 
 #[derive(Debug, Clone)]
 pub struct RequestConfig {
@@ -54,6 +38,12 @@ pub struct RuntimeConfig {
     pub default_timeout: Duration,
 }
 
+#[derive(Debug)]
+pub enum HandlerEvent {
+    Request(InboundRequest),
+    Event(InboundEvent),
+}
+
 #[derive(Debug, Clone)]
 pub struct DecryptedMessage {
     pub header: QlHeader,
@@ -69,12 +59,6 @@ pub struct InboundRequest {
 #[derive(Debug)]
 pub struct InboundEvent {
     pub message: DecryptedMessage,
-}
-
-#[derive(Debug)]
-pub enum HandlerEvent {
-    Request(InboundRequest),
-    Event(InboundEvent),
 }
 
 #[derive(Debug, Clone)]

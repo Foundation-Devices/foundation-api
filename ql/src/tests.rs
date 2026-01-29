@@ -14,9 +14,12 @@ use oneshot;
 use crate::{
     encrypt::*,
     identity::QlIdentity,
-    platform::{PlatformFuture, QlPeer, QlPlatform, QlPlatformExt},
+    platform::{
+        HandshakeKind, PendingHandshake, PlatformFuture, QlPeer, QlPlatform, QlPlatformExt,
+        ResetOrigin,
+    },
     router::{EventHandler, QlRequest, RequestHandler, Router},
-    runtime::{RequestConfig, ResetOrigin, Runtime, RuntimeConfig},
+    runtime::{RequestConfig, Runtime, RuntimeConfig},
     wire::*,
     Event, QlError, RequestResponse,
 };
@@ -178,12 +181,12 @@ impl TestPlatform {
         )
     }
 
-    fn pending_handshake(&self) -> Option<crate::runtime::PendingHandshake> {
+    fn pending_handshake(&self) -> Option<PendingHandshake> {
         let guard = self.inner.peer.lock().ok()?;
         guard.as_ref()?.pending_handshake()
     }
 
-    fn set_pending_handshake(&self, handshake: Option<crate::runtime::PendingHandshake>) {
+    fn set_pending_handshake(&self, handshake: Option<PendingHandshake>) {
         let Ok(guard) = self.inner.peer.lock() else {
             return;
         };
@@ -202,7 +205,8 @@ impl TestPlatform {
 }
 
 impl QlPlatform for TestPlatform {
-    type Peer<'a> = Arc<TestPeer>
+    type Peer<'a>
+        = Arc<TestPeer>
     where
         Self: 'a;
 
@@ -267,7 +271,7 @@ struct TestPeer {
     encapsulation_public_key: EncapsulationPublicKey,
     signing_public_key: SigningPublicKey,
     session: Mutex<Option<SymmetricKey>>,
-    pending_handshake: Mutex<Option<crate::runtime::PendingHandshake>>,
+    pending_handshake: Mutex<Option<PendingHandshake>>,
 }
 
 impl TestPeer {
@@ -302,11 +306,11 @@ impl QlPeer for TestPeer {
         *guard = Some(key);
     }
 
-    fn pending_handshake(&self) -> Option<crate::runtime::PendingHandshake> {
+    fn pending_handshake(&self) -> Option<PendingHandshake> {
         *self.pending_handshake.lock().unwrap()
     }
 
-    fn set_pending_handshake(&self, handshake: Option<crate::runtime::PendingHandshake>) {
+    fn set_pending_handshake(&self, handshake: Option<PendingHandshake>) {
         let mut guard = self.pending_handshake.lock().unwrap();
         *guard = handshake;
     }
@@ -955,13 +959,13 @@ async fn reset_collision_prefers_lower_xid() {
 
             let lower_reset_id = bc_components::ARID::new();
             let higher_reset_id = bc_components::ARID::new();
-            lower_platform.set_pending_handshake(Some(crate::runtime::PendingHandshake {
-                kind: crate::runtime::HandshakeKind::SessionReset,
+            lower_platform.set_pending_handshake(Some(PendingHandshake {
+                kind: HandshakeKind::SessionReset,
                 origin: ResetOrigin::Local,
                 id: lower_reset_id,
             }));
-            higher_platform.set_pending_handshake(Some(crate::runtime::PendingHandshake {
-                kind: crate::runtime::HandshakeKind::SessionReset,
+            higher_platform.set_pending_handshake(Some(PendingHandshake {
+                kind: HandshakeKind::SessionReset,
                 origin: ResetOrigin::Local,
                 id: higher_reset_id,
             }));
