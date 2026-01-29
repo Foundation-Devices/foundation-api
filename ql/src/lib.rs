@@ -1,5 +1,6 @@
 use dcbor::CBOR;
 
+pub mod handle;
 pub mod identity;
 pub mod router;
 pub mod runtime;
