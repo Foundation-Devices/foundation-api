@@ -308,7 +308,7 @@ pub(crate) fn encrypt_pairing_request(
     platform: &dyn QlPlatform,
     recipient_signing_key: &SigningPublicKey,
     recipient_encapsulation_key: &EncapsulationPublicKey,
-) -> Result<(QlHeader, EncryptedMessage), QlError> {
+) -> (QlHeader, EncryptedMessage) {
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
     let recipient = XID::new(recipient_signing_key);
     let message_id = ARID::new();
@@ -336,7 +336,7 @@ pub(crate) fn encrypt_pairing_request(
     };
     let payload_bytes = CBOR::from(payload).to_cbor_data();
     let encrypted = session_key.encrypt(payload_bytes, Some(header.aad_data()), None::<Nonce>);
-    Ok((header, encrypted))
+    (header, encrypted)
 }
 
 pub(crate) fn decrypt_pairing_payload(

@@ -147,15 +147,11 @@ impl Responder {
     where
         R: QlCodec,
     {
-        self.respond_raw(response.into())
-    }
-
-    pub fn respond_raw(self, payload: CBOR) -> Result<(), QlError> {
         self.tx
             .send_blocking(RuntimeEvent::SendResponse {
                 id: self.id,
                 recipient: self.recipient,
-                payload,
+                payload: response.into(),
                 kind: MessageKind::Response,
             })
             .map_err(|_| QlError::Cancelled)
@@ -284,12 +280,13 @@ struct InFlightWrite {
 }
 
 enum LoopStep {
-    Event(Result<RuntimeEvent, async_channel::RecvError>),
+    Event(RuntimeEvent),
     WriteDone {
         id: Option<ARID>,
         result: Result<(), QlError>,
     },
     Timeout,
+    Quit,
 }
 
 impl<P> Runtime<P>
@@ -358,7 +355,8 @@ where
                     }
 
                     match recv_future.as_mut().poll(cx) {
-                        Poll::Ready(event) => Poll::Ready(LoopStep::Event(event)),
+                        Poll::Ready(Ok(event)) => Poll::Ready(LoopStep::Event(event)),
+                        Poll::Ready(Err(_)) => Poll::Ready(LoopStep::Quit),
                         Poll::Pending => Poll::Pending,
                     }
                 })
@@ -366,7 +364,8 @@ where
             };
 
             match step {
-                LoopStep::Event(Ok(event)) => match event {
+                LoopStep::Quit => break,
+                LoopStep::Event(event) => match event {
                     RuntimeEvent::SendRequest {
                         id,
                         recipient,
@@ -453,23 +452,18 @@ where
                         recipient_signing_key,
                         recipient_encapsulation_key,
                     } => {
-                        match encrypt_pairing_request(
+                        let (header, encrypted) = encrypt_pairing_request(
                             &self.platform,
                             &recipient_signing_key,
                             &recipient_encapsulation_key,
-                        ) {
-                            Ok((header, encrypted)) => {
-                                let bytes = encode_ql_message(header, encrypted);
-                                state.outbound.push_back(OutboundBytes { id: None, bytes });
-                            }
-                            Err(error) => self.platform.handle_error(error),
-                        }
+                        );
+                        let bytes = encode_ql_message(header, encrypted);
+                        state.outbound.push_back(OutboundBytes { id: None, bytes });
                     }
                     RuntimeEvent::Incoming { bytes } => {
                         self.handle_incoming_bytes(&mut state, bytes);
                     }
                 },
-                LoopStep::Event(Err(_)) => break,
                 LoopStep::WriteDone { id, result } => {
                     state.in_flight = None;
                     if let Err(error) = result {

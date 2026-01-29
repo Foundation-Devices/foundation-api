@@ -903,8 +903,7 @@ async fn pairing_request_stores_peer() {
                 &sender_platform,
                 &recipient_identity.signing_public_key,
                 &recipient_identity.encapsulation_public_key,
-            )
-            .expect("encrypt pairing request");
+            );
             let message = decode_ql_message(&encode_ql_message(header, encrypted))
                 .expect("decode pairing request");
             let bytes = encode_ql_message(message.header, message.payload);
