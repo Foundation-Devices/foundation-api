@@ -64,7 +64,7 @@ pub trait QlPlatform {
         signing_pub_key: SigningPublicKey,
         encapsulation_pub_key: EncapsulationPublicKey,
         session: SymmetricKey,
-    ) -> Result<(), QlError>;
+    );
 
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
@@ -617,7 +617,7 @@ where
             if let Ok((payload, session_key)) =
                 decrypt_pairing_payload(&self.platform, &message.header, &message.payload)
             {
-                let _ = self.platform.store_peer(
+                self.platform.store_peer(
                     payload.signing_pub_key,
                     payload.encapsulation_pub_key,
                     session_key,

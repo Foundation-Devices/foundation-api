@@ -246,12 +246,11 @@ impl QlPlatform for TestPlatform {
         signing_pub_key: SigningPublicKey,
         encapsulation_pub_key: EncapsulationPublicKey,
         session: SymmetricKey,
-    ) -> Result<(), QlError> {
+    ) {
         let peer = Box::new(TestPeer::new(encapsulation_pub_key, signing_pub_key));
         peer.store_session(session);
-        let mut guard = self.inner.peer.lock().map_err(|_| QlError::Cancelled)?;
+        let mut guard = self.inner.peer.lock().unwrap();
         *guard = Some(peer);
-        Ok(())
     }
 
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
