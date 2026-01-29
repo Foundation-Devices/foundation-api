@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, WeakSender};
-use bc_components::{EncapsulationPublicKey, Nonce, SigningPublicKey, ARID, XID};
+use bc_components::{EncapsulationPublicKey, EncryptedMessage, Nonce, SigningPublicKey, ARID, XID};
 use dcbor::CBOR;
 
 use crate::{
@@ -348,9 +348,6 @@ where
                             self.config.message_expiration,
                         ) {
                             Ok((header, encrypted)) => {
-                                if header.kem_ct.is_some() {
-                                    self.mark_connecting(&mut state, recipient);
-                                }
                                 state.pending.insert(
                                     id,
                                     PendingEntry {
@@ -359,11 +356,7 @@ where
                                     },
                                 );
                                 state.timeouts.push(Reverse(TimeoutEntry { deadline, id }));
-                                let bytes = encode_ql_message(header, encrypted);
-                                state.outbound.push_back(OutboundBytes {
-                                    id: Some(id),
-                                    bytes,
-                                });
+                                self.queue_outbound(&mut state, Some(id), header, encrypted);
                             }
                             Err(error) => {
                                 let _ = state.pending.remove(&id);
@@ -387,11 +380,7 @@ where
                             self.config.message_expiration,
                         ) {
                             Ok((header, encrypted)) => {
-                                if header.kem_ct.is_some() {
-                                    self.mark_connecting(&mut state, recipient);
-                                }
-                                let bytes = encode_ql_message(header, encrypted);
-                                state.outbound.push_back(OutboundBytes { id: None, bytes });
+                                self.queue_outbound(&mut state, None, header, encrypted);
                             }
                             Err(error) => self.platform.handle_error(error),
                         }
@@ -410,8 +399,7 @@ where
                         self.config.message_expiration,
                     ) {
                         Ok((header, encrypted)) => {
-                            let bytes = encode_ql_message(header, encrypted);
-                            state.outbound.push_back(OutboundBytes { id: None, bytes });
+                            self.queue_outbound(&mut state, None, header, encrypted);
                         }
                         Err(error) => self.platform.handle_error(error),
                     },
@@ -419,16 +407,13 @@ where
                         recipient_signing_key,
                         recipient_encapsulation_key,
                     } => {
-                        let recipient = XID::new(&recipient_signing_key);
                         let (header, encrypted) = encrypt_pairing_request(
                             &self.platform,
                             &recipient_signing_key,
                             &recipient_encapsulation_key,
                             self.config.message_expiration,
                         );
-                        let bytes = encode_ql_message(header, encrypted);
-                        state.outbound.push_back(OutboundBytes { id: None, bytes });
-                        self.mark_connecting(&mut state, recipient);
+                        self.queue_outbound(&mut state, None, header, encrypted);
                     }
                     RuntimeEvent::Incoming { bytes } => {
                         self.handle_incoming_bytes(&mut state, bytes);
@@ -479,7 +464,6 @@ where
             let sender = header.sender;
             match extract_reset_payload(&self.platform, header, payload) {
                 Ok(()) => {
-                    self.mark_connecting(state, sender);
                     self.record_activity(state, sender);
                     let reset_entries = state
                         .pending
@@ -494,8 +478,7 @@ where
         }
 
         let sender = header.sender;
-        let has_kem_ct = header.kem_ct.is_some();
-        let kind = header.kind;
+
         let (details, payload) = match extract_envelope(&self.platform, header, payload) {
             Ok(result) => result,
             Err(QlError::InvalidPayload) | Err(QlError::MissingSession(_)) => {
@@ -512,38 +495,29 @@ where
             }
         };
 
-        match kind {
+        self.record_activity(state, sender);
+
+        match details.kind {
             MessageKind::Request | MessageKind::Event => {
-                if has_kem_ct {
-                    self.mark_connecting(state, sender);
-                }
-                self.record_activity(state, sender);
                 self.dispatch_decrypted_message(details, payload);
             }
             MessageKind::Heartbeat => {
-                self.handle_heartbeat_message(state, details, payload, has_kem_ct);
+                self.handle_heartbeat_message(state, details, payload);
             }
             MessageKind::Response | MessageKind::Nack => {
-                self.handle_response_message(state, details, payload, has_kem_ct);
+                self.handle_response_message(state, details, payload);
             }
-            MessageKind::Pairing | MessageKind::SessionReset => {}
+            MessageKind::Pairing | MessageKind::SessionReset => {
+                #[cfg(debug_assertions)]
+                unreachable!("already handled")
+            }
         }
     }
 
-    fn handle_response_message(
-        &self,
-        state: &mut RuntimeState,
-        details: QlDetails,
-        payload: CBOR,
-        has_kem_ct: bool,
-    ) {
+    fn handle_response_message(&self, state: &mut RuntimeState, details: QlDetails, payload: CBOR) {
         let Some(entry) = state.pending.remove(&details.id) else {
             return;
         };
-        if has_kem_ct {
-            self.mark_connecting(state, details.sender);
-        }
-        self.record_activity(state, details.sender);
         if details.kind == MessageKind::Nack {
             let nack = Nack::from(payload);
             let _ = entry.tx.send(Err(QlError::Nack(nack)));
@@ -557,14 +531,10 @@ where
         state: &mut RuntimeState,
         details: QlDetails,
         payload: CBOR,
-        has_kem_ct: bool,
     ) {
         if !payload.is_null() {
             let _ = self.send_session_reset(state, details.sender);
             return;
-        }
-        if has_kem_ct {
-            self.mark_connecting(state, details.sender);
         }
 
         let is_response = state
@@ -574,7 +544,6 @@ where
             .and_then(|entry| entry.pending_heartbeat)
             .map_or(false, |pending| pending.id == details.id);
 
-        self.record_activity(state, details.sender);
         if !is_response {
             if let Err(error) = self.send_heartbeat_message(state, details.sender, details.id) {
                 self.platform.handle_error(error);
@@ -614,6 +583,23 @@ where
         }
     }
 
+    fn queue_outbound(
+        &self,
+        state: &mut RuntimeState,
+        id: Option<ARID>,
+        header: QlHeader,
+        encrypted: EncryptedMessage,
+    ) {
+        if header.kem_ct.is_some() {
+            let entry = self.keepalive_entry_mut(state, header.recipient);
+            entry.pending_heartbeat = None;
+            entry.next_heartbeat_at = None;
+            self.update_peer_status(entry, header.recipient, PeerStatus::Connecting);
+        }
+        let bytes = encode_ql_message(header, encrypted);
+        state.outbound.push_back(OutboundBytes { id, bytes });
+    }
+
     fn send_session_reset(&self, state: &mut RuntimeState, recipient: XID) -> Result<(), QlError> {
         let (session_key, kem_ct, id) = {
             let peer = self.platform.lookup_peer_or_fail(recipient)?;
@@ -628,7 +614,6 @@ where
             }));
             (session_key, kem_ct, id)
         };
-        self.mark_connecting(state, recipient);
 
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
         let header_unsigned = QlHeader {
@@ -652,8 +637,7 @@ where
             signature,
             ..header_unsigned
         };
-        let bytes = encode_ql_message(header, encrypted);
-        state.outbound.push_back(OutboundBytes { id: None, bytes });
+        self.queue_outbound(state, None, header, encrypted);
         Ok(())
     }
 
@@ -672,8 +656,7 @@ where
             MessageKind::Nack,
             self.config.message_expiration,
         )?;
-        let bytes = encode_ql_message(header, encrypted);
-        state.outbound.push_back(OutboundBytes { id: None, bytes });
+        self.queue_outbound(state, None, header, encrypted);
         Ok(())
     }
 
@@ -701,13 +684,6 @@ where
         state.keepalive.push(PeerKeepAlive::new(peer));
         let index = state.keepalive.len() - 1;
         &mut state.keepalive[index]
-    }
-
-    fn mark_connecting(&self, state: &mut RuntimeState, peer: XID) {
-        let entry = self.keepalive_entry_mut(state, peer);
-        entry.pending_heartbeat = None;
-        entry.next_heartbeat_at = None;
-        self.update_peer_status(entry, peer, PeerStatus::Connecting);
     }
 
     fn record_activity(&self, state: &mut RuntimeState, peer: XID) {
@@ -742,8 +718,7 @@ where
             Err(QlError::MissingSession(_)) => return Ok(false),
             Err(error) => return Err(error),
         };
-        let bytes = encode_ql_message(header, encrypted);
-        state.outbound.push_back(OutboundBytes { id: None, bytes });
+        self.queue_outbound(state, None, header, encrypted);
         Ok(true)
     }
 
