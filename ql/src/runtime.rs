@@ -15,8 +15,8 @@ use crate::{
     encrypt::*,
     handle::RuntimeHandle,
     platform::{
-        HandshakeKind, PendingHandshake, PlatformFuture, QlPeer, QlPlatform, QlPlatformExt,
-        ResetOrigin,
+        HandshakeKind, PendingHandshake, PeerStatus, PlatformFuture, QlPeer, QlPlatform,
+        QlPlatformExt, ResetOrigin,
     },
     wire::*,
     QlCodec, QlError,
@@ -28,9 +28,16 @@ pub struct RequestConfig {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct KeepAliveConfig {
+    pub interval: Duration,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
     pub default_timeout: Duration,
     pub message_expiration: Duration,
+    pub keep_alive: Option<KeepAliveConfig>,
 }
 
 #[derive(Debug)]
@@ -120,10 +127,17 @@ struct PendingEntry {
     recipient: XID,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TimeoutKind {
+    Request(ARID),
+    KeepAlive(XID),
+    Heartbeat(XID),
+}
+
 #[derive(Debug, Clone)]
 struct TimeoutEntry {
     deadline: Instant,
-    id: ARID,
+    kind: TimeoutKind,
 }
 
 impl PartialEq for TimeoutEntry {
@@ -188,6 +202,7 @@ struct RuntimeState {
     timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     outbound: VecDeque<OutboundBytes>,
     in_flight: Option<InFlightWrite>,
+    keepalive: HashMap<XID, PeerKeepAlive>,
 }
 
 struct OutboundBytes {
@@ -198,6 +213,31 @@ struct OutboundBytes {
 struct InFlightWrite {
     id: Option<ARID>,
     future: PlatformFuture<'static, Result<(), QlError>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingHeartbeat {
+    id: ARID,
+    deadline: Instant,
+}
+
+#[derive(Debug)]
+struct PeerKeepAlive {
+    last_activity: Option<Instant>,
+    next_heartbeat_at: Option<Instant>,
+    pending_heartbeat: Option<PendingHeartbeat>,
+    status: Option<PeerStatus>,
+}
+
+impl PeerKeepAlive {
+    fn new() -> Self {
+        Self {
+            last_activity: None,
+            next_heartbeat_at: None,
+            pending_heartbeat: None,
+            status: None,
+        }
+    }
 }
 
 enum LoopStep {
@@ -236,9 +276,10 @@ where
             timeouts: BinaryHeap::new(),
             outbound: VecDeque::new(),
             in_flight: None,
+            keepalive: HashMap::new(),
         };
         loop {
-            Self::process_timeouts(&mut state.pending, &mut state.timeouts);
+            self.process_timeouts(&mut state);
 
             if state.in_flight.is_none() {
                 if let Some(message) = state.outbound.pop_front() {
@@ -315,6 +356,9 @@ where
                             self.config.message_expiration,
                         ) {
                             Ok((header, encrypted)) => {
+                                if header.kem_ct.is_some() {
+                                    self.mark_connecting(&mut state, recipient);
+                                }
                                 state.pending.insert(
                                     id,
                                     PendingEntry {
@@ -322,7 +366,10 @@ where
                                         recipient,
                                     },
                                 );
-                                state.timeouts.push(Reverse(TimeoutEntry { deadline, id }));
+                                state.timeouts.push(Reverse(TimeoutEntry {
+                                    deadline,
+                                    kind: TimeoutKind::Request(id),
+                                }));
                                 let bytes = encode_ql_message(header, encrypted);
                                 state.outbound.push_back(OutboundBytes {
                                     id: Some(id),
@@ -353,6 +400,9 @@ where
                             self.config.message_expiration,
                         ) {
                             Ok((header, encrypted)) => {
+                                if header.kem_ct.is_some() {
+                                    self.mark_connecting(&mut state, recipient);
+                                }
                                 let bytes = encode_ql_message(header, encrypted);
                                 state.outbound.push_back(OutboundBytes { id: None, bytes });
                             }
@@ -382,6 +432,7 @@ where
                         recipient_signing_key,
                         recipient_encapsulation_key,
                     } => {
+                        let recipient = XID::new(&recipient_signing_key);
                         let (header, encrypted) = encrypt_pairing_request(
                             &self.platform,
                             &recipient_signing_key,
@@ -390,6 +441,7 @@ where
                         );
                         let bytes = encode_ql_message(header, encrypted);
                         state.outbound.push_back(OutboundBytes { id: None, bytes });
+                        self.mark_connecting(&mut state, recipient);
                     }
                     RuntimeEvent::Incoming { bytes } => {
                         self.handle_incoming_bytes(&mut state, bytes);
@@ -406,7 +458,7 @@ where
                     }
                 }
                 LoopStep::Timeout => {
-                    Self::process_timeouts(&mut state.pending, &mut state.timeouts);
+                    self.process_timeouts(&mut state);
                 }
             }
         }
@@ -438,6 +490,7 @@ where
                     payload.encapsulation_pub_key,
                     session_key,
                 );
+                self.record_activity(state, message.header.sender);
             }
             return;
         }
@@ -474,6 +527,10 @@ where
                             return;
                         }
                     };
+                if message.header.kem_ct.is_some() {
+                    self.mark_connecting(state, message.header.sender);
+                }
+                self.record_activity(state, message.header.sender);
                 let responder = Responder {
                     id: message.header.id,
                     recipient: message.header.sender,
@@ -501,6 +558,10 @@ where
                             return;
                         }
                     };
+                if message.header.kem_ct.is_some() {
+                    self.mark_connecting(state, message.header.sender);
+                }
+                self.record_activity(state, message.header.sender);
                 let _ = self
                     .incoming
                     .send_blocking(HandlerEvent::Event(InboundEvent {
@@ -514,6 +575,7 @@ where
                 match extract_reset_payload(&self.platform, &message.header, message.payload) {
                     Ok(()) => {
                         let sender = message.header.sender;
+                        self.mark_connecting(state, sender);
                         let reset_entries = state
                             .pending
                             .extract_if(|_id, entry| entry.recipient == sender);
@@ -523,6 +585,9 @@ where
                     }
                     Err(error) => self.platform.handle_error(error),
                 }
+            }
+            MessageKind::Heartbeat => {
+                self.handle_heartbeat_message(state, message);
             }
             MessageKind::Pairing | MessageKind::Response | MessageKind::Nack => {}
         }
@@ -537,32 +602,39 @@ where
             let _ = entry.tx.send(Err(error));
             return;
         }
-        let peer = match self.platform.lookup_peer_or_fail(header.sender) {
-            Ok(peer) => peer,
-            Err(error) => {
-                let _ = entry.tx.send(Err(error));
-                return;
-            }
-        };
-        let session_key = match session_key_for_header(&self.platform, &peer, &header) {
-            Ok(key) => key,
-            Err(error) => {
-                let _ = entry.tx.send(Err(error));
-                return;
-            }
-        };
-        let decrypted =
-            match self
-                .platform
-                .decrypt_message(&session_key, &header.aad_data(), &message.payload)
-            {
-                Ok(payload) => payload,
+        if header.kem_ct.is_some() {
+            self.mark_connecting(state, header.sender);
+        }
+        let decrypted = {
+            let peer = match self.platform.lookup_peer_or_fail(header.sender) {
+                Ok(peer) => peer,
                 Err(error) => {
                     let _ = entry.tx.send(Err(error));
                     return;
                 }
             };
-        peer.set_pending_handshake(None);
+            let session_key = match session_key_for_header(&self.platform, &peer, &header) {
+                Ok(key) => key,
+                Err(error) => {
+                    let _ = entry.tx.send(Err(error));
+                    return;
+                }
+            };
+            let decrypted =
+                match self
+                    .platform
+                    .decrypt_message(&session_key, &header.aad_data(), &message.payload)
+                {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        let _ = entry.tx.send(Err(error));
+                        return;
+                    }
+                };
+            peer.set_pending_handshake(None);
+            decrypted
+        };
+        self.record_activity(state, header.sender);
         if header.kind == MessageKind::Nack {
             let nack = Nack::try_from(decrypted).unwrap_or(Nack::Unknown);
             let _ = entry.tx.send(Err(QlError::Nack(nack)));
@@ -571,21 +643,53 @@ where
         }
     }
 
+    fn handle_heartbeat_message(&mut self, state: &mut RuntimeState, message: QlMessage) {
+        let sender = message.header.sender;
+        let heartbeat_id = message.header.id;
+        let should_respond = !self.is_pending_heartbeat(state, sender, heartbeat_id);
+        let result =
+            extract_heartbeat_payload(&self.platform, &message.header, message.payload);
+        match result {
+            Ok(()) => {
+                if message.header.kem_ct.is_some() {
+                    self.mark_connecting(state, sender);
+                }
+                self.record_activity(state, sender);
+                if should_respond {
+                    if let Err(error) = self.send_heartbeat_message(state, sender, heartbeat_id) {
+                        self.platform.handle_error(error);
+                    }
+                }
+            }
+            Err(error) => {
+                if matches!(error, QlError::InvalidPayload | QlError::MissingSession(_)) {
+                    let _ = self.send_session_reset(state, sender);
+                    return;
+                }
+                self.platform.handle_error(error);
+            }
+        }
+    }
+
     fn send_session_reset(
         &mut self,
         state: &mut RuntimeState,
         recipient: XID,
     ) -> Result<(), QlError> {
-        let peer = self.platform.lookup_peer_or_fail(recipient)?;
-        let recipient_key = peer.encapsulation_pub_key();
-        let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
-        peer.store_session(session_key.clone());
-        let id = ARID::new();
-        peer.set_pending_handshake(Some(PendingHandshake {
-            kind: HandshakeKind::SessionReset,
-            origin: ResetOrigin::Local,
-            id,
-        }));
+        let (session_key, kem_ct, id) = {
+            let peer = self.platform.lookup_peer_or_fail(recipient)?;
+            let recipient_key = peer.encapsulation_pub_key().clone();
+            let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
+            let id = ARID::new();
+            peer.store_session(session_key.clone());
+            peer.set_pending_handshake(Some(PendingHandshake {
+                kind: HandshakeKind::SessionReset,
+                origin: ResetOrigin::Local,
+                id,
+            }));
+            (session_key, kem_ct, id)
+        };
+        self.mark_connecting(state, recipient);
 
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
         let header_unsigned = QlHeader {
@@ -634,20 +738,172 @@ where
         Ok(())
     }
 
-    fn process_timeouts(
-        pending: &mut HashMap<ARID, PendingEntry>,
-        timeouts: &mut BinaryHeap<Reverse<TimeoutEntry>>,
+    fn keep_alive_config(&self) -> Option<KeepAliveConfig> {
+        self.config
+            .keep_alive
+            .filter(|config| !config.interval.is_zero() && !config.timeout.is_zero())
+    }
+
+    fn update_peer_status(
+        &mut self,
+        entry: &mut PeerKeepAlive,
+        peer: XID,
+        status: PeerStatus,
     ) {
+        if entry.status != Some(status) {
+            self.platform.handle_peer_status(peer, status);
+            entry.status = Some(status);
+        }
+    }
+
+    fn mark_connecting(&mut self, state: &mut RuntimeState, peer: XID) {
+        let entry = state.keepalive.entry(peer).or_insert_with(PeerKeepAlive::new);
+        entry.pending_heartbeat = None;
+        entry.next_heartbeat_at = None;
+        self.update_peer_status(entry, peer, PeerStatus::Connecting);
+    }
+
+    fn record_activity(&mut self, state: &mut RuntimeState, peer: XID) {
         let now = Instant::now();
-        while let Some(Reverse(entry)) = timeouts.peek().cloned() {
+        let entry = state.keepalive.entry(peer).or_insert_with(PeerKeepAlive::new);
+        entry.last_activity = Some(now);
+        entry.pending_heartbeat = None;
+        self.update_peer_status(entry, peer, PeerStatus::Connected);
+        if let Some(config) = self.keep_alive_config() {
+            let deadline = now + config.interval;
+            entry.next_heartbeat_at = Some(deadline);
+            state.timeouts.push(Reverse(TimeoutEntry {
+                deadline,
+                kind: TimeoutKind::KeepAlive(peer),
+            }));
+        } else {
+            entry.next_heartbeat_at = None;
+        }
+    }
+
+    fn is_pending_heartbeat(&self, state: &RuntimeState, peer: XID, id: ARID) -> bool {
+        state
+            .keepalive
+            .get(&peer)
+            .and_then(|entry| entry.pending_heartbeat)
+            .map_or(false, |pending| pending.id == id)
+    }
+
+    fn send_heartbeat_message(
+        &mut self,
+        state: &mut RuntimeState,
+        recipient: XID,
+        id: ARID,
+    ) -> Result<bool, QlError> {
+        let (header, encrypted) = match encrypt_response(
+            &self.platform,
+            recipient,
+            id,
+            CBOR::null(),
+            MessageKind::Heartbeat,
+            self.config.message_expiration,
+        ) {
+            Ok(result) => result,
+            Err(QlError::MissingSession(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let bytes = encode_ql_message(header, encrypted);
+        state.outbound.push_back(OutboundBytes { id: None, bytes });
+        Ok(true)
+    }
+
+    fn process_timeouts(&mut self, state: &mut RuntimeState) {
+        let now = Instant::now();
+        while let Some(Reverse(entry)) = state.timeouts.peek().cloned() {
             if entry.deadline > now {
                 break;
             }
-            timeouts.pop();
-            if let Some(pending) = pending.remove(&entry.id) {
-                let _ = pending.tx.send(Err(QlError::Timeout));
+            state.timeouts.pop();
+            match entry.kind {
+                TimeoutKind::Request(id) => {
+                    if let Some(pending) = state.pending.remove(&id) {
+                        let _ = pending.tx.send(Err(QlError::Timeout));
+                    }
+                }
+                TimeoutKind::KeepAlive(peer) => {
+                    self.handle_keepalive_timeout(state, peer, entry.deadline);
+                }
+                TimeoutKind::Heartbeat(peer) => {
+                    self.handle_heartbeat_timeout(state, peer, entry.deadline);
+                }
             }
         }
+    }
+
+    fn handle_keepalive_timeout(
+        &mut self,
+        state: &mut RuntimeState,
+        peer: XID,
+        deadline: Instant,
+    ) {
+        let Some(config) = self.keep_alive_config() else {
+            return;
+        };
+        let ready = {
+            let Some(entry) = state.keepalive.get_mut(&peer) else {
+                return;
+            };
+            if entry.next_heartbeat_at != Some(deadline) || entry.pending_heartbeat.is_some() {
+                return;
+            }
+            if entry.status != Some(PeerStatus::Connected) {
+                entry.next_heartbeat_at = None;
+                return;
+            }
+            entry.next_heartbeat_at = None;
+            true
+        };
+        if !ready {
+            return;
+        }
+        let heartbeat_id = ARID::new();
+        let heartbeat_deadline = Instant::now() + config.timeout;
+        let send_result = self.send_heartbeat_message(state, peer, heartbeat_id);
+        let Some(entry) = state.keepalive.get_mut(&peer) else {
+            return;
+        };
+        match send_result {
+            Ok(true) => {
+                entry.pending_heartbeat = Some(PendingHeartbeat {
+                    id: heartbeat_id,
+                    deadline: heartbeat_deadline,
+                });
+                self.update_peer_status(entry, peer, PeerStatus::HeartbeatPending);
+                state.timeouts.push(Reverse(TimeoutEntry {
+                    deadline: heartbeat_deadline,
+                    kind: TimeoutKind::Heartbeat(peer),
+                }));
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.platform.handle_error(error);
+            }
+        }
+    }
+
+    fn handle_heartbeat_timeout(
+        &mut self,
+        state: &mut RuntimeState,
+        peer: XID,
+        deadline: Instant,
+    ) {
+        let Some(entry) = state.keepalive.get_mut(&peer) else {
+            return;
+        };
+        let Some(pending) = entry.pending_heartbeat else {
+            return;
+        };
+        if pending.deadline != deadline {
+            return;
+        }
+        entry.pending_heartbeat = None;
+        entry.next_heartbeat_at = None;
+        self.update_peer_status(entry, peer, PeerStatus::Disconnected);
     }
 
     fn next_timeout_sleep(timeouts: &BinaryHeap<Reverse<TimeoutEntry>>) -> Option<Duration> {

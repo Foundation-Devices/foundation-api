@@ -211,6 +211,22 @@ pub(crate) fn extract_reset_payload(
     Ok(())
 }
 
+pub(crate) fn extract_heartbeat_payload(
+    platform: &impl QlPlatform,
+    header: &QlHeader,
+    payload: EncryptedMessage,
+) -> Result<(), QlError> {
+    let peer = platform.lookup_peer_or_fail(header.sender)?;
+    let session_key = session_key_for_header(platform, &peer, header)?;
+    let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &payload)?;
+    peer.set_pending_handshake(None);
+    if decrypted.is_null() {
+        Ok(())
+    } else {
+        Err(QlError::InvalidPayload)
+    }
+}
+
 pub(crate) fn sign_reset_header(
     signer: &dyn Signer,
     header_unsigned: &QlHeader,

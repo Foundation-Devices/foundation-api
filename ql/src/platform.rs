@@ -69,6 +69,15 @@ pub trait QlPlatform {
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
     fn handle_error(&self, e: QlError);
+    fn handle_peer_status(&self, peer: XID, status: PeerStatus);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerStatus {
+    Connecting,
+    Connected,
+    HeartbeatPending,
+    Disconnected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
