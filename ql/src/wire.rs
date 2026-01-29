@@ -3,7 +3,6 @@ use bc_components::{
     ARID, XID,
 };
 use dcbor::CBOR;
-use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
@@ -58,6 +57,24 @@ pub struct QlDetails {
 pub struct QlMessage {
     pub header: QlHeader,
     pub payload: EncryptedMessage,
+}
+
+impl From<QlMessage> for CBOR {
+    fn from(value: QlMessage) -> Self {
+        CBOR::from(vec![CBOR::from(value.header), CBOR::from(value.payload)])
+    }
+}
+
+impl TryFrom<CBOR> for QlMessage {
+    type Error = dcbor::Error;
+
+    fn try_from(cbor: CBOR) -> Result<Self, Self::Error> {
+        let array = cbor.try_into_array()?;
+        let [header_cbor, payload_cbor] = cbor_array::<2>(array)?;
+        let header = QlHeader::try_from(header_cbor)?;
+        let payload: EncryptedMessage = payload_cbor.try_into()?;
+        Ok(QlMessage { header, payload })
+    }
 }
 
 impl QlHeader {
@@ -213,20 +230,6 @@ impl From<CBOR> for Nack {
             _ => Nack::Unknown,
         }
     }
-}
-
-pub fn encode_ql_message(header: QlHeader, payload: EncryptedMessage) -> Vec<u8> {
-    let cbor = CBOR::from(vec![CBOR::from(header), CBOR::from(payload)]);
-    cbor.to_cbor_data()
-}
-
-pub fn decode_ql_message(bytes: &[u8]) -> Result<QlMessage, dcbor::Error> {
-    let cbor = dcbor::CBOR::try_from_data(bytes)?;
-    let array = cbor.try_into_array()?;
-    let [header_cbor, payload_cbor] = cbor_array::<2>(array)?;
-    let header = QlHeader::try_from(header_cbor)?;
-    let payload: EncryptedMessage = payload_cbor.try_into()?;
-    Ok(QlMessage { header, payload })
 }
 
 #[derive(Debug, Clone)]

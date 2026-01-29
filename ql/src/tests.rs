@@ -8,7 +8,7 @@ use bc_components::{
     Decrypter, EncapsulationPrivateKey, EncapsulationPublicKey, Signer, SigningPublicKey,
     SymmetricKey, XID,
 };
-use dcbor::CBOR;
+use dcbor::{CBOREncodable, CBOR};
 use oneshot;
 
 use crate::{
@@ -390,8 +390,10 @@ fn build_reset_message(
     };
     let payload_bytes = CBOR::from(envelope).to_cbor_data();
     let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-    let bytes = encode_ql_message(header, encrypted);
-    decode_ql_message(&bytes).expect("decode reset")
+    QlMessage {
+        header,
+        payload: encrypted,
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -599,7 +601,9 @@ async fn heartbeat_sends_and_receives() {
                 let server_handle = server_handle.clone();
                 async move {
                     while let Ok(bytes) = client_outbound.recv().await {
-                        if let Ok(message) = decode_ql_message(&bytes) {
+                        if let Ok(message) =
+                            CBOR::try_from_data(&bytes).and_then(QlMessage::try_from)
+                        {
                             if message.header.kind == MessageKind::Heartbeat {
                                 let _ = heartbeat_tx.send(()).await;
                             }
@@ -711,7 +715,9 @@ async fn heartbeat_timeout_marks_disconnected() {
                 let server_handle = server_handle.clone();
                 async move {
                     while let Ok(bytes) = client_outbound.recv().await {
-                        if let Ok(message) = decode_ql_message(&bytes) {
+                        if let Ok(message) =
+                            CBOR::try_from_data(&bytes).and_then(QlMessage::try_from)
+                        {
                             if message.header.kind == MessageKind::Heartbeat {
                                 let _ = heartbeat_tx.send(()).await;
                             }
@@ -726,7 +732,9 @@ async fn heartbeat_timeout_marks_disconnected() {
                 async move {
                     while let Ok(bytes) = server_outbound.recv().await {
                         let mut forward = true;
-                        if let Ok(message) = decode_ql_message(&bytes) {
+                        if let Ok(message) =
+                            CBOR::try_from_data(&bytes).and_then(QlMessage::try_from)
+                        {
                             if message.header.kind == MessageKind::Heartbeat {
                                 forward = false;
                             }
@@ -832,7 +840,9 @@ async fn responds_to_heartbeat_without_keepalive() {
                 let client_platform = client_platform.clone();
                 async move {
                     while let Ok(bytes) = server_outbound.recv().await {
-                        if let Ok(message) = decode_ql_message(&bytes) {
+                        if let Ok(message) =
+                            CBOR::try_from_data(&bytes).and_then(QlMessage::try_from)
+                        {
                             if message.header.kind == MessageKind::Heartbeat {
                                 if let Ok(peer) =
                                     client_platform.lookup_peer_or_fail(message.header.sender)
@@ -878,7 +888,7 @@ async fn responds_to_heartbeat_without_keepalive() {
             assert_eq!(response, Pong(51));
 
             let heartbeat_id = bc_components::ARID::new();
-            let (header, encrypted) = encrypt_response(
+            let message = encrypt_response(
                 &client_platform,
                 recipient,
                 heartbeat_id,
@@ -887,7 +897,7 @@ async fn responds_to_heartbeat_without_keepalive() {
                 config.message_expiration,
             )
             .expect("encrypt heartbeat");
-            let bytes = encode_ql_message(header, encrypted);
+            let bytes = message.to_cbor_data();
             server_handle.send_incoming(bytes).unwrap();
 
             let response_id = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
@@ -1086,7 +1096,10 @@ async fn expired_response_is_rejected() {
             });
 
             let outbound = outbound_rx.recv().await.expect("no outbound request");
-            let outbound_message = decode_ql_message(&outbound).expect("decode outbound");
+
+            let outbound_message = CBOR::try_from_data(&outbound)
+                .and_then(QlMessage::try_from)
+                .expect("decode outbound");
 
             let session_key = platform
                 .lookup_peer(recipient)
@@ -1119,8 +1132,7 @@ async fn expired_response_is_rejected() {
                 Some(header.aad_data()),
                 None::<bc_components::Nonce>,
             );
-            let response_bytes = encode_ql_message(header, encrypted);
-            handle.send_incoming(response_bytes).unwrap();
+            handle.send_incoming(encrypted.to_cbor_data()).unwrap();
 
             let response = response_task.await.unwrap();
             assert!(matches!(response, Err(QlError::Expired(_))));
@@ -1164,8 +1176,9 @@ async fn reset_cancels_pending_request() {
                 &client_identity,
                 bc_components::ARID::new(),
             );
-            let reset_bytes = encode_ql_message(reset_message.header, reset_message.payload);
-            client_handle.send_incoming(reset_bytes).unwrap();
+            client_handle
+                .send_incoming(reset_message.to_cbor_data())
+                .unwrap();
 
             let result = request_task.await.unwrap();
             match result {
@@ -1183,7 +1196,7 @@ fn simultaneous_session_init_resolves() {
         recipient: XID,
         notice: Notice,
         message_id: bc_components::ARID,
-    ) -> (QlHeader, bc_components::EncryptedMessage) {
+    ) -> QlMessage {
         let payload = notice.into();
         encrypt_payload_for_recipient(
             platform,
@@ -1210,21 +1223,29 @@ fn simultaneous_session_init_resolves() {
         client_identity.signing_public_key.clone(),
     );
 
-    let (client_header, client_encrypted) = build_event_message(
+    let client_message = build_event_message(
         &client_platform,
         server_platform.xid(),
         Notice(1),
         bc_components::ARID::new(),
     );
-    let (server_header, server_encrypted) = build_event_message(
+    let server_message = build_event_message(
         &server_platform,
         client_platform.xid(),
         Notice(2),
         bc_components::ARID::new(),
     );
 
-    let server_result = extract_envelope(&server_platform, client_header, client_encrypted);
-    let client_result = extract_envelope(&client_platform, server_header, server_encrypted);
+    let server_result = extract_envelope(
+        &server_platform,
+        client_message.header,
+        client_message.payload,
+    );
+    let client_result = extract_envelope(
+        &client_platform,
+        server_message.header,
+        server_message.payload,
+    );
 
     if client_platform.xid() < server_platform.xid() {
         assert!(matches!(client_result, Err(QlError::SessionInitCollision)));
@@ -1234,13 +1255,13 @@ fn simultaneous_session_init_resolves() {
         assert!(client_result.is_ok());
     }
 
-    let (follow_up_client_header, follow_up_client_encrypted) = build_event_message(
+    let follow_up_client = build_event_message(
         &client_platform,
         server_platform.xid(),
         Notice(3),
         bc_components::ARID::new(),
     );
-    let (follow_up_server_header, follow_up_server_encrypted) = build_event_message(
+    let follow_up_server = build_event_message(
         &server_platform,
         client_platform.xid(),
         Notice(4),
@@ -1249,14 +1270,14 @@ fn simultaneous_session_init_resolves() {
 
     assert!(extract_envelope(
         &server_platform,
-        follow_up_client_header,
-        follow_up_client_encrypted
+        follow_up_client.header,
+        follow_up_client.payload
     )
     .is_ok());
     assert!(extract_envelope(
         &client_platform,
-        follow_up_server_header,
-        follow_up_server_encrypted
+        follow_up_server.header,
+        follow_up_server.payload
     )
     .is_ok());
 }
@@ -1286,15 +1307,13 @@ async fn pairing_request_stores_peer() {
                 .lookup_peer(sender_identity.xid)
                 .is_none());
 
-            let (header, encrypted) = encrypt_pairing_request(
+            let message = encrypt_pairing_request(
                 &sender_platform,
                 &recipient_identity.signing_public_key,
                 &recipient_identity.encapsulation_public_key,
                 config.message_expiration,
             );
-            let message = decode_ql_message(&encode_ql_message(header, encrypted))
-                .expect("decode pairing request");
-            let bytes = encode_ql_message(message.header, message.payload);
+            let bytes = message.to_cbor_data();
 
             tokio::task::spawn_local(async move { core.run().await });
             handle.send_incoming(bytes).unwrap();
@@ -1364,16 +1383,10 @@ async fn reset_collision_prefers_lower_xid() {
                 build_reset_message(&higher_identity, &lower_identity, higher_reset_id);
 
             lower_handle
-                .send_incoming(encode_ql_message(
-                    reset_from_higher.header,
-                    reset_from_higher.payload,
-                ))
+                .send_incoming(reset_from_higher.to_cbor_data())
                 .unwrap();
             higher_handle
-                .send_incoming(encode_ql_message(
-                    reset_from_lower.header,
-                    reset_from_lower.payload,
-                ))
+                .send_incoming(reset_from_lower.to_cbor_data())
                 .unwrap();
 
             tokio::task::yield_now().await;
@@ -1427,10 +1440,7 @@ async fn reset_from_higher_xid_is_accepted_without_pending() {
             );
 
             lower_handle
-                .send_incoming(encode_ql_message(
-                    reset_from_higher.header,
-                    reset_from_higher.payload,
-                ))
+                .send_incoming(reset_from_higher.to_cbor_data())
                 .unwrap();
 
             tokio::task::yield_now().await;
@@ -1499,16 +1509,13 @@ async fn reset_with_invalid_signature_is_rejected() {
             let payload_bytes = CBOR::from(envelope).to_cbor_data();
             let encrypted =
                 session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-            let mut reset_message =
-                decode_ql_message(&encode_ql_message(header, encrypted)).expect("decode reset");
+            let mut reset_message = QlMessage {
+                header,
+                payload: encrypted,
+            };
             reset_message.header.kind = MessageKind::Request;
 
-            handle
-                .send_incoming(encode_ql_message(
-                    reset_message.header,
-                    reset_message.payload,
-                ))
-                .unwrap();
+            handle.send_incoming(reset_message.to_cbor_data()).unwrap();
 
             tokio::task::yield_now().await;
 
