@@ -256,7 +256,7 @@ pub(crate) fn encrypt_payload_for_recipient(
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let (session_key, kem_ct, should_sign_header) = match peer.session() {
         Some(session_key) => (session_key, None, false),
-        None => create_session(peer, message_id)?,
+        None => create_session(peer, message_id),
     };
     let valid_until = now_secs().saturating_add(platform.message_expiration().as_secs());
     let header_unsigned = QlHeader {
@@ -468,7 +468,7 @@ fn sign_header(signer: &dyn Signer, signing_data: &[u8], sign_header: bool) -> O
 fn create_session(
     peer: &dyn QlPeer,
     message_id: ARID,
-) -> Result<(SymmetricKey, Option<EncapsulationCiphertext>, bool), QlError> {
+) -> (SymmetricKey, Option<EncapsulationCiphertext>, bool) {
     let recipient_key = peer.encapsulation_pub_key();
     let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
     peer.store_session(session_key.clone());
@@ -477,7 +477,7 @@ fn create_session(
         origin: ResetOrigin::Local,
         id: message_id,
     }));
-    Ok((session_key, Some(kem_ct), true))
+    (session_key, Some(kem_ct), true)
 }
 
 fn handshake_cmp(local: (XID, ARID), peer: (XID, ARID)) -> Ordering {
