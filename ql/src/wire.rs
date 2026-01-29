@@ -215,44 +215,17 @@ impl From<CBOR> for Nack {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum DecodeError {
-    #[error(transparent)]
-    Cbor(#[from] dcbor::Error),
-}
-
-#[derive(Debug)]
-pub struct DecodeErrContext {
-    pub error: DecodeError,
-    pub header: Option<QlHeader>,
-}
-
 pub fn encode_ql_message(header: QlHeader, payload: EncryptedMessage) -> Vec<u8> {
     let cbor = CBOR::from(vec![CBOR::from(header), CBOR::from(payload)]);
     cbor.to_cbor_data()
 }
 
-pub fn decode_ql_message(bytes: &[u8]) -> Result<QlMessage, DecodeErrContext> {
-    let cbor = dcbor::CBOR::try_from_data(bytes).map_err(|error| DecodeErrContext {
-        error: DecodeError::Cbor(error),
-        header: None,
-    })?;
-    let array = cbor.try_into_array().map_err(|error| DecodeErrContext {
-        error: DecodeError::Cbor(error),
-        header: None,
-    })?;
-    let [header_cbor, payload_cbor] = cbor_array::<2>(array).map_err(|error| DecodeErrContext {
-        error: DecodeError::Cbor(error),
-        header: None,
-    })?;
-    let header = QlHeader::try_from(header_cbor).map_err(|error| DecodeErrContext {
-        error: DecodeError::Cbor(error),
-        header: None,
-    })?;
-    let payload: EncryptedMessage = payload_cbor.try_into().map_err(|error| DecodeErrContext {
-        error: DecodeError::Cbor(error),
-        header: Some(header.clone()),
-    })?;
+pub fn decode_ql_message(bytes: &[u8]) -> Result<QlMessage, dcbor::Error> {
+    let cbor = dcbor::CBOR::try_from_data(bytes)?;
+    let array = cbor.try_into_array()?;
+    let [header_cbor, payload_cbor] = cbor_array::<2>(array)?;
+    let header = QlHeader::try_from(header_cbor)?;
+    let payload: EncryptedMessage = payload_cbor.try_into()?;
     Ok(QlMessage { header, payload })
 }
 
@@ -287,33 +260,6 @@ impl TryFrom<CBOR> for PairingPayload {
     }
 }
 
-fn option_to_cbor<T>(value: Option<T>) -> CBOR
-where
-    T: Into<CBOR>,
-{
-    value.map_or_else(CBOR::null, Into::into)
-}
-
-fn option_from_cbor<T>(value: CBOR) -> Result<Option<T>, dcbor::Error>
-where
-    T: TryFrom<CBOR, Error = dcbor::Error>,
-{
-    if value.is_null() {
-        Ok(None)
-    } else {
-        Ok(Some(T::try_from(value)?))
-    }
-}
-
-fn cbor_array<const N: usize>(array: Vec<CBOR>) -> Result<[CBOR; N], dcbor::Error> {
-    if array.len() != N {
-        return Err(dcbor::Error::msg("invalid array length"));
-    }
-    array
-        .try_into()
-        .map_err(|_| dcbor::Error::msg("invalid array length"))
-}
-
 fn header_cbor(
     kind: MessageKind,
     sender: XID,
@@ -342,4 +288,31 @@ fn header_cbor_unsigned(
         CBOR::from(recipient),
         option_to_cbor(kem_ct),
     ])
+}
+
+fn option_to_cbor<T>(value: Option<T>) -> CBOR
+where
+    T: Into<CBOR>,
+{
+    value.map_or_else(CBOR::null, Into::into)
+}
+
+fn option_from_cbor<T>(value: CBOR) -> Result<Option<T>, dcbor::Error>
+where
+    T: TryFrom<CBOR, Error = dcbor::Error>,
+{
+    if value.is_null() {
+        Ok(None)
+    } else {
+        Ok(Some(T::try_from(value)?))
+    }
+}
+
+fn cbor_array<const N: usize>(array: Vec<CBOR>) -> Result<[CBOR; N], dcbor::Error> {
+    if array.len() != N {
+        return Err(dcbor::Error::msg("invalid array length"));
+    }
+    array
+        .try_into()
+        .map_err(|_| dcbor::Error::msg("invalid array length"))
 }
