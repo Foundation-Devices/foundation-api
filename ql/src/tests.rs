@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -13,13 +14,14 @@ use oneshot;
 
 use crate::{
     encrypt::*,
+    handle::RuntimeHandle,
     identity::QlIdentity,
     platform::{
         HandshakeKind, PeerStatus, PendingHandshake, PlatformFuture, QlPeer, QlPlatform,
         QlPlatformExt, ResetOrigin,
     },
     router::{EventHandler, QlRequest, RequestHandler, Router},
-    runtime::{KeepAliveConfig, RequestConfig, Runtime, RuntimeConfig},
+    runtime::{HandlerStream, KeepAliveConfig, RequestConfig, Runtime, RuntimeConfig},
     wire::*,
     Event, QlError, RequestResponse,
 };
@@ -351,6 +353,119 @@ impl EventHandler<Notice> for TestState {
     }
 }
 
+fn default_runtime_config() -> RuntimeConfig {
+    RuntimeConfig {
+        default_timeout: Duration::from_secs(1),
+        message_expiration: Duration::from_secs(60),
+        keep_alive: None,
+    }
+}
+
+async fn run_local_test<F>(future: F)
+where
+    F: Future<Output = ()>,
+{
+    let local = tokio::task::LocalSet::new();
+    local.run_until(future).await;
+}
+
+fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+    tokio::task::spawn_local(async move {
+        while let Ok(bytes) = outbound.recv().await {
+            handle.send_incoming(bytes).unwrap();
+        }
+    });
+}
+
+fn spawn_router<S>(mut router: Router<S>, mut incoming: HandlerStream)
+where
+    S: 'static,
+{
+    tokio::task::spawn_local(async move {
+        loop {
+            let event = match incoming.next().await {
+                Ok(event) => event,
+                Err(_) => break,
+            };
+            let _ = router.handle(event);
+        }
+    });
+}
+
+struct RuntimePair {
+    client_platform: TestPlatform,
+    server_platform: TestPlatform,
+    client_handle: RuntimeHandle,
+    server_handle: RuntimeHandle,
+    server_incoming: Option<HandlerStream>,
+    client_outbound: Option<Receiver<Vec<u8>>>,
+    server_outbound: Option<Receiver<Vec<u8>>>,
+}
+
+impl RuntimePair {
+    fn new(client_config: RuntimeConfig, server_config: RuntimeConfig) -> Self {
+        let client_identity = QlIdentity::generate();
+        let server_identity = QlIdentity::generate();
+        let (client_platform, client_outbound) = TestPlatform::new(
+            client_identity.clone(),
+            server_identity.encapsulation_public_key.clone(),
+            server_identity.signing_public_key.clone(),
+        );
+        let (server_platform, server_outbound) = TestPlatform::new(
+            server_identity.clone(),
+            client_identity.encapsulation_public_key.clone(),
+            client_identity.signing_public_key.clone(),
+        );
+
+        let (mut client_core, client_handle, _client_incoming) =
+            Runtime::new(client_platform.clone(), client_config);
+        let (mut server_core, server_handle, server_incoming) =
+            Runtime::new(server_platform.clone(), server_config);
+
+        tokio::task::spawn_local(async move { client_core.run().await });
+        tokio::task::spawn_local(async move { server_core.run().await });
+
+        Self {
+            client_platform,
+            server_platform,
+            client_handle,
+            server_handle,
+            server_incoming: Some(server_incoming),
+            client_outbound: Some(client_outbound),
+            server_outbound: Some(server_outbound),
+        }
+    }
+
+    fn recipient(&self) -> XID {
+        self.server_platform.xid()
+    }
+
+    fn spawn_default_links(&mut self) {
+        let client_outbound = self.take_client_outbound();
+        let server_outbound = self.take_server_outbound();
+        spawn_forwarder(client_outbound, self.server_handle.clone());
+        spawn_forwarder(server_outbound, self.client_handle.clone());
+    }
+
+    fn take_server_incoming(&mut self) -> HandlerStream {
+        self.server_incoming
+            .take()
+            .expect("server incoming already taken")
+    }
+
+    fn take_client_outbound(&mut self) -> Receiver<Vec<u8>> {
+        self.client_outbound
+            .take()
+            .expect("client outbound already taken")
+    }
+
+    fn take_server_outbound(&mut self) -> Receiver<Vec<u8>> {
+        self.server_outbound
+            .take()
+            .expect("server outbound already taken")
+    }
+}
+
 fn build_reset_message(
     sender: &QlIdentity,
     recipient: &QlIdentity,
@@ -398,795 +513,446 @@ fn build_reset_message(
 
 #[tokio::test(flavor = "current_thread")]
 async fn typed_round_trip() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (client_platform, client_outbound) = TestPlatform::new(
-                client_identity.clone(),
-                server_identity.encapsulation_public_key.clone(),
-                server_identity.signing_public_key.clone(),
-            );
-            let (server_platform, server_outbound) = TestPlatform::new(
-                server_identity.clone(),
-                client_identity.encapsulation_public_key.clone(),
-                client_identity.signing_public_key.clone(),
-            );
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
+    run_local_test(async {
+        let mut pair = RuntimePair::new(default_runtime_config(), default_runtime_config());
+        pair.spawn_default_links();
 
-            let (mut client_core, client_handle, _client_incoming) =
-                Runtime::new(client_platform.clone(), config);
-            let (mut server_core, server_handle, mut server_incoming) =
-                Runtime::new(server_platform.clone(), config);
-
-            tokio::task::spawn_local(async move { client_core.run().await });
-            tokio::task::spawn_local(async move { server_core.run().await });
-
-            tokio::task::spawn_local({
-                let server_handle = server_handle.clone();
-                async move {
-                    while let Ok(bytes) = client_outbound.recv().await {
-                        server_handle.send_incoming(bytes).unwrap();
-                    }
-                }
+        let (event_tx, event_rx) = oneshot::channel();
+        let router = Router::builder()
+            .add_request_handler::<Ping>()
+            .add_event_handler::<Notice>()
+            .build(TestState {
+                event_tx: Some(event_tx),
             });
+        spawn_router(router, pair.take_server_incoming());
 
-            tokio::task::spawn_local({
-                let client_handle = client_handle.clone();
-                async move {
-                    while let Ok(bytes) = server_outbound.recv().await {
-                        client_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
+        let recipient = pair.recipient();
 
-            let (event_tx, event_rx) = oneshot::channel();
-            let router = Router::builder()
-                .add_request_handler::<Ping>()
-                .add_event_handler::<Notice>()
-                .build(TestState {
-                    event_tx: Some(event_tx),
-                });
+        pair.client_handle.send_event(Notice(7), recipient).unwrap();
+        let event_value = event_rx.await.expect("event handled");
+        assert_eq!(event_value, 7);
 
-            tokio::task::spawn_local({
-                let mut router = router;
-                async move {
-                    loop {
-                        let event = match server_incoming.next().await {
-                            Ok(event) => event,
-                            Err(_) => break,
-                        };
-                        let _ = router.handle(event);
-                    }
-                }
-            });
-
-            let recipient = server_platform.xid();
-
-            client_handle.send_event(Notice(7), recipient).unwrap();
-            let event_value = event_rx.await.expect("event handled");
-            assert_eq!(event_value, 7);
-
-            let response = client_handle
-                .request(Ping(41), recipient, RequestConfig::default())
-                .await
-                .expect("response");
-            assert_eq!(response, Pong(42));
-        })
-        .await;
+        let response = pair
+            .client_handle
+            .request(Ping(41), recipient, RequestConfig::default())
+            .await
+            .expect("response");
+        assert_eq!(response, Pong(42));
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn event_with_ack_round_trip() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (client_platform, client_outbound) = TestPlatform::new(
-                client_identity.clone(),
-                server_identity.encapsulation_public_key.clone(),
-                server_identity.signing_public_key.clone(),
-            );
-            let (server_platform, server_outbound) = TestPlatform::new(
-                server_identity.clone(),
-                client_identity.encapsulation_public_key.clone(),
-                client_identity.signing_public_key.clone(),
-            );
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
+    run_local_test(async {
+        let mut pair = RuntimePair::new(default_runtime_config(), default_runtime_config());
+        pair.spawn_default_links();
 
-            let (mut client_core, client_handle, _client_incoming) =
-                Runtime::new(client_platform.clone(), config);
-            let (mut server_core, server_handle, mut server_incoming) =
-                Runtime::new(server_platform.clone(), config);
+        let router = Router::builder()
+            .add_event_handler::<Notice>()
+            .build(TestState { event_tx: None });
+        spawn_router(router, pair.take_server_incoming());
 
-            tokio::task::spawn_local(async move { client_core.run().await });
-            tokio::task::spawn_local(async move { server_core.run().await });
-
-            tokio::task::spawn_local({
-                let server_handle = server_handle.clone();
-                async move {
-                    while let Ok(bytes) = client_outbound.recv().await {
-                        server_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
-
-            tokio::task::spawn_local({
-                let client_handle = client_handle.clone();
-                async move {
-                    while let Ok(bytes) = server_outbound.recv().await {
-                        client_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
-
-            let router = Router::builder()
-                .add_event_handler::<Notice>()
-                .build(TestState { event_tx: None });
-
-            tokio::task::spawn_local({
-                let mut router = router;
-                async move {
-                    loop {
-                        let event = match server_incoming.next().await {
-                            Ok(event) => event,
-                            Err(_) => break,
-                        };
-                        let _ = router.handle(event);
-                    }
-                }
-            });
-
-            let recipient = server_platform.xid();
-            client_handle
-                .send_event_with_ack(Notice(99), recipient, RequestConfig::default())
-                .await
-                .expect("event ack");
-        })
-        .await;
+        let recipient = pair.recipient();
+        pair.client_handle
+            .send_event_with_ack(Notice(99), recipient, RequestConfig::default())
+            .await
+            .expect("event ack");
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn heartbeat_sends_and_receives() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (client_platform, client_outbound) = TestPlatform::new(
-                client_identity.clone(),
-                server_identity.encapsulation_public_key.clone(),
-                server_identity.signing_public_key.clone(),
-            );
-            let (server_platform, server_outbound) = TestPlatform::new(
-                server_identity.clone(),
-                client_identity.encapsulation_public_key.clone(),
-                client_identity.signing_public_key.clone(),
-            );
-            let keep_alive = KeepAliveConfig {
-                interval: Duration::from_millis(30),
-                timeout: Duration::from_millis(40),
-            };
-            let client_config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: Some(keep_alive),
-            };
-            let server_config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
+    run_local_test(async {
+        let keep_alive = KeepAliveConfig {
+            interval: Duration::from_millis(30),
+            timeout: Duration::from_millis(40),
+        };
+        let client_config = RuntimeConfig {
+            keep_alive: Some(keep_alive),
+            ..default_runtime_config()
+        };
+        let server_config = default_runtime_config();
+        let mut pair = RuntimePair::new(client_config, server_config);
 
-            let (mut client_core, client_handle, _client_incoming) =
-                Runtime::new(client_platform.clone(), client_config);
-            let (mut server_core, server_handle, mut server_incoming) =
-                Runtime::new(server_platform.clone(), server_config);
+        let client_outbound = pair.take_client_outbound();
+        let server_outbound = pair.take_server_outbound();
 
-            tokio::task::spawn_local(async move { client_core.run().await });
-            tokio::task::spawn_local(async move { server_core.run().await });
-
-            let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
-            tokio::task::spawn_local({
-                let server_handle = server_handle.clone();
-                async move {
-                    while let Ok(bytes) = client_outbound.recv().await {
-                        if let Ok(message) =
-                            CBOR::try_from_data(&bytes).and_then(QlMessage::try_from)
-                        {
-                            if message.header.kind == MessageKind::Heartbeat {
-                                let _ = heartbeat_tx.send(()).await;
-                            }
+        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
+        tokio::task::spawn_local({
+            let server_handle = pair.server_handle.clone();
+            async move {
+                while let Ok(bytes) = client_outbound.recv().await {
+                    if let Ok(message) = CBOR::try_from_data(&bytes).and_then(QlMessage::try_from) {
+                        if message.header.kind == MessageKind::Heartbeat {
+                            let _ = heartbeat_tx.send(()).await;
                         }
-                        server_handle.send_incoming(bytes).unwrap();
                     }
+                    server_handle.send_incoming(bytes).unwrap();
                 }
-            });
+            }
+        });
 
-            tokio::task::spawn_local({
-                let client_handle = client_handle.clone();
-                async move {
-                    while let Ok(bytes) = server_outbound.recv().await {
-                        client_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
+        spawn_forwarder(server_outbound, pair.client_handle.clone());
 
-            let router = Router::builder()
-                .add_request_handler::<Ping>()
-                .build(TestState { event_tx: None });
+        let router = Router::builder()
+            .add_request_handler::<Ping>()
+            .build(TestState { event_tx: None });
+        spawn_router(router, pair.take_server_incoming());
 
-            tokio::task::spawn_local({
-                let mut router = router;
-                async move {
-                    loop {
-                        let event = match server_incoming.next().await {
-                            Ok(event) => event,
-                            Err(_) => break,
-                        };
-                        let _ = router.handle(event);
-                    }
-                }
-            });
+        let recipient = pair.recipient();
+        let response = pair
+            .client_handle
+            .request(Ping(1), recipient, RequestConfig::default())
+            .await
+            .expect("response");
+        assert_eq!(response, Pong(2));
 
-            let recipient = server_platform.xid();
-            let response = client_handle
-                .request(Ping(1), recipient, RequestConfig::default())
-                .await
-                .expect("response");
-            assert_eq!(response, Pong(2));
+        let _ = pair.client_platform.take_statuses();
 
-            let _ = client_platform.take_statuses();
+        let _heartbeat = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
+            .await
+            .expect("heartbeat send")
+            .expect("heartbeat ping");
 
-            let _heartbeat = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
-                .await
-                .expect("heartbeat send")
-                .expect("heartbeat ping");
+        tokio::time::sleep(keep_alive.timeout + Duration::from_millis(20)).await;
 
-            tokio::time::sleep(keep_alive.timeout + Duration::from_millis(20)).await;
-
-            let statuses = client_platform.take_statuses();
-            let pending_index = statuses.iter().position(|(peer, status)| {
-                *peer == recipient && *status == PeerStatus::HeartbeatPending
-            });
-            let connected_index = statuses
-                .iter()
-                .rposition(|(peer, status)| *peer == recipient && *status == PeerStatus::Connected);
-            assert!(matches!(
-                (pending_index, connected_index),
-                (Some(pending), Some(connected)) if pending < connected
-            ));
-        })
-        .await;
+        let statuses = pair.client_platform.take_statuses();
+        let pending_index = statuses.iter().position(|(peer, status)| {
+            *peer == recipient && *status == PeerStatus::HeartbeatPending
+        });
+        let connected_index = statuses
+            .iter()
+            .rposition(|(peer, status)| *peer == recipient && *status == PeerStatus::Connected);
+        assert!(matches!(
+            (pending_index, connected_index),
+            (Some(pending), Some(connected)) if pending < connected
+        ));
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn heartbeat_timeout_marks_disconnected() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (client_platform, client_outbound) = TestPlatform::new(
-                client_identity.clone(),
-                server_identity.encapsulation_public_key.clone(),
-                server_identity.signing_public_key.clone(),
-            );
-            let (server_platform, server_outbound) = TestPlatform::new(
-                server_identity.clone(),
-                client_identity.encapsulation_public_key.clone(),
-                client_identity.signing_public_key.clone(),
-            );
-            let keep_alive = KeepAliveConfig {
-                interval: Duration::from_millis(30),
-                timeout: Duration::from_millis(40),
-            };
-            let client_config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: Some(keep_alive),
-            };
-            let server_config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
+    run_local_test(async {
+        let keep_alive = KeepAliveConfig {
+            interval: Duration::from_millis(30),
+            timeout: Duration::from_millis(40),
+        };
+        let client_config = RuntimeConfig {
+            keep_alive: Some(keep_alive),
+            ..default_runtime_config()
+        };
+        let server_config = default_runtime_config();
+        let mut pair = RuntimePair::new(client_config, server_config);
 
-            let (mut client_core, client_handle, _client_incoming) =
-                Runtime::new(client_platform.clone(), client_config);
-            let (mut server_core, server_handle, mut server_incoming) =
-                Runtime::new(server_platform.clone(), server_config);
+        let client_outbound = pair.take_client_outbound();
+        let server_outbound = pair.take_server_outbound();
 
-            tokio::task::spawn_local(async move { client_core.run().await });
-            tokio::task::spawn_local(async move { server_core.run().await });
-
-            let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
-            tokio::task::spawn_local({
-                let server_handle = server_handle.clone();
-                async move {
-                    while let Ok(bytes) = client_outbound.recv().await {
-                        if let Ok(message) =
-                            CBOR::try_from_data(&bytes).and_then(QlMessage::try_from)
-                        {
-                            if message.header.kind == MessageKind::Heartbeat {
-                                let _ = heartbeat_tx.send(()).await;
-                            }
-                        }
-                        server_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
-
-            tokio::task::spawn_local({
-                let client_handle = client_handle.clone();
-                async move {
-                    while let Ok(bytes) = server_outbound.recv().await {
-                        let mut forward = true;
-                        if let Ok(message) =
-                            CBOR::try_from_data(&bytes).and_then(QlMessage::try_from)
-                        {
-                            if message.header.kind == MessageKind::Heartbeat {
-                                forward = false;
-                            }
-                        }
-                        if forward {
-                            client_handle.send_incoming(bytes).unwrap();
+        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
+        tokio::task::spawn_local({
+            let server_handle = pair.server_handle.clone();
+            async move {
+                while let Ok(bytes) = client_outbound.recv().await {
+                    if let Ok(message) = CBOR::try_from_data(&bytes).and_then(QlMessage::try_from) {
+                        if message.header.kind == MessageKind::Heartbeat {
+                            let _ = heartbeat_tx.send(()).await;
                         }
                     }
+                    server_handle.send_incoming(bytes).unwrap();
                 }
-            });
+            }
+        });
 
-            let router = Router::builder()
-                .add_request_handler::<Ping>()
-                .build(TestState { event_tx: None });
-
-            tokio::task::spawn_local({
-                let mut router = router;
-                async move {
-                    loop {
-                        let event = match server_incoming.next().await {
-                            Ok(event) => event,
-                            Err(_) => break,
-                        };
-                        let _ = router.handle(event);
+        tokio::task::spawn_local({
+            let client_handle = pair.client_handle.clone();
+            async move {
+                while let Ok(bytes) = server_outbound.recv().await {
+                    let mut forward = true;
+                    if let Ok(message) = CBOR::try_from_data(&bytes).and_then(QlMessage::try_from) {
+                        if message.header.kind == MessageKind::Heartbeat {
+                            forward = false;
+                        }
+                    }
+                    if forward {
+                        client_handle.send_incoming(bytes).unwrap();
                     }
                 }
-            });
+            }
+        });
 
-            let recipient = server_platform.xid();
-            let response = client_handle
-                .request(Ping(10), recipient, RequestConfig::default())
-                .await
-                .expect("response");
-            assert_eq!(response, Pong(11));
+        let router = Router::builder()
+            .add_request_handler::<Ping>()
+            .build(TestState { event_tx: None });
+        spawn_router(router, pair.take_server_incoming());
 
-            let _ = client_platform.take_statuses();
+        let recipient = pair.recipient();
+        let response = pair
+            .client_handle
+            .request(Ping(10), recipient, RequestConfig::default())
+            .await
+            .expect("response");
+        assert_eq!(response, Pong(11));
 
-            let _heartbeat = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
-                .await
-                .expect("heartbeat send")
-                .expect("heartbeat ping");
+        let _ = pair.client_platform.take_statuses();
 
-            tokio::time::sleep(keep_alive.timeout + Duration::from_millis(30)).await;
+        let _heartbeat = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
+            .await
+            .expect("heartbeat send")
+            .expect("heartbeat ping");
 
-            let statuses = client_platform.take_statuses();
-            let pending_index = statuses.iter().position(|(peer, status)| {
-                *peer == recipient && *status == PeerStatus::HeartbeatPending
-            });
-            let disconnected_index = statuses.iter().rposition(|(peer, status)| {
-                *peer == recipient && *status == PeerStatus::Disconnected
-            });
-            assert!(matches!(
-                (pending_index, disconnected_index),
-                (Some(pending), Some(disconnected)) if pending < disconnected
-            ));
-        })
-        .await;
+        tokio::time::sleep(keep_alive.timeout + Duration::from_millis(30)).await;
+
+        let statuses = pair.client_platform.take_statuses();
+        let pending_index = statuses.iter().position(|(peer, status)| {
+            *peer == recipient && *status == PeerStatus::HeartbeatPending
+        });
+        let disconnected_index = statuses
+            .iter()
+            .rposition(|(peer, status)| *peer == recipient && *status == PeerStatus::Disconnected);
+        assert!(matches!(
+            (pending_index, disconnected_index),
+            (Some(pending), Some(disconnected)) if pending < disconnected
+        ));
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn responds_to_heartbeat_without_keepalive() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (client_platform, client_outbound) = TestPlatform::new(
-                client_identity.clone(),
-                server_identity.encapsulation_public_key.clone(),
-                server_identity.signing_public_key.clone(),
-            );
-            let (server_platform, server_outbound) = TestPlatform::new(
-                server_identity.clone(),
-                client_identity.encapsulation_public_key.clone(),
-                client_identity.signing_public_key.clone(),
-            );
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
+    run_local_test(async {
+        let config = default_runtime_config();
+        let mut pair = RuntimePair::new(config, config);
 
-            let (mut client_core, client_handle, _client_incoming) =
-                Runtime::new(client_platform.clone(), config);
-            let (mut server_core, server_handle, mut server_incoming) =
-                Runtime::new(server_platform.clone(), config);
+        let client_outbound = pair.take_client_outbound();
+        let server_outbound = pair.take_server_outbound();
 
-            tokio::task::spawn_local(async move { client_core.run().await });
-            tokio::task::spawn_local(async move { server_core.run().await });
+        spawn_forwarder(client_outbound, pair.server_handle.clone());
 
-            tokio::task::spawn_local({
-                let server_handle = server_handle.clone();
-                async move {
-                    while let Ok(bytes) = client_outbound.recv().await {
-                        server_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
-
-            let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
-            tokio::task::spawn_local({
-                let client_handle = client_handle.clone();
-                let client_platform = client_platform.clone();
-                async move {
-                    while let Ok(bytes) = server_outbound.recv().await {
-                        if let Ok(message) =
-                            CBOR::try_from_data(&bytes).and_then(QlMessage::try_from)
-                        {
-                            if message.header.kind == MessageKind::Heartbeat {
-                                if let Ok(peer) =
-                                    client_platform.lookup_peer_or_fail(message.header.sender)
-                                {
-                                    if let Ok((envelope, _)) = decrypt_envelope(
-                                        &client_platform,
-                                        &peer,
-                                        &message.header,
-                                        &message.payload,
-                                    ) {
-                                        let _ = heartbeat_tx.send(envelope.id).await;
-                                    }
+        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
+        tokio::task::spawn_local({
+            let client_handle = pair.client_handle.clone();
+            let client_platform = pair.client_platform.clone();
+            async move {
+                while let Ok(bytes) = server_outbound.recv().await {
+                    if let Ok(message) = CBOR::try_from_data(&bytes).and_then(QlMessage::try_from) {
+                        if message.header.kind == MessageKind::Heartbeat {
+                            if let Ok(peer) =
+                                client_platform.lookup_peer_or_fail(message.header.sender)
+                            {
+                                if let Ok((envelope, _)) = decrypt_envelope(
+                                    &client_platform,
+                                    &peer,
+                                    &message.header,
+                                    &message.payload,
+                                ) {
+                                    let _ = heartbeat_tx.send(envelope.id).await;
                                 }
                             }
                         }
-                        client_handle.send_incoming(bytes).unwrap();
                     }
+                    client_handle.send_incoming(bytes).unwrap();
                 }
-            });
+            }
+        });
 
-            let router = Router::builder()
-                .add_request_handler::<Ping>()
-                .build(TestState { event_tx: None });
+        let router = Router::builder()
+            .add_request_handler::<Ping>()
+            .build(TestState { event_tx: None });
+        spawn_router(router, pair.take_server_incoming());
 
-            tokio::task::spawn_local({
-                let mut router = router;
-                async move {
-                    loop {
-                        let event = match server_incoming.next().await {
-                            Ok(event) => event,
-                            Err(_) => break,
-                        };
-                        let _ = router.handle(event);
-                    }
-                }
-            });
+        let recipient = pair.recipient();
+        let response = pair
+            .client_handle
+            .request(Ping(50), recipient, RequestConfig::default())
+            .await
+            .expect("response");
+        assert_eq!(response, Pong(51));
 
-            let recipient = server_platform.xid();
-            let response = client_handle
-                .request(Ping(50), recipient, RequestConfig::default())
-                .await
-                .expect("response");
-            assert_eq!(response, Pong(51));
+        let heartbeat_id = bc_components::ARID::new();
+        let message = encrypt_response(
+            &pair.client_platform,
+            recipient,
+            heartbeat_id,
+            CBOR::null(),
+            MessageKind::Heartbeat,
+            config.message_expiration,
+        )
+        .expect("encrypt heartbeat");
+        let bytes = message.to_cbor_data();
+        pair.server_handle.send_incoming(bytes).unwrap();
 
-            let heartbeat_id = bc_components::ARID::new();
-            let message = encrypt_response(
-                &client_platform,
-                recipient,
-                heartbeat_id,
-                CBOR::null(),
-                MessageKind::Heartbeat,
-                config.message_expiration,
-            )
-            .expect("encrypt heartbeat");
-            let bytes = message.to_cbor_data();
-            server_handle.send_incoming(bytes).unwrap();
-
-            let response_id = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
-                .await
-                .expect("heartbeat response")
-                .expect("heartbeat response id");
-            assert_eq!(response_id, heartbeat_id);
-        })
-        .await;
+        let response_id = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
+            .await
+            .expect("heartbeat response")
+            .expect("heartbeat response id");
+        assert_eq!(response_id, heartbeat_id);
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn nack_unknown_message_is_returned() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (client_platform, client_outbound) = TestPlatform::new(
-                client_identity.clone(),
-                server_identity.encapsulation_public_key.clone(),
-                server_identity.signing_public_key.clone(),
-            );
-            let (server_platform, server_outbound) = TestPlatform::new(
-                server_identity.clone(),
-                client_identity.encapsulation_public_key.clone(),
-                client_identity.signing_public_key.clone(),
-            );
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
+    run_local_test(async {
+        let mut pair = RuntimePair::new(default_runtime_config(), default_runtime_config());
+        pair.spawn_default_links();
 
-            let (mut client_core, client_handle, _client_incoming) =
-                Runtime::new(client_platform.clone(), config);
-            let (mut server_core, server_handle, mut server_incoming) =
-                Runtime::new(server_platform.clone(), config);
+        let router = Router::builder()
+            .add_request_handler::<Ping>()
+            .build(TestState { event_tx: None });
+        spawn_router(router, pair.take_server_incoming());
 
-            tokio::task::spawn_local(async move { client_core.run().await });
-            tokio::task::spawn_local(async move { server_core.run().await });
+        let recipient = pair.recipient();
+        let result = pair
+            .client_handle
+            .request(UnknownRequest(11), recipient, RequestConfig::default())
+            .await;
 
-            tokio::task::spawn_local({
-                let server_handle = server_handle.clone();
-                async move {
-                    while let Ok(bytes) = client_outbound.recv().await {
-                        server_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
-
-            tokio::task::spawn_local({
-                let client_handle = client_handle.clone();
-                async move {
-                    while let Ok(bytes) = server_outbound.recv().await {
-                        client_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
-
-            let router = Router::builder()
-                .add_request_handler::<Ping>()
-                .build(TestState { event_tx: None });
-
-            tokio::task::spawn_local({
-                let mut router = router;
-                async move {
-                    loop {
-                        let event = match server_incoming.next().await {
-                            Ok(event) => event,
-                            Err(_) => break,
-                        };
-                        let _ = router.handle(event);
-                    }
-                }
-            });
-
-            let recipient = server_platform.xid();
-            let result = client_handle
-                .request(UnknownRequest(11), recipient, RequestConfig::default())
-                .await;
-
-            assert!(matches!(
-                result,
-                Err(QlError::Nack(nack)) if nack == Nack::UnknownMessage
-            ));
-        })
-        .await;
+        assert!(matches!(
+            result,
+            Err(QlError::Nack(nack)) if nack == Nack::UnknownMessage
+        ));
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn nack_invalid_payload_is_returned() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (client_platform, client_outbound) = TestPlatform::new(
-                client_identity.clone(),
-                server_identity.encapsulation_public_key.clone(),
-                server_identity.signing_public_key.clone(),
-            );
-            let (server_platform, server_outbound) = TestPlatform::new(
-                server_identity.clone(),
-                client_identity.encapsulation_public_key.clone(),
-                client_identity.signing_public_key.clone(),
-            );
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
+    run_local_test(async {
+        let mut pair = RuntimePair::new(default_runtime_config(), default_runtime_config());
+        pair.spawn_default_links();
 
-            let (mut client_core, client_handle, _client_incoming) =
-                Runtime::new(client_platform.clone(), config);
-            let (mut server_core, server_handle, mut server_incoming) =
-                Runtime::new(server_platform.clone(), config);
+        let router = Router::builder()
+            .add_request_handler::<Ping>()
+            .build(TestState { event_tx: None });
+        spawn_router(router, pair.take_server_incoming());
 
-            tokio::task::spawn_local(async move { client_core.run().await });
-            tokio::task::spawn_local(async move { server_core.run().await });
+        let recipient = pair.recipient();
+        let result = pair
+            .client_handle
+            .request(BadPing, recipient, RequestConfig::default())
+            .await;
 
-            tokio::task::spawn_local({
-                let server_handle = server_handle.clone();
-                async move {
-                    while let Ok(bytes) = client_outbound.recv().await {
-                        server_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
-
-            tokio::task::spawn_local({
-                let client_handle = client_handle.clone();
-                async move {
-                    while let Ok(bytes) = server_outbound.recv().await {
-                        client_handle.send_incoming(bytes).unwrap();
-                    }
-                }
-            });
-
-            let router = Router::builder()
-                .add_request_handler::<Ping>()
-                .build(TestState { event_tx: None });
-
-            tokio::task::spawn_local({
-                let mut router = router;
-                async move {
-                    loop {
-                        let event = match server_incoming.next().await {
-                            Ok(event) => event,
-                            Err(_) => break,
-                        };
-                        let _ = router.handle(event);
-                    }
-                }
-            });
-
-            let recipient = server_platform.xid();
-            let result = client_handle
-                .request(BadPing, recipient, RequestConfig::default())
-                .await;
-
-            assert!(matches!(
-                result,
-                Err(QlError::Nack(nack)) if nack == Nack::InvalidPayload
-            ));
-        })
-        .await;
+        assert!(matches!(
+            result,
+            Err(QlError::Nack(nack)) if nack == Nack::InvalidPayload
+        ));
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn expired_response_is_rejected() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let requester = QlIdentity::generate();
-            let responder = QlIdentity::generate();
-            let (platform, outbound_rx) = TestPlatform::new(
-                requester.clone(),
-                responder.encapsulation_public_key.clone(),
-                responder.signing_public_key.clone(),
-            );
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(2),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
-            let (mut core, handle, _incoming) = Runtime::new(platform.clone(), config);
-            tokio::task::spawn_local(async move { core.run().await });
+    run_local_test(async {
+        let requester = QlIdentity::generate();
+        let responder = QlIdentity::generate();
+        let (platform, outbound_rx) = TestPlatform::new(
+            requester.clone(),
+            responder.encapsulation_public_key.clone(),
+            responder.signing_public_key.clone(),
+        );
+        let config = RuntimeConfig {
+            default_timeout: Duration::from_secs(2),
+            ..default_runtime_config()
+        };
+        let (mut core, handle, _incoming) = Runtime::new(platform.clone(), config);
+        tokio::task::spawn_local(async move { core.run().await });
 
-            let recipient = XID::new(&responder.signing_public_key);
-            let request_handle = handle.clone();
-            let response_task = tokio::task::spawn_local(async move {
-                request_handle
-                    .request(Ping(5), recipient, RequestConfig::default())
-                    .await
-            });
+        let recipient = XID::new(&responder.signing_public_key);
+        let request_handle = handle.clone();
+        let response_task = tokio::task::spawn_local(async move {
+            request_handle
+                .request(Ping(5), recipient, RequestConfig::default())
+                .await
+        });
 
-            let outbound = outbound_rx.recv().await.expect("no outbound request");
+        let outbound = outbound_rx.recv().await.expect("no outbound request");
 
-            let outbound_message = CBOR::try_from_data(&outbound)
-                .and_then(QlMessage::try_from)
-                .expect("decode outbound");
+        let outbound_message = CBOR::try_from_data(&outbound)
+            .and_then(QlMessage::try_from)
+            .expect("decode outbound");
 
-            let session_key = platform
-                .lookup_peer(recipient)
-                .expect("peer")
-                .session()
-                .expect("session");
-            let decrypted = platform
-                .decrypt_message(
-                    &session_key,
-                    &outbound_message.header.aad_data(),
-                    &outbound_message.payload,
-                )
-                .expect("decrypt outbound");
-            let envelope = QlEnvelope::try_from(decrypted).expect("decode envelope");
-            let header = QlHeader {
-                kind: MessageKind::Response,
-                sender: responder.xid,
-                recipient: outbound_message.header.sender,
-                kem_ct: None,
-                signature: None,
-            };
-            let envelope = QlEnvelope {
-                id: envelope.id,
-                valid_until: 0,
-                message_id: 0,
-                payload: CBOR::from(6),
-            };
-            let encrypted = session_key.encrypt(
-                CBOR::from(envelope).to_cbor_data(),
-                Some(header.aad_data()),
-                None::<bc_components::Nonce>,
-            );
-            handle.send_incoming(encrypted.to_cbor_data()).unwrap();
+        let session_key = platform
+            .lookup_peer(recipient)
+            .expect("peer")
+            .session()
+            .expect("session");
+        let decrypted = platform
+            .decrypt_message(
+                &session_key,
+                &outbound_message.header.aad_data(),
+                &outbound_message.payload,
+            )
+            .expect("decrypt outbound");
+        let envelope = QlEnvelope::try_from(decrypted).expect("decode envelope");
+        let header = QlHeader {
+            kind: MessageKind::Response,
+            sender: responder.xid,
+            recipient: outbound_message.header.sender,
+            kem_ct: None,
+            signature: None,
+        };
+        let envelope = QlEnvelope {
+            id: envelope.id,
+            valid_until: 0,
+            message_id: 0,
+            payload: CBOR::from(6),
+        };
+        let encrypted = session_key.encrypt(
+            CBOR::from(envelope).to_cbor_data(),
+            Some(header.aad_data()),
+            None::<bc_components::Nonce>,
+        );
+        handle.send_incoming(encrypted.to_cbor_data()).unwrap();
 
-            let response = response_task.await.unwrap();
-            assert!(matches!(response, Err(QlError::Expired(_))));
-        })
-        .await;
+        let response = response_task.await.unwrap();
+        assert!(matches!(response, Err(QlError::Expired(_))));
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn reset_cancels_pending_request() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (client_platform, client_outbound) = TestPlatform::new(
-                client_identity.clone(),
-                server_identity.encapsulation_public_key.clone(),
-                server_identity.signing_public_key.clone(),
-            );
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
-            let (mut client_core, client_handle, _client_incoming) =
-                Runtime::new(client_platform.clone(), config);
-            tokio::task::spawn_local(async move { client_core.run().await });
+    run_local_test(async {
+        let client_identity = QlIdentity::generate();
+        let server_identity = QlIdentity::generate();
+        let (client_platform, client_outbound) = TestPlatform::new(
+            client_identity.clone(),
+            server_identity.encapsulation_public_key.clone(),
+            server_identity.signing_public_key.clone(),
+        );
+        let config = default_runtime_config();
+        let (mut client_core, client_handle, _client_incoming) =
+            Runtime::new(client_platform.clone(), config);
+        tokio::task::spawn_local(async move { client_core.run().await });
 
-            let recipient = XID::new(&server_identity.signing_public_key);
-            let request_handle = client_handle.clone();
-            let request_task = tokio::task::spawn_local(async move {
-                request_handle
-                    .request(Ping(123), recipient, RequestConfig::default())
-                    .await
-            });
+        let recipient = XID::new(&server_identity.signing_public_key);
+        let request_handle = client_handle.clone();
+        let request_task = tokio::task::spawn_local(async move {
+            request_handle
+                .request(Ping(123), recipient, RequestConfig::default())
+                .await
+        });
 
-            let _ = client_outbound.recv().await.expect("outbound request");
+        let _ = client_outbound.recv().await.expect("outbound request");
 
-            let reset_message = build_reset_message(
-                &server_identity,
-                &client_identity,
-                bc_components::ARID::new(),
-            );
-            client_handle
-                .send_incoming(reset_message.to_cbor_data())
-                .unwrap();
+        let reset_message = build_reset_message(
+            &server_identity,
+            &client_identity,
+            bc_components::ARID::new(),
+        );
+        client_handle
+            .send_incoming(reset_message.to_cbor_data())
+            .unwrap();
 
-            let result = request_task.await.unwrap();
-            match result {
-                Err(QlError::SessionReset) => {}
-                other => panic!("unexpected result: {other:?}"),
-            }
-        })
-        .await;
+        let result = request_task.await.unwrap();
+        match result {
+            Err(QlError::SessionReset) => {}
+            other => panic!("unexpected result: {other:?}"),
+        }
+    })
+    .await;
 }
 
 #[test]
@@ -1284,245 +1050,219 @@ fn simultaneous_session_init_resolves() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pairing_request_stores_peer() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let sender_identity = QlIdentity::generate();
-            let recipient_identity = QlIdentity::generate();
-            let (sender_platform, _sender_outbound) = TestPlatform::new(
-                sender_identity.clone(),
-                recipient_identity.encapsulation_public_key.clone(),
-                recipient_identity.signing_public_key.clone(),
-            );
-            let (recipient_platform, _recipient_outbound) =
-                TestPlatform::new_unpaired(recipient_identity.clone());
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
-            let (mut core, handle, _incoming) = Runtime::new(recipient_platform.clone(), config);
+    run_local_test(async {
+        let sender_identity = QlIdentity::generate();
+        let recipient_identity = QlIdentity::generate();
+        let (sender_platform, _sender_outbound) = TestPlatform::new(
+            sender_identity.clone(),
+            recipient_identity.encapsulation_public_key.clone(),
+            recipient_identity.signing_public_key.clone(),
+        );
+        let (recipient_platform, _recipient_outbound) =
+            TestPlatform::new_unpaired(recipient_identity.clone());
+        let config = default_runtime_config();
+        let (mut core, handle, _incoming) = Runtime::new(recipient_platform.clone(), config);
 
-            assert!(recipient_platform
-                .lookup_peer(sender_identity.xid)
-                .is_none());
+        assert!(recipient_platform
+            .lookup_peer(sender_identity.xid)
+            .is_none());
 
-            let message = encrypt_pairing_request(
-                &sender_platform,
-                &recipient_identity.signing_public_key,
-                &recipient_identity.encapsulation_public_key,
-                config.message_expiration,
-            );
-            let bytes = message.to_cbor_data();
+        let message = encrypt_pairing_request(
+            &sender_platform,
+            &recipient_identity.signing_public_key,
+            &recipient_identity.encapsulation_public_key,
+            config.message_expiration,
+        );
+        let bytes = message.to_cbor_data();
 
-            tokio::task::spawn_local(async move { core.run().await });
-            handle.send_incoming(bytes).unwrap();
-            tokio::task::yield_now().await;
+        tokio::task::spawn_local(async move { core.run().await });
+        handle.send_incoming(bytes).unwrap();
+        tokio::task::yield_now().await;
 
-            let peer = recipient_platform
-                .lookup_peer(sender_identity.xid)
-                .expect("peer stored");
-            assert!(peer.session().is_some());
-        })
-        .await;
+        let peer = recipient_platform
+            .lookup_peer(sender_identity.xid)
+            .expect("peer stored");
+        assert!(peer.session().is_some());
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn reset_collision_prefers_lower_xid() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (lower_identity, higher_identity) = if client_identity.xid < server_identity.xid {
-                (client_identity.clone(), server_identity.clone())
-            } else {
-                (server_identity.clone(), client_identity.clone())
-            };
+    run_local_test(async {
+        let client_identity = QlIdentity::generate();
+        let server_identity = QlIdentity::generate();
+        let (lower_identity, higher_identity) = if client_identity.xid < server_identity.xid {
+            (client_identity.clone(), server_identity.clone())
+        } else {
+            (server_identity.clone(), client_identity.clone())
+        };
 
-            let (lower_platform, _lower_outbound) = TestPlatform::new(
-                lower_identity.clone(),
-                higher_identity.encapsulation_public_key.clone(),
-                higher_identity.signing_public_key.clone(),
-            );
-            let (higher_platform, _higher_outbound) = TestPlatform::new(
-                higher_identity.clone(),
-                lower_identity.encapsulation_public_key.clone(),
-                lower_identity.signing_public_key.clone(),
-            );
+        let (lower_platform, _lower_outbound) = TestPlatform::new(
+            lower_identity.clone(),
+            higher_identity.encapsulation_public_key.clone(),
+            higher_identity.signing_public_key.clone(),
+        );
+        let (higher_platform, _higher_outbound) = TestPlatform::new(
+            higher_identity.clone(),
+            lower_identity.encapsulation_public_key.clone(),
+            lower_identity.signing_public_key.clone(),
+        );
 
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
-            let (mut lower_core, lower_handle, _lower_incoming) =
-                Runtime::new(lower_platform.clone(), config);
-            let (mut higher_core, higher_handle, _higher_incoming) =
-                Runtime::new(higher_platform.clone(), config);
+        let config = default_runtime_config();
+        let (mut lower_core, lower_handle, _lower_incoming) =
+            Runtime::new(lower_platform.clone(), config);
+        let (mut higher_core, higher_handle, _higher_incoming) =
+            Runtime::new(higher_platform.clone(), config);
 
-            tokio::task::spawn_local(async move { lower_core.run().await });
-            tokio::task::spawn_local(async move { higher_core.run().await });
+        tokio::task::spawn_local(async move { lower_core.run().await });
+        tokio::task::spawn_local(async move { higher_core.run().await });
 
-            let lower_reset_id = bc_components::ARID::new();
-            let higher_reset_id = bc_components::ARID::new();
-            lower_platform.set_pending_handshake(Some(PendingHandshake {
-                kind: HandshakeKind::SessionReset,
-                origin: ResetOrigin::Local,
-                id: lower_reset_id,
-            }));
-            higher_platform.set_pending_handshake(Some(PendingHandshake {
-                kind: HandshakeKind::SessionReset,
-                origin: ResetOrigin::Local,
-                id: higher_reset_id,
-            }));
+        let lower_reset_id = bc_components::ARID::new();
+        let higher_reset_id = bc_components::ARID::new();
+        lower_platform.set_pending_handshake(Some(PendingHandshake {
+            kind: HandshakeKind::SessionReset,
+            origin: ResetOrigin::Local,
+            id: lower_reset_id,
+        }));
+        higher_platform.set_pending_handshake(Some(PendingHandshake {
+            kind: HandshakeKind::SessionReset,
+            origin: ResetOrigin::Local,
+            id: higher_reset_id,
+        }));
 
-            let reset_from_lower =
-                build_reset_message(&lower_identity, &higher_identity, lower_reset_id);
-            let reset_from_higher =
-                build_reset_message(&higher_identity, &lower_identity, higher_reset_id);
+        let reset_from_lower = build_reset_message(&lower_identity, &higher_identity, lower_reset_id);
+        let reset_from_higher =
+            build_reset_message(&higher_identity, &lower_identity, higher_reset_id);
 
-            lower_handle
-                .send_incoming(reset_from_higher.to_cbor_data())
-                .unwrap();
-            higher_handle
-                .send_incoming(reset_from_lower.to_cbor_data())
-                .unwrap();
+        lower_handle
+            .send_incoming(reset_from_higher.to_cbor_data())
+            .unwrap();
+        higher_handle
+            .send_incoming(reset_from_lower.to_cbor_data())
+            .unwrap();
 
-            tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
-            assert_eq!(
-                lower_platform.pending_handshake().map(|state| state.origin),
-                Some(ResetOrigin::Local)
-            );
-            assert_eq!(
-                higher_platform
-                    .pending_handshake()
-                    .map(|state| state.origin),
-                Some(ResetOrigin::Peer)
-            );
-        })
-        .await;
+        assert_eq!(
+            lower_platform.pending_handshake().map(|state| state.origin),
+            Some(ResetOrigin::Local)
+        );
+        assert_eq!(
+            higher_platform
+                .pending_handshake()
+                .map(|state| state.origin),
+            Some(ResetOrigin::Peer)
+        );
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn reset_from_higher_xid_is_accepted_without_pending() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (lower_identity, higher_identity) = if client_identity.xid < server_identity.xid {
-                (client_identity.clone(), server_identity.clone())
-            } else {
-                (server_identity.clone(), client_identity.clone())
-            };
+    run_local_test(async {
+        let client_identity = QlIdentity::generate();
+        let server_identity = QlIdentity::generate();
+        let (lower_identity, higher_identity) = if client_identity.xid < server_identity.xid {
+            (client_identity.clone(), server_identity.clone())
+        } else {
+            (server_identity.clone(), client_identity.clone())
+        };
 
-            let (lower_platform, _lower_outbound) = TestPlatform::new(
-                lower_identity.clone(),
-                higher_identity.encapsulation_public_key.clone(),
-                higher_identity.signing_public_key.clone(),
-            );
+        let (lower_platform, _lower_outbound) = TestPlatform::new(
+            lower_identity.clone(),
+            higher_identity.encapsulation_public_key.clone(),
+            higher_identity.signing_public_key.clone(),
+        );
 
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
-            let (mut lower_core, lower_handle, _lower_incoming) =
-                Runtime::new(lower_platform.clone(), config);
-            tokio::task::spawn_local(async move { lower_core.run().await });
+        let config = default_runtime_config();
+        let (mut lower_core, lower_handle, _lower_incoming) =
+            Runtime::new(lower_platform.clone(), config);
+        tokio::task::spawn_local(async move { lower_core.run().await });
 
-            let reset_from_higher = build_reset_message(
-                &higher_identity,
-                &lower_identity,
-                bc_components::ARID::new(),
-            );
+        let reset_from_higher = build_reset_message(
+            &higher_identity,
+            &lower_identity,
+            bc_components::ARID::new(),
+        );
 
-            lower_handle
-                .send_incoming(reset_from_higher.to_cbor_data())
-                .unwrap();
+        lower_handle
+            .send_incoming(reset_from_higher.to_cbor_data())
+            .unwrap();
 
-            tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
-            assert_eq!(
-                lower_platform.pending_handshake().map(|state| state.origin),
-                Some(ResetOrigin::Peer)
-            );
-        })
-        .await;
+        assert_eq!(
+            lower_platform.pending_handshake().map(|state| state.origin),
+            Some(ResetOrigin::Peer)
+        );
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn reset_with_invalid_signature_is_rejected() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let client_identity = QlIdentity::generate();
-            let server_identity = QlIdentity::generate();
-            let (platform, _outbound) = TestPlatform::new(
-                client_identity.clone(),
-                server_identity.encapsulation_public_key.clone(),
-                server_identity.signing_public_key.clone(),
-            );
-            let config = RuntimeConfig {
-                default_timeout: Duration::from_secs(1),
-                message_expiration: Duration::from_secs(60),
-                keep_alive: None,
-            };
-            let (mut core, handle, _incoming) = Runtime::new(platform.clone(), config);
-            tokio::task::spawn_local(async move { core.run().await });
+    run_local_test(async {
+        let client_identity = QlIdentity::generate();
+        let server_identity = QlIdentity::generate();
+        let (platform, _outbound) = TestPlatform::new(
+            client_identity.clone(),
+            server_identity.encapsulation_public_key.clone(),
+            server_identity.signing_public_key.clone(),
+        );
+        let config = default_runtime_config();
+        let (mut core, handle, _incoming) = Runtime::new(platform.clone(), config);
+        tokio::task::spawn_local(async move { core.run().await });
 
-            let id = bc_components::ARID::new();
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_secs())
-                .unwrap_or(0);
-            let valid_until = now.saturating_add(60);
-            let (session_key, kem_ct) = client_identity
-                .encapsulation_public_key
-                .encapsulate_new_shared_secret();
-            let header = QlHeader {
-                kind: MessageKind::SessionReset,
-                sender: server_identity.xid,
-                recipient: client_identity.xid,
-                kem_ct: Some(kem_ct.clone()),
-                signature: None,
-            };
-            let signature = Some(
-                server_identity
-                    .private_keys
-                    .sign(&header.aad_data())
-                    .expect("sign reset header"),
-            );
-            let header = QlHeader {
-                signature,
-                ..header
-            };
-            let aad = header.aad_data();
-            let envelope = QlEnvelope {
-                id,
-                valid_until,
-                message_id: 0,
-                payload: CBOR::null(),
-            };
-            let payload_bytes = CBOR::from(envelope).to_cbor_data();
-            let encrypted =
-                session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-            let mut reset_message = QlMessage {
-                header,
-                payload: encrypted,
-            };
-            reset_message.header.kind = MessageKind::Request;
+        let id = bc_components::ARID::new();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let valid_until = now.saturating_add(60);
+        let (session_key, kem_ct) = client_identity
+            .encapsulation_public_key
+            .encapsulate_new_shared_secret();
+        let header = QlHeader {
+            kind: MessageKind::SessionReset,
+            sender: server_identity.xid,
+            recipient: client_identity.xid,
+            kem_ct: Some(kem_ct.clone()),
+            signature: None,
+        };
+        let signature = Some(
+            server_identity
+                .private_keys
+                .sign(&header.aad_data())
+                .expect("sign reset header"),
+        );
+        let header = QlHeader {
+            signature,
+            ..header
+        };
+        let aad = header.aad_data();
+        let envelope = QlEnvelope {
+            id,
+            valid_until,
+            message_id: 0,
+            payload: CBOR::null(),
+        };
+        let payload_bytes = CBOR::from(envelope).to_cbor_data();
+        let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
+        let mut reset_message = QlMessage {
+            header,
+            payload: encrypted,
+        };
+        reset_message.header.kind = MessageKind::Request;
 
-            handle.send_incoming(reset_message.to_cbor_data()).unwrap();
+        handle.send_incoming(reset_message.to_cbor_data()).unwrap();
 
-            tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
-            let errors = platform.take_errors();
-            assert!(errors
-                .iter()
-                .any(|error| matches!(error, QlError::InvalidSignature)));
-        })
-        .await;
+        let errors = platform.take_errors();
+        assert!(errors
+            .iter()
+            .any(|error| matches!(error, QlError::InvalidSignature)));
+    })
+    .await;
 }
