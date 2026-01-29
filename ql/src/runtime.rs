@@ -541,7 +541,7 @@ where
         }
         self.record_activity(state, details.sender);
         if details.kind == MessageKind::Nack {
-            let nack = Nack::try_from(payload).unwrap_or(Nack::Unknown);
+            let nack = Nack::from(payload);
             let _ = entry.tx.send(Err(QlError::Nack(nack)));
         } else {
             let _ = entry.tx.send(Ok(payload));

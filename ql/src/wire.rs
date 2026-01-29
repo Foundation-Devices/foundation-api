@@ -201,16 +201,14 @@ impl From<Nack> for CBOR {
     }
 }
 
-impl TryFrom<CBOR> for Nack {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let value: u64 = value.try_into()?;
-        Ok(match value {
+impl From<CBOR> for Nack {
+    fn from(value: CBOR) -> Self {
+        let value: u8 = value.try_into().unwrap_or_default();
+        match value {
             1 => Nack::UnknownMessage,
             2 => Nack::InvalidPayload,
             _ => Nack::Unknown,
-        })
+        }
     }
 }
 
