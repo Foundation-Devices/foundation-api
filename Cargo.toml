@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["api", "backup-shard", "btp", "ql", "ql-protocol", "quantum-link-macros"]
+members = ["api", "backup-shard", "btp", "ql", "quantum-link-macros"]
 
 [workspace.package]
 homepage = "https://github.com/Foundation-Devices/foundation-api"
