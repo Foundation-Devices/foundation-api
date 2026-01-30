@@ -41,7 +41,7 @@ pub enum QlHeader {
         kem_ct: EncapsulationCiphertext,
         signature: Signature,
     },
-    Normal {
+    Message {
         sender: XID,
         recipient: XID,
         session: SessionState,
@@ -122,7 +122,7 @@ impl QlHeader {
         match self {
             Self::Pairing { sender, .. }
             | Self::SessionReset { sender, .. }
-            | Self::Normal { sender, .. } => *sender,
+            | Self::Message { sender, .. } => *sender,
         }
     }
 
@@ -130,7 +130,7 @@ impl QlHeader {
         match self {
             Self::Pairing { recipient, .. }
             | Self::SessionReset { recipient, .. }
-            | Self::Normal { recipient, .. } => *recipient,
+            | Self::Message { recipient, .. } => *recipient,
         }
     }
 
@@ -148,26 +148,28 @@ impl QlHeader {
                 ..
             } => header_cbor_session_reset_unsigned(*sender, *recipient, kem_ct.clone())
                 .to_cbor_data(),
-            Self::Normal {
+            Self::Message {
                 sender,
                 recipient,
                 session,
             } => match session {
-                SessionState::Established => header_cbor_normal(*sender, *recipient).to_cbor_data(),
+                SessionState::Established => {
+                    header_cbor_message(*sender, *recipient).to_cbor_data()
+                }
                 SessionState::Init { kem_ct, .. } => {
-                    header_cbor_normal_init_unsigned(*sender, *recipient, kem_ct.clone())
+                    header_cbor_message_init_unsigned(*sender, *recipient, kem_ct.clone())
                         .to_cbor_data()
                 }
             },
         }
     }
 
-    pub fn normal_init_aad(
+    pub fn message_init_aad(
         sender: XID,
         recipient: XID,
         kem_ct: &EncapsulationCiphertext,
     ) -> Vec<u8> {
-        header_cbor_normal_init_unsigned(sender, recipient, kem_ct.clone()).to_cbor_data()
+        header_cbor_message_init_unsigned(sender, recipient, kem_ct.clone()).to_cbor_data()
     }
 
     pub fn session_reset_aad(
@@ -181,7 +183,7 @@ impl QlHeader {
     pub fn has_new_session(&self) -> bool {
         match self {
             Self::Pairing { .. } | Self::SessionReset { .. } => true,
-            Self::Normal { session, .. } => matches!(session, SessionState::Init { .. }),
+            Self::Message { session, .. } => matches!(session, SessionState::Init { .. }),
         }
     }
 }
@@ -200,14 +202,14 @@ impl From<QlHeader> for CBOR {
                 kem_ct,
                 signature,
             } => header_cbor_session_reset(sender, recipient, kem_ct, signature),
-            QlHeader::Normal {
+            QlHeader::Message {
                 sender,
                 recipient,
                 session,
             } => match session {
-                SessionState::Established => header_cbor_normal(sender, recipient),
+                SessionState::Established => header_cbor_message(sender, recipient),
                 SessionState::Init { kem_ct, signature } => {
-                    header_cbor_normal_init(sender, recipient, kem_ct, signature)
+                    header_cbor_message_init(sender, recipient, kem_ct, signature)
                 }
             },
         }
@@ -219,15 +221,15 @@ impl TryFrom<CBOR> for QlHeader {
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let array = value.try_into_array()?;
-        let tag = array
+        let tag: u8 = array
             .first()
             .cloned()
-            .ok_or_else(|| dcbor::Error::msg("missing header tag"))?;
-        let tag: u8 = tag.try_into()?;
+            .ok_or_else(|| dcbor::Error::msg("missing header tag"))?
+            .try_into()?;
         match tag {
             0 => {
                 let [_tag, sender_cbor, recipient_cbor] = cbor_array::<3>(array)?;
-                Ok(Self::Normal {
+                Ok(Self::Message {
                     sender: sender_cbor.try_into()?,
                     recipient: recipient_cbor.try_into()?,
                     session: SessionState::Established,
@@ -236,7 +238,7 @@ impl TryFrom<CBOR> for QlHeader {
             1 => {
                 let [_tag, sender_cbor, recipient_cbor, kem_ct_cbor, signature_cbor] =
                     cbor_array::<5>(array)?;
-                Ok(Self::Normal {
+                Ok(Self::Message {
                     sender: sender_cbor.try_into()?,
                     recipient: recipient_cbor.try_into()?,
                     session: SessionState::Init {
@@ -478,7 +480,7 @@ fn header_cbor_session_reset_unsigned(
     ])
 }
 
-fn header_cbor_normal(sender: XID, recipient: XID) -> CBOR {
+fn header_cbor_message(sender: XID, recipient: XID) -> CBOR {
     CBOR::from(vec![
         CBOR::from(0u8),
         CBOR::from(sender),
@@ -486,7 +488,7 @@ fn header_cbor_normal(sender: XID, recipient: XID) -> CBOR {
     ])
 }
 
-fn header_cbor_normal_init(
+fn header_cbor_message_init(
     sender: XID,
     recipient: XID,
     kem_ct: EncapsulationCiphertext,
@@ -501,7 +503,7 @@ fn header_cbor_normal_init(
     ])
 }
 
-fn header_cbor_normal_init_unsigned(
+fn header_cbor_message_init_unsigned(
     sender: XID,
     recipient: XID,
     kem_ct: EncapsulationCiphertext,

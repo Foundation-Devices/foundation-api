@@ -924,7 +924,7 @@ async fn expired_response_is_rejected() {
             )
             .unwrap();
         let envelope = QlEnvelope::try_from(decrypted).unwrap();
-        let header = QlHeader::Normal {
+        let header = QlHeader::Message {
             sender: responder.xid,
             recipient: outbound_message.header.sender(),
             session: SessionState::Established,
@@ -990,7 +990,7 @@ async fn expired_request_is_rejected_with_nack() {
             .lookup_peer(recipient_identity.xid)
             .unwrap()
             .store_session_key(session_key.clone());
-        let header = QlHeader::Normal {
+        let header = QlHeader::Message {
             sender: sender_identity.xid,
             recipient: recipient_identity.xid,
             session: SessionState::Established,

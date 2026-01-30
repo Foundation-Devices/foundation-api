@@ -56,7 +56,7 @@ pub(crate) fn encrypt_payload_for_recipient(
     let payload_bytes = CBOR::from(envelope).to_cbor_data();
     let (session_key, header, aad) = match session_setup {
         SessionSetup::Existing { session_key } => {
-            let header = QlHeader::Normal {
+            let header = QlHeader::Message {
                 sender: platform.xid(),
                 recipient,
                 session: SessionState::Established,
@@ -68,9 +68,9 @@ pub(crate) fn encrypt_payload_for_recipient(
             session_key,
             kem_ct,
         } => {
-            let aad = QlHeader::normal_init_aad(platform.xid(), recipient, &kem_ct);
+            let aad = QlHeader::message_init_aad(platform.xid(), recipient, &kem_ct);
             let signature = sign_header(platform.signer(), &aad);
-            let header = QlHeader::Normal {
+            let header = QlHeader::Message {
                 sender: platform.xid(),
                 recipient,
                 session: SessionState::Init { kem_ct, signature },
@@ -100,7 +100,7 @@ pub(crate) fn encrypt_response(
         route_id: RouteId::new(0),
         payload,
     };
-    let header = QlHeader::Normal {
+    let header = QlHeader::Message {
         sender: platform.xid(),
         recipient,
         session: SessionState::Established,
@@ -182,7 +182,7 @@ pub(crate) fn decrypt_pairing_payload(
 
 pub(crate) fn verify_header(platform: &impl QlPlatform, header: &QlHeader) -> Result<(), QlError> {
     let (sender, signature) = match header {
-        QlHeader::Normal {
+        QlHeader::Message {
             sender,
             session: SessionState::Init { signature, .. },
             ..
@@ -191,7 +191,7 @@ pub(crate) fn verify_header(platform: &impl QlPlatform, header: &QlHeader) -> Re
             sender, signature, ..
         } => (*sender, signature),
         QlHeader::Pairing { .. }
-        | QlHeader::Normal {
+        | QlHeader::Message {
             session: SessionState::Established,
             ..
         } => return Ok(()),
@@ -213,11 +213,11 @@ pub(crate) fn session_key_for_header(
     match header {
         QlHeader::Pairing { kem_ct, .. }
         | QlHeader::SessionReset { kem_ct, .. }
-        | QlHeader::Normal {
+        | QlHeader::Message {
             session: SessionState::Init { kem_ct, .. },
             ..
         } => platform.decapsulate_shared_secret(kem_ct),
-        QlHeader::Normal {
+        QlHeader::Message {
             sender,
             session: SessionState::Established,
             ..
@@ -332,7 +332,7 @@ pub(crate) fn extract_envelope(
     platform: &impl QlPlatform,
     EncryptedMessage { header, encrypted }: EncryptedMessage,
 ) -> Result<DecryptedMessage, EnvelopeError> {
-    if !matches!(header, QlHeader::Normal { .. }) {
+    if !matches!(header, QlHeader::Message { .. }) {
         return Err(EnvelopeError::Error(QlError::InvalidPayload));
     }
     verify_header(platform, &header).map_err(EnvelopeError::Error)?;
@@ -355,7 +355,7 @@ pub(crate) fn extract_envelope(
     }
     if matches!(
         header,
-        QlHeader::Normal {
+        QlHeader::Message {
             session: SessionState::Init { .. },
             ..
         }
