@@ -1,4 +1,10 @@
-use std::{future::Future, time::Instant};
+use std::{
+    cell::Cell,
+    cmp::Reverse,
+    collections::{BinaryHeap, VecDeque},
+    future::Future,
+    time::Instant,
+};
 
 use bc_components::{EncapsulationPublicKey, XID};
 use dcbor::CBOR;
@@ -6,18 +12,37 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     handshake,
-    platform::{QlPlatform, QlPlatformExt},
-    runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand},
+    platform::{PlatformFuture, QlPlatform, QlPlatformExt},
+    runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand, Token},
     wire::{handshake::HandshakeMessage, QlMessage},
+    QlError,
 };
 
 pub struct RuntimeState {
     peers: Vec<PeerRecord>,
+    next_token: Cell<Token>,
+    outbound: VecDeque<OutboundMessage>,
+    timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
 }
 
 impl RuntimeState {
     pub fn new() -> Self {
-        Self { peers: Vec::new() }
+        Self {
+            peers: Vec::new(),
+            next_token: Cell::new(Token(0)),
+            outbound: VecDeque::new(),
+            timeouts: BinaryHeap::new(),
+        }
+    }
+
+    fn next_token(&self) -> Token {
+        let token = self.next_token.get();
+        self.next_token.set(token.next());
+        token
+    }
+
+    fn peer(&self, peer: XID) -> Option<&PeerRecord> {
+        self.peers.iter().find(|record| record.peer == peer)
     }
 
     fn peer_mut(&mut self, peer: XID) -> Option<&mut PeerRecord> {
@@ -42,11 +67,50 @@ impl RuntimeState {
     }
 }
 
+struct InFlightWrite<'a> {
+    peer: XID,
+    token: Token,
+    future: PlatformFuture<'a, Result<(), QlError>>,
+}
+
+struct OutboundMessage {
+    peer: XID,
+    token: Token,
+    deadline: Instant,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimeoutKind {
+    Outbound { token: Token },
+    Handshake { peer: XID, token: Token },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TimeoutEntry {
+    at: Instant,
+    kind: TimeoutKind,
+}
+
+impl Ord for TimeoutEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.at.cmp(&other.at)
+    }
+}
+
+impl PartialOrd for TimeoutEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl<P: QlPlatform> Runtime<P> {
-    pub async fn run(mut self) {
+    pub async fn run(self) {
         let mut state = RuntimeState::new();
+        let mut in_flight: Option<InFlightWrite<'_>> = None;
         loop {
-            let step = self.next_step(&state).await;
+            self.start_next_write(&mut state, &mut in_flight);
+            let step = self.next_step(&state, &mut in_flight).await;
             match step {
                 LoopStep::Event(command) => match command {
                     RuntimeCommand::RegisterPeer {
@@ -57,33 +121,64 @@ impl<P: QlPlatform> Runtime<P> {
                         self.handle_register_peer(&mut state, peer, signing_key, encapsulation_key);
                     }
                     RuntimeCommand::Connect { peer } => {
-                        self.handle_connect(&mut state, peer).await;
+                        self.handle_connect(&mut state, peer);
                     }
                     RuntimeCommand::Incoming(bytes) => {
-                        self.handle_incoming(&mut state, bytes).await;
+                        self.handle_incoming(&mut state, bytes);
                     }
                 },
-                LoopStep::Timeout(peer) => {
-                    self.handle_handshake_timeout(&mut state, peer);
+                LoopStep::Timeout => {
+                    self.handle_timeouts(&mut state);
+                }
+                LoopStep::WriteDone => {
+                    in_flight = None;
                 }
                 LoopStep::Quit => break,
             }
         }
     }
 
-    async fn next_step(&mut self, state: &RuntimeState) -> LoopStep {
+    fn start_next_write<'a>(
+        &'a self,
+        state: &mut RuntimeState,
+        in_flight: &mut Option<InFlightWrite<'a>>,
+    ) {
+        if in_flight.is_some() {
+            return;
+        }
+        let Some(message) = state.outbound.pop_front() else {
+            return;
+        };
+        *in_flight = Some(InFlightWrite {
+            peer: message.peer,
+            token: message.token,
+            future: self.platform.write_message(message.bytes),
+        });
+    }
+
+    async fn next_step<'a>(
+        &'a self,
+        state: &RuntimeState,
+        in_flight: &'a mut Option<InFlightWrite<'a>>,
+    ) -> LoopStep {
         let recv_future = self.rx.recv();
         futures_lite::pin!(recv_future);
 
-        let mut sleep_future = next_handshake_deadline(state).map(|(peer, deadline)| {
+        let mut sleep_future = next_timeout_deadline(state).map(|deadline| {
             let timeout = deadline.saturating_duration_since(Instant::now());
-            (peer, self.platform.sleep(timeout))
+            self.platform.sleep(timeout)
         });
 
         poll_fn(|cx| {
-            if let Some((peer, future)) = sleep_future.as_mut() {
+            if let Some(in_flight) = in_flight.as_mut() {
+                if let std::task::Poll::Ready(_result) = in_flight.future.as_mut().poll(cx) {
+                    return std::task::Poll::Ready(LoopStep::WriteDone);
+                }
+            }
+
+            if let Some(future) = sleep_future.as_mut() {
                 if let std::task::Poll::Ready(()) = future.as_mut().poll(cx) {
-                    return std::task::Poll::Ready(LoopStep::Timeout(*peer));
+                    return std::task::Poll::Ready(LoopStep::Timeout);
                 }
             }
 
@@ -96,20 +191,19 @@ impl<P: QlPlatform> Runtime<P> {
         .await
     }
 
-    async fn handle_connect(&mut self, state: &mut RuntimeState, peer: XID) {
-        let Some(entry) = state.peer_mut(peer) else {
-            return;
+    fn handle_connect(&self, state: &mut RuntimeState, peer: XID) {
+        let encapsulation_key = match state.peer(peer) {
+            Some(entry) => match &entry.session {
+                PeerSession::Connected { .. }
+                | PeerSession::Initiator { .. }
+                | PeerSession::Responder { .. } => {
+                    return;
+                }
+                PeerSession::Disconnected => entry.encapsulation_key.clone(),
+            },
+            None => return,
         };
-        match entry.session {
-            PeerSession::Connected { .. }
-            | PeerSession::Initiator { .. }
-            | PeerSession::Responder { .. } => {
-                return;
-            }
-            PeerSession::Disconnected => {}
-        }
 
-        let encapsulation_key = entry.encapsulation_key.clone();
         let (hello, session_key) = match handshake::build_hello(
             &self.platform,
             self.platform.xid(),
@@ -120,21 +214,26 @@ impl<P: QlPlatform> Runtime<P> {
             Err(_) => return,
         };
 
-        entry.session = PeerSession::Initiator {
-            hello: hello.clone(),
-            session_key,
-            deadline: Instant::now() + self.config.handshake_timeout,
-            stage: InitiatorStage::WaitingHelloReply,
-        };
-        self.platform.handle_peer_status(peer, &entry.session);
+        let deadline = Instant::now() + self.config.handshake_timeout;
+        let token = state.next_token();
+        if let Some(entry) = state.peer_mut(peer) {
+            entry.session = PeerSession::Initiator {
+                handshake_token: token,
+                hello: hello.clone(),
+                session_key,
+                deadline,
+                stage: InitiatorStage::WaitingHelloReply,
+            };
+            self.platform.handle_peer_status(peer, &entry.session);
+        }
 
         let message = QlMessage::Handshake(HandshakeMessage::Hello(hello));
         let bytes = CBOR::from(message).to_cbor_data();
-        let _ = self.platform.write_message(bytes).await;
+        self.enqueue_handshake_message(state, peer, token, deadline, bytes);
     }
 
     fn handle_register_peer(
-        &mut self,
+        &self,
         state: &mut RuntimeState,
         peer: XID,
         signing_key: bc_components::SigningPublicKey,
@@ -146,73 +245,84 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
-    async fn handle_incoming(&mut self, state: &mut RuntimeState, bytes: Vec<u8>) {
+    fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
         let Ok(message) = CBOR::try_from_data(&bytes).and_then(QlMessage::try_from) else {
             return;
         };
         match message {
             QlMessage::Handshake(message) => {
-                self.handle_handshake(state, message).await;
+                self.handle_handshake(state, message);
             }
         }
     }
 
-    async fn handle_handshake(&mut self, state: &mut RuntimeState, message: HandshakeMessage) {
+    fn handle_handshake(&self, state: &mut RuntimeState, message: HandshakeMessage) {
         match message {
             HandshakeMessage::Hello(hello) => {
-                self.handle_hello(state, hello).await;
+                self.handle_hello(state, hello);
             }
             HandshakeMessage::HelloReply(reply) => {
-                self.handle_hello_reply(state, reply).await;
+                self.handle_hello_reply(state, reply);
             }
             HandshakeMessage::Confirm(confirm) => {
-                self.handle_confirm(state, confirm).await;
+                self.handle_confirm(state, confirm);
             }
         }
     }
 
-    async fn handle_hello(
-        &mut self,
-        state: &mut RuntimeState,
-        hello: crate::wire::handshake::Hello,
-    ) {
+    fn handle_hello(&self, state: &mut RuntimeState, hello: crate::wire::handshake::Hello) {
         if hello.header.recipient != self.platform.xid() {
             return;
         }
         let peer = hello.header.sender;
-        let Some(entry) = state.peer_mut(peer) else {
-            return;
+        let action = match state.peer(peer) {
+            Some(entry) => match &entry.session {
+                PeerSession::Initiator {
+                    hello: local_hello, ..
+                } => {
+                    if peer_hello_wins(local_hello, &hello) {
+                        HelloAction::StartResponder
+                    } else {
+                        HelloAction::Ignore
+                    }
+                }
+                PeerSession::Responder {
+                    hello: stored,
+                    reply,
+                    deadline,
+                    ..
+                } => {
+                    if stored.nonce == hello.nonce {
+                        HelloAction::ResendReply {
+                            reply: reply.clone(),
+                            deadline: *deadline,
+                        }
+                    } else {
+                        HelloAction::StartResponder
+                    }
+                }
+                PeerSession::Disconnected | PeerSession::Connected { .. } => {
+                    HelloAction::StartResponder
+                }
+            },
+            None => return,
         };
 
-        match &entry.session {
-            PeerSession::Initiator {
-                hello: local_hello, ..
-            } => {
-                if peer_hello_wins(local_hello, &hello) {
-                    self.start_responder_handshake(entry, hello).await;
-                }
+        match action {
+            HelloAction::StartResponder => {
+                self.start_responder_handshake(state, peer, hello);
             }
-            PeerSession::Responder {
-                hello: stored,
-                reply,
-                ..
-            } => {
-                if stored.nonce == hello.nonce {
-                    let message = QlMessage::Handshake(HandshakeMessage::HelloReply(reply.clone()));
-                    let bytes = CBOR::from(message).to_cbor_data();
-                    let _ = self.platform.write_message(bytes).await;
-                } else {
-                    self.start_responder_handshake(entry, hello).await;
-                }
+            HelloAction::ResendReply { reply, deadline } => {
+                let message = QlMessage::Handshake(HandshakeMessage::HelloReply(reply));
+                let bytes = CBOR::from(message).to_cbor_data();
+                self.enqueue_outbound(state, peer, bytes, deadline);
             }
-            PeerSession::Disconnected | PeerSession::Connected { .. } => {
-                self.start_responder_handshake(entry, hello).await;
-            }
+            HelloAction::Ignore => {}
         }
     }
 
-    async fn handle_hello_reply(
-        &mut self,
+    fn handle_hello_reply(
+        &self,
         state: &mut RuntimeState,
         reply: crate::wire::handshake::HelloReply,
     ) {
@@ -220,18 +330,22 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
         let peer = reply.header.sender;
-        let Some(entry) = state.peer_mut(peer) else {
-            return;
-        };
-
-        let (hello, initiator_secret, stage) = match &entry.session {
-            PeerSession::Initiator {
-                hello,
-                session_key,
-                stage,
-                ..
-            } => (hello.clone(), session_key.clone(), *stage),
-            _ => return,
+        let (hello, initiator_secret, stage, responder_signing_key) = match state.peer(peer) {
+            Some(entry) => match &entry.session {
+                PeerSession::Initiator {
+                    hello,
+                    session_key,
+                    stage,
+                    ..
+                } => (
+                    hello.clone(),
+                    session_key.clone(),
+                    *stage,
+                    entry.signing_key.clone(),
+                ),
+                _ => return,
+            },
+            None => return,
         };
 
         if stage != InitiatorStage::WaitingHelloReply {
@@ -240,108 +354,196 @@ impl<P: QlPlatform> Runtime<P> {
 
         let confirm = match handshake::build_confirm(
             &self.platform,
-            &entry.signing_key,
+            &responder_signing_key,
             &hello,
             &reply,
             &initiator_secret,
         ) {
             Ok((confirm, session_key)) => {
-                entry.session = PeerSession::Connected { session_key };
-                self.platform.handle_peer_status(peer, &entry.session);
+                if let Some(entry) = state.peer_mut(peer) {
+                    entry.session = PeerSession::Connected { session_key };
+                    self.platform.handle_peer_status(peer, &entry.session);
+                }
                 confirm
             }
             Err(_) => {
-                entry.session = PeerSession::Disconnected;
-                self.platform.handle_peer_status(peer, &entry.session);
+                if let Some(entry) = state.peer_mut(peer) {
+                    entry.session = PeerSession::Disconnected;
+                    self.platform.handle_peer_status(peer, &entry.session);
+                }
                 return;
             }
         };
 
         let message = QlMessage::Handshake(HandshakeMessage::Confirm(confirm));
         let bytes = CBOR::from(message).to_cbor_data();
-        let _ = self.platform.write_message(bytes).await;
+        let deadline = Instant::now() + self.config.handshake_timeout;
+        self.enqueue_outbound(state, peer, bytes, deadline);
     }
 
-    async fn handle_confirm(
-        &mut self,
-        state: &mut RuntimeState,
-        confirm: crate::wire::handshake::Confirm,
-    ) {
+    fn handle_confirm(&self, state: &mut RuntimeState, confirm: crate::wire::handshake::Confirm) {
         if confirm.header.recipient != self.platform.xid() {
             return;
         }
         let peer = confirm.header.sender;
-        let Some(entry) = state.peer_mut(peer) else {
-            return;
+        let (hello, reply, secrets, initiator_signing_key) = match state.peer(peer) {
+            Some(entry) => match &entry.session {
+                PeerSession::Responder {
+                    hello,
+                    reply,
+                    secrets,
+                    ..
+                } => (
+                    hello.clone(),
+                    reply.clone(),
+                    secrets.clone(),
+                    entry.signing_key.clone(),
+                ),
+                _ => return,
+            },
+            None => return,
         };
 
-        let (hello, reply, secrets) = match &entry.session {
-            PeerSession::Responder {
-                hello,
-                reply,
-                secrets,
-                ..
-            } => (hello.clone(), reply.clone(), secrets.clone()),
-            _ => return,
-        };
-
-        match handshake::finalize_confirm(&entry.signing_key, &hello, &reply, &confirm, &secrets) {
+        match handshake::finalize_confirm(
+            &initiator_signing_key,
+            &hello,
+            &reply,
+            &confirm,
+            &secrets,
+        ) {
             Ok(session_key) => {
-                entry.session = PeerSession::Connected { session_key };
-                self.platform.handle_peer_status(peer, &entry.session);
+                if let Some(entry) = state.peer_mut(peer) {
+                    entry.session = PeerSession::Connected { session_key };
+                    self.platform.handle_peer_status(peer, &entry.session);
+                }
             }
             Err(_) => {
-                entry.session = PeerSession::Disconnected;
-                self.platform.handle_peer_status(peer, &entry.session);
+                if let Some(entry) = state.peer_mut(peer) {
+                    entry.session = PeerSession::Disconnected;
+                    self.platform.handle_peer_status(peer, &entry.session);
+                }
             }
         }
     }
 
-    async fn start_responder_handshake(
-        &mut self,
-        entry: &mut PeerRecord,
+    fn start_responder_handshake(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
         hello: crate::wire::handshake::Hello,
     ) {
+        let encapsulation_key = match state.peer(peer) {
+            Some(entry) => entry.encapsulation_key.clone(),
+            None => return,
+        };
         let (reply, secrets) = match handshake::respond_hello(
             &self.platform,
             self.platform.xid(),
-            &entry.encapsulation_key,
+            &encapsulation_key,
             &hello,
         ) {
             Ok(result) => result,
             Err(_) => {
-                entry.session = PeerSession::Disconnected;
-                self.platform.handle_peer_status(entry.peer, &entry.session);
+                if let Some(entry) = state.peer_mut(peer) {
+                    entry.session = PeerSession::Disconnected;
+                    self.platform.handle_peer_status(peer, &entry.session);
+                }
                 return;
             }
         };
 
-        entry.session = PeerSession::Responder {
-            hello: hello.clone(),
-            reply: reply.clone(),
-            secrets,
-            deadline: Instant::now() + self.config.handshake_timeout,
-        };
-        self.platform.handle_peer_status(entry.peer, &entry.session);
+        let deadline = Instant::now() + self.config.handshake_timeout;
+        let token = state.next_token();
+        if let Some(entry) = state.peer_mut(peer) {
+            entry.session = PeerSession::Responder {
+                handshake_token: token,
+                hello: hello.clone(),
+                reply: reply.clone(),
+                secrets,
+                deadline,
+            };
+            self.platform.handle_peer_status(peer, &entry.session);
+        }
 
         let message = QlMessage::Handshake(HandshakeMessage::HelloReply(reply));
         let bytes = CBOR::from(message).to_cbor_data();
-        let _ = self.platform.write_message(bytes).await;
+        self.enqueue_handshake_message(state, peer, token, deadline, bytes);
     }
 
-    fn handle_handshake_timeout(&mut self, state: &mut RuntimeState, peer: XID) {
-        if let Some(entry) = state.peer_mut(peer) {
-            if matches!(entry.session, PeerSession::Connected { .. }) {
-                return;
+    fn enqueue_handshake_message(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        token: Token,
+        deadline: Instant,
+        bytes: Vec<u8>,
+    ) {
+        state.outbound.push_back(OutboundMessage {
+            peer,
+            token,
+            deadline,
+            bytes,
+        });
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: deadline,
+            kind: TimeoutKind::Handshake { peer, token },
+        }));
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: deadline,
+            kind: TimeoutKind::Outbound { token },
+        }));
+    }
+
+    fn enqueue_outbound(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        bytes: Vec<u8>,
+        deadline: Instant,
+    ) {
+        let token = state.next_token();
+        state.outbound.push_back(OutboundMessage {
+            peer,
+            token,
+            deadline,
+            bytes,
+        });
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: deadline,
+            kind: TimeoutKind::Outbound { token },
+        }));
+    }
+
+    fn handle_timeouts(&self, state: &mut RuntimeState) {
+        let now = Instant::now();
+        while let Some(entry) = state.timeouts.peek() {
+            if entry.0.at > now {
+                break;
             }
-            let deadline = match &entry.session {
-                PeerSession::Initiator { deadline, .. } => Some(*deadline),
-                PeerSession::Responder { deadline, .. } => Some(*deadline),
-                _ => None,
-            };
-            if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
-                entry.session = PeerSession::Disconnected;
-                self.platform.handle_peer_status(peer, &entry.session);
+            let entry = state.timeouts.pop().expect("timeout entry just peeked").0;
+            match entry.kind {
+                TimeoutKind::Outbound { token } => {
+                    state.outbound.retain(|message| message.token != token);
+                }
+                TimeoutKind::Handshake { peer, token } => {
+                    let should_disconnect = match state.peer(peer) {
+                        Some(entry) => match &entry.session {
+                            PeerSession::Initiator { handshake_token, .. }
+                            | PeerSession::Responder { handshake_token, .. } => {
+                                *handshake_token == token
+                            }
+                            _ => false,
+                        },
+                        None => false,
+                    };
+                    if should_disconnect {
+                        if let Some(entry) = state.peer_mut(peer) {
+                            entry.session = PeerSession::Disconnected;
+                            self.platform.handle_peer_status(peer, &entry.session);
+                        }
+                        state.outbound.retain(|message| message.peer != peer);
+                    }
+                }
             }
         }
     }
@@ -349,21 +551,22 @@ impl<P: QlPlatform> Runtime<P> {
 
 enum LoopStep {
     Event(RuntimeCommand),
-    Timeout(XID),
+    Timeout,
+    WriteDone,
     Quit,
 }
 
-fn next_handshake_deadline(state: &RuntimeState) -> Option<(XID, Instant)> {
-    state
-        .peers
-        .iter()
-        .filter_map(|record| match &record.session {
-            PeerSession::Initiator { deadline, .. } | PeerSession::Responder { deadline, .. } => {
-                Some((record.peer, *deadline))
-            }
-            _ => None,
-        })
-        .min_by_key(|(_, deadline)| *deadline)
+enum HelloAction {
+    StartResponder,
+    ResendReply {
+        reply: crate::wire::handshake::HelloReply,
+        deadline: Instant,
+    },
+    Ignore,
+}
+
+fn next_timeout_deadline(state: &RuntimeState) -> Option<Instant> {
+    state.timeouts.peek().map(|entry| entry.0.at)
 }
 
 fn peer_hello_wins(

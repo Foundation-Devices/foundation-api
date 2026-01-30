@@ -8,6 +8,15 @@ pub struct RuntimeConfig {
     pub handshake_timeout: Duration,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Token(u64);
+
+impl Token {
+    fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
 impl RuntimeConfig {
     pub fn new(handshake_timeout: Duration) -> Self {
         Self { handshake_timeout }
@@ -115,12 +124,14 @@ impl PeerRecord {
 pub enum PeerSession {
     Disconnected,
     Initiator {
+        handshake_token: Token,
         hello: Hello,
         session_key: SymmetricKey,
         deadline: std::time::Instant,
         stage: InitiatorStage,
     },
     Responder {
+        handshake_token: Token,
         hello: Hello,
         reply: HelloReply,
         secrets: ResponderSecrets,
