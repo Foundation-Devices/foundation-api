@@ -6,8 +6,8 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     handshake,
-    platform::{PeerStatus, QlPlatform},
-    runtime::{PeerRecord, Runtime, RuntimeCommand},
+    platform::QlPlatform,
+    runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand},
     wire::{handshake::HandshakeMessage, QlMessage},
 };
 
@@ -120,11 +120,13 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         let entry = state.upsert_peer(peer, signing_key.clone(), encapsulation_key.clone());
-        entry.pending_hello = Some(hello.clone());
-        entry.status = PeerStatus::Connecting;
-        entry.session_key = Some(session_key);
-        entry.handshake_deadline = Some(Instant::now() + self.config.handshake_timeout);
-        self.platform.handle_peer_status(peer, entry.status);
+        entry.session = PeerSession::Initiator {
+            hello: hello.clone(),
+            session_key,
+            deadline: Instant::now() + self.config.handshake_timeout,
+            stage: InitiatorStage::WaitingHelloReply,
+        };
+        self.platform.handle_peer_status(peer, &entry.session);
 
         let message = QlMessage::Handshake(HandshakeMessage::Hello(hello));
         let bytes = CBOR::from(message).to_cbor_data();
@@ -144,17 +146,17 @@ impl<P: QlPlatform> Runtime<P> {
 
     async fn handle_handshake_timeout(&mut self, state: &mut RuntimeState, peer: XID) {
         if let Some(entry) = state.peer_mut(peer) {
-            if entry.status == PeerStatus::Connecting {
-                if entry
-                    .handshake_deadline
-                    .is_some_and(|deadline| deadline <= Instant::now())
-                {
-                    entry.status = PeerStatus::Disconnected;
-                    entry.pending_hello = None;
-                    entry.session_key = None;
-                    entry.handshake_deadline = None;
-                    self.platform.handle_peer_status(peer, entry.status);
-                }
+            if matches!(entry.session, PeerSession::Connected { .. }) {
+                return;
+            }
+            let deadline = match &entry.session {
+                PeerSession::Initiator { deadline, .. } => Some(*deadline),
+                PeerSession::Responder { deadline, .. } => Some(*deadline),
+                _ => None,
+            };
+            if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+                entry.session = PeerSession::Disconnected;
+                self.platform.handle_peer_status(peer, &entry.session);
             }
         }
     }
@@ -170,6 +172,10 @@ fn next_handshake_deadline(state: &RuntimeState) -> Option<(XID, Instant)> {
     state
         .peers
         .iter()
-        .filter_map(|record| record.handshake_deadline.map(|deadline| (record.peer, deadline)))
+        .filter_map(|record| match &record.session {
+            PeerSession::Initiator { deadline, .. }
+            | PeerSession::Responder { deadline, .. } => Some((record.peer, *deadline)),
+            _ => None,
+        })
         .min_by_key(|(_, deadline)| *deadline)
 }

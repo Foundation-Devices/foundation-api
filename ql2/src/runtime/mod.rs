@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use bc_components::{EncapsulationPublicKey, SigningPublicKey, SymmetricKey, XID};
 
-use crate::{platform::PeerStatus, wire::handshake::Hello};
+use crate::{handshake::ResponderSecrets, wire::handshake::{Hello, HelloReply}};
 
 pub struct RuntimeConfig {
     pub handshake_timeout: Duration,
@@ -82,10 +82,7 @@ pub struct PeerRecord {
     pub peer: XID,
     pub signing_key: SigningPublicKey,
     pub encapsulation_key: EncapsulationPublicKey,
-    pub status: PeerStatus,
-    pub session_key: Option<SymmetricKey>,
-    pub pending_hello: Option<Hello>,
-    pub handshake_deadline: Option<std::time::Instant>,
+    pub session: PeerSession,
 }
 
 impl PeerRecord {
@@ -98,10 +95,33 @@ impl PeerRecord {
             peer,
             signing_key,
             encapsulation_key,
-            status: PeerStatus::Disconnected,
-            session_key: None,
-            pending_hello: None,
-            handshake_deadline: None,
+            session: PeerSession::Disconnected,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum PeerSession {
+    Disconnected,
+    Initiator {
+        hello: Hello,
+        session_key: SymmetricKey,
+        deadline: std::time::Instant,
+        stage: InitiatorStage,
+    },
+    Responder {
+        hello: Hello,
+        reply: HelloReply,
+        secrets: ResponderSecrets,
+        deadline: std::time::Instant,
+    },
+    Connected {
+        session_key: SymmetricKey,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitiatorStage {
+    WaitingHelloReply,
+    WaitingConfirmAck,
 }
