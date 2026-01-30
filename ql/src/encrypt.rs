@@ -239,8 +239,7 @@ pub(crate) fn extract_reset_payload(
     ensure_not_expired(payload.message_id, payload.valid_until)?;
     if let Some(pending) = peer.pending_session() {
         if pending.kind == SessionKind::SessionReset && pending.origin == ResetOrigin::Local {
-            let cmp = handshake_cmp((platform.xid(), pending.id), (sender, payload.message_id));
-            if cmp != Ordering::Less {
+            if sender.cmp(&platform.xid()) != Ordering::Less {
                 return Ok(());
             }
         }
@@ -309,13 +308,6 @@ fn create_session(
     (session_key, kem_ct)
 }
 
-fn handshake_cmp(local: (XID, MessageId), peer: (XID, MessageId)) -> Ordering {
-    match peer.0.cmp(&local.0) {
-        Ordering::Equal => peer.1.cmp(&local.1),
-        order => order,
-    }
-}
-
 fn ensure_not_expired(id: MessageId, valid_until: u64) -> Result<(), QlError> {
     let now = now_secs();
     if now > valid_until {
@@ -360,8 +352,7 @@ pub(crate) fn extract_envelope(
             ..
         }
     ) {
-        ensure_session_init_order(platform, &peer, sender, envelope.message_id)
-            .map_err(EnvelopeError::Error)?;
+        ensure_session_init_order(platform, &peer, sender).map_err(EnvelopeError::Error)?;
         peer.store_session_key(session_key.clone());
     }
     peer.set_pending_session(None);
@@ -400,12 +391,10 @@ fn ensure_session_init_order(
     platform: &impl QlPlatform,
     peer: &impl QlPeer,
     sender: XID,
-    envelope_id: MessageId,
 ) -> Result<(), QlError> {
     if let Some(pending) = peer.pending_session() {
         if pending.kind == SessionKind::SessionInit && pending.origin == ResetOrigin::Local {
-            let cmp = handshake_cmp((platform.xid(), pending.id), (sender, envelope_id));
-            if cmp != Ordering::Less {
+            if sender.cmp(&platform.xid()) != Ordering::Less {
                 return Err(QlError::SessionInitCollision);
             }
         }
