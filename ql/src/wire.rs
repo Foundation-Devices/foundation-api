@@ -56,26 +56,26 @@ pub struct QlDetails {
 }
 
 #[derive(Debug, Clone)]
-pub struct QlMessage {
+pub struct QlEncrypted {
     pub header: QlHeader,
-    pub payload: EncryptedMessage,
+    pub encrypted: EncryptedMessage,
 }
 
-impl From<QlMessage> for CBOR {
-    fn from(value: QlMessage) -> Self {
-        CBOR::from(vec![CBOR::from(value.header), CBOR::from(value.payload)])
+impl From<QlEncrypted> for CBOR {
+    fn from(value: QlEncrypted) -> Self {
+        CBOR::from(vec![CBOR::from(value.header), CBOR::from(value.encrypted)])
     }
 }
 
-impl TryFrom<CBOR> for QlMessage {
+impl TryFrom<CBOR> for QlEncrypted {
     type Error = dcbor::Error;
 
     fn try_from(cbor: CBOR) -> Result<Self, Self::Error> {
         let array = cbor.try_into_array()?;
         let [header_cbor, payload_cbor] = cbor_array::<2>(array)?;
         let header = QlHeader::try_from(header_cbor)?;
-        let payload: EncryptedMessage = payload_cbor.try_into()?;
-        Ok(QlMessage { header, payload })
+        let encrypted: EncryptedMessage = payload_cbor.try_into()?;
+        Ok(QlEncrypted { header, encrypted })
     }
 }
 

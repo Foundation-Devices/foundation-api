@@ -459,17 +459,17 @@ where
     }
 
     fn handle_incoming_bytes(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
-        let message = match CBOR::try_from_data(&bytes).and_then(QlMessage::try_from) {
+        let message = match CBOR::try_from_data(&bytes).and_then(QlEncrypted::try_from) {
             Ok(message) => message,
             Err(_context) => {
                 return;
             }
         };
-        let QlMessage { header, payload } = message;
+        let QlEncrypted { header, encrypted } = message;
 
         if header.kind == MessageKind::Pairing {
             if let Ok((payload, session_key)) =
-                decrypt_pairing_payload(&self.platform, &header, &payload)
+                decrypt_pairing_payload(&self.platform, &header, &encrypted)
             {
                 self.platform.store_peer(
                     payload.signing_pub_key,
@@ -483,7 +483,7 @@ where
 
         if header.kind == MessageKind::SessionReset {
             let sender = header.sender;
-            match extract_reset_payload(&self.platform, header, payload) {
+            match extract_reset_payload(&self.platform, header, encrypted) {
                 Ok(()) => {
                     self.record_activity(state, sender);
                     let reset_entries = state
@@ -501,7 +501,7 @@ where
         let sender = header.sender;
         let kind = header.kind;
 
-        let (details, payload) = match extract_envelope(&self.platform, header, payload) {
+        let (details, payload) = match extract_envelope(&self.platform, header, encrypted) {
             Ok(result) => result,
             Err(QlError::InvalidPayload) | Err(QlError::MissingSession(_)) => {
                 let _ = self.send_session_reset(state, sender);
@@ -616,7 +616,12 @@ where
         }
     }
 
-    fn queue_outbound(&self, state: &mut RuntimeState, id: Option<MessageId>, message: QlMessage) {
+    fn queue_outbound(
+        &self,
+        state: &mut RuntimeState,
+        id: Option<MessageId>,
+        message: QlEncrypted,
+    ) {
         if message.header.kem_ct.is_some() {
             let recipient = message.header.recipient;
             let entry = self.keepalive_entry_mut(state, recipient);
@@ -664,10 +669,7 @@ where
             signature,
             ..header_unsigned
         };
-        let message = QlMessage {
-            header,
-            payload: encrypted,
-        };
+        let message = QlEncrypted { header, encrypted };
         self.queue_outbound(state, None, message);
         Ok(())
     }
