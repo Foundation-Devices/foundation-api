@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use bc_components::{EncapsulationPublicKey, SigningPublicKey, SymmetricKey, XID};
 
-use crate::{handshake::ResponderSecrets, wire::handshake::{Hello, HelloReply}};
+use crate::{crypto::handshake::ResponderSecrets, wire::handshake::{Hello, HelloReply}};
 
 pub struct RuntimeConfig {
     pub handshake_timeout: Duration,

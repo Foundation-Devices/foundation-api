@@ -1,6 +1,5 @@
 mod id;
-pub mod handshake;
-pub mod pairing;
+pub mod crypto;
 pub mod platform;
 pub mod runtime;
 pub mod wire;

@@ -16,8 +16,7 @@ use dcbor::CBOR;
 use tokio::{sync::Semaphore, task::LocalSet};
 
 use crate::{
-    handshake,
-    pairing,
+    crypto::{handshake, pairing},
     platform::{PlatformFuture, QlPlatform},
     runtime::{new_runtime, PeerSession, RuntimeConfig, RuntimeHandle},
     wire::{handshake::HandshakeMessage, QlMessage},

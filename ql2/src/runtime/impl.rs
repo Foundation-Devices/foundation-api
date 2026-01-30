@@ -12,8 +12,7 @@ use dcbor::CBOR;
 use futures_lite::future::poll_fn;
 
 use crate::{
-    handshake,
-    pairing,
+    crypto::{handshake, pairing},
     platform::{PlatformFuture, QlPlatform, QlPlatformExt},
     runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand, Token},
     wire::{handshake::HandshakeMessage, pairing::PairingRequest, QlMessage},
