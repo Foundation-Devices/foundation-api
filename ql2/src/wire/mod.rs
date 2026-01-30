@@ -3,11 +3,24 @@ use dcbor::CBOR;
 pub mod handshake;
 pub mod pairing;
 
-use crate::wire::handshake::HandshakeMessage;
-use crate::wire::pairing::PairingRequest;
+use bc_components::XID;
+
+use crate::wire::{handshake::HandshakeMessage, pairing::PairingRequest};
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum QlMessage {
+pub struct QlMessage {
+    pub header: QlHeader,
+    pub payload: QlPayload,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QlHeader {
+    pub sender: XID,
+    pub recipient: XID,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum QlPayload {
     Handshake(HandshakeMessage),
     Pairing(PairingRequest),
 }
@@ -39,16 +52,15 @@ impl TryFrom<CBOR> for QlTag {
 
 impl From<QlMessage> for CBOR {
     fn from(value: QlMessage) -> Self {
-        match value {
-            QlMessage::Handshake(message) => CBOR::from(vec![
-                CBOR::from(QlTag::Handshake as u8),
-                CBOR::from(message),
-            ]),
-            QlMessage::Pairing(message) => CBOR::from(vec![
-                CBOR::from(QlTag::Pairing as u8),
-                CBOR::from(message),
-            ]),
-        }
+        let (tag, payload) = match value.payload {
+            QlPayload::Handshake(message) => (QlTag::Handshake, CBOR::from(message)),
+            QlPayload::Pairing(message) => (QlTag::Pairing, CBOR::from(message)),
+        };
+        CBOR::from(vec![
+            CBOR::from(tag as u8),
+            CBOR::from(value.header),
+            payload,
+        ])
     }
 }
 
@@ -56,28 +68,45 @@ impl TryFrom<CBOR> for QlMessage {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let array = value.try_into_array()?;
-        if array.len() != 2 {
-            return Err(dcbor::Error::msg("invalid array length"));
-        }
-        let mut iter = array.into_iter();
-        let tag: QlTag = iter
-            .next()
-            .ok_or_else(|| dcbor::Error::msg("missing message tag"))?
-            .try_into()?;
-        let payload = iter
-            .next()
-            .ok_or_else(|| dcbor::Error::msg("missing message payload"))?;
+        let iter = value.try_into_array()?.into_iter();
+        let [tag_cbor, header_cbor, payload] = take_fields(iter)?;
+        let tag = QlTag::try_from(tag_cbor)?;
+        let header = QlHeader::try_from(header_cbor)?;
         match tag {
             QlTag::Handshake => {
                 let message = HandshakeMessage::try_from(payload)?;
-                Ok(QlMessage::Handshake(message))
+                Ok(QlMessage {
+                    header,
+                    payload: QlPayload::Handshake(message),
+                })
             }
             QlTag::Pairing => {
                 let message = PairingRequest::try_from(payload)?;
-                Ok(QlMessage::Pairing(message))
+                Ok(QlMessage {
+                    header,
+                    payload: QlPayload::Pairing(message),
+                })
             }
         }
+    }
+}
+
+impl From<QlHeader> for CBOR {
+    fn from(value: QlHeader) -> Self {
+        CBOR::from(vec![CBOR::from(value.sender), CBOR::from(value.recipient)])
+    }
+}
+
+impl TryFrom<CBOR> for QlHeader {
+    type Error = dcbor::Error;
+
+    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
+        let iter = value.try_into_array()?.into_iter();
+        let [sender_cbor, recipient_cbor] = take_fields(iter)?;
+        Ok(Self {
+            sender: sender_cbor.try_into()?,
+            recipient: recipient_cbor.try_into()?,
+        })
     }
 }
 

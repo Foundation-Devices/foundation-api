@@ -15,7 +15,7 @@ use crate::{
     crypto::{handshake, pairing},
     platform::{PlatformFuture, QlPlatform, QlPlatformExt},
     runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand, Token},
-    wire::{handshake::HandshakeMessage, pairing::PairingRequest, QlMessage},
+    wire::{handshake::HandshakeMessage, pairing::PairingRequest, QlHeader, QlMessage, QlPayload},
     QlError,
 };
 
@@ -232,7 +232,13 @@ impl<P: QlPlatform> Runtime<P> {
             self.platform.handle_peer_status(peer, &entry.session);
         }
 
-        let message = QlMessage::Handshake(HandshakeMessage::Hello(hello));
+        let message = QlMessage {
+            header: QlHeader {
+                sender: self.platform.xid(),
+                recipient: peer,
+            },
+            payload: QlPayload::Handshake(HandshakeMessage::Hello(hello)),
+        };
         let bytes = CBOR::from(message).to_cbor_data();
         self.enqueue_handshake_message(state, peer, token, deadline, bytes);
     }
@@ -254,35 +260,41 @@ impl<P: QlPlatform> Runtime<P> {
         let Ok(message) = CBOR::try_from_data(&bytes).and_then(QlMessage::try_from) else {
             return;
         };
-        match message {
-            QlMessage::Handshake(message) => {
-                self.handle_handshake(state, message);
-            }
-            QlMessage::Pairing(request) => {
-                self.handle_pairing(state, request);
-            }
-        }
-    }
-
-    fn handle_handshake(&self, state: &mut RuntimeState, message: HandshakeMessage) {
-        match message {
-            HandshakeMessage::Hello(hello) => {
-                self.handle_hello(state, hello);
-            }
-            HandshakeMessage::HelloReply(reply) => {
-                self.handle_hello_reply(state, reply);
-            }
-            HandshakeMessage::Confirm(confirm) => {
-                self.handle_confirm(state, confirm);
-            }
-        }
-    }
-
-    fn handle_pairing(&self, state: &mut RuntimeState, request: PairingRequest) {
-        if request.header.recipient != self.platform.xid() {
+        let QlMessage { header, payload } = message;
+        if header.recipient != self.platform.xid() {
             return;
         }
-        let payload = match pairing::decrypt_pairing_request(&self.platform, request) {
+        match payload {
+            QlPayload::Handshake(message) => {
+                self.handle_handshake(state, header, message);
+            }
+            QlPayload::Pairing(request) => {
+                self.handle_pairing(state, header, request);
+            }
+        }
+    }
+
+    fn handle_handshake(
+        &self,
+        state: &mut RuntimeState,
+        header: QlHeader,
+        message: HandshakeMessage,
+    ) {
+        match message {
+            HandshakeMessage::Hello(hello) => {
+                self.handle_hello(state, header, hello);
+            }
+            HandshakeMessage::HelloReply(reply) => {
+                self.handle_hello_reply(state, header, reply);
+            }
+            HandshakeMessage::Confirm(confirm) => {
+                self.handle_confirm(state, header, confirm);
+            }
+        }
+    }
+
+    fn handle_pairing(&self, state: &mut RuntimeState, header: QlHeader, request: PairingRequest) {
+        let payload = match pairing::decrypt_pairing_request(&self.platform, &header, request) {
             Ok(payload) => payload,
             Err(_) => return,
         };
@@ -291,17 +303,14 @@ impl<P: QlPlatform> Runtime<P> {
         self.handle_connect(state, peer);
     }
 
-    fn handle_hello(&self, state: &mut RuntimeState, hello: crate::wire::handshake::Hello) {
-        if hello.header.recipient != self.platform.xid() {
-            return;
-        }
-        let peer = hello.header.sender;
+    fn handle_hello(&self, state: &mut RuntimeState, header: QlHeader, hello: crate::wire::handshake::Hello) {
+        let peer = header.sender;
         let action = match state.peer(peer) {
             Some(entry) => match &entry.session {
                 PeerSession::Initiator {
                     hello: local_hello, ..
                 } => {
-                    if peer_hello_wins(local_hello, &hello) {
+                    if peer_hello_wins(local_hello, self.platform.xid(), &hello, peer) {
                         HelloAction::StartResponder
                     } else {
                         HelloAction::Ignore
@@ -334,7 +343,13 @@ impl<P: QlPlatform> Runtime<P> {
                 self.start_responder_handshake(state, peer, hello);
             }
             HelloAction::ResendReply { reply, deadline } => {
-                let message = QlMessage::Handshake(HandshakeMessage::HelloReply(reply));
+                let message = QlMessage {
+                    header: QlHeader {
+                        sender: self.platform.xid(),
+                        recipient: peer,
+                    },
+                    payload: QlPayload::Handshake(HandshakeMessage::HelloReply(reply)),
+                };
                 let bytes = CBOR::from(message).to_cbor_data();
                 self.enqueue_outbound(state, peer, bytes, deadline);
             }
@@ -345,12 +360,10 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_hello_reply(
         &self,
         state: &mut RuntimeState,
+        header: QlHeader,
         reply: crate::wire::handshake::HelloReply,
     ) {
-        if reply.header.recipient != self.platform.xid() {
-            return;
-        }
-        let peer = reply.header.sender;
+        let peer = header.sender;
         let (hello, initiator_secret, stage, responder_signing_key) = match state.peer(peer) {
             Some(entry) => match &entry.session {
                 PeerSession::Initiator {
@@ -375,6 +388,8 @@ impl<P: QlPlatform> Runtime<P> {
 
         let confirm = match handshake::build_confirm(
             &self.platform,
+            self.platform.xid(),
+            peer,
             &responder_signing_key,
             &hello,
             &reply,
@@ -396,17 +411,20 @@ impl<P: QlPlatform> Runtime<P> {
             }
         };
 
-        let message = QlMessage::Handshake(HandshakeMessage::Confirm(confirm));
+        let message = QlMessage {
+            header: QlHeader {
+                sender: self.platform.xid(),
+                recipient: peer,
+            },
+            payload: QlPayload::Handshake(HandshakeMessage::Confirm(confirm)),
+        };
         let bytes = CBOR::from(message).to_cbor_data();
         let deadline = Instant::now() + self.config.handshake_timeout;
         self.enqueue_outbound(state, peer, bytes, deadline);
     }
 
-    fn handle_confirm(&self, state: &mut RuntimeState, confirm: crate::wire::handshake::Confirm) {
-        if confirm.header.recipient != self.platform.xid() {
-            return;
-        }
-        let peer = confirm.header.sender;
+    fn handle_confirm(&self, state: &mut RuntimeState, header: QlHeader, confirm: crate::wire::handshake::Confirm) {
+        let peer = header.sender;
         let (hello, reply, secrets, initiator_signing_key) = match state.peer(peer) {
             Some(entry) => match &entry.session {
                 PeerSession::Responder {
@@ -426,6 +444,8 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         match handshake::finalize_confirm(
+            peer,
+            self.platform.xid(),
             &initiator_signing_key,
             &hello,
             &reply,
@@ -459,6 +479,7 @@ impl<P: QlPlatform> Runtime<P> {
         };
         let (reply, secrets) = match handshake::respond_hello(
             &self.platform,
+            peer,
             self.platform.xid(),
             &encapsulation_key,
             &hello,
@@ -486,7 +507,13 @@ impl<P: QlPlatform> Runtime<P> {
             self.platform.handle_peer_status(peer, &entry.session);
         }
 
-        let message = QlMessage::Handshake(HandshakeMessage::HelloReply(reply));
+        let message = QlMessage {
+            header: QlHeader {
+                sender: self.platform.xid(),
+                recipient: peer,
+            },
+            payload: QlPayload::Handshake(HandshakeMessage::HelloReply(reply)),
+        };
         let bytes = CBOR::from(message).to_cbor_data();
         self.enqueue_handshake_message(state, peer, token, deadline, bytes);
     }
@@ -622,7 +649,9 @@ fn next_timeout_deadline(state: &RuntimeState) -> Option<Instant> {
 
 fn peer_hello_wins(
     local_hello: &crate::wire::handshake::Hello,
+    local_sender: XID,
     peer_hello: &crate::wire::handshake::Hello,
+    peer_sender: XID,
 ) -> bool {
     use std::cmp::Ordering;
 
@@ -630,12 +659,7 @@ fn peer_hello_wins(
         Ordering::Less => true,
         Ordering::Greater => false,
         Ordering::Equal => {
-            peer_hello
-                .header
-                .sender
-                .data()
-                .cmp(local_hello.header.sender.data())
-                == Ordering::Less
+            peer_sender.data().cmp(local_sender.data()) == Ordering::Less
         }
     }
 }

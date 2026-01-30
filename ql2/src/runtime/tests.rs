@@ -19,7 +19,7 @@ use crate::{
     crypto::{handshake, pairing},
     platform::{PlatformFuture, QlPlatform},
     runtime::{new_runtime, PeerSession, RuntimeConfig, RuntimeHandle},
-    wire::{handshake::HandshakeMessage, QlMessage},
+    wire::{handshake::HandshakeMessage, QlHeader, QlMessage, QlPayload},
     MessageId, QlError,
 };
 
@@ -416,7 +416,7 @@ async fn pairing_request_triggers_handshake() {
         let peer_a = XID::new(&signing_a);
         let peer_b = XID::new(&signing_b);
 
-        let pairing_request = pairing::build_pairing_request(
+        let pairing_message = pairing::build_pairing_message(
             &platform_a,
             peer_b,
             &encap_b,
@@ -424,7 +424,7 @@ async fn pairing_request_triggers_handshake() {
             Duration::from_secs(1),
         )
         .expect("pairing request");
-        let pairing_bytes = CBOR::from(QlMessage::Pairing(pairing_request)).to_cbor_data();
+        let pairing_bytes = CBOR::from(pairing_message).to_cbor_data();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
@@ -504,7 +504,13 @@ async fn handshake_timeout_drops_queued_messages() {
 
         let (hello, _secret) = handshake::build_hello(&platform_b, peer_b, peer_a, &encap_a)
             .expect("hello build");
-        let message = QlMessage::Handshake(HandshakeMessage::Hello(hello));
+        let message = QlMessage {
+            header: QlHeader {
+                sender: peer_b,
+                recipient: peer_a,
+            },
+            payload: QlPayload::Handshake(HandshakeMessage::Hello(hello)),
+        };
         let bytes = CBOR::from(message).to_cbor_data();
         handle_a.send_incoming(bytes).await.unwrap();
 
