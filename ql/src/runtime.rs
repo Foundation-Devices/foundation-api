@@ -221,13 +221,19 @@ struct PendingHeartbeat {
     deadline: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum HeartbeatState {
+    Idle,
+    Waiting { next_heartbeat_at: Instant },
+    Pending { heartbeat: PendingHeartbeat },
+}
+
 #[derive(Debug)]
 struct PeerKeepAlive {
     peer: XID,
     last_activity: Option<Instant>,
-    next_heartbeat_at: Option<Instant>,
-    pending_heartbeat: Option<PendingHeartbeat>,
-    status: Option<PeerStatus>,
+    heartbeat: HeartbeatState,
+    status: PeerStatus,
 }
 
 impl PeerKeepAlive {
@@ -235,9 +241,15 @@ impl PeerKeepAlive {
         Self {
             peer,
             last_activity: None,
-            next_heartbeat_at: None,
-            pending_heartbeat: None,
-            status: None,
+            heartbeat: HeartbeatState::Idle,
+            status: PeerStatus::Disconnected,
+        }
+    }
+
+    fn pending_heartbeat_id(&self) -> Option<MessageId> {
+        match self.heartbeat {
+            HeartbeatState::Pending { heartbeat } => Some(heartbeat.id),
+            _ => None,
         }
     }
 }
@@ -282,9 +294,6 @@ where
         };
         let mut in_flight: Option<InFlightWrite<'_>> = None;
         loop {
-            self.process_request_timeouts(&mut state);
-            self.process_keepalives(&mut state);
-
             if in_flight.is_none() {
                 if let Some(message) = state.outbound.pop_front() {
                     in_flight = Some(InFlightWrite {
@@ -563,8 +572,8 @@ where
             .keepalive
             .iter()
             .find(|entry| entry.peer == details.sender)
-            .and_then(|entry| entry.pending_heartbeat)
-            .map_or(false, |pending| pending.id == details.message_id);
+            .and_then(|entry| entry.pending_heartbeat_id())
+            .map_or(false, |id| id == details.message_id);
 
         if !is_response {
             if let Err(error) =
@@ -611,8 +620,7 @@ where
         if message.header.kem_ct.is_some() {
             let recipient = message.header.recipient;
             let entry = self.keepalive_entry_mut(state, recipient);
-            entry.pending_heartbeat = None;
-            entry.next_heartbeat_at = None;
+            entry.heartbeat = HeartbeatState::Idle;
             self.update_peer_status(entry, recipient, PeerStatus::Connecting);
         }
         let bytes = message.to_cbor_data();
@@ -690,9 +698,9 @@ where
     }
 
     fn update_peer_status(&self, entry: &mut PeerKeepAlive, peer: XID, status: PeerStatus) {
-        if entry.status != Some(status) {
+        if entry.status != status {
             self.platform.handle_peer_status(peer, status);
-            entry.status = Some(status);
+            entry.status = status;
         }
     }
 
@@ -713,13 +721,14 @@ where
         let now = Instant::now();
         let entry = self.keepalive_entry_mut(state, peer);
         entry.last_activity = Some(now);
-        entry.pending_heartbeat = None;
         self.update_peer_status(entry, peer, PeerStatus::Connected);
         if let Some(config) = self.keep_alive_config() {
             let deadline = now + config.interval;
-            entry.next_heartbeat_at = Some(deadline);
+            entry.heartbeat = HeartbeatState::Waiting {
+                next_heartbeat_at: deadline,
+            };
         } else {
-            entry.next_heartbeat_at = None;
+            entry.heartbeat = HeartbeatState::Idle;
         }
     }
 
@@ -763,45 +772,53 @@ where
             return;
         };
         let now = Instant::now();
-        let mut send_targets = Vec::new();
-        for entry in &mut state.keepalive {
-            if let Some(pending) = entry.pending_heartbeat {
-                if pending.deadline <= now {
-                    entry.pending_heartbeat = None;
-                    entry.next_heartbeat_at = None;
-                    self.update_peer_status(entry, entry.peer, PeerStatus::Disconnected);
+        let mut index = 0;
+        while index < state.keepalive.len() {
+            let mut send_peer = None;
+            {
+                let entry = &mut state.keepalive[index];
+                match entry.heartbeat {
+                    HeartbeatState::Pending { heartbeat } => {
+                        if heartbeat.deadline <= now {
+                            entry.heartbeat = HeartbeatState::Idle;
+                            self.update_peer_status(entry, entry.peer, PeerStatus::Disconnected);
+                        }
+                    }
+                    HeartbeatState::Waiting { next_heartbeat_at } => {
+                        if entry.status == PeerStatus::Connected && next_heartbeat_at <= now {
+                            entry.heartbeat = HeartbeatState::Idle;
+                            send_peer = Some(entry.peer);
+                        }
+                    }
+                    HeartbeatState::Idle => {}
                 }
-                continue;
             }
-            if entry.status != Some(PeerStatus::Connected) {
-                continue;
-            }
-            let Some(deadline) = entry.next_heartbeat_at else {
-                continue;
-            };
-            if deadline <= now {
-                entry.next_heartbeat_at = None;
-                send_targets.push(entry.peer);
-            }
-        }
 
-        for peer in send_targets {
-            let heartbeat_id = state.next_id();
-            let heartbeat_deadline = now + config.timeout;
-            let send_result = self.send_heartbeat_message(state, peer, heartbeat_id);
-            let entry = self.keepalive_entry_mut(state, peer);
-            match send_result {
-                Ok(true) => {
-                    entry.pending_heartbeat = Some(PendingHeartbeat {
-                        id: heartbeat_id,
-                        deadline: heartbeat_deadline,
-                    });
-                    self.update_peer_status(entry, peer, PeerStatus::HeartbeatPending);
+            if let Some(peer) = send_peer {
+                let heartbeat_id = state.next_id();
+                let send_result = self.send_heartbeat_message(state, peer, heartbeat_id);
+                match send_result {
+                    Ok(true) => {
+                        let entry = &mut state.keepalive[index];
+                        entry.heartbeat = HeartbeatState::Pending {
+                            heartbeat: PendingHeartbeat {
+                                id: heartbeat_id,
+                                deadline: now + config.timeout,
+                            },
+                        };
+                        self.update_peer_status(entry, peer, PeerStatus::HeartbeatPending);
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.platform.handle_error(error);
+                    }
                 }
-                Ok(false) => {}
-                Err(error) => {
-                    self.platform.handle_error(error);
-                }
+            }
+
+            if state.keepalive[index].status == PeerStatus::Disconnected {
+                state.keepalive.swap_remove(index);
+            } else {
+                index += 1;
             }
         }
     }
@@ -816,11 +833,12 @@ where
         let now = Instant::now();
         let mut next_deadline: Option<Instant> = None;
         for entry in entries {
-            if let Some(deadline) = entry.next_heartbeat_at {
-                next_deadline = Some(next_deadline.map_or(deadline, |next| next.min(deadline)));
-            }
-            if let Some(pending) = entry.pending_heartbeat {
-                let deadline = pending.deadline;
+            let deadline = match entry.heartbeat {
+                HeartbeatState::Waiting { next_heartbeat_at } => Some(next_heartbeat_at),
+                HeartbeatState::Pending { heartbeat } => Some(heartbeat.deadline),
+                HeartbeatState::Idle => None,
+            };
+            if let Some(deadline) = deadline {
                 next_deadline = Some(next_deadline.map_or(deadline, |next| next.min(deadline)));
             }
         }
