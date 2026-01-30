@@ -3,7 +3,7 @@ use bc_components::{
 };
 use dcbor::CBOR;
 
-use crate::{MessageId, RouteId};
+use crate::{MessageId, RouteId, SessionEpoch};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
@@ -44,6 +44,7 @@ pub enum QlHeader {
     Message {
         sender: XID,
         recipient: XID,
+        epoch: SessionEpoch,
         session: SessionState,
     },
 }
@@ -73,6 +74,7 @@ pub struct QlEnvelope {
 pub struct SessionPayload {
     pub message_id: MessageId,
     pub valid_until: u64,
+    pub session_epoch: SessionEpoch,
 }
 
 /// aggregated request information
@@ -151,15 +153,19 @@ impl QlHeader {
             Self::Message {
                 sender,
                 recipient,
+                epoch,
                 session,
             } => match session {
                 SessionState::Established => {
-                    Self::header_cbor_message(*sender, *recipient).to_cbor_data()
+                    Self::header_cbor_message(*sender, *recipient, *epoch).to_cbor_data()
                 }
-                SessionState::Init { kem_ct, .. } => {
-                    Self::header_cbor_message_init_unsigned(*sender, *recipient, kem_ct.clone())
-                        .to_cbor_data()
-                }
+                SessionState::Init { kem_ct, .. } => Self::header_cbor_message_init_unsigned(
+                    *sender,
+                    *recipient,
+                    *epoch,
+                    kem_ct.clone(),
+                )
+                .to_cbor_data(),
             },
         }
     }
@@ -167,9 +173,11 @@ impl QlHeader {
     pub fn message_init_aad(
         sender: XID,
         recipient: XID,
+        epoch: SessionEpoch,
         kem_ct: &EncapsulationCiphertext,
     ) -> Vec<u8> {
-        Self::header_cbor_message_init_unsigned(sender, recipient, kem_ct.clone()).to_cbor_data()
+        Self::header_cbor_message_init_unsigned(sender, recipient, epoch, kem_ct.clone())
+            .to_cbor_data()
     }
 
     pub fn session_reset_aad(
@@ -209,23 +217,26 @@ impl QlHeader {
         ])
     }
 
-    fn header_cbor_message(sender: XID, recipient: XID) -> CBOR {
+    fn header_cbor_message(sender: XID, recipient: XID, epoch: SessionEpoch) -> CBOR {
         CBOR::from(vec![
             CBOR::from(0u8),
             CBOR::from(sender),
             CBOR::from(recipient),
+            CBOR::from(epoch),
         ])
     }
 
     fn header_cbor_message_init_unsigned(
         sender: XID,
         recipient: XID,
+        epoch: SessionEpoch,
         kem_ct: EncapsulationCiphertext,
     ) -> CBOR {
         CBOR::from(vec![
             CBOR::from(1u8),
             CBOR::from(sender),
             CBOR::from(recipient),
+            CBOR::from(epoch),
             CBOR::from(kem_ct),
         ])
     }
@@ -254,13 +265,17 @@ impl From<QlHeader> for CBOR {
             QlHeader::Message {
                 sender,
                 recipient,
+                epoch,
                 session,
             } => match session {
-                SessionState::Established => QlHeader::header_cbor_message(sender, recipient),
+                SessionState::Established => {
+                    QlHeader::header_cbor_message(sender, recipient, epoch)
+                }
                 SessionState::Init { kem_ct, signature } => CBOR::from(vec![
                     CBOR::from(1u8),
                     CBOR::from(sender),
                     CBOR::from(recipient),
+                    CBOR::from(epoch),
                     CBOR::from(kem_ct),
                     CBOR::from(signature),
                 ]),
@@ -281,19 +296,21 @@ impl TryFrom<CBOR> for QlHeader {
             .try_into()?;
         match tag {
             0 => {
-                let [_tag, sender_cbor, recipient_cbor] = cbor_array::<3>(array)?;
+                let [_tag, sender_cbor, recipient_cbor, epoch_cbor] = cbor_array::<4>(array)?;
                 Ok(Self::Message {
                     sender: sender_cbor.try_into()?,
                     recipient: recipient_cbor.try_into()?,
+                    epoch: epoch_cbor.try_into()?,
                     session: SessionState::Established,
                 })
             }
             1 => {
-                let [_tag, sender_cbor, recipient_cbor, kem_ct_cbor, signature_cbor] =
-                    cbor_array::<5>(array)?;
+                let [_tag, sender_cbor, recipient_cbor, epoch_cbor, kem_ct_cbor, signature_cbor] =
+                    cbor_array::<6>(array)?;
                 Ok(Self::Message {
                     sender: sender_cbor.try_into()?,
                     recipient: recipient_cbor.try_into()?,
+                    epoch: epoch_cbor.try_into()?,
                     session: SessionState::Init {
                         kem_ct: kem_ct_cbor.try_into()?,
                         signature: signature_cbor.try_into()?,
@@ -357,6 +374,7 @@ impl From<SessionPayload> for CBOR {
         CBOR::from(vec![
             CBOR::from(value.message_id),
             CBOR::from(value.valid_until),
+            CBOR::from(value.session_epoch),
         ])
     }
 }
@@ -366,10 +384,11 @@ impl TryFrom<CBOR> for SessionPayload {
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let array = value.try_into_array()?;
-        let [id_cbor, valid_until_cbor] = cbor_array::<2>(array)?;
+        let [id_cbor, valid_until_cbor, epoch_cbor] = cbor_array::<3>(array)?;
         Ok(Self {
             message_id: id_cbor.try_into()?,
             valid_until: valid_until_cbor.try_into()?,
+            session_epoch: epoch_cbor.try_into()?,
         })
     }
 }

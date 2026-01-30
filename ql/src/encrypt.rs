@@ -12,7 +12,7 @@ use crate::{
         DecryptedMessage, EncryptedMessage, MessageKind, Nack, PairingPayload, QlDetails,
         QlEnvelope, QlHeader, SessionPayload, SessionState,
     },
-    MessageId, QlError, RouteId,
+    MessageId, QlError, RouteId, SessionEpoch,
 };
 
 #[derive(Debug)]
@@ -36,12 +36,16 @@ pub(crate) fn encrypt_payload_for_recipient(
 ) -> Result<EncryptedMessage, QlError> {
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let session_setup = match peer.session() {
-        Some(session_key) => SessionSetup::Existing { session_key },
+        Some(session_key) => {
+            let epoch = peer.session_epoch().ok_or(QlError::InvalidPayload)?;
+            SessionSetup::Existing { session_key, epoch }
+        }
         None => {
-            let (session_key, kem_ct) = create_session(&peer, message_id);
+            let (session_key, kem_ct, epoch) = create_session(&peer, message_id);
             SessionSetup::Init {
                 session_key,
                 kem_ct,
+                epoch,
             }
         }
     };
@@ -55,10 +59,11 @@ pub(crate) fn encrypt_payload_for_recipient(
     };
     let payload_bytes = CBOR::from(envelope).to_cbor_data();
     let (session_key, header, aad) = match session_setup {
-        SessionSetup::Existing { session_key } => {
+        SessionSetup::Existing { session_key, epoch } => {
             let header = QlHeader::Message {
                 sender: platform.xid(),
                 recipient,
+                epoch,
                 session: SessionState::Established,
             };
             let aad = header.aad_data();
@@ -67,12 +72,14 @@ pub(crate) fn encrypt_payload_for_recipient(
         SessionSetup::Init {
             session_key,
             kem_ct,
+            epoch,
         } => {
-            let aad = QlHeader::message_init_aad(platform.xid(), recipient, &kem_ct);
+            let aad = QlHeader::message_init_aad(platform.xid(), recipient, epoch, &kem_ct);
             let signature = sign_header(platform.signer(), &aad);
             let header = QlHeader::Message {
                 sender: platform.xid(),
                 recipient,
+                epoch,
                 session: SessionState::Init { kem_ct, signature },
             };
             (session_key, header, aad)
@@ -92,6 +99,7 @@ pub(crate) fn encrypt_response(
 ) -> Result<EncryptedMessage, QlError> {
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let session_key = peer.session().ok_or(QlError::MissingSession(recipient))?;
+    let epoch = peer.session_epoch().ok_or(QlError::InvalidPayload)?;
     let valid_until = now_secs().saturating_add(expiration.as_secs());
     let envelope = QlEnvelope {
         message_id,
@@ -103,6 +111,7 @@ pub(crate) fn encrypt_response(
     let header = QlHeader::Message {
         sender: platform.xid(),
         recipient,
+        epoch,
         session: SessionState::Established,
     };
     let aad = header.aad_data();
@@ -219,9 +228,18 @@ pub(crate) fn session_key_for_header(
         } => platform.decapsulate_shared_secret(kem_ct),
         QlHeader::Message {
             sender,
+            epoch,
             session: SessionState::Established,
             ..
-        } => peer.session().ok_or(QlError::MissingSession(*sender)),
+        } => {
+            let Some(current_epoch) = peer.session_epoch() else {
+                return Err(QlError::MissingSession(*sender));
+            };
+            if *epoch != current_epoch {
+                return Err(QlError::StaleSession);
+            }
+            peer.session().ok_or(QlError::MissingSession(*sender))
+        }
     }
 }
 
@@ -237,18 +255,38 @@ pub(crate) fn extract_reset_payload(
     let peer = platform.lookup_peer_or_fail(sender)?;
     let (payload, session_key) = decrypt_session_payload(platform, &peer, &header, &encrypted)?;
     ensure_not_expired(payload.message_id, payload.valid_until)?;
+    let mut has_local_pending = false;
     if let Some(pending) = peer.pending_session() {
         if pending.kind == SessionKind::SessionReset && pending.origin == ResetOrigin::Local {
-            if sender.cmp(&platform.xid()) != Ordering::Less {
+            has_local_pending = true;
+            match payload.session_epoch.cmp(&pending.epoch) {
+                Ordering::Less => return Ok(()),
+                Ordering::Equal => {
+                    if !peer_session_wins(
+                        (platform.xid(), pending.epoch),
+                        (sender, payload.session_epoch),
+                    ) {
+                        return Ok(());
+                    }
+                }
+                Ordering::Greater => {}
+            }
+        }
+    }
+    if !has_local_pending {
+        if let Some(current_epoch) = peer.session_epoch() {
+            if payload.session_epoch <= current_epoch {
                 return Ok(());
             }
         }
     }
     peer.store_session_key(session_key.clone());
+    peer.set_session_epoch(Some(payload.session_epoch));
     peer.set_pending_session(Some(PendingSession {
         kind: SessionKind::SessionReset,
         origin: ResetOrigin::Peer,
         id: payload.message_id,
+        epoch: payload.session_epoch,
     }));
     Ok(())
 }
@@ -267,10 +305,12 @@ pub(crate) fn now_secs() -> u64 {
 enum SessionSetup {
     Existing {
         session_key: SymmetricKey,
+        epoch: SessionEpoch,
     },
     Init {
         session_key: SymmetricKey,
         kem_ct: EncapsulationCiphertext,
+        epoch: SessionEpoch,
     },
 }
 
@@ -296,16 +336,25 @@ fn pairing_proof_data(
 fn create_session(
     peer: &impl QlPeer,
     message_id: MessageId,
-) -> (SymmetricKey, EncapsulationCiphertext) {
+) -> (SymmetricKey, EncapsulationCiphertext, SessionEpoch) {
     let recipient_key = peer.encapsulation_pub_key();
     let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
+    let epoch = next_session_epoch(peer);
     peer.store_session_key(session_key.clone());
+    peer.set_session_epoch(Some(epoch));
     peer.set_pending_session(Some(PendingSession {
         kind: SessionKind::SessionInit,
         origin: ResetOrigin::Local,
         id: message_id,
+        epoch,
     }));
-    (session_key, kem_ct)
+    (session_key, kem_ct, epoch)
+}
+
+fn next_session_epoch(peer: &impl QlPeer) -> SessionEpoch {
+    peer.session_epoch()
+        .map(SessionEpoch::next)
+        .unwrap_or_else(|| SessionEpoch::new(1))
 }
 
 fn ensure_not_expired(id: MessageId, valid_until: u64) -> Result<(), QlError> {
@@ -352,8 +401,13 @@ pub(crate) fn extract_envelope(
             ..
         }
     ) {
-        ensure_session_init_order(platform, &peer, sender).map_err(EnvelopeError::Error)?;
+        let epoch = match header {
+            QlHeader::Message { epoch, .. } => epoch,
+            _ => return Err(EnvelopeError::Error(QlError::InvalidPayload)),
+        };
+        ensure_session_init_order(platform, &peer, sender, epoch).map_err(EnvelopeError::Error)?;
         peer.store_session_key(session_key.clone());
+        peer.set_session_epoch(Some(epoch));
     }
     peer.set_pending_session(None);
     let details = QlDetails::from_parts(&header, &envelope);
@@ -391,13 +445,34 @@ fn ensure_session_init_order(
     platform: &impl QlPlatform,
     peer: &impl QlPeer,
     sender: XID,
+    epoch: SessionEpoch,
 ) -> Result<(), QlError> {
     if let Some(pending) = peer.pending_session() {
         if pending.kind == SessionKind::SessionInit && pending.origin == ResetOrigin::Local {
-            if sender.cmp(&platform.xid()) != Ordering::Less {
-                return Err(QlError::SessionInitCollision);
+            match epoch.cmp(&pending.epoch) {
+                Ordering::Less => return Err(QlError::StaleSession),
+                Ordering::Equal => {
+                    if !peer_session_wins((platform.xid(), pending.epoch), (sender, epoch)) {
+                        return Err(QlError::SessionInitCollision);
+                    }
+                }
+                Ordering::Greater => {}
             }
+            return Ok(());
+        }
+    }
+    if let Some(current_epoch) = peer.session_epoch() {
+        if epoch <= current_epoch {
+            return Err(QlError::StaleSession);
         }
     }
     Ok(())
+}
+
+fn peer_session_wins(local: (XID, SessionEpoch), peer: (XID, SessionEpoch)) -> bool {
+    match peer.1.cmp(&local.1) {
+        Ordering::Greater => true,
+        Ordering::Less => false,
+        Ordering::Equal => peer.0 < local.0,
+    }
 }

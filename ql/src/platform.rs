@@ -6,7 +6,7 @@ use bc_components::{
 };
 use dcbor::CBOR;
 
-use crate::{MessageId, QlError};
+use crate::{MessageId, QlError, SessionEpoch};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -21,6 +21,7 @@ pub trait QlPlatform {
         signing_pub_key: SigningPublicKey,
         encapsulation_pub_key: EncapsulationPublicKey,
         session: SymmetricKey,
+        session_epoch: SessionEpoch,
     );
 
     fn encapsulation_private_key(&self) -> EncapsulationPrivateKey;
@@ -38,7 +39,9 @@ pub trait QlPeer {
     fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey;
     fn signing_pub_key(&self) -> &SigningPublicKey;
     fn session(&self) -> Option<SymmetricKey>;
+    fn session_epoch(&self) -> Option<SessionEpoch>;
     fn store_session_key(&self, key: SymmetricKey);
+    fn set_session_epoch(&self, epoch: Option<SessionEpoch>);
     fn pending_session(&self) -> Option<PendingSession>;
     fn set_pending_session(&self, handshake: Option<PendingSession>);
 }
@@ -59,8 +62,16 @@ where
         (**self).session()
     }
 
+    fn session_epoch(&self) -> Option<SessionEpoch> {
+        (**self).session_epoch()
+    }
+
     fn store_session_key(&self, key: SymmetricKey) {
         (**self).store_session_key(key)
+    }
+
+    fn set_session_epoch(&self, epoch: Option<SessionEpoch>) {
+        (**self).set_session_epoch(epoch)
     }
 
     fn pending_session(&self) -> Option<PendingSession> {
@@ -97,6 +108,7 @@ pub struct PendingSession {
     pub kind: SessionKind,
     pub origin: ResetOrigin,
     pub id: MessageId,
+    pub epoch: SessionEpoch,
 }
 
 pub(crate) trait QlPlatformExt: QlPlatform {

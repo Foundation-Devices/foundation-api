@@ -35,6 +35,8 @@ pub enum QlError {
     UnknownPeer(bc_components::XID),
     #[error("session init collision")]
     SessionInitCollision,
+    #[error("stale session")]
+    StaleSession,
     #[error("session reset")]
     SessionReset,
     #[error("timeout")]

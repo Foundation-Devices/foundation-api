@@ -26,13 +26,18 @@ use crate::{
     router::{EventHandler, QlRequest, RequestHandler, Router},
     runtime::{HandlerStream, KeepAliveConfig, RequestConfig, Runtime, RuntimeConfig},
     wire::*,
-    Event, MessageId, QlError, RequestResponse, RouteId,
+    Event, MessageId, QlError, RequestResponse, RouteId, SessionEpoch,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 fn next_id() -> MessageId {
     MessageId::new(NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed))
+}
+
+fn next_epoch() -> SessionEpoch {
+    SessionEpoch::new(NEXT_EPOCH.fetch_add(1, AtomicOrdering::Relaxed))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,9 +278,11 @@ impl QlPlatform for TestPlatform {
         signing_pub_key: SigningPublicKey,
         encapsulation_pub_key: EncapsulationPublicKey,
         session: SymmetricKey,
+        session_epoch: SessionEpoch,
     ) {
         let peer = Arc::new(TestPeer::new(encapsulation_pub_key, signing_pub_key));
         peer.store_session_key(session);
+        peer.set_session_epoch(Some(session_epoch));
         let mut guard = self.inner.peer.lock().unwrap();
         *guard = Some(peer);
     }
@@ -294,6 +301,7 @@ struct TestPeer {
     encapsulation_public_key: EncapsulationPublicKey,
     signing_public_key: SigningPublicKey,
     session: Mutex<Option<SymmetricKey>>,
+    session_epoch: Mutex<Option<SessionEpoch>>,
     pending_session: Mutex<Option<PendingSession>>,
 }
 
@@ -306,6 +314,7 @@ impl TestPeer {
             encapsulation_public_key,
             signing_public_key,
             session: Mutex::new(None),
+            session_epoch: Mutex::new(None),
             pending_session: Mutex::new(None),
         }
     }
@@ -324,9 +333,18 @@ impl QlPeer for TestPeer {
         self.session.lock().unwrap().clone()
     }
 
+    fn session_epoch(&self) -> Option<SessionEpoch> {
+        *self.session_epoch.lock().unwrap()
+    }
+
     fn store_session_key(&self, key: SymmetricKey) {
         let mut guard = self.session.lock().unwrap();
         *guard = Some(key);
+    }
+
+    fn set_session_epoch(&self, epoch: Option<SessionEpoch>) {
+        let mut guard = self.session_epoch.lock().unwrap();
+        *guard = epoch;
     }
 
     fn pending_session(&self) -> Option<PendingSession> {
@@ -479,6 +497,7 @@ fn build_reset_message(
     sender: &QlIdentity,
     recipient: &QlIdentity,
     id: MessageId,
+    epoch: SessionEpoch,
 ) -> EncryptedMessage {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -499,6 +518,7 @@ fn build_reset_message(
     let envelope = SessionPayload {
         message_id: id,
         valid_until,
+        session_epoch: epoch,
     };
     let payload_bytes = envelope.to_cbor_data();
     let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
@@ -924,9 +944,14 @@ async fn expired_response_is_rejected() {
             )
             .unwrap();
         let envelope = QlEnvelope::try_from(decrypted).unwrap();
+        let epoch = match outbound_message.header {
+            QlHeader::Message { epoch, .. } => epoch,
+            _ => panic!("unexpected header"),
+        };
         let header = QlHeader::Message {
             sender: responder.xid,
             recipient: outbound_message.header.sender(),
+            epoch,
             session: SessionState::Established,
         };
         let envelope = QlEnvelope {
@@ -982,17 +1007,27 @@ async fn expired_request_is_rejected_with_nack() {
         let (session_key, _kem_ct) = recipient_identity
             .encapsulation_public_key
             .encapsulate_new_shared_secret();
+        let epoch = next_epoch();
         recipient_platform
             .lookup_peer(sender_identity.xid)
+            .unwrap()
+            .store_session_key(session_key.clone());
+        recipient_platform
+            .lookup_peer(sender_identity.xid)
+            .unwrap()
+            .set_session_epoch(Some(epoch));
+        sender_platform
+            .lookup_peer(recipient_identity.xid)
             .unwrap()
             .store_session_key(session_key.clone());
         sender_platform
             .lookup_peer(recipient_identity.xid)
             .unwrap()
-            .store_session_key(session_key.clone());
+            .set_session_epoch(Some(epoch));
         let header = QlHeader::Message {
             sender: sender_identity.xid,
             recipient: recipient_identity.xid,
+            epoch,
             session: SessionState::Established,
         };
         let envelope = QlEnvelope {
@@ -1079,10 +1114,15 @@ async fn missing_session_triggers_reset_and_cancels_request() {
             .server_platform
             .encapsulation_public_key()
             .encapsulate_new_shared_secret();
+        let epoch = next_epoch();
         pair.client_platform
             .lookup_peer(recipient)
             .unwrap()
             .store_session_key(session_key);
+        pair.client_platform
+            .lookup_peer(recipient)
+            .unwrap()
+            .set_session_epoch(Some(epoch));
 
         let request_task = tokio::task::spawn_local(pair.client_handle.request(
             Ping(1),
@@ -1126,7 +1166,12 @@ async fn reset_cancels_pending_request() {
 
         let _ = client_outbound.recv().await.unwrap();
 
-        let reset_message = build_reset_message(&server_identity, &client_identity, next_id());
+        let reset_message = build_reset_message(
+            &server_identity,
+            &client_identity,
+            next_id(),
+            next_epoch(),
+        );
         client_handle
             .send_incoming(reset_message.to_cbor_data())
             .unwrap();
@@ -1292,21 +1337,24 @@ async fn reset_collision_prefers_lower_xid() {
 
         let lower_reset_id = next_id();
         let higher_reset_id = next_id();
+        let epoch = next_epoch();
         lower_platform.set_pending_session(Some(PendingSession {
             kind: SessionKind::SessionReset,
             origin: ResetOrigin::Local,
             id: lower_reset_id,
+            epoch,
         }));
         higher_platform.set_pending_session(Some(PendingSession {
             kind: SessionKind::SessionReset,
             origin: ResetOrigin::Local,
             id: higher_reset_id,
+            epoch,
         }));
 
         let reset_from_lower =
-            build_reset_message(&lower_identity, &higher_identity, lower_reset_id);
+            build_reset_message(&lower_identity, &higher_identity, lower_reset_id, epoch);
         let reset_from_higher =
-            build_reset_message(&higher_identity, &lower_identity, higher_reset_id);
+            build_reset_message(&higher_identity, &lower_identity, higher_reset_id, epoch);
 
         lower_handle
             .send_incoming(reset_from_higher.to_cbor_data())
@@ -1351,7 +1399,8 @@ async fn reset_from_higher_xid_is_accepted_without_pending() {
             Runtime::new(lower_platform.clone(), config);
         tokio::task::spawn_local(async move { lower_core.run().await });
 
-        let reset_from_higher = build_reset_message(&higher_identity, &lower_identity, next_id());
+        let reset_from_higher =
+            build_reset_message(&higher_identity, &lower_identity, next_id(), next_epoch());
 
         lower_handle
             .send_incoming(reset_from_higher.to_cbor_data())
@@ -1361,6 +1410,133 @@ async fn reset_from_higher_xid_is_accepted_without_pending() {
 
         assert_eq!(
             lower_platform.pending_session().map(|state| state.origin),
+            Some(ResetOrigin::Peer)
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reset_from_peer_then_invalid_message_keeps_peer_pending_session() {
+    // reset arrives while a local reset is pending but the peer reset “wins,”
+    // then stale messages from the old session arrive and trigger new resets
+    run_local_test(async {
+        let client_identity = QlIdentity::generate();
+        let server_identity = QlIdentity::generate();
+
+        let (client_platform, client_outbound) = TestPlatform::new(
+            client_identity.clone(),
+            server_identity.encapsulation_public_key.clone(),
+            server_identity.signing_public_key.clone(),
+        );
+        let (server_platform, _server_outbound) = TestPlatform::new(
+            server_identity.clone(),
+            client_identity.encapsulation_public_key.clone(),
+            client_identity.signing_public_key.clone(),
+        );
+
+        let config = default_runtime_config();
+        let (mut client_core, client_handle, _client_incoming) =
+            Runtime::new(client_platform.clone(), config);
+        let (mut server_core, server_handle, _server_incoming) =
+            Runtime::new(server_platform.clone(), config);
+
+        tokio::task::spawn_local(async move { client_core.run().await });
+        tokio::task::spawn_local(async move { server_core.run().await });
+
+        let stale_key = SymmetricKey::new();
+        let stale_epoch = next_epoch();
+        server_platform
+            .lookup_peer(client_identity.xid)
+            .unwrap()
+            .store_session_key(stale_key.clone());
+        server_platform
+            .lookup_peer(client_identity.xid)
+            .unwrap()
+            .set_session_epoch(Some(stale_epoch));
+        client_platform
+            .lookup_peer(server_identity.xid)
+            .unwrap()
+            .set_session_epoch(Some(stale_epoch));
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let valid_until = now.saturating_add(60);
+
+        let stale_header = QlHeader::Message {
+            sender: server_identity.xid,
+            recipient: client_identity.xid,
+            epoch: stale_epoch,
+            session: SessionState::Established,
+        };
+        let stale_envelope = QlEnvelope {
+            message_id: next_id(),
+            valid_until,
+            kind: MessageKind::Event,
+            route_id: RouteId::new(0),
+            payload: CBOR::null(),
+        };
+        let stale_encrypted = stale_key.encrypt(
+            stale_envelope.to_cbor_data(),
+            Some(stale_header.aad_data()),
+            None::<bc_components::Nonce>,
+        );
+        let stale_message = EncryptedMessage {
+            header: stale_header,
+            encrypted: stale_encrypted,
+        };
+
+        client_handle
+            .send_incoming(stale_message.to_cbor_data())
+            .unwrap();
+
+        let reset_bytes = tokio::time::timeout(Duration::from_secs(1), client_outbound.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        server_handle.send_incoming(reset_bytes).unwrap();
+
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            server_platform.pending_session().map(|state| state.origin),
+            Some(ResetOrigin::Peer)
+        );
+
+        let bad_key = SymmetricKey::new();
+        let bad_header = QlHeader::Message {
+            sender: client_identity.xid,
+            recipient: server_identity.xid,
+            epoch: stale_epoch,
+            session: SessionState::Established,
+        };
+        let bad_envelope = QlEnvelope {
+            message_id: next_id(),
+            valid_until: now.saturating_add(60),
+            kind: MessageKind::Event,
+            route_id: RouteId::new(0),
+            payload: CBOR::null(),
+        };
+        let bad_encrypted = bad_key.encrypt(
+            bad_envelope.to_cbor_data(),
+            Some(bad_header.aad_data()),
+            None::<bc_components::Nonce>,
+        );
+        let bad_message = EncryptedMessage {
+            header: bad_header,
+            encrypted: bad_encrypted,
+        };
+
+        server_handle
+            .send_incoming(bad_message.to_cbor_data())
+            .unwrap();
+
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            server_platform.pending_session().map(|state| state.origin),
             Some(ResetOrigin::Peer)
         );
     })
@@ -1382,6 +1558,7 @@ async fn reset_with_invalid_signature_is_rejected() {
         tokio::task::spawn_local(async move { core.run().await });
 
         let id = next_id();
+        let epoch = next_epoch();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs())
@@ -1404,6 +1581,7 @@ async fn reset_with_invalid_signature_is_rejected() {
         let envelope = SessionPayload {
             message_id: id,
             valid_until,
+            session_epoch: epoch,
         };
         let payload_bytes = envelope.to_cbor_data();
         let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);

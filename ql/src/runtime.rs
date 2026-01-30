@@ -19,7 +19,7 @@ use crate::{
         SessionKind,
     },
     wire::*,
-    MessageId, QlCodec, QlError, RouteId,
+    MessageId, QlCodec, QlError, RouteId, SessionEpoch,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -466,6 +466,7 @@ where
                     payload.signing_pub_key,
                     payload.encapsulation_pub_key,
                     session_key,
+                    SessionEpoch::new(1),
                 );
                 self.record_activity(state, sender);
             }
@@ -490,8 +491,21 @@ where
 
         let message = match extract_envelope(&self.platform, encrypted) {
             Ok(result) => result,
+            Err(EnvelopeError::Error(QlError::StaleSession)) => {
+                return;
+            }
             Err(EnvelopeError::Error(QlError::InvalidPayload))
             | Err(EnvelopeError::Error(QlError::MissingSession(_))) => {
+                if let Some(peer) = self.platform.lookup_peer(sender) {
+                    // Avoid overriding a peer-initiated reset with a local reset.
+                    if let Some(pending) = peer.pending_session() {
+                        if pending.kind == SessionKind::SessionReset
+                            && pending.origin == ResetOrigin::Peer
+                        {
+                            return;
+                        }
+                    }
+                }
                 let _ = self.send_session_reset(state, sender);
                 return;
             }
@@ -611,18 +625,24 @@ where
     }
 
     fn send_session_reset(&self, state: &mut RuntimeState, recipient: XID) -> Result<(), QlError> {
-        let (session_key, kem_ct, id) = {
+        let (session_key, kem_ct, id, epoch) = {
             let peer = self.platform.lookup_peer_or_fail(recipient)?;
             let recipient_key = peer.encapsulation_pub_key().clone();
             let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
             let id = state.next_id();
+            let epoch = peer
+                .session_epoch()
+                .map(SessionEpoch::next)
+                .unwrap_or_else(|| SessionEpoch::new(1));
             peer.store_session_key(session_key.clone());
+            peer.set_session_epoch(Some(epoch));
             peer.set_pending_session(Some(PendingSession {
                 kind: SessionKind::SessionReset,
                 origin: ResetOrigin::Local,
                 id,
+                epoch,
             }));
-            (session_key, kem_ct, id)
+            (session_key, kem_ct, id, epoch)
         };
 
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
@@ -637,6 +657,7 @@ where
         let envelope = SessionPayload {
             message_id: id,
             valid_until,
+            session_epoch: epoch,
         };
         let payload_bytes = CBOR::from(envelope).to_cbor_data();
         let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<Nonce>);
