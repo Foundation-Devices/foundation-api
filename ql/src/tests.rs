@@ -932,6 +932,78 @@ async fn expired_response_is_rejected() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn expired_request_is_rejected_with_nack() {
+    run_local_test(async {
+        let sender_identity = QlIdentity::generate();
+        let recipient_identity = QlIdentity::generate();
+        let (sender_platform, _sender_outbound) = TestPlatform::new(
+            sender_identity.clone(),
+            recipient_identity.encapsulation_public_key.clone(),
+            recipient_identity.signing_public_key.clone(),
+        );
+        let (recipient_platform, recipient_outbound) = TestPlatform::new(
+            recipient_identity.clone(),
+            sender_identity.encapsulation_public_key.clone(),
+            sender_identity.signing_public_key.clone(),
+        );
+        let config = default_runtime_config();
+        let (mut core, handle, _incoming) = Runtime::new(recipient_platform.clone(), config);
+        tokio::task::spawn_local(async move { core.run().await });
+
+        let id = next_id();
+        let (session_key, _kem_ct) = recipient_identity
+            .encapsulation_public_key
+            .encapsulate_new_shared_secret();
+        recipient_platform
+            .lookup_peer(sender_identity.xid)
+            .unwrap()
+            .store_session(session_key.clone());
+        sender_platform
+            .lookup_peer(recipient_identity.xid)
+            .unwrap()
+            .store_session(session_key.clone());
+        let header = QlHeader {
+            kind: MessageKind::Request,
+            sender: sender_identity.xid,
+            recipient: recipient_identity.xid,
+            kem_ct: None,
+            signature: None,
+        };
+        let envelope = QlEnvelope {
+            message_id: id,
+            valid_until: 0,
+            route_id: Ping::ID,
+            payload: CBOR::from(Ping(5)),
+        };
+        let encrypted = session_key.encrypt(
+            CBOR::from(envelope).to_cbor_data(),
+            Some(header.aad_data()),
+            None::<bc_components::Nonce>,
+        );
+        let message = EncryptedMessage { header, encrypted };
+
+        handle.send_incoming(message.to_cbor_data()).unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), recipient_outbound.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let nack_message =
+            CBOR::try_from_data(&outbound).and_then(EncryptedMessage::try_from).unwrap();
+        assert_eq!(nack_message.header.kind, MessageKind::Nack);
+
+        let decrypted = sender_platform
+            .decrypt_message(&session_key, &nack_message.header.aad_data(), &nack_message.encrypted)
+            .unwrap();
+        let envelope = QlEnvelope::try_from(decrypted).unwrap();
+        let nack = Nack::from(envelope.payload);
+        assert_eq!(nack, Nack::Expired);
+        assert_eq!(envelope.message_id, id);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn reset_cancels_pending_request() {
     run_local_test(async {
         let client_identity = QlIdentity::generate();
