@@ -11,3 +11,6 @@ bc-components = { version = "0.28.0", default-features = false, features = ["pqc
 dcbor = { version = "0.23.3" }
 futures-lite = { version = "2.5" }
 thiserror = { version = "2" }
+
+[dev-dependencies]
+tokio = { version = "1.44", features = ["macros", "rt", "time"] }

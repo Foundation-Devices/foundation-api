@@ -14,24 +14,32 @@ impl RuntimeConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct RuntimeHandle {
     tx: async_channel::Sender<RuntimeCommand>,
 }
 
 impl RuntimeHandle {
-    pub async fn send_hello(
+    pub async fn register_peer(
         &self,
         peer: XID,
         signing_key: SigningPublicKey,
         encapsulation_key: EncapsulationPublicKey,
     ) -> Result<(), async_channel::SendError<RuntimeCommand>> {
         self.tx
-            .send(RuntimeCommand::SendHello {
+            .send(RuntimeCommand::RegisterPeer {
                 peer,
                 signing_key,
                 encapsulation_key,
             })
             .await
+    }
+
+    pub async fn connect(
+        &self,
+        peer: XID,
+    ) -> Result<(), async_channel::SendError<RuntimeCommand>> {
+        self.tx.send(RuntimeCommand::Connect { peer }).await
     }
 
     pub async fn send_incoming(
@@ -50,11 +58,17 @@ pub struct Runtime<P> {
 
 mod r#impl;
 
+#[cfg(test)]
+mod tests;
+
 pub enum RuntimeCommand {
-    SendHello {
+    RegisterPeer {
         peer: XID,
         signing_key: SigningPublicKey,
         encapsulation_key: EncapsulationPublicKey,
+    },
+    Connect {
+        peer: XID,
     },
     Incoming(Vec<u8>),
 }

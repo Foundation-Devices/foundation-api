@@ -1965,6 +1965,7 @@ dependencies = [
  "dcbor",
  "futures-lite",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
