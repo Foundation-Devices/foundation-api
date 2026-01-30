@@ -11,7 +11,7 @@ pub struct PairingRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PairingPayload {
+pub struct PairingRequestBody {
     pub message_id: MessageId,
     pub valid_until: u64,
     pub signing_pub_key: SigningPublicKey,
@@ -39,8 +39,8 @@ impl TryFrom<CBOR> for PairingRequest {
     }
 }
 
-impl From<PairingPayload> for CBOR {
-    fn from(value: PairingPayload) -> Self {
+impl From<PairingRequestBody> for CBOR {
+    fn from(value: PairingRequestBody) -> Self {
         CBOR::from(vec![
             CBOR::from(value.message_id),
             CBOR::from(value.valid_until),
@@ -51,7 +51,7 @@ impl From<PairingPayload> for CBOR {
     }
 }
 
-impl TryFrom<CBOR> for PairingPayload {
+impl TryFrom<CBOR> for PairingRequestBody {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
