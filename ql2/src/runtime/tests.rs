@@ -17,10 +17,11 @@ use tokio::{sync::Semaphore, task::LocalSet};
 
 use crate::{
     handshake,
+    pairing,
     platform::{PlatformFuture, QlPlatform},
     runtime::{new_runtime, PeerSession, RuntimeConfig, RuntimeHandle},
     wire::{handshake::HandshakeMessage, QlMessage},
-    QlError,
+    MessageId, QlError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +92,10 @@ impl QlPlatform for TestPlatform {
 
     fn encapsulation_private_key(&self) -> &EncapsulationPrivateKey {
         &self.encapsulation_private
+    }
+
+    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey {
+        &self.encapsulation_public
     }
 
     fn fill_bytes(&self, data: &mut [u8]) {
@@ -178,6 +183,10 @@ impl QlPlatform for BlockingPlatform {
 
     fn encapsulation_private_key(&self) -> &EncapsulationPrivateKey {
         &self.encapsulation_private
+    }
+
+    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey {
+        &self.encapsulation_public
     }
 
     fn fill_bytes(&self, data: &mut [u8]) {
@@ -391,6 +400,53 @@ async fn invalid_signature_disconnects() {
         handle_a.connect(peer_b).await.unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Disconnected).await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pairing_request_triggers_handshake() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+
+        let signing_a = platform_a.signing_public_key().clone();
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(&signing_a);
+        let peer_b = XID::new(&signing_b);
+
+        let pairing_request = pairing::build_pairing_request(
+            &platform_a,
+            peer_b,
+            &encap_b,
+            MessageId::new(1),
+            Duration::from_secs(1),
+        )
+        .expect("pairing request");
+        let pairing_bytes = CBOR::from(QlMessage::Pairing(pairing_request)).to_cbor_data();
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        spawn_forwarder(outbound_a, handle_b.clone());
+        spawn_forwarder(outbound_b, handle_a.clone());
+
+        handle_a
+            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
+            .await
+            .unwrap();
+
+        handle_b.send_incoming(pairing_bytes).await.unwrap();
+
+        await_status(&status_b, peer_a, PeerStage::Initiator).await;
+        await_status(&status_a, peer_b, PeerStage::Responder).await;
+        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b, PeerStage::Connected).await;
     })
     .await;
 }

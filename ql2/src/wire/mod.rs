@@ -1,17 +1,21 @@
 use dcbor::CBOR;
 
 pub mod handshake;
+pub mod pairing;
 
 use crate::wire::handshake::HandshakeMessage;
+use crate::wire::pairing::PairingRequest;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum QlMessage {
     Handshake(HandshakeMessage),
+    Pairing(PairingRequest),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QlTag {
     Handshake = 1,
+    Pairing = 2,
 }
 
 impl From<QlTag> for CBOR {
@@ -27,6 +31,7 @@ impl TryFrom<CBOR> for QlTag {
         let tag: u8 = value.try_into()?;
         match tag {
             1 => Ok(Self::Handshake),
+            2 => Ok(Self::Pairing),
             _ => Err(dcbor::Error::msg("unknown message tag")),
         }
     }
@@ -37,6 +42,10 @@ impl From<QlMessage> for CBOR {
         match value {
             QlMessage::Handshake(message) => CBOR::from(vec![
                 CBOR::from(QlTag::Handshake as u8),
+                CBOR::from(message),
+            ]),
+            QlMessage::Pairing(message) => CBOR::from(vec![
+                CBOR::from(QlTag::Pairing as u8),
                 CBOR::from(message),
             ]),
         }
@@ -64,11 +73,15 @@ impl TryFrom<CBOR> for QlMessage {
                 let message = HandshakeMessage::try_from(payload)?;
                 Ok(QlMessage::Handshake(message))
             }
+            QlTag::Pairing => {
+                let message = PairingRequest::try_from(payload)?;
+                Ok(QlMessage::Pairing(message))
+            }
         }
     }
 }
 
-fn take_fields<const N: usize>(
+pub(crate) fn take_fields<const N: usize>(
     mut iter: impl Iterator<Item = CBOR>,
 ) -> Result<[CBOR; N], dcbor::Error> {
     use std::mem::MaybeUninit;

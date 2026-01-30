@@ -13,9 +13,10 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     handshake,
+    pairing,
     platform::{PlatformFuture, QlPlatform, QlPlatformExt},
     runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand, Token},
-    wire::{handshake::HandshakeMessage, QlMessage},
+    wire::{handshake::HandshakeMessage, pairing::PairingRequest, QlMessage},
     QlError,
 };
 
@@ -258,6 +259,9 @@ impl<P: QlPlatform> Runtime<P> {
             QlMessage::Handshake(message) => {
                 self.handle_handshake(state, message);
             }
+            QlMessage::Pairing(request) => {
+                self.handle_pairing(state, request);
+            }
         }
     }
 
@@ -273,6 +277,19 @@ impl<P: QlPlatform> Runtime<P> {
                 self.handle_confirm(state, confirm);
             }
         }
+    }
+
+    fn handle_pairing(&self, state: &mut RuntimeState, request: PairingRequest) {
+        if request.header.recipient != self.platform.xid() {
+            return;
+        }
+        let payload = match pairing::decrypt_pairing_request(&self.platform, request) {
+            Ok(payload) => payload,
+            Err(_) => return,
+        };
+        let peer = XID::new(&payload.signing_pub_key);
+        state.upsert_peer(peer, payload.signing_pub_key, payload.encapsulation_pub_key);
+        self.handle_connect(state, peer);
     }
 
     fn handle_hello(&self, state: &mut RuntimeState, hello: crate::wire::handshake::Hello) {

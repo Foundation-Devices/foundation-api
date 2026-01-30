@@ -1,6 +1,8 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
-use bc_components::{EncapsulationPrivateKey, Signer, SigningPublicKey, XID};
+use bc_components::{
+    EncapsulationPrivateKey, EncapsulationPublicKey, Signer, SigningPublicKey, XID,
+};
 
 use crate::{runtime::PeerSession, QlError};
 
@@ -10,6 +12,7 @@ pub trait QlPlatform {
     fn signer(&self) -> &dyn Signer;
     fn signing_public_key(&self) -> &SigningPublicKey;
     fn encapsulation_private_key(&self) -> &EncapsulationPrivateKey;
+    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey;
 
     fn fill_bytes(&self, data: &mut [u8]);
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
