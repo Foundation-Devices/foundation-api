@@ -407,6 +407,7 @@ struct RuntimePair {
     client_handle: RuntimeHandle,
     server_handle: RuntimeHandle,
     server_incoming: Option<HandlerStream>,
+    client_incoming: Option<HandlerStream>,
     client_outbound: Option<Receiver<Vec<u8>>>,
     server_outbound: Option<Receiver<Vec<u8>>>,
 }
@@ -426,7 +427,7 @@ impl RuntimePair {
             client_identity.signing_public_key.clone(),
         );
 
-        let (mut client_core, client_handle, _client_incoming) =
+        let (mut client_core, client_handle, client_incoming) =
             Runtime::new(client_platform.clone(), client_config);
         let (mut server_core, server_handle, server_incoming) =
             Runtime::new(server_platform.clone(), server_config);
@@ -440,6 +441,7 @@ impl RuntimePair {
             client_handle,
             server_handle,
             server_incoming: Some(server_incoming),
+            client_incoming: Some(client_incoming),
             client_outbound: Some(client_outbound),
             server_outbound: Some(server_outbound),
         }
@@ -458,6 +460,10 @@ impl RuntimePair {
 
     fn take_server_incoming(&mut self) -> HandlerStream {
         self.server_incoming.take().unwrap()
+    }
+
+    fn take_client_incoming(&mut self) -> HandlerStream {
+        self.client_incoming.take().unwrap()
     }
 
     fn take_client_outbound(&mut self) -> Receiver<Vec<u8>> {
@@ -1247,6 +1253,110 @@ async fn reset_with_invalid_signature_is_rejected() {
         assert!(errors
             .iter()
             .any(|error| matches!(error, QlError::InvalidSignature)));
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn heartbeat_timeout_resets_on_incoming_message() {
+    run_local_test(async {
+        let keep_alive = KeepAliveConfig {
+            interval: Duration::from_millis(30),
+            timeout: Duration::from_millis(80),
+        };
+        let client_config = RuntimeConfig {
+            keep_alive: Some(keep_alive),
+            ..default_runtime_config()
+        };
+        let server_config = default_runtime_config();
+        let mut pair = RuntimePair::new(client_config, server_config);
+
+        let client_outbound = pair.take_client_outbound();
+        let server_outbound = pair.take_server_outbound();
+
+        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
+        tokio::task::spawn_local({
+            let server_handle = pair.server_handle.clone();
+            async move {
+                while let Ok(bytes) = client_outbound.recv().await {
+                    if let Ok(message) =
+                        CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
+                    {
+                        if message.header.kind == MessageKind::Heartbeat {
+                            let _ = heartbeat_tx.send(()).await;
+                        }
+                    }
+                    server_handle.send_incoming(bytes).unwrap();
+                }
+            }
+        });
+
+        tokio::task::spawn_local({
+            let client_handle = pair.client_handle.clone();
+            async move {
+                while let Ok(bytes) = server_outbound.recv().await {
+                    let mut forward = true;
+                    if let Ok(message) =
+                        CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
+                    {
+                        if message.header.kind == MessageKind::Heartbeat {
+                            forward = false;
+                        }
+                    }
+                    if forward {
+                        client_handle.send_incoming(bytes).unwrap();
+                    }
+                }
+            }
+        });
+
+        let server_router = Router::builder()
+            .add_request_handler::<Ping>()
+            .build(TestState { event_tx: None });
+        spawn_router(server_router, pair.take_server_incoming());
+
+        let client_router = Router::builder()
+            .add_request_handler::<Ping>()
+            .build(TestState { event_tx: None });
+        spawn_router(client_router, pair.take_client_incoming());
+
+        let recipient = pair.recipient();
+        let response = pair
+            .client_handle
+            .request(Ping(1), recipient, RequestConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(response, Pong(2));
+
+        let _ = pair.client_platform.take_statuses();
+
+        let _heartbeat = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        tokio::time::sleep(keep_alive.timeout / 2).await;
+
+        let server_response = pair
+            .server_handle
+            .request(
+                Ping(10),
+                pair.client_platform.xid(),
+                RequestConfig::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(server_response, Pong(11));
+
+        tokio::time::sleep(keep_alive.timeout / 2 + Duration::from_millis(10)).await;
+
+        let statuses = pair.client_platform.take_statuses();
+        assert!(
+            !statuses.iter().any(|(peer, status)| {
+                *peer == recipient && *status == PeerStatus::Disconnected
+            }),
+            "unexpected disconnect: {statuses:?}"
+        );
     })
     .await;
 }
