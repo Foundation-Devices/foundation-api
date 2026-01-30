@@ -271,6 +271,7 @@ impl<P: QlPlatform> Runtime<P> {
             QlPayload::Pairing(request) => {
                 self.handle_pairing(state, header, request);
             }
+            QlPayload::Record(_encrypted) => {}
         }
     }
 

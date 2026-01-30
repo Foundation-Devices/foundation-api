@@ -2,8 +2,9 @@ use dcbor::CBOR;
 
 pub mod handshake;
 pub mod pairing;
+pub mod record;
 
-use bc_components::XID;
+use bc_components::{EncryptedMessage, XID};
 
 use crate::wire::{handshake::HandshakeMessage, pairing::PairingRequest};
 
@@ -23,12 +24,14 @@ pub struct QlHeader {
 pub enum QlPayload {
     Handshake(HandshakeMessage),
     Pairing(PairingRequest),
+    Record(EncryptedMessage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QlTag {
     Handshake = 1,
     Pairing = 2,
+    Record = 3,
 }
 
 impl From<QlTag> for CBOR {
@@ -45,6 +48,7 @@ impl TryFrom<CBOR> for QlTag {
         match tag {
             1 => Ok(Self::Handshake),
             2 => Ok(Self::Pairing),
+            3 => Ok(Self::Record),
             _ => Err(dcbor::Error::msg("unknown message tag")),
         }
     }
@@ -55,6 +59,7 @@ impl From<QlMessage> for CBOR {
         let (tag, payload) = match value.payload {
             QlPayload::Handshake(message) => (QlTag::Handshake, CBOR::from(message)),
             QlPayload::Pairing(message) => (QlTag::Pairing, CBOR::from(message)),
+            QlPayload::Record(message) => (QlTag::Record, CBOR::from(message)),
         };
         CBOR::from(vec![
             CBOR::from(tag as u8),
@@ -85,6 +90,13 @@ impl TryFrom<CBOR> for QlMessage {
                 Ok(QlMessage {
                     header,
                     payload: QlPayload::Pairing(message),
+                })
+            }
+            QlTag::Record => {
+                let message = EncryptedMessage::try_from(payload)?;
+                Ok(QlMessage {
+                    header,
+                    payload: QlPayload::Record(message),
                 })
             }
         }
