@@ -301,9 +301,7 @@ where
                 let recv_future = self.rx.recv();
                 futures_lite::pin!(recv_future);
 
-                let next_request = Self::next_timeout_sleep(&state.timeouts);
-                let next_keepalive = Self::next_keepalive_sleep(&state.keepalive);
-                let sleep_duration = min_duration(&[next_request, next_keepalive]);
+                let sleep_duration = Self::next_sleep(&state.timeouts, &state.keepalive);
                 let mut sleep_future = sleep_duration.map(|duration| self.platform.sleep(duration));
 
                 futures_lite::future::poll_fn(|cx| {
@@ -798,14 +796,25 @@ where
         }
     }
 
-    fn next_timeout_sleep(timeouts: &BinaryHeap<Reverse<TimeoutEntry>>) -> Option<Duration> {
-        let Reverse(entry) = timeouts.peek()?;
+    fn next_sleep(
+        timeouts: &BinaryHeap<Reverse<TimeoutEntry>>,
+        keepalive: &[PeerKeepAlive],
+    ) -> Option<Duration> {
         let now = Instant::now();
+        let next_request = Self::next_timeout_sleep(now, &timeouts);
+        let next_keepalive = Self::next_keepalive_sleep(now, &keepalive);
+        min_duration(&[next_request, next_keepalive])
+    }
+
+    fn next_timeout_sleep(
+        now: Instant,
+        timeouts: &BinaryHeap<Reverse<TimeoutEntry>>,
+    ) -> Option<Duration> {
+        let Reverse(entry) = timeouts.peek()?;
         Some(entry.deadline.saturating_duration_since(now))
     }
 
-    fn next_keepalive_sleep(entries: &[PeerKeepAlive]) -> Option<Duration> {
-        let now = Instant::now();
+    fn next_keepalive_sleep(now: Instant, entries: &[PeerKeepAlive]) -> Option<Duration> {
         let mut next_deadline: Option<Instant> = None;
         for entry in entries {
             let deadline = match entry.heartbeat {
