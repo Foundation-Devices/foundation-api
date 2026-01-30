@@ -1009,6 +1009,72 @@ async fn expired_request_is_rejected_with_nack() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn missing_session_triggers_reset_and_cancels_request() {
+    run_local_test(async {
+        let config = default_runtime_config();
+        let mut pair = RuntimePair::new(config, config);
+
+        let client_outbound = pair.take_client_outbound();
+        let server_outbound = pair.take_server_outbound();
+
+        let (reset_tx, reset_rx) = async_channel::unbounded();
+        tokio::task::spawn_local({
+            let server_handle = pair.server_handle.clone();
+            async move {
+                while let Ok(bytes) = client_outbound.recv().await {
+                    server_handle.send_incoming(bytes).unwrap();
+                }
+            }
+        });
+
+        tokio::task::spawn_local({
+            let client_handle = pair.client_handle.clone();
+            async move {
+                while let Ok(bytes) = server_outbound.recv().await {
+                    if let Ok(message) =
+                        CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
+                    {
+                        if message.header.kind == MessageKind::SessionReset {
+                            let _ = reset_tx.send(()).await;
+                        }
+                    }
+                    client_handle.send_incoming(bytes).unwrap();
+                }
+            }
+        });
+
+        let server_router = Router::builder()
+            .add_request_handler::<Ping>()
+            .build(TestState { event_tx: None });
+        spawn_router(server_router, pair.take_server_incoming());
+
+        let recipient = pair.recipient();
+        let (session_key, _kem_ct) = pair
+            .server_platform
+            .encapsulation_public_key()
+            .encapsulate_new_shared_secret();
+        pair.client_platform
+            .lookup_peer(recipient)
+            .unwrap()
+            .store_session(session_key);
+
+        let request_task = tokio::task::spawn_local(
+            pair.client_handle
+                .request(Ping(1), recipient, RequestConfig::default()),
+        );
+
+        let _ = tokio::time::timeout(Duration::from_secs(1), reset_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let result = request_task.await.unwrap();
+        assert!(matches!(result, Err(QlError::SessionReset)));
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn reset_cancels_pending_request() {
     run_local_test(async {
         let client_identity = QlIdentity::generate();
