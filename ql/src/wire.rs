@@ -10,8 +10,6 @@ pub enum MessageKind {
     Request,
     Response,
     Event,
-    SessionReset,
-    Pairing,
     Nack,
     Heartbeat,
 }
@@ -31,12 +29,32 @@ pub enum Nack {
 /// contents are verified during decryption
 /// contains minimal data necessary for request routing
 #[derive(Debug, Clone)]
-pub struct QlHeader {
-    pub kind: MessageKind,
-    pub sender: XID,
-    pub recipient: XID,
-    pub kem_ct: Option<EncapsulationCiphertext>,
-    pub signature: Option<Signature>,
+pub enum QlHeader {
+    Pairing {
+        sender: XID,
+        recipient: XID,
+        kem_ct: EncapsulationCiphertext,
+    },
+    SessionReset {
+        sender: XID,
+        recipient: XID,
+        kem_ct: EncapsulationCiphertext,
+        signature: Signature,
+    },
+    Normal {
+        sender: XID,
+        recipient: XID,
+        session: SessionState,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum SessionState {
+    Established,
+    Init {
+        kem_ct: EncapsulationCiphertext,
+        signature: Signature,
+    },
 }
 
 /// private, encrypted message envelope
@@ -45,8 +63,16 @@ pub struct QlHeader {
 pub struct QlEnvelope {
     pub message_id: MessageId,
     pub valid_until: u64,
+    pub kind: MessageKind,
     pub route_id: RouteId,
     pub payload: CBOR,
+}
+
+/// private, encrypted session control payload
+#[derive(Debug, Clone)]
+pub struct SessionPayload {
+    pub message_id: MessageId,
+    pub valid_until: u64,
 }
 
 /// aggregated request information
@@ -92,21 +118,99 @@ impl TryFrom<CBOR> for EncryptedMessage {
 }
 
 impl QlHeader {
+    pub fn sender(&self) -> XID {
+        match self {
+            Self::Pairing { sender, .. }
+            | Self::SessionReset { sender, .. }
+            | Self::Normal { sender, .. } => *sender,
+        }
+    }
+
+    pub fn recipient(&self) -> XID {
+        match self {
+            Self::Pairing { recipient, .. }
+            | Self::SessionReset { recipient, .. }
+            | Self::Normal { recipient, .. } => *recipient,
+        }
+    }
+
     pub fn aad_data(&self) -> Vec<u8> {
-        header_cbor_unsigned(self.kind, self.sender, self.recipient, self.kem_ct.clone())
-            .to_cbor_data()
+        match self {
+            Self::Pairing {
+                sender,
+                recipient,
+                kem_ct,
+            } => header_cbor_pairing(*sender, *recipient, kem_ct.clone()).to_cbor_data(),
+            Self::SessionReset {
+                sender,
+                recipient,
+                kem_ct,
+                ..
+            } => header_cbor_session_reset_unsigned(*sender, *recipient, kem_ct.clone())
+                .to_cbor_data(),
+            Self::Normal {
+                sender,
+                recipient,
+                session,
+            } => match session {
+                SessionState::Established => header_cbor_normal(*sender, *recipient).to_cbor_data(),
+                SessionState::Init { kem_ct, .. } => {
+                    header_cbor_normal_init_unsigned(*sender, *recipient, kem_ct.clone())
+                        .to_cbor_data()
+                }
+            },
+        }
+    }
+
+    pub fn normal_init_aad(
+        sender: XID,
+        recipient: XID,
+        kem_ct: &EncapsulationCiphertext,
+    ) -> Vec<u8> {
+        header_cbor_normal_init_unsigned(sender, recipient, kem_ct.clone()).to_cbor_data()
+    }
+
+    pub fn session_reset_aad(
+        sender: XID,
+        recipient: XID,
+        kem_ct: &EncapsulationCiphertext,
+    ) -> Vec<u8> {
+        header_cbor_session_reset_unsigned(sender, recipient, kem_ct.clone()).to_cbor_data()
+    }
+
+    pub fn has_new_session(&self) -> bool {
+        match self {
+            Self::Pairing { .. } | Self::SessionReset { .. } => true,
+            Self::Normal { session, .. } => matches!(session, SessionState::Init { .. }),
+        }
     }
 }
 
 impl From<QlHeader> for CBOR {
     fn from(value: QlHeader) -> Self {
-        header_cbor(
-            value.kind,
-            value.sender,
-            value.recipient,
-            value.kem_ct,
-            value.signature,
-        )
+        match value {
+            QlHeader::Pairing {
+                sender,
+                recipient,
+                kem_ct,
+            } => header_cbor_pairing(sender, recipient, kem_ct),
+            QlHeader::SessionReset {
+                sender,
+                recipient,
+                kem_ct,
+                signature,
+            } => header_cbor_session_reset(sender, recipient, kem_ct, signature),
+            QlHeader::Normal {
+                sender,
+                recipient,
+                session,
+            } => match session {
+                SessionState::Established => header_cbor_normal(sender, recipient),
+                SessionState::Init { kem_ct, signature } => {
+                    header_cbor_normal_init(sender, recipient, kem_ct, signature)
+                }
+            },
+        }
     }
 }
 
@@ -115,20 +219,52 @@ impl TryFrom<CBOR> for QlHeader {
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let array = value.try_into_array()?;
-        let [kind_cbor, sender_cbor, recipient_cbor, kem_ct_cbor, signature_cbor] =
-            cbor_array::<5>(array)?;
-        let kind = kind_cbor.try_into()?;
-        let sender = sender_cbor.try_into()?;
-        let recipient = recipient_cbor.try_into()?;
-        let kem_ct = option_from_cbor(kem_ct_cbor)?;
-        let signature = option_from_cbor(signature_cbor)?;
-        Ok(Self {
-            kind,
-            sender,
-            recipient,
-            kem_ct,
-            signature,
-        })
+        let tag = array
+            .first()
+            .cloned()
+            .ok_or_else(|| dcbor::Error::msg("missing header tag"))?;
+        let tag: u8 = tag.try_into()?;
+        match tag {
+            0 => {
+                let [_tag, sender_cbor, recipient_cbor] = cbor_array::<3>(array)?;
+                Ok(Self::Normal {
+                    sender: sender_cbor.try_into()?,
+                    recipient: recipient_cbor.try_into()?,
+                    session: SessionState::Established,
+                })
+            }
+            1 => {
+                let [_tag, sender_cbor, recipient_cbor, kem_ct_cbor, signature_cbor] =
+                    cbor_array::<5>(array)?;
+                Ok(Self::Normal {
+                    sender: sender_cbor.try_into()?,
+                    recipient: recipient_cbor.try_into()?,
+                    session: SessionState::Init {
+                        kem_ct: kem_ct_cbor.try_into()?,
+                        signature: signature_cbor.try_into()?,
+                    },
+                })
+            }
+            2 => {
+                let [_tag, sender_cbor, recipient_cbor, kem_ct_cbor] = cbor_array::<4>(array)?;
+                Ok(Self::Pairing {
+                    sender: sender_cbor.try_into()?,
+                    recipient: recipient_cbor.try_into()?,
+                    kem_ct: kem_ct_cbor.try_into()?,
+                })
+            }
+            3 => {
+                let [_tag, sender_cbor, recipient_cbor, kem_ct_cbor, signature_cbor] =
+                    cbor_array::<5>(array)?;
+                Ok(Self::SessionReset {
+                    sender: sender_cbor.try_into()?,
+                    recipient: recipient_cbor.try_into()?,
+                    kem_ct: kem_ct_cbor.try_into()?,
+                    signature: signature_cbor.try_into()?,
+                })
+            }
+            _ => Err(dcbor::Error::msg("unknown header tag")),
+        }
     }
 }
 
@@ -137,6 +273,7 @@ impl From<QlEnvelope> for CBOR {
         CBOR::from(vec![
             CBOR::from(value.message_id),
             CBOR::from(value.valid_until),
+            CBOR::from(value.kind),
             CBOR::from(value.route_id),
             value.payload,
         ])
@@ -148,12 +285,36 @@ impl TryFrom<CBOR> for QlEnvelope {
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let array = value.try_into_array()?;
-        let [id_cbor, valid_until_cbor, message_id_cbor, payload] = cbor_array::<4>(array)?;
+        let [id_cbor, valid_until_cbor, kind_cbor, message_id_cbor, payload] =
+            cbor_array::<5>(array)?;
         Ok(Self {
             message_id: id_cbor.try_into()?,
             valid_until: valid_until_cbor.try_into()?,
+            kind: kind_cbor.try_into()?,
             route_id: message_id_cbor.try_into()?,
             payload,
+        })
+    }
+}
+
+impl From<SessionPayload> for CBOR {
+    fn from(value: SessionPayload) -> Self {
+        CBOR::from(vec![
+            CBOR::from(value.message_id),
+            CBOR::from(value.valid_until),
+        ])
+    }
+}
+
+impl TryFrom<CBOR> for SessionPayload {
+    type Error = dcbor::Error;
+
+    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
+        let array = value.try_into_array()?;
+        let [id_cbor, valid_until_cbor] = cbor_array::<2>(array)?;
+        Ok(Self {
+            message_id: id_cbor.try_into()?,
+            valid_until: valid_until_cbor.try_into()?,
         })
     }
 }
@@ -161,11 +322,11 @@ impl TryFrom<CBOR> for QlEnvelope {
 impl QlDetails {
     pub fn from_parts(header: &QlHeader, envelope: &QlEnvelope) -> Self {
         Self {
-            kind: header.kind,
+            kind: envelope.kind,
             message_id: envelope.message_id,
             route_id: envelope.route_id,
-            sender: header.sender,
-            recipient: header.recipient,
+            sender: header.sender(),
+            recipient: header.recipient(),
             valid_until: envelope.valid_until,
         }
     }
@@ -177,8 +338,6 @@ impl From<MessageKind> for CBOR {
             MessageKind::Request => 1,
             MessageKind::Response => 2,
             MessageKind::Event => 3,
-            MessageKind::SessionReset => 4,
-            MessageKind::Pairing => 5,
             MessageKind::Nack => 6,
             MessageKind::Heartbeat => 7,
         };
@@ -195,8 +354,6 @@ impl TryFrom<CBOR> for MessageKind {
             1 => Ok(MessageKind::Request),
             2 => Ok(MessageKind::Response),
             3 => Ok(MessageKind::Event),
-            4 => Ok(MessageKind::SessionReset),
-            5 => Ok(MessageKind::Pairing),
             6 => Ok(MessageKind::Nack),
             7 => Ok(MessageKind::Heartbeat),
             _ => Err(dcbor::Error::msg("unknown message kind")),
@@ -248,6 +405,8 @@ impl From<CBOR> for Nack {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PairingPayload {
+    pub(crate) message_id: MessageId,
+    pub(crate) valid_until: u64,
     pub(crate) signing_pub_key: SigningPublicKey,
     pub(crate) encapsulation_pub_key: EncapsulationPublicKey,
     pub(crate) proof: Signature,
@@ -256,6 +415,8 @@ pub(crate) struct PairingPayload {
 impl From<PairingPayload> for CBOR {
     fn from(value: PairingPayload) -> Self {
         CBOR::from(vec![
+            CBOR::from(value.message_id),
+            CBOR::from(value.valid_until),
             CBOR::from(value.signing_pub_key),
             CBOR::from(value.encapsulation_pub_key),
             CBOR::from(value.proof),
@@ -268,8 +429,11 @@ impl TryFrom<CBOR> for PairingPayload {
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let array = value.try_into_array()?;
-        let [signing_pub_key, encapsulation_pub_key, proof] = cbor_array::<3>(array)?;
+        let [message_id, valid_until, signing_pub_key, encapsulation_pub_key, proof] =
+            cbor_array::<5>(array)?;
         Ok(Self {
+            message_id: message_id.try_into()?,
+            valid_until: valid_until.try_into()?,
             signing_pub_key: signing_pub_key.try_into()?,
             encapsulation_pub_key: encapsulation_pub_key.try_into()?,
             proof: proof.try_into()?,
@@ -277,52 +441,77 @@ impl TryFrom<CBOR> for PairingPayload {
     }
 }
 
-fn header_cbor(
-    kind: MessageKind,
-    sender: XID,
-    recipient: XID,
-    kem_ct: Option<EncapsulationCiphertext>,
-    signature: Option<Signature>,
-) -> CBOR {
+fn header_cbor_pairing(sender: XID, recipient: XID, kem_ct: EncapsulationCiphertext) -> CBOR {
     CBOR::from(vec![
-        CBOR::from(kind),
+        CBOR::from(2u8),
         CBOR::from(sender),
         CBOR::from(recipient),
-        option_to_cbor(kem_ct),
-        option_to_cbor(signature),
+        CBOR::from(kem_ct),
     ])
 }
 
-fn header_cbor_unsigned(
-    kind: MessageKind,
+fn header_cbor_session_reset(
     sender: XID,
     recipient: XID,
-    kem_ct: Option<EncapsulationCiphertext>,
+    kem_ct: EncapsulationCiphertext,
+    signature: Signature,
 ) -> CBOR {
     CBOR::from(vec![
-        CBOR::from(kind),
+        CBOR::from(3u8),
         CBOR::from(sender),
         CBOR::from(recipient),
-        option_to_cbor(kem_ct),
+        CBOR::from(kem_ct),
+        CBOR::from(signature),
     ])
 }
 
-fn option_to_cbor<T>(value: Option<T>) -> CBOR
-where
-    T: Into<CBOR>,
-{
-    value.map_or_else(CBOR::null, Into::into)
+fn header_cbor_session_reset_unsigned(
+    sender: XID,
+    recipient: XID,
+    kem_ct: EncapsulationCiphertext,
+) -> CBOR {
+    CBOR::from(vec![
+        CBOR::from(3u8),
+        CBOR::from(sender),
+        CBOR::from(recipient),
+        CBOR::from(kem_ct),
+    ])
 }
 
-fn option_from_cbor<T>(value: CBOR) -> Result<Option<T>, dcbor::Error>
-where
-    T: TryFrom<CBOR, Error = dcbor::Error>,
-{
-    if value.is_null() {
-        Ok(None)
-    } else {
-        Ok(Some(T::try_from(value)?))
-    }
+fn header_cbor_normal(sender: XID, recipient: XID) -> CBOR {
+    CBOR::from(vec![
+        CBOR::from(0u8),
+        CBOR::from(sender),
+        CBOR::from(recipient),
+    ])
+}
+
+fn header_cbor_normal_init(
+    sender: XID,
+    recipient: XID,
+    kem_ct: EncapsulationCiphertext,
+    signature: Signature,
+) -> CBOR {
+    CBOR::from(vec![
+        CBOR::from(1u8),
+        CBOR::from(sender),
+        CBOR::from(recipient),
+        CBOR::from(kem_ct),
+        CBOR::from(signature),
+    ])
+}
+
+fn header_cbor_normal_init_unsigned(
+    sender: XID,
+    recipient: XID,
+    kem_ct: EncapsulationCiphertext,
+) -> CBOR {
+    CBOR::from(vec![
+        CBOR::from(1u8),
+        CBOR::from(sender),
+        CBOR::from(recipient),
+        CBOR::from(kem_ct),
+    ])
 }
 
 fn cbor_array<const N: usize>(array: Vec<CBOR>) -> Result<[CBOR; N], dcbor::Error> {

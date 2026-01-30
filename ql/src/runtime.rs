@@ -15,8 +15,8 @@ use crate::{
     encrypt::*,
     handle::RuntimeHandle,
     platform::{
-        HandshakeKind, PeerStatus, PendingHandshake, PlatformFuture, QlPeer, QlPlatform,
-        QlPlatformExt, ResetOrigin,
+        PeerStatus, PendingSession, PlatformFuture, QlPeer, QlPlatform, QlPlatformExt, ResetOrigin,
+        SessionKind,
     },
     wire::*,
     MessageId, QlCodec, QlError, RouteId,
@@ -460,10 +460,9 @@ where
             }
         };
 
-        let kind = encrypted.header.kind;
-        let sender = encrypted.header.sender;
+        let sender = encrypted.header.sender();
 
-        if kind == MessageKind::Pairing {
+        if matches!(&encrypted.header, QlHeader::Pairing { .. }) {
             if let Ok((payload, session_key)) = decrypt_pairing_payload(&self.platform, encrypted) {
                 self.platform.store_peer(
                     payload.signing_pub_key,
@@ -475,7 +474,7 @@ where
             return;
         }
 
-        if kind == MessageKind::SessionReset {
+        if matches!(&encrypted.header, QlHeader::SessionReset { .. }) {
             match extract_reset_payload(&self.platform, encrypted) {
                 Ok(()) => {
                     self.record_activity(state, sender);
@@ -493,18 +492,19 @@ where
 
         let message = match extract_envelope(&self.platform, encrypted) {
             Ok(result) => result,
-            Err(QlError::InvalidPayload) | Err(QlError::MissingSession(_)) => {
+            Err(EnvelopeError::Error(QlError::InvalidPayload))
+            | Err(EnvelopeError::Error(QlError::MissingSession(_))) => {
                 let _ = self.send_session_reset(state, sender);
                 return;
             }
-            Err(QlError::Nack { nack, id }) => {
+            Err(EnvelopeError::Nack { nack, id, kind }) => {
                 if matches!(kind, MessageKind::Response | MessageKind::Nack) {
                     self.resolve_pending_nack(state, id, nack);
                 }
                 let _ = self.send_nack(state, sender, id, nack);
                 return;
             }
-            Err(e) => {
+            Err(EnvelopeError::Error(e)) => {
                 self.platform.handle_error(e);
                 return;
             }
@@ -521,10 +521,6 @@ where
             }
             MessageKind::Response | MessageKind::Nack => {
                 self.handle_response_message(state, message);
-            }
-            MessageKind::Pairing | MessageKind::SessionReset => {
-                #[cfg(debug_assertions)]
-                unreachable!("already handled")
             }
         }
     }
@@ -606,8 +602,8 @@ where
         id: Option<MessageId>,
         message: EncryptedMessage,
     ) {
-        if message.header.kem_ct.is_some() {
-            let recipient = message.header.recipient;
+        if message.header.has_new_session() {
+            let recipient = message.header.recipient();
             let entry = self.keepalive_entry_mut(state, recipient);
             entry.heartbeat = HeartbeatState::Idle;
             self.update_peer_status(entry, recipient, PeerStatus::Connecting);
@@ -622,9 +618,9 @@ where
             let recipient_key = peer.encapsulation_pub_key().clone();
             let (session_key, kem_ct) = recipient_key.encapsulate_new_shared_secret();
             let id = state.next_id();
-            peer.store_session(session_key.clone());
-            peer.set_pending_handshake(Some(PendingHandshake {
-                kind: HandshakeKind::SessionReset,
+            peer.store_session_key(session_key.clone());
+            peer.set_pending_session(Some(PendingSession {
+                kind: SessionKind::SessionReset,
                 origin: ResetOrigin::Local,
                 id,
             }));
@@ -632,27 +628,20 @@ where
         };
 
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
-        let header_unsigned = QlHeader {
-            kind: MessageKind::SessionReset,
+        let aad = QlHeader::session_reset_aad(self.platform.xid(), recipient, &kem_ct);
+        let signature = sign_header(self.platform.signer(), &aad);
+        let header = QlHeader::SessionReset {
             sender: self.platform.xid(),
             recipient,
-            kem_ct: Some(kem_ct.clone()),
-            signature: None,
+            kem_ct: kem_ct.clone(),
+            signature,
         };
-        let envelope = QlEnvelope {
+        let envelope = SessionPayload {
             message_id: id,
             valid_until,
-            route_id: RouteId::new(0),
-            payload: CBOR::null(),
         };
-        let aad = header_unsigned.aad_data();
         let payload_bytes = CBOR::from(envelope).to_cbor_data();
         let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<Nonce>);
-        let signature = sign_reset_header(self.platform.signer(), &header_unsigned);
-        let header = QlHeader {
-            signature,
-            ..header_unsigned
-        };
         let message = EncryptedMessage { header, encrypted };
         self.queue_outbound(state, None, message);
         Ok(())

@@ -38,9 +38,9 @@ pub trait QlPeer {
     fn encapsulation_pub_key(&self) -> &EncapsulationPublicKey;
     fn signing_pub_key(&self) -> &SigningPublicKey;
     fn session(&self) -> Option<SymmetricKey>;
-    fn store_session(&self, key: SymmetricKey);
-    fn pending_handshake(&self) -> Option<PendingHandshake>;
-    fn set_pending_handshake(&self, handshake: Option<PendingHandshake>);
+    fn store_session_key(&self, key: SymmetricKey);
+    fn pending_session(&self) -> Option<PendingSession>;
+    fn set_pending_session(&self, handshake: Option<PendingSession>);
 }
 
 impl<T> QlPeer for Arc<T>
@@ -59,16 +59,16 @@ where
         (**self).session()
     }
 
-    fn store_session(&self, key: SymmetricKey) {
-        (**self).store_session(key)
+    fn store_session_key(&self, key: SymmetricKey) {
+        (**self).store_session_key(key)
     }
 
-    fn pending_handshake(&self) -> Option<PendingHandshake> {
-        (**self).pending_handshake()
+    fn pending_session(&self) -> Option<PendingSession> {
+        (**self).pending_session()
     }
 
-    fn set_pending_handshake(&self, handshake: Option<PendingHandshake>) {
-        (**self).set_pending_handshake(handshake)
+    fn set_pending_session(&self, handshake: Option<PendingSession>) {
+        (**self).set_pending_session(handshake)
     }
 }
 
@@ -87,14 +87,14 @@ pub enum ResetOrigin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandshakeKind {
+pub enum SessionKind {
     SessionInit,
     SessionReset,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PendingHandshake {
-    pub kind: HandshakeKind,
+pub struct PendingSession {
+    pub kind: SessionKind,
     pub origin: ResetOrigin,
     pub id: MessageId,
 }

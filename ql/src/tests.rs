@@ -20,8 +20,8 @@ use crate::{
     handle::RuntimeHandle,
     identity::QlIdentity,
     platform::{
-        HandshakeKind, PeerStatus, PendingHandshake, PlatformFuture, QlPeer, QlPlatform,
-        QlPlatformExt, ResetOrigin,
+        PeerStatus, PendingSession, PlatformFuture, QlPeer, QlPlatform, QlPlatformExt, ResetOrigin,
+        SessionKind,
     },
     router::{EventHandler, QlRequest, RequestHandler, Router},
     runtime::{HandlerStream, KeepAliveConfig, RequestConfig, Runtime, RuntimeConfig},
@@ -195,19 +195,19 @@ impl TestPlatform {
         )
     }
 
-    fn pending_handshake(&self) -> Option<PendingHandshake> {
+    fn pending_session(&self) -> Option<PendingSession> {
         let guard = self.inner.peer.lock().ok()?;
-        guard.as_ref()?.pending_handshake()
+        guard.as_ref()?.pending_session()
     }
 
-    fn set_pending_handshake(&self, handshake: Option<PendingHandshake>) {
+    fn set_pending_session(&self, handshake: Option<PendingSession>) {
         let Ok(guard) = self.inner.peer.lock() else {
             return;
         };
         let Some(peer) = guard.as_ref() else {
             return;
         };
-        peer.set_pending_handshake(handshake);
+        peer.set_pending_session(handshake);
     }
 
     fn take_errors(&self) -> Vec<QlError> {
@@ -275,7 +275,7 @@ impl QlPlatform for TestPlatform {
         session: SymmetricKey,
     ) {
         let peer = Arc::new(TestPeer::new(encapsulation_pub_key, signing_pub_key));
-        peer.store_session(session);
+        peer.store_session_key(session);
         let mut guard = self.inner.peer.lock().unwrap();
         *guard = Some(peer);
     }
@@ -294,7 +294,7 @@ struct TestPeer {
     encapsulation_public_key: EncapsulationPublicKey,
     signing_public_key: SigningPublicKey,
     session: Mutex<Option<SymmetricKey>>,
-    pending_handshake: Mutex<Option<PendingHandshake>>,
+    pending_session: Mutex<Option<PendingSession>>,
 }
 
 impl TestPeer {
@@ -306,7 +306,7 @@ impl TestPeer {
             encapsulation_public_key,
             signing_public_key,
             session: Mutex::new(None),
-            pending_handshake: Mutex::new(None),
+            pending_session: Mutex::new(None),
         }
     }
 }
@@ -324,17 +324,17 @@ impl QlPeer for TestPeer {
         self.session.lock().unwrap().clone()
     }
 
-    fn store_session(&self, key: SymmetricKey) {
+    fn store_session_key(&self, key: SymmetricKey) {
         let mut guard = self.session.lock().unwrap();
         *guard = Some(key);
     }
 
-    fn pending_handshake(&self) -> Option<PendingHandshake> {
-        *self.pending_handshake.lock().unwrap()
+    fn pending_session(&self) -> Option<PendingSession> {
+        *self.pending_session.lock().unwrap()
     }
 
-    fn set_pending_handshake(&self, handshake: Option<PendingHandshake>) {
-        let mut guard = self.pending_handshake.lock().unwrap();
+    fn set_pending_session(&self, handshake: Option<PendingSession>) {
+        let mut guard = self.pending_session.lock().unwrap();
         *guard = handshake;
     }
 }
@@ -488,24 +488,17 @@ fn build_reset_message(
     let (session_key, kem_ct) = recipient
         .encapsulation_public_key
         .encapsulate_new_shared_secret();
-    let header = QlHeader {
-        kind: MessageKind::SessionReset,
+    let aad = QlHeader::session_reset_aad(sender.xid, recipient.xid, &kem_ct);
+    let signature = sign_header(&sender.private_keys, &aad);
+    let header = QlHeader::SessionReset {
         sender: sender.xid,
         recipient: recipient.xid,
-        kem_ct: Some(kem_ct.clone()),
-        signature: None,
-    };
-    let signature = Some(sender.private_keys.sign(&header.aad_data()).unwrap());
-    let header = QlHeader {
+        kem_ct: kem_ct.clone(),
         signature,
-        ..header
     };
-    let aad = header.aad_data();
-    let envelope = QlEnvelope {
+    let envelope = SessionPayload {
         message_id: id,
         valid_until,
-        route_id: RouteId::new(0),
-        payload: CBOR::null(),
     };
     let payload_bytes = envelope.to_cbor_data();
     let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
@@ -584,13 +577,25 @@ async fn heartbeat_sends_and_receives() {
         let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
         tokio::task::spawn_local({
             let server_handle = pair.server_handle.clone();
+            let server_platform = pair.server_platform.clone();
             async move {
                 while let Ok(bytes) = client_outbound.recv().await {
                     if let Ok(message) =
                         CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
                     {
-                        if message.header.kind == MessageKind::Heartbeat {
-                            let _ = heartbeat_tx.send(()).await;
+                        if let Ok(peer) =
+                            server_platform.lookup_peer_or_fail(message.header.sender())
+                        {
+                            if let Ok((envelope, _)) = decrypt_envelope(
+                                &server_platform,
+                                &peer,
+                                &message.header,
+                                &message.encrypted,
+                            ) {
+                                if envelope.kind == MessageKind::Heartbeat {
+                                    let _ = heartbeat_tx.send(()).await;
+                                }
+                            }
                         }
                     }
                     server_handle.send_incoming(bytes).unwrap();
@@ -658,13 +663,25 @@ async fn heartbeat_timeout_marks_disconnected() {
         let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
         tokio::task::spawn_local({
             let server_handle = pair.server_handle.clone();
+            let server_platform = pair.server_platform.clone();
             async move {
                 while let Ok(bytes) = client_outbound.recv().await {
                     if let Ok(message) =
                         CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
                     {
-                        if message.header.kind == MessageKind::Heartbeat {
-                            let _ = heartbeat_tx.send(()).await;
+                        if let Ok(peer) =
+                            server_platform.lookup_peer_or_fail(message.header.sender())
+                        {
+                            if let Ok((envelope, _)) = decrypt_envelope(
+                                &server_platform,
+                                &peer,
+                                &message.header,
+                                &message.encrypted,
+                            ) {
+                                if envelope.kind == MessageKind::Heartbeat {
+                                    let _ = heartbeat_tx.send(()).await;
+                                }
+                            }
                         }
                     }
                     server_handle.send_incoming(bytes).unwrap();
@@ -674,14 +691,26 @@ async fn heartbeat_timeout_marks_disconnected() {
 
         tokio::task::spawn_local({
             let client_handle = pair.client_handle.clone();
+            let client_platform = pair.client_platform.clone();
             async move {
                 while let Ok(bytes) = server_outbound.recv().await {
                     let mut forward = true;
                     if let Ok(message) =
                         CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
                     {
-                        if message.header.kind == MessageKind::Heartbeat {
-                            forward = false;
+                        if let Ok(peer) =
+                            client_platform.lookup_peer_or_fail(message.header.sender())
+                        {
+                            if let Ok((envelope, _)) = decrypt_envelope(
+                                &client_platform,
+                                &peer,
+                                &message.header,
+                                &message.encrypted,
+                            ) {
+                                if envelope.kind == MessageKind::Heartbeat {
+                                    forward = false;
+                                }
+                            }
                         }
                     }
                     if forward {
@@ -748,16 +777,16 @@ async fn responds_to_heartbeat_without_keepalive() {
                     if let Ok(message) =
                         CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
                     {
-                        if message.header.kind == MessageKind::Heartbeat {
-                            if let Ok(peer) =
-                                client_platform.lookup_peer_or_fail(message.header.sender)
-                            {
-                                if let Ok((envelope, _)) = decrypt_envelope(
-                                    &client_platform,
-                                    &peer,
-                                    &message.header,
-                                    &message.encrypted,
-                                ) {
+                        if let Ok(peer) =
+                            client_platform.lookup_peer_or_fail(message.header.sender())
+                        {
+                            if let Ok((envelope, _)) = decrypt_envelope(
+                                &client_platform,
+                                &peer,
+                                &message.header,
+                                &message.encrypted,
+                            ) {
+                                if envelope.kind == MessageKind::Heartbeat {
                                     let _ = heartbeat_tx.send(envelope.message_id).await;
                                 }
                             }
@@ -895,16 +924,15 @@ async fn expired_response_is_rejected() {
             )
             .unwrap();
         let envelope = QlEnvelope::try_from(decrypted).unwrap();
-        let header = QlHeader {
-            kind: MessageKind::Response,
+        let header = QlHeader::Normal {
             sender: responder.xid,
-            recipient: outbound_message.header.sender,
-            kem_ct: None,
-            signature: None,
+            recipient: outbound_message.header.sender(),
+            session: SessionState::Established,
         };
         let envelope = QlEnvelope {
             message_id: envelope.message_id,
             valid_until: 0,
+            kind: MessageKind::Response,
             route_id: RouteId::new(0),
             payload: CBOR::from(6),
         };
@@ -957,21 +985,20 @@ async fn expired_request_is_rejected_with_nack() {
         recipient_platform
             .lookup_peer(sender_identity.xid)
             .unwrap()
-            .store_session(session_key.clone());
+            .store_session_key(session_key.clone());
         sender_platform
             .lookup_peer(recipient_identity.xid)
             .unwrap()
-            .store_session(session_key.clone());
-        let header = QlHeader {
-            kind: MessageKind::Request,
+            .store_session_key(session_key.clone());
+        let header = QlHeader::Normal {
             sender: sender_identity.xid,
             recipient: recipient_identity.xid,
-            kem_ct: None,
-            signature: None,
+            session: SessionState::Established,
         };
         let envelope = QlEnvelope {
             message_id: id,
             valid_until: 0,
+            kind: MessageKind::Request,
             route_id: Ping::ID,
             payload: CBOR::from(Ping(5)),
         };
@@ -991,8 +1018,6 @@ async fn expired_request_is_rejected_with_nack() {
         let nack_message = CBOR::try_from_data(&outbound)
             .and_then(EncryptedMessage::try_from)
             .unwrap();
-        assert_eq!(nack_message.header.kind, MessageKind::Nack);
-
         let decrypted = sender_platform
             .decrypt_message(
                 &session_key,
@@ -1001,6 +1026,7 @@ async fn expired_request_is_rejected_with_nack() {
             )
             .unwrap();
         let envelope = QlEnvelope::try_from(decrypted).unwrap();
+        assert_eq!(envelope.kind, MessageKind::Nack);
         let nack = Nack::from(envelope.payload);
         assert_eq!(nack, Nack::Expired);
         assert_eq!(envelope.message_id, id);
@@ -1034,7 +1060,7 @@ async fn missing_session_triggers_reset_and_cancels_request() {
                     if let Ok(message) =
                         CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
                     {
-                        if message.header.kind == MessageKind::SessionReset {
+                        if matches!(message.header, QlHeader::SessionReset { .. }) {
                             let _ = reset_tx.send(()).await;
                         }
                     }
@@ -1056,12 +1082,13 @@ async fn missing_session_triggers_reset_and_cancels_request() {
         pair.client_platform
             .lookup_peer(recipient)
             .unwrap()
-            .store_session(session_key);
+            .store_session_key(session_key);
 
-        let request_task = tokio::task::spawn_local(
-            pair.client_handle
-                .request(Ping(1), recipient, RequestConfig::default()),
-        );
+        let request_task = tokio::task::spawn_local(pair.client_handle.request(
+            Ping(1),
+            recipient,
+            RequestConfig::default(),
+        ));
 
         let _ = tokio::time::timeout(Duration::from_secs(1), reset_rx.recv())
             .await
@@ -1164,10 +1191,16 @@ fn simultaneous_session_init_resolves() {
     let client_result = extract_envelope(&client_platform, server_message);
 
     if client_platform.xid() < server_platform.xid() {
-        assert!(matches!(client_result, Err(QlError::SessionInitCollision)));
+        assert!(matches!(
+            client_result,
+            Err(EnvelopeError::Error(QlError::SessionInitCollision))
+        ));
         assert!(server_result.is_ok());
     } else {
-        assert!(matches!(server_result, Err(QlError::SessionInitCollision)));
+        assert!(matches!(
+            server_result,
+            Err(EnvelopeError::Error(QlError::SessionInitCollision))
+        ));
         assert!(client_result.is_ok());
     }
 
@@ -1259,13 +1292,13 @@ async fn reset_collision_prefers_lower_xid() {
 
         let lower_reset_id = next_id();
         let higher_reset_id = next_id();
-        lower_platform.set_pending_handshake(Some(PendingHandshake {
-            kind: HandshakeKind::SessionReset,
+        lower_platform.set_pending_session(Some(PendingSession {
+            kind: SessionKind::SessionReset,
             origin: ResetOrigin::Local,
             id: lower_reset_id,
         }));
-        higher_platform.set_pending_handshake(Some(PendingHandshake {
-            kind: HandshakeKind::SessionReset,
+        higher_platform.set_pending_session(Some(PendingSession {
+            kind: SessionKind::SessionReset,
             origin: ResetOrigin::Local,
             id: higher_reset_id,
         }));
@@ -1285,13 +1318,11 @@ async fn reset_collision_prefers_lower_xid() {
         tokio::task::yield_now().await;
 
         assert_eq!(
-            lower_platform.pending_handshake().map(|state| state.origin),
+            lower_platform.pending_session().map(|state| state.origin),
             Some(ResetOrigin::Local)
         );
         assert_eq!(
-            higher_platform
-                .pending_handshake()
-                .map(|state| state.origin),
+            higher_platform.pending_session().map(|state| state.origin),
             Some(ResetOrigin::Peer)
         );
     })
@@ -1329,7 +1360,7 @@ async fn reset_from_higher_xid_is_accepted_without_pending() {
         tokio::task::yield_now().await;
 
         assert_eq!(
-            lower_platform.pending_handshake().map(|state| state.origin),
+            lower_platform.pending_session().map(|state| state.origin),
             Some(ResetOrigin::Peer)
         );
     })
@@ -1359,34 +1390,24 @@ async fn reset_with_invalid_signature_is_rejected() {
         let (session_key, kem_ct) = client_identity
             .encapsulation_public_key
             .encapsulate_new_shared_secret();
-        let header = QlHeader {
-            kind: MessageKind::SessionReset,
+        let aad = QlHeader::session_reset_aad(server_identity.xid, client_identity.xid, &kem_ct);
+        let signature = server_identity
+            .private_keys
+            .sign(b"invalid-signature")
+            .unwrap();
+        let header = QlHeader::SessionReset {
             sender: server_identity.xid,
             recipient: client_identity.xid,
-            kem_ct: Some(kem_ct.clone()),
-            signature: None,
-        };
-        let signature = Some(
-            server_identity
-                .private_keys
-                .sign(&header.aad_data())
-                .unwrap(),
-        );
-        let header = QlHeader {
+            kem_ct: kem_ct.clone(),
             signature,
-            ..header
         };
-        let aad = header.aad_data();
-        let envelope = QlEnvelope {
+        let envelope = SessionPayload {
             message_id: id,
             valid_until,
-            route_id: RouteId::new(0),
-            payload: CBOR::null(),
         };
         let payload_bytes = envelope.to_cbor_data();
         let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
-        let mut reset_message = EncryptedMessage { header, encrypted };
-        reset_message.header.kind = MessageKind::Request;
+        let reset_message = EncryptedMessage { header, encrypted };
 
         handle.send_incoming(reset_message.to_cbor_data()).unwrap();
 
@@ -1420,13 +1441,25 @@ async fn heartbeat_timeout_resets_on_incoming_message() {
         let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
         tokio::task::spawn_local({
             let server_handle = pair.server_handle.clone();
+            let server_platform = pair.server_platform.clone();
             async move {
                 while let Ok(bytes) = client_outbound.recv().await {
                     if let Ok(message) =
                         CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
                     {
-                        if message.header.kind == MessageKind::Heartbeat {
-                            let _ = heartbeat_tx.send(()).await;
+                        if let Ok(peer) =
+                            server_platform.lookup_peer_or_fail(message.header.sender())
+                        {
+                            if let Ok((envelope, _)) = decrypt_envelope(
+                                &server_platform,
+                                &peer,
+                                &message.header,
+                                &message.encrypted,
+                            ) {
+                                if envelope.kind == MessageKind::Heartbeat {
+                                    let _ = heartbeat_tx.send(()).await;
+                                }
+                            }
                         }
                     }
                     server_handle.send_incoming(bytes).unwrap();
@@ -1436,14 +1469,26 @@ async fn heartbeat_timeout_resets_on_incoming_message() {
 
         tokio::task::spawn_local({
             let client_handle = pair.client_handle.clone();
+            let client_platform = pair.client_platform.clone();
             async move {
                 while let Ok(bytes) = server_outbound.recv().await {
                     let mut forward = true;
                     if let Ok(message) =
                         CBOR::try_from_data(&bytes).and_then(EncryptedMessage::try_from)
                     {
-                        if message.header.kind == MessageKind::Heartbeat {
-                            forward = false;
+                        if let Ok(peer) =
+                            client_platform.lookup_peer_or_fail(message.header.sender())
+                        {
+                            if let Ok((envelope, _)) = decrypt_envelope(
+                                &client_platform,
+                                &peer,
+                                &message.header,
+                                &message.encrypted,
+                            ) {
+                                if envelope.kind == MessageKind::Heartbeat {
+                                    forward = false;
+                                }
+                            }
                         }
                     }
                     if forward {
