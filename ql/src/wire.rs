@@ -27,6 +27,9 @@ pub enum Nack {
     Expired,
 }
 
+/// public, un-encrypted message header
+/// contents are verified during decryption
+/// contains minimal data necessary for request routing
 #[derive(Debug, Clone)]
 pub struct QlHeader {
     pub kind: MessageKind,
@@ -36,6 +39,8 @@ pub struct QlHeader {
     pub signature: Option<Signature>,
 }
 
+/// private, encrypted message envelope
+/// contains sensitive message contents
 #[derive(Debug, Clone)]
 pub struct QlEnvelope {
     pub message_id: MessageId,
@@ -44,6 +49,8 @@ pub struct QlEnvelope {
     pub payload: CBOR,
 }
 
+/// aggregated request information
+/// from unencrypted/encrypted wrappers
 #[derive(Debug, Clone)]
 pub struct QlDetails {
     pub kind: MessageKind,
