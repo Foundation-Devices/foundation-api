@@ -140,13 +140,13 @@ impl QlHeader {
                 sender,
                 recipient,
                 kem_ct,
-            } => header_cbor_pairing(*sender, *recipient, kem_ct.clone()).to_cbor_data(),
+            } => Self::header_cbor_pairing(*sender, *recipient, kem_ct.clone()).to_cbor_data(),
             Self::SessionReset {
                 sender,
                 recipient,
                 kem_ct,
                 ..
-            } => header_cbor_session_reset_unsigned(*sender, *recipient, kem_ct.clone())
+            } => Self::header_cbor_session_reset_unsigned(*sender, *recipient, kem_ct.clone())
                 .to_cbor_data(),
             Self::Message {
                 sender,
@@ -154,10 +154,10 @@ impl QlHeader {
                 session,
             } => match session {
                 SessionState::Established => {
-                    header_cbor_message(*sender, *recipient).to_cbor_data()
+                    Self::header_cbor_message(*sender, *recipient).to_cbor_data()
                 }
                 SessionState::Init { kem_ct, .. } => {
-                    header_cbor_message_init_unsigned(*sender, *recipient, kem_ct.clone())
+                    Self::header_cbor_message_init_unsigned(*sender, *recipient, kem_ct.clone())
                         .to_cbor_data()
                 }
             },
@@ -169,7 +169,7 @@ impl QlHeader {
         recipient: XID,
         kem_ct: &EncapsulationCiphertext,
     ) -> Vec<u8> {
-        header_cbor_message_init_unsigned(sender, recipient, kem_ct.clone()).to_cbor_data()
+        Self::header_cbor_message_init_unsigned(sender, recipient, kem_ct.clone()).to_cbor_data()
     }
 
     pub fn session_reset_aad(
@@ -177,7 +177,7 @@ impl QlHeader {
         recipient: XID,
         kem_ct: &EncapsulationCiphertext,
     ) -> Vec<u8> {
-        header_cbor_session_reset_unsigned(sender, recipient, kem_ct.clone()).to_cbor_data()
+        Self::header_cbor_session_reset_unsigned(sender, recipient, kem_ct.clone()).to_cbor_data()
     }
 
     pub fn has_new_session(&self) -> bool {
@@ -185,6 +185,49 @@ impl QlHeader {
             Self::Pairing { .. } | Self::SessionReset { .. } => true,
             Self::Message { session, .. } => matches!(session, SessionState::Init { .. }),
         }
+    }
+
+    fn header_cbor_pairing(sender: XID, recipient: XID, kem_ct: EncapsulationCiphertext) -> CBOR {
+        CBOR::from(vec![
+            CBOR::from(2u8),
+            CBOR::from(sender),
+            CBOR::from(recipient),
+            CBOR::from(kem_ct),
+        ])
+    }
+
+    fn header_cbor_session_reset_unsigned(
+        sender: XID,
+        recipient: XID,
+        kem_ct: EncapsulationCiphertext,
+    ) -> CBOR {
+        CBOR::from(vec![
+            CBOR::from(3u8),
+            CBOR::from(sender),
+            CBOR::from(recipient),
+            CBOR::from(kem_ct),
+        ])
+    }
+
+    fn header_cbor_message(sender: XID, recipient: XID) -> CBOR {
+        CBOR::from(vec![
+            CBOR::from(0u8),
+            CBOR::from(sender),
+            CBOR::from(recipient),
+        ])
+    }
+
+    fn header_cbor_message_init_unsigned(
+        sender: XID,
+        recipient: XID,
+        kem_ct: EncapsulationCiphertext,
+    ) -> CBOR {
+        CBOR::from(vec![
+            CBOR::from(1u8),
+            CBOR::from(sender),
+            CBOR::from(recipient),
+            CBOR::from(kem_ct),
+        ])
     }
 }
 
@@ -195,22 +238,32 @@ impl From<QlHeader> for CBOR {
                 sender,
                 recipient,
                 kem_ct,
-            } => header_cbor_pairing(sender, recipient, kem_ct),
+            } => QlHeader::header_cbor_pairing(sender, recipient, kem_ct),
             QlHeader::SessionReset {
                 sender,
                 recipient,
                 kem_ct,
                 signature,
-            } => header_cbor_session_reset(sender, recipient, kem_ct, signature),
+            } => CBOR::from(vec![
+                CBOR::from(3u8),
+                CBOR::from(sender),
+                CBOR::from(recipient),
+                CBOR::from(kem_ct),
+                CBOR::from(signature),
+            ]),
             QlHeader::Message {
                 sender,
                 recipient,
                 session,
             } => match session {
-                SessionState::Established => header_cbor_message(sender, recipient),
-                SessionState::Init { kem_ct, signature } => {
-                    header_cbor_message_init(sender, recipient, kem_ct, signature)
-                }
+                SessionState::Established => QlHeader::header_cbor_message(sender, recipient),
+                SessionState::Init { kem_ct, signature } => CBOR::from(vec![
+                    CBOR::from(1u8),
+                    CBOR::from(sender),
+                    CBOR::from(recipient),
+                    CBOR::from(kem_ct),
+                    CBOR::from(signature),
+                ]),
             },
         }
     }
@@ -441,79 +494,6 @@ impl TryFrom<CBOR> for PairingPayload {
             proof: proof.try_into()?,
         })
     }
-}
-
-fn header_cbor_pairing(sender: XID, recipient: XID, kem_ct: EncapsulationCiphertext) -> CBOR {
-    CBOR::from(vec![
-        CBOR::from(2u8),
-        CBOR::from(sender),
-        CBOR::from(recipient),
-        CBOR::from(kem_ct),
-    ])
-}
-
-fn header_cbor_session_reset(
-    sender: XID,
-    recipient: XID,
-    kem_ct: EncapsulationCiphertext,
-    signature: Signature,
-) -> CBOR {
-    CBOR::from(vec![
-        CBOR::from(3u8),
-        CBOR::from(sender),
-        CBOR::from(recipient),
-        CBOR::from(kem_ct),
-        CBOR::from(signature),
-    ])
-}
-
-fn header_cbor_session_reset_unsigned(
-    sender: XID,
-    recipient: XID,
-    kem_ct: EncapsulationCiphertext,
-) -> CBOR {
-    CBOR::from(vec![
-        CBOR::from(3u8),
-        CBOR::from(sender),
-        CBOR::from(recipient),
-        CBOR::from(kem_ct),
-    ])
-}
-
-fn header_cbor_message(sender: XID, recipient: XID) -> CBOR {
-    CBOR::from(vec![
-        CBOR::from(0u8),
-        CBOR::from(sender),
-        CBOR::from(recipient),
-    ])
-}
-
-fn header_cbor_message_init(
-    sender: XID,
-    recipient: XID,
-    kem_ct: EncapsulationCiphertext,
-    signature: Signature,
-) -> CBOR {
-    CBOR::from(vec![
-        CBOR::from(1u8),
-        CBOR::from(sender),
-        CBOR::from(recipient),
-        CBOR::from(kem_ct),
-        CBOR::from(signature),
-    ])
-}
-
-fn header_cbor_message_init_unsigned(
-    sender: XID,
-    recipient: XID,
-    kem_ct: EncapsulationCiphertext,
-) -> CBOR {
-    CBOR::from(vec![
-        CBOR::from(1u8),
-        CBOR::from(sender),
-        CBOR::from(recipient),
-        CBOR::from(kem_ct),
-    ])
 }
 
 fn cbor_array<const N: usize>(array: Vec<CBOR>) -> Result<[CBOR; N], dcbor::Error> {
