@@ -818,7 +818,7 @@ async fn nack_unknown_message_is_returned() {
             result,
             Err(QlError::Nack {
                 id: _,
-                nack: Nack::UnknownMessage
+                nack: Nack::UnknownRoute
             })
         ));
     })

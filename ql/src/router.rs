@@ -142,7 +142,7 @@ impl<S> Router<S> {
                 let handler = match self.handlers.get(&message_id) {
                     Some(handler) => handler,
                     None => {
-                        let _ = request.respond_to.respond_nack(Nack::UnknownMessage);
+                        let _ = request.respond_to.respond_nack(Nack::UnknownRoute);
                         return Ok(());
                     }
                 };

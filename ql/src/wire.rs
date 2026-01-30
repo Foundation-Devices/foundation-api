@@ -22,7 +22,7 @@ pub struct Ack;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nack {
     Unknown,
-    UnknownMessage,
+    UnknownRoute,
     InvalidPayload,
     Expired,
 }
@@ -219,7 +219,7 @@ impl From<Nack> for CBOR {
     fn from(value: Nack) -> Self {
         let value = match value {
             Nack::Unknown => 0,
-            Nack::UnknownMessage => 1,
+            Nack::UnknownRoute => 1,
             Nack::InvalidPayload => 2,
             Nack::Expired => 3,
         };
@@ -231,7 +231,7 @@ impl From<CBOR> for Nack {
     fn from(value: CBOR) -> Self {
         let value: u8 = value.try_into().unwrap_or_default();
         match value {
-            1 => Nack::UnknownMessage,
+            1 => Nack::UnknownRoute,
             2 => Nack::InvalidPayload,
             3 => Nack::Expired,
             _ => Nack::Unknown,
