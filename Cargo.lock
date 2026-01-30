@@ -1957,6 +1957,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ql2"
+version = "0.1.0"
+dependencies = [
+ "bc-components",
+ "dcbor",
+ "thiserror",
+]
+
+[[package]]
 name = "quantum-link-macros"
 version = "0.1.0"
 dependencies = [

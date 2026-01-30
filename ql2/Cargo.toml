@@ -1,0 +1,11 @@
+[package]
+name = "ql2"
+version = "0.1.0"
+edition = "2021"
+description = "Quantum Link handshake prototype"
+license = "Proprietary"
+
+[dependencies]
+bc-components = { version = "0.28.0", default-features = false, features = ["pqcrypto"] }
+dcbor = { version = "0.23.3" }
+thiserror = { version = "2" }

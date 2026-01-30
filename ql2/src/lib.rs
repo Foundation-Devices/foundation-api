@@ -1,0 +1,15 @@
+use thiserror::Error;
+
+pub mod handshake;
+pub mod platform;
+pub mod wire;
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum QlError {
+    #[error("invalid payload")]
+    InvalidPayload,
+    #[error("invalid handshake role")]
+    InvalidRole,
+    #[error("invalid signature")]
+    InvalidSignature,
+}
