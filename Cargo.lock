@@ -1960,8 +1960,10 @@ dependencies = [
 name = "ql2"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "bc-components",
  "dcbor",
+ "futures-lite",
  "thiserror",
 ]
 

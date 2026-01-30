@@ -2,6 +2,7 @@ use thiserror::Error;
 
 pub mod handshake;
 pub mod platform;
+pub mod runtime;
 pub mod wire;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
