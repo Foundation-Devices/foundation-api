@@ -8,6 +8,7 @@ use dcbor::CBOR;
 
 use crate::{
     platform::{HandshakeKind, PendingHandshake, QlPeer, QlPlatform, QlPlatformExt, ResetOrigin},
+    runtime::DecryptedMessage,
     wire::{MessageKind, Nack, PairingPayload, QlDetails, QlEncrypted, QlEnvelope, QlHeader},
     MessageId, QlError, RouteId,
 };
@@ -291,7 +292,7 @@ pub(crate) fn extract_envelope(
     platform: &impl QlPlatform,
     header: QlHeader,
     payload: EncryptedMessage,
-) -> Result<(QlDetails, CBOR), QlError> {
+) -> Result<DecryptedMessage, QlError> {
     verify_header(platform, &header)?;
     let peer = platform.lookup_peer_or_fail(header.sender)?;
     let (envelope, session_key) = decrypt_envelope(platform, &peer, &header, &payload)?;
@@ -302,7 +303,10 @@ pub(crate) fn extract_envelope(
     }
     peer.set_pending_handshake(None);
     let details = QlDetails::from_parts(&header, &envelope);
-    Ok((details, envelope.payload))
+    Ok(DecryptedMessage {
+        header: details,
+        payload: envelope.payload,
+    })
 }
 
 pub(crate) fn decrypt_envelope(

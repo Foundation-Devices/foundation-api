@@ -501,7 +501,7 @@ where
         let sender = header.sender;
         let kind = header.kind;
 
-        let (details, payload) = match extract_envelope(&self.platform, header, encrypted) {
+        let message = match extract_envelope(&self.platform, header, encrypted) {
             Ok(result) => result,
             Err(QlError::InvalidPayload) | Err(QlError::MissingSession(_)) => {
                 let _ = self.send_session_reset(state, sender);
@@ -522,15 +522,15 @@ where
 
         self.record_activity(state, sender);
 
-        match details.kind {
+        match message.header.kind {
             MessageKind::Request | MessageKind::Event => {
-                self.dispatch_decrypted_message(details, payload);
+                self.dispatch_decrypted_message(message);
             }
             MessageKind::Heartbeat => {
-                self.handle_heartbeat_message(state, details, payload);
+                self.handle_heartbeat_message(state, message);
             }
             MessageKind::Response | MessageKind::Nack => {
-                self.handle_response_message(state, details, payload);
+                self.handle_response_message(state, message);
             }
             MessageKind::Pairing | MessageKind::SessionReset => {
                 #[cfg(debug_assertions)]
@@ -539,12 +539,16 @@ where
         }
     }
 
-    fn handle_response_message(&self, state: &mut RuntimeState, details: QlDetails, payload: CBOR) {
-        if details.kind == MessageKind::Nack {
+    fn handle_response_message(
+        &self,
+        state: &mut RuntimeState,
+        DecryptedMessage { header, payload }: DecryptedMessage,
+    ) {
+        if header.kind == MessageKind::Nack {
             let nack = Nack::from(payload);
-            self.resolve_pending_nack(state, details.message_id, nack);
+            self.resolve_pending_nack(state, header.message_id, nack);
         } else {
-            let Some(entry) = state.pending.remove(&details.message_id) else {
+            let Some(entry) = state.pending.remove(&header.message_id) else {
                 return;
             };
             let _ = entry.tx.send(Ok(payload));
@@ -560,57 +564,47 @@ where
     fn handle_heartbeat_message(
         &self,
         state: &mut RuntimeState,
-        details: QlDetails,
-        payload: CBOR,
+        DecryptedMessage { header, payload }: DecryptedMessage,
     ) {
         if !payload.is_null() {
-            let _ = self.send_session_reset(state, details.sender);
+            let _ = self.send_session_reset(state, header.sender);
             return;
         }
 
         let is_response = state
             .keepalive
             .iter()
-            .find(|entry| entry.peer == details.sender)
+            .find(|entry| entry.peer == header.sender)
             .and_then(|entry| entry.pending_heartbeat_id())
-            .map_or(false, |id| id == details.message_id);
+            .map_or(false, |id| id == header.message_id);
 
         if !is_response {
-            if let Err(error) =
-                self.send_heartbeat_message(state, details.sender, details.message_id)
+            if let Err(error) = self.send_heartbeat_message(state, header.sender, header.message_id)
             {
                 self.platform.handle_error(error);
             }
         }
     }
 
-    fn dispatch_decrypted_message(&self, details: QlDetails, payload: CBOR) {
-        match details.kind {
+    fn dispatch_decrypted_message(&self, message: DecryptedMessage) {
+        match message.header.kind {
             MessageKind::Request => {
                 let responder = Responder {
-                    id: details.message_id,
-                    recipient: details.sender,
+                    id: message.header.message_id,
+                    recipient: message.header.sender,
                     tx: self.tx.upgrade().unwrap(),
                 };
                 let _ = self
                     .incoming
                     .send_blocking(HandlerEvent::Request(InboundRequest {
-                        message: DecryptedMessage {
-                            header: details,
-                            payload,
-                        },
+                        message,
                         respond_to: responder,
                     }));
             }
             MessageKind::Event => {
                 let _ = self
                     .incoming
-                    .send_blocking(HandlerEvent::Event(InboundEvent {
-                        message: DecryptedMessage {
-                            header: details,
-                            payload,
-                        },
-                    }));
+                    .send_blocking(HandlerEvent::Event(InboundEvent { message }));
             }
             _ => {}
         }
