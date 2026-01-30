@@ -79,6 +79,7 @@ pub fn new_runtime<P: crate::platform::QlPlatform>(
 
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
+    pub peer: XID,
     pub signing_key: SigningPublicKey,
     pub encapsulation_key: EncapsulationPublicKey,
     pub status: PeerStatus,
@@ -88,8 +89,13 @@ pub struct PeerRecord {
 }
 
 impl PeerRecord {
-    pub fn new(signing_key: SigningPublicKey, encapsulation_key: EncapsulationPublicKey) -> Self {
+    pub fn new(
+        peer: XID,
+        signing_key: SigningPublicKey,
+        encapsulation_key: EncapsulationPublicKey,
+    ) -> Self {
         Self {
+            peer,
             signing_key,
             encapsulation_key,
             status: PeerStatus::Disconnected,

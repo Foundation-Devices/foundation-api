@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future, time::Instant};
+use std::{future::Future, time::Instant};
 
 use bc_components::{EncapsulationPublicKey, XID};
 use dcbor::CBOR;
@@ -12,14 +12,34 @@ use crate::{
 };
 
 pub struct RuntimeState {
-    peers: HashMap<XID, PeerRecord>,
+    peers: Vec<PeerRecord>,
 }
 
 impl RuntimeState {
     pub fn new() -> Self {
         Self {
-            peers: HashMap::new(),
+            peers: Vec::new(),
         }
+    }
+
+    fn peer_mut(&mut self, peer: XID) -> Option<&mut PeerRecord> {
+        self.peers.iter_mut().find(|record| record.peer == peer)
+    }
+
+    fn upsert_peer(
+        &mut self,
+        peer: XID,
+        signing_key: bc_components::SigningPublicKey,
+        encapsulation_key: EncapsulationPublicKey,
+    ) -> &mut PeerRecord {
+        if let Some(index) = self.peers.iter().position(|record| record.peer == peer) {
+            return &mut self.peers[index];
+        }
+        self.peers
+            .push(PeerRecord::new(peer, signing_key, encapsulation_key));
+        self.peers
+            .last_mut()
+            .expect("peer record just inserted")
     }
 }
 
@@ -99,9 +119,7 @@ impl<P: QlPlatform> Runtime<P> {
             Err(_) => return,
         };
 
-        let entry = state.peers.entry(peer).or_insert_with(|| {
-            PeerRecord::new(signing_key.clone(), encapsulation_key.clone())
-        });
+        let entry = state.upsert_peer(peer, signing_key.clone(), encapsulation_key.clone());
         entry.pending_hello = Some(hello.clone());
         entry.status = PeerStatus::Connecting;
         entry.session_key = Some(session_key);
@@ -125,7 +143,7 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     async fn handle_handshake_timeout(&mut self, state: &mut RuntimeState, peer: XID) {
-        if let Some(entry) = state.peers.get_mut(&peer) {
+        if let Some(entry) = state.peer_mut(peer) {
             if entry.status == PeerStatus::Connecting {
                 if entry
                     .handshake_deadline
@@ -152,6 +170,6 @@ fn next_handshake_deadline(state: &RuntimeState) -> Option<(XID, Instant)> {
     state
         .peers
         .iter()
-        .filter_map(|(peer, record)| record.handshake_deadline.map(|deadline| (*peer, deadline)))
+        .filter_map(|record| record.handshake_deadline.map(|deadline| (record.peer, deadline)))
         .min_by_key(|(_, deadline)| *deadline)
 }
