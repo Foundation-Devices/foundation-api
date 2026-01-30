@@ -3,6 +3,7 @@ use std::{
     cmp::Reverse,
     collections::{BinaryHeap, VecDeque},
     future::Future,
+    task::Poll,
     time::Instant,
 };
 
@@ -76,7 +77,6 @@ struct InFlightWrite<'a> {
 struct OutboundMessage {
     peer: XID,
     token: Token,
-    deadline: Instant,
     bytes: Vec<u8>,
 }
 
@@ -109,8 +109,10 @@ impl<P: QlPlatform> Runtime<P> {
         let mut state = RuntimeState::new();
         let mut in_flight: Option<InFlightWrite<'_>> = None;
         loop {
-            self.start_next_write(&mut state, &mut in_flight);
-            let step = self.next_step(&state, &mut in_flight).await;
+            if in_flight.is_none() {
+                in_flight = self.start_next_write(&mut state);
+            }
+            let step = self.next_step(&state, in_flight.as_mut()).await;
             match step {
                 LoopStep::Event(command) => match command {
                     RuntimeCommand::RegisterPeer {
@@ -130,36 +132,30 @@ impl<P: QlPlatform> Runtime<P> {
                 LoopStep::Timeout => {
                     self.handle_timeouts(&mut state);
                 }
-                LoopStep::WriteDone => {
+                LoopStep::WriteDone { .. } => {
                     in_flight = None;
+                    // TODO: HANDLE ERROR?
                 }
                 LoopStep::Quit => break,
             }
         }
     }
 
-    fn start_next_write<'a>(
-        &'a self,
-        state: &mut RuntimeState,
-        in_flight: &mut Option<InFlightWrite<'a>>,
-    ) {
-        if in_flight.is_some() {
-            return;
-        }
+    fn start_next_write<'a>(&'a self, state: &mut RuntimeState) -> Option<InFlightWrite<'a>> {
         let Some(message) = state.outbound.pop_front() else {
-            return;
+            return None;
         };
-        *in_flight = Some(InFlightWrite {
+        Some(InFlightWrite {
             peer: message.peer,
             token: message.token,
             future: self.platform.write_message(message.bytes),
-        });
+        })
     }
 
     async fn next_step<'a>(
         &'a self,
         state: &RuntimeState,
-        in_flight: &'a mut Option<InFlightWrite<'a>>,
+        mut in_flight: Option<&mut InFlightWrite<'a>>,
     ) -> LoopStep {
         let recv_future = self.rx.recv();
         futures_lite::pin!(recv_future);
@@ -169,10 +165,14 @@ impl<P: QlPlatform> Runtime<P> {
             self.platform.sleep(timeout)
         });
 
-        poll_fn(|cx| {
+        let step = poll_fn(|cx| {
             if let Some(in_flight) = in_flight.as_mut() {
-                if let std::task::Poll::Ready(_result) = in_flight.future.as_mut().poll(cx) {
-                    return std::task::Poll::Ready(LoopStep::WriteDone);
+                if let Poll::Ready(result) = in_flight.future.as_mut().poll(cx) {
+                    return Poll::Ready(LoopStep::WriteDone {
+                        peer: in_flight.peer,
+                        token: in_flight.token,
+                        result,
+                    });
                 }
             }
 
@@ -188,7 +188,8 @@ impl<P: QlPlatform> Runtime<P> {
                 std::task::Poll::Pending => std::task::Poll::Pending,
             }
         })
-        .await
+        .await;
+        step
     }
 
     fn handle_connect(&self, state: &mut RuntimeState, peer: XID) {
@@ -478,12 +479,9 @@ impl<P: QlPlatform> Runtime<P> {
         deadline: Instant,
         bytes: Vec<u8>,
     ) {
-        state.outbound.push_back(OutboundMessage {
-            peer,
-            token,
-            deadline,
-            bytes,
-        });
+        state
+            .outbound
+            .push_back(OutboundMessage { peer, token, bytes });
         state.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Handshake { peer, token },
@@ -502,12 +500,9 @@ impl<P: QlPlatform> Runtime<P> {
         deadline: Instant,
     ) {
         let token = state.next_token();
-        state.outbound.push_back(OutboundMessage {
-            peer,
-            token,
-            deadline,
-            bytes,
-        });
+        state
+            .outbound
+            .push_back(OutboundMessage { peer, token, bytes });
         state.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Outbound { token },
@@ -528,10 +523,12 @@ impl<P: QlPlatform> Runtime<P> {
                 TimeoutKind::Handshake { peer, token } => {
                     let should_disconnect = match state.peer(peer) {
                         Some(entry) => match &entry.session {
-                            PeerSession::Initiator { handshake_token, .. }
-                            | PeerSession::Responder { handshake_token, .. } => {
-                                *handshake_token == token
+                            PeerSession::Initiator {
+                                handshake_token, ..
                             }
+                            | PeerSession::Responder {
+                                handshake_token, ..
+                            } => *handshake_token == token,
                             _ => false,
                         },
                         None => false,
@@ -552,7 +549,11 @@ impl<P: QlPlatform> Runtime<P> {
 enum LoopStep {
     Event(RuntimeCommand),
     Timeout,
-    WriteDone,
+    WriteDone {
+        peer: XID,
+        token: Token,
+        result: Result<(), QlError>,
+    },
     Quit,
 }
 
