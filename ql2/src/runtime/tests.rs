@@ -18,10 +18,10 @@ use tokio::{sync::Semaphore, task::LocalSet};
 use crate::{
     crypto::{handshake, pair},
     platform::{PlatformFuture, QlPlatform},
-    runtime::{new_runtime, PeerSession, RequestConfig, RuntimeConfig, RuntimeHandle},
+    runtime::{new_runtime, HandlerEvent, PeerSession, RequestConfig, RuntimeConfig, RuntimeHandle},
     wire::{
         handshake::HandshakeRecord,
-        message::{MessageKind, Nack},
+        message::Nack,
         QlHeader, QlPayload, QlRecord,
     },
     MessageId, QlError, RouteId,
@@ -131,6 +131,8 @@ impl QlPlatform for TestPlatform {
         };
         let _ = self.status.try_send(StatusEvent { peer, stage });
     }
+
+    fn handle_inbound(&self, _event: crate::runtime::HandlerEvent) {}
 }
 
 struct BlockingPlatform {
@@ -143,6 +145,106 @@ struct BlockingPlatform {
     nonce_seed: u8,
     nonce_counter: AtomicU8,
     write_gate: Arc<Semaphore>,
+}
+
+struct InboundPlatform {
+    signing_private: SigningPrivateKey,
+    signing_public: SigningPublicKey,
+    encapsulation_private: EncapsulationPrivateKey,
+    encapsulation_public: EncapsulationPublicKey,
+    outbound: Sender<Vec<u8>>,
+    status: Sender<StatusEvent>,
+    inbound: Sender<HandlerEvent>,
+    nonce_seed: u8,
+    nonce_counter: AtomicU8,
+}
+
+impl InboundPlatform {
+    fn new(seed: u8) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>, Receiver<HandlerEvent>) {
+        let (signing_private, signing_public) = SignatureScheme::MLDSA44.keypair();
+        let (encapsulation_private, encapsulation_public) =
+            EncapsulationScheme::default().keypair();
+        let (outbound, outbound_rx) = async_channel::unbounded();
+        let (status, status_rx) = async_channel::unbounded();
+        let (inbound, inbound_rx) = async_channel::unbounded();
+        (
+            Self {
+                signing_private,
+                signing_public,
+                encapsulation_private,
+                encapsulation_public,
+                outbound,
+                status,
+                inbound,
+                nonce_seed: seed,
+                nonce_counter: AtomicU8::new(0),
+            },
+            outbound_rx,
+            status_rx,
+            inbound_rx,
+        )
+    }
+
+    fn signing_public_key(&self) -> &SigningPublicKey {
+        &self.signing_public
+    }
+
+    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey {
+        &self.encapsulation_public
+    }
+}
+
+impl QlPlatform for InboundPlatform {
+    fn signer(&self) -> &dyn Signer {
+        &self.signing_private
+    }
+
+    fn signing_public_key(&self) -> &SigningPublicKey {
+        &self.signing_public
+    }
+
+    fn encapsulation_private_key(&self) -> &EncapsulationPrivateKey {
+        &self.encapsulation_private
+    }
+
+    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey {
+        &self.encapsulation_public
+    }
+
+    fn fill_bytes(&self, data: &mut [u8]) {
+        let value = self
+            .nonce_seed
+            .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
+        data.fill(value);
+    }
+
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
+        let outbound = self.outbound.clone();
+        Box::pin(async move {
+            outbound
+                .send(message)
+                .await
+                .map_err(|_| QlError::InvalidPayload)
+        })
+    }
+
+    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
+        Box::pin(tokio::time::sleep(duration))
+    }
+
+    fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
+        let stage = match session {
+            PeerSession::Disconnected => PeerStage::Disconnected,
+            PeerSession::Initiator { .. } => PeerStage::Initiator,
+            PeerSession::Responder { .. } => PeerStage::Responder,
+            PeerSession::Connected { .. } => PeerStage::Connected,
+        };
+        let _ = self.status.try_send(StatusEvent { peer, stage });
+    }
+
+    fn handle_inbound(&self, event: HandlerEvent) {
+        let _ = self.inbound.try_send(event);
+    }
 }
 
 impl BlockingPlatform {
@@ -236,6 +338,8 @@ impl QlPlatform for BlockingPlatform {
         };
         let _ = self.status.try_send(StatusEvent { peer, stage });
     }
+
+    fn handle_inbound(&self, _event: crate::runtime::HandlerEvent) {}
 }
 
 async fn run_local_test<F>(future: F)
@@ -479,7 +583,7 @@ async fn request_response_round_trip() {
         let config = RuntimeConfig::new(Duration::from_millis(200))
             .with_request_timeout(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+        let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
 
         let signing_a = platform_a.signing_public_key().clone();
         let signing_b = platform_b.signing_public_key().clone();
@@ -511,7 +615,13 @@ async fn request_response_round_trip() {
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
 
-        let ticket = handle_a
+        let inbound_task = tokio::task::spawn_local(async move {
+            if let Ok(HandlerEvent::Request(request)) = inbound_b.recv().await {
+                let _ = request.respond_to.respond(99u8);
+            }
+        });
+
+        let response = handle_a
             .send_request(
                 peer_b,
                 RouteId::new(7),
@@ -521,14 +631,10 @@ async fn request_response_round_trip() {
             .await
             .unwrap();
 
-        handle_b
-            .send_response(ticket.id, peer_a, CBOR::from(99u8), MessageKind::Response)
-            .await
-            .unwrap();
-
-        let response = ticket.recv().await.unwrap();
+        let response = response.recv().await.unwrap();
         let value: u8 = response.try_into().unwrap();
         assert_eq!(value, 99u8);
+        let _ = inbound_task.await;
     })
     .await;
 }
@@ -597,7 +703,7 @@ async fn request_nack_resolves_pending() {
         let config = RuntimeConfig::new(Duration::from_millis(200))
             .with_request_timeout(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+        let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
 
         let signing_a = platform_a.signing_public_key().clone();
         let signing_b = platform_b.signing_public_key().clone();
@@ -629,7 +735,13 @@ async fn request_nack_resolves_pending() {
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
 
-        let ticket = handle_a
+        let inbound_task = tokio::task::spawn_local(async move {
+            if let Ok(HandlerEvent::Request(request)) = inbound_b.recv().await {
+                let _ = request.respond_to.respond_nack(Nack::InvalidPayload);
+            }
+        });
+
+        let response = handle_a
             .send_request(
                 peer_b,
                 RouteId::new(2),
@@ -639,25 +751,77 @@ async fn request_nack_resolves_pending() {
             .await
             .unwrap();
 
+        let result = response.recv().await;
+        assert!(matches!(
+            result,
+            Err(QlError::Nack {
+                nack: Nack::InvalidPayload,
+                ..
+            })
+        ));
+        let _ = inbound_task.await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_dispatches_to_platform_callback() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200))
+            .with_request_timeout(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
+
+        let signing_a = platform_a.signing_public_key().clone();
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_a = platform_a.encapsulation_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(&signing_a);
+        let peer_b = XID::new(&signing_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        spawn_forwarder(outbound_a, handle_b.clone());
+        spawn_forwarder(outbound_b, handle_a.clone());
+
+        handle_a
+            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
+            .await
+            .unwrap();
         handle_b
-            .send_response(
-                ticket.id,
-                peer_a,
-                CBOR::from(Nack::InvalidPayload),
-                MessageKind::Nack,
+            .register_peer(peer_a, signing_a.clone(), encap_a.clone())
+            .await
+            .unwrap();
+
+        handle_a.connect(peer_b).await.unwrap();
+
+        await_status(&status_a, peer_b, PeerStage::Connected).await;
+        await_status(&status_b, peer_a, PeerStage::Connected).await;
+
+        let inbound_task = tokio::task::spawn_local(async move {
+            if let Ok(HandlerEvent::Request(request)) = inbound_b.recv().await {
+                let _ = request.respond_to.respond(7u8);
+            }
+        });
+
+        let ticket = handle_a
+            .send_request(
+                peer_b,
+                RouteId::new(3),
+                CBOR::from(1u8),
+                RequestConfig::default(),
             )
             .await
             .unwrap();
 
-        let ticket_id = ticket.id;
-        let result = ticket.recv().await;
-        assert!(matches!(
-            result,
-            Err(QlError::Nack {
-                id,
-                nack: Nack::InvalidPayload,
-            }) if id == ticket_id
-        ));
+        let response = ticket.recv().await.unwrap();
+        let value: u8 = response.try_into().unwrap();
+        assert_eq!(value, 7u8);
+        let _ = inbound_task.await;
     })
     .await;
 }

@@ -1,5 +1,6 @@
 pub mod crypto;
 mod id;
+pub mod router;
 pub mod platform;
 pub mod runtime;
 pub mod wire;

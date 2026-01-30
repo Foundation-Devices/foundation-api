@@ -1,11 +1,4 @@
-use std::{
-    cell::Cell,
-    cmp::Reverse,
-    collections::{BinaryHeap, HashMap, VecDeque},
-    future::Future,
-    task::Poll,
-    time::{Instant, SystemTime, UNIX_EPOCH},
-};
+use std::{cmp::Reverse, future::Future, task::Poll, time::Instant};
 
 use bc_components::{EncapsulationPublicKey, XID};
 use dcbor::CBOR;
@@ -13,8 +6,15 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     crypto::{handshake, message, pair},
-    platform::{PlatformFuture, QlPlatform, QlPlatformExt},
-    runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand, Token},
+    platform::{QlPlatform, QlPlatformExt},
+    runtime::{
+        internal::{
+            now_secs, next_timeout_deadline, peer_hello_wins, HelloAction, InFlightWrite, LoopStep,
+            OutboundMessage, PendingEntry, RuntimeState, TimeoutEntry, TimeoutKind,
+        },
+        HandlerEvent, InboundEvent, InboundRequest, InitiatorStage, PeerSession, Responder,
+        Runtime, RuntimeCommand, Token,
+    },
     wire::{
         handshake::HandshakeRecord,
         message::{MessageBody, MessageKind, Nack},
@@ -24,100 +24,6 @@ use crate::{
     MessageId, QlError, RouteId,
 };
 
-pub struct RuntimeState {
-    peers: Vec<PeerRecord>,
-    next_token: Cell<Token>,
-    outbound: VecDeque<OutboundMessage>,
-    timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
-    pending: HashMap<MessageId, PendingEntry>,
-}
-
-impl RuntimeState {
-    pub fn new() -> Self {
-        Self {
-            peers: Vec::new(),
-            next_token: Cell::new(Token(0)),
-            outbound: VecDeque::new(),
-            timeouts: BinaryHeap::new(),
-            pending: HashMap::new(),
-        }
-    }
-
-    fn next_token(&self) -> Token {
-        let token = self.next_token.get();
-        self.next_token.set(token.next());
-        token
-    }
-
-    fn peer(&self, peer: XID) -> Option<&PeerRecord> {
-        self.peers.iter().find(|record| record.peer == peer)
-    }
-
-    fn peer_mut(&mut self, peer: XID) -> Option<&mut PeerRecord> {
-        self.peers.iter_mut().find(|record| record.peer == peer)
-    }
-
-    fn upsert_peer(
-        &mut self,
-        peer: XID,
-        signing_key: bc_components::SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
-    ) -> &mut PeerRecord {
-        if let Some(index) = self.peers.iter().position(|record| record.peer == peer) {
-            let record = &mut self.peers[index];
-            record.signing_key = signing_key;
-            record.encapsulation_key = encapsulation_key;
-            return record;
-        }
-        self.peers
-            .push(PeerRecord::new(peer, signing_key, encapsulation_key));
-        self.peers.last_mut().expect("peer record just inserted")
-    }
-}
-
-struct PendingEntry {
-    recipient: XID,
-    tx: oneshot::Sender<Result<CBOR, QlError>>,
-}
-
-struct InFlightWrite<'a> {
-    peer: XID,
-    token: Token,
-    message_id: Option<MessageId>,
-    future: PlatformFuture<'a, Result<(), QlError>>,
-}
-
-struct OutboundMessage {
-    peer: XID,
-    token: Token,
-    message_id: Option<MessageId>,
-    bytes: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TimeoutKind {
-    Outbound { token: Token },
-    Handshake { peer: XID, token: Token },
-    Request { id: MessageId },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TimeoutEntry {
-    at: Instant,
-    kind: TimeoutKind,
-}
-
-impl Ord for TimeoutEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.at.cmp(&other.at)
-    }
-}
-
-impl PartialOrd for TimeoutEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
 
 impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
@@ -141,7 +47,6 @@ impl<P: QlPlatform> Runtime<P> {
                         self.handle_connect(&mut state, peer);
                     }
                     RuntimeCommand::SendRequest {
-                        id,
                         recipient,
                         route_id,
                         payload,
@@ -149,16 +54,15 @@ impl<P: QlPlatform> Runtime<P> {
                         config,
                     } => {
                         self.handle_send_request(
-                            &mut state, id, recipient, route_id, payload, respond_to, config,
+                            &mut state, recipient, route_id, payload, respond_to, config,
                         );
                     }
                     RuntimeCommand::SendEvent {
-                        id,
                         recipient,
                         route_id,
                         payload,
                     } => {
-                        self.handle_send_event(&mut state, id, recipient, route_id, payload);
+                        self.handle_send_event(&mut state, recipient, route_id, payload);
                     }
                     RuntimeCommand::SendResponse {
                         id,
@@ -305,13 +209,13 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_send_request(
         &self,
         state: &mut RuntimeState,
-        id: MessageId,
         recipient: XID,
         route_id: RouteId,
         payload: CBOR,
         respond_to: oneshot::Sender<Result<CBOR, QlError>>,
         config: super::RequestConfig,
     ) {
+        let id = state.next_message_id();
         let timeout = config
             .timeout
             .unwrap_or(self.config.default_request_timeout);
@@ -367,11 +271,11 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_send_event(
         &self,
         state: &mut RuntimeState,
-        id: MessageId,
         recipient: XID,
         route_id: RouteId,
         payload: CBOR,
     ) {
+        let id = state.next_message_id();
         let session_key = match state.peer(recipient) {
             Some(entry) => match &entry.session {
                 PeerSession::Connected { session_key } => session_key.clone(),
@@ -522,7 +426,16 @@ impl<P: QlPlatform> Runtime<P> {
                 let nack = Nack::from(record.payload);
                 self.resolve_pending_nack(state, peer, record.message_id, nack);
             }
-            MessageKind::Request | MessageKind::Event => {}
+            MessageKind::Request => {
+                let responder = Responder::new(record.message_id, record.sender, self.tx.clone());
+                self.platform.handle_inbound(HandlerEvent::Request(InboundRequest {
+                    message: record,
+                    respond_to: responder,
+                }));
+            }
+            MessageKind::Event => {
+                self.platform.handle_inbound(HandlerEvent::Event(InboundEvent { message: record }));
+            }
         }
     }
 
@@ -913,51 +826,4 @@ impl<P: QlPlatform> Runtime<P> {
             }
         }
     }
-}
-
-enum LoopStep {
-    Event(RuntimeCommand),
-    Timeout,
-    WriteDone {
-        peer: XID,
-        token: Token,
-        message_id: Option<MessageId>,
-        result: Result<(), QlError>,
-    },
-    Quit,
-}
-
-enum HelloAction {
-    StartResponder,
-    ResendReply {
-        reply: crate::wire::handshake::HelloReply,
-        deadline: Instant,
-    },
-    Ignore,
-}
-
-fn next_timeout_deadline(state: &RuntimeState) -> Option<Instant> {
-    state.timeouts.peek().map(|entry| entry.0.at)
-}
-
-fn peer_hello_wins(
-    local_hello: &crate::wire::handshake::Hello,
-    local_sender: XID,
-    peer_hello: &crate::wire::handshake::Hello,
-    peer_sender: XID,
-) -> bool {
-    use std::cmp::Ordering;
-
-    match peer_hello.nonce.data().cmp(local_hello.nonce.data()) {
-        Ordering::Less => true,
-        Ordering::Greater => false,
-        Ordering::Equal => peer_sender.data().cmp(local_sender.data()) == Ordering::Less,
-    }
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }

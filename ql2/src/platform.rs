@@ -4,7 +4,10 @@ use bc_components::{
     EncapsulationPrivateKey, EncapsulationPublicKey, Signer, SigningPublicKey, XID,
 };
 
-use crate::{runtime::PeerSession, QlError};
+use crate::{
+    runtime::{HandlerEvent, PeerSession},
+    QlError,
+};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -18,6 +21,7 @@ pub trait QlPlatform {
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
     fn handle_peer_status(&self, peer: XID, session: &PeerSession);
+    fn handle_inbound(&self, event: HandlerEvent);
 }
 
 pub(crate) trait QlPlatformExt: QlPlatform {

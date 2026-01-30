@@ -12,6 +12,9 @@ pub enum MessageKind {
     Nack,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ack;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageBody {
     pub message_id: MessageId,
@@ -63,6 +66,24 @@ impl TryFrom<CBOR> for MessageKind {
             3 => Ok(Self::Event),
             6 => Ok(Self::Nack),
             _ => Err(dcbor::Error::msg("unknown record kind")),
+        }
+    }
+}
+
+impl From<Ack> for CBOR {
+    fn from(_value: Ack) -> Self {
+        CBOR::null()
+    }
+}
+
+impl TryFrom<CBOR> for Ack {
+    type Error = dcbor::Error;
+
+    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
+        if value.is_null() {
+            Ok(Self)
+        } else {
+            Err(dcbor::Error::msg("expected null"))
         }
     }
 }

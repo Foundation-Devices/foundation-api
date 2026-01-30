@@ -1,22 +1,11 @@
-use std::{
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::time::Duration;
 
-use bc_components::{EncapsulationPublicKey, SigningPublicKey, SymmetricKey, XID};
+use bc_components::XID;
 use dcbor::CBOR;
-use oneshot::Receiver;
 
 use crate::{
-    crypto::handshake::ResponderSecrets,
-    wire::{
-        handshake::{Hello, HelloReply},
-        message::MessageKind,
-    },
-    MessageId, QlError, RouteId,
+    wire::message::{DecryptedMessage, MessageKind, Nack},
+    MessageId, QlCodec, QlError,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -29,15 +18,6 @@ pub struct RuntimeConfig {
     pub handshake_timeout: Duration,
     pub default_request_timeout: Duration,
     pub message_expiration: Duration,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Token(u64);
-
-impl Token {
-    fn next(self) -> Self {
-        Self(self.0.wrapping_add(1))
-    }
 }
 
 impl RuntimeConfig {
@@ -60,109 +40,62 @@ impl RuntimeConfig {
     }
 }
 
-#[derive(Clone)]
-pub struct RuntimeHandle {
+#[derive(Debug)]
+pub enum HandlerEvent {
+    Request(InboundRequest),
+    Event(InboundEvent),
+}
+
+#[derive(Debug)]
+pub struct InboundRequest {
+    pub message: DecryptedMessage,
+    pub respond_to: Responder,
+}
+
+#[derive(Debug)]
+pub struct InboundEvent {
+    pub message: DecryptedMessage,
+}
+
+#[derive(Debug, Clone)]
+pub struct Responder {
+    id: MessageId,
+    recipient: XID,
     tx: async_channel::Sender<RuntimeCommand>,
-    next_message_id: Arc<AtomicU64>,
 }
 
-pub struct RequestTicket {
-    pub id: MessageId,
-    rx: Receiver<Result<CBOR, QlError>>,
-}
-
-impl RequestTicket {
-    pub async fn recv(self) -> Result<CBOR, QlError> {
-        self.rx.await.unwrap_or(Err(QlError::Cancelled))
-    }
-}
-
-impl RuntimeHandle {
-    fn next_message_id(&self) -> MessageId {
-        let value = self.next_message_id.fetch_add(1, Ordering::Relaxed);
-        MessageId::new(value)
-    }
-
-    pub async fn register_peer(
-        &self,
-        peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
-    ) -> Result<(), async_channel::SendError<RuntimeCommand>> {
-        self.tx
-            .send(RuntimeCommand::RegisterPeer {
-                peer,
-                signing_key,
-                encapsulation_key,
-            })
-            .await
-    }
-
-    pub async fn connect(&self, peer: XID) -> Result<(), async_channel::SendError<RuntimeCommand>> {
-        self.tx.send(RuntimeCommand::Connect { peer }).await
-    }
-
-    pub async fn send_incoming(
-        &self,
-        bytes: Vec<u8>,
-    ) -> Result<(), async_channel::SendError<RuntimeCommand>> {
-        self.tx.send(RuntimeCommand::Incoming(bytes)).await
-    }
-
-    pub async fn send_request(
-        &self,
-        recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
-        config: RequestConfig,
-    ) -> Result<RequestTicket, async_channel::SendError<RuntimeCommand>> {
-        let id = self.next_message_id();
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(RuntimeCommand::SendRequest {
-                id,
-                recipient,
-                route_id,
-                payload,
-                respond_to: tx,
-                config,
-            })
-            .await?;
-        Ok(RequestTicket { id, rx })
-    }
-
-    pub async fn send_event(
-        &self,
-        recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
-    ) -> Result<(), async_channel::SendError<RuntimeCommand>> {
-        let id = self.next_message_id();
-        self.tx
-            .send(RuntimeCommand::SendEvent {
-                id,
-                recipient,
-                route_id,
-                payload,
-            })
-            .await
-    }
-
-    pub async fn send_response(
-        &self,
+impl Responder {
+    pub(crate) fn new(
         id: MessageId,
         recipient: XID,
-        payload: CBOR,
-        kind: MessageKind,
-    ) -> Result<(), async_channel::SendError<RuntimeCommand>> {
+        tx: async_channel::Sender<RuntimeCommand>,
+    ) -> Self {
+        Self { id, recipient, tx }
+    }
+
+    pub fn respond<R>(self, response: R) -> Result<(), QlError>
+    where
+        R: QlCodec,
+    {
         self.tx
-            .send(RuntimeCommand::SendResponse {
-                id,
-                recipient,
-                payload,
-                kind,
+            .try_send(RuntimeCommand::SendResponse {
+                id: self.id,
+                recipient: self.recipient,
+                payload: response.into(),
+                kind: MessageKind::Response,
             })
-            .await
+            .map_err(|_| QlError::Cancelled)
+    }
+
+    pub fn respond_nack(self, reason: Nack) -> Result<(), QlError> {
+        self.tx
+            .try_send(RuntimeCommand::SendResponse {
+                id: self.id,
+                recipient: self.recipient,
+                payload: CBOR::from(reason),
+                kind: MessageKind::Nack,
+            })
+            .map_err(|_| QlError::Cancelled)
     }
 }
 
@@ -170,111 +103,33 @@ pub struct Runtime<P> {
     platform: P,
     config: RuntimeConfig,
     rx: async_channel::Receiver<RuntimeCommand>,
+    tx: async_channel::Sender<RuntimeCommand>,
 }
 
+pub mod handle;
+pub(crate) mod internal;
+pub use handle::{Response, RuntimeHandle};
+pub use internal::{InitiatorStage, PeerSession, Token};
+pub(crate) use internal::RuntimeCommand;
 mod r#impl;
 
 #[cfg(test)]
 mod tests;
-
-pub enum RuntimeCommand {
-    RegisterPeer {
-        peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
-    },
-    Connect {
-        peer: XID,
-    },
-    SendRequest {
-        id: MessageId,
-        recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
-        respond_to: oneshot::Sender<Result<CBOR, QlError>>,
-        config: RequestConfig,
-    },
-    SendEvent {
-        id: MessageId,
-        recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
-    },
-    SendResponse {
-        id: MessageId,
-        recipient: XID,
-        payload: CBOR,
-        kind: MessageKind,
-    },
-    Incoming(Vec<u8>),
-}
 
 pub fn new_runtime<P: crate::platform::QlPlatform>(
     platform: P,
     config: RuntimeConfig,
 ) -> (Runtime<P>, RuntimeHandle) {
     let (tx, rx) = async_channel::unbounded();
-    let next_message_id = Arc::new(AtomicU64::new(1));
     (
         Runtime {
             platform,
             config,
             rx,
+            tx: tx.clone(),
         },
-        RuntimeHandle {
-            tx,
-            next_message_id,
-        },
+        RuntimeHandle::new(tx),
     )
 }
 
-#[derive(Debug, Clone)]
-pub struct PeerRecord {
-    pub peer: XID,
-    pub signing_key: SigningPublicKey,
-    pub encapsulation_key: EncapsulationPublicKey,
-    pub session: PeerSession,
-}
-
-impl PeerRecord {
-    pub fn new(
-        peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
-    ) -> Self {
-        Self {
-            peer,
-            signing_key,
-            encapsulation_key,
-            session: PeerSession::Disconnected,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum PeerSession {
-    Disconnected,
-    Initiator {
-        handshake_token: Token,
-        hello: Hello,
-        session_key: SymmetricKey,
-        deadline: std::time::Instant,
-        stage: InitiatorStage,
-    },
-    Responder {
-        handshake_token: Token,
-        hello: Hello,
-        reply: HelloReply,
-        secrets: ResponderSecrets,
-        deadline: std::time::Instant,
-    },
-    Connected {
-        session_key: SymmetricKey,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InitiatorStage {
-    WaitingHelloReply,
-    WaitingConfirmAck,
-}
+ 
