@@ -1,10 +1,10 @@
 use std::{
     cell::Cell,
     cmp::Reverse,
-    collections::{BinaryHeap, VecDeque},
+    collections::{BinaryHeap, HashMap, VecDeque},
     future::Future,
     task::Poll,
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use bc_components::{EncapsulationPublicKey, XID};
@@ -12,11 +12,16 @@ use dcbor::CBOR;
 use futures_lite::future::poll_fn;
 
 use crate::{
-    crypto::{handshake, pairing},
+    crypto::{handshake, pairing, record},
     platform::{PlatformFuture, QlPlatform, QlPlatformExt},
     runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand, Token},
-    wire::{handshake::HandshakeMessage, pairing::PairingRequest, QlHeader, QlMessage, QlPayload},
-    QlError,
+    wire::{
+        handshake::HandshakeMessage,
+        pairing::PairingRequest,
+        record::{Nack, RecordBody, RecordKind},
+        QlHeader, QlMessage, QlPayload,
+    },
+    MessageId, QlError, RouteId,
 };
 
 pub struct RuntimeState {
@@ -24,6 +29,7 @@ pub struct RuntimeState {
     next_token: Cell<Token>,
     outbound: VecDeque<OutboundMessage>,
     timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
+    pending: HashMap<MessageId, PendingEntry>,
 }
 
 impl RuntimeState {
@@ -33,6 +39,7 @@ impl RuntimeState {
             next_token: Cell::new(Token(0)),
             outbound: VecDeque::new(),
             timeouts: BinaryHeap::new(),
+            pending: HashMap::new(),
         }
     }
 
@@ -68,15 +75,22 @@ impl RuntimeState {
     }
 }
 
+struct PendingEntry {
+    recipient: XID,
+    tx: oneshot::Sender<Result<CBOR, QlError>>,
+}
+
 struct InFlightWrite<'a> {
     peer: XID,
     token: Token,
+    message_id: Option<MessageId>,
     future: PlatformFuture<'a, Result<(), QlError>>,
 }
 
 struct OutboundMessage {
     peer: XID,
     token: Token,
+    message_id: Option<MessageId>,
     bytes: Vec<u8>,
 }
 
@@ -84,6 +98,7 @@ struct OutboundMessage {
 enum TimeoutKind {
     Outbound { token: Token },
     Handshake { peer: XID, token: Token },
+    Request { id: MessageId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +140,34 @@ impl<P: QlPlatform> Runtime<P> {
                     RuntimeCommand::Connect { peer } => {
                         self.handle_connect(&mut state, peer);
                     }
+                    RuntimeCommand::SendRequest {
+                        id,
+                        recipient,
+                        route_id,
+                        payload,
+                        respond_to,
+                        config,
+                    } => {
+                        self.handle_send_request(
+                            &mut state, id, recipient, route_id, payload, respond_to, config,
+                        );
+                    }
+                    RuntimeCommand::SendEvent {
+                        id,
+                        recipient,
+                        route_id,
+                        payload,
+                    } => {
+                        self.handle_send_event(&mut state, id, recipient, route_id, payload);
+                    }
+                    RuntimeCommand::SendResponse {
+                        id,
+                        recipient,
+                        payload,
+                        kind,
+                    } => {
+                        self.handle_send_response(&mut state, id, recipient, payload, kind);
+                    }
                     RuntimeCommand::Incoming(bytes) => {
                         self.handle_incoming(&mut state, bytes);
                     }
@@ -135,10 +178,11 @@ impl<P: QlPlatform> Runtime<P> {
                 LoopStep::WriteDone {
                     peer,
                     token,
+                    message_id,
                     result,
                 } => {
                     in_flight = None;
-                    self.handle_write_done(&mut state, peer, token, result);
+                    self.handle_write_done(&mut state, peer, token, message_id, result);
                 }
                 LoopStep::Quit => break,
             }
@@ -152,6 +196,7 @@ impl<P: QlPlatform> Runtime<P> {
         Some(InFlightWrite {
             peer: message.peer,
             token: message.token,
+            message_id: message.message_id,
             future: self.platform.write_message(message.bytes),
         })
     }
@@ -175,21 +220,22 @@ impl<P: QlPlatform> Runtime<P> {
                     return Poll::Ready(LoopStep::WriteDone {
                         peer: in_flight.peer,
                         token: in_flight.token,
+                        message_id: in_flight.message_id,
                         result,
                     });
                 }
             }
 
             if let Some(future) = sleep_future.as_mut() {
-                if let std::task::Poll::Ready(()) = future.as_mut().poll(cx) {
-                    return std::task::Poll::Ready(LoopStep::Timeout);
+                if let Poll::Ready(()) = future.as_mut().poll(cx) {
+                    return Poll::Ready(LoopStep::Timeout);
                 }
             }
 
             match recv_future.as_mut().poll(cx) {
-                std::task::Poll::Ready(Ok(event)) => std::task::Poll::Ready(LoopStep::Event(event)),
-                std::task::Poll::Ready(Err(_)) => std::task::Poll::Ready(LoopStep::Quit),
-                std::task::Poll::Pending => std::task::Poll::Pending,
+                Poll::Ready(Ok(event)) => Poll::Ready(LoopStep::Event(event)),
+                Poll::Ready(Err(_)) => Poll::Ready(LoopStep::Quit),
+                Poll::Pending => Poll::Pending,
             }
         })
         .await;
@@ -256,6 +302,144 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
+    fn handle_send_request(
+        &self,
+        state: &mut RuntimeState,
+        id: MessageId,
+        recipient: XID,
+        route_id: RouteId,
+        payload: CBOR,
+        respond_to: oneshot::Sender<Result<CBOR, QlError>>,
+        config: super::RequestConfig,
+    ) {
+        let timeout = config
+            .timeout
+            .unwrap_or(self.config.default_request_timeout);
+        if timeout.is_zero() {
+            let _ = respond_to.send(Err(QlError::Timeout));
+            return;
+        }
+        let session_key = match state.peer(recipient) {
+            Some(entry) => match &entry.session {
+                PeerSession::Connected { session_key } => session_key.clone(),
+                _ => {
+                    let _ = respond_to.send(Err(QlError::MissingSession(recipient)));
+                    return;
+                }
+            },
+            None => {
+                let _ = respond_to.send(Err(QlError::UnknownPeer(recipient)));
+                return;
+            }
+        };
+        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
+        let body = RecordBody {
+            message_id: id,
+            valid_until,
+            kind: RecordKind::Request,
+            route_id,
+            payload,
+        };
+        let message = record::encrypt_record(
+            QlHeader {
+                sender: self.platform.xid(),
+                recipient,
+            },
+            &session_key,
+            body,
+        );
+        let bytes = CBOR::from(message).to_cbor_data();
+        state.pending.insert(
+            id,
+            PendingEntry {
+                recipient,
+                tx: respond_to,
+            },
+        );
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: Instant::now() + timeout,
+            kind: TimeoutKind::Request { id },
+        }));
+        let outbound_deadline = Instant::now() + self.config.message_expiration;
+        self.enqueue_outbound(state, recipient, bytes, outbound_deadline, Some(id));
+    }
+
+    fn handle_send_event(
+        &self,
+        state: &mut RuntimeState,
+        id: MessageId,
+        recipient: XID,
+        route_id: RouteId,
+        payload: CBOR,
+    ) {
+        let session_key = match state.peer(recipient) {
+            Some(entry) => match &entry.session {
+                PeerSession::Connected { session_key } => session_key.clone(),
+                _ => return,
+            },
+            None => return,
+        };
+        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
+        let body = RecordBody {
+            message_id: id,
+            valid_until,
+            kind: RecordKind::Event,
+            route_id,
+            payload,
+        };
+        let message = record::encrypt_record(
+            QlHeader {
+                sender: self.platform.xid(),
+                recipient,
+            },
+            &session_key,
+            body,
+        );
+        let bytes = CBOR::from(message).to_cbor_data();
+        let outbound_deadline = Instant::now() + self.config.message_expiration;
+        self.enqueue_outbound(state, recipient, bytes, outbound_deadline, None);
+    }
+
+    fn handle_send_response(
+        &self,
+        state: &mut RuntimeState,
+        id: MessageId,
+        recipient: XID,
+        payload: CBOR,
+        kind: RecordKind,
+    ) {
+        let kind = match kind {
+            RecordKind::Response | RecordKind::Nack => kind,
+            _ => return,
+        };
+        let session_key = match state.peer(recipient) {
+            Some(entry) => match &entry.session {
+                PeerSession::Connected { session_key } => session_key.clone(),
+                _ => return,
+            },
+            None => return,
+        };
+        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
+        let body = RecordBody {
+            message_id: id,
+            valid_until,
+            kind,
+            route_id: RouteId::new(0),
+            payload,
+        };
+        let message = record::encrypt_record(
+            QlHeader {
+                sender: self.platform.xid(),
+                recipient,
+            },
+            &session_key,
+            body,
+        );
+        let bytes = CBOR::from(message).to_cbor_data();
+        let outbound_deadline = Instant::now() + self.config.message_expiration;
+        self.enqueue_outbound(state, recipient, bytes, outbound_deadline, None);
+    }
+
     fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
         let Ok(message) = CBOR::try_from_data(&bytes).and_then(QlMessage::try_from) else {
             return;
@@ -271,7 +455,9 @@ impl<P: QlPlatform> Runtime<P> {
             QlPayload::Pairing(request) => {
                 self.handle_pairing(state, header, request);
             }
-            QlPayload::Record(_encrypted) => {}
+            QlPayload::Record(encrypted) => {
+                self.handle_record(state, header, encrypted);
+            }
         }
     }
 
@@ -304,7 +490,71 @@ impl<P: QlPlatform> Runtime<P> {
         self.handle_connect(state, peer);
     }
 
-    fn handle_hello(&self, state: &mut RuntimeState, header: QlHeader, hello: crate::wire::handshake::Hello) {
+    fn handle_record(
+        &self,
+        state: &mut RuntimeState,
+        header: QlHeader,
+        encrypted: bc_components::EncryptedMessage,
+    ) {
+        let peer = header.sender;
+        let session_key = match state.peer(peer) {
+            Some(entry) => match &entry.session {
+                PeerSession::Connected { session_key } => session_key.clone(),
+                _ => return,
+            },
+            None => return,
+        };
+        let record = match record::decrypt_record(&header, &encrypted, &session_key) {
+            Ok(record) => record,
+            Err(record::RecordError::Nack { .. }) => return,
+            Err(record::RecordError::Error(_)) => return,
+        };
+        match record.kind {
+            RecordKind::Response => {
+                self.resolve_pending_ok(state, peer, record.message_id, record.payload);
+            }
+            RecordKind::Nack => {
+                let nack = Nack::from(record.payload);
+                self.resolve_pending_nack(state, peer, record.message_id, nack);
+            }
+            RecordKind::Request | RecordKind::Event => {}
+        }
+    }
+
+    fn resolve_pending_ok(
+        &self,
+        state: &mut RuntimeState,
+        sender: XID,
+        id: MessageId,
+        payload: CBOR,
+    ) {
+        if let Some(entry) = state.pending.remove(&id) {
+            if entry.recipient == sender {
+                let _ = entry.tx.send(Ok(payload));
+            }
+        }
+    }
+
+    fn resolve_pending_nack(
+        &self,
+        state: &mut RuntimeState,
+        sender: XID,
+        id: MessageId,
+        nack: Nack,
+    ) {
+        if let Some(entry) = state.pending.remove(&id) {
+            if entry.recipient == sender {
+                let _ = entry.tx.send(Err(QlError::Nack { id, nack }));
+            }
+        }
+    }
+
+    fn handle_hello(
+        &self,
+        state: &mut RuntimeState,
+        header: QlHeader,
+        hello: crate::wire::handshake::Hello,
+    ) {
         let peer = header.sender;
         let action = match state.peer(peer) {
             Some(entry) => match &entry.session {
@@ -352,7 +602,7 @@ impl<P: QlPlatform> Runtime<P> {
                     payload: QlPayload::Handshake(HandshakeMessage::HelloReply(reply)),
                 };
                 let bytes = CBOR::from(message).to_cbor_data();
-                self.enqueue_outbound(state, peer, bytes, deadline);
+                self.enqueue_outbound(state, peer, bytes, deadline, None);
             }
             HelloAction::Ignore => {}
         }
@@ -421,10 +671,15 @@ impl<P: QlPlatform> Runtime<P> {
         };
         let bytes = CBOR::from(message).to_cbor_data();
         let deadline = Instant::now() + self.config.handshake_timeout;
-        self.enqueue_outbound(state, peer, bytes, deadline);
+        self.enqueue_outbound(state, peer, bytes, deadline, None);
     }
 
-    fn handle_confirm(&self, state: &mut RuntimeState, header: QlHeader, confirm: crate::wire::handshake::Confirm) {
+    fn handle_confirm(
+        &self,
+        state: &mut RuntimeState,
+        header: QlHeader,
+        confirm: crate::wire::handshake::Confirm,
+    ) {
         let peer = header.sender;
         let (hello, reply, secrets, initiator_signing_key) = match state.peer(peer) {
             Some(entry) => match &entry.session {
@@ -527,9 +782,12 @@ impl<P: QlPlatform> Runtime<P> {
         deadline: Instant,
         bytes: Vec<u8>,
     ) {
-        state
-            .outbound
-            .push_back(OutboundMessage { peer, token, bytes });
+        state.outbound.push_back(OutboundMessage {
+            peer,
+            token,
+            message_id: None,
+            bytes,
+        });
         state.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Handshake { peer, token },
@@ -546,11 +804,15 @@ impl<P: QlPlatform> Runtime<P> {
         peer: XID,
         bytes: Vec<u8>,
         deadline: Instant,
+        message_id: Option<MessageId>,
     ) {
         let token = state.next_token();
-        state
-            .outbound
-            .push_back(OutboundMessage { peer, token, bytes });
+        state.outbound.push_back(OutboundMessage {
+            peer,
+            token,
+            message_id,
+            bytes,
+        });
         state.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Outbound { token },
@@ -566,7 +828,20 @@ impl<P: QlPlatform> Runtime<P> {
             let entry = state.timeouts.pop().expect("timeout entry just peeked").0;
             match entry.kind {
                 TimeoutKind::Outbound { token } => {
-                    state.outbound.retain(|message| message.token != token);
+                    let mut message_id = None;
+                    state.outbound.retain(|message| {
+                        if message.token == token {
+                            message_id = message.message_id;
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    if let Some(id) = message_id {
+                        if let Some(entry) = state.pending.remove(&id) {
+                            let _ = entry.tx.send(Err(QlError::SendFailed));
+                        }
+                    }
                 }
                 TimeoutKind::Handshake { peer, token } => {
                     let should_disconnect = match state.peer(peer) {
@@ -589,6 +864,11 @@ impl<P: QlPlatform> Runtime<P> {
                         state.outbound.retain(|message| message.peer != peer);
                     }
                 }
+                TimeoutKind::Request { id } => {
+                    if let Some(entry) = state.pending.remove(&id) {
+                        let _ = entry.tx.send(Err(QlError::Timeout));
+                    }
+                }
             }
         }
     }
@@ -598,11 +878,17 @@ impl<P: QlPlatform> Runtime<P> {
         state: &mut RuntimeState,
         peer: XID,
         token: Token,
+        message_id: Option<MessageId>,
         result: Result<(), QlError>,
     ) {
         match result {
             Ok(()) => {}
             Err(_) => {
+                if let Some(id) = message_id {
+                    if let Some(entry) = state.pending.remove(&id) {
+                        let _ = entry.tx.send(Err(QlError::SendFailed));
+                    }
+                }
                 let should_disconnect = match state.peer(peer).map(|entry| &entry.session) {
                     Some(PeerSession::Initiator {
                         handshake_token, ..
@@ -630,6 +916,7 @@ enum LoopStep {
     WriteDone {
         peer: XID,
         token: Token,
+        message_id: Option<MessageId>,
         result: Result<(), QlError>,
     },
     Quit,
@@ -659,8 +946,13 @@ fn peer_hello_wins(
     match peer_hello.nonce.data().cmp(local_hello.nonce.data()) {
         Ordering::Less => true,
         Ordering::Greater => false,
-        Ordering::Equal => {
-            peer_sender.data().cmp(local_sender.data()) == Ordering::Less
-        }
+        Ordering::Equal => peer_sender.data().cmp(local_sender.data()) == Ordering::Less,
     }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }

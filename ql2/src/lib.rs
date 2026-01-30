@@ -26,4 +26,19 @@ pub enum QlError {
     InvalidRole,
     #[error("invalid signature")]
     InvalidSignature,
+    #[error("missing session for {0}")]
+    MissingSession(bc_components::XID),
+    #[error("unknown peer {0}")]
+    UnknownPeer(bc_components::XID),
+    #[error("timeout")]
+    Timeout,
+    #[error("send failed")]
+    SendFailed,
+    #[error("nack {nack:?}")]
+    Nack {
+        id: MessageId,
+        nack: wire::record::Nack,
+    },
+    #[error("cancelled")]
+    Cancelled,
 }

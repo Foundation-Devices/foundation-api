@@ -1964,6 +1964,7 @@ dependencies = [
  "bc-components",
  "dcbor",
  "futures-lite",
+ "oneshot",
  "thiserror",
  "tokio",
 ]

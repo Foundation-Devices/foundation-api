@@ -12,6 +12,7 @@ bc-components = { version = "0.28.0", default-features = false, features = [
 ] }
 dcbor = { version = "0.23.3" }
 futures-lite = { version = "2.5" }
+oneshot = { version = "0.1.11" }
 thiserror = { version = "2" }
 
 [dev-dependencies]
