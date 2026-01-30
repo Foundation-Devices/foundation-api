@@ -6,7 +6,7 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     handshake,
-    platform::QlPlatform,
+    platform::{QlPlatform, QlPlatformExt},
     runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand},
     wire::{handshake::HandshakeMessage, QlMessage},
 };
@@ -111,7 +111,7 @@ impl<P: QlPlatform> Runtime<P> {
     ) {
         let (hello, session_key) = match handshake::build_hello(
             &self.platform,
-            self.local_xid,
+            self.platform.xid(),
             peer,
             &encapsulation_key,
         ) {

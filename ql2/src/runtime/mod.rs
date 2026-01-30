@@ -45,7 +45,6 @@ impl RuntimeHandle {
 pub struct Runtime<P> {
     platform: P,
     config: RuntimeConfig,
-    local_xid: XID,
     rx: async_channel::Receiver<RuntimeCommand>,
 }
 
@@ -63,14 +62,12 @@ pub enum RuntimeCommand {
 pub fn new_runtime<P: crate::platform::QlPlatform>(
     platform: P,
     config: RuntimeConfig,
-    local_xid: XID,
 ) -> (Runtime<P>, RuntimeHandle) {
     let (tx, rx) = async_channel::unbounded();
     (
         Runtime {
             platform,
             config,
-            local_xid,
             rx,
         },
         RuntimeHandle { tx },
