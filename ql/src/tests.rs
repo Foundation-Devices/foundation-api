@@ -909,7 +909,7 @@ async fn expired_response_is_rejected() {
             payload: CBOR::from(6),
         };
         let encrypted = session_key.encrypt(
-            CBOR::from(envelope).to_cbor_data(),
+            envelope.to_cbor_data(),
             Some(header.aad_data()),
             None::<bc_components::Nonce>,
         );
@@ -976,7 +976,7 @@ async fn expired_request_is_rejected_with_nack() {
             payload: CBOR::from(Ping(5)),
         };
         let encrypted = session_key.encrypt(
-            CBOR::from(envelope).to_cbor_data(),
+            envelope.to_cbor_data(),
             Some(header.aad_data()),
             None::<bc_components::Nonce>,
         );
@@ -988,12 +988,17 @@ async fn expired_request_is_rejected_with_nack() {
             .await
             .unwrap()
             .unwrap();
-        let nack_message =
-            CBOR::try_from_data(&outbound).and_then(EncryptedMessage::try_from).unwrap();
+        let nack_message = CBOR::try_from_data(&outbound)
+            .and_then(EncryptedMessage::try_from)
+            .unwrap();
         assert_eq!(nack_message.header.kind, MessageKind::Nack);
 
         let decrypted = sender_platform
-            .decrypt_message(&session_key, &nack_message.header.aad_data(), &nack_message.encrypted)
+            .decrypt_message(
+                &session_key,
+                &nack_message.header.aad_data(),
+                &nack_message.encrypted,
+            )
             .unwrap();
         let envelope = QlEnvelope::try_from(decrypted).unwrap();
         let nack = Nack::from(envelope.payload);
