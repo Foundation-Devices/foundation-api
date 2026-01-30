@@ -12,7 +12,10 @@ use oneshot::Receiver;
 
 use crate::{
     crypto::handshake::ResponderSecrets,
-    wire::{handshake::Hello, handshake::HelloReply, record::RecordKind},
+    wire::{
+        handshake::{Hello, HelloReply},
+        message::MessageKind,
+    },
     MessageId, QlError, RouteId,
 };
 
@@ -95,10 +98,7 @@ impl RuntimeHandle {
             .await
     }
 
-    pub async fn connect(
-        &self,
-        peer: XID,
-    ) -> Result<(), async_channel::SendError<RuntimeCommand>> {
+    pub async fn connect(&self, peer: XID) -> Result<(), async_channel::SendError<RuntimeCommand>> {
         self.tx.send(RuntimeCommand::Connect { peer }).await
     }
 
@@ -153,7 +153,7 @@ impl RuntimeHandle {
         id: MessageId,
         recipient: XID,
         payload: CBOR,
-        kind: RecordKind,
+        kind: MessageKind,
     ) -> Result<(), async_channel::SendError<RuntimeCommand>> {
         self.tx
             .send(RuntimeCommand::SendResponse {
@@ -204,7 +204,7 @@ pub enum RuntimeCommand {
         id: MessageId,
         recipient: XID,
         payload: CBOR,
-        kind: RecordKind,
+        kind: MessageKind,
     },
     Incoming(Vec<u8>),
 }

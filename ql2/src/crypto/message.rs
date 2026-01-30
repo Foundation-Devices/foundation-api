@@ -5,50 +5,54 @@ use dcbor::CBOR;
 
 use crate::{
     wire::{
-        record::{DecryptedRecord, Nack, RecordBody, RecordKind},
-        QlHeader, QlMessage, QlPayload,
+        message::{DecryptedMessage, MessageBody, MessageKind, Nack},
+        QlHeader, QlPayload, QlRecord,
     },
     MessageId, QlError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RecordError {
+pub enum MessageError {
     Nack {
         id: MessageId,
         nack: Nack,
-        kind: RecordKind,
+        kind: MessageKind,
     },
     Error(QlError),
 }
 
-pub fn encrypt_record(header: QlHeader, session_key: &SymmetricKey, body: RecordBody) -> QlMessage {
+pub fn encrypt_message(
+    header: QlHeader,
+    session_key: &SymmetricKey,
+    body: MessageBody,
+) -> QlRecord {
     let aad = CBOR::from(header.clone()).to_cbor_data();
     let body_bytes = CBOR::from(body).to_cbor_data();
     let encrypted = session_key.encrypt(body_bytes, Some(aad), None::<Nonce>);
-    QlMessage {
+    QlRecord {
         header,
-        payload: QlPayload::Record(encrypted),
+        payload: QlPayload::Message(encrypted),
     }
 }
 
-pub fn decrypt_record(
+pub fn decrypt_message(
     header: &QlHeader,
     encrypted: &bc_components::EncryptedMessage,
     session_key: &SymmetricKey,
-) -> Result<DecryptedRecord, RecordError> {
+) -> Result<DecryptedMessage, MessageError> {
     let aad = CBOR::from(header.clone()).to_cbor_data();
     if encrypted.aad() != aad {
-        return Err(RecordError::Error(QlError::InvalidPayload));
+        return Err(MessageError::Error(QlError::InvalidPayload));
     }
     let body = decrypt_body(session_key, encrypted)?;
     if now_secs() > body.valid_until {
-        return Err(RecordError::Nack {
+        return Err(MessageError::Nack {
             id: body.message_id,
             nack: Nack::Expired,
             kind: body.kind,
         });
     }
-    Ok(DecryptedRecord {
+    Ok(DecryptedMessage {
         sender: header.sender,
         recipient: header.recipient,
         kind: body.kind,
@@ -62,13 +66,13 @@ pub fn decrypt_record(
 fn decrypt_body(
     session_key: &SymmetricKey,
     encrypted: &bc_components::EncryptedMessage,
-) -> Result<RecordBody, RecordError> {
+) -> Result<MessageBody, MessageError> {
     let plaintext = session_key
         .decrypt(encrypted)
-        .map_err(|_| RecordError::Error(QlError::InvalidPayload))?;
+        .map_err(|_| MessageError::Error(QlError::InvalidPayload))?;
     let cbor =
-        CBOR::try_from_data(plaintext).map_err(|_| RecordError::Error(QlError::InvalidPayload))?;
-    RecordBody::try_from(cbor).map_err(|_| RecordError::Error(QlError::InvalidPayload))
+        CBOR::try_from_data(plaintext).map_err(|_| MessageError::Error(QlError::InvalidPayload))?;
+    MessageBody::try_from(cbor).map_err(|_| MessageError::Error(QlError::InvalidPayload))
 }
 
 fn now_secs() -> u64 {

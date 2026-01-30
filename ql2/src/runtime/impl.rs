@@ -12,14 +12,14 @@ use dcbor::CBOR;
 use futures_lite::future::poll_fn;
 
 use crate::{
-    crypto::{handshake, pairing, record},
+    crypto::{handshake, message, pair},
     platform::{PlatformFuture, QlPlatform, QlPlatformExt},
     runtime::{InitiatorStage, PeerRecord, PeerSession, Runtime, RuntimeCommand, Token},
     wire::{
-        handshake::HandshakeMessage,
-        pairing::PairingRequest,
-        record::{Nack, RecordBody, RecordKind},
-        QlHeader, QlMessage, QlPayload,
+        handshake::HandshakeRecord,
+        message::{MessageBody, MessageKind, Nack},
+        pair::PairRequestRecord,
+        QlHeader, QlPayload, QlRecord,
     },
     MessageId, QlError, RouteId,
 };
@@ -278,12 +278,12 @@ impl<P: QlPlatform> Runtime<P> {
             self.platform.handle_peer_status(peer, &entry.session);
         }
 
-        let message = QlMessage {
+        let message = QlRecord {
             header: QlHeader {
                 sender: self.platform.xid(),
                 recipient: peer,
             },
-            payload: QlPayload::Handshake(HandshakeMessage::Hello(hello)),
+            payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
         };
         let bytes = CBOR::from(message).to_cbor_data();
         self.enqueue_handshake_message(state, peer, token, deadline, bytes);
@@ -333,14 +333,14 @@ impl<P: QlPlatform> Runtime<P> {
             }
         };
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
-        let body = RecordBody {
+        let body = MessageBody {
             message_id: id,
             valid_until,
-            kind: RecordKind::Request,
+            kind: MessageKind::Request,
             route_id,
             payload,
         };
-        let message = record::encrypt_record(
+        let message = message::encrypt_message(
             QlHeader {
                 sender: self.platform.xid(),
                 recipient,
@@ -380,14 +380,14 @@ impl<P: QlPlatform> Runtime<P> {
             None => return,
         };
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
-        let body = RecordBody {
+        let body = MessageBody {
             message_id: id,
             valid_until,
-            kind: RecordKind::Event,
+            kind: MessageKind::Event,
             route_id,
             payload,
         };
-        let message = record::encrypt_record(
+        let message = message::encrypt_message(
             QlHeader {
                 sender: self.platform.xid(),
                 recipient,
@@ -406,10 +406,10 @@ impl<P: QlPlatform> Runtime<P> {
         id: MessageId,
         recipient: XID,
         payload: CBOR,
-        kind: RecordKind,
+        kind: MessageKind,
     ) {
         let kind = match kind {
-            RecordKind::Response | RecordKind::Nack => kind,
+            MessageKind::Response | MessageKind::Nack => kind,
             _ => return,
         };
         let session_key = match state.peer(recipient) {
@@ -420,14 +420,14 @@ impl<P: QlPlatform> Runtime<P> {
             None => return,
         };
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
-        let body = RecordBody {
+        let body = MessageBody {
             message_id: id,
             valid_until,
             kind,
             route_id: RouteId::new(0),
             payload,
         };
-        let message = record::encrypt_record(
+        let message = message::encrypt_message(
             QlHeader {
                 sender: self.platform.xid(),
                 recipient,
@@ -441,10 +441,10 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
-        let Ok(message) = CBOR::try_from_data(&bytes).and_then(QlMessage::try_from) else {
+        let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
             return;
         };
-        let QlMessage { header, payload } = message;
+        let QlRecord { header, payload } = record;
         if header.recipient != self.platform.xid() {
             return;
         }
@@ -452,10 +452,10 @@ impl<P: QlPlatform> Runtime<P> {
             QlPayload::Handshake(message) => {
                 self.handle_handshake(state, header, message);
             }
-            QlPayload::Pairing(request) => {
+            QlPayload::Pair(request) => {
                 self.handle_pairing(state, header, request);
             }
-            QlPayload::Record(encrypted) => {
+            QlPayload::Message(encrypted) => {
                 self.handle_record(state, header, encrypted);
             }
         }
@@ -465,23 +465,28 @@ impl<P: QlPlatform> Runtime<P> {
         &self,
         state: &mut RuntimeState,
         header: QlHeader,
-        message: HandshakeMessage,
+        message: HandshakeRecord,
     ) {
         match message {
-            HandshakeMessage::Hello(hello) => {
+            HandshakeRecord::Hello(hello) => {
                 self.handle_hello(state, header, hello);
             }
-            HandshakeMessage::HelloReply(reply) => {
+            HandshakeRecord::HelloReply(reply) => {
                 self.handle_hello_reply(state, header, reply);
             }
-            HandshakeMessage::Confirm(confirm) => {
+            HandshakeRecord::Confirm(confirm) => {
                 self.handle_confirm(state, header, confirm);
             }
         }
     }
 
-    fn handle_pairing(&self, state: &mut RuntimeState, header: QlHeader, request: PairingRequest) {
-        let payload = match pairing::decrypt_pairing_request(&self.platform, &header, request) {
+    fn handle_pairing(
+        &self,
+        state: &mut RuntimeState,
+        header: QlHeader,
+        request: PairRequestRecord,
+    ) {
+        let payload = match pair::decrypt_pair_request(&self.platform, &header, request) {
             Ok(payload) => payload,
             Err(_) => return,
         };
@@ -504,20 +509,20 @@ impl<P: QlPlatform> Runtime<P> {
             },
             None => return,
         };
-        let record = match record::decrypt_record(&header, &encrypted, &session_key) {
+        let record = match message::decrypt_message(&header, &encrypted, &session_key) {
             Ok(record) => record,
-            Err(record::RecordError::Nack { .. }) => return,
-            Err(record::RecordError::Error(_)) => return,
+            Err(message::MessageError::Nack { .. }) => return,
+            Err(message::MessageError::Error(_)) => return,
         };
         match record.kind {
-            RecordKind::Response => {
+            MessageKind::Response => {
                 self.resolve_pending_ok(state, peer, record.message_id, record.payload);
             }
-            RecordKind::Nack => {
+            MessageKind::Nack => {
                 let nack = Nack::from(record.payload);
                 self.resolve_pending_nack(state, peer, record.message_id, nack);
             }
-            RecordKind::Request | RecordKind::Event => {}
+            MessageKind::Request | MessageKind::Event => {}
         }
     }
 
@@ -594,12 +599,12 @@ impl<P: QlPlatform> Runtime<P> {
                 self.start_responder_handshake(state, peer, hello);
             }
             HelloAction::ResendReply { reply, deadline } => {
-                let message = QlMessage {
+                let message = QlRecord {
                     header: QlHeader {
                         sender: self.platform.xid(),
                         recipient: peer,
                     },
-                    payload: QlPayload::Handshake(HandshakeMessage::HelloReply(reply)),
+                    payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
                 };
                 let bytes = CBOR::from(message).to_cbor_data();
                 self.enqueue_outbound(state, peer, bytes, deadline, None);
@@ -662,12 +667,12 @@ impl<P: QlPlatform> Runtime<P> {
             }
         };
 
-        let message = QlMessage {
+        let message = QlRecord {
             header: QlHeader {
                 sender: self.platform.xid(),
                 recipient: peer,
             },
-            payload: QlPayload::Handshake(HandshakeMessage::Confirm(confirm)),
+            payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
         };
         let bytes = CBOR::from(message).to_cbor_data();
         let deadline = Instant::now() + self.config.handshake_timeout;
@@ -763,12 +768,12 @@ impl<P: QlPlatform> Runtime<P> {
             self.platform.handle_peer_status(peer, &entry.session);
         }
 
-        let message = QlMessage {
+        let message = QlRecord {
             header: QlHeader {
                 sender: self.platform.xid(),
                 recipient: peer,
             },
-            payload: QlPayload::Handshake(HandshakeMessage::HelloReply(reply)),
+            payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
         };
         let bytes = CBOR::from(message).to_cbor_data();
         self.enqueue_handshake_message(state, peer, token, deadline, bytes);

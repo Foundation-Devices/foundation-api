@@ -5,7 +5,7 @@ use super::take_fields;
 use crate::QlError;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum HandshakeMessage {
+pub enum HandshakeRecord {
     Hello(Hello),
     HelloReply(HelloReply),
     Confirm(Confirm),
@@ -62,21 +62,21 @@ pub fn verify_transcript_signature(
     }
 }
 
-impl From<HandshakeMessage> for CBOR {
-    fn from(value: HandshakeMessage) -> Self {
+impl From<HandshakeRecord> for CBOR {
+    fn from(value: HandshakeRecord) -> Self {
         match value {
-            HandshakeMessage::Hello(message) => CBOR::from(vec![
+            HandshakeRecord::Hello(message) => CBOR::from(vec![
                 CBOR::from(HandshakeKind::Hello as u8),
                 CBOR::from(message.nonce),
                 CBOR::from(message.kem_ct),
             ]),
-            HandshakeMessage::HelloReply(message) => CBOR::from(vec![
+            HandshakeRecord::HelloReply(message) => CBOR::from(vec![
                 CBOR::from(HandshakeKind::HelloReply as u8),
                 CBOR::from(message.nonce),
                 CBOR::from(message.kem_ct),
                 CBOR::from(message.signature),
             ]),
-            HandshakeMessage::Confirm(message) => CBOR::from(vec![
+            HandshakeRecord::Confirm(message) => CBOR::from(vec![
                 CBOR::from(HandshakeKind::Confirm as u8),
                 CBOR::from(message.signature),
             ]),
@@ -84,7 +84,7 @@ impl From<HandshakeMessage> for CBOR {
     }
 }
 
-impl TryFrom<CBOR> for HandshakeMessage {
+impl TryFrom<CBOR> for HandshakeRecord {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
@@ -96,14 +96,14 @@ impl TryFrom<CBOR> for HandshakeMessage {
         match tag {
             HandshakeKind::Hello => {
                 let [nonce_cbor, kem_ct_cbor] = take_fields(iter)?;
-                Ok(HandshakeMessage::Hello(Hello {
+                Ok(HandshakeRecord::Hello(Hello {
                     nonce: nonce_cbor.try_into()?,
                     kem_ct: kem_ct_cbor.try_into()?,
                 }))
             }
             HandshakeKind::HelloReply => {
                 let [nonce_cbor, kem_ct_cbor, signature_cbor] = take_fields(iter)?;
-                Ok(HandshakeMessage::HelloReply(HelloReply {
+                Ok(HandshakeRecord::HelloReply(HelloReply {
                     nonce: nonce_cbor.try_into()?,
                     kem_ct: kem_ct_cbor.try_into()?,
                     signature: signature_cbor.try_into()?,
@@ -111,7 +111,7 @@ impl TryFrom<CBOR> for HandshakeMessage {
             }
             HandshakeKind::Confirm => {
                 let [signature_cbor] = take_fields(iter)?;
-                Ok(HandshakeMessage::Confirm(Confirm {
+                Ok(HandshakeRecord::Confirm(Confirm {
                     signature: signature_cbor.try_into()?,
                 }))
             }

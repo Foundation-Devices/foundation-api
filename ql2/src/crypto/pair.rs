@@ -6,19 +6,19 @@ use dcbor::CBOR;
 use crate::{
     platform::{QlPlatform, QlPlatformExt},
     wire::{
-        pairing::{PairingRequest, PairingRequestBody},
-        QlHeader, QlMessage, QlPayload,
+        pair::{PairRequestBody, PairRequestRecord},
+        QlHeader, QlPayload, QlRecord,
     },
     MessageId, QlError,
 };
 
-pub fn build_pairing_message(
+pub fn build_pair_request(
     platform: &impl QlPlatform,
     recipient: XID,
     recipient_encapsulation_key: &EncapsulationPublicKey,
     message_id: MessageId,
     valid_for: Duration,
-) -> Result<QlMessage, QlError> {
+) -> Result<QlRecord, QlError> {
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
     let header = QlHeader {
         sender: platform.xid(),
@@ -39,7 +39,7 @@ pub fn build_pairing_message(
         .signer()
         .sign(&proof_data)
         .map_err(|_| QlError::InvalidPayload)?;
-    let body = PairingRequestBody {
+    let body = PairRequestBody {
         message_id,
         valid_until,
         signing_pub_key,
@@ -49,18 +49,18 @@ pub fn build_pairing_message(
     let body_bytes = CBOR::from(body).to_cbor_data();
     let aad = pairing_aad(&header, &kem_ct);
     let encrypted = session_key.encrypt(body_bytes, Some(aad), None::<Nonce>);
-    Ok(QlMessage {
+    Ok(QlRecord {
         header,
-        payload: QlPayload::Pairing(PairingRequest { kem_ct, encrypted }),
+        payload: QlPayload::Pair(PairRequestRecord { kem_ct, encrypted }),
     })
 }
 
-pub fn decrypt_pairing_request(
+pub fn decrypt_pair_request(
     platform: &impl QlPlatform,
     header: &QlHeader,
-    request: PairingRequest,
-) -> Result<PairingRequestBody, QlError> {
-    let PairingRequest { kem_ct, encrypted } = request;
+    request: PairRequestRecord,
+) -> Result<PairRequestBody, QlError> {
+    let PairRequestRecord { kem_ct, encrypted } = request;
     let session_key = platform
         .encapsulation_private_key()
         .decapsulate_shared_secret(&kem_ct)
@@ -113,12 +113,12 @@ fn pairing_proof_data(
 fn decrypt_body(
     key: &SymmetricKey,
     encrypted: &bc_components::EncryptedMessage,
-) -> Result<PairingRequestBody, QlError> {
+) -> Result<PairRequestBody, QlError> {
     let plaintext = key
         .decrypt(encrypted)
         .map_err(|_| QlError::InvalidPayload)?;
     let cbor = CBOR::try_from_data(plaintext).map_err(|_| QlError::InvalidPayload)?;
-    PairingRequestBody::try_from(cbor).map_err(|_| QlError::InvalidPayload)
+    PairRequestBody::try_from(cbor).map_err(|_| QlError::InvalidPayload)
 }
 
 fn ensure_not_expired(_message_id: MessageId, valid_until: u64) -> Result<(), QlError> {

@@ -9,17 +9,21 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 use bc_components::{
-    EncapsulationPrivateKey, EncapsulationPublicKey, EncapsulationScheme, SignatureScheme,
-    SigningPrivateKey, SigningPublicKey, Signer, XID,
+    EncapsulationPrivateKey, EncapsulationPublicKey, EncapsulationScheme, SignatureScheme, Signer,
+    SigningPrivateKey, SigningPublicKey, XID,
 };
 use dcbor::CBOR;
 use tokio::{sync::Semaphore, task::LocalSet};
 
 use crate::{
-    crypto::{handshake, pairing},
+    crypto::{handshake, pair},
     platform::{PlatformFuture, QlPlatform},
     runtime::{new_runtime, PeerSession, RequestConfig, RuntimeConfig, RuntimeHandle},
-    wire::{handshake::HandshakeMessage, record::{Nack, RecordKind}, QlHeader, QlMessage, QlPayload},
+    wire::{
+        handshake::HandshakeRecord,
+        message::{MessageKind, Nack},
+        QlHeader, QlPayload, QlRecord,
+    },
     MessageId, QlError, RouteId,
 };
 
@@ -106,7 +110,12 @@ impl QlPlatform for TestPlatform {
 
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
-        Box::pin(async move { outbound.send(message).await.map_err(|_| QlError::InvalidPayload) })
+        Box::pin(async move {
+            outbound
+                .send(message)
+                .await
+                .map_err(|_| QlError::InvalidPayload)
+        })
     }
 
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
@@ -137,7 +146,14 @@ struct BlockingPlatform {
 }
 
 impl BlockingPlatform {
-    fn new(seed: u8) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>, Arc<Semaphore>) {
+    fn new(
+        seed: u8,
+    ) -> (
+        Self,
+        Receiver<Vec<u8>>,
+        Receiver<StatusEvent>,
+        Arc<Semaphore>,
+    ) {
         let (signing_private, signing_public) = SignatureScheme::MLDSA44.keypair();
         let (encapsulation_private, encapsulation_public) =
             EncapsulationScheme::default().keypair();
@@ -200,7 +216,10 @@ impl QlPlatform for BlockingPlatform {
         let write_gate = self.write_gate.clone();
         Box::pin(async move {
             let _permit = write_gate.acquire().await.expect("write gate closed");
-            outbound.send(message).await.map_err(|_| QlError::InvalidPayload)
+            outbound
+                .send(message)
+                .await
+                .map_err(|_| QlError::InvalidPayload)
         })
     }
 
@@ -268,7 +287,8 @@ async fn handshake_initiator_connects() {
         let peer_b = XID::new(&signing_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
+        let (runtime_b, handle_b) =
+            new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
@@ -333,7 +353,8 @@ async fn simultaneous_handshakes_resolve() {
         let peer_b = XID::new(&signing_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
+        let (runtime_b, handle_b) =
+            new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
@@ -379,7 +400,8 @@ async fn invalid_signature_disconnects() {
         let peer_b = XID::new(&signing_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
+        let (runtime_b, handle_b) =
+            new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
@@ -416,7 +438,7 @@ async fn pairing_request_triggers_handshake() {
         let peer_a = XID::new(&signing_a);
         let peer_b = XID::new(&signing_b);
 
-        let pairing_message = pairing::build_pairing_message(
+        let pairing_message = pair::build_pair_request(
             &platform_a,
             peer_b,
             &encap_b,
@@ -427,7 +449,8 @@ async fn pairing_request_triggers_handshake() {
         let pairing_bytes = CBOR::from(pairing_message).to_cbor_data();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
+        let (runtime_b, handle_b) =
+            new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
@@ -499,7 +522,7 @@ async fn request_response_round_trip() {
             .unwrap();
 
         handle_b
-            .send_response(ticket.id, peer_a, CBOR::from(99u8), RecordKind::Response)
+            .send_response(ticket.id, peer_a, CBOR::from(99u8), MessageKind::Response)
             .await
             .unwrap();
 
@@ -621,7 +644,7 @@ async fn request_nack_resolves_pending() {
                 ticket.id,
                 peer_a,
                 CBOR::from(Nack::InvalidPayload),
-                RecordKind::Nack,
+                MessageKind::Nack,
             )
             .await
             .unwrap();
@@ -691,14 +714,14 @@ async fn handshake_timeout_drops_queued_messages() {
         handle_a.connect(peer_b).await.unwrap();
         await_status(&status_a, peer_b, PeerStage::Initiator).await;
 
-        let (hello, _secret) = handshake::build_hello(&platform_b, peer_b, peer_a, &encap_a)
-            .expect("hello build");
-        let message = QlMessage {
+        let (hello, _secret) =
+            handshake::build_hello(&platform_b, peer_b, peer_a, &encap_a).expect("hello build");
+        let message = QlRecord {
             header: QlHeader {
                 sender: peer_b,
                 recipient: peer_a,
             },
-            payload: QlPayload::Handshake(HandshakeMessage::Hello(hello)),
+            payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
         };
         let bytes = CBOR::from(message).to_cbor_data();
         handle_a.send_incoming(bytes).await.unwrap();

@@ -1,5 +1,5 @@
-mod id;
 pub mod crypto;
+mod id;
 pub mod platform;
 pub mod runtime;
 pub mod wire;
@@ -37,7 +37,7 @@ pub enum QlError {
     #[error("nack {nack:?}")]
     Nack {
         id: MessageId,
-        nack: wire::record::Nack,
+        nack: wire::message::Nack,
     },
     #[error("cancelled")]
     Cancelled,

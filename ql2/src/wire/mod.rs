@@ -1,15 +1,15 @@
 use dcbor::CBOR;
 
 pub mod handshake;
-pub mod pairing;
-pub mod record;
+pub mod message;
+pub mod pair;
 
 use bc_components::{EncryptedMessage, XID};
 
-use crate::wire::{handshake::HandshakeMessage, pairing::PairingRequest};
+use crate::wire::{handshake::HandshakeRecord, pair::PairRequestRecord};
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct QlMessage {
+pub struct QlRecord {
     pub header: QlHeader,
     pub payload: QlPayload,
 }
@@ -22,9 +22,9 @@ pub struct QlHeader {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum QlPayload {
-    Handshake(HandshakeMessage),
-    Pairing(PairingRequest),
-    Record(EncryptedMessage),
+    Handshake(HandshakeRecord),
+    Pair(PairRequestRecord),
+    Message(EncryptedMessage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,12 +54,12 @@ impl TryFrom<CBOR> for QlTag {
     }
 }
 
-impl From<QlMessage> for CBOR {
-    fn from(value: QlMessage) -> Self {
+impl From<QlRecord> for CBOR {
+    fn from(value: QlRecord) -> Self {
         let (tag, payload) = match value.payload {
             QlPayload::Handshake(message) => (QlTag::Handshake, CBOR::from(message)),
-            QlPayload::Pairing(message) => (QlTag::Pairing, CBOR::from(message)),
-            QlPayload::Record(message) => (QlTag::Record, CBOR::from(message)),
+            QlPayload::Pair(message) => (QlTag::Pairing, CBOR::from(message)),
+            QlPayload::Message(message) => (QlTag::Record, CBOR::from(message)),
         };
         CBOR::from(vec![
             CBOR::from(tag as u8),
@@ -69,7 +69,7 @@ impl From<QlMessage> for CBOR {
     }
 }
 
-impl TryFrom<CBOR> for QlMessage {
+impl TryFrom<CBOR> for QlRecord {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
@@ -79,24 +79,24 @@ impl TryFrom<CBOR> for QlMessage {
         let header = QlHeader::try_from(header_cbor)?;
         match tag {
             QlTag::Handshake => {
-                let message = HandshakeMessage::try_from(payload)?;
-                Ok(QlMessage {
+                let message = HandshakeRecord::try_from(payload)?;
+                Ok(QlRecord {
                     header,
                     payload: QlPayload::Handshake(message),
                 })
             }
             QlTag::Pairing => {
-                let message = PairingRequest::try_from(payload)?;
-                Ok(QlMessage {
+                let message = PairRequestRecord::try_from(payload)?;
+                Ok(QlRecord {
                     header,
-                    payload: QlPayload::Pairing(message),
+                    payload: QlPayload::Pair(message),
                 })
             }
             QlTag::Record => {
                 let message = EncryptedMessage::try_from(payload)?;
-                Ok(QlMessage {
+                Ok(QlRecord {
                     header,
-                    payload: QlPayload::Record(message),
+                    payload: QlPayload::Message(message),
                 })
             }
         }

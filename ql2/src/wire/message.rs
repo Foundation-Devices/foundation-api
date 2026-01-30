@@ -5,7 +5,7 @@ use super::take_fields;
 use crate::{MessageId, RouteId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordKind {
+pub enum MessageKind {
     Request,
     Response,
     Event,
@@ -13,19 +13,19 @@ pub enum RecordKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RecordBody {
+pub struct MessageBody {
     pub message_id: MessageId,
     pub valid_until: u64,
-    pub kind: RecordKind,
+    pub kind: MessageKind,
     pub route_id: RouteId,
     pub payload: CBOR,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DecryptedRecord {
+pub struct DecryptedMessage {
     pub sender: XID,
     pub recipient: XID,
-    pub kind: RecordKind,
+    pub kind: MessageKind,
     pub message_id: MessageId,
     pub route_id: RouteId,
     pub valid_until: u64,
@@ -40,19 +40,19 @@ pub enum Nack {
     Expired,
 }
 
-impl From<RecordKind> for CBOR {
-    fn from(value: RecordKind) -> Self {
+impl From<MessageKind> for CBOR {
+    fn from(value: MessageKind) -> Self {
         let kind = match value {
-            RecordKind::Request => 1,
-            RecordKind::Response => 2,
-            RecordKind::Event => 3,
-            RecordKind::Nack => 6,
+            MessageKind::Request => 1,
+            MessageKind::Response => 2,
+            MessageKind::Event => 3,
+            MessageKind::Nack => 6,
         };
         CBOR::from(kind)
     }
 }
 
-impl TryFrom<CBOR> for RecordKind {
+impl TryFrom<CBOR> for MessageKind {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
@@ -67,8 +67,8 @@ impl TryFrom<CBOR> for RecordKind {
     }
 }
 
-impl From<RecordBody> for CBOR {
-    fn from(value: RecordBody) -> Self {
+impl From<MessageBody> for CBOR {
+    fn from(value: MessageBody) -> Self {
         CBOR::from(vec![
             CBOR::from(value.message_id),
             CBOR::from(value.valid_until),
@@ -79,7 +79,7 @@ impl From<RecordBody> for CBOR {
     }
 }
 
-impl TryFrom<CBOR> for RecordBody {
+impl TryFrom<CBOR> for MessageBody {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
