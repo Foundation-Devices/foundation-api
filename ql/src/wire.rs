@@ -1,6 +1,5 @@
 use bc_components::{
-    EncapsulationCiphertext, EncapsulationPublicKey, EncryptedMessage, Signature, SigningPublicKey,
-    XID,
+    EncapsulationCiphertext, EncapsulationPublicKey, Signature, SigningPublicKey, XID,
 };
 use dcbor::CBOR;
 
@@ -56,26 +55,32 @@ pub struct QlDetails {
 }
 
 #[derive(Debug, Clone)]
-pub struct QlEncrypted {
+pub struct EncryptedMessage {
     pub header: QlHeader,
-    pub encrypted: EncryptedMessage,
+    pub encrypted: bc_components::EncryptedMessage,
 }
 
-impl From<QlEncrypted> for CBOR {
-    fn from(value: QlEncrypted) -> Self {
+#[derive(Debug, Clone)]
+pub struct DecryptedMessage {
+    pub header: QlDetails,
+    pub payload: CBOR,
+}
+
+impl From<EncryptedMessage> for CBOR {
+    fn from(value: EncryptedMessage) -> Self {
         CBOR::from(vec![CBOR::from(value.header), CBOR::from(value.encrypted)])
     }
 }
 
-impl TryFrom<CBOR> for QlEncrypted {
+impl TryFrom<CBOR> for EncryptedMessage {
     type Error = dcbor::Error;
 
     fn try_from(cbor: CBOR) -> Result<Self, Self::Error> {
         let array = cbor.try_into_array()?;
         let [header_cbor, payload_cbor] = cbor_array::<2>(array)?;
         let header = QlHeader::try_from(header_cbor)?;
-        let encrypted: EncryptedMessage = payload_cbor.try_into()?;
-        Ok(QlEncrypted { header, encrypted })
+        let encrypted = payload_cbor.try_into()?;
+        Ok(EncryptedMessage { header, encrypted })
     }
 }
 

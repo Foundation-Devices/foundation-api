@@ -1,8 +1,8 @@
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use bc_components::{
-    EncapsulationCiphertext, EncapsulationPrivateKey, EncapsulationPublicKey, EncryptedMessage,
-    Signer, SigningPublicKey, SymmetricKey, XID,
+    EncapsulationCiphertext, EncapsulationPrivateKey, EncapsulationPublicKey, Signer,
+    SigningPublicKey, SymmetricKey, XID,
 };
 use dcbor::CBOR;
 
@@ -122,7 +122,7 @@ pub(crate) trait QlPlatformExt: QlPlatform {
         &self,
         key: &SymmetricKey,
         header_aad: &[u8],
-        payload: &EncryptedMessage,
+        payload: &bc_components::EncryptedMessage,
     ) -> Result<CBOR, QlError> {
         if payload.aad() != header_aad {
             return Err(QlError::InvalidPayload);

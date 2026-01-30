@@ -1,15 +1,17 @@
 use std::{cmp::Ordering, time::Duration};
 
 use bc_components::{
-    EncapsulationCiphertext, EncapsulationPublicKey, EncryptedMessage, Nonce, Signature, Signer,
-    SigningPublicKey, SymmetricKey, Verifier, XID,
+    EncapsulationCiphertext, EncapsulationPublicKey, Nonce, Signature, Signer, SigningPublicKey,
+    SymmetricKey, Verifier, XID,
 };
 use dcbor::CBOR;
 
 use crate::{
     platform::{HandshakeKind, PendingHandshake, QlPeer, QlPlatform, QlPlatformExt, ResetOrigin},
-    runtime::DecryptedMessage,
-    wire::{MessageKind, Nack, PairingPayload, QlDetails, QlEncrypted, QlEnvelope, QlHeader},
+    wire::{
+        DecryptedMessage, EncryptedMessage, MessageKind, Nack, PairingPayload, QlDetails,
+        QlEnvelope, QlHeader,
+    },
     MessageId, QlError, RouteId,
 };
 
@@ -21,7 +23,7 @@ pub(crate) fn encrypt_payload_for_recipient(
     route_id: RouteId,
     payload: CBOR,
     expiration: Duration,
-) -> Result<QlEncrypted, QlError> {
+) -> Result<EncryptedMessage, QlError> {
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let (session_key, kem_ct, should_sign_header) = match peer.session() {
         Some(session_key) => (session_key, None, false),
@@ -49,7 +51,7 @@ pub(crate) fn encrypt_payload_for_recipient(
         signature,
         ..header_unsigned
     };
-    Ok(QlEncrypted { header, encrypted })
+    Ok(EncryptedMessage { header, encrypted })
 }
 
 pub(crate) fn encrypt_response(
@@ -59,7 +61,7 @@ pub(crate) fn encrypt_response(
     payload: CBOR,
     kind: MessageKind,
     expiration: Duration,
-) -> Result<QlEncrypted, QlError> {
+) -> Result<EncryptedMessage, QlError> {
     let peer = platform.lookup_peer_or_fail(recipient)?;
     let session_key = peer.session().ok_or(QlError::MissingSession(recipient))?;
     let valid_until = now_secs().saturating_add(expiration.as_secs());
@@ -79,7 +81,7 @@ pub(crate) fn encrypt_response(
     let aad = header.aad_data();
     let payload_bytes = CBOR::from(envelope).to_cbor_data();
     let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<Nonce>);
-    Ok(QlEncrypted { header, encrypted })
+    Ok(EncryptedMessage { header, encrypted })
 }
 
 pub(crate) fn encrypt_pairing_request(
@@ -88,7 +90,7 @@ pub(crate) fn encrypt_pairing_request(
     recipient_encapsulation_key: &EncapsulationPublicKey,
     message_id: MessageId,
     expiration: Duration,
-) -> QlEncrypted {
+) -> EncryptedMessage {
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
     let recipient = XID::new(recipient_signing_key);
     let valid_until = now_secs().saturating_add(expiration.as_secs());
@@ -125,17 +127,16 @@ pub(crate) fn encrypt_pairing_request(
     };
     let payload_bytes = CBOR::from(envelope).to_cbor_data();
     let encrypted = session_key.encrypt(payload_bytes, Some(header.aad_data()), None::<Nonce>);
-    QlEncrypted { header, encrypted }
+    EncryptedMessage { header, encrypted }
 }
 
 pub(crate) fn decrypt_pairing_payload(
     platform: &impl QlPlatform,
-    header: &QlHeader,
-    payload: &EncryptedMessage,
+    EncryptedMessage { header, encrypted }: EncryptedMessage,
 ) -> Result<(PairingPayload, SymmetricKey), QlError> {
     let kem_ct = header.kem_ct.as_ref().ok_or(QlError::InvalidPayload)?;
     let session_key = platform.decapsulate_shared_secret(kem_ct)?;
-    let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), payload)?;
+    let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), &encrypted)?;
     let envelope = QlEnvelope::try_from(decrypted).map_err(QlError::Decode)?;
     ensure_not_expired(envelope.message_id, envelope.valid_until)?;
     let pairing = PairingPayload::try_from(envelope.payload).map_err(QlError::Decode)?;
@@ -143,7 +144,7 @@ pub(crate) fn decrypt_pairing_payload(
         return Err(QlError::InvalidPayload);
     }
     let proof_data = pairing_proof_data(
-        header,
+        &header,
         envelope.message_id,
         envelope.valid_until,
         &pairing.signing_pub_key,
@@ -184,12 +185,11 @@ pub(crate) fn session_key_for_header(
 
 pub(crate) fn extract_reset_payload(
     platform: &impl QlPlatform,
-    header: QlHeader,
-    payload: EncryptedMessage,
+    EncryptedMessage { header, encrypted }: EncryptedMessage,
 ) -> Result<(), QlError> {
     verify_header(platform, &header)?;
     let peer = platform.lookup_peer_or_fail(header.sender)?;
-    let (envelope, session_key) = decrypt_envelope(platform, &peer, &header, &payload)?;
+    let (envelope, session_key) = decrypt_envelope(platform, &peer, &header, &encrypted)?;
     ensure_not_expired(envelope.message_id, envelope.valid_until)?;
     if let Some(pending) = peer.pending_handshake() {
         if pending.kind == HandshakeKind::SessionReset && pending.origin == ResetOrigin::Local {
@@ -290,12 +290,11 @@ fn ensure_not_expired(id: MessageId, valid_until: u64) -> Result<(), QlError> {
 
 pub(crate) fn extract_envelope(
     platform: &impl QlPlatform,
-    header: QlHeader,
-    payload: EncryptedMessage,
+    EncryptedMessage { header, encrypted }: EncryptedMessage,
 ) -> Result<DecryptedMessage, QlError> {
     verify_header(platform, &header)?;
     let peer = platform.lookup_peer_or_fail(header.sender)?;
-    let (envelope, session_key) = decrypt_envelope(platform, &peer, &header, &payload)?;
+    let (envelope, session_key) = decrypt_envelope(platform, &peer, &header, &encrypted)?;
     ensure_not_expired(envelope.message_id, envelope.valid_until)?;
     if header.kem_ct.is_some() {
         ensure_session_init_order(platform, &peer, header.sender, envelope.message_id)?;
@@ -313,7 +312,7 @@ pub(crate) fn decrypt_envelope(
     platform: &impl QlPlatform,
     peer: &impl QlPeer,
     header: &QlHeader,
-    payload: &EncryptedMessage,
+    payload: &bc_components::EncryptedMessage,
 ) -> Result<(QlEnvelope, SymmetricKey), QlError> {
     let session_key = session_key_for_header(platform, peer, header)?;
     let decrypted = platform.decrypt_message(&session_key, &header.aad_data(), payload)?;

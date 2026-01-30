@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::{
-    runtime::{DecryptedMessage, HandlerEvent, InboundEvent, InboundRequest, Responder},
+    runtime::{HandlerEvent, Responder},
     wire::{Ack, Nack},
     Event, QlCodec, QlError, RequestResponse, RouteId,
 };
@@ -139,7 +139,6 @@ impl<S> Router<S> {
         match event {
             HandlerEvent::Request(request) => {
                 let message_id = request.message.header.route_id;
-                let payload = request.message.payload;
                 let handler = match self.handlers.get(&message_id) {
                     Some(handler) => handler,
                     None => {
@@ -147,33 +146,15 @@ impl<S> Router<S> {
                         return Ok(());
                     }
                 };
-                handler(
-                    &mut self.state,
-                    HandlerEvent::Request(InboundRequest {
-                        message: DecryptedMessage {
-                            header: request.message.header,
-                            payload,
-                        },
-                        respond_to: request.respond_to,
-                    }),
-                )
+                handler(&mut self.state, HandlerEvent::Request(request))
             }
             HandlerEvent::Event(event) => {
                 let message_id = event.message.header.route_id;
-                let payload = event.message.payload;
                 let handler = self
                     .handlers
                     .get(&message_id)
                     .ok_or(RouterError::MissingHandler(message_id))?;
-                handler(
-                    &mut self.state,
-                    HandlerEvent::Event(InboundEvent {
-                        message: DecryptedMessage {
-                            header: event.message.header,
-                            payload,
-                        },
-                    }),
-                )
+                handler(&mut self.state, HandlerEvent::Event(event))
             }
         }
     }
