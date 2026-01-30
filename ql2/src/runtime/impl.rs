@@ -132,9 +132,13 @@ impl<P: QlPlatform> Runtime<P> {
                 LoopStep::Timeout => {
                     self.handle_timeouts(&mut state);
                 }
-                LoopStep::WriteDone { .. } => {
+                LoopStep::WriteDone {
+                    peer,
+                    token,
+                    result,
+                } => {
                     in_flight = None;
-                    // TODO: HANDLE ERROR?
+                    self.handle_write_done(&mut state, peer, token, result);
                 }
                 LoopStep::Quit => break,
             }
@@ -540,6 +544,36 @@ impl<P: QlPlatform> Runtime<P> {
                         }
                         state.outbound.retain(|message| message.peer != peer);
                     }
+                }
+            }
+        }
+    }
+
+    fn handle_write_done(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        token: Token,
+        result: Result<(), QlError>,
+    ) {
+        match result {
+            Ok(()) => {}
+            Err(_) => {
+                let should_disconnect = match state.peer(peer).map(|entry| &entry.session) {
+                    Some(PeerSession::Initiator {
+                        handshake_token, ..
+                    }) if *handshake_token == token => true,
+                    Some(PeerSession::Responder {
+                        handshake_token, ..
+                    }) if *handshake_token == token => true,
+                    _ => false,
+                };
+                if should_disconnect {
+                    if let Some(entry) = state.peer_mut(peer) {
+                        entry.session = PeerSession::Disconnected;
+                        self.platform.handle_peer_status(peer, &entry.session);
+                    }
+                    state.outbound.retain(|message| message.peer != peer);
                 }
             }
         }
