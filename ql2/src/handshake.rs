@@ -6,7 +6,7 @@ use dcbor::CBOR;
 
 use crate::{
     platform::QlPlatform,
-    wire::{
+    wire::handshake::{
         verify_transcript_signature, Confirm, HandshakeHeader, HandshakeKind, Hello, HelloReply,
     },
     QlError,

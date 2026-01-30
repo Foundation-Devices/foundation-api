@@ -5,18 +5,11 @@ use dcbor::CBOR;
 
 use crate::QlError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandshakeKind {
-    Hello,
-    HelloReply,
-    Confirm,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HandshakeHeader {
-    pub kind: HandshakeKind,
-    pub sender: XID,
-    pub recipient: XID,
+#[derive(Debug, Clone, PartialEq)]
+pub enum HandshakeMessage {
+    Hello(Hello),
+    HelloReply(HelloReply),
+    Confirm(Confirm),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,11 +33,18 @@ pub struct Confirm {
     pub signature: Signature,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum HandshakeMessage {
-    Hello(Hello),
-    HelloReply(HelloReply),
-    Confirm(Confirm),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandshakeKind {
+    Hello,
+    HelloReply,
+    Confirm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandshakeHeader {
+    pub kind: HandshakeKind,
+    pub sender: XID,
+    pub recipient: XID,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
