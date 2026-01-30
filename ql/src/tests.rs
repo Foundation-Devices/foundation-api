@@ -457,21 +457,15 @@ impl RuntimePair {
     }
 
     fn take_server_incoming(&mut self) -> HandlerStream {
-        self.server_incoming
-            .take()
-            .expect("server incoming already taken")
+        self.server_incoming.take().unwrap()
     }
 
     fn take_client_outbound(&mut self) -> Receiver<Vec<u8>> {
-        self.client_outbound
-            .take()
-            .expect("client outbound already taken")
+        self.client_outbound.take().unwrap()
     }
 
     fn take_server_outbound(&mut self) -> Receiver<Vec<u8>> {
-        self.server_outbound
-            .take()
-            .expect("server outbound already taken")
+        self.server_outbound.take().unwrap()
     }
 }
 
@@ -495,12 +489,7 @@ fn build_reset_message(
         kem_ct: Some(kem_ct.clone()),
         signature: None,
     };
-    let signature = Some(
-        sender
-            .private_keys
-            .sign(&header.aad_data())
-            .expect("sign reset header"),
-    );
+    let signature = Some(sender.private_keys.sign(&header.aad_data()).unwrap());
     let header = QlHeader {
         signature,
         ..header
@@ -512,7 +501,7 @@ fn build_reset_message(
         route_id: RouteId::new(0),
         payload: CBOR::null(),
     };
-    let payload_bytes = CBOR::from(envelope).to_cbor_data();
+    let payload_bytes = envelope.to_cbor_data();
     let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
     EncryptedMessage { header, encrypted }
 }
@@ -535,14 +524,14 @@ async fn typed_round_trip() {
         let recipient = pair.recipient();
 
         pair.client_handle.send_event(Notice(7), recipient).unwrap();
-        let event_value = event_rx.await.expect("event handled");
+        let event_value = event_rx.await.unwrap();
         assert_eq!(event_value, 7);
 
         let response = pair
             .client_handle
             .request(Ping(41), recipient, RequestConfig::default())
             .await
-            .expect("response");
+            .unwrap();
         assert_eq!(response, Pong(42));
     })
     .await;
@@ -560,10 +549,11 @@ async fn event_with_ack_round_trip() {
         spawn_router(router, pair.take_server_incoming());
 
         let recipient = pair.recipient();
-        pair.client_handle
+        let _ack = pair
+            .client_handle
             .send_event_with_ack(Notice(99), recipient, RequestConfig::default())
             .await
-            .expect("event ack");
+            .unwrap();
     })
     .await;
 }
@@ -614,15 +604,16 @@ async fn heartbeat_sends_and_receives() {
             .client_handle
             .request(Ping(1), recipient, RequestConfig::default())
             .await
-            .expect("response");
+            .unwrap();
+
         assert_eq!(response, Pong(2));
 
         let _ = pair.client_platform.take_statuses();
 
         let _heartbeat = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
             .await
-            .expect("heartbeat send")
-            .expect("heartbeat ping");
+            .unwrap()
+            .unwrap();
 
         tokio::time::sleep(keep_alive.timeout + Duration::from_millis(20)).await;
 
@@ -704,15 +695,15 @@ async fn heartbeat_timeout_marks_disconnected() {
             .client_handle
             .request(Ping(10), recipient, RequestConfig::default())
             .await
-            .expect("response");
+            .unwrap();
         assert_eq!(response, Pong(11));
 
         let _ = pair.client_platform.take_statuses();
 
         let _heartbeat = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
             .await
-            .expect("heartbeat send")
-            .expect("heartbeat ping");
+            .unwrap()
+            .unwrap();
 
         tokio::time::sleep(keep_alive.timeout + Duration::from_millis(30)).await;
 
@@ -781,7 +772,7 @@ async fn responds_to_heartbeat_without_keepalive() {
             .client_handle
             .request(Ping(50), recipient, RequestConfig::default())
             .await
-            .expect("response");
+            .unwrap();
         assert_eq!(response, Pong(51));
 
         let heartbeat_id = next_id();
@@ -793,14 +784,14 @@ async fn responds_to_heartbeat_without_keepalive() {
             MessageKind::Heartbeat,
             config.message_expiration,
         )
-        .expect("encrypt heartbeat");
+        .unwrap();
         let bytes = message.to_cbor_data();
         pair.server_handle.send_incoming(bytes).unwrap();
 
         let response_id = tokio::time::timeout(Duration::from_secs(1), heartbeat_rx.recv())
             .await
-            .expect("heartbeat response")
-            .expect("heartbeat response id");
+            .unwrap()
+            .unwrap();
         assert_eq!(response_id, heartbeat_id);
     })
     .await;
@@ -884,25 +875,20 @@ async fn expired_response_is_rejected() {
             RequestConfig::default(),
         ));
 
-        let outbound = outbound_rx.recv().await.expect("no outbound request");
+        let outbound = outbound_rx.recv().await.unwrap();
 
         let outbound_message = CBOR::try_from_data(&outbound)
             .and_then(EncryptedMessage::try_from)
-            .expect("decode outbound");
-
-        let session_key = platform
-            .lookup_peer(recipient)
-            .expect("peer")
-            .session()
-            .expect("session");
+            .unwrap();
+        let session_key = platform.lookup_peer(recipient).unwrap().session().unwrap();
         let decrypted = platform
             .decrypt_message(
                 &session_key,
                 &outbound_message.header.aad_data(),
                 &outbound_message.encrypted,
             )
-            .expect("decrypt outbound");
-        let envelope = QlEnvelope::try_from(decrypted).expect("decode envelope");
+            .unwrap();
+        let envelope = QlEnvelope::try_from(decrypted).unwrap();
         let header = QlHeader {
             kind: MessageKind::Response,
             sender: responder.xid,
@@ -922,9 +908,7 @@ async fn expired_response_is_rejected() {
             None::<bc_components::Nonce>,
         );
         let message = EncryptedMessage { header, encrypted };
-        handle
-            .send_incoming(CBOR::from(message).to_cbor_data())
-            .unwrap();
+        handle.send_incoming(message.to_cbor_data()).unwrap();
 
         let response = response_task.await.unwrap();
         assert!(
@@ -964,7 +948,7 @@ async fn reset_cancels_pending_request() {
                 .await
         });
 
-        let _ = client_outbound.recv().await.expect("outbound request");
+        let _ = client_outbound.recv().await.unwrap();
 
         let reset_message = build_reset_message(&server_identity, &client_identity, next_id());
         client_handle
@@ -998,7 +982,7 @@ fn simultaneous_session_init_resolves() {
             payload,
             Duration::from_secs(60),
         )
-        .expect("encrypt event")
+        .unwrap()
     }
 
     let client_identity = QlIdentity::generate();
@@ -1087,9 +1071,7 @@ async fn pairing_request_stores_peer() {
         handle.send_incoming(bytes).unwrap();
         tokio::task::yield_now().await;
 
-        let peer = recipient_platform
-            .lookup_peer(sender_identity.xid)
-            .expect("peer stored");
+        let peer = recipient_platform.lookup_peer(sender_identity.xid).unwrap();
         assert!(peer.session().is_some());
     })
     .await;
@@ -1239,7 +1221,7 @@ async fn reset_with_invalid_signature_is_rejected() {
             server_identity
                 .private_keys
                 .sign(&header.aad_data())
-                .expect("sign reset header"),
+                .unwrap(),
         );
         let header = QlHeader {
             signature,
@@ -1252,7 +1234,7 @@ async fn reset_with_invalid_signature_is_rejected() {
             route_id: RouteId::new(0),
             payload: CBOR::null(),
         };
-        let payload_bytes = CBOR::from(envelope).to_cbor_data();
+        let payload_bytes = envelope.to_cbor_data();
         let encrypted = session_key.encrypt(payload_bytes, Some(aad), None::<bc_components::Nonce>);
         let mut reset_message = EncryptedMessage { header, encrypted };
         reset_message.header.kind = MessageKind::Request;
