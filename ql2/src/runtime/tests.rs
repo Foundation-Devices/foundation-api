@@ -18,12 +18,10 @@ use tokio::{sync::Semaphore, task::LocalSet};
 use crate::{
     crypto::{handshake, pair},
     platform::{PlatformFuture, QlPlatform},
-    runtime::{new_runtime, HandlerEvent, PeerSession, RequestConfig, RuntimeConfig, RuntimeHandle},
-    wire::{
-        handshake::HandshakeRecord,
-        message::Nack,
-        QlHeader, QlPayload, QlRecord,
+    runtime::{
+        new_runtime, HandlerEvent, PeerSession, RequestConfig, RuntimeConfig, RuntimeHandle,
     },
+    wire::{handshake::HandshakeRecord, message::Nack, QlHeader, QlPayload, QlRecord},
     MessageId, QlError, RouteId,
 };
 
@@ -160,7 +158,14 @@ struct InboundPlatform {
 }
 
 impl InboundPlatform {
-    fn new(seed: u8) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>, Receiver<HandlerEvent>) {
+    fn new(
+        seed: u8,
+    ) -> (
+        Self,
+        Receiver<Vec<u8>>,
+        Receiver<StatusEvent>,
+        Receiver<HandlerEvent>,
+    ) {
         let (signing_private, signing_public) = SignatureScheme::MLDSA44.keypair();
         let (encapsulation_private, encapsulation_public) =
             EncapsulationScheme::default().keypair();
@@ -622,7 +627,7 @@ async fn request_response_round_trip() {
         });
 
         let response = handle_a
-            .send_request(
+            .send_request_raw(
                 peer_b,
                 RouteId::new(7),
                 CBOR::from(12u8),
@@ -678,7 +683,7 @@ async fn request_timeout_returns_error() {
         await_status(&status_b, peer_a, PeerStage::Connected).await;
 
         let ticket = handle_a
-            .send_request(
+            .send_request_raw(
                 peer_b,
                 RouteId::new(1),
                 CBOR::from(1u8),
@@ -742,7 +747,7 @@ async fn request_nack_resolves_pending() {
         });
 
         let response = handle_a
-            .send_request(
+            .send_request_raw(
                 peer_b,
                 RouteId::new(2),
                 CBOR::from(2u8),
@@ -809,7 +814,7 @@ async fn request_dispatches_to_platform_callback() {
         });
 
         let ticket = handle_a
-            .send_request(
+            .send_request_raw(
                 peer_b,
                 RouteId::new(3),
                 CBOR::from(1u8),
