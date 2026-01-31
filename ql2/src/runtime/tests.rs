@@ -17,7 +17,7 @@ use tokio::{sync::Semaphore, task::LocalSet};
 
 use crate::{
     crypto::{handshake, heartbeat, pair},
-    platform::{PlatformFuture, QlPlatform},
+    platform::{PlatformFuture, QlPlatform, QlPlatformExt},
     runtime::{
         internal::now_secs, new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RequestConfig,
         RuntimeConfig, RuntimeHandle,
@@ -326,7 +326,7 @@ impl QlPlatform for BlockingPlatform {
         let outbound = self.outbound.clone();
         let write_gate = self.write_gate.clone();
         Box::pin(async move {
-            let _permit = write_gate.acquire().await.expect("write gate closed");
+            let _permit = write_gate.acquire().await.unwrap();
             outbound
                 .send(message)
                 .await
@@ -415,6 +415,27 @@ fn spawn_gated_forwarder(
     });
 }
 
+fn register_peers(
+    handle_a: &RuntimeHandle,
+    handle_b: &RuntimeHandle,
+    platform_a: &impl QlPlatformExt,
+    platform_b: &impl QlPlatformExt,
+) -> (XID, XID) {
+    let peer_a = platform_a.xid();
+    let peer_b = platform_b.xid();
+    handle_a.register_peer(
+        peer_b,
+        platform_b.signing_public_key().clone(),
+        platform_b.encapsulation_public_key().clone(),
+    );
+    handle_b.register_peer(
+        peer_a,
+        platform_a.signing_public_key().clone(),
+        platform_a.encapsulation_public_key().clone(),
+    );
+    (peer_a, peer_b)
+}
+
 async fn await_status(
     receiver: &Receiver<StatusEvent>,
     peer: XID,
@@ -430,7 +451,7 @@ async fn await_status(
         }
     })
     .await
-    .expect("status timeout")
+    .unwrap()
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -440,12 +461,6 @@ async fn handshake_initiator_connects() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
 
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) =
@@ -457,8 +472,7 @@ async fn handshake_initiator_connects() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_drop_heartbeat_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        let (_peer_a, peer_b) = register_peers(&handle_a, &handle_b, &platform_a, &platform_b);
 
         handle_a.connect(peer_b).unwrap();
 
@@ -475,13 +489,15 @@ async fn handshake_timeout_disconnects() {
         let (platform_a, _outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
 
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_b = XID::new(&signing_b);
+        let peer_b = platform_b.xid();
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         tokio::task::spawn_local(async move { runtime_a.run().await });
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_a.register_peer(
+            peer_b,
+            platform_b.signing_public_key().clone(),
+            platform_b.encapsulation_public_key().clone(),
+        );
 
         handle_a.connect(peer_b).unwrap();
 
@@ -497,12 +513,8 @@ async fn simultaneous_handshakes_resolve() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
 
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) =
@@ -514,8 +526,7 @@ async fn simultaneous_handshakes_resolve() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &platform_a, &platform_b);
 
         handle_a.connect(peer_b).unwrap();
         handle_b.connect(peer_a).unwrap();
@@ -537,12 +548,8 @@ async fn invalid_signature_disconnects() {
         let (wrong_private, wrong_public) = SignatureScheme::MLDSA44.keypair();
         let _ = wrong_private;
 
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) =
@@ -554,8 +561,16 @@ async fn invalid_signature_disconnects() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, wrong_public, encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        handle_a.register_peer(
+            peer_b,
+            wrong_public,
+            platform_b.encapsulation_public_key().clone(),
+        );
+        handle_b.register_peer(
+            peer_a,
+            platform_a.signing_public_key().clone(),
+            platform_a.encapsulation_public_key().clone(),
+        );
 
         handle_a.connect(peer_b).unwrap();
 
@@ -571,11 +586,9 @@ async fn pairing_request_triggers_handshake() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
 
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
         let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let pairing_message = pair::build_pair_request(
             &platform_a,
@@ -584,7 +597,7 @@ async fn pairing_request_triggers_handshake() {
             MessageId::new(1),
             Duration::from_secs(1),
         )
-        .expect("pairing request");
+        .unwrap();
         let pairing_bytes = CBOR::from(pairing_message).to_cbor_data();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
@@ -597,7 +610,11 @@ async fn pairing_request_triggers_handshake() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_a.register_peer(
+            peer_b,
+            platform_b.signing_public_key().clone(),
+            platform_b.encapsulation_public_key().clone(),
+        );
 
         handle_b.send_incoming(pairing_bytes);
 
@@ -617,12 +634,8 @@ async fn request_response_round_trip() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
 
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -633,8 +646,7 @@ async fn request_response_round_trip() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &platform_a, &platform_b);
 
         handle_a.connect(peer_b).unwrap();
 
@@ -670,12 +682,8 @@ async fn request_timeout_returns_error() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
 
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -686,8 +694,7 @@ async fn request_timeout_returns_error() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &platform_a, &platform_b);
 
         handle_a.connect(peer_b).unwrap();
 
@@ -705,7 +712,7 @@ async fn request_timeout_returns_error() {
 
         let result = tokio::time::timeout(Duration::from_millis(200), ticket.recv())
             .await
-            .expect("timeout wait");
+            .unwrap();
         assert!(matches!(result, Err(QlError::Timeout)));
     })
     .await;
@@ -719,12 +726,8 @@ async fn request_nack_resolves_pending() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
 
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -735,8 +738,7 @@ async fn request_nack_resolves_pending() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &platform_a, &platform_b);
 
         handle_a.connect(peer_b).unwrap();
 
@@ -777,12 +779,8 @@ async fn request_dispatches_to_platform_callback() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
 
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -793,8 +791,7 @@ async fn request_dispatches_to_platform_callback() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &platform_a, &platform_b);
 
         handle_a.connect(peer_b).unwrap();
 
@@ -853,23 +850,28 @@ async fn handshake_timeout_drops_queued_messages() {
         let (platform_a, outbound_a, status_a, write_gate) = BlockingPlatform::new(2);
         let (platform_b, _outbound_b, _status_b) = TestPlatform::new(1);
 
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         tokio::task::spawn_local(async move { runtime_a.run().await });
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_a.register_peer(
+            peer_b,
+            platform_b.signing_public_key().clone(),
+            platform_b.encapsulation_public_key().clone(),
+        );
 
         handle_a.connect(peer_b).unwrap();
         await_status(&status_a, peer_b, PeerStage::Initiator).await;
 
-        let (hello, _secret) =
-            handshake::build_hello(&platform_b, peer_b, peer_a, &encap_a).expect("hello build");
+        let (hello, _secret) = handshake::build_hello(
+            &platform_b,
+            peer_b,
+            peer_a,
+            platform_a.encapsulation_public_key(),
+        )
+        .unwrap();
         let message = QlRecord {
             header: QlHeader {
                 sender: peer_b,
@@ -886,8 +888,8 @@ async fn handshake_timeout_drops_queued_messages() {
         write_gate.add_permits(1);
         let _ = tokio::time::timeout(Duration::from_millis(100), outbound_a.recv())
             .await
-            .expect("hello write")
-            .expect("outbound closed");
+            .unwrap()
+            .unwrap();
 
         write_gate.add_permits(1);
         let second = tokio::time::timeout(Duration::from_millis(50), outbound_a.recv()).await;
@@ -906,15 +908,17 @@ async fn heartbeat_ignored_without_session() {
         let (platform_a, outbound_a, _status_a) = TestPlatform::new(1);
         let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
 
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(platform_a.signing_public_key());
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         tokio::task::spawn_local(async move { runtime_a.run().await });
 
-        handle_a.register_peer(peer_b, signing_b, encap_b);
+        handle_a.register_peer(
+            peer_b,
+            platform_b.signing_public_key().clone(),
+            platform_b.encapsulation_public_key().clone(),
+        );
 
         let heartbeat = heartbeat::encrypt_heartbeat(
             QlHeader {
@@ -1013,8 +1017,8 @@ async fn heartbeat_sent_after_idle() {
 
         let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
             .await
-            .expect("heartbeat timeout")
-            .expect("heartbeat channel closed");
+            .unwrap()
+            .unwrap();
     })
     .await;
 }
@@ -1059,12 +1063,12 @@ async fn heartbeat_reply_when_connected() {
 
         let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_ab_rx.recv())
             .await
-            .expect("heartbeat request timeout")
-            .expect("heartbeat channel closed");
+            .unwrap()
+            .unwrap();
         let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_ba_rx.recv())
             .await
-            .expect("heartbeat reply timeout")
-            .expect("heartbeat channel closed");
+            .unwrap()
+            .unwrap();
     })
     .await;
 }
@@ -1108,8 +1112,8 @@ async fn any_message_clears_pending() {
 
         let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
             .await
-            .expect("heartbeat request timeout")
-            .expect("heartbeat channel closed");
+            .unwrap()
+            .unwrap();
 
         handle_b.send_event_raw(peer_a, RouteId::new(99), CBOR::from(1u8));
 
@@ -1181,7 +1185,7 @@ async fn heartbeat_timeout_disconnects_and_drops_outbound() {
 
         let result = tokio::time::timeout(Duration::from_millis(300), response.recv())
             .await
-            .expect("response wait");
+            .unwrap();
         assert!(
             matches!(result, Err(QlError::SendFailed)),
             "unexpected result: {result:?}"
@@ -1230,12 +1234,12 @@ async fn no_ping_pong() {
 
         let _ = tokio::time::timeout(Duration::from_millis(300), heartbeat_ab_rx.recv())
             .await
-            .expect("heartbeat request timeout")
-            .expect("heartbeat channel closed");
+            .unwrap()
+            .unwrap();
         let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_ba_rx.recv())
             .await
-            .expect("heartbeat reply timeout")
-            .expect("heartbeat channel closed");
+            .unwrap()
+            .unwrap();
 
         let followup =
             tokio::time::timeout(Duration::from_millis(50), heartbeat_ab_rx.recv()).await;
