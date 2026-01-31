@@ -68,6 +68,42 @@ impl PeerRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct PeerStore {
+    peers: Vec<PeerRecord>,
+}
+
+impl PeerStore {
+    pub fn new() -> Self {
+        Self { peers: Vec::new() }
+    }
+
+    pub fn peer(&self, peer: XID) -> Option<&PeerRecord> {
+        self.peers.iter().find(|record| record.peer == peer)
+    }
+
+    pub fn peer_mut(&mut self, peer: XID) -> Option<&mut PeerRecord> {
+        self.peers.iter_mut().find(|record| record.peer == peer)
+    }
+
+    pub fn upsert_peer(
+        &mut self,
+        peer: XID,
+        signing_key: SigningPublicKey,
+        encapsulation_key: EncapsulationPublicKey,
+    ) -> &mut PeerRecord {
+        if let Some(index) = self.peers.iter().position(|record| record.peer == peer) {
+            let record = &mut self.peers[index];
+            record.signing_key = signing_key;
+            record.encapsulation_key = encapsulation_key;
+            return record;
+        }
+        self.peers
+            .push(PeerRecord::new(peer, signing_key, encapsulation_key));
+        self.peers.last_mut().expect("peer record just inserted")
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum PeerSession {
     Disconnected,
     Initiator {
@@ -96,6 +132,14 @@ impl PeerSession {
         match self {
             PeerSession::Connected { .. } => true,
             _ => false,
+        }
+    }
+
+    #[inline]
+    pub fn session_key(&self) -> Option<&SymmetricKey> {
+        match self {
+            PeerSession::Connected { session_key, .. } => Some(session_key),
+            _ => None,
         }
     }
 }
@@ -137,7 +181,7 @@ pub(crate) enum RuntimeCommand {
 }
 
 pub struct RuntimeState {
-    pub peers: Vec<PeerRecord>,
+    pub peers: PeerStore,
     pub next_token: Cell<Token>,
     pub outbound: VecDeque<OutboundMessage>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
@@ -148,7 +192,7 @@ pub struct RuntimeState {
 impl RuntimeState {
     pub fn new() -> Self {
         Self {
-            peers: Vec::new(),
+            peers: PeerStore::new(),
             next_token: Cell::new(Token(0)),
             outbound: VecDeque::new(),
             timeouts: BinaryHeap::new(),
@@ -167,31 +211,6 @@ impl RuntimeState {
         let id = self.next_message_id;
         self.next_message_id = id.wrapping_add(1);
         MessageId::new(id)
-    }
-
-    pub fn peer(&self, peer: XID) -> Option<&PeerRecord> {
-        self.peers.iter().find(|record| record.peer == peer)
-    }
-
-    pub fn peer_mut(&mut self, peer: XID) -> Option<&mut PeerRecord> {
-        self.peers.iter_mut().find(|record| record.peer == peer)
-    }
-
-    pub fn upsert_peer(
-        &mut self,
-        peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
-    ) -> &mut PeerRecord {
-        if let Some(index) = self.peers.iter().position(|record| record.peer == peer) {
-            let record = &mut self.peers[index];
-            record.signing_key = signing_key;
-            record.encapsulation_key = encapsulation_key;
-            return record;
-        }
-        self.peers
-            .push(PeerRecord::new(peer, signing_key, encapsulation_key));
-        self.peers.last_mut().expect("peer record just inserted")
     }
 }
 
