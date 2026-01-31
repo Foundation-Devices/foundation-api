@@ -1,6 +1,7 @@
 use dcbor::CBOR;
 
 pub mod handshake;
+pub mod heartbeat;
 pub mod message;
 pub mod pair;
 
@@ -31,6 +32,7 @@ pub enum QlPayload {
     Handshake(HandshakeRecord),
     Pair(PairRequestRecord),
     Message(EncryptedMessage),
+    Heartbeat(EncryptedMessage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +40,7 @@ pub enum QlTag {
     Handshake = 1,
     Pairing = 2,
     Record = 3,
+    Heartbeat = 4,
 }
 
 impl From<QlTag> for CBOR {
@@ -55,6 +58,7 @@ impl TryFrom<CBOR> for QlTag {
             1 => Ok(Self::Handshake),
             2 => Ok(Self::Pairing),
             3 => Ok(Self::Record),
+            4 => Ok(Self::Heartbeat),
             _ => Err(dcbor::Error::msg("unknown message tag")),
         }
     }
@@ -66,6 +70,7 @@ impl From<QlRecord> for CBOR {
             QlPayload::Handshake(message) => (QlTag::Handshake, CBOR::from(message)),
             QlPayload::Pair(message) => (QlTag::Pairing, CBOR::from(message)),
             QlPayload::Message(message) => (QlTag::Record, CBOR::from(message)),
+            QlPayload::Heartbeat(message) => (QlTag::Heartbeat, CBOR::from(message)),
         };
         CBOR::from(vec![
             CBOR::from(tag as u8),
@@ -103,6 +108,13 @@ impl TryFrom<CBOR> for QlRecord {
                 Ok(QlRecord {
                     header,
                     payload: QlPayload::Message(message),
+                })
+            }
+            QlTag::Heartbeat => {
+                let message = EncryptedMessage::try_from(payload)?;
+                Ok(QlRecord {
+                    header,
+                    payload: QlPayload::Heartbeat(message),
                 })
             }
         }

@@ -28,11 +28,29 @@ impl Token {
 }
 
 #[derive(Debug, Clone)]
+pub struct KeepAliveState {
+    pub token: Token,
+    pub pending: bool,
+    pub last_activity: Option<Instant>,
+}
+
+impl KeepAliveState {
+    pub fn new() -> Self {
+        Self {
+            token: Token(0),
+            pending: false,
+            last_activity: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct PeerRecord {
     pub peer: XID,
     pub signing_key: SigningPublicKey,
     pub encapsulation_key: EncapsulationPublicKey,
     pub session: PeerSession,
+    pub keepalive: KeepAliveState,
 }
 
 impl PeerRecord {
@@ -46,6 +64,7 @@ impl PeerRecord {
             signing_key,
             encapsulation_key,
             session: PeerSession::Disconnected,
+            keepalive: KeepAliveState::new(),
         }
     }
 }
@@ -70,6 +89,16 @@ pub enum PeerSession {
     Connected {
         session_key: SymmetricKey,
     },
+}
+
+impl PeerSession {
+    #[inline]
+    pub fn is_connected(&self) -> bool {
+        match self {
+            PeerSession::Connected { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +220,8 @@ pub enum TimeoutKind {
     Outbound { token: Token },
     Handshake { peer: XID, token: Token },
     Request { id: MessageId },
+    KeepAliveSend { peer: XID, token: Token },
+    KeepAliveTimeout { peer: XID, token: Token },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,22 +1,25 @@
-use std::{cmp::Reverse, future::Future, task::Poll, time::Instant};
+use std::{
+    cmp::Reverse, collections::binary_heap::PeekMut, future::Future, task::Poll, time::Instant,
+};
 
 use bc_components::{EncapsulationPublicKey, XID};
 use dcbor::CBOR;
 use futures_lite::future::poll_fn;
 
 use crate::{
-    crypto::{handshake, message, pair},
+    crypto::{handshake, heartbeat, message, pair},
     platform::{QlPlatform, QlPlatformExt},
     runtime::{
         internal::{
             next_timeout_deadline, now_secs, peer_hello_wins, HelloAction, InFlightWrite, LoopStep,
             OutboundMessage, PendingEntry, RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
         },
-        HandlerEvent, InboundEvent, InboundRequest, InitiatorStage, PeerSession, Responder,
-        Runtime, Token,
+        HandlerEvent, InboundEvent, InboundRequest, InitiatorStage, KeepAliveConfig, PeerSession,
+        Responder, Runtime, Token,
     },
     wire::{
         handshake::HandshakeRecord,
+        heartbeat::HeartbeatBody,
         message::{MessageBody, MessageKind, Nack},
         pair::PairRequestRecord,
         QlHeader, QlPayload, QlRecord,
@@ -361,6 +364,9 @@ impl<P: QlPlatform> Runtime<P> {
             QlPayload::Message(encrypted) => {
                 self.handle_record(state, header, encrypted);
             }
+            QlPayload::Heartbeat(encrypted) => {
+                self.handle_heartbeat(state, header, encrypted);
+            }
         }
     }
 
@@ -414,9 +420,11 @@ impl<P: QlPlatform> Runtime<P> {
         };
         let record = match message::decrypt_message(&header, &encrypted, &session_key) {
             Ok(record) => record,
+            // TODO: fix this
             Err(message::MessageError::Nack { .. }) => return,
             Err(message::MessageError::Error(_)) => return,
         };
+        self.record_activity(state, peer);
         match record.kind {
             MessageKind::Response => {
                 self.resolve_pending_ok(state, peer, record.message_id, record.payload);
@@ -441,6 +449,93 @@ impl<P: QlPlatform> Runtime<P> {
                     .handle_inbound(HandlerEvent::Event(InboundEvent { message: record }));
             }
         }
+    }
+
+    fn handle_heartbeat(
+        &self,
+        state: &mut RuntimeState,
+        header: QlHeader,
+        encrypted: bc_components::EncryptedMessage,
+    ) {
+        let peer = header.sender;
+        let session_key = match state.peer(peer) {
+            Some(entry) => match &entry.session {
+                PeerSession::Connected { session_key } => session_key.clone(),
+                _ => return,
+            },
+            None => return,
+        };
+        if heartbeat::decrypt_heartbeat(&header, &encrypted, &session_key).is_err() {
+            return;
+        }
+        self.record_activity(state, peer);
+        self.send_heartbeat_message(state, peer, session_key);
+    }
+
+    fn send_heartbeat_message(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        session_key: bc_components::SymmetricKey,
+    ) {
+        let message_id = state.next_message_id();
+        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
+        let message = heartbeat::encrypt_heartbeat(
+            QlHeader {
+                sender: self.platform.xid(),
+                recipient: peer,
+            },
+            &session_key,
+            HeartbeatBody {
+                message_id,
+                valid_until,
+            },
+        );
+        let bytes = CBOR::from(message).to_cbor_data();
+        let outbound_deadline = Instant::now() + self.config.message_expiration;
+        self.enqueue_outbound(state, peer, bytes, outbound_deadline, None);
+    }
+
+    fn keep_alive_config(&self) -> Option<KeepAliveConfig> {
+        self.config
+            .keep_alive
+            .filter(|config| !config.interval.is_zero() && !config.timeout.is_zero())
+    }
+
+    fn record_activity(&self, state: &mut RuntimeState, peer: XID) {
+        let Some(config) = self.keep_alive_config() else {
+            return;
+        };
+        match state.peer(peer).map(|entry| &entry.session) {
+            Some(PeerSession::Connected { .. }) => {}
+            _ => return,
+        }
+        let token = state.next_token();
+        let now = Instant::now();
+        if let Some(entry) = state.peer_mut(peer) {
+            entry.keepalive.last_activity = Some(now);
+            entry.keepalive.pending = false;
+            entry.keepalive.token = token;
+        }
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: now + config.interval,
+            kind: TimeoutKind::KeepAliveSend { peer, token },
+        }));
+    }
+
+    fn drop_outbound_for_peer(&self, state: &mut RuntimeState, peer: XID) {
+        state.outbound.retain(|message| {
+            if message.peer == peer {
+                if let Some(id) = message.message_id {
+                    if let Some(entry) = state.pending.remove(&id) {
+                        let _ = entry.tx.send(Err(QlError::SendFailed));
+                    }
+                }
+                false
+            } else {
+                true
+            }
+        });
     }
 
     fn resolve_pending_ok(
@@ -573,6 +668,7 @@ impl<P: QlPlatform> Runtime<P> {
                     entry.session = PeerSession::Connected { session_key };
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
+                self.record_activity(state, peer);
                 confirm
             }
             Err(_) => {
@@ -635,6 +731,7 @@ impl<P: QlPlatform> Runtime<P> {
                     entry.session = PeerSession::Connected { session_key };
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
+                self.record_activity(state, peer);
             }
             Err(_) => {
                 if let Some(entry) = state.peer_mut(peer) {
@@ -743,11 +840,11 @@ impl<P: QlPlatform> Runtime<P> {
 
     fn handle_timeouts(&self, state: &mut RuntimeState) {
         let now = Instant::now();
-        while let Some(entry) = state.timeouts.peek() {
-            if entry.0.at > now {
+        loop {
+            let Some(entry) = state.timeouts.peek_mut().filter(|e| e.0.at <= now) else {
                 break;
-            }
-            let entry = state.timeouts.pop().expect("timeout entry just peeked").0;
+            };
+            let entry = PeekMut::pop(entry).0;
             match entry.kind {
                 TimeoutKind::Outbound { token } => {
                     let mut message_id = None;
@@ -766,17 +863,17 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                 }
                 TimeoutKind::Handshake { peer, token } => {
-                    let should_disconnect = match state.peer(peer) {
-                        Some(entry) => match &entry.session {
-                            PeerSession::Initiator {
-                                handshake_token, ..
-                            }
-                            | PeerSession::Responder {
-                                handshake_token, ..
-                            } => *handshake_token == token,
-                            _ => false,
-                        },
-                        None => false,
+                    let Some(entry) = state.peer(peer) else {
+                        continue;
+                    };
+                    let should_disconnect = match &entry.session {
+                        PeerSession::Initiator {
+                            handshake_token, ..
+                        }
+                        | PeerSession::Responder {
+                            handshake_token, ..
+                        } => *handshake_token == token,
+                        _ => false,
                     };
                     if should_disconnect {
                         if let Some(entry) = state.peer_mut(peer) {
@@ -789,6 +886,50 @@ impl<P: QlPlatform> Runtime<P> {
                 TimeoutKind::Request { id } => {
                     if let Some(entry) = state.pending.remove(&id) {
                         let _ = entry.tx.send(Err(QlError::Timeout));
+                    }
+                }
+                TimeoutKind::KeepAliveSend { peer, token } => {
+                    let Some(config) = self.keep_alive_config() else {
+                        continue;
+                    };
+                    let session_key = {
+                        let Some(entry) = state.peer(peer) else {
+                            continue;
+                        };
+                        let PeerSession::Connected { session_key } = &entry.session else {
+                            continue;
+                        };
+                        if entry.keepalive.token == token && !entry.keepalive.pending {
+                            session_key.clone()
+                        } else {
+                            continue;
+                        }
+                    };
+                    self.send_heartbeat_message(state, peer, session_key);
+                    if let Some(entry) = state.peer_mut(peer) {
+                        entry.keepalive.pending = true;
+                    }
+                    state.timeouts.push(Reverse(TimeoutEntry {
+                        at: now + config.timeout,
+                        kind: TimeoutKind::KeepAliveTimeout { peer, token },
+                    }));
+                }
+                TimeoutKind::KeepAliveTimeout { peer, token } => {
+                    let Some(entry) = state.peer(peer) else {
+                        continue;
+                    };
+
+                    if entry.keepalive.token == token
+                        && entry.keepalive.pending
+                        && entry.session.is_connected()
+                    {
+                        if let Some(entry) = state.peer_mut(peer) {
+                            entry.session = PeerSession::Disconnected;
+                            entry.keepalive.pending = false;
+                            entry.keepalive.last_activity = None;
+                            self.platform.handle_peer_status(peer, &entry.session);
+                        }
+                        self.drop_outbound_for_peer(state, peer);
                     }
                 }
             }

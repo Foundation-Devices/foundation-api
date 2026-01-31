@@ -24,10 +24,17 @@ pub struct RequestConfig {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct KeepAliveConfig {
+    pub interval: Duration,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
     pub handshake_timeout: Duration,
     pub default_request_timeout: Duration,
     pub message_expiration: Duration,
+    pub keep_alive: Option<KeepAliveConfig>,
 }
 
 impl RuntimeConfig {
@@ -36,6 +43,7 @@ impl RuntimeConfig {
             handshake_timeout,
             default_request_timeout: Duration::from_secs(5),
             message_expiration: Duration::from_secs(30),
+            keep_alive: None,
         }
     }
 
@@ -46,6 +54,11 @@ impl RuntimeConfig {
 
     pub fn with_message_expiration(mut self, expiration: Duration) -> Self {
         self.message_expiration = expiration;
+        self
+    }
+
+    pub fn with_keep_alive(mut self, config: KeepAliveConfig) -> Self {
+        self.keep_alive = Some(config);
         self
     }
 }
