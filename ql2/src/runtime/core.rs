@@ -979,31 +979,30 @@ impl<P: QlPlatform> Runtime<P> {
         message_id: Option<MessageId>,
         result: Result<(), QlError>,
     ) {
-        match result {
-            Ok(()) => {}
-            Err(_) => {
-                if let Some(id) = message_id {
-                    if let Some(entry) = state.pending.remove(&id) {
-                        let _ = entry.tx.send(Err(QlError::SendFailed));
-                    }
-                }
-                let should_disconnect = match state.peers.peer(peer).map(|entry| &entry.session) {
-                    Some(PeerSession::Initiator {
-                        handshake_token, ..
-                    }) if *handshake_token == token => true,
-                    Some(PeerSession::Responder {
-                        handshake_token, ..
-                    }) if *handshake_token == token => true,
-                    _ => false,
-                };
-                if should_disconnect {
-                    if let Some(entry) = state.peers.peer_mut(peer) {
-                        entry.session = PeerSession::Disconnected;
-                        self.platform.handle_peer_status(peer, &entry.session);
-                    }
-                    state.outbound.retain(|message| message.peer != peer);
-                }
+        if result.is_ok() {
+            return;
+        }
+
+        if let Some(id) = message_id {
+            if let Some(entry) = state.pending.remove(&id) {
+                let _ = entry.tx.send(Err(QlError::SendFailed));
             }
+        }
+        let should_disconnect = match state.peers.peer(peer).map(|entry| &entry.session) {
+            Some(PeerSession::Initiator {
+                handshake_token, ..
+            }) if *handshake_token == token => true,
+            Some(PeerSession::Responder {
+                handshake_token, ..
+            }) if *handshake_token == token => true,
+            _ => false,
+        };
+        if should_disconnect {
+            if let Some(entry) = state.peers.peer_mut(peer) {
+                entry.session = PeerSession::Disconnected;
+                self.platform.handle_peer_status(peer, &entry.session);
+            }
+            state.outbound.retain(|message| message.peer != peer);
         }
     }
 }
