@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     runtime::{HandlerEvent, Responder},
-    wire::{Ack, Nack},
+    wire::message::{Ack, Nack},
     Event, QlCodec, QlError, RequestResponse, RouteId,
 };
 
@@ -119,7 +119,7 @@ impl<S> RouterBuilder<S> {
 
     fn add_handler(mut self, id: RouteId, handler: RouterHandler<S>) -> Self {
         if self.handlers.insert(id, handler).is_some() {
-            panic!("duplicate message_id {id}");
+            panic!("duplicate route_id {id}");
         }
         self
     }
@@ -138,8 +138,8 @@ impl<S> Router<S> {
     pub fn handle(&mut self, event: HandlerEvent) -> Result<(), RouterError> {
         match event {
             HandlerEvent::Request(request) => {
-                let message_id = request.message.header.route_id;
-                let handler = match self.handlers.get(&message_id) {
+                let route_id = request.message.route_id;
+                let handler = match self.handlers.get(&route_id) {
                     Some(handler) => handler,
                     None => {
                         let _ = request.respond_to.respond_nack(Nack::UnknownRoute);
@@ -149,11 +149,11 @@ impl<S> Router<S> {
                 handler(&mut self.state, HandlerEvent::Request(request))
             }
             HandlerEvent::Event(event) => {
-                let message_id = event.message.header.route_id;
+                let route_id = event.message.route_id;
                 let handler = self
                     .handlers
-                    .get(&message_id)
-                    .ok_or(RouterError::MissingHandler(message_id))?;
+                    .get(&route_id)
+                    .ok_or(RouterError::MissingHandler(route_id))?;
                 handler(&mut self.state, HandlerEvent::Event(event))
             }
         }

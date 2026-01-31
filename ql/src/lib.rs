@@ -1,9 +1,7 @@
-mod encrypt;
-pub mod handle;
+pub mod crypto;
 mod id;
-pub mod identity;
-pub mod platform;
 pub mod router;
+pub mod platform;
 pub mod runtime;
 pub mod wire;
 
@@ -21,33 +19,27 @@ pub trait Event: QlCodec {
     const ID: RouteId;
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QlError {
-    #[error(transparent)]
-    Decode(#[from] dcbor::Error),
     #[error("invalid payload")]
     InvalidPayload,
+    #[error("invalid handshake role")]
+    InvalidRole,
     #[error("invalid signature")]
     InvalidSignature,
     #[error("missing session for {0}")]
     MissingSession(bc_components::XID),
     #[error("unknown peer {0}")]
     UnknownPeer(bc_components::XID),
-    #[error("session init collision")]
-    SessionInitCollision,
-    #[error("stale session")]
-    StaleSession,
-    #[error("session reset")]
-    SessionReset,
     #[error("timeout")]
     Timeout,
     #[error("send failed")]
     SendFailed,
     #[error("nack {nack:?}")]
-    Nack { id: MessageId, nack: wire::Nack },
+    Nack {
+        id: MessageId,
+        nack: wire::message::Nack,
+    },
     #[error("cancelled")]
     Cancelled,
 }
-
-#[cfg(test)]
-mod tests;
