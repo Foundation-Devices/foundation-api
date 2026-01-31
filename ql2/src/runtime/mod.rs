@@ -1,3 +1,13 @@
+pub use handle::{Response, RuntimeHandle};
+pub use internal::{InitiatorStage, PeerSession, Token};
+
+mod core;
+pub mod handle;
+pub(crate) mod internal;
+
+#[cfg(test)]
+mod tests;
+
 use std::time::Duration;
 
 use bc_components::XID;
@@ -61,14 +71,14 @@ pub struct InboundEvent {
 pub struct Responder {
     id: MessageId,
     recipient: XID,
-    tx: async_channel::Sender<RuntimeCommand>,
+    tx: async_channel::Sender<internal::RuntimeCommand>,
 }
 
 impl Responder {
     pub(crate) fn new(
         id: MessageId,
         recipient: XID,
-        tx: async_channel::Sender<RuntimeCommand>,
+        tx: async_channel::Sender<internal::RuntimeCommand>,
     ) -> Self {
         Self { id, recipient, tx }
     }
@@ -78,7 +88,7 @@ impl Responder {
         R: QlCodec,
     {
         self.tx
-            .try_send(RuntimeCommand::SendResponse {
+            .try_send(internal::RuntimeCommand::SendResponse {
                 id: self.id,
                 recipient: self.recipient,
                 payload: response.into(),
@@ -89,7 +99,7 @@ impl Responder {
 
     pub fn respond_nack(self, reason: Nack) -> Result<(), QlError> {
         self.tx
-            .try_send(RuntimeCommand::SendResponse {
+            .try_send(internal::RuntimeCommand::SendResponse {
                 id: self.id,
                 recipient: self.recipient,
                 payload: CBOR::from(reason),
@@ -102,24 +112,14 @@ impl Responder {
 pub struct Runtime<P> {
     platform: P,
     config: RuntimeConfig,
-    rx: async_channel::Receiver<RuntimeCommand>,
-    tx: async_channel::Sender<RuntimeCommand>,
+    rx: async_channel::Receiver<internal::RuntimeCommand>,
+    tx: async_channel::Sender<internal::RuntimeCommand>,
 }
 
-pub mod handle;
-pub(crate) mod internal;
-pub use handle::{Response, RuntimeHandle};
-pub use internal::{InitiatorStage, PeerSession, Token};
-pub(crate) use internal::RuntimeCommand;
-mod r#impl;
-
-#[cfg(test)]
-mod tests;
-
-pub fn new_runtime<P: crate::platform::QlPlatform>(
-    platform: P,
-    config: RuntimeConfig,
-) -> (Runtime<P>, RuntimeHandle) {
+pub fn new_runtime<P>(platform: P, config: RuntimeConfig) -> (Runtime<P>, RuntimeHandle)
+where
+    P: crate::platform::QlPlatform,
+{
     let (tx, rx) = async_channel::unbounded();
     (
         Runtime {
@@ -128,8 +128,6 @@ pub fn new_runtime<P: crate::platform::QlPlatform>(
             rx,
             tx: tx.clone(),
         },
-        RuntimeHandle::new(tx),
+        RuntimeHandle { tx },
     )
 }
-
- 

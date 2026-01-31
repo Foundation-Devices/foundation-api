@@ -9,11 +9,11 @@ use crate::{
     platform::{QlPlatform, QlPlatformExt},
     runtime::{
         internal::{
-            now_secs, next_timeout_deadline, peer_hello_wins, HelloAction, InFlightWrite, LoopStep,
-            OutboundMessage, PendingEntry, RuntimeState, TimeoutEntry, TimeoutKind,
+            next_timeout_deadline, now_secs, peer_hello_wins, HelloAction, InFlightWrite, LoopStep,
+            OutboundMessage, PendingEntry, RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
         },
         HandlerEvent, InboundEvent, InboundRequest, InitiatorStage, PeerSession, Responder,
-        Runtime, RuntimeCommand, Token,
+        Runtime, Token,
     },
     wire::{
         handshake::HandshakeRecord,
@@ -23,7 +23,6 @@ use crate::{
     },
     MessageId, QlError, RouteId,
 };
-
 
 impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
@@ -428,13 +427,15 @@ impl<P: QlPlatform> Runtime<P> {
             }
             MessageKind::Request => {
                 let responder = Responder::new(record.message_id, record.sender, self.tx.clone());
-                self.platform.handle_inbound(HandlerEvent::Request(InboundRequest {
-                    message: record,
-                    respond_to: responder,
-                }));
+                self.platform
+                    .handle_inbound(HandlerEvent::Request(InboundRequest {
+                        message: record,
+                        respond_to: responder,
+                    }));
             }
             MessageKind::Event => {
-                self.platform.handle_inbound(HandlerEvent::Event(InboundEvent { message: record }));
+                self.platform
+                    .handle_inbound(HandlerEvent::Event(InboundEvent { message: record }));
             }
         }
     }

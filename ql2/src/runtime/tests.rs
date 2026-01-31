@@ -358,7 +358,7 @@ where
 fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
     tokio::task::spawn_local(async move {
         while let Ok(bytes) = outbound.recv().await {
-            let _ = handle.send_incoming(bytes).await;
+            let _ = handle.send_incoming(bytes);
         }
     });
 }
@@ -407,14 +407,12 @@ async fn handshake_initiator_connects() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
         handle_b
             .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .await
             .unwrap();
 
-        handle_a.connect(peer_b).await.unwrap();
+        handle_a.connect(peer_b).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
@@ -437,10 +435,9 @@ async fn handshake_timeout_disconnects() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
 
-        handle_a.connect(peer_b).await.unwrap();
+        handle_a.connect(peer_b).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Disconnected).await;
     })
@@ -473,16 +470,13 @@ async fn simultaneous_handshakes_resolve() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
         handle_b
             .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .await
             .unwrap();
 
-        let send_a = handle_a.connect(peer_b);
-        let send_b = handle_b.connect(peer_a);
-        let _ = tokio::join!(send_a, send_b);
+        handle_a.connect(peer_b).unwrap();
+        handle_b.connect(peer_a).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Initiator).await;
         await_status(&status_b, peer_a, PeerStage::Responder).await;
@@ -520,14 +514,12 @@ async fn invalid_signature_disconnects() {
 
         handle_a
             .register_peer(peer_b, wrong_public, encap_b.clone())
-            .await
             .unwrap();
         handle_b
             .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .await
             .unwrap();
 
-        handle_a.connect(peer_b).await.unwrap();
+        handle_a.connect(peer_b).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Disconnected).await;
     })
@@ -569,10 +561,9 @@ async fn pairing_request_triggers_handshake() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
 
-        handle_b.send_incoming(pairing_bytes).await.unwrap();
+        handle_b.send_incoming(pairing_bytes).unwrap();
 
         await_status(&status_b, peer_a, PeerStage::Initiator).await;
         await_status(&status_a, peer_b, PeerStage::Responder).await;
@@ -608,14 +599,12 @@ async fn request_response_round_trip() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
         handle_b
             .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .await
             .unwrap();
 
-        handle_a.connect(peer_b).await.unwrap();
+        handle_a.connect(peer_b).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
@@ -633,7 +622,6 @@ async fn request_response_round_trip() {
                 CBOR::from(12u8),
                 RequestConfig::default(),
             )
-            .await
             .unwrap();
 
         let response = response.recv().await.unwrap();
@@ -670,14 +658,12 @@ async fn request_timeout_returns_error() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
         handle_b
             .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .await
             .unwrap();
 
-        handle_a.connect(peer_b).await.unwrap();
+        handle_a.connect(peer_b).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
@@ -691,7 +677,6 @@ async fn request_timeout_returns_error() {
                     timeout: Some(Duration::from_millis(30)),
                 },
             )
-            .await
             .unwrap();
 
         let result = tokio::time::timeout(Duration::from_millis(200), ticket.recv())
@@ -728,14 +713,12 @@ async fn request_nack_resolves_pending() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
         handle_b
             .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .await
             .unwrap();
 
-        handle_a.connect(peer_b).await.unwrap();
+        handle_a.connect(peer_b).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
@@ -753,7 +736,6 @@ async fn request_nack_resolves_pending() {
                 CBOR::from(2u8),
                 RequestConfig::default(),
             )
-            .await
             .unwrap();
 
         let result = response.recv().await;
@@ -795,14 +777,12 @@ async fn request_dispatches_to_platform_callback() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
         handle_b
             .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .await
             .unwrap();
 
-        handle_a.connect(peer_b).await.unwrap();
+        handle_a.connect(peer_b).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
@@ -820,7 +800,6 @@ async fn request_dispatches_to_platform_callback() {
                 CBOR::from(1u8),
                 RequestConfig::default(),
             )
-            .await
             .unwrap();
 
         let response = ticket.recv().await.unwrap();
@@ -847,10 +826,9 @@ async fn blocked_write_still_times_out() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
 
-        handle_a.connect(peer_b).await.unwrap();
+        handle_a.connect(peer_b).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Initiator).await;
         await_status(&status_a, peer_b, PeerStage::Disconnected).await;
@@ -877,10 +855,9 @@ async fn handshake_timeout_drops_queued_messages() {
 
         handle_a
             .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .await
             .unwrap();
 
-        handle_a.connect(peer_b).await.unwrap();
+        handle_a.connect(peer_b).unwrap();
         await_status(&status_a, peer_b, PeerStage::Initiator).await;
 
         let (hello, _secret) =
@@ -893,7 +870,7 @@ async fn handshake_timeout_drops_queued_messages() {
             payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
         };
         let bytes = CBOR::from(message).to_cbor_data();
-        handle_a.send_incoming(bytes).await.unwrap();
+        handle_a.send_incoming(bytes).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Responder).await;
         await_status(&status_a, peer_b, PeerStage::Disconnected).await;

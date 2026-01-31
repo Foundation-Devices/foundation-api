@@ -7,10 +7,9 @@ use std::{
 
 use bc_components::{EncapsulationPublicKey, SigningPublicKey, XID};
 use dcbor::CBOR;
-use oneshot::Receiver;
 
 use crate::{
-    runtime::{RequestConfig, RuntimeCommand},
+    runtime::{internal::RuntimeCommand, RequestConfig},
     wire::message::Ack,
     Event, QlCodec, QlError, RequestResponse, RouteId,
 };
@@ -21,7 +20,7 @@ pub struct RuntimeHandle {
 }
 
 pub struct Response<T> {
-    rx: Receiver<Result<CBOR, QlError>>,
+    rx: oneshot::Receiver<Result<CBOR, QlError>>,
     _type: PhantomData<fn() -> T>,
 }
 
@@ -46,74 +45,66 @@ where
 }
 
 impl RuntimeHandle {
-    pub(crate) fn new(tx: async_channel::Sender<RuntimeCommand>) -> Self {
-        Self { tx }
-    }
-
-    pub async fn register_peer(
+    pub fn register_peer(
         &self,
         peer: XID,
         signing_key: SigningPublicKey,
         encapsulation_key: EncapsulationPublicKey,
     ) -> Result<(), QlError> {
         self.tx
-            .send(RuntimeCommand::RegisterPeer {
+            .send_blocking(RuntimeCommand::RegisterPeer {
                 peer,
                 signing_key,
                 encapsulation_key,
             })
-            .await
             .map_err(|_| QlError::Cancelled)
     }
 
-    pub async fn connect(&self, peer: XID) -> Result<(), QlError> {
+    pub fn connect(&self, peer: XID) -> Result<(), QlError> {
         self.tx
-            .send(RuntimeCommand::Connect { peer })
-            .await
+            .send_blocking(RuntimeCommand::Connect { peer })
             .map_err(|_| QlError::Cancelled)
     }
 
-    pub async fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
+    pub fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
         self.tx
-            .send(RuntimeCommand::Incoming(bytes))
-            .await
+            .send_blocking(RuntimeCommand::Incoming(bytes))
             .map_err(|_| QlError::Cancelled)
     }
 
-    pub async fn request<M>(
+    pub fn request<M>(
         &self,
         message: M,
         recipient: XID,
         config: RequestConfig,
-    ) -> Result<Response<M::Response>, QlError>
+    ) -> Response<M::Response>
     where
         M: RequestResponse,
     {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(RuntimeCommand::SendRequest {
+            .send_blocking(RuntimeCommand::SendRequest {
                 recipient,
                 route_id: M::ID,
                 payload: message.into(),
                 respond_to: tx,
                 config,
             })
-            .await
-            .map_err(|_| QlError::Cancelled)?;
-        Ok(Response {
+            .unwrap();
+        Response {
             rx,
             _type: PhantomData,
-        })
+        }
     }
 
-    pub async fn send_event<M>(&self, message: M, recipient: XID) -> Result<(), QlError>
+    pub fn send_event<M>(&self, message: M, recipient: XID) -> Result<(), QlError>
     where
         M: Event,
     {
-        self.send_event_raw(recipient, M::ID, message.into()).await
+        self.send_event_raw(recipient, M::ID, message.into())
     }
 
-    pub async fn send_event_with_ack<M>(
+    pub fn send_event_with_ack<M>(
         &self,
         message: M,
         recipient: XID,
@@ -124,14 +115,13 @@ impl RuntimeHandle {
     {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(RuntimeCommand::SendRequest {
+            .send_blocking(RuntimeCommand::SendRequest {
                 recipient,
                 route_id: M::ID,
                 payload: message.into(),
                 respond_to: tx,
                 config,
             })
-            .await
             .map_err(|_| QlError::Cancelled)?;
         Ok(Response {
             rx,
@@ -139,23 +129,22 @@ impl RuntimeHandle {
         })
     }
 
-    pub async fn send_event_raw(
+    pub fn send_event_raw(
         &self,
         recipient: XID,
         route_id: RouteId,
         payload: CBOR,
     ) -> Result<(), QlError> {
         self.tx
-            .send(RuntimeCommand::SendEvent {
+            .send_blocking(RuntimeCommand::SendEvent {
                 recipient,
                 route_id,
                 payload,
             })
-            .await
             .map_err(|_| QlError::Cancelled)
     }
 
-    pub async fn send_request_raw(
+    pub fn send_request_raw(
         &self,
         recipient: XID,
         route_id: RouteId,
@@ -164,14 +153,13 @@ impl RuntimeHandle {
     ) -> Result<Response<CBOR>, QlError> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(RuntimeCommand::SendRequest {
+            .send_blocking(RuntimeCommand::SendRequest {
                 recipient,
                 route_id,
                 payload,
                 respond_to: tx,
                 config,
             })
-            .await
             .map_err(|_| QlError::Cancelled)?;
         Ok(Response {
             rx,
