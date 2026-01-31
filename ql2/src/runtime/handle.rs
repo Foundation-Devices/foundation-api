@@ -50,14 +50,12 @@ impl RuntimeHandle {
         peer: XID,
         signing_key: SigningPublicKey,
         encapsulation_key: EncapsulationPublicKey,
-    ) -> Result<(), QlError> {
-        self.tx
-            .send_blocking(RuntimeCommand::RegisterPeer {
-                peer,
-                signing_key,
-                encapsulation_key,
-            })
-            .map_err(|_| QlError::Cancelled)
+    ) {
+        self.send(RuntimeCommand::RegisterPeer {
+            peer,
+            signing_key,
+            encapsulation_key,
+        })
     }
 
     pub fn connect(&self, peer: XID) -> Result<(), QlError> {
@@ -66,10 +64,8 @@ impl RuntimeHandle {
             .map_err(|_| QlError::Cancelled)
     }
 
-    pub fn send_incoming(&self, bytes: Vec<u8>) -> Result<(), QlError> {
-        self.tx
-            .send_blocking(RuntimeCommand::Incoming(bytes))
-            .map_err(|_| QlError::Cancelled)
+    pub fn send_incoming(&self, bytes: Vec<u8>) {
+        self.send(RuntimeCommand::Incoming(bytes))
     }
 
     pub fn request<M>(
@@ -82,22 +78,20 @@ impl RuntimeHandle {
         M: RequestResponse,
     {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send_blocking(RuntimeCommand::SendRequest {
-                recipient,
-                route_id: M::ID,
-                payload: message.into(),
-                respond_to: tx,
-                config,
-            })
-            .unwrap();
+        self.send(RuntimeCommand::SendRequest {
+            recipient,
+            route_id: M::ID,
+            payload: message.into(),
+            respond_to: tx,
+            config,
+        });
         Response {
             rx,
             _type: PhantomData,
         }
     }
 
-    pub fn send_event<M>(&self, message: M, recipient: XID) -> Result<(), QlError>
+    pub fn send_event<M>(&self, message: M, recipient: XID)
     where
         M: Event,
     {
@@ -109,39 +103,30 @@ impl RuntimeHandle {
         message: M,
         recipient: XID,
         config: RequestConfig,
-    ) -> Result<Response<Ack>, QlError>
+    ) -> Response<Ack>
     where
         M: Event,
     {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send_blocking(RuntimeCommand::SendRequest {
-                recipient,
-                route_id: M::ID,
-                payload: message.into(),
-                respond_to: tx,
-                config,
-            })
-            .map_err(|_| QlError::Cancelled)?;
-        Ok(Response {
+        self.send(RuntimeCommand::SendRequest {
+            recipient,
+            route_id: M::ID,
+            payload: message.into(),
+            respond_to: tx,
+            config,
+        });
+        Response {
             rx,
             _type: PhantomData,
-        })
+        }
     }
 
-    pub fn send_event_raw(
-        &self,
-        recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
-    ) -> Result<(), QlError> {
-        self.tx
-            .send_blocking(RuntimeCommand::SendEvent {
-                recipient,
-                route_id,
-                payload,
-            })
-            .map_err(|_| QlError::Cancelled)
+    pub fn send_event_raw(&self, recipient: XID, route_id: RouteId, payload: CBOR) {
+        self.send(RuntimeCommand::SendEvent {
+            recipient,
+            route_id,
+            payload,
+        })
     }
 
     pub fn send_request_raw(
@@ -150,20 +135,27 @@ impl RuntimeHandle {
         route_id: RouteId,
         payload: CBOR,
         config: RequestConfig,
-    ) -> Result<Response<CBOR>, QlError> {
+    ) -> Response<CBOR> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send_blocking(RuntimeCommand::SendRequest {
-                recipient,
-                route_id,
-                payload,
-                respond_to: tx,
-                config,
-            })
-            .map_err(|_| QlError::Cancelled)?;
-        Ok(Response {
+        self.send(RuntimeCommand::SendRequest {
+            recipient,
+            route_id,
+            payload,
+            respond_to: tx,
+            config,
+        });
+        Response {
             rx,
             _type: PhantomData,
-        })
+        }
+    }
+}
+
+impl RuntimeHandle {
+    #[inline]
+    #[track_caller]
+    fn send(&self, cmd: RuntimeCommand) {
+        // send_blocking is ok bc queue is unbounded
+        self.tx.send_blocking(cmd).expect("runtime is alive")
     }
 }

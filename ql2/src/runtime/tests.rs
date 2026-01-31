@@ -405,12 +405,8 @@ async fn handshake_initiator_connects() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
-        handle_b
-            .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
 
         handle_a.connect(peer_b).unwrap();
 
@@ -433,9 +429,7 @@ async fn handshake_timeout_disconnects() {
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         tokio::task::spawn_local(async move { runtime_a.run().await });
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
 
         handle_a.connect(peer_b).unwrap();
 
@@ -468,12 +462,8 @@ async fn simultaneous_handshakes_resolve() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
-        handle_b
-            .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
 
         handle_a.connect(peer_b).unwrap();
         handle_b.connect(peer_a).unwrap();
@@ -512,12 +502,8 @@ async fn invalid_signature_disconnects() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a
-            .register_peer(peer_b, wrong_public, encap_b.clone())
-            .unwrap();
-        handle_b
-            .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, wrong_public, encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
 
         handle_a.connect(peer_b).unwrap();
 
@@ -559,11 +545,9 @@ async fn pairing_request_triggers_handshake() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
 
-        handle_b.send_incoming(pairing_bytes).unwrap();
+        handle_b.send_incoming(pairing_bytes);
 
         await_status(&status_b, peer_a, PeerStage::Initiator).await;
         await_status(&status_a, peer_b, PeerStage::Responder).await;
@@ -597,12 +581,8 @@ async fn request_response_round_trip() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
-        handle_b
-            .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
 
         handle_a.connect(peer_b).unwrap();
 
@@ -615,14 +595,12 @@ async fn request_response_round_trip() {
             }
         });
 
-        let response = handle_a
-            .send_request_raw(
-                peer_b,
-                RouteId::new(7),
-                CBOR::from(12u8),
-                RequestConfig::default(),
-            )
-            .unwrap();
+        let response = handle_a.send_request_raw(
+            peer_b,
+            RouteId::new(7),
+            CBOR::from(12u8),
+            RequestConfig::default(),
+        );
 
         let response = response.recv().await.unwrap();
         let value: u8 = response.try_into().unwrap();
@@ -656,28 +634,22 @@ async fn request_timeout_returns_error() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
-        handle_b
-            .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
 
         handle_a.connect(peer_b).unwrap();
 
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
 
-        let ticket = handle_a
-            .send_request_raw(
-                peer_b,
-                RouteId::new(1),
-                CBOR::from(1u8),
-                RequestConfig {
-                    timeout: Some(Duration::from_millis(30)),
-                },
-            )
-            .unwrap();
+        let ticket = handle_a.send_request_raw(
+            peer_b,
+            RouteId::new(1),
+            CBOR::from(1u8),
+            RequestConfig {
+                timeout: Some(Duration::from_millis(30)),
+            },
+        );
 
         let result = tokio::time::timeout(Duration::from_millis(200), ticket.recv())
             .await
@@ -711,12 +683,8 @@ async fn request_nack_resolves_pending() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
-        handle_b
-            .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
 
         handle_a.connect(peer_b).unwrap();
 
@@ -729,14 +697,12 @@ async fn request_nack_resolves_pending() {
             }
         });
 
-        let response = handle_a
-            .send_request_raw(
-                peer_b,
-                RouteId::new(2),
-                CBOR::from(2u8),
-                RequestConfig::default(),
-            )
-            .unwrap();
+        let response = handle_a.send_request_raw(
+            peer_b,
+            RouteId::new(2),
+            CBOR::from(2u8),
+            RequestConfig::default(),
+        );
 
         let result = response.recv().await;
         assert!(matches!(
@@ -775,12 +741,8 @@ async fn request_dispatches_to_platform_callback() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
-        handle_b
-            .register_peer(peer_a, signing_a.clone(), encap_a.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
 
         handle_a.connect(peer_b).unwrap();
 
@@ -793,14 +755,12 @@ async fn request_dispatches_to_platform_callback() {
             }
         });
 
-        let ticket = handle_a
-            .send_request_raw(
-                peer_b,
-                RouteId::new(3),
-                CBOR::from(1u8),
-                RequestConfig::default(),
-            )
-            .unwrap();
+        let ticket = handle_a.send_request_raw(
+            peer_b,
+            RouteId::new(3),
+            CBOR::from(1u8),
+            RequestConfig::default(),
+        );
 
         let response = ticket.recv().await.unwrap();
         let value: u8 = response.try_into().unwrap();
@@ -824,9 +784,7 @@ async fn blocked_write_still_times_out() {
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         tokio::task::spawn_local(async move { runtime_a.run().await });
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
 
         handle_a.connect(peer_b).unwrap();
 
@@ -853,9 +811,7 @@ async fn handshake_timeout_drops_queued_messages() {
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         tokio::task::spawn_local(async move { runtime_a.run().await });
 
-        handle_a
-            .register_peer(peer_b, signing_b.clone(), encap_b.clone())
-            .unwrap();
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
 
         handle_a.connect(peer_b).unwrap();
         await_status(&status_a, peer_b, PeerStage::Initiator).await;
@@ -870,7 +826,7 @@ async fn handshake_timeout_drops_queued_messages() {
             payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
         };
         let bytes = CBOR::from(message).to_cbor_data();
-        handle_a.send_incoming(bytes).unwrap();
+        handle_a.send_incoming(bytes);
 
         await_status(&status_a, peer_b, PeerStage::Responder).await;
         await_status(&status_a, peer_b, PeerStage::Disconnected).await;
