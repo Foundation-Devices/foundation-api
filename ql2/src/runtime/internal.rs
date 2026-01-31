@@ -50,7 +50,6 @@ pub struct PeerRecord {
     pub signing_key: SigningPublicKey,
     pub encapsulation_key: EncapsulationPublicKey,
     pub session: PeerSession,
-    pub keepalive: KeepAliveState,
 }
 
 impl PeerRecord {
@@ -64,7 +63,6 @@ impl PeerRecord {
             signing_key,
             encapsulation_key,
             session: PeerSession::Disconnected,
-            keepalive: KeepAliveState::new(),
         }
     }
 }
@@ -88,6 +86,7 @@ pub enum PeerSession {
     },
     Connected {
         session_key: SymmetricKey,
+        keepalive: KeepAliveState,
     },
 }
 

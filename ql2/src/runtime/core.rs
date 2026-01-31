@@ -11,8 +11,9 @@ use crate::{
     platform::{QlPlatform, QlPlatformExt},
     runtime::{
         internal::{
-            next_timeout_deadline, now_secs, peer_hello_wins, HelloAction, InFlightWrite, LoopStep,
-            OutboundMessage, PendingEntry, RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
+            next_timeout_deadline, now_secs, peer_hello_wins, HelloAction, InFlightWrite,
+            KeepAliveState, LoopStep, OutboundMessage, PendingEntry, RuntimeCommand, RuntimeState,
+            TimeoutEntry, TimeoutKind,
         },
         HandlerEvent, InboundEvent, InboundRequest, InitiatorStage, KeepAliveConfig, PeerSession,
         Responder, Runtime, Token,
@@ -120,7 +121,7 @@ impl<P: QlPlatform> Runtime<P> {
             self.platform.sleep(timeout)
         });
 
-        let step = poll_fn(|cx| {
+        poll_fn(|cx| {
             if let Some(in_flight) = in_flight.as_mut() {
                 if let Poll::Ready(result) = in_flight.future.as_mut().poll(cx) {
                     return Poll::Ready(LoopStep::WriteDone {
@@ -138,14 +139,12 @@ impl<P: QlPlatform> Runtime<P> {
                 }
             }
 
-            match recv_future.as_mut().poll(cx) {
-                Poll::Ready(Ok(event)) => Poll::Ready(LoopStep::Event(event)),
-                Poll::Ready(Err(_)) => Poll::Ready(LoopStep::Quit),
-                Poll::Pending => Poll::Pending,
-            }
+            recv_future.as_mut().poll(cx).map(|res| match res {
+                Ok(event) => LoopStep::Event(event),
+                Err(_) => LoopStep::Quit,
+            })
         })
-        .await;
-        step
+        .await
     }
 
     fn handle_connect(&self, state: &mut RuntimeState, peer: XID) {
@@ -227,7 +226,7 @@ impl<P: QlPlatform> Runtime<P> {
         }
         let session_key = match state.peer(recipient) {
             Some(entry) => match &entry.session {
-                PeerSession::Connected { session_key } => session_key.clone(),
+                PeerSession::Connected { session_key, .. } => session_key.clone(),
                 _ => {
                     let _ = respond_to.send(Err(QlError::MissingSession(recipient)));
                     return;
@@ -280,7 +279,7 @@ impl<P: QlPlatform> Runtime<P> {
         let id = state.next_message_id();
         let session_key = match state.peer(recipient) {
             Some(entry) => match &entry.session {
-                PeerSession::Connected { session_key } => session_key.clone(),
+                PeerSession::Connected { session_key, .. } => session_key.clone(),
                 _ => return,
             },
             None => return,
@@ -320,7 +319,7 @@ impl<P: QlPlatform> Runtime<P> {
         };
         let session_key = match state.peer(recipient) {
             Some(entry) => match &entry.session {
-                PeerSession::Connected { session_key } => session_key.clone(),
+                PeerSession::Connected { session_key, .. } => session_key.clone(),
                 _ => return,
             },
             None => return,
@@ -413,7 +412,7 @@ impl<P: QlPlatform> Runtime<P> {
         let peer = header.sender;
         let session_key = match state.peer(peer) {
             Some(entry) => match &entry.session {
-                PeerSession::Connected { session_key } => session_key.clone(),
+                PeerSession::Connected { session_key, .. } => session_key.clone(),
                 _ => return,
             },
             None => return,
@@ -458,18 +457,25 @@ impl<P: QlPlatform> Runtime<P> {
         encrypted: bc_components::EncryptedMessage,
     ) {
         let peer = header.sender;
-        let session_key = match state.peer(peer) {
-            Some(entry) => match &entry.session {
-                PeerSession::Connected { session_key } => session_key.clone(),
+        let (session_key, should_reply) = {
+            let Some(entry) = state.peer(peer) else {
+                return;
+            };
+            match &entry.session {
+                PeerSession::Connected {
+                    session_key,
+                    keepalive,
+                } => (session_key.clone(), !keepalive.pending),
                 _ => return,
-            },
-            None => return,
+            }
         };
         if heartbeat::decrypt_heartbeat(&header, &encrypted, &session_key).is_err() {
             return;
         }
         self.record_activity(state, peer);
-        self.send_heartbeat_message(state, peer, session_key);
+        if should_reply {
+            self.send_heartbeat_message(state, peer, session_key);
+        }
     }
 
     fn send_heartbeat_message(
@@ -506,17 +512,17 @@ impl<P: QlPlatform> Runtime<P> {
         let Some(config) = self.keep_alive_config() else {
             return;
         };
-        match state.peer(peer).map(|entry| &entry.session) {
-            Some(PeerSession::Connected { .. }) => {}
-            _ => return,
-        }
         let token = state.next_token();
+        let Some(entry) = state.peer_mut(peer) else {
+            return;
+        };
+        let PeerSession::Connected { keepalive, .. } = &mut entry.session else {
+            return;
+        };
         let now = Instant::now();
-        if let Some(entry) = state.peer_mut(peer) {
-            entry.keepalive.last_activity = Some(now);
-            entry.keepalive.pending = false;
-            entry.keepalive.token = token;
-        }
+        keepalive.last_activity = Some(now);
+        keepalive.pending = false;
+        keepalive.token = token;
         state.timeouts.push(Reverse(TimeoutEntry {
             at: now + config.interval,
             kind: TimeoutKind::KeepAliveSend { peer, token },
@@ -665,7 +671,10 @@ impl<P: QlPlatform> Runtime<P> {
         ) {
             Ok((confirm, session_key)) => {
                 if let Some(entry) = state.peer_mut(peer) {
-                    entry.session = PeerSession::Connected { session_key };
+                    entry.session = PeerSession::Connected {
+                        session_key,
+                        keepalive: KeepAliveState::new(),
+                    };
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
                 self.record_activity(state, peer);
@@ -728,7 +737,10 @@ impl<P: QlPlatform> Runtime<P> {
         ) {
             Ok(session_key) => {
                 if let Some(entry) = state.peer_mut(peer) {
-                    entry.session = PeerSession::Connected { session_key };
+                    entry.session = PeerSession::Connected {
+                        session_key,
+                        keepalive: KeepAliveState::new(),
+                    };
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
                 self.record_activity(state, peer);
@@ -896,10 +908,14 @@ impl<P: QlPlatform> Runtime<P> {
                         let Some(entry) = state.peer(peer) else {
                             continue;
                         };
-                        let PeerSession::Connected { session_key } = &entry.session else {
+                        let PeerSession::Connected {
+                            session_key,
+                            keepalive,
+                        } = &entry.session
+                        else {
                             continue;
                         };
-                        if entry.keepalive.token == token && !entry.keepalive.pending {
+                        if keepalive.token == token && !keepalive.pending {
                             session_key.clone()
                         } else {
                             continue;
@@ -907,7 +923,11 @@ impl<P: QlPlatform> Runtime<P> {
                     };
                     self.send_heartbeat_message(state, peer, session_key);
                     if let Some(entry) = state.peer_mut(peer) {
-                        entry.keepalive.pending = true;
+                        if let PeerSession::Connected { keepalive, .. } = &mut entry.session {
+                            if keepalive.token == token {
+                                keepalive.pending = true;
+                            }
+                        }
                     }
                     state.timeouts.push(Reverse(TimeoutEntry {
                         at: now + config.timeout,
@@ -919,14 +939,16 @@ impl<P: QlPlatform> Runtime<P> {
                         continue;
                     };
 
-                    if entry.keepalive.token == token
-                        && entry.keepalive.pending
-                        && entry.session.is_connected()
-                    {
+                    let should_disconnect = match &entry.session {
+                        PeerSession::Connected { keepalive, .. } => {
+                            keepalive.token == token && keepalive.pending
+                        }
+                        _ => false,
+                    };
+
+                    if should_disconnect {
                         if let Some(entry) = state.peer_mut(peer) {
                             entry.session = PeerSession::Disconnected;
-                            entry.keepalive.pending = false;
-                            entry.keepalive.last_activity = None;
                             self.platform.handle_peer_status(peer, &entry.session);
                         }
                         self.drop_outbound_for_peer(state, peer);
