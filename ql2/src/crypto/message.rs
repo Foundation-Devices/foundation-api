@@ -1,9 +1,8 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use bc_components::{Nonce, SymmetricKey};
 use dcbor::CBOR;
 
 use crate::{
+    crypto::ensure_not_expired,
     wire::{
         message::{DecryptedMessage, MessageBody, MessageKind, Nack},
         QlHeader, QlPayload, QlRecord,
@@ -19,6 +18,12 @@ pub enum MessageError {
         kind: MessageKind,
     },
     Error(QlError),
+}
+
+impl From<QlError> for MessageError {
+    fn from(value: QlError) -> Self {
+        Self::Error(value)
+    }
 }
 
 pub fn encrypt_message(
@@ -40,18 +45,12 @@ pub fn decrypt_message(
     encrypted: &bc_components::EncryptedMessage,
     session_key: &SymmetricKey,
 ) -> Result<DecryptedMessage, MessageError> {
-    let aad = CBOR::from(header.clone()).to_cbor_data();
+    let aad = header.aad();
     if encrypted.aad() != aad {
-        return Err(MessageError::Error(QlError::InvalidPayload));
+        return Err(QlError::InvalidPayload.into());
     }
     let body = decrypt_body(session_key, encrypted)?;
-    if now_secs() > body.valid_until {
-        return Err(MessageError::Nack {
-            id: body.message_id,
-            nack: Nack::Expired,
-            kind: body.kind,
-        });
-    }
+    ensure_not_expired(body.message_id, body.valid_until)?;
     Ok(DecryptedMessage {
         sender: header.sender,
         recipient: header.recipient,
@@ -66,18 +65,10 @@ pub fn decrypt_message(
 fn decrypt_body(
     session_key: &SymmetricKey,
     encrypted: &bc_components::EncryptedMessage,
-) -> Result<MessageBody, MessageError> {
+) -> Result<MessageBody, QlError> {
     let plaintext = session_key
         .decrypt(encrypted)
-        .map_err(|_| MessageError::Error(QlError::InvalidPayload))?;
-    let cbor =
-        CBOR::try_from_data(plaintext).map_err(|_| MessageError::Error(QlError::InvalidPayload))?;
-    MessageBody::try_from(cbor).map_err(|_| MessageError::Error(QlError::InvalidPayload))
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+        .map_err(|_| QlError::InvalidPayload)?;
+    let cbor = CBOR::try_from_data(plaintext).map_err(|_| QlError::InvalidPayload)?;
+    MessageBody::try_from(cbor).map_err(|_| QlError::InvalidPayload)
 }

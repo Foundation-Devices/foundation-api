@@ -20,6 +20,12 @@ pub struct QlHeader {
     pub recipient: XID,
 }
 
+impl QlHeader {
+    pub fn aad(&self) -> Vec<u8> {
+        CBOR::from(self.clone()).to_cbor_data()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum QlPayload {
     Handshake(HandshakeRecord),

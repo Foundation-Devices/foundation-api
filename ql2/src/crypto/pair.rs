@@ -1,9 +1,10 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use bc_components::{EncapsulationPublicKey, Nonce, SigningPublicKey, SymmetricKey, Verifier, XID};
 use dcbor::CBOR;
 
 use crate::{
+    crypto::ensure_not_expired,
     platform::{QlPlatform, QlPlatformExt},
     wire::{
         pair::{PairRequestBody, PairRequestRecord},
@@ -24,7 +25,7 @@ pub fn build_pair_request(
         sender: platform.xid(),
         recipient,
     };
-    let valid_until = now_secs().saturating_add(valid_for.as_secs());
+    let valid_until = super::now_secs().saturating_add(valid_for.as_secs());
     let signing_pub_key = platform.signing_public_key().clone();
     let sender_encapsulation_key = platform.encapsulation_public_key().clone();
     let proof_data = pairing_proof_data(
@@ -121,21 +122,6 @@ fn decrypt_body(
     PairRequestBody::try_from(cbor).map_err(|_| QlError::InvalidPayload)
 }
 
-fn ensure_not_expired(_message_id: MessageId, valid_until: u64) -> Result<(), QlError> {
-    if now_secs() > valid_until {
-        Err(QlError::InvalidPayload)
-    } else {
-        Ok(())
-    }
-}
-
 fn pairing_aad(header: &QlHeader, kem_ct: &bc_components::EncapsulationCiphertext) -> Vec<u8> {
     CBOR::from(vec![CBOR::from(header.clone()), CBOR::from(kem_ct.clone())]).to_cbor_data()
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
