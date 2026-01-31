@@ -484,6 +484,123 @@ async fn await_status(
     .unwrap()
 }
 
+#[test]
+fn protocol_record_size_breakdown() {
+    let (platform_a, _outbound_a, _status_a) = TestPlatform::new(1);
+    let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
+
+    let initiator = platform_a.xid();
+    let responder = platform_b.xid();
+
+    let (hello, initiator_secret) = handshake::build_hello(
+        &platform_a,
+        initiator,
+        responder,
+        platform_b.encapsulation_public_key(),
+    )
+    .unwrap();
+    let hello_record = QlRecord {
+        header: QlHeader {
+            sender: initiator,
+            recipient: responder,
+        },
+        payload: QlPayload::Handshake(HandshakeRecord::Hello(hello.clone())),
+    };
+    let hello_size = CBOR::from(hello_record).to_cbor_data().len();
+
+    let (hello_reply, responder_secrets) = handshake::respond_hello(
+        &platform_b,
+        initiator,
+        responder,
+        platform_a.encapsulation_public_key(),
+        &hello,
+    )
+    .unwrap();
+    let reply_record = QlRecord {
+        header: QlHeader {
+            sender: responder,
+            recipient: initiator,
+        },
+        payload: QlPayload::Handshake(HandshakeRecord::HelloReply(hello_reply.clone())),
+    };
+    let reply_size = CBOR::from(reply_record).to_cbor_data().len();
+
+    let (confirm, session_key) = handshake::build_confirm(
+        &platform_a,
+        initiator,
+        responder,
+        platform_b.signing_public_key(),
+        &hello,
+        &hello_reply,
+        &initiator_secret,
+    )
+    .unwrap();
+    let _session_key_b = handshake::finalize_confirm(
+        initiator,
+        responder,
+        platform_a.signing_public_key(),
+        &hello,
+        &hello_reply,
+        &confirm,
+        &responder_secrets,
+    )
+    .unwrap();
+    let confirm_record = QlRecord {
+        header: QlHeader {
+            sender: initiator,
+            recipient: responder,
+        },
+        payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
+    };
+    let confirm_size = CBOR::from(confirm_record).to_cbor_data().len();
+
+    let pair_record = pair::build_pair_request(
+        &platform_a,
+        responder,
+        platform_b.encapsulation_public_key(),
+        MessageId::new(1),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let pair_size = CBOR::from(pair_record).to_cbor_data().len();
+
+    let message_record = encrypt_message(
+        QlHeader {
+            sender: initiator,
+            recipient: responder,
+        },
+        &session_key,
+        MessageBody {
+            message_id: MessageId::new(2),
+            valid_until: now_secs().saturating_add(60),
+            kind: MessageKind::Event,
+            route_id: RouteId::new(1),
+            payload: CBOR::null(),
+        },
+    );
+    let message_size = CBOR::from(message_record).to_cbor_data().len();
+
+    let heartbeat_record = heartbeat::encrypt_heartbeat(
+        QlHeader {
+            sender: initiator,
+            recipient: responder,
+        },
+        &session_key,
+        HeartbeatBody {
+            message_id: MessageId::new(3),
+            valid_until: now_secs().saturating_add(60),
+        },
+    );
+    let heartbeat_size = CBOR::from(heartbeat_record).to_cbor_data().len();
+
+    println!("ql size hello: {} bytes", hello_size);
+    println!("ql size hello_reply: {} bytes", reply_size);
+    println!("ql size confirm: {} bytes", confirm_size);
+    println!("ql size pair_request: {} bytes", pair_size);
+    println!("ql size message: {} bytes", message_size);
+    println!("ql size heartbeat: {} bytes", heartbeat_size);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn handshake_initiator_connects() {
     run_local_test(async {
@@ -1602,119 +1719,64 @@ async fn multi_peer_activity_is_per_peer() {
     .await;
 }
 
-#[test]
-fn protocol_record_size_breakdown() {
-    let (platform_a, _outbound_a, _status_a) = TestPlatform::new(1);
-    let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
+#[tokio::test(flavor = "current_thread")]
+async fn replayed_message_is_ignored() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
-    let initiator = platform_a.xid();
-    let responder = platform_b.xid();
+        let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
 
-    let (hello, initiator_secret) = handshake::build_hello(
-        &platform_a,
-        initiator,
-        responder,
-        platform_b.encapsulation_public_key(),
-    )
-    .unwrap();
-    let hello_record = QlRecord {
-        header: QlHeader {
-            sender: initiator,
-            recipient: responder,
-        },
-        payload: QlPayload::Handshake(HandshakeRecord::Hello(hello.clone())),
-    };
-    let hello_size = CBOR::from(hello_record).to_cbor_data().len();
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
 
-    let (hello_reply, responder_secrets) = handshake::respond_hello(
-        &platform_b,
-        initiator,
-        responder,
-        platform_a.encapsulation_public_key(),
-        &hello,
-    )
-    .unwrap();
-    let reply_record = QlRecord {
-        header: QlHeader {
-            sender: responder,
-            recipient: initiator,
-        },
-        payload: QlPayload::Handshake(HandshakeRecord::HelloReply(hello_reply.clone())),
-    };
-    let reply_size = CBOR::from(reply_record).to_cbor_data().len();
+        tokio::task::spawn_local({
+            let handle_b = handle_b.clone();
+            async move {
+                while let Ok(bytes) = outbound_a.recv().await {
+                    let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from)
+                    else {
+                        let _ = handle_b.send_incoming(bytes);
+                        continue;
+                    };
+                    if matches!(record.payload, QlPayload::Message(_)) {
+                        let _ = handle_b.send_incoming(bytes.clone());
+                        // send the exact same bytes twice to simulate replay.
+                        let _ = handle_b.send_incoming(bytes);
+                        continue;
+                    }
+                    let _ = handle_b.send_incoming(bytes);
+                }
+            }
+        });
+        spawn_forwarder(outbound_b, handle_a.clone());
 
-    let (confirm, session_key) = handshake::build_confirm(
-        &platform_a,
-        initiator,
-        responder,
-        platform_b.signing_public_key(),
-        &hello,
-        &hello_reply,
-        &initiator_secret,
-    )
-    .unwrap();
-    let _session_key_b = handshake::finalize_confirm(
-        initiator,
-        responder,
-        platform_a.signing_public_key(),
-        &hello,
-        &hello_reply,
-        &confirm,
-        &responder_secrets,
-    )
-    .unwrap();
-    let confirm_record = QlRecord {
-        header: QlHeader {
-            sender: initiator,
-            recipient: responder,
-        },
-        payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
-    };
-    let confirm_size = CBOR::from(confirm_record).to_cbor_data().len();
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
 
-    let pair_record = pair::build_pair_request(
-        &platform_a,
-        responder,
-        platform_b.encapsulation_public_key(),
-        MessageId::new(1),
-        Duration::from_secs(60),
-    )
-    .unwrap();
-    let pair_size = CBOR::from(pair_record).to_cbor_data().len();
+        handle_a.connect(peer_b.xid).unwrap();
 
-    let message_record = encrypt_message(
-        QlHeader {
-            sender: initiator,
-            recipient: responder,
-        },
-        &session_key,
-        MessageBody {
-            message_id: MessageId::new(2),
-            valid_until: now_secs().saturating_add(60),
-            kind: MessageKind::Event,
-            route_id: RouteId::new(1),
-            payload: CBOR::null(),
-        },
-    );
-    let message_size = CBOR::from(message_record).to_cbor_data().len();
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
-    let heartbeat_record = heartbeat::encrypt_heartbeat(
-        QlHeader {
-            sender: initiator,
-            recipient: responder,
-        },
-        &session_key,
-        HeartbeatBody {
-            message_id: MessageId::new(3),
-            valid_until: now_secs().saturating_add(60),
-        },
-    );
-    let heartbeat_size = CBOR::from(heartbeat_record).to_cbor_data().len();
+        handle_a.send_event_raw(peer_b.xid, RouteId::new(9), CBOR::from(1u8));
 
-    println!("ql size hello: {} bytes", hello_size);
-    println!("ql size hello_reply: {} bytes", reply_size);
-    println!("ql size confirm: {} bytes", confirm_size);
-    println!("ql size pair_request: {} bytes", pair_size);
-    println!("ql size message: {} bytes", message_size);
-    println!("ql size heartbeat: {} bytes", heartbeat_size);
+        let first = tokio::time::timeout(Duration::from_secs(1), inbound_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match first {
+            HandlerEvent::Event(event) => {
+                assert_eq!(event.message.route_id, RouteId::new(9));
+            }
+            HandlerEvent::Request(_) => panic!("unexpected request"),
+        }
+
+        let second = tokio::time::timeout(Duration::from_millis(50), inbound_b.recv()).await;
+        assert!(second.is_err(), "replay delivered a second event");
+    })
+    .await;
 }

@@ -15,6 +15,7 @@ use crate::{
             KeepAliveState, LoopStep, OutboundMessage, PendingEntry, RuntimeCommand, RuntimeState,
             TimeoutEntry, TimeoutKind,
         },
+        replay_cache::{ReplayKey, ReplayNamespace},
         HandlerEvent, InboundEvent, InboundRequest, InitiatorStage, KeepAliveConfig, PeerSession,
         Responder, Runtime, Token,
     },
@@ -426,6 +427,17 @@ impl<P: QlPlatform> Runtime<P> {
             Err(message::MessageError::Nack { .. }) => return,
             Err(message::MessageError::Error(_)) => return,
         };
+        let namespace = match record.kind {
+            MessageKind::Request | MessageKind::Event => ReplayNamespace::Peer,
+            MessageKind::Response | MessageKind::Nack => ReplayNamespace::Local,
+        };
+        let replay_key = ReplayKey::new(peer, namespace, record.message_id);
+        if state
+            .replay_cache
+            .check_and_store_valid_until(replay_key, record.valid_until)
+        {
+            return;
+        }
         self.record_activity(state, peer);
         match record.kind {
             MessageKind::Response => {

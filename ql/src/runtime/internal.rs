@@ -10,7 +10,7 @@ use dcbor::CBOR;
 
 use crate::{
     platform::PlatformFuture,
-    runtime::RequestConfig,
+    runtime::{replay_cache::ReplayCache, RequestConfig},
     wire::{
         handshake::{Hello, HelloReply},
         message::MessageKind,
@@ -187,6 +187,7 @@ pub struct RuntimeState {
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     pub pending: HashMap<MessageId, PendingEntry>,
     pub next_message_id: u64,
+    pub replay_cache: ReplayCache,
 }
 
 impl RuntimeState {
@@ -198,6 +199,7 @@ impl RuntimeState {
             timeouts: BinaryHeap::new(),
             pending: HashMap::new(),
             next_message_id: 1,
+            replay_cache: ReplayCache::new(),
         }
     }
 

@@ -4,6 +4,7 @@ pub use internal::{InitiatorStage, PeerSession, Token};
 mod core;
 pub mod handle;
 pub(crate) mod internal;
+pub mod replay_cache;
 
 #[cfg(test)]
 mod tests;
