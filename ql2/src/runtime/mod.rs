@@ -113,7 +113,7 @@ pub struct Runtime<P> {
     platform: P,
     config: RuntimeConfig,
     rx: async_channel::Receiver<internal::RuntimeCommand>,
-    tx: async_channel::Sender<internal::RuntimeCommand>,
+    tx: async_channel::WeakSender<internal::RuntimeCommand>,
 }
 
 pub fn new_runtime<P>(platform: P, config: RuntimeConfig) -> (Runtime<P>, RuntimeHandle)
@@ -126,7 +126,7 @@ where
             platform,
             config,
             rx,
-            tx: tx.clone(),
+            tx: tx.downgrade(),
         },
         RuntimeHandle { tx },
     )

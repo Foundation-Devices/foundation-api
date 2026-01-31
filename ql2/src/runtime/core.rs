@@ -28,7 +28,7 @@ impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
         let mut state = RuntimeState::new();
         let mut in_flight: Option<InFlightWrite<'_>> = None;
-        loop {
+        while !self.rx.is_closed() {
             if in_flight.is_none() {
                 in_flight = self.start_next_write(&mut state);
             }
@@ -426,7 +426,10 @@ impl<P: QlPlatform> Runtime<P> {
                 self.resolve_pending_nack(state, peer, record.message_id, nack);
             }
             MessageKind::Request => {
-                let responder = Responder::new(record.message_id, record.sender, self.tx.clone());
+                let Some(tx) = self.tx.upgrade() else {
+                    return;
+                };
+                let responder = Responder::new(record.message_id, record.sender, tx);
                 self.platform
                     .handle_inbound(HandlerEvent::Request(InboundRequest {
                         message: record,
