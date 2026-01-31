@@ -488,8 +488,8 @@ async fn handshake_initiator_connects() {
         let config = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) =
@@ -501,12 +501,12 @@ async fn handshake_initiator_connects() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_drop_heartbeat_forwarder(outbound_b, handle_a.clone());
 
-        let (peer_a, peer_b) = register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
 
-        handle_a.connect(peer_b).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
     })
     .await;
 }
@@ -541,10 +541,8 @@ async fn simultaneous_handshakes_resolve() {
         let config = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) =
@@ -556,15 +554,15 @@ async fn simultaneous_handshakes_resolve() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
 
-        handle_a.connect(peer_b).unwrap();
-        handle_b.connect(peer_a).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
+        handle_b.connect(peer_a.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Initiator).await;
-        await_status(&status_b, peer_a, PeerStage::Responder).await;
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Initiator).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Responder).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
     })
     .await;
 }
@@ -577,10 +575,8 @@ async fn invalid_signature_disconnects() {
         let (platform_b, outbound_b, _status_b) = TestPlatform::new(2);
         let (wrong_private, wrong_public) = SignatureScheme::MLDSA44.keypair();
         let _ = wrong_private;
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) =
@@ -592,16 +588,16 @@ async fn invalid_signature_disconnects() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, wrong_public, identity_b.encapsulation_key.clone());
+        handle_a.register_peer(peer_b.xid, wrong_public, peer_b.encapsulation_key.clone());
         handle_b.register_peer(
-            peer_a,
-            identity_a.signing_key.clone(),
-            identity_a.encapsulation_key.clone(),
+            peer_a.xid,
+            peer_a.signing_key.clone(),
+            peer_a.encapsulation_key.clone(),
         );
 
-        handle_a.connect(peer_b).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Disconnected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
     })
     .await;
 }
@@ -612,15 +608,13 @@ async fn pairing_request_triggers_handshake() {
         let config = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let pairing_message = pair::build_pair_request(
             &platform_a,
-            peer_b,
-            &identity_b.encapsulation_key,
+            peer_b.xid,
+            &peer_b.encapsulation_key,
             MessageId::new(1),
             Duration::from_secs(1),
         )
@@ -638,17 +632,17 @@ async fn pairing_request_triggers_handshake() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         handle_a.register_peer(
-            peer_b,
-            identity_b.signing_key.clone(),
-            identity_b.encapsulation_key.clone(),
+            peer_b.xid,
+            peer_b.signing_key.clone(),
+            peer_b.encapsulation_key.clone(),
         );
 
         handle_b.send_incoming(pairing_bytes);
 
-        await_status(&status_b, peer_a, PeerStage::Initiator).await;
-        await_status(&status_a, peer_b, PeerStage::Responder).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Initiator).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Responder).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
     })
     .await;
 }
@@ -660,10 +654,8 @@ async fn request_response_round_trip() {
             .with_request_timeout(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -674,12 +666,12 @@ async fn request_response_round_trip() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
 
-        handle_a.connect(peer_b).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let inbound_task = tokio::task::spawn_local(async move {
             if let Ok(HandlerEvent::Request(request)) = inbound_b.recv().await {
@@ -688,7 +680,7 @@ async fn request_response_round_trip() {
         });
 
         let response = handle_a.send_request_raw(
-            peer_b,
+            peer_b.xid,
             RouteId::new(7),
             CBOR::from(12u8),
             RequestConfig::default(),
@@ -709,10 +701,8 @@ async fn request_timeout_returns_error() {
             .with_request_timeout(Duration::from_millis(30));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -723,15 +713,15 @@ async fn request_timeout_returns_error() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
 
-        handle_a.connect(peer_b).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let ticket = handle_a.send_request_raw(
-            peer_b,
+            peer_b.xid,
             RouteId::new(1),
             CBOR::from(1u8),
             RequestConfig {
@@ -754,10 +744,8 @@ async fn request_nack_resolves_pending() {
             .with_request_timeout(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -768,12 +756,12 @@ async fn request_nack_resolves_pending() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
 
-        handle_a.connect(peer_b).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let inbound_task = tokio::task::spawn_local(async move {
             if let Ok(HandlerEvent::Request(request)) = inbound_b.recv().await {
@@ -782,7 +770,7 @@ async fn request_nack_resolves_pending() {
         });
 
         let response = handle_a.send_request_raw(
-            peer_b,
+            peer_b.xid,
             RouteId::new(2),
             CBOR::from(2u8),
             RequestConfig::default(),
@@ -808,10 +796,8 @@ async fn request_dispatches_to_platform_callback() {
             .with_request_timeout(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -822,12 +808,12 @@ async fn request_dispatches_to_platform_callback() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
 
-        handle_a.connect(peer_b).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let inbound_task = tokio::task::spawn_local(async move {
             if let Ok(HandlerEvent::Request(request)) = inbound_b.recv().await {
@@ -836,7 +822,7 @@ async fn request_dispatches_to_platform_callback() {
         });
 
         let ticket = handle_a.send_request_raw(
-            peer_b,
+            peer_b.xid,
             RouteId::new(3),
             CBOR::from(1u8),
             RequestConfig::default(),
@@ -880,38 +866,36 @@ async fn handshake_timeout_drops_queued_messages() {
         let config = RuntimeConfig::new(Duration::from_millis(60));
         let (platform_a, outbound_a, status_a, write_gate) = BlockingPlatform::new(2);
         let (platform_b, _outbound_b, _status_b) = TestPlatform::new(1);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         tokio::task::spawn_local(async move { runtime_a.run().await });
 
         handle_a.register_peer(
-            peer_b,
-            identity_b.signing_key.clone(),
-            identity_b.encapsulation_key.clone(),
+            peer_b.xid,
+            peer_b.signing_key.clone(),
+            peer_b.encapsulation_key.clone(),
         );
 
-        handle_a.connect(peer_b).unwrap();
-        await_status(&status_a, peer_b, PeerStage::Initiator).await;
+        handle_a.connect(peer_b.xid).unwrap();
+        await_status(&status_a, peer_b.xid, PeerStage::Initiator).await;
 
         let (hello, _secret) =
-            handshake::build_hello(&platform_b, peer_b, peer_a, &identity_a.encapsulation_key)
+            handshake::build_hello(&platform_b, peer_b.xid, peer_a.xid, &peer_a.encapsulation_key)
                 .unwrap();
         let message = QlRecord {
             header: QlHeader {
-                sender: peer_b,
-                recipient: peer_a,
+                sender: peer_b.xid,
+                recipient: peer_a.xid,
             },
             payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
         };
         let bytes = CBOR::from(message).to_cbor_data();
         handle_a.send_incoming(bytes);
 
-        await_status(&status_a, peer_b, PeerStage::Responder).await;
-        await_status(&status_a, peer_b, PeerStage::Disconnected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Responder).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
 
         write_gate.add_permits(1);
         let _ = tokio::time::timeout(Duration::from_millis(100), outbound_a.recv())
@@ -1335,12 +1319,9 @@ async fn multi_peer_simultaneous_handshakes() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let (platform_c, outbound_c, status_c) = TestPlatform::new(3);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let identity_c = peer_identity(&platform_c);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
-        let peer_c = identity_c.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
+        let peer_c = peer_identity(&platform_c);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) =
@@ -1354,21 +1335,21 @@ async fn multi_peer_simultaneous_handshakes() {
 
         spawn_routed_forwarder(
             outbound_a,
-            vec![(peer_b, handle_b.clone()), (peer_c, handle_c.clone())],
+            vec![(peer_b.xid, handle_b.clone()), (peer_c.xid, handle_c.clone())],
         );
-        spawn_routed_forwarder(outbound_b, vec![(peer_a, handle_a.clone())]);
-        spawn_routed_forwarder(outbound_c, vec![(peer_a, handle_a.clone())]);
+        spawn_routed_forwarder(outbound_b, vec![(peer_a.xid, handle_a.clone())]);
+        spawn_routed_forwarder(outbound_c, vec![(peer_a.xid, handle_a.clone())]);
 
-        let _ = register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        let _ = register_peers(&handle_a, &handle_c, &identity_a, &identity_c);
+        let _ = register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        let _ = register_peers(&handle_a, &handle_c, &peer_a, &peer_c);
 
-        handle_a.connect(peer_b).unwrap();
-        handle_a.connect(peer_c).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect(peer_c.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_a, peer_c, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
-        await_status(&status_c, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_a, peer_c.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
+        await_status(&status_c, peer_a.xid, PeerStage::Connected).await;
     })
     .await;
 }
@@ -1386,12 +1367,9 @@ async fn multi_peer_keepalive_disconnect_isolated() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let (platform_c, outbound_c, status_c) = TestPlatform::new(3);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let identity_c = peer_identity(&platform_c);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
-        let peer_c = identity_c.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
+        let peer_c = peer_identity(&platform_c);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -1404,36 +1382,36 @@ async fn multi_peer_keepalive_disconnect_isolated() {
         let drop_b_to_a = Arc::new(AtomicBool::new(false));
         spawn_routed_forwarder(
             outbound_a,
-            vec![(peer_b, handle_b.clone()), (peer_c, handle_c.clone())],
+            vec![(peer_b.xid, handle_b.clone()), (peer_c.xid, handle_c.clone())],
         );
-        spawn_routed_forwarder_with_filter(outbound_b, vec![(peer_a, handle_a.clone())], {
+        spawn_routed_forwarder_with_filter(outbound_b, vec![(peer_a.xid, handle_a.clone())], {
             let drop_b_to_a = drop_b_to_a.clone();
             move |record| {
-                !(drop_b_to_a.load(Ordering::Relaxed) && record.header.recipient == peer_a)
+                !(drop_b_to_a.load(Ordering::Relaxed) && record.header.recipient == peer_a.xid)
             }
         });
-        spawn_routed_forwarder(outbound_c, vec![(peer_a, handle_a.clone())]);
+        spawn_routed_forwarder(outbound_c, vec![(peer_a.xid, handle_a.clone())]);
 
-        let _ = register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        let _ = register_peers(&handle_a, &handle_c, &identity_a, &identity_c);
+        let _ = register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        let _ = register_peers(&handle_a, &handle_c, &peer_a, &peer_c);
 
-        handle_a.connect(peer_b).unwrap();
-        handle_a.connect(peer_c).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect(peer_c.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_a, peer_c, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
-        await_status(&status_c, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_a, peer_c.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
+        await_status(&status_c, peer_a.xid, PeerStage::Connected).await;
 
         drop_b_to_a.store(true, Ordering::Relaxed);
 
-        await_status(&status_a, peer_b, PeerStage::Disconnected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
 
         let disconnect =
             tokio::time::timeout(keep_alive.timeout + Duration::from_millis(80), async {
                 loop {
                     if let Ok(event) = status_a.recv().await {
-                        if event.peer == peer_c && event.stage == PeerStage::Disconnected {
+                        if event.peer == peer_c.xid && event.stage == PeerStage::Disconnected {
                             return;
                         }
                     }
@@ -1458,12 +1436,9 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let (platform_c, outbound_c, status_c, inbound_c) = InboundPlatform::new(3);
-        let identity_a = peer_identity(&platform_a);
-        let identity_b = peer_identity(&platform_b);
-        let identity_c = peer_identity(&platform_c);
-        let peer_a = identity_a.xid;
-        let peer_b = identity_b.xid;
-        let peer_c = identity_c.xid;
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
+        let peer_c = peer_identity(&platform_c);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -1476,26 +1451,26 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
         let drop_b_to_a = Arc::new(AtomicBool::new(false));
         spawn_routed_forwarder(
             outbound_a,
-            vec![(peer_b, handle_b.clone()), (peer_c, handle_c.clone())],
+            vec![(peer_b.xid, handle_b.clone()), (peer_c.xid, handle_c.clone())],
         );
-        spawn_routed_forwarder_with_filter(outbound_b, vec![(peer_a, handle_a.clone())], {
+        spawn_routed_forwarder_with_filter(outbound_b, vec![(peer_a.xid, handle_a.clone())], {
             let drop_b_to_a = drop_b_to_a.clone();
             move |record| {
-                !(drop_b_to_a.load(Ordering::Relaxed) && record.header.recipient == peer_a)
+                !(drop_b_to_a.load(Ordering::Relaxed) && record.header.recipient == peer_a.xid)
             }
         });
-        spawn_routed_forwarder(outbound_c, vec![(peer_a, handle_a.clone())]);
+        spawn_routed_forwarder(outbound_c, vec![(peer_a.xid, handle_a.clone())]);
 
-        let _ = register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        let _ = register_peers(&handle_a, &handle_c, &identity_a, &identity_c);
+        let _ = register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        let _ = register_peers(&handle_a, &handle_c, &peer_a, &peer_c);
 
-        handle_a.connect(peer_b).unwrap();
-        handle_a.connect(peer_c).unwrap();
+        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect(peer_c.xid).unwrap();
 
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_a, peer_c, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
-        await_status(&status_c, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_a, peer_c.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
+        await_status(&status_c, peer_a.xid, PeerStage::Connected).await;
 
         let inbound_task = tokio::task::spawn_local(async move {
             if let Ok(HandlerEvent::Request(request)) = inbound_c.recv().await {
@@ -1506,7 +1481,7 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
         drop_b_to_a.store(true, Ordering::Relaxed);
 
         let request_b = handle_a.send_request_raw(
-            peer_b,
+            peer_b.xid,
             RouteId::new(10),
             CBOR::from(10u8),
             RequestConfig {
@@ -1514,7 +1489,7 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
             },
         );
         let request_c = handle_a.send_request_raw(
-            peer_c,
+            peer_c.xid,
             RouteId::new(11),
             CBOR::from(11u8),
             RequestConfig {
@@ -1529,7 +1504,7 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
         let value: u8 = response_c.try_into().unwrap();
         assert_eq!(value, 55u8);
 
-        await_status(&status_a, peer_b, PeerStage::Disconnected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
 
         let result_b = tokio::time::timeout(Duration::from_millis(200), request_b.recv())
             .await
