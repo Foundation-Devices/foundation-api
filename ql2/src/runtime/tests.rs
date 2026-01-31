@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     sync::{
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc,
     },
     time::Duration,
@@ -10,18 +10,22 @@ use std::{
 use async_channel::{Receiver, Sender};
 use bc_components::{
     EncapsulationPrivateKey, EncapsulationPublicKey, EncapsulationScheme, SignatureScheme, Signer,
-    SigningPrivateKey, SigningPublicKey, XID,
+    SigningPrivateKey, SigningPublicKey, SymmetricKey, XID,
 };
 use dcbor::CBOR;
 use tokio::{sync::Semaphore, task::LocalSet};
 
 use crate::{
-    crypto::{handshake, pair},
+    crypto::{handshake, heartbeat, pair},
     platform::{PlatformFuture, QlPlatform},
     runtime::{
-        new_runtime, HandlerEvent, PeerSession, RequestConfig, RuntimeConfig, RuntimeHandle,
+        internal::now_secs, new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RequestConfig,
+        RuntimeConfig, RuntimeHandle,
     },
-    wire::{handshake::HandshakeRecord, message::Nack, QlHeader, QlPayload, QlRecord},
+    wire::{
+        handshake::HandshakeRecord, heartbeat::HeartbeatBody, message::Nack, QlHeader, QlPayload,
+        QlRecord,
+    },
     MessageId, QlError, RouteId,
 };
 
@@ -363,6 +367,54 @@ fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
     });
 }
 
+fn is_heartbeat(bytes: &[u8]) -> bool {
+    let Ok(record) = CBOR::try_from_data(bytes).and_then(QlRecord::try_from) else {
+        return false;
+    };
+    matches!(record.payload, QlPayload::Heartbeat(_))
+}
+
+fn spawn_heartbeat_tap_forwarder(
+    outbound: Receiver<Vec<u8>>,
+    handle: RuntimeHandle,
+    heartbeat_tx: Sender<()>,
+) {
+    tokio::task::spawn_local(async move {
+        while let Ok(bytes) = outbound.recv().await {
+            if is_heartbeat(&bytes) {
+                let _ = heartbeat_tx.send(()).await;
+            }
+            let _ = handle.send_incoming(bytes);
+        }
+    });
+}
+
+fn spawn_drop_heartbeat_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+    tokio::task::spawn_local(async move {
+        while let Ok(bytes) = outbound.recv().await {
+            if is_heartbeat(&bytes) {
+                continue;
+            }
+            let _ = handle.send_incoming(bytes);
+        }
+    });
+}
+
+fn spawn_gated_forwarder(
+    outbound: Receiver<Vec<u8>>,
+    handle: RuntimeHandle,
+    drop_flag: Arc<AtomicBool>,
+) {
+    tokio::task::spawn_local(async move {
+        while let Ok(bytes) = outbound.recv().await {
+            if drop_flag.load(Ordering::Relaxed) {
+                continue;
+            }
+            let _ = handle.send_incoming(bytes);
+        }
+    });
+}
+
 async fn await_status(
     receiver: &Receiver<StatusEvent>,
     peer: XID,
@@ -403,7 +455,7 @@ async fn handshake_initiator_connects() {
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
         spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
+        spawn_drop_heartbeat_forwarder(outbound_b, handle_a.clone());
 
         handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
         handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
@@ -843,6 +895,403 @@ async fn handshake_timeout_drops_queued_messages() {
             second.is_err(),
             "expected queued handshake reply to be dropped"
         );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn heartbeat_ignored_without_session() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, _status_a) = TestPlatform::new(1);
+        let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
+
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(platform_a.signing_public_key());
+        let peer_b = XID::new(&signing_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+
+        handle_a.register_peer(peer_b, signing_b, encap_b);
+
+        let heartbeat = heartbeat::encrypt_heartbeat(
+            QlHeader {
+                sender: peer_b,
+                recipient: peer_a,
+            },
+            &SymmetricKey::new(),
+            HeartbeatBody {
+                message_id: MessageId::new(1),
+                valid_until: now_secs().saturating_add(60),
+            },
+        );
+        let bytes = CBOR::from(heartbeat).to_cbor_data();
+        handle_a.send_incoming(bytes);
+
+        let result = tokio::time::timeout(Duration::from_millis(50), outbound_a.recv()).await;
+        assert!(result.is_err(), "expected heartbeat to be ignored");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn keepalive_disabled_no_heartbeat() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+
+        let signing_a = platform_a.signing_public_key().clone();
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_a = platform_a.encapsulation_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(&signing_a);
+        let peer_b = XID::new(&signing_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
+        spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
+        spawn_forwarder(outbound_b, handle_a.clone());
+
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+
+        handle_a.connect(peer_b).unwrap();
+
+        await_status(&status_a, peer_b, PeerStage::Connected).await;
+        await_status(&status_b, peer_a, PeerStage::Connected).await;
+
+        let result = tokio::time::timeout(Duration::from_millis(120), heartbeat_rx.recv()).await;
+        assert!(result.is_err(), "unexpected heartbeat while disabled");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn heartbeat_sent_after_idle() {
+    run_local_test(async {
+        let keep_alive = KeepAliveConfig {
+            interval: Duration::from_millis(30),
+            timeout: Duration::from_millis(80),
+        };
+        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
+        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+
+        let signing_a = platform_a.signing_public_key().clone();
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_a = platform_a.encapsulation_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(&signing_a);
+        let peer_b = XID::new(&signing_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
+        spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
+        spawn_forwarder(outbound_b, handle_a.clone());
+
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+
+        handle_a.connect(peer_b).unwrap();
+
+        await_status(&status_a, peer_b, PeerStage::Connected).await;
+        await_status(&status_b, peer_a, PeerStage::Connected).await;
+
+        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
+            .await
+            .expect("heartbeat timeout")
+            .expect("heartbeat channel closed");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn heartbeat_reply_when_connected() {
+    run_local_test(async {
+        let keep_alive = KeepAliveConfig {
+            interval: Duration::from_millis(30),
+            timeout: Duration::from_millis(80),
+        };
+        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
+        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+
+        let signing_a = platform_a.signing_public_key().clone();
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_a = platform_a.encapsulation_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(&signing_a);
+        let peer_b = XID::new(&signing_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        let (heartbeat_ab_tx, heartbeat_ab_rx) = async_channel::unbounded();
+        let (heartbeat_ba_tx, heartbeat_ba_rx) = async_channel::unbounded();
+        spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_ab_tx);
+        spawn_heartbeat_tap_forwarder(outbound_b, handle_a.clone(), heartbeat_ba_tx);
+
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+
+        handle_a.connect(peer_b).unwrap();
+
+        await_status(&status_a, peer_b, PeerStage::Connected).await;
+        await_status(&status_b, peer_a, PeerStage::Connected).await;
+
+        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_ab_rx.recv())
+            .await
+            .expect("heartbeat request timeout")
+            .expect("heartbeat channel closed");
+        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_ba_rx.recv())
+            .await
+            .expect("heartbeat reply timeout")
+            .expect("heartbeat channel closed");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn any_message_clears_pending() {
+    run_local_test(async {
+        let keep_alive = KeepAliveConfig {
+            interval: Duration::from_millis(120),
+            timeout: Duration::from_millis(40),
+        };
+        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
+        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+
+        let signing_a = platform_a.signing_public_key().clone();
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_a = platform_a.encapsulation_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(&signing_a);
+        let peer_b = XID::new(&signing_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
+        spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
+        spawn_drop_heartbeat_forwarder(outbound_b, handle_a.clone());
+
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+
+        handle_a.connect(peer_b).unwrap();
+
+        await_status(&status_a, peer_b, PeerStage::Connected).await;
+        await_status(&status_b, peer_a, PeerStage::Connected).await;
+
+        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
+            .await
+            .expect("heartbeat request timeout")
+            .expect("heartbeat channel closed");
+
+        handle_b.send_event_raw(peer_a, RouteId::new(99), CBOR::from(1u8));
+
+        let window = keep_alive.timeout + Duration::from_millis(20);
+        let disconnect = tokio::time::timeout(window, async {
+            loop {
+                if let Ok(event) = status_a.recv().await {
+                    if event.peer == peer_b && event.stage == PeerStage::Disconnected {
+                        return;
+                    }
+                }
+            }
+        })
+        .await;
+        assert!(disconnect.is_err(), "unexpected disconnect");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn heartbeat_timeout_disconnects_and_drops_outbound() {
+    run_local_test(async {
+        let keep_alive = KeepAliveConfig {
+            interval: Duration::from_millis(80),
+            timeout: Duration::from_millis(60),
+        };
+        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
+        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(2);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(1);
+
+        let signing_a = platform_a.signing_public_key().clone();
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_a = platform_a.encapsulation_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(&signing_a);
+        let peer_b = XID::new(&signing_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        let drop_flag = Arc::new(AtomicBool::new(false));
+        spawn_forwarder(outbound_a, handle_b.clone());
+        spawn_gated_forwarder(outbound_b, handle_a.clone(), drop_flag.clone());
+
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+
+        handle_a.connect(peer_b).unwrap();
+
+        await_status(&status_a, peer_b, PeerStage::Connected).await;
+        await_status(&status_b, peer_a, PeerStage::Connected).await;
+
+        drop_flag.store(true, Ordering::Relaxed);
+
+        let response = handle_a.send_request_raw(
+            peer_b,
+            RouteId::new(9),
+            CBOR::from(9u8),
+            RequestConfig {
+                timeout: Some(Duration::from_millis(200)),
+            },
+        );
+
+        await_status(&status_a, peer_b, PeerStage::Disconnected).await;
+
+        let result = tokio::time::timeout(Duration::from_millis(300), response.recv())
+            .await
+            .expect("response wait");
+        assert!(
+            matches!(result, Err(QlError::SendFailed)),
+            "unexpected result: {result:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn no_ping_pong() {
+    run_local_test(async {
+        let keep_alive = KeepAliveConfig {
+            interval: Duration::from_millis(200),
+            timeout: Duration::from_millis(60),
+        };
+        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
+        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+
+        let signing_a = platform_a.signing_public_key().clone();
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_a = platform_a.encapsulation_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(&signing_a);
+        let peer_b = XID::new(&signing_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        let (heartbeat_ab_tx, heartbeat_ab_rx) = async_channel::unbounded();
+        let (heartbeat_ba_tx, heartbeat_ba_rx) = async_channel::unbounded();
+        spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_ab_tx);
+        spawn_heartbeat_tap_forwarder(outbound_b, handle_a.clone(), heartbeat_ba_tx);
+
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+
+        handle_a.connect(peer_b).unwrap();
+
+        await_status(&status_a, peer_b, PeerStage::Connected).await;
+        await_status(&status_b, peer_a, PeerStage::Connected).await;
+
+        let _ = tokio::time::timeout(Duration::from_millis(300), heartbeat_ab_rx.recv())
+            .await
+            .expect("heartbeat request timeout")
+            .expect("heartbeat channel closed");
+        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_ba_rx.recv())
+            .await
+            .expect("heartbeat reply timeout")
+            .expect("heartbeat channel closed");
+
+        let followup =
+            tokio::time::timeout(Duration::from_millis(50), heartbeat_ab_rx.recv()).await;
+        assert!(followup.is_err(), "unexpected heartbeat ping-pong");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_heartbeat_ignored() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+
+        let signing_a = platform_a.signing_public_key().clone();
+        let signing_b = platform_b.signing_public_key().clone();
+        let encap_a = platform_a.encapsulation_public_key().clone();
+        let encap_b = platform_b.encapsulation_public_key().clone();
+        let peer_a = XID::new(&signing_a);
+        let peer_b = XID::new(&signing_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
+        spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
+        spawn_forwarder(outbound_b, handle_a.clone());
+
+        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+
+        handle_a.connect(peer_b).unwrap();
+
+        await_status(&status_a, peer_b, PeerStage::Connected).await;
+        await_status(&status_b, peer_a, PeerStage::Connected).await;
+
+        let heartbeat = heartbeat::encrypt_heartbeat(
+            QlHeader {
+                sender: peer_b,
+                recipient: peer_a,
+            },
+            &SymmetricKey::new(),
+            HeartbeatBody {
+                message_id: MessageId::new(42),
+                valid_until: now_secs().saturating_add(30),
+            },
+        );
+        let bytes = CBOR::from(heartbeat).to_cbor_data();
+        handle_a.send_incoming(bytes);
+
+        let result = tokio::time::timeout(Duration::from_millis(50), heartbeat_rx.recv()).await;
+        assert!(result.is_err(), "unexpected heartbeat reply");
     })
     .await;
 }
