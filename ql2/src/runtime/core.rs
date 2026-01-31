@@ -547,6 +547,15 @@ impl<P: QlPlatform> Runtime<P> {
         });
     }
 
+    fn fail_pending_for_peer(&self, state: &mut RuntimeState, peer: XID) {
+        state
+            .pending
+            .extract_if(|_id, entry| entry.recipient == peer)
+            .for_each(|(_, entry)| {
+                let _ = entry.tx.send(Err(QlError::SendFailed));
+            });
+    }
+
     fn resolve_pending_ok(
         &self,
         state: &mut RuntimeState,
@@ -955,6 +964,7 @@ impl<P: QlPlatform> Runtime<P> {
                             self.platform.handle_peer_status(peer, &entry.session);
                         }
                         self.drop_outbound_for_peer(state, peer);
+                        self.fail_pending_for_peer(state, peer);
                     }
                 }
             }
