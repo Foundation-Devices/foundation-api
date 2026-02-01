@@ -6,9 +6,6 @@ pub mod handle;
 pub(crate) mod internal;
 pub mod replay_cache;
 
-#[cfg(test)]
-mod tests;
-
 use std::time::Duration;
 
 use bc_components::XID;

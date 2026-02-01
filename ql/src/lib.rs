@@ -7,6 +7,9 @@ pub mod wire;
 
 pub use id::*;
 
+#[cfg(test)]
+mod tests;
+
 pub trait QlCodec: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}
 impl<T> QlCodec for T where T: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}
 
