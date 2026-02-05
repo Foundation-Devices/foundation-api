@@ -14,7 +14,10 @@ post-quantum, session-based message protocol
 - each platform had to interpret + correlate by hand
 - no ack/nack
 - no notion of 'liveness'/'connected' status
-- 6KB minimum message size
+- ~6.6KB min sealed event
+  - sender xid document (pq pubkeys)
+  - per-message signature
+  - recipient encryption (+ continuations)
 - more a utility crate than a protocol
 
 <!-- end_slide -->
@@ -43,16 +46,17 @@ post-quantum, session-based message protocol
 # design shift: per-message -> session
 - v1 sealed each message
 - v2 signs once, then aead per message
-- aead = authenticated encryption with associated data
-- encrypts payload + integrity tag (chacha20-poly1305)
-- aad = additional authenticated data
-- visible header, integrity-protected (not encrypted)
 
 ```text
 v1: seal(msg) = sign(msg) + encrypt(recipient)
 v2: session_key = handshake()
 v2: aead(msg, aad=header)
 ```
+
+<!-- new_lines: 10 -->
+_aead = authenticated encryption with associated data_
+
+_aad = additional authenticated data (visible, integrity-protected)_
 
 <!-- end_slide -->
 
