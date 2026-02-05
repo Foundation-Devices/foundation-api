@@ -28,7 +28,7 @@ post-quantum, session-based message protocol
 - gstp sealed envelope per message
 - per-message sign+encrypt (envelope)
 - implicit req/resp in enum variants
-- app-owned pairing + timeouts
+- app-owned pairing, timeouts, keepalive, connected status
 
 <!-- column: 1 -->
 
@@ -36,7 +36,7 @@ post-quantum, session-based message protocol
 - compact record + typed payloads
 - handshake signatures + per‑message aead under symmetric session key
 - explicit kind + ids + nack
-- runtime handles timeouts + keepalive
+- runtime handles pairing, timeouts, keepalive, connected status, request/response matching
 
 <!-- end_slide -->
 
@@ -62,7 +62,7 @@ v2: aead(msg, aad=header)
 
 ```rust
 pub trait QlPlatform {
-    // pq identity + kem
+    // pq identity
     fn signing_private_key(&self) -> &MLDSAPrivateKey;
     fn signing_public_key(&self) -> &MLDSAPublicKey;
     fn encapsulation_private_key(&self) -> &MLKEMPrivateKey;
