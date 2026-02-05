@@ -112,7 +112,7 @@ impl QlPlatform for TestPlatform {
 
     fn fill_bytes(&self, data: &mut [u8]) {
         let value = self
-            .nonce_seed
+       fill_random_bytese_seed
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
         data.fill(value);
     }
@@ -221,7 +221,7 @@ impl QlPlatform for InboundPlatform {
     fn fill_bytes(&self, data: &mut [u8]) {
         let value = self
             .nonce_seed
-            .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
+       fill_random_bytesping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
         data.fill(value);
     }
 
@@ -308,7 +308,7 @@ impl QlPlatform for BlockingPlatform {
         let value = self
             .nonce_seed
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
-        data.fill(value);
+       fill_random_bytes(value);
     }
 
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {

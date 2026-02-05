@@ -113,7 +113,7 @@ fn handshake_transcript(
 
 fn next_nonce(platform: &impl QlPlatform) -> Nonce {
     let mut data = [0u8; Nonce::NONCE_SIZE];
-    platform.fill_bytes(&mut data);
+    platform.fill_random_bytes(&mut data);
     Nonce::from_data(data)
 }
 
