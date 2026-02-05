@@ -9,15 +9,15 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 use bc_components::{
-    MLDSA, MLDSAPrivateKey, MLDSAPublicKey, MLKEM, MLKEMPrivateKey, MLKEMPublicKey, XID,
+    MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, MLDSA, MLKEM, XID,
 };
 use dcbor::CBOR;
 use tokio::{sync::Semaphore, task::LocalSet};
 
 use crate::{
     crypto::{
-        handshake as crypto_handshake, heartbeat as crypto_heartbeat,
-        message::encrypt_message, pair,
+        handshake as crypto_handshake, heartbeat as crypto_heartbeat, message::encrypt_message,
+        pair,
     },
     platform::{PlatformFuture, QlPlatform, QlPlatformExt},
     runtime::{
@@ -34,8 +34,8 @@ use crate::{
 };
 
 mod handshake;
-mod requests;
 mod heartbeat;
+mod requests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeerStage {
@@ -110,7 +110,7 @@ impl QlPlatform for TestPlatform {
         &self.encapsulation_public
     }
 
-    fn fill_bytes(&self, data: &mut [u8]) {
+    fn fill_random_bytes(&self, data: &mut [u8]) {
         let value = self
             .nonce_seed
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
@@ -218,7 +218,7 @@ impl QlPlatform for InboundPlatform {
         &self.encapsulation_public
     }
 
-    fn fill_bytes(&self, data: &mut [u8]) {
+    fn fill_random_bytes(&self, data: &mut [u8]) {
         let value = self
             .nonce_seed
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
@@ -304,7 +304,7 @@ impl QlPlatform for BlockingPlatform {
         &self.encapsulation_public
     }
 
-    fn fill_bytes(&self, data: &mut [u8]) {
+    fn fill_random_bytes(&self, data: &mut [u8]) {
         let value = self
             .nonce_seed
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
