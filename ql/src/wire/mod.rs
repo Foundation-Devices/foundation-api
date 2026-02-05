@@ -145,7 +145,7 @@ pub(crate) fn take_fields<const N: usize>(
 ) -> Result<[CBOR; N], dcbor::Error> {
     use std::mem::MaybeUninit;
 
-    let mut fields: [MaybeUninit<CBOR>; N] = unsafe { MaybeUninit::uninit().assume_init() };
+    let mut fields: [MaybeUninit<CBOR>; N] = [const { MaybeUninit::uninit() }; N];
     for (index, slot) in fields.iter_mut().enumerate() {
         let Some(value) = iter.next() else {
             for init in &mut fields[..index] {
