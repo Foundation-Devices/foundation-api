@@ -1,3 +1,8 @@
+---
+theme:
+  name: gruvbox-dark
+---
+
 # quantumlink protocol v2
 post-quantum, session-based message protocol
 
