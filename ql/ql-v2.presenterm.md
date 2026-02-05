@@ -23,6 +23,21 @@ v2: handshake() -> session_key
 
 <!-- end_slide -->
 
+# pq-only keys (new)
+- protocol boundary requires pq keys
+- no generic signer / encapsulation types
+
+```rust
+pub trait QlPlatform {
+    fn signing_private_key(&self) -> &MLDSAPrivateKey;
+    fn signing_public_key(&self) -> &MLDSAPublicKey;
+    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey;
+    fn encapsulation_public_key(&self) -> &MLKEMPublicKey;
+}
+```
+
+<!-- end_slide -->
+
 # multi-peer runtime
 - runtime tracks sessions per peer
 - concurrent handshakes + keepalive per peer
@@ -64,9 +79,9 @@ pub struct QlHeader {
 <!-- end_slide -->
 
 # handshake flow
-- hello: nonce + kem ciphertext
-- reply: nonce + kem ciphertext + signature
-- confirm: signature, then session key
+- hello: nonce + mlkem ciphertext
+- reply: nonce + mlkem ciphertext + mldsa signature
+- confirm: mldsa signature, then session key
 
 <!-- end_slide -->
 
@@ -74,24 +89,24 @@ pub struct QlHeader {
 ```rust
 pub struct Hello {
     pub nonce: Nonce,
-    pub kem_ct: EncapsulationCiphertext,
+    pub kem_ct: MLKEMCiphertext,
 }
 
 pub struct HelloReply {
     pub nonce: Nonce,
-    pub kem_ct: EncapsulationCiphertext,
-    pub signature: Signature,
+    pub kem_ct: MLKEMCiphertext,
+    pub signature: MLDSASignature,
 }
 
 pub struct Confirm {
-    pub signature: Signature,
+    pub signature: MLDSASignature,
 }
 ```
 
 <!-- end_slide -->
 
 # session key derivation
-- kem secrets + transcript digest
+- mlkem secrets + transcript digest
 - same symmetric primitive for all records
 
 ```rust
@@ -192,7 +207,7 @@ handle.send_event(status, peer);
 # security model shift
 - v1: per-message signature + encryption (gstp + envelope)
 - v2: handshake signatures + session aead
-- same aead (chacha20-poly1305), pq via ml-kem + ml-dsa
+- same aead (chacha20-poly1305), pq is required (ml-kem + ml-dsa)
 - tradeoff: per-message isolation vs session speed
 
 <!-- end_slide -->
