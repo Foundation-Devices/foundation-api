@@ -1,5 +1,5 @@
-# ql v2: quantumlink protocol
-small, session-oriented api for quantumlink v2
+# quantumlink protocol v2
+post-quantum, session-based message protocol
 
 <!-- end_slide -->
 
@@ -8,31 +8,48 @@ small, session-oriented api for quantumlink v2
 - no request/response or subscriptions
 - manual matching on one big enum
 - no ack/nack
+- no notion of 'liveness'/'connected' status
+- 6KB minimum message size
+- more a utility crate than a protocol
 
 <!-- end_slide -->
 
 # design shift: per-message -> session
 - v1 sealed each message
 - v2 signs once, then aead per message
+- aead = authenticated encryption with associated data
+- encrypts payload + integrity tag (chacha20-poly1305)
+- aad = additional authenticated data
+- visible header, integrity-protected (not encrypted)
 
 ```text
 v1: seal(msg) = sign(msg) + encrypt(recipient)
-v2: handshake() -> session_key
-    aead(msg, aad=header)
+v2: session_key = handshake()
+v2: aead(msg, aad=header)
 ```
 
 <!-- end_slide -->
 
-# pq-only keys (new)
-- protocol boundary requires pq keys
-- no generic signer / encapsulation types
+# configurable host platform
+- same runtime across keyos / mobile / desktop
+- host supplies pq keys, io, timers, callbacks
 
 ```rust
 pub trait QlPlatform {
+    // pq identity + kem
     fn signing_private_key(&self) -> &MLDSAPrivateKey;
     fn signing_public_key(&self) -> &MLDSAPublicKey;
     fn encapsulation_private_key(&self) -> &MLKEMPrivateKey;
     fn encapsulation_public_key(&self) -> &MLKEMPublicKey;
+
+    // transport + runtime hooks
+    fn fill_bytes(&self, data: &mut [u8]);
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
+    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
+
+    // event handlers
+    fn handle_peer_status(&self, peer: XID, session: &PeerSession);
+    fn handle_inbound(&self, event: HandlerEvent);
 }
 ```
 
@@ -51,11 +68,22 @@ handle.connect(peer)?;
 
 # protocol breakdown
 ```mermaid +render
-flowchart LR
-  A["pair request<br/>first contact"] --> B["handshake<br/>hello / reply / confirm"]
-  B --> C["session key"]
-  C --> D["encrypted records<br/>request / response / event / nack"]
-  C --> E["heartbeats<br/>keepalive"]
+sequenceDiagram
+  participant A as initiator
+  participant B as responder
+
+  Note over A,B: pairing (first contact)
+  A->>B: pair request (kem + signed payload)
+
+  Note over A,B: handshake (mutual auth)
+  A->>B: hello (nonce + kem ct)
+  B->>A: hello reply (nonce + kem ct + signature)
+  A->>B: confirm (signature)
+
+  Note over A,B: session established
+  A->>B: request / event (aead + aad header)
+  B->>A: response / nack (aead + aad header)
+  A-->>B: heartbeat (optional)
 ```
 
 <!-- end_slide -->
@@ -78,14 +106,11 @@ pub struct QlHeader {
 
 <!-- end_slide -->
 
-# handshake flow
+# handshake flow + records
 - hello: nonce + mlkem ciphertext
 - reply: nonce + mlkem ciphertext + mldsa signature
 - confirm: mldsa signature, then session key
 
-<!-- end_slide -->
-
-# handshake records (from `ql/src/wire/handshake.rs`)
 ```rust
 pub struct Hello {
     pub nonce: Nonce,
@@ -119,7 +144,7 @@ let session_key = SymmetricKey::from_data(*digest.data());
 
 # message modalities
 - request / response
-- event / ack (null)
+- event: fire-and-forget or acked
 - nack for structured failure
 
 ```rust
@@ -213,16 +238,16 @@ handle.send_event(status, peer);
 <!-- end_slide -->
 
 # performance snapshot (cbor sizes)
-| protocol | message type | size (bytes) | notes |
+| proto | message | bytes | notes |
 | :-- | :-- | --: | :-- |
-| v1 | sealed message (exchange_rate) | 6645 | per-message envelope (sign + encrypt) |
-| v1 | sealed heartbeat | 6633 | per-message envelope (sign + encrypt) |
-| v2 | handshake hello | 132 | kem ciphertext + nonce |
-| v2 | handshake hello reply | 2563 | signature + kem ciphertext |
-| v2 | handshake confirm | 2510 | signature only |
-| v2 | pair request | 4065 | signed payload + kem-wrapped body |
-| v2 | message (empty payload) | 199 | steady-state record |
-| v2 | heartbeat | 196 | steady-state record |
+| v1 | sealed msg (exchange_rate) | 6645 | sign+encrypt |
+| v1 | sealed heartbeat | 6633 | sign+encrypt |
+| v2 | hello | 132 | kem+nonce |
+| v2 | hello reply | 2563 | sig+kem |
+| v2 | confirm | 2510 | sig |
+| v2 | pair request | 4065 | sig+kem |
+| v2 | message (empty) | 199 | steady-state |
+| v2 | heartbeat | 196 | steady-state |
 
 handshake total: 5205 bytes
 
