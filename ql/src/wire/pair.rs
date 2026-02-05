@@ -1,4 +1,4 @@
-use bc_components::{EncapsulationCiphertext, EncapsulationPublicKey, Signature, SigningPublicKey};
+use bc_components::{MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, MLKEMPublicKey};
 use dcbor::CBOR;
 
 use super::take_fields;
@@ -6,7 +6,7 @@ use crate::MessageId;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PairRequestRecord {
-    pub kem_ct: EncapsulationCiphertext,
+    pub kem_ct: MLKEMCiphertext,
     pub encrypted: bc_components::EncryptedMessage,
 }
 
@@ -14,9 +14,9 @@ pub struct PairRequestRecord {
 pub struct PairRequestBody {
     pub message_id: MessageId,
     pub valid_until: u64,
-    pub signing_pub_key: SigningPublicKey,
-    pub encapsulation_pub_key: EncapsulationPublicKey,
-    pub proof: Signature,
+    pub signing_pub_key: MLDSAPublicKey,
+    pub encapsulation_pub_key: MLKEMPublicKey,
+    pub proof: MLDSASignature,
 }
 
 impl From<PairRequestRecord> for CBOR {

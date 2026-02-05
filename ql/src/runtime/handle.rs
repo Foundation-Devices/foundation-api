@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use bc_components::{EncapsulationPublicKey, SigningPublicKey, XID};
+use bc_components::{MLDSAPublicKey, MLKEMPublicKey, XID};
 use dcbor::CBOR;
 
 use crate::{
@@ -48,8 +48,8 @@ impl RuntimeHandle {
     pub fn register_peer(
         &self,
         peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
+        signing_key: MLDSAPublicKey,
+        encapsulation_key: MLKEMPublicKey,
     ) {
         self.send(RuntimeCommand::RegisterPeer {
             peer,

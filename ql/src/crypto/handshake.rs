@@ -1,6 +1,5 @@
 use bc_components::{
-    Digest, EncapsulationCiphertext, EncapsulationPublicKey, Nonce, SigningPublicKey, SymmetricKey,
-    XID,
+    Digest, MLDSAPublicKey, MLKEMCiphertext, MLKEMPublicKey, Nonce, SymmetricKey, XID,
 };
 use dcbor::CBOR;
 
@@ -20,7 +19,7 @@ pub fn build_hello(
     platform: &impl QlPlatform,
     _sender: XID,
     _recipient: XID,
-    recipient_encapsulation_key: &EncapsulationPublicKey,
+    recipient_encapsulation_key: &MLKEMPublicKey,
 ) -> Result<(Hello, SymmetricKey), QlError> {
     let nonce = next_nonce(platform);
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
@@ -31,7 +30,7 @@ pub fn respond_hello(
     platform: &impl QlPlatform,
     initiator: XID,
     responder: XID,
-    initiator_encapsulation_key: &EncapsulationPublicKey,
+    initiator_encapsulation_key: &MLKEMPublicKey,
     hello: &Hello,
 ) -> Result<(HelloReply, ResponderSecrets), QlError> {
     let initiator_secret = platform
@@ -41,10 +40,7 @@ pub fn respond_hello(
     let nonce = next_nonce(platform);
     let (responder_secret, kem_ct) = initiator_encapsulation_key.encapsulate_new_shared_secret();
     let transcript = handshake_transcript(initiator, responder, hello, &nonce, &kem_ct);
-    let signature = platform
-        .signer()
-        .sign(&transcript)
-        .map_err(|_| QlError::InvalidPayload)?;
+    let signature = platform.signing_private_key().sign(&transcript);
     let reply = HelloReply {
         nonce,
         kem_ct,
@@ -63,7 +59,7 @@ pub fn build_confirm(
     platform: &impl QlPlatform,
     initiator: XID,
     responder: XID,
-    responder_signing_key: &SigningPublicKey,
+    responder_signing_key: &MLDSAPublicKey,
     hello: &Hello,
     reply: &HelloReply,
     initiator_secret: &SymmetricKey,
@@ -74,10 +70,7 @@ pub fn build_confirm(
         .encapsulation_private_key()
         .decapsulate_shared_secret(&reply.kem_ct)
         .map_err(|_| QlError::InvalidPayload)?;
-    let signature = platform
-        .signer()
-        .sign(&transcript)
-        .map_err(|_| QlError::InvalidPayload)?;
+    let signature = platform.signing_private_key().sign(&transcript);
     let confirm = Confirm { signature };
     let session_key = derive_session_key(initiator_secret, &responder_secret, &transcript);
     Ok((confirm, session_key))
@@ -86,7 +79,7 @@ pub fn build_confirm(
 pub fn finalize_confirm(
     initiator: XID,
     responder: XID,
-    initiator_signing_key: &SigningPublicKey,
+    initiator_signing_key: &MLDSAPublicKey,
     hello: &Hello,
     reply: &HelloReply,
     confirm: &Confirm,
@@ -104,8 +97,8 @@ fn handshake_transcript(
     initiator: XID,
     responder: XID,
     hello: &Hello,
-    responder_nonce: &bc_components::Nonce,
-    responder_kem_ct: &EncapsulationCiphertext,
+    responder_nonce: &Nonce,
+    responder_kem_ct: &MLKEMCiphertext,
 ) -> Vec<u8> {
     CBOR::from(vec![
         CBOR::from(initiator),

@@ -9,8 +9,7 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 use bc_components::{
-    EncapsulationPrivateKey, EncapsulationPublicKey, EncapsulationScheme, SignatureScheme, Signer,
-    SigningPrivateKey, SigningPublicKey, SymmetricKey, XID,
+    MLDSA, MLDSAPrivateKey, MLDSAPublicKey, MLKEM, MLKEMPrivateKey, MLKEMPublicKey, XID,
 };
 use dcbor::CBOR;
 use tokio::{sync::Semaphore, task::LocalSet};
@@ -53,10 +52,10 @@ struct StatusEvent {
 }
 
 struct TestPlatform {
-    signing_private: SigningPrivateKey,
-    signing_public: SigningPublicKey,
-    encapsulation_private: EncapsulationPrivateKey,
-    encapsulation_public: EncapsulationPublicKey,
+    signing_private: MLDSAPrivateKey,
+    signing_public: MLDSAPublicKey,
+    encapsulation_private: MLKEMPrivateKey,
+    encapsulation_public: MLKEMPublicKey,
     outbound: Sender<Vec<u8>>,
     status: Sender<StatusEvent>,
     nonce_seed: u8,
@@ -65,9 +64,8 @@ struct TestPlatform {
 
 impl TestPlatform {
     fn new(seed: u8) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
-        let (signing_private, signing_public) = SignatureScheme::MLDSA44.keypair();
-        let (encapsulation_private, encapsulation_public) =
-            EncapsulationScheme::default().keypair();
+        let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
+        let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
         let (outbound, outbound_rx) = async_channel::unbounded();
         let (status, status_rx) = async_channel::unbounded();
         (
@@ -86,29 +84,29 @@ impl TestPlatform {
         )
     }
 
-    fn signing_public_key(&self) -> &SigningPublicKey {
+    fn signing_public_key(&self) -> &MLDSAPublicKey {
         &self.signing_public
     }
 
-    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey {
+    fn encapsulation_public_key(&self) -> &MLKEMPublicKey {
         &self.encapsulation_public
     }
 }
 
 impl QlPlatform for TestPlatform {
-    fn signer(&self) -> &dyn Signer {
+    fn signing_private_key(&self) -> &MLDSAPrivateKey {
         &self.signing_private
     }
 
-    fn signing_public_key(&self) -> &SigningPublicKey {
+    fn signing_public_key(&self) -> &MLDSAPublicKey {
         &self.signing_public
     }
 
-    fn encapsulation_private_key(&self) -> &EncapsulationPrivateKey {
+    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey {
         &self.encapsulation_private
     }
 
-    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey {
+    fn encapsulation_public_key(&self) -> &MLKEMPublicKey {
         &self.encapsulation_public
     }
 
@@ -147,10 +145,10 @@ impl QlPlatform for TestPlatform {
 }
 
 struct BlockingPlatform {
-    signing_private: SigningPrivateKey,
-    signing_public: SigningPublicKey,
-    encapsulation_private: EncapsulationPrivateKey,
-    encapsulation_public: EncapsulationPublicKey,
+    signing_private: MLDSAPrivateKey,
+    signing_public: MLDSAPublicKey,
+    encapsulation_private: MLKEMPrivateKey,
+    encapsulation_public: MLKEMPublicKey,
     outbound: Sender<Vec<u8>>,
     status: Sender<StatusEvent>,
     nonce_seed: u8,
@@ -159,10 +157,10 @@ struct BlockingPlatform {
 }
 
 struct InboundPlatform {
-    signing_private: SigningPrivateKey,
-    signing_public: SigningPublicKey,
-    encapsulation_private: EncapsulationPrivateKey,
-    encapsulation_public: EncapsulationPublicKey,
+    signing_private: MLDSAPrivateKey,
+    signing_public: MLDSAPublicKey,
+    encapsulation_private: MLKEMPrivateKey,
+    encapsulation_public: MLKEMPublicKey,
     outbound: Sender<Vec<u8>>,
     status: Sender<StatusEvent>,
     inbound: Sender<HandlerEvent>,
@@ -179,9 +177,8 @@ impl InboundPlatform {
         Receiver<StatusEvent>,
         Receiver<HandlerEvent>,
     ) {
-        let (signing_private, signing_public) = SignatureScheme::MLDSA44.keypair();
-        let (encapsulation_private, encapsulation_public) =
-            EncapsulationScheme::default().keypair();
+        let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
+        let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
         let (outbound, outbound_rx) = async_channel::unbounded();
         let (status, status_rx) = async_channel::unbounded();
         let (inbound, inbound_rx) = async_channel::unbounded();
@@ -205,19 +202,19 @@ impl InboundPlatform {
 }
 
 impl QlPlatform for InboundPlatform {
-    fn signer(&self) -> &dyn Signer {
+    fn signing_private_key(&self) -> &MLDSAPrivateKey {
         &self.signing_private
     }
 
-    fn signing_public_key(&self) -> &SigningPublicKey {
+    fn signing_public_key(&self) -> &MLDSAPublicKey {
         &self.signing_public
     }
 
-    fn encapsulation_private_key(&self) -> &EncapsulationPrivateKey {
+    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey {
         &self.encapsulation_private
     }
 
-    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey {
+    fn encapsulation_public_key(&self) -> &MLKEMPublicKey {
         &self.encapsulation_public
     }
 
@@ -266,9 +263,8 @@ impl BlockingPlatform {
         Receiver<StatusEvent>,
         Arc<Semaphore>,
     ) {
-        let (signing_private, signing_public) = SignatureScheme::MLDSA44.keypair();
-        let (encapsulation_private, encapsulation_public) =
-            EncapsulationScheme::default().keypair();
+        let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
+        let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
         let (outbound, outbound_rx) = async_channel::unbounded();
         let (status, status_rx) = async_channel::unbounded();
         let write_gate = Arc::new(Semaphore::new(0));
@@ -292,19 +288,19 @@ impl BlockingPlatform {
 }
 
 impl QlPlatform for BlockingPlatform {
-    fn signer(&self) -> &dyn Signer {
+    fn signing_private_key(&self) -> &MLDSAPrivateKey {
         &self.signing_private
     }
 
-    fn signing_public_key(&self) -> &SigningPublicKey {
+    fn signing_public_key(&self) -> &MLDSAPublicKey {
         &self.signing_public
     }
 
-    fn encapsulation_private_key(&self) -> &EncapsulationPrivateKey {
+    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey {
         &self.encapsulation_private
     }
 
-    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey {
+    fn encapsulation_public_key(&self) -> &MLKEMPublicKey {
         &self.encapsulation_public
     }
 
@@ -440,8 +436,8 @@ fn spawn_routed_forwarder_with_filter<F>(
 #[derive(Clone)]
 struct PeerIdentity {
     xid: XID,
-    signing_key: SigningPublicKey,
-    encapsulation_key: EncapsulationPublicKey,
+    signing_key: MLDSAPublicKey,
+    encapsulation_key: MLKEMPublicKey,
 }
 
 fn peer_identity(platform: &impl QlPlatformExt) -> PeerIdentity {

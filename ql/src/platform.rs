@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
 use bc_components::{
-    EncapsulationPrivateKey, EncapsulationPublicKey, Signer, SigningPublicKey, XID,
+    MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SigningPublicKey, XID,
 };
 
 use crate::{
@@ -12,10 +12,10 @@ use crate::{
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 pub trait QlPlatform {
-    fn signer(&self) -> &dyn Signer;
-    fn signing_public_key(&self) -> &SigningPublicKey;
-    fn encapsulation_private_key(&self) -> &EncapsulationPrivateKey;
-    fn encapsulation_public_key(&self) -> &EncapsulationPublicKey;
+    fn signing_private_key(&self) -> &MLDSAPrivateKey;
+    fn signing_public_key(&self) -> &MLDSAPublicKey;
+    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey;
+    fn encapsulation_public_key(&self) -> &MLKEMPublicKey;
 
     fn fill_bytes(&self, data: &mut [u8]);
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
@@ -26,7 +26,7 @@ pub trait QlPlatform {
 
 pub(crate) trait QlPlatformExt: QlPlatform {
     fn xid(&self) -> XID {
-        XID::new(&self.signing_public_key())
+        XID::new(SigningPublicKey::MLDSA(self.signing_public_key().clone()))
     }
 }
 

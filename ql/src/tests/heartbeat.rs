@@ -1,4 +1,5 @@
 use super::*;
+use bc_components::SymmetricKey;
 
 #[tokio::test(flavor = "current_thread")]
 async fn heartbeat_ignored_without_session() {
@@ -50,8 +51,8 @@ async fn keepalive_disabled_no_heartbeat() {
         let signing_b = platform_b.signing_public_key().clone();
         let encap_a = platform_a.encapsulation_public_key().clone();
         let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -93,8 +94,8 @@ async fn heartbeat_sent_after_idle() {
         let signing_b = platform_b.signing_public_key().clone();
         let encap_a = platform_a.encapsulation_public_key().clone();
         let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -138,8 +139,8 @@ async fn heartbeat_reply_when_connected() {
         let signing_b = platform_b.signing_public_key().clone();
         let encap_a = platform_a.encapsulation_public_key().clone();
         let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -188,8 +189,8 @@ async fn any_message_clears_pending() {
         let signing_b = platform_b.signing_public_key().clone();
         let encap_a = platform_a.encapsulation_public_key().clone();
         let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -248,8 +249,8 @@ async fn heartbeat_timeout_disconnects_and_drops_outbound() {
         let signing_b = platform_b.signing_public_key().clone();
         let encap_a = platform_a.encapsulation_public_key().clone();
         let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -309,8 +310,8 @@ async fn no_ping_pong() {
         let signing_b = platform_b.signing_public_key().clone();
         let encap_a = platform_a.encapsulation_public_key().clone();
         let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -358,8 +359,8 @@ async fn invalid_heartbeat_ignored() {
         let signing_b = platform_b.signing_public_key().clone();
         let encap_a = platform_a.encapsulation_public_key().clone();
         let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = XID::new(&signing_a);
-        let peer_b = XID::new(&signing_b);
+        let peer_a = platform_a.xid();
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, config);

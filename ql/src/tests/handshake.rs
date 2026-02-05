@@ -91,7 +91,7 @@ async fn invalid_signature_disconnects() {
         let config = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, _status_b) = TestPlatform::new(2);
-        let (wrong_private, wrong_public) = SignatureScheme::MLDSA44.keypair();
+        let (wrong_private, wrong_public) = MLDSA::MLDSA44.keypair();
         let _ = wrong_private;
         let peer_a = peer_identity(&platform_a);
         let peer_b = peer_identity(&platform_b);
@@ -174,7 +174,7 @@ async fn blocked_write_still_times_out() {
 
         let signing_b = platform_b.signing_public_key().clone();
         let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_b = XID::new(&signing_b);
+        let peer_b = platform_b.xid();
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         tokio::task::spawn_local(async move { runtime_a.run().await });

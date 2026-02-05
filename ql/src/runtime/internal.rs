@@ -5,7 +5,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use bc_components::{EncapsulationPublicKey, SigningPublicKey, SymmetricKey, XID};
+use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 use dcbor::CBOR;
 
 use crate::{
@@ -47,17 +47,13 @@ impl KeepAliveState {
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
     pub peer: XID,
-    pub signing_key: SigningPublicKey,
-    pub encapsulation_key: EncapsulationPublicKey,
+    pub signing_key: MLDSAPublicKey,
+    pub encapsulation_key: MLKEMPublicKey,
     pub session: PeerSession,
 }
 
 impl PeerRecord {
-    pub fn new(
-        peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
-    ) -> Self {
+    pub fn new(peer: XID, signing_key: MLDSAPublicKey, encapsulation_key: MLKEMPublicKey) -> Self {
         Self {
             peer,
             signing_key,
@@ -88,8 +84,8 @@ impl PeerStore {
     pub fn upsert_peer(
         &mut self,
         peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
+        signing_key: MLDSAPublicKey,
+        encapsulation_key: MLKEMPublicKey,
     ) -> &mut PeerRecord {
         if let Some(index) = self.peers.iter().position(|record| record.peer == peer) {
             let record = &mut self.peers[index];
@@ -153,8 +149,8 @@ pub enum InitiatorStage {
 pub(crate) enum RuntimeCommand {
     RegisterPeer {
         peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
+        signing_key: MLDSAPublicKey,
+        encapsulation_key: MLKEMPublicKey,
     },
     Connect {
         peer: XID,

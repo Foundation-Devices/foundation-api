@@ -2,7 +2,7 @@ use std::{
     cmp::Reverse, collections::binary_heap::PeekMut, future::Future, task::Poll, time::Instant,
 };
 
-use bc_components::{EncapsulationPublicKey, XID};
+use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SigningPublicKey, XID};
 use dcbor::CBOR;
 use futures_lite::future::poll_fn;
 
@@ -199,8 +199,8 @@ impl<P: QlPlatform> Runtime<P> {
         &self,
         state: &mut RuntimeState,
         peer: XID,
-        signing_key: bc_components::SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
+        signing_key: MLDSAPublicKey,
+        encapsulation_key: MLKEMPublicKey,
     ) {
         let entry = state
             .peers
@@ -400,7 +400,7 @@ impl<P: QlPlatform> Runtime<P> {
             Ok(payload) => payload,
             Err(_) => return,
         };
-        let peer = XID::new(&payload.signing_pub_key);
+        let peer = XID::new(SigningPublicKey::MLDSA(payload.signing_pub_key.clone()));
         state
             .peers
             .upsert_peer(peer, payload.signing_pub_key, payload.encapsulation_pub_key);
