@@ -5,12 +5,33 @@ post-quantum, session-based message protocol
 
 # ql v1: constraints
 - no message_id or sequence id
-- no request/response or subscriptions
-- manual matching on one big enum
+- no protocol-level request/response pairing
+- each platform had to interpret + correlate by hand
 - no ack/nack
 - no notion of 'liveness'/'connected' status
 - 6KB minimum message size
 - more a utility crate than a protocol
+
+<!-- end_slide -->
+
+# v1 vs v2
+<!-- column_layout: [1, 1] -->
+
+<!-- column: 0 -->
+
+## v1
+- gstp sealed envelope per message
+- per-message sign+encrypt (envelope)
+- implicit req/resp in enum variants
+- app-owned pairing + timeouts
+
+<!-- column: 1 -->
+
+## v2
+- compact record + typed payloads
+- handshake signatures + per‑message aead under symmetric session key
+- explicit kind + ids + nack
+- runtime handles timeouts + keepalive
 
 <!-- end_slide -->
 
@@ -67,7 +88,7 @@ handle.connect(peer)?;
 <!-- end_slide -->
 
 # protocol breakdown
-```mermaid +render
+```mermaid +render +width:90%
 sequenceDiagram
   participant A as initiator
   participant B as responder
@@ -131,10 +152,15 @@ pub struct Confirm {
 <!-- end_slide -->
 
 # session key derivation
-- mlkem secrets + transcript digest
-- same symmetric primitive for all records
+- transcript binds ids + nonces + kem ciphertexts
+- session key = digest(initiator_secret, responder_secret, transcript)
 
 ```rust
+let transcript = cbor([
+    initiator, responder,
+    hello.nonce, reply.nonce,
+    hello.kem_ct, reply.kem_ct,
+]);
 let payload = cbor([initiator_secret, responder_secret, transcript]);
 let digest = Digest::from_image(payload);
 let session_key = SymmetricKey::from_data(*digest.data());
@@ -226,14 +252,6 @@ let router = Router::builder()
 let reply = handle.request(msg, peer, RequestConfig::default()).await?;
 handle.send_event(status, peer);
 ```
-
-<!-- end_slide -->
-
-# security model shift
-- v1: per-message signature + encryption (gstp + envelope)
-- v2: handshake signatures + session aead
-- same aead (chacha20-poly1305), pq is required (ml-kem + ml-dsa)
-- tradeoff: per-message isolation vs session speed
 
 <!-- end_slide -->
 
