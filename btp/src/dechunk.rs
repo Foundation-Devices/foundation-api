@@ -181,8 +181,8 @@ impl Dechunker {
             Some(info) if info.total_chunks != header.total_chunks => {
                 return Err(LengthMismatchError {
                     message_id: header.message_id,
-                    expected: info.message_id,
-                    actual: header.message_id,
+                    expected: info.total_chunks,
+                    actual: header.total_chunks,
                 }
                 .into());
             }
@@ -264,11 +264,14 @@ impl<const N: usize> MasterDechunker<N> {
     }
 
     pub fn insert_chunk(&mut self, chunk: Chunk) -> Option<Vec<u8>> {
-        let (completed, _evicted) = self.insert_chunk_raw(chunk);
+        let (completed, _evicted) = self.insert_chunk_raw(chunk).ok()?;
         completed
     }
 
-    pub fn insert_chunk_raw(&mut self, chunk: Chunk) -> (Option<Vec<u8>>, Option<DechunkerSlot>) {
+    pub fn insert_chunk_raw(
+        &mut self,
+        chunk: Chunk,
+    ) -> Result<(Option<Vec<u8>>, Option<DechunkerSlot>), ReceiveError> {
         let message_id = chunk.header.message_id;
 
         for decoder_slot in &mut self.dechunkers {
@@ -276,13 +279,13 @@ impl<const N: usize> MasterDechunker<N> {
                 if slot.dechunker.message_id() == Some(message_id) {
                     self.counter += 1;
                     slot.last_used = self.counter;
-                    slot.dechunker.insert_chunk(chunk).unwrap();
+                    slot.dechunker.insert_chunk(chunk)?;
 
                     return if slot.dechunker.is_complete() {
                         let completed = decoder_slot.take().unwrap().dechunker.data();
-                        (completed, None)
+                        Ok((completed, None))
                     } else {
-                        (None, None)
+                        Ok((None, None))
                     };
                 }
             }
@@ -306,14 +309,14 @@ impl<const N: usize> MasterDechunker<N> {
         decoder.insert_chunk(chunk).unwrap();
 
         if decoder.is_complete() {
-            (decoder.data(), evicted)
+            Ok((decoder.data(), evicted))
         } else {
             self.counter += 1;
             *target_slot = Some(DechunkerSlot {
                 dechunker: decoder,
                 last_used: self.counter,
             });
-            (None, evicted)
+            Ok((None, evicted))
         }
     }
 
