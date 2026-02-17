@@ -9,7 +9,7 @@ post-quantum, session-based message protocol
 <!-- end_slide -->
 
 # ql v1: constraints
-- no message_id or sequence id
+- no message id / sequence id
 - no protocol-level request/response pairing
 - each platform had to interpret + correlate by hand
 - no ack/nack
