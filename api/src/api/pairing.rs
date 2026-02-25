@@ -26,3 +26,12 @@ pub struct PairingRequest {
     #[n(1)]
     pub device_name: String,
 }
+
+#[quantum_link]
+pub struct UnpairingRequest {}
+
+#[quantum_link]
+pub struct UnpairingResponse {
+    #[n(0)]
+    pub success: bool,
+}
