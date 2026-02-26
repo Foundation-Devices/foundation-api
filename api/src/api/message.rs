@@ -15,7 +15,7 @@ use crate::{
         FirmwareUpdateCheckResponse,
     },
     fx::{ExchangeRate, ExchangeRateHistory},
-    pairing::{PairingRequest, PairingResponse},
+    pairing::{PairingRequest, PairingResponse, UnpairingRequest, UnpairingResponse},
     scv::SecurityCheck,
     status::{DeviceStatus, EnvoyStatus, Heartbeat, TimezoneRequest, TimezoneResponse},
 };
@@ -127,4 +127,9 @@ pub enum QuantumLinkMessage {
     TimezoneRequest(TimezoneRequest),
     #[n(34)]
     TimezoneResponse(TimezoneResponse),
+
+    #[n(35)]
+    UnpairingRequest(UnpairingRequest),
+    #[n(36)]
+    UnpairingResponse(UnpairingResponse),
 }
