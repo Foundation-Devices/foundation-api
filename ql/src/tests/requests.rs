@@ -10,7 +10,7 @@ async fn request_response_round_trip() {
         let peer_a = peer_identity(&platform_a);
         let peer_b = peer_identity(&platform_b);
 
-        let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
@@ -57,7 +57,7 @@ async fn request_timeout_returns_error() {
         let peer_a = peer_identity(&platform_a);
         let peer_b = peer_identity(&platform_b);
 
-        let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
@@ -100,7 +100,7 @@ async fn request_nack_resolves_pending() {
         let peer_a = peer_identity(&platform_a);
         let peer_b = peer_identity(&platform_b);
 
-        let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
@@ -152,7 +152,7 @@ async fn request_dispatches_to_platform_callback() {
         let peer_a = peer_identity(&platform_a);
         let peer_b = peer_identity(&platform_b);
 
-        let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
@@ -198,7 +198,7 @@ async fn replayed_message_is_ignored() {
         let peer_a = peer_identity(&platform_a);
         let peer_b = peer_identity(&platform_b);
 
-        let (runtime_a, handle_a) = new_runtime(platform_a, config.clone());
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
@@ -210,15 +210,15 @@ async fn replayed_message_is_ignored() {
                 while let Ok(bytes) = outbound_a.recv().await {
                     let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from)
                     else {
-                        let _ = handle_b.send_incoming(bytes);
+                        handle_b.send_incoming(bytes);
                         continue;
                     };
                     if matches!(record.payload, QlPayload::Message(_)) {
-                        let _ = handle_b.send_incoming(bytes.clone());
-                        let _ = handle_b.send_incoming(bytes);
+                        handle_b.send_incoming(bytes.clone());
+                        handle_b.send_incoming(bytes);
                         continue;
                     }
-                    let _ = handle_b.send_incoming(bytes);
+                    handle_b.send_incoming(bytes);
                 }
             }
         });

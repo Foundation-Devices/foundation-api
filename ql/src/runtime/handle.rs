@@ -39,7 +39,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         pin!(&mut self.rx).poll(cx).map(|result| {
             let payload = result.unwrap_or(Err(QlError::Cancelled))?;
-            Ok(T::try_from(payload).map_err(|_| QlError::InvalidPayload)?)
+            T::try_from(payload).map_err(|_| QlError::InvalidPayload)
         })
     }
 }

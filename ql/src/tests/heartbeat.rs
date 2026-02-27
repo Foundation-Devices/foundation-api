@@ -116,7 +116,7 @@ async fn heartbeat_sent_after_idle() {
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
 
-        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
+        tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
             .await
             .unwrap()
             .unwrap();
@@ -162,11 +162,11 @@ async fn heartbeat_reply_when_connected() {
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
 
-        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_ab_rx.recv())
+        tokio::time::timeout(Duration::from_millis(200), heartbeat_ab_rx.recv())
             .await
             .unwrap()
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_ba_rx.recv())
+        tokio::time::timeout(Duration::from_millis(200), heartbeat_ba_rx.recv())
             .await
             .unwrap()
             .unwrap();
@@ -211,7 +211,7 @@ async fn any_message_clears_pending() {
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
 
-        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
+        tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
             .await
             .unwrap()
             .unwrap();
@@ -333,11 +333,11 @@ async fn no_ping_pong() {
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
 
-        let _ = tokio::time::timeout(Duration::from_millis(300), heartbeat_ab_rx.recv())
+        tokio::time::timeout(Duration::from_millis(300), heartbeat_ab_rx.recv())
             .await
             .unwrap()
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_millis(200), heartbeat_ba_rx.recv())
+        tokio::time::timeout(Duration::from_millis(200), heartbeat_ba_rx.recv())
             .await
             .unwrap()
             .unwrap();

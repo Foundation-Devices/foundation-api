@@ -102,9 +102,7 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn start_next_write<'a>(&'a self, state: &mut RuntimeState) -> Option<InFlightWrite<'a>> {
-        let Some(message) = state.outbound.pop_front() else {
-            return None;
-        };
+        let message = state.outbound.pop_front()?;
         Some(InFlightWrite {
             peer: message.peer,
             token: message.token,
@@ -258,7 +256,7 @@ impl<P: QlPlatform> Runtime<P> {
                 sender: self.platform.xid(),
                 recipient,
             },
-            &session_key,
+            session_key,
             body,
         );
         let bytes = CBOR::from(message).to_cbor_data();
@@ -305,7 +303,7 @@ impl<P: QlPlatform> Runtime<P> {
                 sender: self.platform.xid(),
                 recipient,
             },
-            &session_key,
+            session_key,
             body,
         );
         let bytes = CBOR::from(message).to_cbor_data();
@@ -346,7 +344,7 @@ impl<P: QlPlatform> Runtime<P> {
                 sender: self.platform.xid(),
                 recipient,
             },
-            &session_key,
+            session_key,
             body,
         );
         let bytes = CBOR::from(message).to_cbor_data();

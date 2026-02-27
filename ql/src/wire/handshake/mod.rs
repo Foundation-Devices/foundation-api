@@ -58,7 +58,7 @@ pub fn verify_transcript_signature(
     signature: &MLDSASignature,
     transcript: &[u8],
 ) -> Result<(), QlError> {
-    match signing_key.verify(signature, &transcript) {
+    match signing_key.verify(signature, transcript) {
         Ok(true) => Ok(()),
         _ => Err(QlError::InvalidSignature),
     }

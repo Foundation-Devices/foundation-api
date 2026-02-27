@@ -349,7 +349,7 @@ where
 fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
     tokio::task::spawn_local(async move {
         while let Ok(bytes) = outbound.recv().await {
-            let _ = handle.send_incoming(bytes);
+            handle.send_incoming(bytes);
         }
     });
 }
@@ -371,7 +371,7 @@ fn spawn_heartbeat_tap_forwarder(
             if is_heartbeat(&bytes) {
                 let _ = heartbeat_tx.send(()).await;
             }
-            let _ = handle.send_incoming(bytes);
+            handle.send_incoming(bytes);
         }
     });
 }
@@ -382,7 +382,7 @@ fn spawn_drop_heartbeat_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHa
             if is_heartbeat(&bytes) {
                 continue;
             }
-            let _ = handle.send_incoming(bytes);
+            handle.send_incoming(bytes);
         }
     });
 }
@@ -397,7 +397,7 @@ fn spawn_gated_forwarder(
             if drop_flag.load(Ordering::Relaxed) {
                 continue;
             }
-            let _ = handle.send_incoming(bytes);
+            handle.send_incoming(bytes);
         }
     });
 }
@@ -425,7 +425,7 @@ fn spawn_routed_forwarder_with_filter<F>(
                 .iter()
                 .find(|(peer, _)| *peer == record.header.recipient)
             {
-                let _ = handle.send_incoming(bytes);
+                handle.send_incoming(bytes);
             }
         }
     });
@@ -595,7 +595,7 @@ fn protocol_record_size_breakdown() {
     let heartbeat_size = CBOR::from(heartbeat_record).to_cbor_data().len();
 
     let print_size = |label: &str, size: usize| {
-        println!("{:<21}: {} bytes", label, size);
+        println!("{label:<21}: {size} bytes");
     };
 
     print_size("ql size hello", hello_size);

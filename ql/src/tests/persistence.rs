@@ -7,6 +7,13 @@ use bc_components::{
 
 use super::*;
 
+type PersistPlatformParts = (
+    PersistPlatform,
+    Receiver<Vec<u8>>,
+    Receiver<StatusEvent>,
+    Receiver<Vec<crate::Peer>>,
+);
+
 struct PersistPlatform {
     signing_private: MLDSAPrivateKey,
     signing_public: MLDSAPublicKey,
@@ -21,15 +28,7 @@ struct PersistPlatform {
 }
 
 impl PersistPlatform {
-    fn new(
-        seed: u8,
-        loaded_peers: Vec<crate::Peer>,
-    ) -> (
-        Self,
-        Receiver<Vec<u8>>,
-        Receiver<StatusEvent>,
-        Receiver<Vec<crate::Peer>>,
-    ) {
+    fn new(seed: u8, loaded_peers: Vec<crate::Peer>) -> PersistPlatformParts {
         let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
         let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
         let (outbound, outbound_rx) = async_channel::unbounded();

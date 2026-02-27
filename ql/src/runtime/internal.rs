@@ -38,6 +38,12 @@ impl KeepAliveState {
     }
 }
 
+impl Default for KeepAliveState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
     pub peer: XID,
@@ -130,10 +136,7 @@ pub enum PeerSession {
 impl PeerSession {
     #[inline]
     pub fn is_connected(&self) -> bool {
-        match self {
-            PeerSession::Connected { .. } => true,
-            _ => false,
-        }
+        matches!(self, PeerSession::Connected { .. })
     }
 
     #[inline]
