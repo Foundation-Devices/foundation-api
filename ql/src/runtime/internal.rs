@@ -21,12 +21,6 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Token(u64);
 
-impl Token {
-    pub(crate) fn next(self) -> Self {
-        Self(self.0.wrapping_add(1))
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct KeepAliveState {
     pub token: Token,
@@ -193,7 +187,7 @@ pub struct RuntimeState {
     pub outbound: VecDeque<OutboundMessage>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     pub pending: HashMap<MessageId, PendingEntry>,
-    pub next_message_id: u64,
+    pub next_message_id: Cell<MessageId>,
     pub replay_cache: ReplayCache,
 }
 
@@ -201,25 +195,25 @@ impl RuntimeState {
     pub fn new() -> Self {
         Self {
             peers: PeerStore::new(),
-            next_token: Cell::new(Token(0)),
+            next_token: Cell::new(Token(1)),
             outbound: VecDeque::new(),
             timeouts: BinaryHeap::new(),
             pending: HashMap::new(),
-            next_message_id: 1,
+            next_message_id: Cell::new(MessageId::new(1)),
             replay_cache: ReplayCache::new(),
         }
     }
 
     pub fn next_token(&self) -> Token {
         let token = self.next_token.get();
-        self.next_token.set(token.next());
+        self.next_token.set(Token(token.0.wrapping_add(1)));
         token
     }
 
-    pub fn next_message_id(&mut self) -> MessageId {
-        let id = self.next_message_id;
-        self.next_message_id = id.wrapping_add(1);
-        MessageId::new(id)
+    pub fn next_message_id(&self) -> MessageId {
+        let id = self.next_message_id.get();
+        self.next_message_id.set(MessageId(id.0.wrapping_add(1)));
+        id
     }
 }
 

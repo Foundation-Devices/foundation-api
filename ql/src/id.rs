@@ -3,7 +3,7 @@ use std::fmt;
 use dcbor::CBOR;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MessageId(u64);
+pub struct MessageId(pub u64);
 
 impl MessageId {
     pub const fn new(value: u64) -> Self {
