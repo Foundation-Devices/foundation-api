@@ -433,8 +433,10 @@ impl<P: QlPlatform> Runtime<P> {
         };
         let record = match message::decrypt_message(&header, &encrypted, &session_key) {
             Ok(record) => record,
-            // TODO: fix this
-            Err(message::MessageError::Nack { .. }) => return,
+            Err(message::MessageError::Nack { id, nack, kind }) => {
+                self.handle_message_nack(state, peer, id, nack, kind);
+                return;
+            }
             Err(message::MessageError::Error(_)) => return,
         };
         let namespace = match record.kind {
@@ -473,6 +475,20 @@ impl<P: QlPlatform> Runtime<P> {
                     .handle_inbound(HandlerEvent::Event(InboundEvent { message: record }));
             }
         }
+    }
+
+    fn handle_message_nack(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        id: MessageId,
+        nack: Nack,
+        kind: MessageKind,
+    ) {
+        if kind != MessageKind::Request {
+            return;
+        }
+        self.handle_send_response(state, id, peer, CBOR::from(nack), MessageKind::Nack);
     }
 
     fn handle_heartbeat(

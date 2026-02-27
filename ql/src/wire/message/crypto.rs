@@ -47,7 +47,14 @@ pub fn decrypt_message(
         return Err(QlError::InvalidPayload.into());
     }
     let body = decrypt_body(session_key, encrypted)?;
-    ensure_not_expired(body.message_id, body.valid_until)?;
+    ensure_not_expired(body.message_id, body.valid_until).map_err(|err| match err {
+        QlError::Nack { id, nack } => MessageError::Nack {
+            id,
+            nack,
+            kind: body.kind,
+        },
+        other => MessageError::Error(other),
+    })?;
     Ok(DecryptedMessage {
         sender: header.sender,
         recipient: header.recipient,
