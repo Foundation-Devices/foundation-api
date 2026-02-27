@@ -133,7 +133,7 @@ async fn pairing_request_triggers_handshake() {
             &platform_a,
             peer_b.xid,
             &peer_b.encapsulation_key,
-            MessageId::new(1),
+            MessageId(1),
             Duration::from_secs(1),
         )
         .unwrap();

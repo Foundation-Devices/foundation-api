@@ -199,7 +199,7 @@ impl RuntimeState {
             outbound: VecDeque::new(),
             timeouts: BinaryHeap::new(),
             pending: HashMap::new(),
-            next_message_id: Cell::new(MessageId::new(1)),
+            next_message_id: Cell::new(MessageId(1)),
             replay_cache: ReplayCache::new(),
         }
     }

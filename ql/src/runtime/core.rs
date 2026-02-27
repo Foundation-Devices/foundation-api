@@ -339,7 +339,7 @@ impl<P: QlPlatform> Runtime<P> {
             message_id: id,
             valid_until,
             kind,
-            route_id: RouteId::new(0),
+            route_id: RouteId(0),
             payload,
         };
         let message = message::encrypt_message(

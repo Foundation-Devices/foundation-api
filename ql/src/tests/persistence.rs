@@ -200,7 +200,7 @@ async fn pairing_persists_snapshot() {
             &platform_a,
             peer_b.xid,
             &peer_b.encapsulation_key,
-            MessageId::new(1),
+            MessageId(1),
             Duration::from_secs(1),
         )
         .unwrap();

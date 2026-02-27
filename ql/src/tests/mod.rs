@@ -562,7 +562,7 @@ fn protocol_record_size_breakdown() {
         &platform_a,
         responder,
         platform_b.encapsulation_public_key(),
-        MessageId::new(1),
+        MessageId(1),
         Duration::from_secs(60),
     )
     .unwrap();
@@ -575,10 +575,10 @@ fn protocol_record_size_breakdown() {
         },
         &session_key,
         MessageBody {
-            message_id: MessageId::new(2),
+            message_id: MessageId(2),
             valid_until: now_secs().saturating_add(60),
             kind: MessageKind::Event,
-            route_id: RouteId::new(1),
+            route_id: RouteId(1),
             payload: CBOR::null(),
         },
     );
@@ -591,7 +591,7 @@ fn protocol_record_size_breakdown() {
         },
         &session_key,
         HeartbeatBody {
-            message_id: MessageId::new(3),
+            message_id: MessageId(3),
             valid_until: now_secs().saturating_add(60),
         },
     );

@@ -1,5 +1,6 @@
-use super::*;
 use bc_components::SymmetricKey;
+
+use super::*;
 
 #[tokio::test(flavor = "current_thread")]
 async fn heartbeat_ignored_without_session() {
@@ -27,7 +28,7 @@ async fn heartbeat_ignored_without_session() {
             },
             &SymmetricKey::new(),
             HeartbeatBody {
-                message_id: MessageId::new(1),
+                message_id: MessageId(1),
                 valid_until: now_secs().saturating_add(60),
             },
         );
@@ -215,7 +216,7 @@ async fn any_message_clears_pending() {
             .unwrap()
             .unwrap();
 
-        handle_b.send_event_raw(peer_a, RouteId::new(99), CBOR::from(1u8));
+        handle_b.send_event_raw(peer_a, RouteId(99), CBOR::from(1u8));
 
         let window = keep_alive.timeout + Duration::from_millis(20);
         let disconnect = tokio::time::timeout(window, async {
@@ -274,7 +275,7 @@ async fn heartbeat_timeout_disconnects_and_drops_outbound() {
 
         let response = handle_a.send_request_raw(
             peer_b,
-            RouteId::new(9),
+            RouteId(9),
             CBOR::from(9u8),
             RequestConfig {
                 timeout: Some(Duration::from_millis(200)),
@@ -387,7 +388,7 @@ async fn invalid_heartbeat_ignored() {
             },
             &SymmetricKey::new(),
             HeartbeatBody {
-                message_id: MessageId::new(42),
+                message_id: MessageId(42),
                 valid_until: now_secs().saturating_add(30),
             },
         );
@@ -534,7 +535,7 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
 
         let request_b = handle_a.send_request_raw(
             peer_b.xid,
-            RouteId::new(10),
+            RouteId(10),
             CBOR::from(10u8),
             RequestConfig {
                 timeout: Some(Duration::from_millis(200)),
@@ -542,7 +543,7 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
         );
         let request_c = handle_a.send_request_raw(
             peer_c.xid,
-            RouteId::new(11),
+            RouteId(11),
             CBOR::from(11u8),
             RequestConfig {
                 timeout: Some(Duration::from_millis(200)),
@@ -619,7 +620,7 @@ async fn multi_peer_activity_is_per_peer() {
 
         tokio::time::sleep(keep_alive.interval + Duration::from_millis(5)).await;
 
-        handle_b.send_event_raw(peer_a.xid, RouteId::new(99), CBOR::from(1u8));
+        handle_b.send_event_raw(peer_a.xid, RouteId(99), CBOR::from(1u8));
 
         await_status(&status_a, peer_c.xid, PeerStage::Disconnected).await;
 

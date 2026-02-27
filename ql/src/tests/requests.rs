@@ -34,7 +34,7 @@ async fn request_response_round_trip() {
 
         let response = handle_a.send_request_raw(
             peer_b.xid,
-            RouteId::new(7),
+            RouteId(7),
             CBOR::from(12u8),
             RequestConfig::default(),
         );
@@ -75,7 +75,7 @@ async fn request_timeout_returns_error() {
 
         let ticket = handle_a.send_request_raw(
             peer_b.xid,
-            RouteId::new(1),
+            RouteId(1),
             CBOR::from(1u8),
             RequestConfig {
                 timeout: Some(Duration::from_millis(30)),
@@ -124,7 +124,7 @@ async fn request_nack_resolves_pending() {
 
         let response = handle_a.send_request_raw(
             peer_b.xid,
-            RouteId::new(2),
+            RouteId(2),
             CBOR::from(2u8),
             RequestConfig::default(),
         );
@@ -176,7 +176,7 @@ async fn request_dispatches_to_platform_callback() {
 
         let ticket = handle_a.send_request_raw(
             peer_b.xid,
-            RouteId::new(3),
+            RouteId(3),
             CBOR::from(1u8),
             RequestConfig::default(),
         );
@@ -231,7 +231,7 @@ async fn replayed_message_is_ignored() {
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
-        handle_a.send_event_raw(peer_b.xid, RouteId::new(9), CBOR::from(1u8));
+        handle_a.send_event_raw(peer_b.xid, RouteId(9), CBOR::from(1u8));
 
         let first = tokio::time::timeout(Duration::from_secs(1), inbound_b.recv())
             .await
@@ -239,7 +239,7 @@ async fn replayed_message_is_ignored() {
             .unwrap();
         match first {
             HandlerEvent::Event(event) => {
-                assert_eq!(event.message.route_id, RouteId::new(9));
+                assert_eq!(event.message.route_id, RouteId(9));
             }
             HandlerEvent::Request(_) => panic!("unexpected request"),
         }

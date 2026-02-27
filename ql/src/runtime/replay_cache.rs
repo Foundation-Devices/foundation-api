@@ -133,7 +133,7 @@ mod tests {
     fn check_and_store_detects_replay() {
         let mut cache = ReplayCache::new();
         let peer = peer_with_byte(1);
-        let key = ReplayKey::new(peer, ReplayNamespace::Peer, MessageId::new(1));
+        let key = ReplayKey::new(peer, ReplayNamespace::Peer, MessageId(1));
         let now_secs = 100;
         let expires_at = 110;
 
@@ -148,8 +148,8 @@ mod tests {
         let expired_at = 99;
         let future_at = 110;
 
-        let key_old = ReplayKey::new(peer_with_byte(2), ReplayNamespace::Peer, MessageId::new(2));
-        let key_new = ReplayKey::new(peer_with_byte(3), ReplayNamespace::Peer, MessageId::new(3));
+        let key_old = ReplayKey::new(peer_with_byte(2), ReplayNamespace::Peer, MessageId(2));
+        let key_new = ReplayKey::new(peer_with_byte(3), ReplayNamespace::Peer, MessageId(3));
 
         cache.add(key_old, expired_at);
         cache.add(key_new, future_at);
@@ -167,8 +167,8 @@ mod tests {
 
         let peer_a = peer_with_byte(4);
         let peer_b = peer_with_byte(5);
-        let key_a = ReplayKey::new(peer_a, ReplayNamespace::Peer, MessageId::new(4));
-        let key_b = ReplayKey::new(peer_b, ReplayNamespace::Peer, MessageId::new(5));
+        let key_a = ReplayKey::new(peer_a, ReplayNamespace::Peer, MessageId(4));
+        let key_b = ReplayKey::new(peer_b, ReplayNamespace::Peer, MessageId(5));
 
         cache.add(key_a, expires_at);
         cache.add(key_b, expires_at);
