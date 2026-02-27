@@ -5,13 +5,10 @@ use bc_components::{
 };
 use dcbor::CBOR;
 
+use super::{PairRequestBody, PairRequestRecord};
 use crate::{
-    crypto::ensure_not_expired,
     platform::{QlPlatform, QlPlatformExt},
-    wire::{
-        pair::{PairRequestBody, PairRequestRecord},
-        QlHeader, QlPayload, QlRecord,
-    },
+    wire::{ensure_not_expired, now_secs, QlHeader, QlPayload, QlRecord},
     MessageId, QlError,
 };
 
@@ -27,7 +24,7 @@ pub fn build_pair_request(
         sender: platform.xid(),
         recipient,
     };
-    let valid_until = super::now_secs().saturating_add(valid_for.as_secs());
+    let valid_until = now_secs().saturating_add(valid_for.as_secs());
     let signing_pub_key = platform.signing_public_key().clone();
     let sender_encapsulation_key = platform.encapsulation_public_key().clone();
     let proof_data = pairing_proof_data(

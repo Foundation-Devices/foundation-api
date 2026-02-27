@@ -7,7 +7,6 @@ use dcbor::CBOR;
 use futures_lite::future::poll_fn;
 
 use crate::{
-    crypto::{handshake, heartbeat, message, pair},
     platform::{QlPlatform, QlPlatformExt},
     runtime::{
         internal::{
@@ -20,10 +19,10 @@ use crate::{
         Responder, Runtime, Token,
     },
     wire::{
-        handshake::HandshakeRecord,
-        heartbeat::HeartbeatBody,
-        message::{MessageBody, MessageKind, Nack},
-        pair::PairRequestRecord,
+        handshake::{self, HandshakeRecord},
+        heartbeat::{self, HeartbeatBody},
+        message::{self, MessageBody, MessageKind, Nack},
+        pair::{self, PairRequestRecord},
         QlHeader, QlPayload, QlRecord,
     },
     MessageId, QlError, RouteId,

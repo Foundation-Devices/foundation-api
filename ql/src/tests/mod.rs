@@ -15,20 +15,17 @@ use dcbor::CBOR;
 use tokio::{sync::Semaphore, task::LocalSet};
 
 use crate::{
-    crypto::{
-        handshake as crypto_handshake, heartbeat as crypto_heartbeat, message::encrypt_message,
-        pair,
-    },
     platform::{PlatformFuture, QlPlatform, QlPlatformExt},
     runtime::{
         internal::now_secs, new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RequestConfig,
         RuntimeConfig, RuntimeHandle,
     },
     wire::{
+        self,
         handshake::HandshakeRecord,
         heartbeat::HeartbeatBody,
-        message::{MessageBody, MessageKind, Nack},
-        QlHeader, QlPayload, QlRecord,
+        message::{encrypt_message, MessageBody, MessageKind, Nack},
+        pair, QlHeader, QlPayload, QlRecord,
     },
     MessageId, QlError, RouteId,
 };
@@ -496,7 +493,7 @@ fn protocol_record_size_breakdown() {
     let initiator = platform_a.xid();
     let responder = platform_b.xid();
 
-    let (hello, initiator_secret) = crypto_handshake::build_hello(
+    let (hello, initiator_secret) = wire::handshake::build_hello(
         &platform_a,
         initiator,
         responder,
@@ -512,7 +509,7 @@ fn protocol_record_size_breakdown() {
     };
     let hello_size = CBOR::from(hello_record).to_cbor_data().len();
 
-    let (hello_reply, responder_secrets) = crypto_handshake::respond_hello(
+    let (hello_reply, responder_secrets) = wire::handshake::respond_hello(
         &platform_b,
         initiator,
         responder,
@@ -529,7 +526,7 @@ fn protocol_record_size_breakdown() {
     };
     let reply_size = CBOR::from(reply_record).to_cbor_data().len();
 
-    let (confirm, session_key) = crypto_handshake::build_confirm(
+    let (confirm, session_key) = wire::handshake::build_confirm(
         &platform_a,
         initiator,
         responder,
@@ -539,7 +536,7 @@ fn protocol_record_size_breakdown() {
         &initiator_secret,
     )
     .unwrap();
-    let _session_key_b = crypto_handshake::finalize_confirm(
+    let _session_key_b = wire::handshake::finalize_confirm(
         initiator,
         responder,
         platform_a.signing_public_key(),
@@ -584,7 +581,7 @@ fn protocol_record_size_breakdown() {
     );
     let message_size = CBOR::from(message_record).to_cbor_data().len();
 
-    let heartbeat_record = crypto_heartbeat::encrypt_heartbeat(
+    let heartbeat_record = wire::heartbeat::encrypt_heartbeat(
         QlHeader {
             sender: initiator,
             recipient: responder,

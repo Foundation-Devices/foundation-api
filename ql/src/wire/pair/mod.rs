@@ -4,6 +4,9 @@ use dcbor::CBOR;
 use super::take_fields;
 use crate::MessageId;
 
+mod crypto;
+pub use crypto::*;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PairRequestRecord {
     pub kem_ct: MLKEMCiphertext,

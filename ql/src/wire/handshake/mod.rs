@@ -4,6 +4,9 @@ use dcbor::CBOR;
 use super::take_fields;
 use crate::QlError;
 
+mod crypto;
+pub use crypto::*;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HandshakeRecord {
     Hello(Hello),

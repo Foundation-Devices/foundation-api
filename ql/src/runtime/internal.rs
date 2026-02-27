@@ -118,7 +118,7 @@ pub enum PeerSession {
         handshake_token: Token,
         hello: Hello,
         reply: HelloReply,
-        secrets: crate::crypto::handshake::ResponderSecrets,
+        secrets: crate::wire::handshake::ResponderSecrets,
         deadline: Instant,
     },
     Connected {

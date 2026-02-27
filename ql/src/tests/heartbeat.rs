@@ -21,7 +21,7 @@ async fn heartbeat_ignored_without_session() {
             platform_b.encapsulation_public_key().clone(),
         );
 
-        let heartbeat = crypto_heartbeat::encrypt_heartbeat(
+        let heartbeat = wire::heartbeat::encrypt_heartbeat(
             QlHeader {
                 sender: peer_b,
                 recipient: peer_a,
@@ -381,7 +381,7 @@ async fn invalid_heartbeat_ignored() {
         await_status(&status_a, peer_b, PeerStage::Connected).await;
         await_status(&status_b, peer_a, PeerStage::Connected).await;
 
-        let heartbeat = crypto_heartbeat::encrypt_heartbeat(
+        let heartbeat = wire::heartbeat::encrypt_heartbeat(
             QlHeader {
                 sender: peer_b,
                 recipient: peer_a,

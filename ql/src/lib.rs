@@ -1,4 +1,3 @@
-pub mod crypto;
 mod id;
 pub mod platform;
 pub mod router;

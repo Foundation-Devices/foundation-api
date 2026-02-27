@@ -1,12 +1,9 @@
 use bc_components::{Nonce, SymmetricKey};
 use dcbor::CBOR;
 
+use super::{DecryptedMessage, MessageBody, MessageKind, Nack};
 use crate::{
-    crypto::ensure_not_expired,
-    wire::{
-        message::{DecryptedMessage, MessageBody, MessageKind, Nack},
-        QlHeader, QlPayload, QlRecord,
-    },
+    wire::{ensure_not_expired, QlHeader, QlPayload, QlRecord},
     MessageId, QlError,
 };
 

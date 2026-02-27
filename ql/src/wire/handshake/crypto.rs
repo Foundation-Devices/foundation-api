@@ -3,11 +3,8 @@ use bc_components::{
 };
 use dcbor::CBOR;
 
-use crate::{
-    platform::QlPlatform,
-    wire::handshake::{verify_transcript_signature, Confirm, Hello, HelloReply},
-    QlError,
-};
+use super::{verify_transcript_signature, Confirm, Hello, HelloReply};
+use crate::{platform::QlPlatform, QlError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponderSecrets {
@@ -93,6 +90,7 @@ pub fn finalize_confirm(
         &transcript,
     ))
 }
+
 fn handshake_transcript(
     initiator: XID,
     responder: XID,

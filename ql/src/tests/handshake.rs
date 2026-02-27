@@ -210,7 +210,7 @@ async fn handshake_timeout_drops_queued_messages() {
         handle_a.connect(peer_b.xid).unwrap();
         await_status(&status_a, peer_b.xid, PeerStage::Initiator).await;
 
-        let (hello, _secret) = crypto_handshake::build_hello(
+        let (hello, _secret) = wire::handshake::build_hello(
             &platform_b,
             peer_b.xid,
             peer_a.xid,
