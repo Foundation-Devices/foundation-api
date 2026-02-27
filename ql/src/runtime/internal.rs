@@ -15,7 +15,7 @@ use crate::{
         handshake::{Hello, HelloReply},
         message::MessageKind,
     },
-    MessageId, QlError, RouteId,
+    MessageId, Peer, QlError, RouteId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -96,6 +96,17 @@ impl PeerStore {
         self.peers
             .push(PeerRecord::new(peer, signing_key, encapsulation_key));
         self.peers.last_mut().expect("peer record just inserted")
+    }
+
+    pub fn all(&self) -> Vec<Peer> {
+        self.peers
+            .iter()
+            .map(|record| Peer {
+                peer: record.peer,
+                signing_key: record.signing_key.clone(),
+                encapsulation_key: record.encapsulation_key.clone(),
+            })
+            .collect()
     }
 }
 

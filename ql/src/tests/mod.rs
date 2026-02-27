@@ -35,6 +35,7 @@ use crate::{
 
 mod handshake;
 mod heartbeat;
+mod persistence;
 mod requests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

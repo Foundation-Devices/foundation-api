@@ -32,6 +32,11 @@ use crate::{
 impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
         let mut state = RuntimeState::new();
+        for peer in self.platform.load_peers().await {
+            state
+                .peers
+                .upsert_peer(peer.peer, peer.signing_key, peer.encapsulation_key);
+        }
         let mut in_flight: Option<InFlightWrite<'_>> = None;
         while !self.rx.is_closed() {
             if in_flight.is_none() {
@@ -202,12 +207,15 @@ impl<P: QlPlatform> Runtime<P> {
         signing_key: MLDSAPublicKey,
         encapsulation_key: MLKEMPublicKey,
     ) {
-        let entry = state
-            .peers
-            .upsert_peer(peer, signing_key, encapsulation_key);
-        if let PeerSession::Disconnected = entry.session {
-            self.platform.handle_peer_status(peer, &entry.session);
+        {
+            let entry = state
+                .peers
+                .upsert_peer(peer, signing_key, encapsulation_key);
+            if let PeerSession::Disconnected = entry.session {
+                self.platform.handle_peer_status(peer, &entry.session);
+            }
         }
+        self.persist_peers(state);
     }
 
     fn handle_send_request(
@@ -404,7 +412,12 @@ impl<P: QlPlatform> Runtime<P> {
         state
             .peers
             .upsert_peer(peer, payload.signing_pub_key, payload.encapsulation_pub_key);
+        self.persist_peers(state);
         self.handle_connect(state, peer);
+    }
+
+    fn persist_peers(&self, state: &RuntimeState) {
+        self.platform.persist_peers(state.peers.all());
     }
 
     fn handle_record(
