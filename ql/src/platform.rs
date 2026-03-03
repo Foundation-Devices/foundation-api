@@ -21,11 +21,8 @@ pub trait QlPlatform {
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
 
-    fn load_peers(&self) -> PlatformFuture<'_, Vec<Peer>> {
-        Box::pin(async { Vec::new() })
-    }
-
-    fn persist_peers(&self, _peers: Vec<Peer>) {}
+    fn load_peers(&self) -> PlatformFuture<'_, Vec<Peer>>;
+    fn persist_peers(&self, peers: Vec<Peer>);
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession);
     fn handle_inbound(&self, event: HandlerEvent);

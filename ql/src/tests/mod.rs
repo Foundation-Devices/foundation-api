@@ -129,6 +129,12 @@ impl QlPlatform for TestPlatform {
         Box::pin(tokio::time::sleep(duration))
     }
 
+    fn load_peers(&self) -> PlatformFuture<'_, Vec<crate::Peer>> {
+        Box::pin(async { Vec::new() })
+    }
+
+    fn persist_peers(&self, _peers: Vec<crate::Peer>) {}
+
     fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
         let stage = match session {
             PeerSession::Disconnected => PeerStage::Disconnected,
@@ -237,6 +243,12 @@ impl QlPlatform for InboundPlatform {
         Box::pin(tokio::time::sleep(duration))
     }
 
+    fn load_peers(&self) -> PlatformFuture<'_, Vec<crate::Peer>> {
+        Box::pin(async { Vec::new() })
+    }
+
+    fn persist_peers(&self, _peers: Vec<crate::Peer>) {}
+
     fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
         let stage = match session {
             PeerSession::Disconnected => PeerStage::Disconnected,
@@ -324,6 +336,12 @@ impl QlPlatform for BlockingPlatform {
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
         Box::pin(tokio::time::sleep(duration))
     }
+
+    fn load_peers(&self) -> PlatformFuture<'_, Vec<crate::Peer>> {
+        Box::pin(async { Vec::new() })
+    }
+
+    fn persist_peers(&self, _peers: Vec<crate::Peer>) {}
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
         let stage = match session {
