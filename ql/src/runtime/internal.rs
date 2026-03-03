@@ -108,6 +108,11 @@ impl PeerStore {
             })
             .collect()
     }
+
+    pub fn remove_peer(&mut self, peer: XID) -> Option<PeerRecord> {
+        let index = self.peers.iter().position(|record| record.peer == peer)?;
+        Some(self.peers.remove(index))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +166,9 @@ pub(crate) enum RuntimeCommand {
         encapsulation_key: MLKEMPublicKey,
     },
     Connect {
+        peer: XID,
+    },
+    Unpair {
         peer: XID,
     },
     SendRequest {
