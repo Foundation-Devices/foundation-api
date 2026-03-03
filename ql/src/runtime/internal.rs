@@ -13,7 +13,7 @@ use crate::{
     runtime::{replay_cache::ReplayCache, RequestConfig},
     wire::{
         handshake::{Hello, HelloReply},
-        message::MessageKind,
+        message::{MessageBody, MessageKind},
     },
     MessageId, Peer, QlError, RouteId,
 };
@@ -232,11 +232,16 @@ pub struct InFlightWrite<'a> {
     pub future: PlatformFuture<'a, Result<(), QlError>>,
 }
 
+pub enum OutboundPayload {
+    PreEncoded(Vec<u8>),
+    DeferredMessage(MessageBody),
+}
+
 pub struct OutboundMessage {
     pub peer: XID,
     pub token: Token,
     pub message_id: Option<MessageId>,
-    pub bytes: Vec<u8>,
+    pub payload: OutboundPayload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

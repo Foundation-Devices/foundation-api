@@ -11,8 +11,8 @@ use crate::{
     runtime::{
         internal::{
             next_timeout_deadline, now_secs, peer_hello_wins, HelloAction, InFlightWrite,
-            KeepAliveState, LoopStep, OutboundMessage, PendingEntry, RuntimeCommand, RuntimeState,
-            TimeoutEntry, TimeoutKind,
+            KeepAliveState, LoopStep, OutboundMessage, OutboundPayload, PendingEntry,
+            RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
         HandlerEvent, InboundEvent, InboundRequest, InitiatorStage, KeepAliveConfig, PeerSession,
@@ -102,13 +102,41 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn start_next_write<'a>(&'a self, state: &mut RuntimeState) -> Option<InFlightWrite<'a>> {
-        let message = state.outbound.pop_front()?;
-        Some(InFlightWrite {
-            peer: message.peer,
-            token: message.token,
-            message_id: message.message_id,
-            future: self.platform.write_message(message.bytes),
-        })
+        while let Some(message) = state.outbound.pop_front() {
+            let bytes = match message.payload {
+                OutboundPayload::PreEncoded(bytes) => bytes,
+                OutboundPayload::DeferredMessage(body) => {
+                    let Some(session_key) = state
+                        .peers
+                        .peer(message.peer)
+                        .and_then(|entry| entry.session.session_key())
+                    else {
+                        if let Some(id) = message.message_id {
+                            if let Some(entry) = state.pending.remove(&id) {
+                                let _ = entry.tx.send(Err(QlError::SendFailed));
+                            }
+                        }
+                        continue;
+                    };
+                    let message = message::encrypt_message(
+                        QlHeader {
+                            sender: self.platform.xid(),
+                            recipient: message.peer,
+                        },
+                        session_key,
+                        body,
+                    );
+                    CBOR::from(message).to_cbor_data()
+                }
+            };
+            return Some(InFlightWrite {
+                peer: message.peer,
+                token: message.token,
+                message_id: message.message_id,
+                future: self.platform.write_message(bytes),
+            });
+        }
+        None
     }
 
     async fn next_step<'a>(
@@ -236,13 +264,10 @@ impl<P: QlPlatform> Runtime<P> {
             let _ = respond_to.send(Err(QlError::UnknownPeer(recipient)));
             return;
         };
-        let session_key = match &entry.session {
-            PeerSession::Connected { session_key, .. } => session_key,
-            _ => {
-                let _ = respond_to.send(Err(QlError::MissingSession(recipient)));
-                return;
-            }
-        };
+        if !entry.session.is_connected() {
+            let _ = respond_to.send(Err(QlError::MissingSession(recipient)));
+            return;
+        }
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
         let body = MessageBody {
             message_id: id,
@@ -251,15 +276,6 @@ impl<P: QlPlatform> Runtime<P> {
             route_id,
             payload,
         };
-        let message = message::encrypt_message(
-            QlHeader {
-                sender: self.platform.xid(),
-                recipient,
-            },
-            session_key,
-            body,
-        );
-        let bytes = CBOR::from(message).to_cbor_data();
         state.pending.insert(
             id,
             PendingEntry {
@@ -272,7 +288,13 @@ impl<P: QlPlatform> Runtime<P> {
             kind: TimeoutKind::Request { id },
         }));
         let outbound_deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(state, recipient, bytes, outbound_deadline, Some(id));
+        self.enqueue_outbound(
+            state,
+            recipient,
+            OutboundPayload::DeferredMessage(body),
+            outbound_deadline,
+            Some(id),
+        );
     }
 
     fn handle_send_event(
@@ -283,13 +305,12 @@ impl<P: QlPlatform> Runtime<P> {
         payload: CBOR,
     ) {
         let id = state.next_message_id();
-        let Some(session_key) = state
-            .peers
-            .peer(recipient)
-            .and_then(|p| p.session.session_key())
-        else {
+        let Some(entry) = state.peers.peer(recipient) else {
             return;
         };
+        if !entry.session.is_connected() {
+            return;
+        }
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
         let body = MessageBody {
             message_id: id,
@@ -298,17 +319,14 @@ impl<P: QlPlatform> Runtime<P> {
             route_id,
             payload,
         };
-        let message = message::encrypt_message(
-            QlHeader {
-                sender: self.platform.xid(),
-                recipient,
-            },
-            session_key,
-            body,
-        );
-        let bytes = CBOR::from(message).to_cbor_data();
         let outbound_deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(state, recipient, bytes, outbound_deadline, None);
+        self.enqueue_outbound(
+            state,
+            recipient,
+            OutboundPayload::DeferredMessage(body),
+            outbound_deadline,
+            None,
+        );
     }
 
     fn handle_send_response(
@@ -323,13 +341,12 @@ impl<P: QlPlatform> Runtime<P> {
             MessageKind::Response | MessageKind::Nack => kind,
             _ => return,
         };
-        let Some(session_key) = state
-            .peers
-            .peer(recipient)
-            .and_then(|p| p.session.session_key())
-        else {
+        let Some(entry) = state.peers.peer(recipient) else {
             return;
         };
+        if !entry.session.is_connected() {
+            return;
+        }
 
         let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
         let body = MessageBody {
@@ -339,17 +356,14 @@ impl<P: QlPlatform> Runtime<P> {
             route_id: RouteId(0),
             payload,
         };
-        let message = message::encrypt_message(
-            QlHeader {
-                sender: self.platform.xid(),
-                recipient,
-            },
-            session_key,
-            body,
-        );
-        let bytes = CBOR::from(message).to_cbor_data();
         let outbound_deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(state, recipient, bytes, outbound_deadline, None);
+        self.enqueue_outbound(
+            state,
+            recipient,
+            OutboundPayload::DeferredMessage(body),
+            outbound_deadline,
+            None,
+        );
     }
 
     fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
@@ -540,7 +554,13 @@ impl<P: QlPlatform> Runtime<P> {
         );
         let bytes = CBOR::from(message).to_cbor_data();
         let outbound_deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(state, peer, bytes, outbound_deadline, None);
+        self.enqueue_outbound(
+            state,
+            peer,
+            OutboundPayload::PreEncoded(bytes),
+            outbound_deadline,
+            None,
+        );
     }
 
     fn keep_alive_config(&self) -> Option<KeepAliveConfig> {
@@ -675,7 +695,13 @@ impl<P: QlPlatform> Runtime<P> {
                     payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
                 };
                 let bytes = CBOR::from(message).to_cbor_data();
-                self.enqueue_outbound(state, peer, bytes, deadline, None);
+                self.enqueue_outbound(
+                    state,
+                    peer,
+                    OutboundPayload::PreEncoded(bytes),
+                    deadline,
+                    None,
+                );
             }
             HelloAction::Ignore => {}
         }
@@ -748,7 +774,13 @@ impl<P: QlPlatform> Runtime<P> {
         };
         let bytes = CBOR::from(message).to_cbor_data();
         let deadline = Instant::now() + self.config.handshake_timeout;
-        self.enqueue_outbound(state, peer, bytes, deadline, None);
+        self.enqueue_outbound(
+            state,
+            peer,
+            OutboundPayload::PreEncoded(bytes),
+            deadline,
+            None,
+        );
     }
 
     fn handle_confirm(
@@ -867,7 +899,7 @@ impl<P: QlPlatform> Runtime<P> {
             peer,
             token,
             message_id: None,
-            bytes,
+            payload: OutboundPayload::PreEncoded(bytes),
         });
         state.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
@@ -883,7 +915,7 @@ impl<P: QlPlatform> Runtime<P> {
         &self,
         state: &mut RuntimeState,
         peer: XID,
-        bytes: Vec<u8>,
+        payload: OutboundPayload,
         deadline: Instant,
         message_id: Option<MessageId>,
     ) {
@@ -892,7 +924,7 @@ impl<P: QlPlatform> Runtime<P> {
             peer,
             token,
             message_id,
-            bytes,
+            payload,
         });
         state.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,

@@ -285,7 +285,7 @@ async fn expired_request_returns_expired_nack() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_delayed_message_forwarder(outbound_a, handle_b.clone(), Duration::from_millis(1500));
+        spawn_delayed_message_forwarder(outbound_a, handle_b.clone(), Duration::from_millis(2000));
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
@@ -365,6 +365,81 @@ async fn expired_event_does_not_send_nack() {
             unexpected.is_err(),
             "expired event should not generate nack"
         );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_reset_fails_queued_request() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(60));
+        let (platform_a, outbound_a, status_a, write_gate) = BlockingPlatform::new(1);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
+        let (reset_hello, _secret) = wire::handshake::build_hello(
+            &platform_b,
+            peer_b.xid,
+            peer_a.xid,
+            &peer_a.encapsulation_key,
+        )
+        .unwrap();
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        spawn_forwarder(outbound_a, handle_b.clone());
+        spawn_forwarder(outbound_b, handle_a.clone());
+
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+
+        write_gate.add_permits(2);
+        handle_a.connect(peer_b.xid).unwrap();
+
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
+
+        let blocked = handle_a.send_request_raw(
+            peer_b.xid,
+            RouteId(12),
+            CBOR::from(12u8),
+            RequestConfig {
+                timeout: Some(Duration::from_millis(200)),
+            },
+        );
+        let queued = handle_a.send_request_raw(
+            peer_b.xid,
+            RouteId(13),
+            CBOR::from(13u8),
+            RequestConfig {
+                timeout: Some(Duration::from_millis(200)),
+            },
+        );
+
+        let hello_message = QlRecord {
+            header: QlHeader {
+                sender: peer_b.xid,
+                recipient: peer_a.xid,
+            },
+            payload: QlPayload::Handshake(HandshakeRecord::Hello(reset_hello)),
+        };
+        handle_a.send_incoming(CBOR::from(hello_message).to_cbor_data());
+
+        await_status(&status_a, peer_b.xid, PeerStage::Responder).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
+
+        let queued_result = tokio::time::timeout(Duration::from_millis(300), queued.recv())
+            .await
+            .unwrap();
+        assert!(matches!(queued_result, Err(QlError::Timeout)));
+
+        let blocked_result = tokio::time::timeout(Duration::from_millis(300), blocked.recv())
+            .await
+            .unwrap();
+        assert!(matches!(blocked_result, Err(QlError::Timeout)));
     })
     .await;
 }
