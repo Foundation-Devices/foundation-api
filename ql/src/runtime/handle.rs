@@ -64,6 +64,12 @@ impl RuntimeHandle {
             .map_err(|_| QlError::Cancelled)
     }
 
+    pub fn unpair(&self, peer: XID) -> Result<(), QlError> {
+        self.tx
+            .send_blocking(RuntimeCommand::Unpair { peer })
+            .map_err(|_| QlError::Cancelled)
+    }
+
     pub fn send_incoming(&self, bytes: Vec<u8>) {
         self.send(RuntimeCommand::Incoming(bytes))
     }

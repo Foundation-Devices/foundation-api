@@ -23,6 +23,7 @@ use crate::{
         heartbeat::{self, HeartbeatBody},
         message::{self, MessageBody, MessageKind, Nack},
         pair::{self, PairRequestRecord},
+        unpair::{self, UnpairRecord},
         QlHeader, QlPayload, QlRecord,
     },
     MessageId, QlError, RouteId,
@@ -53,6 +54,9 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                     RuntimeCommand::Connect { peer } => {
                         self.handle_connect(&mut state, peer);
+                    }
+                    RuntimeCommand::Unpair { peer } => {
+                        self.handle_send_unpair(&mut state, peer);
                     }
                     RuntimeCommand::SendRequest {
                         recipient,
@@ -366,6 +370,31 @@ impl<P: QlPlatform> Runtime<P> {
         );
     }
 
+    fn handle_send_unpair(&self, state: &mut RuntimeState, peer: XID) {
+        if state.peers.peer(peer).is_none() {
+            return;
+        }
+        let message = unpair::build_unpair_record(
+            &self.platform,
+            QlHeader {
+                sender: self.platform.xid(),
+                recipient: peer,
+            },
+            state.next_message_id(),
+            now_secs().saturating_add(self.config.message_expiration.as_secs()),
+        );
+        let bytes = CBOR::from(message).to_cbor_data();
+        self.hard_unpair_peer(state, peer);
+        let deadline = Instant::now() + self.config.message_expiration;
+        self.enqueue_outbound(
+            state,
+            peer,
+            OutboundPayload::PreEncoded(bytes),
+            deadline,
+            None,
+        );
+    }
+
     fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
         let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
             return;
@@ -380,6 +409,9 @@ impl<P: QlPlatform> Runtime<P> {
             }
             QlPayload::Pair(request) => {
                 self.handle_pairing(state, header, request);
+            }
+            QlPayload::Unpair(unpair) => {
+                self.handle_unpair(state, header, unpair);
             }
             QlPayload::Message(encrypted) => {
                 self.handle_record(state, header, encrypted);
@@ -425,6 +457,40 @@ impl<P: QlPlatform> Runtime<P> {
             .upsert_peer(peer, payload.signing_pub_key, payload.encapsulation_pub_key);
         self.persist_peers(state);
         self.handle_connect(state, peer);
+    }
+
+    fn handle_unpair(&self, state: &mut RuntimeState, header: QlHeader, record: UnpairRecord) {
+        let peer = header.sender;
+        let Some(signing_key) = state
+            .peers
+            .peer(peer)
+            .map(|entry| entry.signing_key.clone())
+        else {
+            return;
+        };
+        if unpair::verify_unpair_record(&header, &record, &signing_key).is_err() {
+            return;
+        }
+        let replay_key = ReplayKey::new(peer, ReplayNamespace::Peer, record.message_id);
+        if state
+            .replay_cache
+            .check_and_store_valid_until(replay_key, record.valid_until)
+        {
+            return;
+        }
+        self.hard_unpair_peer(state, peer);
+    }
+
+    fn hard_unpair_peer(&self, state: &mut RuntimeState, peer: XID) {
+        if state.peers.remove_peer(peer).is_none() {
+            return;
+        }
+        self.drop_outbound_for_peer(state, peer);
+        self.fail_pending_for_peer(state, peer);
+        state.replay_cache.clear_peer(peer);
+        self.platform
+            .handle_peer_status(peer, &PeerSession::Disconnected);
+        self.persist_peers(state);
     }
 
     fn persist_peers(&self, state: &RuntimeState) {

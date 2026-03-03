@@ -34,6 +34,7 @@ mod handshake;
 mod heartbeat;
 mod persistence;
 mod requests;
+mod unpair;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeerStage {
