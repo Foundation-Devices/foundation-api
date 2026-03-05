@@ -35,6 +35,8 @@ pub struct FirmwareUpdateAvailable {
 pub struct FirmwareFetchRequest {
     #[n(0)]
     pub current_version: String,
+    #[n(1)]
+    pub chunk_offset: Option<u64>,
 }
 
 // From Envoy to Prime
