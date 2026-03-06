@@ -1,5 +1,6 @@
 pub use handle::{
     InboundByteStream, InboundStream, OutboundTransfer, Response, RuntimeHandle, StreamResponse,
+    UploadRequest,
 };
 pub use internal::{InitiatorStage, PeerSession, Token};
 
@@ -15,7 +16,7 @@ use dcbor::CBOR;
 
 use crate::{
     wire::message::{DecryptedMessage, MessageKind, Nack},
-    MessageId, QlCodec, QlError,
+    MessageId, QlCodec, QlError, RouteId,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -66,12 +67,24 @@ impl RuntimeConfig {
 #[derive(Debug)]
 pub enum HandlerEvent {
     Request(InboundRequest),
+    UploadRequest(InboundUploadRequest),
     Event(InboundEvent),
 }
 
 #[derive(Debug)]
 pub struct InboundRequest {
     pub message: DecryptedMessage,
+    pub respond_to: Responder,
+}
+
+#[derive(Debug)]
+pub struct InboundUploadRequest {
+    pub sender: XID,
+    pub recipient: XID,
+    pub route_id: RouteId,
+    pub message_id: MessageId,
+    pub meta: CBOR,
+    pub body: InboundByteStream,
     pub respond_to: Responder,
 }
 

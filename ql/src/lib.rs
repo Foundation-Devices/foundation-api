@@ -33,6 +33,11 @@ pub trait QlStream: QlCodec {
     type StreamMeta: QlCodec;
 }
 
+pub trait QlUpload: QlCodec {
+    const ID: RouteId;
+    type Response: QlCodec;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QlError {
     #[error("invalid payload")]

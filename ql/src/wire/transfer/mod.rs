@@ -1,7 +1,7 @@
 use dcbor::CBOR;
 
 use super::take_fields;
-use crate::MessageId;
+use crate::{MessageId, RouteId};
 
 mod crypto;
 pub use crypto::*;
@@ -16,17 +16,33 @@ pub struct TransferBody {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransferFrame {
-    Open { request_id: MessageId, meta: CBOR },
-    Chunk { seq: u32, data: Vec<u8> },
-    Finish { seq: u32 },
-    Ack { next_seq: u32 },
+    OpenResponse {
+        request_id: MessageId,
+        meta: CBOR,
+    },
+    OpenRequest {
+        request_id: MessageId,
+        route_id: RouteId,
+        meta: CBOR,
+    },
+    Chunk {
+        seq: u32,
+        data: Vec<u8>,
+    },
+    Finish {
+        seq: u32,
+    },
+    Ack {
+        next_seq: u32,
+    },
     Cancel,
     CancelAck,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferKind {
-    Open = 1,
+    OpenResponse = 1,
+    OpenRequest,
     Chunk,
     Finish,
     Ack,
@@ -63,9 +79,19 @@ impl TryFrom<CBOR> for TransferBody {
 impl From<TransferFrame> for CBOR {
     fn from(value: TransferFrame) -> Self {
         match value {
-            TransferFrame::Open { request_id, meta } => CBOR::from(vec![
-                CBOR::from(TransferKind::Open as u8),
+            TransferFrame::OpenResponse { request_id, meta } => CBOR::from(vec![
+                CBOR::from(TransferKind::OpenResponse as u8),
                 CBOR::from(request_id),
+                meta,
+            ]),
+            TransferFrame::OpenRequest {
+                request_id,
+                route_id,
+                meta,
+            } => CBOR::from(vec![
+                CBOR::from(TransferKind::OpenRequest as u8),
+                CBOR::from(request_id),
+                CBOR::from(route_id),
                 meta,
             ]),
             TransferFrame::Chunk { seq, data } => CBOR::from(vec![
@@ -97,10 +123,18 @@ impl TryFrom<CBOR> for TransferFrame {
             .ok_or_else(|| dcbor::Error::msg("missing transfer frame tag"))?
             .try_into()?;
         match tag {
-            TransferKind::Open => {
+            TransferKind::OpenResponse => {
                 let [request_id, meta] = take_fields(iter)?;
-                Ok(Self::Open {
+                Ok(Self::OpenResponse {
                     request_id: request_id.try_into()?,
+                    meta,
+                })
+            }
+            TransferKind::OpenRequest => {
+                let [request_id, route_id, meta] = take_fields(iter)?;
+                Ok(Self::OpenRequest {
+                    request_id: request_id.try_into()?,
+                    route_id: route_id.try_into()?,
                     meta,
                 })
             }
@@ -147,12 +181,13 @@ impl TryFrom<CBOR> for TransferKind {
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let tag: u8 = value.try_into()?;
         match tag {
-            1 => Ok(Self::Open),
-            2 => Ok(Self::Chunk),
-            3 => Ok(Self::Finish),
-            4 => Ok(Self::Ack),
-            5 => Ok(Self::Cancel),
-            6 => Ok(Self::CancelAck),
+            1 => Ok(Self::OpenResponse),
+            2 => Ok(Self::OpenRequest),
+            3 => Ok(Self::Chunk),
+            4 => Ok(Self::Finish),
+            5 => Ok(Self::Ack),
+            6 => Ok(Self::Cancel),
+            7 => Ok(Self::CancelAck),
             _ => Err(dcbor::Error::msg("unknown transfer frame tag")),
         }
     }

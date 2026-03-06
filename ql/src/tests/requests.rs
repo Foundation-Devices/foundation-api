@@ -260,6 +260,7 @@ async fn replayed_message_is_ignored() {
                 assert_eq!(event.message.route_id, RouteId(9));
             }
             HandlerEvent::Request(_) => panic!("unexpected request"),
+            HandlerEvent::UploadRequest(_) => panic!("unexpected upload request"),
         }
 
         let second = tokio::time::timeout(Duration::from_millis(50), inbound_b.recv()).await;

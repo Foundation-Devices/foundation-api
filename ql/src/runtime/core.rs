@@ -17,8 +17,8 @@ use crate::{
             RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
-        HandlerEvent, InboundEvent, InboundRequest, InitiatorStage, KeepAliveConfig, PeerSession,
-        Responder, Runtime, Token,
+        HandlerEvent, InboundByteStream, InboundEvent, InboundRequest, InboundUploadRequest,
+        InitiatorStage, KeepAliveConfig, PeerSession, Responder, Runtime, Token,
     },
     wire::{
         handshake::{self, HandshakeRecord},
@@ -84,6 +84,20 @@ impl<P: QlPlatform> Runtime<P> {
                     } => {
                         self.handle_send_stream_request(
                             &mut state, recipient, route_id, payload, respond_to, config,
+                        );
+                    }
+                    RuntimeCommand::SendUploadRequest {
+                        recipient,
+                        route_id,
+                        payload,
+                        respond_to,
+                        chunk_rx,
+                        start,
+                        config,
+                    } => {
+                        self.handle_send_upload_request(
+                            &mut state, recipient, route_id, payload, respond_to, chunk_rx, start,
+                            config,
                         );
                     }
                     RuntimeCommand::SendEvent {
@@ -403,6 +417,72 @@ impl<P: QlPlatform> Runtime<P> {
         );
     }
 
+    fn handle_send_upload_request(
+        &self,
+        state: &mut RuntimeState,
+        recipient: XID,
+        route_id: RouteId,
+        payload: CBOR,
+        respond_to: oneshot::Sender<Result<CBOR, QlError>>,
+        chunk_rx: async_channel::Receiver<OutboundStreamInput>,
+        start: oneshot::Sender<Result<MessageId, QlError>>,
+        config: super::RequestConfig,
+    ) {
+        let timeout = config
+            .timeout
+            .unwrap_or(self.config.default_request_timeout);
+        if timeout.is_zero() {
+            let _ = start.send(Err(QlError::Timeout));
+            return;
+        }
+        let Some(entry) = state.peers.peer(recipient) else {
+            let _ = start.send(Err(QlError::UnknownPeer(recipient)));
+            return;
+        };
+        if !entry.session.is_connected() {
+            let _ = start.send(Err(QlError::MissingSession(recipient)));
+            return;
+        }
+
+        let request_id = state.next_message_id();
+        state.pending.insert(
+            request_id,
+            PendingEntry {
+                recipient,
+                tx: respond_to,
+            },
+        );
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: Instant::now() + timeout,
+            kind: TimeoutKind::Request { id: request_id },
+        }));
+
+        let transfer_id = request_id;
+        let key = (recipient, transfer_id);
+        if state.outbound_transfers.contains_key(&key) {
+            let _ = state.pending.remove(&request_id);
+            let _ = start.send(Err(QlError::SendFailed));
+            return;
+        }
+
+        state.outbound_transfers.insert(
+            key,
+            OutboundTransferState {
+                request_id,
+                peer: recipient,
+                transfer_id,
+                stage: OutboundTransferStage::Opening,
+                next_seq: 1,
+                open_route_id: Some(route_id),
+                open_meta: Some(payload),
+                chunk_rx,
+                awaiting: None,
+            },
+        );
+
+        let _ = start.send(Ok(request_id));
+    }
+
     fn handle_send_event(
         &self,
         state: &mut RuntimeState,
@@ -501,6 +581,7 @@ impl<P: QlPlatform> Runtime<P> {
                 transfer_id,
                 stage: OutboundTransferStage::Opening,
                 next_seq: 1,
+                open_route_id: None,
                 open_meta: Some(meta),
                 chunk_rx,
                 awaiting: None,
@@ -807,8 +888,22 @@ impl<P: QlPlatform> Runtime<P> {
         frame: TransferFrame,
     ) {
         match frame {
-            TransferFrame::Open { request_id, meta } => {
-                self.handle_transfer_open(state, peer, transfer_id, request_id, meta);
+            TransferFrame::OpenResponse { request_id, meta } => {
+                self.handle_transfer_open_response(state, peer, transfer_id, request_id, meta);
+            }
+            TransferFrame::OpenRequest {
+                request_id,
+                route_id,
+                meta,
+            } => {
+                self.handle_transfer_open_request(
+                    state,
+                    peer,
+                    transfer_id,
+                    request_id,
+                    route_id,
+                    meta,
+                );
             }
             TransferFrame::Chunk { seq, data } => {
                 self.handle_transfer_chunk(state, peer, transfer_id, seq, data);
@@ -828,7 +923,7 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
-    fn handle_transfer_open(
+    fn handle_transfer_open_response(
         &self,
         state: &mut RuntimeState,
         peer: XID,
@@ -864,6 +959,51 @@ impl<P: QlPlatform> Runtime<P> {
             self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
             return;
         }
+
+        state.inbound_transfers.insert(
+            (peer, transfer_id),
+            InboundTransferState {
+                expected_seq: 1,
+                chunk_tx,
+            },
+        );
+
+        self.send_transfer_frame(
+            state,
+            peer,
+            transfer_id,
+            TransferFrame::Ack { next_seq: 1 },
+            true,
+        );
+    }
+
+    fn handle_transfer_open_request(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        request_id: MessageId,
+        route_id: RouteId,
+        meta: CBOR,
+    ) {
+        let Some(tx) = self.tx.upgrade() else {
+            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
+            return;
+        };
+
+        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
+        let responder = Responder::new(request_id, peer, tx.clone());
+        let body = InboundByteStream::new(peer, transfer_id, chunk_rx, tx);
+        self.platform
+            .handle_inbound(HandlerEvent::UploadRequest(InboundUploadRequest {
+                sender: peer,
+                recipient: self.platform.xid(),
+                route_id,
+                message_id: request_id,
+                meta,
+                body,
+                respond_to: responder,
+            }));
 
         state.inbound_transfers.insert(
             (peer, transfer_id),
@@ -1114,6 +1254,7 @@ impl<P: QlPlatform> Runtime<P> {
                 };
                 let awaiting = OutboundAwaiting::Open {
                     request_id: transfer_state.request_id,
+                    route_id: transfer_state.open_route_id,
                     meta,
                 };
                 if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
@@ -1167,9 +1308,20 @@ impl<P: QlPlatform> Runtime<P> {
         attempt: u8,
     ) -> bool {
         let frame = match &awaiting {
-            OutboundAwaiting::Open { request_id, meta } => TransferFrame::Open {
-                request_id: *request_id,
-                meta: meta.clone(),
+            OutboundAwaiting::Open {
+                request_id,
+                route_id,
+                meta,
+            } => match route_id {
+                Some(route_id) => TransferFrame::OpenRequest {
+                    request_id: *request_id,
+                    route_id: *route_id,
+                    meta: meta.clone(),
+                },
+                None => TransferFrame::OpenResponse {
+                    request_id: *request_id,
+                    meta: meta.clone(),
+                },
             },
             OutboundAwaiting::Chunk { seq, data } => TransferFrame::Chunk {
                 seq: *seq,

@@ -202,11 +202,20 @@ pub(crate) struct InboundStreamDelivery {
 // Last sender frame currently awaiting ack.
 pub enum OutboundAwaiting {
     // Open frame with request correlation.
-    Open { request_id: MessageId, meta: CBOR },
+    Open {
+        request_id: MessageId,
+        route_id: Option<RouteId>,
+        meta: CBOR,
+    },
     // Data frame at a specific sequence.
-    Chunk { seq: u32, data: Vec<u8> },
+    Chunk {
+        seq: u32,
+        data: Vec<u8>,
+    },
     // Finish frame at a specific sequence.
-    Finish { seq: u32 },
+    Finish {
+        seq: u32,
+    },
     // Cancel frame awaiting cancel-ack.
     Cancel,
 }
@@ -230,6 +239,7 @@ pub struct OutboundTransferState {
     pub transfer_id: MessageId,
     pub stage: OutboundTransferStage,
     pub next_seq: u32,
+    pub open_route_id: Option<RouteId>,
     pub open_meta: Option<CBOR>,
     pub chunk_rx: Receiver<OutboundStreamInput>,
     pub awaiting: Option<OutboundAwaiting>,
@@ -271,6 +281,16 @@ pub(crate) enum RuntimeCommand {
         route_id: RouteId,
         payload: CBOR,
         respond_to: oneshot::Sender<Result<InboundStreamDelivery, QlError>>,
+        config: RequestConfig,
+    },
+    // Send streamed request and await unary response.
+    SendUploadRequest {
+        recipient: XID,
+        route_id: RouteId,
+        payload: CBOR,
+        respond_to: oneshot::Sender<Result<CBOR, QlError>>,
+        chunk_rx: Receiver<OutboundStreamInput>,
+        start: oneshot::Sender<Result<MessageId, QlError>>,
         config: RequestConfig,
     },
     // Send fire-and-forget event.

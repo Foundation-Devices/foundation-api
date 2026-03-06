@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::{
-    runtime::{HandlerEvent, OutboundTransfer, Responder},
+    runtime::{HandlerEvent, InboundByteStream, OutboundTransfer, Responder},
     wire::message::{Ack, Nack},
-    Event, QlCodec, QlError, QlStream, RequestResponse, RouteId,
+    Event, QlCodec, QlError, QlStream, QlUpload, RequestResponse, RouteId,
 };
 
 pub trait RequestHandler<M>
@@ -21,6 +21,14 @@ where
     M: QlStream,
 {
     fn handle(&mut self, request: QlStreamRequest<M>);
+}
+
+pub trait UploadRequestHandler<M>
+where
+    M: QlUpload,
+{
+    fn handle(&mut self, request: QlUploadRequest<M>);
+    fn default_response() -> M::Response;
 }
 
 pub trait EventHandler<M>
@@ -44,6 +52,15 @@ where
 {
     pub message: M,
     pub responder: QlStreamResponder<M::StreamMeta>,
+}
+
+pub struct QlUploadRequest<M>
+where
+    M: QlUpload,
+{
+    pub message: M,
+    pub body: InboundByteStream,
+    pub responder: QlResponder<M::Response>,
 }
 
 pub struct QlResponder<R>
@@ -164,6 +181,14 @@ impl<S> RouterBuilder<S> {
         self.add_handler(M::ID, handle_stream_request::<M, S>)
     }
 
+    pub fn add_upload_request_handler<M>(self) -> Self
+    where
+        M: QlUpload,
+        S: UploadRequestHandler<M>,
+    {
+        self.add_handler(M::ID, handle_upload_request::<M, S>)
+    }
+
     pub fn add_event_handler<M>(self) -> Self
     where
         M: Event,
@@ -211,6 +236,17 @@ impl<S> Router<S> {
                 };
                 handler(&mut self.state, HandlerEvent::Request(request))
             }
+            HandlerEvent::UploadRequest(request) => {
+                let route_id = request.route_id;
+                let handler = match self.handlers.get(&route_id) {
+                    Some(handler) => handler,
+                    None => {
+                        let _ = request.respond_to.respond_nack(Nack::UnknownRoute);
+                        return Ok(());
+                    }
+                };
+                handler(&mut self.state, HandlerEvent::UploadRequest(request))
+            }
             HandlerEvent::Event(event) => {
                 let route_id = event.message.route_id;
                 let handler = self
@@ -230,6 +266,10 @@ where
 {
     let (payload, responder) = match event {
         HandlerEvent::Request(request) => (request.message.payload, request.respond_to),
+        HandlerEvent::UploadRequest(request) => {
+            let _ = request.respond_to.respond_nack(Nack::InvalidPayload);
+            return Err(RouterError::Runtime(QlError::InvalidPayload));
+        }
         HandlerEvent::Event(_) => return Err(RouterError::Runtime(QlError::InvalidPayload)),
     };
     let message = match M::try_from(payload) {
@@ -254,6 +294,10 @@ where
 {
     let (payload, responder) = match event {
         HandlerEvent::Request(request) => (request.message.payload, request.respond_to),
+        HandlerEvent::UploadRequest(request) => {
+            let _ = request.respond_to.respond_nack(Nack::InvalidPayload);
+            return Err(RouterError::Runtime(QlError::InvalidPayload));
+        }
         HandlerEvent::Event(_) => return Err(RouterError::Runtime(QlError::InvalidPayload)),
     };
     let message = match M::try_from(payload) {
@@ -271,6 +315,38 @@ where
     Ok(())
 }
 
+fn handle_upload_request<M, S>(state: &mut S, event: HandlerEvent) -> Result<(), RouterError>
+where
+    M: QlUpload,
+    S: UploadRequestHandler<M>,
+{
+    let (meta, body, responder) = match event {
+        HandlerEvent::UploadRequest(request) => (request.meta, request.body, request.respond_to),
+        HandlerEvent::Request(request) => {
+            let _ = request.respond_to.respond_nack(Nack::InvalidPayload);
+            return Err(RouterError::Runtime(QlError::InvalidPayload));
+        }
+        HandlerEvent::Event(_) => return Err(RouterError::Runtime(QlError::InvalidPayload)),
+    };
+    let message = match M::try_from(meta) {
+        Ok(message) => message,
+        Err(error) => {
+            let _ = responder.respond_nack(Nack::InvalidPayload);
+            return Err(RouterError::Decode(error));
+        }
+    };
+    let responder = QlResponder {
+        responder: Some(responder),
+        default: S::default_response,
+    };
+    state.handle(QlUploadRequest {
+        message,
+        body,
+        responder,
+    });
+    Ok(())
+}
+
 fn handle_event<M, S>(state: &mut S, event: HandlerEvent) -> Result<(), RouterError>
 where
     M: Event,
@@ -279,6 +355,10 @@ where
     let (payload, responder) = match event {
         HandlerEvent::Event(event) => (event.message.payload, None),
         HandlerEvent::Request(request) => (request.message.payload, Some(request.respond_to)),
+        HandlerEvent::UploadRequest(request) => {
+            let _ = request.respond_to.respond_nack(Nack::InvalidPayload);
+            return Err(RouterError::Runtime(QlError::InvalidPayload));
+        }
     };
     let message = match M::try_from(payload) {
         Ok(message) => message,

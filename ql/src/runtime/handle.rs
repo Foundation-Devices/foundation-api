@@ -15,7 +15,7 @@ use crate::{
         RequestConfig,
     },
     wire::message::Ack,
-    Event, MessageId, QlCodec, QlError, QlStream, RequestResponse, RouteId,
+    Event, MessageId, QlCodec, QlError, QlStream, QlUpload, RequestResponse, RouteId,
 };
 
 #[derive(Clone)]
@@ -46,11 +46,26 @@ pub struct InboundByteStream {
     finished: bool,
 }
 
+impl std::fmt::Debug for InboundByteStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InboundByteStream")
+            .field("sender", &self.sender)
+            .field("transfer_id", &self.transfer_id)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct OutboundTransfer {
     recipient: XID,
     transfer_id: MessageId,
     chunk_tx: Option<Sender<OutboundStreamInput>>,
     tx: Sender<RuntimeCommand>,
+}
+
+pub struct UploadRequest<R> {
+    pub transfer: OutboundTransfer,
+    pub response: Response<R>,
 }
 
 impl<T> Response<T> {
@@ -112,6 +127,17 @@ where
                 body: InboundByteStream::new(peer, transfer_id, rx, tx),
             })
         })
+    }
+}
+
+impl<R> UploadRequest<R>
+where
+    R: QlCodec,
+{
+    pub async fn finish(self) -> Result<R, QlError> {
+        let Self { transfer, response } = self;
+        transfer.finish().await?;
+        response.await
     }
 }
 
@@ -321,6 +347,27 @@ impl RuntimeHandle {
         }
     }
 
+    pub async fn request_upload<M>(
+        &self,
+        message: M,
+        recipient: XID,
+        config: RequestConfig,
+    ) -> Result<UploadRequest<M::Response>, QlError>
+    where
+        M: QlUpload,
+    {
+        let upload = self
+            .send_request_upload_raw(recipient, M::ID, message.into(), config)
+            .await?;
+        Ok(UploadRequest {
+            transfer: upload.transfer,
+            response: Response {
+                rx: upload.response.rx,
+                _type: PhantomData,
+            },
+        })
+    }
+
     pub fn send_event<M>(&self, message: M, recipient: XID)
     where
         M: Event,
@@ -399,6 +446,40 @@ impl RuntimeHandle {
             rx,
             _type: PhantomData,
         }
+    }
+
+    pub async fn send_request_upload_raw(
+        &self,
+        recipient: XID,
+        route_id: RouteId,
+        payload: CBOR,
+        config: RequestConfig,
+    ) -> Result<UploadRequest<CBOR>, QlError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
+        let (start_tx, start_rx) = oneshot::channel();
+        self.tx
+            .send(RuntimeCommand::SendUploadRequest {
+                recipient,
+                route_id,
+                payload,
+                respond_to: response_tx,
+                chunk_rx,
+                start: start_tx,
+                config,
+            })
+            .await
+            .map_err(|_| QlError::Cancelled)?;
+
+        let transfer_id = start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
+
+        Ok(UploadRequest {
+            transfer: OutboundTransfer::new(recipient, transfer_id, chunk_tx, self.tx.clone()),
+            response: Response {
+                rx: response_rx,
+                _type: PhantomData,
+            },
+        })
     }
 }
 
