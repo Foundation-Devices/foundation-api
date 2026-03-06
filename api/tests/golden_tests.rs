@@ -101,6 +101,7 @@ fn golden_firmware_fetch_request() {
     assert_golden!(QuantumLinkMessage::FirmwareFetchRequest(
         FirmwareFetchRequest {
             current_version: "2.4.0".to_string(),
+            chunk_offset: None
         },
     ));
 }
