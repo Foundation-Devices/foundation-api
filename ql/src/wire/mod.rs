@@ -4,6 +4,7 @@ pub mod handshake;
 pub mod heartbeat;
 pub mod message;
 pub mod pair;
+pub mod transfer;
 pub mod unpair;
 
 use bc_components::{EncryptedMessage, XID};
@@ -36,6 +37,7 @@ pub enum QlPayload {
     Unpair(UnpairRecord),
     Message(EncryptedMessage),
     Heartbeat(EncryptedMessage),
+    Transfer(EncryptedMessage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +47,7 @@ pub enum QlTag {
     Record = 3,
     Heartbeat = 4,
     Unpair = 5,
+    Transfer = 6,
 }
 
 impl From<QlTag> for CBOR {
@@ -64,6 +67,7 @@ impl TryFrom<CBOR> for QlTag {
             3 => Ok(Self::Record),
             4 => Ok(Self::Heartbeat),
             5 => Ok(Self::Unpair),
+            6 => Ok(Self::Transfer),
             _ => Err(dcbor::Error::msg("unknown message tag")),
         }
     }
@@ -77,6 +81,7 @@ impl From<QlRecord> for CBOR {
             QlPayload::Message(message) => (QlTag::Record, CBOR::from(message)),
             QlPayload::Heartbeat(message) => (QlTag::Heartbeat, CBOR::from(message)),
             QlPayload::Unpair(message) => (QlTag::Unpair, CBOR::from(message)),
+            QlPayload::Transfer(message) => (QlTag::Transfer, CBOR::from(message)),
         };
         CBOR::from(vec![
             CBOR::from(tag as u8),
@@ -128,6 +133,13 @@ impl TryFrom<CBOR> for QlRecord {
                 Ok(QlRecord {
                     header,
                     payload: QlPayload::Unpair(message),
+                })
+            }
+            QlTag::Transfer => {
+                let message = EncryptedMessage::try_from(payload)?;
+                Ok(QlRecord {
+                    header,
+                    payload: QlPayload::Transfer(message),
                 })
             }
         }

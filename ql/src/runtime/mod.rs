@@ -1,4 +1,6 @@
-pub use handle::{Response, RuntimeHandle};
+pub use handle::{
+    InboundByteStream, InboundStream, OutboundTransfer, Response, RuntimeHandle, StreamResponse,
+};
 pub use internal::{InitiatorStage, PeerSession, Token};
 
 mod core;
@@ -117,6 +119,27 @@ impl Responder {
                 kind: MessageKind::Nack,
             })
             .map_err(|_| QlError::Cancelled)
+    }
+
+    pub fn respond_stream<M>(self, meta: M) -> Result<handle::OutboundTransfer, QlError>
+    where
+        M: QlCodec,
+    {
+        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
+        self.tx
+            .send_blocking(internal::RuntimeCommand::StartResponseStream {
+                request_id: self.id,
+                recipient: self.recipient,
+                meta: meta.into(),
+                chunk_rx,
+            })
+            .map_err(|_| QlError::Cancelled)?;
+        Ok(handle::OutboundTransfer::new(
+            self.recipient,
+            self.id,
+            chunk_tx,
+            self.tx,
+        ))
     }
 }
 

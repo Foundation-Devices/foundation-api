@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::{
-    runtime::{HandlerEvent, Responder},
+    runtime::{HandlerEvent, OutboundTransfer, Responder},
     wire::message::{Ack, Nack},
-    Event, QlCodec, QlError, RequestResponse, RouteId,
+    Event, QlCodec, QlError, QlStream, RequestResponse, RouteId,
 };
 
 pub trait RequestHandler<M>
@@ -14,6 +14,13 @@ where
 {
     fn handle(&mut self, request: QlRequest<M>);
     fn default_response() -> M::Response;
+}
+
+pub trait StreamRequestHandler<M>
+where
+    M: QlStream,
+{
+    fn handle(&mut self, request: QlStreamRequest<M>);
 }
 
 pub trait EventHandler<M>
@@ -31,12 +38,28 @@ where
     pub responder: QlResponder<M::Response>,
 }
 
+pub struct QlStreamRequest<M>
+where
+    M: QlStream,
+{
+    pub message: M,
+    pub responder: QlStreamResponder<M::StreamMeta>,
+}
+
 pub struct QlResponder<R>
 where
     R: QlCodec,
 {
     responder: Option<Responder>,
     default: fn() -> R,
+}
+
+pub struct QlStreamResponder<M>
+where
+    M: QlCodec,
+{
+    responder: Option<Responder>,
+    _meta: std::marker::PhantomData<fn() -> M>,
 }
 
 impl<R> QlResponder<R>
@@ -58,6 +81,21 @@ where
     }
 }
 
+impl<M> QlStreamResponder<M>
+where
+    M: QlCodec,
+{
+    pub fn respond_stream(mut self, meta: M) -> Result<OutboundTransfer, QlError> {
+        let responder = self.responder.take().unwrap();
+        responder.respond_stream(meta)
+    }
+
+    pub fn respond_nack(mut self, reason: Nack) -> Result<(), QlError> {
+        let responder = self.responder.take().unwrap();
+        responder.respond_nack(reason)
+    }
+}
+
 impl<R> Drop for QlResponder<R>
 where
     R: QlCodec,
@@ -66,6 +104,17 @@ where
         if self.responder.is_some() {
             let default = (self.default)();
             let _ = self.respond_inner(default);
+        }
+    }
+}
+
+impl<M> Drop for QlStreamResponder<M>
+where
+    M: QlCodec,
+{
+    fn drop(&mut self) {
+        if let Some(responder) = self.responder.take() {
+            let _ = responder.respond_nack(Nack::Unknown);
         }
     }
 }
@@ -105,6 +154,14 @@ impl<S> RouterBuilder<S> {
         S: RequestHandler<M>,
     {
         self.add_handler(M::ID, handle_request::<M, S>)
+    }
+
+    pub fn add_stream_request_handler<M>(self) -> Self
+    where
+        M: QlStream,
+        S: StreamRequestHandler<M>,
+    {
+        self.add_handler(M::ID, handle_stream_request::<M, S>)
     }
 
     pub fn add_event_handler<M>(self) -> Self
@@ -187,6 +244,30 @@ where
         default: S::default_response,
     };
     state.handle(QlRequest { message, responder });
+    Ok(())
+}
+
+fn handle_stream_request<M, S>(state: &mut S, event: HandlerEvent) -> Result<(), RouterError>
+where
+    M: QlStream,
+    S: StreamRequestHandler<M>,
+{
+    let (payload, responder) = match event {
+        HandlerEvent::Request(request) => (request.message.payload, request.respond_to),
+        HandlerEvent::Event(_) => return Err(RouterError::Runtime(QlError::InvalidPayload)),
+    };
+    let message = match M::try_from(payload) {
+        Ok(message) => message,
+        Err(error) => {
+            let _ = responder.respond_nack(Nack::InvalidPayload);
+            return Err(RouterError::Decode(error));
+        }
+    };
+    let responder = QlStreamResponder {
+        responder: Some(responder),
+        _meta: std::marker::PhantomData,
+    };
+    state.handle(QlStreamRequest { message, responder });
     Ok(())
 }
 

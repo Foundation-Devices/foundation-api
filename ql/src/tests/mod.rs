@@ -34,6 +34,7 @@ mod handshake;
 mod heartbeat;
 mod persistence;
 mod requests;
+mod streams;
 mod unpair;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

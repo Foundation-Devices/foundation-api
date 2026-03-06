@@ -28,6 +28,11 @@ pub trait Event: QlCodec {
     const ID: RouteId;
 }
 
+pub trait QlStream: QlCodec {
+    const ID: RouteId;
+    type StreamMeta: QlCodec;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QlError {
     #[error("invalid payload")]
@@ -51,4 +56,8 @@ pub enum QlError {
     },
     #[error("cancelled")]
     Cancelled,
+    #[error("transfer cancelled")]
+    TransferCancelled { id: MessageId },
+    #[error("transfer protocol error")]
+    TransferProtocol { id: MessageId },
 }
