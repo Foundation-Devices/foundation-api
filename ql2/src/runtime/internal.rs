@@ -9,6 +9,7 @@ use async_channel::{Receiver, Sender};
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
 use crate::{
+    pipe,
     platform::PlatformFuture,
     runtime::{replay_cache::ReplayCache, AcceptedCallDelivery, CallConfig},
     wire::{
@@ -157,11 +158,6 @@ pub enum InitiatorStage {
     WaitingConfirmAck,
 }
 
-pub(crate) enum OutboundStreamInput {
-    Chunk(Vec<u8>),
-    Finish,
-}
-
 pub(crate) enum InboundStreamItem {
     Chunk(Vec<u8>),
     Finished,
@@ -185,29 +181,28 @@ pub enum CallPhase {
     Closed,
 }
 
-#[derive(Debug, Clone)]
-pub struct PendingChunk {
-    pub bytes: Vec<u8>,
-    pub sent: usize,
-}
-
 pub struct AwaitingPacket {
     pub packet_id: PacketId,
-    pub frame: CallFrame,
+    pub frame: AwaitingFrame,
     pub attempt: u8,
+}
+
+pub enum AwaitingFrame {
+    Control(CallFrame),
+    Data {
+        dir: Direction,
+        offset: u64,
+        len: usize,
+    },
 }
 
 pub struct OutboundCallStreamState {
     pub dir: Direction,
-    pub chunk_rx: Receiver<OutboundStreamInput>,
+    pub pipe: pipe::PipeReader,
     pub queue: VecDeque<CallFrame>,
     pub awaiting: Option<AwaitingPacket>,
-    pub pending_chunk: Option<PendingChunk>,
-    pub next_offset: u64,
-    pub remote_recv_offset: u64,
     pub remote_max_offset: u64,
     pub data_enabled: bool,
-    pub source_finished: bool,
     pub closed: bool,
 }
 
@@ -262,7 +257,7 @@ pub(crate) enum RuntimeCommand {
         route_id: RouteId,
         request_head: Vec<u8>,
         response_expected: bool,
-        request_rx: Receiver<OutboundStreamInput>,
+        request_pipe: pipe::PipeReader,
         accepted: oneshot::Sender<Result<AcceptedCallDelivery, QlError>>,
         start: oneshot::Sender<Result<CallId, QlError>>,
         config: CallConfig,
@@ -271,7 +266,7 @@ pub(crate) enum RuntimeCommand {
         recipient: XID,
         call_id: CallId,
         response_head: Vec<u8>,
-        response_rx: Receiver<OutboundStreamInput>,
+        response_pipe: pipe::PipeReader,
     },
     RejectCall {
         recipient: XID,
@@ -519,22 +514,14 @@ impl CallRecord {
 }
 
 impl OutboundCallStreamState {
-    pub fn new(
-        dir: Direction,
-        chunk_rx: Receiver<OutboundStreamInput>,
-        remote_max_offset: u64,
-    ) -> Self {
+    pub fn new(dir: Direction, pipe: pipe::PipeReader, remote_max_offset: u64) -> Self {
         Self {
             dir,
-            chunk_rx,
+            pipe,
             queue: VecDeque::new(),
             awaiting: None,
-            pending_chunk: None,
-            next_offset: 0,
-            remote_recv_offset: 0,
             remote_max_offset,
             data_enabled: false,
-            source_finished: false,
             closed: false,
         }
     }

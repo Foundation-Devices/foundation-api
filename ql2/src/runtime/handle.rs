@@ -1,9 +1,11 @@
 use async_channel::Sender;
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, XID};
+use futures_lite::future::poll_fn;
 
 use crate::{
+    pipe,
     runtime::{
-        internal::{InboundStreamItem, OutboundStreamInput, RuntimeCommand},
+        internal::{InboundStreamItem, RuntimeCommand},
         AcceptedCallDelivery, CallConfig,
     },
     wire::call::{Direction, RejectCode, ResetCode},
@@ -13,6 +15,7 @@ use crate::{
 #[derive(Clone)]
 pub struct RuntimeHandle {
     pub(crate) tx: async_channel::Sender<RuntimeCommand>,
+    pub(crate) pipe_size_bytes: usize,
 }
 
 pub struct PendingCall {
@@ -47,6 +50,7 @@ pub struct InboundCall {
 pub struct CallResponder {
     call_id: CallId,
     recipient: XID,
+    pipe_size_bytes: usize,
     tx: async_channel::Sender<RuntimeCommand>,
 }
 
@@ -74,7 +78,7 @@ pub struct OutboundByteStream {
     recipient: XID,
     call_id: CallId,
     dir: Direction,
-    chunk_tx: Option<Sender<OutboundStreamInput>>,
+    pipe: Option<pipe::PipeWriter>,
     tx: Sender<RuntimeCommand>,
 }
 
@@ -180,56 +184,65 @@ impl OutboundByteStream {
         recipient: XID,
         call_id: CallId,
         dir: Direction,
-        chunk_tx: Sender<OutboundStreamInput>,
+        pipe: pipe::PipeWriter,
         tx: Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             recipient,
             call_id,
             dir,
-            chunk_tx: Some(chunk_tx),
+            pipe: Some(pipe),
             tx,
         }
     }
 
-    pub async fn write_next(&mut self, chunk: Vec<u8>) -> Result<(), QlError> {
-        let chunk_tx = self
-            .chunk_tx
-            .as_ref()
+    pub async fn write(&mut self, bytes: &[u8]) -> Result<usize, QlError> {
+        let pipe = self
+            .pipe
+            .as_mut()
             .expect("stream not finished or reset");
-        chunk_tx
-            .send(OutboundStreamInput::Chunk(chunk))
-            .await
-            .map_err(|_| QlError::Cancelled)?;
+        let written = poll_fn(|cx| pipe.poll_write(cx, bytes)).await?;
+        // TODO: We currently nudge the runtime after every successful write. If this becomes noisy,
+        // add a coalesced readiness bit rather than buffering writes in another queue again.
         self.tx
-            .send(RuntimeCommand::PollCall {
+            .try_send(RuntimeCommand::PollCall {
                 peer: self.recipient,
                 call_id: self.call_id,
             })
-            .await
-            .map_err(|_| QlError::Cancelled)
+            .map_err(|_| QlError::Cancelled)?;
+        Ok(written)
+    }
+
+    pub async fn write_all(&mut self, mut bytes: &[u8]) -> Result<(), QlError> {
+        while !bytes.is_empty() {
+            let written = self.write(bytes).await?;
+            if written == 0 {
+                return Err(QlError::Cancelled);
+            }
+            bytes = &bytes[written..];
+        }
+        Ok(())
     }
 
     pub async fn finish(mut self) -> Result<(), QlError> {
-        let Some(chunk_tx) = self.chunk_tx.take() else {
+        let Some(mut pipe) = self.pipe.take() else {
             return Ok(());
         };
-        if chunk_tx.send(OutboundStreamInput::Finish).await.is_err() {
-            return Ok(());
-        }
+        pipe.finish();
         self.tx
-            .send(RuntimeCommand::PollCall {
+            .try_send(RuntimeCommand::PollCall {
                 peer: self.recipient,
                 call_id: self.call_id,
             })
-            .await
             .map_err(|_| QlError::Cancelled)?;
-        chunk_tx.closed().await;
+        // TODO: closed() resolves when the runtime closes this outbound side, which currently
+        // means finish acked, reset, or abort. Revisit if we want a stricter finish-only signal.
+        pipe.closed().await;
         Ok(())
     }
 
     pub async fn reset(mut self, code: ResetCode) -> Result<(), QlError> {
-        self.chunk_tx.take();
+        self.pipe.take();
         self.tx
             .send(RuntimeCommand::ResetOutbound {
                 recipient: self.recipient,
@@ -244,7 +257,7 @@ impl OutboundByteStream {
 
 impl Drop for OutboundByteStream {
     fn drop(&mut self) {
-        if self.chunk_tx.take().is_none() {
+        if self.pipe.take().is_none() {
             return;
         }
         let _ = self.tx.try_send(RuntimeCommand::ResetOutbound {
@@ -260,30 +273,32 @@ impl CallResponder {
     pub(crate) fn new(
         call_id: CallId,
         recipient: XID,
+        pipe_size_bytes: usize,
         tx: async_channel::Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             call_id,
             recipient,
+            pipe_size_bytes,
             tx,
         }
     }
 
     pub fn accept(self, response_head: Vec<u8>) -> Result<OutboundByteStream, QlError> {
-        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
+        let (response_pipe, response_writer) = pipe::pipe(self.pipe_size_bytes);
         self.tx
             .send_blocking(RuntimeCommand::AcceptCall {
                 recipient: self.recipient,
                 call_id: self.call_id,
                 response_head,
-                response_rx: chunk_rx,
+                response_pipe,
             })
             .map_err(|_| QlError::Cancelled)?;
         Ok(OutboundByteStream::new(
             self.recipient,
             self.call_id,
             Direction::Response,
-            chunk_tx,
+            response_writer,
             self.tx,
         ))
     }
@@ -338,7 +353,7 @@ impl RuntimeHandle {
         config: CallConfig,
     ) -> Result<PendingCall, QlError> {
         let (accepted_tx, accepted_rx) = oneshot::channel();
-        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
+        let (request_pipe, request_writer) = pipe::pipe(self.pipe_size_bytes);
         let (start_tx, start_rx) = oneshot::channel();
         self.tx
             .send(RuntimeCommand::OpenCall {
@@ -346,7 +361,7 @@ impl RuntimeHandle {
                 route_id,
                 request_head,
                 response_expected,
-                request_rx: chunk_rx,
+                request_pipe,
                 accepted: accepted_tx,
                 start: start_tx,
                 config,
@@ -361,7 +376,7 @@ impl RuntimeHandle {
                 recipient,
                 call_id,
                 Direction::Request,
-                chunk_tx,
+                request_writer,
                 self.tx.clone(),
             ),
             accepted: PendingAccept { rx: accepted_rx },

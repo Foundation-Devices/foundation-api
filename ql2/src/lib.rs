@@ -1,4 +1,5 @@
 mod id;
+mod pipe;
 pub mod platform;
 pub mod runtime;
 pub mod wire;
@@ -46,4 +47,10 @@ pub enum QlError {
     CallProtocol { id: CallId },
     #[error("cancelled")]
     Cancelled,
+}
+
+impl From<crate::pipe::PipeClosed> for QlError {
+    fn from(_: crate::pipe::PipeClosed) -> Self {
+        Self::Cancelled
+    }
 }

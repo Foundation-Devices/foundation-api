@@ -40,6 +40,7 @@ pub struct RuntimeConfig {
     pub packet_ack_timeout: Duration,
     pub call_retry_limit: u8,
     pub max_payload_bytes: usize,
+    pub pipe_size_bytes: usize,
     pub initial_credit: u64,
     pub keep_alive: Option<KeepAliveConfig>,
 }
@@ -53,6 +54,7 @@ impl RuntimeConfig {
             packet_ack_timeout: Duration::from_millis(150),
             call_retry_limit: 5,
             max_payload_bytes: 1024,
+            pipe_size_bytes: 2048,
             initial_credit: 1024,
             keep_alive: None,
         }
@@ -81,6 +83,12 @@ impl RuntimeConfig {
     pub fn with_max_payload_bytes(mut self, max_payload_bytes: usize) -> Self {
         self.max_payload_bytes = max_payload_bytes.max(1);
         self.initial_credit = self.initial_credit.max(self.max_payload_bytes as u64);
+        self.pipe_size_bytes = self.pipe_size_bytes.max(self.max_payload_bytes);
+        self
+    }
+
+    pub fn with_pipe_size_bytes(mut self, pipe_size_bytes: usize) -> Self {
+        self.pipe_size_bytes = pipe_size_bytes.max(self.max_payload_bytes);
         self
     }
 
@@ -127,6 +135,9 @@ where
             rx,
             tx: tx.downgrade(),
         },
-        RuntimeHandle { tx },
+        RuntimeHandle {
+            tx,
+            pipe_size_bytes: config.pipe_size_bytes,
+        },
     )
 }

@@ -46,9 +46,9 @@ async fn duplex_call_round_trip() {
             let mut response = call.respond_to.accept(b"resp-head".to_vec()).unwrap();
 
             assert_eq!(request.next_chunk().await.unwrap(), Some(vec![1, 2]));
-            response.write_next(vec![9]).await.unwrap();
+            response.write_all(&[9]).await.unwrap();
             assert_eq!(request.next_chunk().await.unwrap(), Some(vec![3, 4]));
-            response.write_next(vec![8, 7]).await.unwrap();
+            response.write_all(&[8, 7]).await.unwrap();
             assert_eq!(request.next_chunk().await.unwrap(), None);
             response.finish().await.unwrap();
         });
@@ -67,11 +67,11 @@ async fn duplex_call_round_trip() {
             mut request,
             accepted,
         } = pending;
-        request.write_next(vec![1, 2]).await.unwrap();
+        request.write_all(&[1, 2]).await.unwrap();
         let mut accepted = accepted.recv().await.unwrap();
         assert_eq!(accepted.response_head, b"resp-head".to_vec());
         assert_eq!(accepted.response.next_chunk().await.unwrap(), Some(vec![9]));
-        request.write_next(vec![3, 4]).await.unwrap();
+        request.write_all(&[3, 4]).await.unwrap();
         request.finish().await.unwrap();
         assert_eq!(
             accepted.response.next_chunk().await.unwrap(),
@@ -310,7 +310,7 @@ async fn request_reset_can_keep_response_alive() {
             let mut response = call.respond_to.accept(b"err".to_vec()).unwrap();
             assert_eq!(request.next_chunk().await.unwrap(), Some(vec![1, 2]));
             request.reset(ResetCode::InvalidData).await.unwrap();
-            response.write_next(b"invalid".to_vec()).await.unwrap();
+            response.write_all(b"invalid").await.unwrap();
             response.finish().await.unwrap();
         });
 
@@ -328,14 +328,14 @@ async fn request_reset_can_keep_response_alive() {
             mut request,
             accepted,
         } = pending;
-        request.write_next(vec![1, 2]).await.unwrap();
+        request.write_all(&[1, 2]).await.unwrap();
         let mut accepted = accepted.recv().await.unwrap();
         assert_eq!(accepted.response_head, b"err".to_vec());
         assert_eq!(
             accepted.response.next_chunk().await.unwrap(),
             Some(b"invalid".to_vec())
         );
-        let err = request.write_next(vec![3, 4]).await.unwrap_err();
+        let err = request.write_all(&[3, 4]).await.unwrap_err();
         assert!(matches!(err, QlError::Cancelled));
         assert_eq!(accepted.response.next_chunk().await.unwrap(), None);
 
