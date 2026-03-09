@@ -32,8 +32,6 @@ use crate::{
     CallId, MessageId, PacketId, QlError, RouteId,
 };
 
-const CALL_RETRY_LIMIT: u8 = 5;
-
 impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
         let mut state = RuntimeState::new();
@@ -2046,7 +2044,7 @@ impl<P: QlPlatform> Runtime<P> {
                     if !should_retry {
                         continue;
                     }
-                    if attempt >= CALL_RETRY_LIMIT {
+                    if attempt >= self.config.call_retry_limit {
                         let _ = call;
                         self.fail_call(state, peer, call_id, QlError::Timeout);
                         continue;

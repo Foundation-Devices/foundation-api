@@ -38,6 +38,7 @@ pub struct RuntimeConfig {
     pub default_open_timeout: Duration,
     pub packet_expiration: Duration,
     pub packet_ack_timeout: Duration,
+    pub call_retry_limit: u8,
     pub max_payload_bytes: usize,
     pub initial_credit: u64,
     pub keep_alive: Option<KeepAliveConfig>,
@@ -50,6 +51,7 @@ impl RuntimeConfig {
             default_open_timeout: Duration::from_secs(5),
             packet_expiration: Duration::from_secs(30),
             packet_ack_timeout: Duration::from_millis(150),
+            call_retry_limit: 5,
             max_payload_bytes: 1024,
             initial_credit: 1024,
             keep_alive: None,
@@ -68,6 +70,11 @@ impl RuntimeConfig {
 
     pub fn with_packet_ack_timeout(mut self, timeout: Duration) -> Self {
         self.packet_ack_timeout = timeout;
+        self
+    }
+
+    pub fn with_call_retry_limit(mut self, call_retry_limit: u8) -> Self {
+        self.call_retry_limit = call_retry_limit;
         self
     }
 
