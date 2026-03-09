@@ -2,7 +2,7 @@
 name = "ql2"
 version = "0.1.0"
 edition = "2021"
-description = "Quantum Link v2 duplex call prototype"
+description = "Quantum Link v2 duplex stream prototype"
 license = "Proprietary"
 
 [dependencies]

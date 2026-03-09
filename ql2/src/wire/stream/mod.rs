@@ -1,17 +1,17 @@
 use dcbor::CBOR;
 
 use super::take_fields;
-use crate::{CallId, PacketId, RouteId};
+use crate::{PacketId, RouteId, StreamId};
 
 mod crypto;
 pub use crypto::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallBody {
+pub struct StreamBody {
     pub packet_id: PacketId,
     pub valid_until: u64,
     pub packet_ack: Option<PacketAck>,
-    pub frame: Option<CallFrame>,
+    pub frame: Option<StreamFrame>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,18 +20,18 @@ pub struct PacketAck {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallFrame {
-    Open(CallFrameOpen),
-    Accept(CallFrameAccept),
-    Data(CallFrameData),
-    Credit(CallFrameCredit),
-    Finish(CallFrameFinish),
-    Reset(CallFrameReset),
+pub enum StreamFrame {
+    Open(StreamFrameOpen),
+    Accept(StreamFrameAccept),
+    Data(StreamFrameData),
+    Credit(StreamFrameCredit),
+    Finish(StreamFrameFinish),
+    Reset(StreamFrameReset),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallFrameOpen {
-    pub call_id: CallId,
+pub struct StreamFrameOpen {
+    pub stream_id: StreamId,
     pub route_id: RouteId,
     pub flags: OpenFlags,
     pub request_head: Vec<u8>,
@@ -39,38 +39,38 @@ pub struct CallFrameOpen {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallFrameAccept {
-    pub call_id: CallId,
+pub struct StreamFrameAccept {
+    pub stream_id: StreamId,
     pub status: AcceptStatus,
     pub response_head: Vec<u8>,
     pub request_max_offset: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CallFrameCredit {
-    pub call_id: CallId,
+pub struct StreamFrameCredit {
+    pub stream_id: StreamId,
     pub dir: Direction,
     pub recv_offset: u64,
     pub max_offset: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallFrameData {
-    pub call_id: CallId,
+pub struct StreamFrameData {
+    pub stream_id: StreamId,
     pub dir: Direction,
     pub offset: u64,
     pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CallFrameFinish {
-    pub call_id: CallId,
+pub struct StreamFrameFinish {
+    pub stream_id: StreamId,
     pub dir: Direction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CallFrameReset {
-    pub call_id: CallId,
+pub struct StreamFrameReset {
+    pub stream_id: StreamId,
     pub dir: ResetTarget,
     pub code: ResetCode,
 }
@@ -139,8 +139,8 @@ pub enum ResetCode {
     Timeout = 3,
 }
 
-impl From<CallBody> for CBOR {
-    fn from(value: CallBody) -> Self {
+impl From<StreamBody> for CBOR {
+    fn from(value: StreamBody) -> Self {
         CBOR::from(vec![
             CBOR::from(value.packet_id),
             CBOR::from(value.valid_until),
@@ -150,7 +150,7 @@ impl From<CallBody> for CBOR {
     }
 }
 
-impl TryFrom<CBOR> for CallBody {
+impl TryFrom<CBOR> for StreamBody {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
@@ -189,65 +189,71 @@ impl TryFrom<CBOR> for PacketAck {
     }
 }
 
-impl From<CallFrame> for CBOR {
-    fn from(value: CallFrame) -> Self {
+impl From<StreamFrame> for CBOR {
+    fn from(value: StreamFrame) -> Self {
         match value {
-            CallFrame::Open(CallFrameOpen {
-                call_id,
+            StreamFrame::Open(StreamFrameOpen {
+                stream_id,
                 route_id,
                 flags,
                 request_head,
                 response_max_offset,
             }) => CBOR::from(vec![
                 CBOR::from(1u8),
-                CBOR::from(call_id),
+                CBOR::from(stream_id),
                 CBOR::from(route_id),
                 CBOR::from(flags),
                 CBOR::from(request_head),
                 CBOR::from(response_max_offset),
             ]),
-            CallFrame::Accept(CallFrameAccept {
-                call_id,
+            StreamFrame::Accept(StreamFrameAccept {
+                stream_id,
                 status,
                 response_head,
                 request_max_offset,
             }) => CBOR::from(vec![
                 CBOR::from(2u8),
-                CBOR::from(call_id),
+                CBOR::from(stream_id),
                 CBOR::from(status),
                 CBOR::from(response_head),
                 CBOR::from(request_max_offset),
             ]),
-            CallFrame::Data(CallFrameData {
-                call_id,
+            StreamFrame::Data(StreamFrameData {
+                stream_id,
                 dir,
                 offset,
                 bytes,
             }) => CBOR::from(vec![
                 CBOR::from(3u8),
-                CBOR::from(call_id),
+                CBOR::from(stream_id),
                 CBOR::from(dir),
                 CBOR::from(offset),
                 CBOR::from(bytes),
             ]),
-            CallFrame::Credit(CallFrameCredit {
-                call_id,
+            StreamFrame::Credit(StreamFrameCredit {
+                stream_id,
                 dir,
                 recv_offset,
                 max_offset,
             }) => CBOR::from(vec![
                 CBOR::from(4u8),
-                CBOR::from(call_id),
+                CBOR::from(stream_id),
                 CBOR::from(dir),
                 CBOR::from(recv_offset),
                 CBOR::from(max_offset),
             ]),
-            CallFrame::Finish(CallFrameFinish { call_id, dir }) => {
-                CBOR::from(vec![CBOR::from(5u8), CBOR::from(call_id), CBOR::from(dir)])
-            }
-            CallFrame::Reset(CallFrameReset { call_id, dir, code }) => CBOR::from(vec![
+            StreamFrame::Finish(StreamFrameFinish { stream_id, dir }) => CBOR::from(vec![
+                CBOR::from(5u8),
+                CBOR::from(stream_id),
+                CBOR::from(dir),
+            ]),
+            StreamFrame::Reset(StreamFrameReset {
+                stream_id,
+                dir,
+                code,
+            }) => CBOR::from(vec![
                 CBOR::from(6u8),
-                CBOR::from(call_id),
+                CBOR::from(stream_id),
                 CBOR::from(dir),
                 CBOR::from(code),
             ]),
@@ -255,21 +261,21 @@ impl From<CallFrame> for CBOR {
     }
 }
 
-impl TryFrom<CBOR> for CallFrame {
+impl TryFrom<CBOR> for StreamFrame {
     type Error = dcbor::Error;
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         let mut iter = value.try_into_array()?.into_iter();
         let tag: u8 = iter
             .next()
-            .ok_or_else(|| dcbor::Error::msg("missing call frame tag"))?
+            .ok_or_else(|| dcbor::Error::msg("missing stream frame tag"))?
             .try_into()?;
         match tag {
             1 => {
-                let [call_id, route_id, flags, request_head, response_max_offset] =
+                let [stream_id, route_id, flags, request_head, response_max_offset] =
                     take_fields(iter)?;
-                Ok(Self::Open(CallFrameOpen {
-                    call_id: call_id.try_into()?,
+                Ok(Self::Open(StreamFrameOpen {
+                    stream_id: stream_id.try_into()?,
                     route_id: route_id.try_into()?,
                     flags: flags.try_into()?,
                     request_head: request_head.try_into()?,
@@ -277,48 +283,48 @@ impl TryFrom<CBOR> for CallFrame {
                 }))
             }
             2 => {
-                let [call_id, status, response_head, request_max_offset] = take_fields(iter)?;
-                Ok(Self::Accept(CallFrameAccept {
-                    call_id: call_id.try_into()?,
+                let [stream_id, status, response_head, request_max_offset] = take_fields(iter)?;
+                Ok(Self::Accept(StreamFrameAccept {
+                    stream_id: stream_id.try_into()?,
                     status: status.try_into()?,
                     response_head: response_head.try_into()?,
                     request_max_offset: request_max_offset.try_into()?,
                 }))
             }
             3 => {
-                let [call_id, dir, offset, bytes] = take_fields(iter)?;
-                Ok(Self::Data(CallFrameData {
-                    call_id: call_id.try_into()?,
+                let [stream_id, dir, offset, bytes] = take_fields(iter)?;
+                Ok(Self::Data(StreamFrameData {
+                    stream_id: stream_id.try_into()?,
                     dir: dir.try_into()?,
                     offset: offset.try_into()?,
                     bytes: bytes.try_into()?,
                 }))
             }
             4 => {
-                let [call_id, dir, recv_offset, max_offset] = take_fields(iter)?;
-                Ok(Self::Credit(CallFrameCredit {
-                    call_id: call_id.try_into()?,
+                let [stream_id, dir, recv_offset, max_offset] = take_fields(iter)?;
+                Ok(Self::Credit(StreamFrameCredit {
+                    stream_id: stream_id.try_into()?,
                     dir: dir.try_into()?,
                     recv_offset: recv_offset.try_into()?,
                     max_offset: max_offset.try_into()?,
                 }))
             }
             5 => {
-                let [call_id, dir] = take_fields(iter)?;
-                Ok(Self::Finish(CallFrameFinish {
-                    call_id: call_id.try_into()?,
+                let [stream_id, dir] = take_fields(iter)?;
+                Ok(Self::Finish(StreamFrameFinish {
+                    stream_id: stream_id.try_into()?,
                     dir: dir.try_into()?,
                 }))
             }
             6 => {
-                let [call_id, dir, code] = take_fields(iter)?;
-                Ok(Self::Reset(CallFrameReset {
-                    call_id: call_id.try_into()?,
+                let [stream_id, dir, code] = take_fields(iter)?;
+                Ok(Self::Reset(StreamFrameReset {
+                    stream_id: stream_id.try_into()?,
                     dir: dir.try_into()?,
                     code: code.try_into()?,
                 }))
             }
-            _ => Err(dcbor::Error::msg("unknown call frame tag")),
+            _ => Err(dcbor::Error::msg("unknown stream frame tag")),
         }
     }
 }

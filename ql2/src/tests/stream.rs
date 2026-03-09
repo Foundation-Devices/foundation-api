@@ -2,13 +2,13 @@ use std::{sync::atomic::Ordering, time::Duration};
 
 use super::*;
 use crate::{
-    runtime::{CallConfig, PendingCall},
-    wire::call::{RejectCode, ResetCode},
+    runtime::{PendingStream, StreamConfig},
+    wire::stream::{RejectCode, ResetCode},
     RouteId,
 };
 
 #[tokio::test(flavor = "current_thread")]
-async fn duplex_call_round_trip() {
+async fn duplex_stream_round_trip() {
     run_local_test(async {
         let config = RuntimeConfig::new(Duration::from_millis(200))
             .with_open_timeout(Duration::from_millis(300))
@@ -36,14 +36,14 @@ async fn duplex_call_round_trip() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let responder_task = tokio::task::spawn_local(async move {
-            let call = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
-            assert_eq!(call.route_id, RouteId(11));
-            assert_eq!(call.request_head, b"req-head".to_vec());
+            assert_eq!(stream.route_id, RouteId(11));
+            assert_eq!(stream.request_head, b"req-head".to_vec());
 
-            let mut request = call.request;
-            let mut response = call.respond_to.accept(b"resp-head".to_vec()).unwrap();
+            let mut request = stream.request;
+            let mut response = stream.respond_to.accept(b"resp-head".to_vec()).unwrap();
 
             assert_eq!(request.next_chunk().await.unwrap(), Some(vec![1, 2]));
             response.write_all(&[9]).await.unwrap();
@@ -54,21 +54,21 @@ async fn duplex_call_round_trip() {
         });
 
         let pending = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(11),
                 b"req-head".to_vec(),
                 true,
-                CallConfig::default(),
+                StreamConfig::default(),
             )
             .await
             .unwrap();
-        let PendingCall {
+        let PendingStream {
             mut request,
             accepted,
         } = pending;
         request.write_all(&[1, 2]).await.unwrap();
-        let mut accepted = accepted.recv().await.unwrap();
+        let mut accepted = accepted.await.unwrap();
         assert_eq!(accepted.response_head, b"resp-head".to_vec());
         assert_eq!(accepted.response.next_chunk().await.unwrap(), Some(vec![9]));
         request.write_all(&[3, 4]).await.unwrap();
@@ -107,7 +107,7 @@ async fn duplicate_open_is_idempotent() {
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
         spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_drop_first_call_forwarder(outbound_b, handle_a.clone());
+        spawn_drop_first_stream_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
         handle_a.connect(peer_b.xid).unwrap();
@@ -116,28 +116,28 @@ async fn duplicate_open_is_idempotent() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let responder_task = tokio::task::spawn_local(async move {
-            let call = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
             tokio::time::sleep(Duration::from_millis(120)).await;
-            let response = call.respond_to.accept(Vec::new()).unwrap();
+            let response = stream.respond_to.accept(Vec::new()).unwrap();
             let second = tokio::time::timeout(Duration::from_millis(120), inbound_b.recv()).await;
-            assert!(second.is_err(), "duplicate open redispatched call");
+            assert!(second.is_err(), "duplicate open redispatched stream");
             response.finish().await.unwrap();
         });
 
         let pending = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(12),
                 Vec::new(),
                 true,
-                CallConfig::default(),
+                StreamConfig::default(),
             )
             .await
             .unwrap();
-        let PendingCall { request, accepted } = pending;
-        let mut accepted = accepted.recv().await.unwrap();
+        let PendingStream { request, accepted } = pending;
+        let mut accepted = accepted.await.unwrap();
         request.finish().await.unwrap();
         assert_eq!(accepted.response.next_chunk().await.unwrap(), None);
 
@@ -169,7 +169,7 @@ async fn duplicate_accept_is_idempotent() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_drop_first_call_when(outbound_a, handle_b.clone(), arm_drop.clone());
+        spawn_drop_first_stream_when(outbound_a, handle_b.clone(), arm_drop.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
@@ -179,27 +179,27 @@ async fn duplicate_accept_is_idempotent() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let responder_task = tokio::task::spawn_local(async move {
-            let call = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
             arm_drop.store(true, Ordering::Relaxed);
-            let response = call.respond_to.accept(b"accepted".to_vec()).unwrap();
+            let response = stream.respond_to.accept(b"accepted".to_vec()).unwrap();
             tokio::time::sleep(Duration::from_millis(150)).await;
             response.finish().await.unwrap();
         });
 
         let pending = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(13),
                 Vec::new(),
                 true,
-                CallConfig::default(),
+                StreamConfig::default(),
             )
             .await
             .unwrap();
-        let PendingCall { request, accepted } = pending;
-        let mut accepted = accepted.recv().await.unwrap();
+        let PendingStream { request, accepted } = pending;
+        let mut accepted = accepted.await.unwrap();
         assert_eq!(accepted.response_head, b"accepted".to_vec());
         tokio::time::sleep(Duration::from_millis(120)).await;
         request.finish().await.unwrap();
@@ -232,7 +232,7 @@ async fn replayed_open_packet_is_ignored() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_duplicate_first_call_forwarder(outbound_a, handle_b.clone());
+        spawn_duplicate_first_stream_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
@@ -242,27 +242,27 @@ async fn replayed_open_packet_is_ignored() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let responder_task = tokio::task::spawn_local(async move {
-            let call = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
             let second = tokio::time::timeout(Duration::from_millis(80), inbound_b.recv()).await;
-            assert!(second.is_err(), "replayed open redispatched call");
-            let response = call.respond_to.accept(Vec::new()).unwrap();
+            assert!(second.is_err(), "replayed open redispatched stream");
+            let response = stream.respond_to.accept(Vec::new()).unwrap();
             response.finish().await.unwrap();
         });
 
         let pending = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(14),
                 Vec::new(),
                 true,
-                CallConfig::default(),
+                StreamConfig::default(),
             )
             .await
             .unwrap();
-        let PendingCall { request, accepted } = pending;
-        let mut accepted = accepted.recv().await.unwrap();
+        let PendingStream { request, accepted } = pending;
+        let mut accepted = accepted.await.unwrap();
         request.finish().await.unwrap();
         assert_eq!(accepted.response.next_chunk().await.unwrap(), None);
 
@@ -303,11 +303,11 @@ async fn request_reset_can_keep_response_alive() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let responder_task = tokio::task::spawn_local(async move {
-            let call = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
-            let mut request = call.request;
-            let mut response = call.respond_to.accept(b"err".to_vec()).unwrap();
+            let mut request = stream.request;
+            let mut response = stream.respond_to.accept(b"err".to_vec()).unwrap();
             assert_eq!(request.next_chunk().await.unwrap(), Some(vec![1, 2]));
             request.reset(ResetCode::InvalidData).await.unwrap();
             response.write_all(b"invalid").await.unwrap();
@@ -315,21 +315,21 @@ async fn request_reset_can_keep_response_alive() {
         });
 
         let pending = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(15),
                 Vec::new(),
                 true,
-                CallConfig::default(),
+                StreamConfig::default(),
             )
             .await
             .unwrap();
-        let PendingCall {
+        let PendingStream {
             mut request,
             accepted,
         } = pending;
         request.write_all(&[1, 2]).await.unwrap();
-        let mut accepted = accepted.recv().await.unwrap();
+        let mut accepted = accepted.await.unwrap();
         assert_eq!(accepted.response_head, b"err".to_vec());
         assert_eq!(
             accepted.response.next_chunk().await.unwrap(),
@@ -373,28 +373,28 @@ async fn open_timeout_returns_error() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let pending = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(16),
                 Vec::new(),
                 true,
-                CallConfig::default(),
+                StreamConfig::default(),
             )
             .await
             .unwrap();
 
-        let _call = match inbound_b.recv().await.unwrap() {
-            HandlerEvent::Call(call) => call,
+        let _stream = match inbound_b.recv().await.unwrap() {
+            HandlerEvent::Stream(stream) => stream,
         };
 
-        let err = pending.accepted.recv().await.unwrap_err();
+        let err = pending.accepted.await.unwrap_err();
         assert!(matches!(err, QlError::Timeout));
     })
     .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn reject_surfaces_call_rejected() {
+async fn reject_surfaces_stream_rejected() {
     run_local_test(async {
         let config = RuntimeConfig::new(Duration::from_millis(200))
             .with_open_timeout(Duration::from_millis(300));
@@ -419,26 +419,26 @@ async fn reject_surfaces_call_rejected() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         tokio::task::spawn_local(async move {
-            let call = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
-            call.respond_to.reject(RejectCode::UnknownRoute).unwrap();
+            stream.respond_to.reject(RejectCode::UnknownRoute).unwrap();
         });
 
         let pending = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(17),
                 Vec::new(),
                 true,
-                CallConfig::default(),
+                StreamConfig::default(),
             )
             .await
             .unwrap();
-        let err = pending.accepted.recv().await.unwrap_err();
+        let err = pending.accepted.await.unwrap_err();
         assert!(matches!(
             err,
-            QlError::CallRejected {
+            QlError::StreamRejected {
                 code: RejectCode::UnknownRoute,
                 ..
             }

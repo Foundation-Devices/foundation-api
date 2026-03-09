@@ -1,3 +1,9 @@
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use async_channel::Sender;
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, XID};
 use futures_lite::future::poll_fn;
@@ -6,10 +12,10 @@ use crate::{
     pipe,
     runtime::{
         internal::{InboundStreamItem, RuntimeCommand},
-        AcceptedCallDelivery, CallConfig,
+        AcceptedStreamDelivery, StreamConfig,
     },
-    wire::call::{Direction, RejectCode, ResetCode},
-    CallId, QlError, RouteId,
+    wire::stream::{Direction, RejectCode, ResetCode},
+    QlError, RouteId, StreamId,
 };
 
 #[derive(Clone)]
@@ -18,37 +24,33 @@ pub struct RuntimeHandle {
     pub(crate) pipe_size_bytes: usize,
 }
 
-pub struct PendingCall {
+pub struct PendingStream {
     pub request: OutboundByteStream,
     pub accepted: PendingAccept,
 }
 
-pub struct PendingAccept {
-    rx: oneshot::Receiver<Result<AcceptedCallDelivery, QlError>>,
-}
-
 #[derive(Debug)]
-pub struct AcceptedCall {
-    pub call_id: CallId,
+pub struct AcceptedStream {
+    pub stream_id: StreamId,
     pub response_head: Vec<u8>,
     pub response: InboundByteStream,
 }
 
 #[derive(Debug)]
-pub struct InboundCall {
+pub struct InboundStream {
     pub sender: XID,
     pub recipient: XID,
     pub route_id: RouteId,
-    pub call_id: CallId,
+    pub stream_id: StreamId,
     pub request_head: Vec<u8>,
     pub response_expected: bool,
     pub request: InboundByteStream,
-    pub respond_to: CallResponder,
+    pub respond_to: StreamResponder,
 }
 
 #[derive(Debug, Clone)]
-pub struct CallResponder {
-    call_id: CallId,
+pub struct StreamResponder {
+    stream_id: StreamId,
     recipient: XID,
     pipe_size_bytes: usize,
     tx: async_channel::Sender<RuntimeCommand>,
@@ -56,7 +58,7 @@ pub struct CallResponder {
 
 pub struct InboundByteStream {
     sender: XID,
-    call_id: CallId,
+    stream_id: StreamId,
     dir: Direction,
     rx: async_channel::Receiver<InboundStreamItem>,
     tx: Sender<RuntimeCommand>,
@@ -67,7 +69,7 @@ impl std::fmt::Debug for InboundByteStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InboundByteStream")
             .field("sender", &self.sender)
-            .field("call_id", &self.call_id)
+            .field("stream_id", &self.stream_id)
             .field("dir", &self.dir)
             .field("finished", &self.finished)
             .finish_non_exhaustive()
@@ -76,26 +78,38 @@ impl std::fmt::Debug for InboundByteStream {
 
 pub struct OutboundByteStream {
     recipient: XID,
-    call_id: CallId,
+    stream_id: StreamId,
     dir: Direction,
     pipe: Option<pipe::PipeWriter>,
     tx: Sender<RuntimeCommand>,
 }
 
-impl PendingAccept {
-    pub async fn recv(self) -> Result<AcceptedCall, QlError> {
-        let delivery = self.rx.await.unwrap_or(Err(QlError::Cancelled))?;
-        let AcceptedCallDelivery {
-            peer,
-            call_id,
-            response_head,
-            rx,
-            tx,
-        } = delivery;
-        Ok(AcceptedCall {
-            call_id,
-            response_head,
-            response: InboundByteStream::new(peer, call_id, Direction::Response, rx, tx),
+pub struct PendingAccept {
+    rx: oneshot::Receiver<Result<AcceptedStreamDelivery, QlError>>,
+}
+
+impl Future for PendingAccept {
+    type Output = Result<AcceptedStream, QlError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        Pin::new(&mut this.rx).poll(cx).map(|result| match result {
+            Ok(Ok(delivery)) => {
+                let AcceptedStreamDelivery {
+                    peer,
+                    stream_id,
+                    response_head,
+                    rx,
+                    tx,
+                } = delivery;
+                Ok(AcceptedStream {
+                    stream_id,
+                    response_head,
+                    response: InboundByteStream::new(peer, stream_id, Direction::Response, rx, tx),
+                })
+            }
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(QlError::Cancelled),
         })
     }
 }
@@ -103,14 +117,14 @@ impl PendingAccept {
 impl InboundByteStream {
     pub(crate) fn new(
         sender: XID,
-        call_id: CallId,
+        stream_id: StreamId,
         dir: Direction,
         rx: async_channel::Receiver<InboundStreamItem>,
         tx: Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             sender,
-            call_id,
+            stream_id,
             dir,
             rx,
             tx,
@@ -129,7 +143,7 @@ impl InboundByteStream {
                     .tx
                     .send(RuntimeCommand::AdvanceInboundCredit {
                         sender: self.sender,
-                        call_id: self.call_id,
+                        stream_id: self.stream_id,
                         dir: self.dir,
                         amount: len as u64,
                     })
@@ -156,7 +170,7 @@ impl InboundByteStream {
         self.tx
             .send(RuntimeCommand::ResetInbound {
                 sender: self.sender,
-                call_id: self.call_id,
+                stream_id: self.stream_id,
                 dir: self.dir,
                 code,
             })
@@ -172,7 +186,7 @@ impl Drop for InboundByteStream {
         }
         let _ = self.tx.try_send(RuntimeCommand::ResetInbound {
             sender: self.sender,
-            call_id: self.call_id,
+            stream_id: self.stream_id,
             dir: self.dir,
             code: ResetCode::Cancelled,
         });
@@ -182,14 +196,14 @@ impl Drop for InboundByteStream {
 impl OutboundByteStream {
     pub(crate) fn new(
         recipient: XID,
-        call_id: CallId,
+        stream_id: StreamId,
         dir: Direction,
         pipe: pipe::PipeWriter,
         tx: Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             recipient,
-            call_id,
+            stream_id,
             dir,
             pipe: Some(pipe),
             tx,
@@ -202,9 +216,9 @@ impl OutboundByteStream {
         // TODO: We currently nudge the runtime after every successful write. If this becomes noisy,
         // add a coalesced readiness bit rather than buffering writes in another queue again.
         self.tx
-            .try_send(RuntimeCommand::PollCall {
+            .try_send(RuntimeCommand::PollStream {
                 peer: self.recipient,
-                call_id: self.call_id,
+                stream_id: self.stream_id,
             })
             .map_err(|_| QlError::Cancelled)?;
         Ok(written)
@@ -227,9 +241,9 @@ impl OutboundByteStream {
         };
         pipe.finish();
         self.tx
-            .try_send(RuntimeCommand::PollCall {
+            .try_send(RuntimeCommand::PollStream {
                 peer: self.recipient,
-                call_id: self.call_id,
+                stream_id: self.stream_id,
             })
             .map_err(|_| QlError::Cancelled)?;
         // TODO: closed() resolves when the runtime closes this outbound side, which currently
@@ -243,7 +257,7 @@ impl OutboundByteStream {
         self.tx
             .send(RuntimeCommand::ResetOutbound {
                 recipient: self.recipient,
-                call_id: self.call_id,
+                stream_id: self.stream_id,
                 dir: self.dir,
                 code,
             })
@@ -259,22 +273,22 @@ impl Drop for OutboundByteStream {
         }
         let _ = self.tx.try_send(RuntimeCommand::ResetOutbound {
             recipient: self.recipient,
-            call_id: self.call_id,
+            stream_id: self.stream_id,
             dir: self.dir,
             code: ResetCode::Cancelled,
         });
     }
 }
 
-impl CallResponder {
+impl StreamResponder {
     pub(crate) fn new(
-        call_id: CallId,
+        stream_id: StreamId,
         recipient: XID,
         pipe_size_bytes: usize,
         tx: async_channel::Sender<RuntimeCommand>,
     ) -> Self {
         Self {
-            call_id,
+            stream_id,
             recipient,
             pipe_size_bytes,
             tx,
@@ -284,16 +298,16 @@ impl CallResponder {
     pub fn accept(self, response_head: Vec<u8>) -> Result<OutboundByteStream, QlError> {
         let (response_pipe, response_writer) = pipe::pipe(self.pipe_size_bytes);
         self.tx
-            .send_blocking(RuntimeCommand::AcceptCall {
+            .send_blocking(RuntimeCommand::AcceptStream {
                 recipient: self.recipient,
-                call_id: self.call_id,
+                stream_id: self.stream_id,
                 response_head,
                 response_pipe,
             })
             .map_err(|_| QlError::Cancelled)?;
         Ok(OutboundByteStream::new(
             self.recipient,
-            self.call_id,
+            self.stream_id,
             Direction::Response,
             response_writer,
             self.tx,
@@ -302,9 +316,9 @@ impl CallResponder {
 
     pub fn reject(self, code: RejectCode) -> Result<(), QlError> {
         self.tx
-            .try_send(RuntimeCommand::RejectCall {
+            .try_send(RuntimeCommand::RejectStream {
                 recipient: self.recipient,
-                call_id: self.call_id,
+                stream_id: self.stream_id,
                 code,
             })
             .map_err(|_| QlError::Cancelled)
@@ -341,19 +355,19 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::Incoming(bytes))
     }
 
-    pub async fn open_call(
+    pub async fn open_stream(
         &self,
         recipient: XID,
         route_id: RouteId,
         request_head: Vec<u8>,
         response_expected: bool,
-        config: CallConfig,
-    ) -> Result<PendingCall, QlError> {
+        config: StreamConfig,
+    ) -> Result<PendingStream, QlError> {
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let (request_pipe, request_writer) = pipe::pipe(self.pipe_size_bytes);
         let (start_tx, start_rx) = oneshot::channel();
         self.tx
-            .send(RuntimeCommand::OpenCall {
+            .send(RuntimeCommand::OpenStream {
                 recipient,
                 route_id,
                 request_head,
@@ -366,12 +380,12 @@ impl RuntimeHandle {
             .await
             .map_err(|_| QlError::Cancelled)?;
 
-        let call_id = start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
+        let stream_id = start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
 
-        Ok(PendingCall {
+        Ok(PendingStream {
             request: OutboundByteStream::new(
                 recipient,
-                call_id,
+                stream_id,
                 Direction::Request,
                 request_writer,
                 self.tx.clone(),

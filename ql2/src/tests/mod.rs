@@ -27,10 +27,10 @@ use crate::{
     MessageId, PacketId, Peer, QlError,
 };
 
-mod calls;
 mod handshake;
 mod heartbeat;
 mod persistence;
+mod stream;
 mod unpair;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,11 +266,11 @@ fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
     });
 }
 
-fn is_call(bytes: &[u8]) -> bool {
+fn is_stream(bytes: &[u8]) -> bool {
     let Ok(record) = CBOR::try_from_data(bytes).and_then(QlRecord::try_from) else {
         return false;
     };
-    matches!(record.payload, QlPayload::Call(_))
+    matches!(record.payload, QlPayload::Stream(_))
 }
 
 fn is_heartbeat(bytes: &[u8]) -> bool {
@@ -280,11 +280,11 @@ fn is_heartbeat(bytes: &[u8]) -> bool {
     matches!(record.payload, QlPayload::Heartbeat(_))
 }
 
-fn spawn_drop_first_call_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+fn spawn_drop_first_stream_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
     tokio::task::spawn_local(async move {
         let mut dropped = false;
         while let Ok(bytes) = outbound.recv().await {
-            if !dropped && is_call(&bytes) {
+            if !dropped && is_stream(&bytes) {
                 dropped = true;
                 continue;
             }
@@ -293,7 +293,7 @@ fn spawn_drop_first_call_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeH
     });
 }
 
-fn spawn_drop_first_call_when(
+fn spawn_drop_first_stream_when(
     outbound: Receiver<Vec<u8>>,
     handle: RuntimeHandle,
     armed: Arc<AtomicBool>,
@@ -301,7 +301,7 @@ fn spawn_drop_first_call_when(
     tokio::task::spawn_local(async move {
         let mut dropped = false;
         while let Ok(bytes) = outbound.recv().await {
-            if armed.load(Ordering::Relaxed) && !dropped && is_call(&bytes) {
+            if armed.load(Ordering::Relaxed) && !dropped && is_stream(&bytes) {
                 dropped = true;
                 continue;
             }
@@ -310,11 +310,11 @@ fn spawn_drop_first_call_when(
     });
 }
 
-fn spawn_duplicate_first_call_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+fn spawn_duplicate_first_stream_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
     tokio::task::spawn_local(async move {
         let mut duplicated = false;
         while let Ok(bytes) = outbound.recv().await {
-            if !duplicated && is_call(&bytes) {
+            if !duplicated && is_stream(&bytes) {
                 duplicated = true;
                 handle.send_incoming(bytes.clone());
             }
@@ -618,26 +618,28 @@ fn protocol_record_size_breakdown() {
     };
     let confirm_size = CBOR::from(confirm_record).to_cbor_data().len();
 
-    let call_record = wire::call::encrypt_call(
+    let stream_record = wire::stream::encrypt_stream(
         QlHeader {
             sender: initiator,
             recipient: responder,
         },
         &session_key,
-        wire::call::CallBody {
+        wire::stream::StreamBody {
             packet_id: PacketId(1),
             valid_until: wire::now_secs().saturating_add(60),
             packet_ack: None,
-            frame: Some(wire::call::CallFrame::Open(wire::call::CallFrameOpen {
-                call_id: crate::CallId(2),
-                route_id: crate::RouteId(9),
-                flags: wire::call::OpenFlags::new(true, false),
-                request_head: vec![1, 2, 3],
-                response_max_offset: 1024,
-            })),
+            frame: Some(wire::stream::StreamFrame::Open(
+                wire::stream::StreamFrameOpen {
+                    stream_id: crate::StreamId(2),
+                    route_id: crate::RouteId(9),
+                    flags: wire::stream::OpenFlags::new(true, false),
+                    request_head: vec![1, 2, 3],
+                    response_max_offset: 1024,
+                },
+            )),
         },
     );
-    let call_size = CBOR::from(call_record).to_cbor_data().len();
+    let stream_size = CBOR::from(stream_record).to_cbor_data().len();
 
     let print_size = |label: &str, size: usize| {
         println!("{label:<21}: {size} bytes");
@@ -646,6 +648,6 @@ fn protocol_record_size_breakdown() {
     print_size("ql2 size hello", hello_size);
     print_size("ql2 size hello_reply", reply_size);
     print_size("ql2 size confirm", confirm_size);
-    print_size("ql2 size call open", call_size);
+    print_size("ql2 size stream open", stream_size);
     let _ = MessageId(0);
 }

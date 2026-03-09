@@ -33,7 +33,7 @@ async fn connected_unpair_removes_peer_on_both_sides() {
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
         let result_a = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(90),
                 Vec::new(),
@@ -44,7 +44,7 @@ async fn connected_unpair_removes_peer_on_both_sides() {
         assert!(matches!(result_a, Err(QlError::UnknownPeer(peer)) if peer == peer_b.xid));
 
         let result_b = handle_b
-            .open_call(
+            .open_stream(
                 peer_a.xid,
                 RouteId(91),
                 Vec::new(),
@@ -86,7 +86,7 @@ async fn unpair_works_without_session() {
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
         let result_a = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(92),
                 Vec::new(),
@@ -97,7 +97,7 @@ async fn unpair_works_without_session() {
         assert!(matches!(result_a, Err(QlError::UnknownPeer(peer)) if peer == peer_b.xid));
 
         let result_b = handle_b
-            .open_call(
+            .open_stream(
                 peer_a.xid,
                 RouteId(93),
                 Vec::new(),
@@ -146,7 +146,7 @@ async fn invalid_unpair_signature_is_ignored() {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let result = handle_b
-            .open_call(
+            .open_stream(
                 peer_a.xid,
                 RouteId(94),
                 Vec::new(),

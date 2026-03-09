@@ -1,6 +1,6 @@
 pub use handle::{
-    AcceptedCall, CallResponder, InboundByteStream, InboundCall, OutboundByteStream, PendingAccept,
-    PendingCall, RuntimeHandle,
+    AcceptedStream, InboundByteStream, InboundStream, OutboundByteStream, PendingAccept,
+    PendingStream, RuntimeHandle, StreamResponder,
 };
 pub use internal::{InitiatorStage, PeerSession, Token};
 
@@ -13,14 +13,14 @@ use std::time::Duration;
 
 use bc_components::XID;
 
-use crate::{platform::QlPlatform, CallId};
+use crate::{platform::QlPlatform, StreamId};
 
 #[derive(Debug, Clone, Copy)]
-pub struct CallConfig {
+pub struct StreamConfig {
     pub open_timeout: Option<Duration>,
 }
 
-impl Default for CallConfig {
+impl Default for StreamConfig {
     fn default() -> Self {
         Self { open_timeout: None }
     }
@@ -38,7 +38,7 @@ pub struct RuntimeConfig {
     pub default_open_timeout: Duration,
     pub packet_expiration: Duration,
     pub packet_ack_timeout: Duration,
-    pub call_retry_limit: u8,
+    pub stream_retry_limit: u8,
     pub max_payload_bytes: usize,
     pub pipe_size_bytes: usize,
     pub initial_credit: u64,
@@ -52,7 +52,7 @@ impl RuntimeConfig {
             default_open_timeout: Duration::from_secs(5),
             packet_expiration: Duration::from_secs(30),
             packet_ack_timeout: Duration::from_millis(150),
-            call_retry_limit: 5,
+            stream_retry_limit: 5,
             max_payload_bytes: 1024,
             pipe_size_bytes: 2048,
             initial_credit: 1024,
@@ -75,8 +75,8 @@ impl RuntimeConfig {
         self
     }
 
-    pub fn with_call_retry_limit(mut self, call_retry_limit: u8) -> Self {
-        self.call_retry_limit = call_retry_limit;
+    pub fn with_stream_retry_limit(mut self, stream_retry_limit: u8) -> Self {
+        self.stream_retry_limit = stream_retry_limit;
         self
     }
 
@@ -105,12 +105,12 @@ impl RuntimeConfig {
 
 #[derive(Debug)]
 pub enum HandlerEvent {
-    Call(InboundCall),
+    Stream(InboundStream),
 }
 
-pub(crate) struct AcceptedCallDelivery {
+pub(crate) struct AcceptedStreamDelivery {
     pub peer: XID,
-    pub call_id: CallId,
+    pub stream_id: StreamId,
     pub response_head: Vec<u8>,
     pub rx: async_channel::Receiver<internal::InboundStreamItem>,
     pub tx: async_channel::Sender<internal::RuntimeCommand>,

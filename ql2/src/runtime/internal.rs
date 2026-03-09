@@ -11,15 +11,15 @@ use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 use crate::{
     pipe,
     platform::PlatformFuture,
-    runtime::{replay_cache::ReplayCache, AcceptedCallDelivery, CallConfig},
+    runtime::{replay_cache::ReplayCache, AcceptedStreamDelivery, StreamConfig},
     wire::{
-        call::{
-            CallBody, CallFrame, CallFrameAccept, CallFrameCredit, CallFrameOpen, CallFrameReset,
-            Direction, OpenFlags, RejectCode, ResetCode, ResetTarget,
-        },
         handshake::{Hello, HelloReply},
+        stream::{
+            Direction, OpenFlags, RejectCode, ResetCode, ResetTarget, StreamBody, StreamFrame,
+            StreamFrameAccept, StreamFrameCredit, StreamFrameOpen, StreamFrameReset,
+        },
     },
-    CallId, PacketId, Peer, QlError, RouteId,
+    PacketId, Peer, QlError, RouteId, StreamId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -168,13 +168,13 @@ pub(crate) enum InboundStreamItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallRole {
+pub enum StreamRole {
     Initiator,
     Responder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallPhase {
+pub enum StreamPhase {
     InitiatorOpening,
     InitiatorWaitingAccept,
     ResponderPending,
@@ -191,7 +191,7 @@ pub struct AwaitingPacket {
 }
 
 pub enum AwaitingFrame {
-    Control(CallFrame),
+    Control(StreamFrame),
     Data {
         dir: Direction,
         offset: u64,
@@ -199,18 +199,18 @@ pub enum AwaitingFrame {
     },
 }
 
-pub struct PendingCallFrames {
+pub struct PendingStreamFrames {
     pub setup: Option<SetupFrame>,
-    pub credit: Option<CallFrameCredit>,
-    pub reset: Option<CallFrameReset>,
+    pub credit: Option<StreamFrameCredit>,
+    pub reset: Option<StreamFrameReset>,
 }
 
 pub enum SetupFrame {
-    Open(CallFrameOpen),
-    Accept(CallFrameAccept),
+    Open(StreamFrameOpen),
+    Accept(StreamFrameAccept),
 }
 
-impl PendingCallFrames {
+impl PendingStreamFrames {
     pub fn new() -> Self {
         Self {
             setup: None,
@@ -219,24 +219,24 @@ impl PendingCallFrames {
         }
     }
 
-    pub fn take_next_control(&mut self, call_id: CallId) -> Option<CallFrame> {
+    pub fn take_next_control(&mut self, stream_id: StreamId) -> Option<StreamFrame> {
         if let Some(setup) = self.setup.take() {
             return Some(match setup {
-                SetupFrame::Open(frame) => CallFrame::Open(frame),
-                SetupFrame::Accept(frame) => CallFrame::Accept(frame),
+                SetupFrame::Open(frame) => StreamFrame::Open(frame),
+                SetupFrame::Accept(frame) => StreamFrame::Accept(frame),
             });
         }
         if let Some(reset) = self.reset.take() {
-            return Some(CallFrame::Reset(CallFrameReset { call_id, ..reset }));
+            return Some(StreamFrame::Reset(StreamFrameReset { stream_id, ..reset }));
         }
-        self.credit.take().map(CallFrame::Credit)
+        self.credit.take().map(StreamFrame::Credit)
     }
 
     pub fn set_setup(&mut self, frame: SetupFrame) {
         self.setup = Some(frame);
     }
 
-    pub fn set_credit(&mut self, frame: CallFrameCredit) {
+    pub fn set_credit(&mut self, frame: StreamFrameCredit) {
         if self.reset.is_none() {
             self.credit = Some(frame);
         }
@@ -244,8 +244,8 @@ impl PendingCallFrames {
 
     pub fn set_reset(&mut self, dir: ResetTarget, code: ResetCode) {
         self.credit = None;
-        self.reset = Some(CallFrameReset {
-            call_id: CallId(0),
+        self.reset = Some(StreamFrameReset {
+            stream_id: StreamId(0),
             dir,
             code,
         });
@@ -258,17 +258,17 @@ impl PendingCallFrames {
     }
 }
 
-pub struct OutboundCallStreamState {
+pub struct OutboundStreamState {
     pub dir: Direction,
     pub pipe: pipe::PipeReader,
-    pub pending: PendingCallFrames,
+    pub pending: PendingStreamFrames,
     pub awaiting: Option<AwaitingPacket>,
     pub remote_max_offset: u64,
     pub data_enabled: bool,
     pub closed: bool,
 }
 
-pub struct InboundCallStreamState {
+pub struct InboundStreamState {
     pub dir: Direction,
     pub chunk_tx: Sender<InboundStreamItem>,
     pub pending_chunk: Option<Vec<u8>>,
@@ -283,22 +283,22 @@ pub enum InboundTerminal {
     Error(QlError),
 }
 
-pub struct CallRecord {
+pub struct StreamRecord {
     pub peer: XID,
-    pub call_id: CallId,
+    pub stream_id: StreamId,
     pub route_id: RouteId,
-    pub role: CallRole,
-    pub phase: CallPhase,
+    pub role: StreamRole,
+    pub phase: StreamPhase,
     pub open_flags: OpenFlags,
     pub request_head: Vec<u8>,
     pub response_head: Option<Vec<u8>>,
     pub response_rx: Option<Receiver<InboundStreamItem>>,
-    pub accept_tx: Option<oneshot::Sender<Result<AcceptedCallDelivery, QlError>>>,
+    pub accept_tx: Option<oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>>,
     pub open_timeout_token: Token,
     pub initial_remote_credit: u64,
-    pub outbound: Option<OutboundCallStreamState>,
-    pub inbound: InboundCallStreamState,
-    pub accept_frame: Option<CallFrameAccept>,
+    pub outbound: Option<OutboundStreamState>,
+    pub inbound: InboundStreamState,
+    pub accept_frame: Option<StreamFrameAccept>,
     pub last_activity: Instant,
 }
 
@@ -314,84 +314,84 @@ pub(crate) enum RuntimeCommand {
     Unpair {
         peer: XID,
     },
-    OpenCall {
+    OpenStream {
         recipient: XID,
         route_id: RouteId,
         request_head: Vec<u8>,
         response_expected: bool,
         request_pipe: pipe::PipeReader,
-        accepted: oneshot::Sender<Result<AcceptedCallDelivery, QlError>>,
-        start: oneshot::Sender<Result<CallId, QlError>>,
-        config: CallConfig,
+        accepted: oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>,
+        start: oneshot::Sender<Result<StreamId, QlError>>,
+        config: StreamConfig,
     },
-    AcceptCall {
+    AcceptStream {
         recipient: XID,
-        call_id: CallId,
+        stream_id: StreamId,
         response_head: Vec<u8>,
         response_pipe: pipe::PipeReader,
     },
-    RejectCall {
+    RejectStream {
         recipient: XID,
-        call_id: CallId,
+        stream_id: StreamId,
         code: RejectCode,
     },
-    PollCall {
+    PollStream {
         peer: XID,
-        call_id: CallId,
+        stream_id: StreamId,
     },
     AdvanceInboundCredit {
         sender: XID,
-        call_id: CallId,
+        stream_id: StreamId,
         dir: Direction,
         amount: u64,
     },
     ResetOutbound {
         recipient: XID,
-        call_id: CallId,
+        stream_id: StreamId,
         dir: Direction,
         code: ResetCode,
     },
     ResetInbound {
         sender: XID,
-        call_id: CallId,
+        stream_id: StreamId,
         dir: Direction,
         code: ResetCode,
     },
     Incoming(Vec<u8>),
 }
 
-pub struct CallState {
-    by_id: HashMap<(XID, CallId), CallRecord>,
+pub struct StreamState {
+    by_id: HashMap<(XID, StreamId), StreamRecord>,
 }
 
-impl CallState {
+impl StreamState {
     pub fn new() -> Self {
         Self {
             by_id: HashMap::new(),
         }
     }
 
-    pub fn get(&self, key: &(XID, CallId)) -> Option<&CallRecord> {
+    pub fn get(&self, key: &(XID, StreamId)) -> Option<&StreamRecord> {
         self.by_id.get(key)
     }
 
-    pub fn get_mut(&mut self, key: &(XID, CallId)) -> Option<&mut CallRecord> {
+    pub fn get_mut(&mut self, key: &(XID, StreamId)) -> Option<&mut StreamRecord> {
         self.by_id.get_mut(key)
     }
 
-    pub fn insert(&mut self, key: (XID, CallId), call: CallRecord) -> Option<CallRecord> {
-        self.by_id.insert(key, call)
+    pub fn insert(&mut self, key: (XID, StreamId), stream: StreamRecord) -> Option<StreamRecord> {
+        self.by_id.insert(key, stream)
     }
 
-    pub fn remove(&mut self, key: &(XID, CallId)) -> Option<CallRecord> {
+    pub fn remove(&mut self, key: &(XID, StreamId)) -> Option<StreamRecord> {
         self.by_id.remove(key)
     }
 
-    pub fn keys(&self) -> impl Iterator<Item = &(XID, CallId)> {
+    pub fn keys(&self) -> impl Iterator<Item = &(XID, StreamId)> {
         self.by_id.keys()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&(XID, CallId), &CallRecord)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&(XID, StreamId), &StreamRecord)> {
         self.by_id.iter()
     }
 }
@@ -429,22 +429,22 @@ impl CoreState {
         PacketId(id)
     }
 
-    pub fn next_call_id(&self) -> CallId {
+    pub fn next_stream_id(&self) -> StreamId {
         let id = self.next_id.get();
         self.next_id.set(id.wrapping_add(1));
-        CallId(id)
+        StreamId(id)
     }
 }
 
 pub struct RuntimeState {
-    pub calls: CallState,
+    pub stream: StreamState,
     pub core: CoreState,
 }
 
 impl RuntimeState {
     pub fn new() -> Self {
         Self {
-            calls: CallState::new(),
+            stream: StreamState::new(),
             core: CoreState::new(),
         }
     }
@@ -453,7 +453,7 @@ impl RuntimeState {
 pub struct InFlightWrite<'a> {
     pub peer: XID,
     pub token: Token,
-    pub call_id: Option<CallId>,
+    pub stream_id: Option<StreamId>,
     pub packet_id: Option<PacketId>,
     pub track_ack: bool,
     pub future: PlatformFuture<'a, Result<(), QlError>>,
@@ -461,13 +461,13 @@ pub struct InFlightWrite<'a> {
 
 pub enum OutboundPayload {
     PreEncoded(Vec<u8>),
-    DeferredCall(CallBody),
+    DeferredStream(StreamBody),
 }
 
 pub struct OutboundMessage {
     pub peer: XID,
     pub token: Token,
-    pub call_id: Option<CallId>,
+    pub stream_id: Option<StreamId>,
     pub packet_id: Option<PacketId>,
     pub track_ack: bool,
     pub payload: OutboundPayload,
@@ -490,14 +490,14 @@ pub enum TimeoutKind {
         peer: XID,
         token: Token,
     },
-    CallOpen {
+    StreamOpen {
         peer: XID,
-        call_id: CallId,
+        stream_id: StreamId,
         token: Token,
     },
-    CallPacket {
+    StreamPacket {
         peer: XID,
-        call_id: CallId,
+        stream_id: StreamId,
         packet_id: PacketId,
         attempt: u8,
     },
@@ -527,7 +527,7 @@ pub enum LoopStep {
     WriteDone {
         peer: XID,
         token: Token,
-        call_id: Option<CallId>,
+        stream_id: Option<StreamId>,
         packet_id: Option<PacketId>,
         track_ack: bool,
         result: Result<(), QlError>,
@@ -566,21 +566,21 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-impl CallRecord {
+impl StreamRecord {
     pub fn local_outbound_dir(&self) -> Direction {
         match self.role {
-            CallRole::Initiator => Direction::Request,
-            CallRole::Responder => Direction::Response,
+            StreamRole::Initiator => Direction::Request,
+            StreamRole::Responder => Direction::Response,
         }
     }
 }
 
-impl OutboundCallStreamState {
+impl OutboundStreamState {
     pub fn new(dir: Direction, pipe: pipe::PipeReader, remote_max_offset: u64) -> Self {
         Self {
             dir,
             pipe,
-            pending: PendingCallFrames::new(),
+            pending: PendingStreamFrames::new(),
             awaiting: None,
             remote_max_offset,
             data_enabled: false,
@@ -589,7 +589,7 @@ impl OutboundCallStreamState {
     }
 }
 
-impl InboundCallStreamState {
+impl InboundStreamState {
     pub fn new(dir: Direction, chunk_tx: Sender<InboundStreamItem>, max_offset: u64) -> Self {
         Self {
             dir,

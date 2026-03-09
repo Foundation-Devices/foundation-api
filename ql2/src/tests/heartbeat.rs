@@ -154,7 +154,7 @@ async fn heartbeat_reply_when_connected() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn any_call_clears_pending() {
+async fn any_stream_clears_pending() {
     run_local_test(async {
         let keep_alive = KeepAliveConfig {
             interval: Duration::from_millis(120),
@@ -189,15 +189,15 @@ async fn any_call_clears_pending() {
             .unwrap();
 
         let responder_task = tokio::task::spawn_local(async move {
-            let call = match inbound_a.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_a.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
-            let response = call.respond_to.accept(Vec::new()).unwrap();
+            let response = stream.respond_to.accept(Vec::new()).unwrap();
             response.finish().await.unwrap();
         });
 
         let pending = handle_b
-            .open_call(
+            .open_stream(
                 peer_a.xid,
                 RouteId(99),
                 Vec::new(),
@@ -207,7 +207,7 @@ async fn any_call_clears_pending() {
             .await
             .unwrap();
         pending.request.finish().await.unwrap();
-        let _ = pending.accepted.recv().await.unwrap();
+        let _ = pending.accepted.await.unwrap();
 
         let window = keep_alive.timeout + Duration::from_millis(20);
         let disconnect = tokio::time::timeout(window, async {
@@ -260,23 +260,23 @@ async fn heartbeat_timeout_disconnects_and_drops_outbound() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let responder_task = tokio::task::spawn_local(async move {
-            let call = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
-            let response = call.respond_to.accept(Vec::new()).unwrap();
+            let response = stream.respond_to.accept(Vec::new()).unwrap();
             response.finish().await.unwrap();
         });
 
         drop_flag.store(true, Ordering::Relaxed);
 
         let pending = handle_a
-            .open_call(peer_b.xid, RouteId(9), Vec::new(), true, Default::default())
+            .open_stream(peer_b.xid, RouteId(9), Vec::new(), true, Default::default())
             .await
             .unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
 
-        let result = tokio::time::timeout(Duration::from_millis(300), pending.accepted.recv())
+        let result = tokio::time::timeout(Duration::from_millis(300), pending.accepted)
             .await
             .unwrap();
         assert!(matches!(result, Err(QlError::SendFailed)));
@@ -504,17 +504,17 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
         await_status(&status_c, peer_a.xid, PeerStage::Connected).await;
 
         let inbound_task = tokio::task::spawn_local(async move {
-            let call = match inbound_c.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_c.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
-            let response = call.respond_to.accept(Vec::new()).unwrap();
+            let response = stream.respond_to.accept(Vec::new()).unwrap();
             response.finish().await.unwrap();
         });
 
         drop_b_to_a.store(true, Ordering::Relaxed);
 
         let pending_b = handle_a
-            .open_call(
+            .open_stream(
                 peer_b.xid,
                 RouteId(10),
                 Vec::new(),
@@ -524,7 +524,7 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
             .await
             .unwrap();
         let pending_c = handle_a
-            .open_call(
+            .open_stream(
                 peer_c.xid,
                 RouteId(11),
                 Vec::new(),
@@ -534,17 +534,16 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
             .await
             .unwrap();
 
-        let accepted_c =
-            tokio::time::timeout(Duration::from_millis(200), pending_c.accepted.recv())
-                .await
-                .expect("response wait")
-                .expect("response channel");
+        let accepted_c = tokio::time::timeout(Duration::from_millis(200), pending_c.accepted)
+            .await
+            .expect("response wait")
+            .expect("response channel");
         pending_c.request.finish().await.unwrap();
         drop(accepted_c);
 
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
 
-        let result_b = tokio::time::timeout(Duration::from_millis(200), pending_b.accepted.recv())
+        let result_b = tokio::time::timeout(Duration::from_millis(200), pending_b.accepted)
             .await
             .expect("response wait");
         assert!(matches!(result_b, Err(QlError::SendFailed)));
@@ -606,15 +605,15 @@ async fn multi_peer_activity_is_per_peer() {
         tokio::time::sleep(keep_alive.interval + Duration::from_millis(5)).await;
 
         let responder_task = tokio::task::spawn_local(async move {
-            let call = match inbound_a.recv().await.unwrap() {
-                HandlerEvent::Call(call) => call,
+            let stream = match inbound_a.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
             };
-            let response = call.respond_to.accept(Vec::new()).unwrap();
+            let response = stream.respond_to.accept(Vec::new()).unwrap();
             response.finish().await.unwrap();
         });
 
         let pending = handle_b
-            .open_call(
+            .open_stream(
                 peer_a.xid,
                 RouteId(99),
                 Vec::new(),
@@ -624,7 +623,7 @@ async fn multi_peer_activity_is_per_peer() {
             .await
             .unwrap();
         pending.request.finish().await.unwrap();
-        let _ = pending.accepted.recv().await.unwrap();
+        let _ = pending.accepted.await.unwrap();
 
         await_status(&status_a, peer_c.xid, PeerStage::Disconnected).await;
 

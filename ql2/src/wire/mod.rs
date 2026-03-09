@@ -1,9 +1,9 @@
 use dcbor::CBOR;
 
-pub mod call;
 pub mod handshake;
 pub mod heartbeat;
 pub mod pair;
+pub mod stream;
 pub mod unpair;
 
 use bc_components::{EncryptedMessage, XID};
@@ -35,14 +35,14 @@ pub enum QlPayload {
     Pair(PairRequestRecord),
     Unpair(UnpairRecord),
     Heartbeat(EncryptedMessage),
-    Call(EncryptedMessage),
+    Stream(EncryptedMessage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QlTag {
     Handshake = 1,
     Pairing = 2,
-    Call = 3,
+    Stream = 3,
     Heartbeat = 4,
     Unpair = 5,
 }
@@ -61,7 +61,7 @@ impl TryFrom<CBOR> for QlTag {
         match tag {
             1 => Ok(Self::Handshake),
             2 => Ok(Self::Pairing),
-            3 => Ok(Self::Call),
+            3 => Ok(Self::Stream),
             4 => Ok(Self::Heartbeat),
             5 => Ok(Self::Unpair),
             _ => Err(dcbor::Error::msg("unknown message tag")),
@@ -74,7 +74,7 @@ impl From<QlRecord> for CBOR {
         let (tag, payload) = match value.payload {
             QlPayload::Handshake(message) => (QlTag::Handshake, CBOR::from(message)),
             QlPayload::Pair(message) => (QlTag::Pairing, CBOR::from(message)),
-            QlPayload::Call(message) => (QlTag::Call, CBOR::from(message)),
+            QlPayload::Stream(message) => (QlTag::Stream, CBOR::from(message)),
             QlPayload::Heartbeat(message) => (QlTag::Heartbeat, CBOR::from(message)),
             QlPayload::Unpair(message) => (QlTag::Unpair, CBOR::from(message)),
         };
@@ -103,9 +103,9 @@ impl TryFrom<CBOR> for QlRecord {
                 header,
                 payload: QlPayload::Pair(PairRequestRecord::try_from(payload)?),
             }),
-            QlTag::Call => Ok(QlRecord {
+            QlTag::Stream => Ok(QlRecord {
                 header,
-                payload: QlPayload::Call(EncryptedMessage::try_from(payload)?),
+                payload: QlPayload::Stream(EncryptedMessage::try_from(payload)?),
             }),
             QlTag::Heartbeat => Ok(QlRecord {
                 header,

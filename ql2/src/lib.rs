@@ -32,19 +32,19 @@ pub enum QlError {
     Timeout,
     #[error("send failed")]
     SendFailed,
-    #[error("call rejected {code:?}")]
-    CallRejected {
-        id: CallId,
-        code: wire::call::RejectCode,
+    #[error("stream rejected {code:?}")]
+    StreamRejected {
+        id: StreamId,
+        code: wire::stream::RejectCode,
     },
-    #[error("call reset {code:?}")]
-    CallReset {
-        id: CallId,
-        dir: wire::call::Direction,
-        code: wire::call::ResetCode,
+    #[error("stream reset {code:?}")]
+    StreamReset {
+        id: StreamId,
+        dir: wire::stream::Direction,
+        code: wire::stream::ResetCode,
     },
-    #[error("call protocol error")]
-    CallProtocol { id: CallId },
+    #[error("stream protocol error")]
+    StreamProtocol { id: StreamId },
     #[error("cancelled")]
     Cancelled,
 }
