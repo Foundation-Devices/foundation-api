@@ -15,14 +15,16 @@ use crate::{
             now_secs, peer_hello_wins, AwaitingFrame, AwaitingPacket, CallPhase, CallRecord,
             CallRole, CoreState, HelloAction, InFlightWrite, InboundStreamItem, InboundTerminal,
             InitiatorStage, KeepAliveState, LoopStep, OutboundCallStreamState, OutboundMessage,
-            OutboundPayload, RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
+            OutboundPayload, RuntimeCommand, RuntimeState, SetupFrame, TimeoutEntry, TimeoutKind,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
         AcceptedCallDelivery, HandlerEvent, KeepAliveConfig, PeerSession, Runtime,
     },
     wire::{
         call::{
-            self, AcceptStatus, CallBody, CallFrame, Direction, OpenFlags, RejectCode, ResetCode,
+            self, AcceptStatus, CallBody, CallFrame, CallFrameAccept, CallFrameCredit,
+            CallFrameData, CallFrameFinish, CallFrameOpen, CallFrameReset, Direction, OpenFlags,
+            RejectCode, ResetCode,
         },
         handshake::{self, HandshakeRecord},
         heartbeat::{self, HeartbeatBody},
@@ -369,13 +371,13 @@ impl<P: QlPlatform> Runtime<P> {
         let open_flags = OpenFlags::new(response_expected, false);
         let token = state.core.next_token();
         let mut outbound = OutboundCallStreamState::new(Direction::Request, request_pipe, 0);
-        outbound.queue.push_back(CallFrame::Open {
+        outbound.pending.set_setup(SetupFrame::Open(CallFrameOpen {
             call_id,
             route_id,
             flags: open_flags,
             request_head: request_head.clone(),
             response_max_offset: self.config.initial_credit,
-        });
+        }));
         let call = CallRecord {
             peer: recipient,
             call_id,
@@ -432,13 +434,15 @@ impl<P: QlPlatform> Runtime<P> {
             response_pipe,
             call.initial_remote_credit,
         );
-        let frame = CallFrame::Accept {
+        let frame = CallFrameAccept {
             call_id,
             status: AcceptStatus::Accepted,
             response_head: response_head.clone(),
             request_max_offset: self.config.initial_credit,
         };
-        outbound.queue.push_back(frame.clone());
+        outbound
+            .pending
+            .set_setup(SetupFrame::Accept(frame.clone()));
         call.phase = CallPhase::ResponderAccepting;
         call.response_head = Some(response_head);
         call.accept_frame = Some(frame);
@@ -462,7 +466,7 @@ impl<P: QlPlatform> Runtime<P> {
         if call.role != CallRole::Responder || call.phase != CallPhase::ResponderPending {
             return;
         }
-        let frame = CallFrame::Accept {
+        let frame = CallFrameAccept {
             call_id,
             status: AcceptStatus::Rejected(code),
             response_head: Vec::new(),
@@ -478,7 +482,7 @@ impl<P: QlPlatform> Runtime<P> {
             call.initial_remote_credit,
         );
         outbound.closed = true;
-        outbound.queue.push_back(frame);
+        outbound.pending.set_setup(SetupFrame::Accept(frame));
         call.outbound = Some(outbound);
         call.last_activity = Instant::now();
         self.drive_call(state, recipient, call_id);
@@ -524,16 +528,14 @@ impl<P: QlPlatform> Runtime<P> {
         if let Some(outbound) = call.outbound.as_mut() {
             if !outbound.closed {
                 outbound.closed = true;
-                outbound.queue.clear();
-                outbound.pipe.close();
-                outbound.queue.push_back(CallFrame::Reset {
-                    call_id,
-                    dir: match dir {
+                outbound.pending.set_reset(
+                    match dir {
                         Direction::Request => call::ResetTarget::Request,
                         Direction::Response => call::ResetTarget::Response,
                     },
                     code,
-                });
+                );
+                outbound.pipe.close();
             }
         }
         call.last_activity = Instant::now();
@@ -567,14 +569,13 @@ impl<P: QlPlatform> Runtime<P> {
             }));
         call.inbound.chunk_tx.close();
         if let Some(outbound) = call.outbound.as_mut() {
-            outbound.queue.push_back(CallFrame::Reset {
-                call_id,
-                dir: match dir {
+            outbound.pending.set_reset(
+                match dir {
                     Direction::Request => call::ResetTarget::Request,
                     Direction::Response => call::ResetTarget::Response,
                 },
                 code,
-            });
+            );
             outbound.pipe.close();
         }
         call.last_activity = Instant::now();
@@ -727,13 +728,13 @@ impl<P: QlPlatform> Runtime<P> {
         self.send_packet_ack(&mut state.core, peer, body.packet_id);
 
         match frame {
-            CallFrame::Open {
+            CallFrame::Open(CallFrameOpen {
                 call_id,
                 route_id,
                 flags,
                 request_head,
                 response_max_offset,
-            } => self.handle_call_open(
+            }) => self.handle_call_open(
                 state,
                 peer,
                 call_id,
@@ -742,12 +743,12 @@ impl<P: QlPlatform> Runtime<P> {
                 request_head,
                 response_max_offset,
             ),
-            CallFrame::Accept {
+            CallFrame::Accept(CallFrameAccept {
                 call_id,
                 status,
                 response_head,
                 request_max_offset,
-            } => self.handle_call_accept(
+            }) => self.handle_call_accept(
                 state,
                 peer,
                 call_id,
@@ -755,22 +756,22 @@ impl<P: QlPlatform> Runtime<P> {
                 response_head,
                 request_max_offset,
             ),
-            CallFrame::Data {
+            CallFrame::Data(CallFrameData {
                 call_id,
                 dir,
                 offset,
                 bytes,
-            } => self.handle_call_data(state, peer, call_id, dir, offset, bytes),
-            CallFrame::Credit {
+            }) => self.handle_call_data(state, peer, call_id, dir, offset, bytes),
+            CallFrame::Credit(CallFrameCredit {
                 call_id,
                 dir,
                 recv_offset,
                 max_offset,
-            } => self.handle_call_credit(state, peer, call_id, dir, recv_offset, max_offset),
-            CallFrame::Finish { call_id, dir } => {
+            }) => self.handle_call_credit(state, peer, call_id, dir, recv_offset, max_offset),
+            CallFrame::Finish(CallFrameFinish { call_id, dir }) => {
                 self.handle_call_finish(state, peer, call_id, dir)
             }
-            CallFrame::Reset { call_id, dir, code } => {
+            CallFrame::Reset(CallFrameReset { call_id, dir, code }) => {
                 self.handle_call_reset(state, peer, call_id, dir, code)
             }
         }
@@ -881,7 +882,7 @@ impl<P: QlPlatform> Runtime<P> {
                 send_protocol_reset = true;
             } else if let Some(existing) = &call.accept_frame {
                 match existing {
-                    CallFrame::Accept {
+                    CallFrameAccept {
                         call_id: existing_call_id,
                         status: existing_status,
                         response_head: existing_response_head,
@@ -900,7 +901,7 @@ impl<P: QlPlatform> Runtime<P> {
                 if let Some(outbound) = call.outbound.as_mut() {
                     if matches!(
                         outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
-                        Some(AwaitingFrame::Control(CallFrame::Open { .. }))
+                        Some(AwaitingFrame::Control(CallFrame::Open(_)))
                     ) {
                         outbound.awaiting = None;
                     }
@@ -909,7 +910,7 @@ impl<P: QlPlatform> Runtime<P> {
                 match status {
                     AcceptStatus::Accepted => {
                         call.phase = CallPhase::Open;
-                        call.accept_frame = Some(CallFrame::Accept {
+                        call.accept_frame = Some(CallFrameAccept {
                             call_id,
                             status: AcceptStatus::Accepted,
                             response_head: response_head.clone(),
@@ -932,7 +933,7 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                     AcceptStatus::Rejected(code) => {
                         call.phase = CallPhase::Rejected;
-                        call.accept_frame = Some(CallFrame::Accept {
+                        call.accept_frame = Some(CallFrameAccept {
                             call_id,
                             status: AcceptStatus::Rejected(code),
                             response_head,
@@ -940,7 +941,7 @@ impl<P: QlPlatform> Runtime<P> {
                         });
                         if let Some(outbound) = call.outbound.as_mut() {
                             outbound.closed = true;
-                            outbound.queue.clear();
+                            outbound.pending.clear();
                             outbound.awaiting = None;
                             outbound.pipe.close();
                         }
@@ -1140,7 +1141,7 @@ impl<P: QlPlatform> Runtime<P> {
                 _ => false,
             };
             if affects_outbound {
-                outbound.queue.clear();
+                outbound.pending.clear();
                 outbound.awaiting = None;
                 outbound.closed = true;
                 outbound.pipe.close();
@@ -1181,32 +1182,32 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         match awaiting.frame {
-            AwaitingFrame::Control(CallFrame::Open { .. }) => {
+            AwaitingFrame::Control(CallFrame::Open(_)) => {
                 if call.phase == CallPhase::InitiatorOpening {
                     call.phase = CallPhase::InitiatorWaitingAccept;
                 }
             }
-            AwaitingFrame::Control(CallFrame::Accept {
+            AwaitingFrame::Control(CallFrame::Accept(CallFrameAccept {
                 status: AcceptStatus::Accepted,
                 ..
-            }) => {
+            })) => {
                 if call.phase == CallPhase::ResponderAccepting {
                     call.phase = CallPhase::Open;
                     outbound.data_enabled = true;
                 }
             }
-            AwaitingFrame::Control(CallFrame::Accept {
+            AwaitingFrame::Control(CallFrame::Accept(CallFrameAccept {
                 status: AcceptStatus::Rejected(_),
                 ..
-            }) => {
+            })) => {
                 call.phase = CallPhase::Rejected;
                 outbound.closed = true;
                 outbound.pipe.close();
             }
-            AwaitingFrame::Control(CallFrame::Finish { .. }) => {
+            AwaitingFrame::Control(CallFrame::Finish(_)) => {
                 outbound.pipe.close();
             }
-            AwaitingFrame::Control(CallFrame::Reset { dir, .. }) => {
+            AwaitingFrame::Control(CallFrame::Reset(CallFrameReset { dir, .. })) => {
                 let affects_outbound = match (dir, outbound.dir) {
                     (call::ResetTarget::Request, Direction::Request)
                     | (call::ResetTarget::Response, Direction::Response)
@@ -1217,7 +1218,7 @@ impl<P: QlPlatform> Runtime<P> {
                     outbound.pipe.close();
                 }
             }
-            AwaitingFrame::Control(CallFrame::Data { .. } | CallFrame::Credit { .. }) => {}
+            AwaitingFrame::Control(CallFrame::Data(_) | CallFrame::Credit(_)) => {}
             AwaitingFrame::Data { .. } => {}
         }
 
@@ -1246,7 +1247,7 @@ impl<P: QlPlatform> Runtime<P> {
         {
             let outbound = call.outbound.as_mut().unwrap();
             if outbound.awaiting.is_none() {
-                if let Some(frame) = outbound.queue.pop_front() {
+                if let Some(frame) = outbound.pending.take_next_control(call.call_id) {
                     next_control = Some(frame);
                 } else if outbound.data_enabled && !outbound.closed {
                     if let Some(mut send) = outbound
@@ -1258,13 +1259,13 @@ impl<P: QlPlatform> Runtime<P> {
                         // format owns `Vec<u8>`. The ring eliminates the long-lived stream buffer
                         // allocations but not this packet build step.
                         send.read_exact(&mut bytes).expect("grant length is exact");
-                        next_data = Some((outbound.dir, send.offset(), send.len(), bytes));
+                        next_data = Some((outbound.dir, send.offset(), bytes));
                     } else if outbound.pipe.writer_finished() && outbound.pipe.all_sent() {
                         outbound.closed = true;
-                        next_control = Some(CallFrame::Finish {
+                        next_control = Some(CallFrame::Finish(CallFrameFinish {
                             call_id,
                             dir: outbound.dir,
-                        });
+                        }));
                     }
                 }
             }
@@ -1272,8 +1273,8 @@ impl<P: QlPlatform> Runtime<P> {
 
         if let Some(frame) = next_control {
             self.send_control_frame(core, call, frame, 0);
-        } else if let Some((dir, offset, len, bytes)) = next_data {
-            self.send_data_frame(core, call, dir, offset, len, bytes, 0);
+        } else if let Some((dir, offset, bytes)) = next_data {
+            self.send_data_frame(core, call, dir, offset, bytes, 0);
         }
     }
 
@@ -1316,7 +1317,6 @@ impl<P: QlPlatform> Runtime<P> {
         call: &mut CallRecord,
         dir: Direction,
         offset: u64,
-        len: usize,
         bytes: Vec<u8>,
         attempt: u8,
     ) {
@@ -1326,7 +1326,11 @@ impl<P: QlPlatform> Runtime<P> {
         };
         outbound.awaiting = Some(AwaitingPacket {
             packet_id,
-            frame: AwaitingFrame::Data { dir, offset, len },
+            frame: AwaitingFrame::Data {
+                dir,
+                offset,
+                len: bytes.len(),
+            },
             attempt,
         });
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
@@ -1341,19 +1345,19 @@ impl<P: QlPlatform> Runtime<P> {
                 packet_id,
                 valid_until,
                 packet_ack: None,
-                frame: Some(CallFrame::Data {
+                frame: Some(CallFrame::Data(CallFrameData {
                     call_id: call.call_id,
                     dir,
                     offset,
                     bytes,
-                }),
+                })),
             },
         );
     }
 
     fn queue_credit(&self, call: &mut CallRecord, dir: Direction) {
         if let Some(outbound) = call.outbound.as_mut() {
-            outbound.queue.push_back(CallFrame::Credit {
+            outbound.pending.set_credit(CallFrameCredit {
                 call_id: call.call_id,
                 dir,
                 recv_offset: call.inbound.next_offset,
@@ -1364,12 +1368,7 @@ impl<P: QlPlatform> Runtime<P> {
 
     fn queue_local_reset(&self, call: &mut CallRecord, dir: call::ResetTarget, code: ResetCode) {
         if let Some(outbound) = call.outbound.as_mut() {
-            outbound.queue.clear();
-            outbound.queue.push_back(CallFrame::Reset {
-                call_id: call.call_id,
-                dir,
-                code,
-            });
+            outbound.pending.set_reset(dir, code);
             outbound.closed = true;
             // TODO: This closes the local writer before the reset frame is acknowledged.
             // That matches the old cancel-fast behavior, but we may want a stricter contract later.
@@ -1392,12 +1391,12 @@ impl<P: QlPlatform> Runtime<P> {
         };
         if matches!(
             outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
-            Some(AwaitingFrame::Control(CallFrame::Accept { .. }))
+            Some(AwaitingFrame::Control(CallFrame::Accept(_)))
         ) {
             outbound.awaiting = None;
             if matches!(
                 call.accept_frame,
-                Some(CallFrame::Accept {
+                Some(CallFrameAccept {
                     status: AcceptStatus::Accepted,
                     ..
                 })
@@ -1509,7 +1508,7 @@ impl<P: QlPlatform> Runtime<P> {
                 packet_id,
                 valid_until,
                 packet_ack: None,
-                frame: Some(CallFrame::Reset { call_id, dir, code }),
+                frame: Some(CallFrame::Reset(CallFrameReset { call_id, dir, code })),
             },
         );
     }
@@ -1910,7 +1909,7 @@ impl<P: QlPlatform> Runtime<P> {
             let _ = tx.send(Err(error.clone()));
         }
         if let Some(outbound) = call.outbound.as_mut() {
-            outbound.queue.clear();
+            outbound.pending.clear();
             outbound.awaiting = None;
             outbound.closed = true;
             outbound.pipe.close();
@@ -2098,7 +2097,6 @@ impl<P: QlPlatform> Runtime<P> {
                                         call,
                                         *dir,
                                         *offset,
-                                        *len,
                                         bytes,
                                         attempt.saturating_add(1),
                                     );
@@ -2180,12 +2178,12 @@ trait FrameExt {
 impl FrameExt for CallFrame {
     fn call_id(&self) -> CallId {
         match self {
-            CallFrame::Open { call_id, .. }
-            | CallFrame::Accept { call_id, .. }
-            | CallFrame::Data { call_id, .. }
-            | CallFrame::Credit { call_id, .. }
-            | CallFrame::Finish { call_id, .. }
-            | CallFrame::Reset { call_id, .. } => *call_id,
+            CallFrame::Open(CallFrameOpen { call_id, .. })
+            | CallFrame::Accept(CallFrameAccept { call_id, .. })
+            | CallFrame::Data(CallFrameData { call_id, .. })
+            | CallFrame::Credit(CallFrameCredit { call_id, .. })
+            | CallFrame::Finish(CallFrameFinish { call_id, .. })
+            | CallFrame::Reset(CallFrameReset { call_id, .. }) => *call_id,
         }
     }
 }

@@ -13,7 +13,10 @@ use crate::{
     platform::PlatformFuture,
     runtime::{replay_cache::ReplayCache, AcceptedCallDelivery, CallConfig},
     wire::{
-        call::{CallBody, CallFrame, Direction, OpenFlags, RejectCode, ResetCode},
+        call::{
+            CallBody, CallFrame, CallFrameAccept, CallFrameCredit, CallFrameOpen, CallFrameReset,
+            Direction, OpenFlags, RejectCode, ResetCode, ResetTarget,
+        },
         handshake::{Hello, HelloReply},
     },
     CallId, PacketId, Peer, QlError, RouteId,
@@ -196,10 +199,69 @@ pub enum AwaitingFrame {
     },
 }
 
+pub struct PendingCallFrames {
+    pub setup: Option<SetupFrame>,
+    pub credit: Option<CallFrameCredit>,
+    pub reset: Option<CallFrameReset>,
+}
+
+pub enum SetupFrame {
+    Open(CallFrameOpen),
+    Accept(CallFrameAccept),
+}
+
+impl PendingCallFrames {
+    pub fn new() -> Self {
+        Self {
+            setup: None,
+            credit: None,
+            reset: None,
+        }
+    }
+
+    pub fn take_next_control(&mut self, call_id: CallId) -> Option<CallFrame> {
+        if let Some(setup) = self.setup.take() {
+            return Some(match setup {
+                SetupFrame::Open(frame) => CallFrame::Open(frame),
+                SetupFrame::Accept(frame) => CallFrame::Accept(frame),
+            });
+        }
+        if let Some(reset) = self.reset.take() {
+            return Some(CallFrame::Reset(CallFrameReset { call_id, ..reset }));
+        }
+        self.credit.take().map(CallFrame::Credit)
+    }
+
+    pub fn set_setup(&mut self, frame: SetupFrame) {
+        self.setup = Some(frame);
+    }
+
+    pub fn set_credit(&mut self, frame: CallFrameCredit) {
+        if self.reset.is_none() {
+            self.credit = Some(frame);
+        }
+    }
+
+    pub fn set_reset(&mut self, dir: ResetTarget, code: ResetCode) {
+        self.credit = None;
+        self.reset = Some(CallFrameReset {
+            call_id: CallId(0),
+            dir,
+            code,
+        });
+    }
+
+    pub fn clear(&mut self) {
+        self.setup = None;
+        self.credit = None;
+        self.reset = None;
+    }
+}
+
 pub struct OutboundCallStreamState {
     pub dir: Direction,
     pub pipe: pipe::PipeReader,
-    pub queue: VecDeque<CallFrame>,
+    pub pending: PendingCallFrames,
     pub awaiting: Option<AwaitingPacket>,
     pub remote_max_offset: u64,
     pub data_enabled: bool,
@@ -236,7 +298,7 @@ pub struct CallRecord {
     pub initial_remote_credit: u64,
     pub outbound: Option<OutboundCallStreamState>,
     pub inbound: InboundCallStreamState,
-    pub accept_frame: Option<CallFrame>,
+    pub accept_frame: Option<CallFrameAccept>,
     pub last_activity: Instant,
 }
 
@@ -518,7 +580,7 @@ impl OutboundCallStreamState {
         Self {
             dir,
             pipe,
-            queue: VecDeque::new(),
+            pending: PendingCallFrames::new(),
             awaiting: None,
             remote_max_offset,
             data_enabled: false,

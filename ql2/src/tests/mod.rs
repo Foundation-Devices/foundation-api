@@ -628,13 +628,13 @@ fn protocol_record_size_breakdown() {
             packet_id: PacketId(1),
             valid_until: wire::now_secs().saturating_add(60),
             packet_ack: None,
-            frame: Some(wire::call::CallFrame::Open {
+            frame: Some(wire::call::CallFrame::Open(wire::call::CallFrameOpen {
                 call_id: crate::CallId(2),
                 route_id: crate::RouteId(9),
                 flags: wire::call::OpenFlags::new(true, false),
                 request_head: vec![1, 2, 3],
                 response_max_offset: 1024,
-            }),
+            })),
         },
     );
     let call_size = CBOR::from(call_record).to_cbor_data().len();

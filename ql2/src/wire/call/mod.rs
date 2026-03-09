@@ -21,40 +21,58 @@ pub struct PacketAck {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallFrame {
-    Open {
-        call_id: CallId,
-        route_id: RouteId,
-        flags: OpenFlags,
-        request_head: Vec<u8>,
-        response_max_offset: u64,
-    },
-    Accept {
-        call_id: CallId,
-        status: AcceptStatus,
-        response_head: Vec<u8>,
-        request_max_offset: u64,
-    },
-    Data {
-        call_id: CallId,
-        dir: Direction,
-        offset: u64,
-        bytes: Vec<u8>,
-    },
-    Credit {
-        call_id: CallId,
-        dir: Direction,
-        recv_offset: u64,
-        max_offset: u64,
-    },
-    Finish {
-        call_id: CallId,
-        dir: Direction,
-    },
-    Reset {
-        call_id: CallId,
-        dir: ResetTarget,
-        code: ResetCode,
-    },
+    Open(CallFrameOpen),
+    Accept(CallFrameAccept),
+    Data(CallFrameData),
+    Credit(CallFrameCredit),
+    Finish(CallFrameFinish),
+    Reset(CallFrameReset),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallFrameOpen {
+    pub call_id: CallId,
+    pub route_id: RouteId,
+    pub flags: OpenFlags,
+    pub request_head: Vec<u8>,
+    pub response_max_offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallFrameAccept {
+    pub call_id: CallId,
+    pub status: AcceptStatus,
+    pub response_head: Vec<u8>,
+    pub request_max_offset: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallFrameCredit {
+    pub call_id: CallId,
+    pub dir: Direction,
+    pub recv_offset: u64,
+    pub max_offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallFrameData {
+    pub call_id: CallId,
+    pub dir: Direction,
+    pub offset: u64,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallFrameFinish {
+    pub call_id: CallId,
+    pub dir: Direction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallFrameReset {
+    pub call_id: CallId,
+    pub dir: ResetTarget,
+    pub code: ResetCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,13 +192,13 @@ impl TryFrom<CBOR> for PacketAck {
 impl From<CallFrame> for CBOR {
     fn from(value: CallFrame) -> Self {
         match value {
-            CallFrame::Open {
+            CallFrame::Open(CallFrameOpen {
                 call_id,
                 route_id,
                 flags,
                 request_head,
                 response_max_offset,
-            } => CBOR::from(vec![
+            }) => CBOR::from(vec![
                 CBOR::from(1u8),
                 CBOR::from(call_id),
                 CBOR::from(route_id),
@@ -188,46 +206,46 @@ impl From<CallFrame> for CBOR {
                 CBOR::from(request_head),
                 CBOR::from(response_max_offset),
             ]),
-            CallFrame::Accept {
+            CallFrame::Accept(CallFrameAccept {
                 call_id,
                 status,
                 response_head,
                 request_max_offset,
-            } => CBOR::from(vec![
+            }) => CBOR::from(vec![
                 CBOR::from(2u8),
                 CBOR::from(call_id),
                 CBOR::from(status),
                 CBOR::from(response_head),
                 CBOR::from(request_max_offset),
             ]),
-            CallFrame::Data {
+            CallFrame::Data(CallFrameData {
                 call_id,
                 dir,
                 offset,
                 bytes,
-            } => CBOR::from(vec![
+            }) => CBOR::from(vec![
                 CBOR::from(3u8),
                 CBOR::from(call_id),
                 CBOR::from(dir),
                 CBOR::from(offset),
                 CBOR::from(bytes),
             ]),
-            CallFrame::Credit {
+            CallFrame::Credit(CallFrameCredit {
                 call_id,
                 dir,
                 recv_offset,
                 max_offset,
-            } => CBOR::from(vec![
+            }) => CBOR::from(vec![
                 CBOR::from(4u8),
                 CBOR::from(call_id),
                 CBOR::from(dir),
                 CBOR::from(recv_offset),
                 CBOR::from(max_offset),
             ]),
-            CallFrame::Finish { call_id, dir } => {
+            CallFrame::Finish(CallFrameFinish { call_id, dir }) => {
                 CBOR::from(vec![CBOR::from(5u8), CBOR::from(call_id), CBOR::from(dir)])
             }
-            CallFrame::Reset { call_id, dir, code } => CBOR::from(vec![
+            CallFrame::Reset(CallFrameReset { call_id, dir, code }) => CBOR::from(vec![
                 CBOR::from(6u8),
                 CBOR::from(call_id),
                 CBOR::from(dir),
@@ -250,55 +268,55 @@ impl TryFrom<CBOR> for CallFrame {
             1 => {
                 let [call_id, route_id, flags, request_head, response_max_offset] =
                     take_fields(iter)?;
-                Ok(Self::Open {
+                Ok(Self::Open(CallFrameOpen {
                     call_id: call_id.try_into()?,
                     route_id: route_id.try_into()?,
                     flags: flags.try_into()?,
                     request_head: request_head.try_into()?,
                     response_max_offset: response_max_offset.try_into()?,
-                })
+                }))
             }
             2 => {
                 let [call_id, status, response_head, request_max_offset] = take_fields(iter)?;
-                Ok(Self::Accept {
+                Ok(Self::Accept(CallFrameAccept {
                     call_id: call_id.try_into()?,
                     status: status.try_into()?,
                     response_head: response_head.try_into()?,
                     request_max_offset: request_max_offset.try_into()?,
-                })
+                }))
             }
             3 => {
                 let [call_id, dir, offset, bytes] = take_fields(iter)?;
-                Ok(Self::Data {
+                Ok(Self::Data(CallFrameData {
                     call_id: call_id.try_into()?,
                     dir: dir.try_into()?,
                     offset: offset.try_into()?,
                     bytes: bytes.try_into()?,
-                })
+                }))
             }
             4 => {
                 let [call_id, dir, recv_offset, max_offset] = take_fields(iter)?;
-                Ok(Self::Credit {
+                Ok(Self::Credit(CallFrameCredit {
                     call_id: call_id.try_into()?,
                     dir: dir.try_into()?,
                     recv_offset: recv_offset.try_into()?,
                     max_offset: max_offset.try_into()?,
-                })
+                }))
             }
             5 => {
                 let [call_id, dir] = take_fields(iter)?;
-                Ok(Self::Finish {
+                Ok(Self::Finish(CallFrameFinish {
                     call_id: call_id.try_into()?,
                     dir: dir.try_into()?,
-                })
+                }))
             }
             6 => {
                 let [call_id, dir, code] = take_fields(iter)?;
-                Ok(Self::Reset {
+                Ok(Self::Reset(CallFrameReset {
                     call_id: call_id.try_into()?,
                     dir: dir.try_into()?,
                     code: code.try_into()?,
-                })
+                }))
             }
             _ => Err(dcbor::Error::msg("unknown call frame tag")),
         }
