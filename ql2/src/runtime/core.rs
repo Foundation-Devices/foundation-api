@@ -11,14 +11,13 @@ use crate::{
     runtime::{
         handle::{CallResponder, InboundByteStream, InboundCall},
         internal::{
-            next_timeout_deadline, now_secs, peer_hello_wins, response_delivery, AwaitingPacket,
-            CallPhase, CallRole, CallState, HelloAction, InFlightWrite, InboundStreamItem,
-            InboundTerminal, InitiatorStage, KeepAliveState, LoopStep, OutboundCallStreamState,
-            OutboundMessage, OutboundPayload, PendingChunk, RuntimeCommand, RuntimeState,
-            TimeoutEntry, TimeoutKind,
+            now_secs, peer_hello_wins, AwaitingPacket, CallPhase, CallRecord, CallRole, CoreState,
+            HelloAction, InFlightWrite, InboundStreamItem, InboundTerminal, InitiatorStage,
+            KeepAliveState, LoopStep, OutboundCallStreamState, OutboundMessage, OutboundPayload,
+            PendingChunk, RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
-        HandlerEvent, KeepAliveConfig, Runtime,
+        AcceptedCallDelivery, HandlerEvent, KeepAliveConfig, Runtime,
     },
     wire::{
         call::{
@@ -40,6 +39,7 @@ impl<P: QlPlatform> Runtime<P> {
         let mut state = RuntimeState::new();
         for peer in self.platform.load_peers().await {
             state
+                .core
                 .peers
                 .upsert_peer(peer.peer, peer.signing_key, peer.encapsulation_key);
         }
@@ -50,7 +50,7 @@ impl<P: QlPlatform> Runtime<P> {
             if in_flight.is_none() {
                 in_flight = self.start_next_write(&mut state);
             }
-            match self.next_step(&state, in_flight.as_mut()).await {
+            match self.next_step(&state.core, in_flight.as_mut()).await {
                 LoopStep::Event(command) => match command {
                     RuntimeCommand::RegisterPeer {
                         peer,
@@ -163,11 +163,12 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn start_next_write<'a>(&'a self, state: &mut RuntimeState) -> Option<InFlightWrite<'a>> {
-        while let Some(message) = state.outbound.pop_front() {
+        while let Some(message) = state.core.outbound.pop_front() {
             let bytes = match message.payload {
                 OutboundPayload::PreEncoded(bytes) => bytes,
                 OutboundPayload::DeferredCall(body) => {
                     let Some(session_key) = state
+                        .core
                         .peers
                         .peer(message.peer)
                         .and_then(|entry| entry.session.session_key())
@@ -202,13 +203,14 @@ impl<P: QlPlatform> Runtime<P> {
 
     async fn next_step<'a>(
         &'a self,
-        state: &RuntimeState,
+        core: &CoreState,
         mut in_flight: Option<&mut InFlightWrite<'a>>,
     ) -> LoopStep {
         let recv_future = self.rx.recv();
         futures_lite::pin!(recv_future);
 
-        let mut sleep_future = next_timeout_deadline(state).map(|deadline| {
+        let mut sleep_future = core.timeouts.peek().map(|entry| {
+            let deadline = entry.0.at;
             let timeout = deadline.saturating_duration_since(Instant::now());
             self.platform.sleep(timeout)
         });
@@ -250,6 +252,7 @@ impl<P: QlPlatform> Runtime<P> {
     ) {
         {
             let entry = state
+                .core
                 .peers
                 .upsert_peer(peer, signing_key, encapsulation_key);
             if let crate::runtime::PeerSession::Disconnected = entry.session {
@@ -260,7 +263,7 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn handle_connect(&self, state: &mut RuntimeState, peer: XID) {
-        let encapsulation_key = match state.peers.peer(peer) {
+        let encapsulation_key = match state.core.peers.peer(peer) {
             Some(entry) => match &entry.session {
                 crate::runtime::PeerSession::Connected { .. }
                 | crate::runtime::PeerSession::Initiator { .. }
@@ -281,8 +284,8 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         let deadline = Instant::now() + self.config.handshake_timeout;
-        let token = state.next_token();
-        if let Some(entry) = state.peers.peer_mut(peer) {
+        let token = state.core.next_token();
+        if let Some(entry) = state.core.peers.peer_mut(peer) {
             entry.session = crate::runtime::PeerSession::Initiator {
                 handshake_token: token,
                 hello: hello.clone(),
@@ -301,7 +304,7 @@ impl<P: QlPlatform> Runtime<P> {
             payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
         };
         self.enqueue_handshake_message(
-            state,
+            &mut state.core,
             peer,
             token,
             deadline,
@@ -310,7 +313,7 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn handle_unpair_local(&self, state: &mut RuntimeState, peer: XID) {
-        if state.peers.peer(peer).is_none() {
+        if state.core.peers.peer(peer).is_none() {
             return;
         }
         let record = unpair::build_unpair_record(
@@ -319,14 +322,15 @@ impl<P: QlPlatform> Runtime<P> {
                 sender: self.platform.xid(),
                 recipient: peer,
             },
-            crate::MessageId(state.next_packet_id().0),
+            crate::MessageId(state.core.next_packet_id().0),
             now_secs().saturating_add(self.config.packet_expiration.as_secs()),
         );
         self.unpair_peer(state, peer);
+        let token = state.core.next_token();
         self.enqueue_handshake_message(
-            state,
+            &mut state.core,
             peer,
-            state.next_token(),
+            token,
             Instant::now() + self.config.packet_expiration,
             CBOR::from(record).to_cbor_data(),
         );
@@ -344,7 +348,7 @@ impl<P: QlPlatform> Runtime<P> {
         start: oneshot::Sender<Result<CallId, QlError>>,
         config: crate::runtime::CallConfig,
     ) {
-        let Some(entry) = state.peers.peer(recipient) else {
+        let Some(entry) = state.core.peers.peer(recipient) else {
             let _ = start.send(Err(QlError::UnknownPeer(recipient)));
             return;
         };
@@ -361,10 +365,10 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
 
-        let call_id = state.next_call_id();
+        let call_id = state.core.next_call_id();
         let (response_tx, response_rx) = async_channel::bounded(1);
         let open_flags = OpenFlags::new(response_expected, false);
-        let token = state.next_token();
+        let token = state.core.next_token();
         let mut outbound = OutboundCallStreamState::new(Direction::Request, request_rx, 0);
         outbound.queue.push_back(CallFrame::Open {
             call_id,
@@ -373,7 +377,7 @@ impl<P: QlPlatform> Runtime<P> {
             request_head: request_head.clone(),
             response_max_offset: self.config.initial_credit,
         });
-        let call = CallState {
+        let call = CallRecord {
             peer: recipient,
             call_id,
             route_id,
@@ -396,7 +400,7 @@ impl<P: QlPlatform> Runtime<P> {
             last_activity: Instant::now(),
         };
         state.calls.insert((recipient, call_id), call);
-        state.timeouts.push(Reverse(TimeoutEntry {
+        state.core.timeouts.push(Reverse(TimeoutEntry {
             at: Instant::now() + timeout,
             kind: TimeoutKind::CallOpen {
                 peer: recipient,
@@ -417,11 +421,10 @@ impl<P: QlPlatform> Runtime<P> {
         response_rx: async_channel::Receiver<crate::runtime::internal::OutboundStreamInput>,
     ) {
         let key = (recipient, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
+        let Some(call) = state.calls.get_mut(&key) else {
             return;
         };
         if call.role != CallRole::Responder || call.phase != CallPhase::ResponderPending {
-            state.calls.insert(key, call);
             return;
         }
 
@@ -443,7 +446,6 @@ impl<P: QlPlatform> Runtime<P> {
         call.inbound.max_offset = self.config.initial_credit;
         call.outbound = Some(outbound);
         call.last_activity = Instant::now();
-        state.calls.insert(key, call);
         self.drive_call(state, recipient, call_id);
     }
 
@@ -455,11 +457,10 @@ impl<P: QlPlatform> Runtime<P> {
         code: RejectCode,
     ) {
         let key = (recipient, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
+        let Some(call) = state.calls.get_mut(&key) else {
             return;
         };
         if call.role != CallRole::Responder || call.phase != CallPhase::ResponderPending {
-            state.calls.insert(key, call);
             return;
         }
         let frame = CallFrame::Accept {
@@ -480,7 +481,6 @@ impl<P: QlPlatform> Runtime<P> {
         outbound.queue.push_back(frame);
         call.outbound = Some(outbound);
         call.last_activity = Instant::now();
-        state.calls.insert(key, call);
         self.drive_call(state, recipient, call_id);
     }
 
@@ -493,18 +493,16 @@ impl<P: QlPlatform> Runtime<P> {
         amount: u64,
     ) {
         let key = (sender, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
+        let Some(call) = state.calls.get_mut(&key) else {
             return;
         };
         if call.inbound.dir != dir || call.inbound.closed {
-            state.calls.insert(key, call);
             return;
         }
         call.inbound.max_offset = call.inbound.max_offset.saturating_add(amount);
         self.flush_inbound_terminal(&mut call.inbound);
-        self.queue_credit(&mut call, dir);
+        self.queue_credit(call, dir);
         call.last_activity = Instant::now();
-        state.calls.insert(key, call);
         self.drive_call(state, sender, call_id);
     }
 
@@ -517,11 +515,10 @@ impl<P: QlPlatform> Runtime<P> {
         code: ResetCode,
     ) {
         let key = (recipient, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
+        let Some(call) = state.calls.get_mut(&key) else {
             return;
         };
         if call.local_outbound_dir() != dir {
-            state.calls.insert(key, call);
             return;
         }
         if let Some(outbound) = call.outbound.as_mut() {
@@ -541,7 +538,6 @@ impl<P: QlPlatform> Runtime<P> {
             }
         }
         call.last_activity = Instant::now();
-        state.calls.insert(key, call);
         self.drive_call(state, recipient, call_id);
     }
 
@@ -554,11 +550,10 @@ impl<P: QlPlatform> Runtime<P> {
         code: ResetCode,
     ) {
         let key = (sender, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
+        let Some(call) = state.calls.get_mut(&key) else {
             return;
         };
         if call.inbound.dir != dir || call.inbound.closed {
-            state.calls.insert(key, call);
             return;
         }
         call.inbound.closed = true;
@@ -583,7 +578,6 @@ impl<P: QlPlatform> Runtime<P> {
             });
         }
         call.last_activity = Instant::now();
-        state.calls.insert(key, call);
         self.drive_call(state, sender, call_id);
     }
 
@@ -629,6 +623,7 @@ impl<P: QlPlatform> Runtime<P> {
         };
         let peer = XID::new(SigningPublicKey::MLDSA(payload.signing_pub_key.clone()));
         state
+            .core
             .peers
             .upsert_peer(peer, payload.signing_pub_key, payload.encapsulation_pub_key);
         self.persist_peers(state);
@@ -638,6 +633,7 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_unpair(&self, state: &mut RuntimeState, header: QlHeader, record: UnpairRecord) {
         let peer = header.sender;
         let Some(signing_key) = state
+            .core
             .peers
             .peer(peer)
             .map(|entry| entry.signing_key.clone())
@@ -653,6 +649,7 @@ impl<P: QlPlatform> Runtime<P> {
             crate::MessageId(record.message_id.0),
         );
         if state
+            .core
             .replay_cache
             .check_and_store_valid_until(replay_key, record.valid_until)
         {
@@ -669,7 +666,7 @@ impl<P: QlPlatform> Runtime<P> {
     ) {
         let peer = header.sender;
         let (session_key, should_reply) = {
-            let Some(entry) = state.peers.peer(peer) else {
+            let Some(entry) = state.core.peers.peer(peer) else {
                 return;
             };
             match &entry.session {
@@ -696,7 +693,7 @@ impl<P: QlPlatform> Runtime<P> {
         encrypted: bc_components::EncryptedMessage,
     ) {
         let peer = header.sender;
-        let session_key = match state.peers.peer(peer) {
+        let session_key = match state.core.peers.peer(peer) {
             Some(entry) => match &entry.session {
                 crate::runtime::PeerSession::Connected { session_key, .. } => session_key.clone(),
                 _ => return,
@@ -719,6 +716,7 @@ impl<P: QlPlatform> Runtime<P> {
         let replay_key =
             ReplayKey::new(peer, ReplayNamespace::Transfer, MessageId(body.packet_id.0));
         if state
+            .core
             .replay_cache
             .check_and_store_valid_until(replay_key, body.valid_until)
         {
@@ -727,7 +725,7 @@ impl<P: QlPlatform> Runtime<P> {
 
         self.record_activity(state, peer);
         self.record_call_activity(state, peer, frame.call_id());
-        self.send_packet_ack(state, peer, body.packet_id);
+        self.send_packet_ack(&mut state.core, peer, body.packet_id);
 
         match frame {
             CallFrame::Open {
@@ -800,7 +798,7 @@ impl<P: QlPlatform> Runtime<P> {
                 return;
             }
             self.send_ephemeral_reset(
-                state,
+                &mut state.core,
                 peer,
                 call_id,
                 call::ResetTarget::Both,
@@ -821,7 +819,7 @@ impl<P: QlPlatform> Runtime<P> {
             self.flush_inbound_terminal(&mut inbound);
         }
 
-        let call = CallState {
+        let call = CallRecord {
             peer,
             call_id,
             route_id,
@@ -869,85 +867,96 @@ impl<P: QlPlatform> Runtime<P> {
         request_max_offset: u64,
     ) {
         let key = (peer, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
-            return;
-        };
-        if call.role != CallRole::Initiator {
+        let mut send_protocol_reset = false;
+        let mut fail_protocol = false;
+        {
+            let Some(call) = state.calls.get_mut(&key) else {
+                return;
+            };
+            if call.role != CallRole::Initiator {
+                send_protocol_reset = true;
+            } else if let Some(existing) = &call.accept_frame {
+                if *existing
+                    == (CallFrame::Accept {
+                        call_id,
+                        status: status.clone(),
+                        response_head: response_head.clone(),
+                        request_max_offset,
+                    })
+                {
+                    return;
+                }
+                fail_protocol = true;
+            } else {
+                if let Some(outbound) = call.outbound.as_mut() {
+                    if matches!(
+                        outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
+                        Some(CallFrame::Open { .. })
+                    ) {
+                        outbound.awaiting = None;
+                    }
+                }
+
+                call.accept_frame = Some(CallFrame::Accept {
+                    call_id,
+                    status: status.clone(),
+                    response_head: response_head.clone(),
+                    request_max_offset,
+                });
+
+                match status {
+                    AcceptStatus::Accepted => {
+                        call.phase = CallPhase::Open;
+                        call.response_head = Some(response_head);
+                        if let Some(outbound) = call.outbound.as_mut() {
+                            outbound.remote_max_offset = request_max_offset;
+                            outbound.data_enabled = true;
+                        }
+                        if let Some(tx) = call.accept_tx.take() {
+                            let delivery = call.response_rx.take().map(|rx| AcceptedCallDelivery {
+                                peer: call.peer,
+                                call_id: call.call_id,
+                                response_head: call.response_head.clone().unwrap_or_default(),
+                                rx,
+                                tx: self.tx.upgrade().expect("runtime tx"),
+                            });
+                            let _ = tx.send(delivery.ok_or(QlError::Cancelled));
+                        }
+                    }
+                    AcceptStatus::Rejected(code) => {
+                        call.phase = CallPhase::Rejected;
+                        if let Some(outbound) = call.outbound.as_mut() {
+                            outbound.closed = true;
+                            outbound.queue.clear();
+                            outbound.pending_chunk = None;
+                            outbound.awaiting = None;
+                            outbound.chunk_rx.close();
+                        }
+                        if let Some(tx) = call.accept_tx.take() {
+                            let _ = tx.send(Err(QlError::CallRejected { id: call_id, code }));
+                        }
+                        call.inbound.closed = true;
+                        call.inbound.chunk_tx.close();
+                    }
+                }
+
+                call.last_activity = Instant::now();
+            }
+        }
+        if send_protocol_reset {
             self.send_ephemeral_reset(
-                state,
+                &mut state.core,
                 peer,
                 call_id,
                 call::ResetTarget::Both,
                 ResetCode::Protocol,
             );
-            state.calls.insert(key, call);
             return;
         }
-        if let Some(existing) = &call.accept_frame {
-            if *existing
-                == (CallFrame::Accept {
-                    call_id,
-                    status: status.clone(),
-                    response_head: response_head.clone(),
-                    request_max_offset,
-                })
-            {
-                state.calls.insert(key, call);
-                return;
-            }
+        if fail_protocol {
             self.fail_call(state, peer, call_id, QlError::CallProtocol { id: call_id });
             return;
         }
-
-        if let Some(outbound) = call.outbound.as_mut() {
-            if matches!(
-                outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
-                Some(CallFrame::Open { .. })
-            ) {
-                outbound.awaiting = None;
-            }
-        }
-
-        call.accept_frame = Some(CallFrame::Accept {
-            call_id,
-            status: status.clone(),
-            response_head: response_head.clone(),
-            request_max_offset,
-        });
-
-        match status {
-            AcceptStatus::Accepted => {
-                call.phase = CallPhase::Open;
-                call.response_head = Some(response_head);
-                if let Some(outbound) = call.outbound.as_mut() {
-                    outbound.remote_max_offset = request_max_offset;
-                    outbound.data_enabled = true;
-                }
-                if let Some(tx) = call.accept_tx.take() {
-                    let delivery =
-                        response_delivery(&mut call, self.tx.upgrade().expect("runtime tx"));
-                    let _ = tx.send(delivery.ok_or(QlError::Cancelled));
-                }
-            }
-            AcceptStatus::Rejected(code) => {
-                call.phase = CallPhase::Rejected;
-                if let Some(outbound) = call.outbound.as_mut() {
-                    outbound.closed = true;
-                    outbound.queue.clear();
-                    outbound.pending_chunk = None;
-                    outbound.awaiting = None;
-                    outbound.chunk_rx.close();
-                }
-                if let Some(tx) = call.accept_tx.take() {
-                    let _ = tx.send(Err(QlError::CallRejected { id: call_id, code }));
-                }
-                call.inbound.closed = true;
-                call.inbound.chunk_tx.close();
-            }
-        }
-
-        call.last_activity = Instant::now();
-        state.calls.insert(key, call);
         self.drive_call(state, peer, call_id);
     }
 
@@ -961,53 +970,56 @@ impl<P: QlPlatform> Runtime<P> {
         bytes: Vec<u8>,
     ) {
         let key = (peer, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
-            return;
-        };
-        self.note_accept_seen_from_remote(&mut call);
-        if call.inbound.dir != dir || call.inbound.closed {
+        let mut fail_protocol = false;
+        {
+            let Some(call) = state.calls.get_mut(&key) else {
+                return;
+            };
+            self.note_accept_seen_from_remote(call);
+            if call.inbound.dir != dir || call.inbound.closed {
+                fail_protocol = true;
+            } else if offset < call.inbound.next_offset {
+                self.queue_credit(call, dir);
+                call.last_activity = Instant::now();
+            } else {
+                let end = offset.saturating_add(bytes.len() as u64);
+                if offset != call.inbound.next_offset || end > call.inbound.max_offset {
+                    self.queue_local_reset(call, call::ResetTarget::Both, ResetCode::Protocol);
+                } else {
+                    call.inbound.next_offset = end;
+                    if call.inbound.pending_chunk.is_some() {
+                        self.queue_local_reset(call, call::ResetTarget::Both, ResetCode::Protocol);
+                    } else {
+                        match call
+                            .inbound
+                            .chunk_tx
+                            .try_send(InboundStreamItem::Chunk(bytes))
+                        {
+                            Ok(()) => {}
+                            Err(async_channel::TrySendError::Full(InboundStreamItem::Chunk(
+                                chunk,
+                            ))) => {
+                                call.inbound.pending_chunk = Some(chunk);
+                            }
+                            Err(async_channel::TrySendError::Closed(_)) => {
+                                self.queue_local_reset(
+                                    call,
+                                    call::ResetTarget::Both,
+                                    ResetCode::Cancelled,
+                                );
+                            }
+                            Err(async_channel::TrySendError::Full(_)) => unreachable!(),
+                        }
+                        self.queue_credit(call, dir);
+                    }
+                }
+                call.last_activity = Instant::now();
+            }
+        }
+        if fail_protocol {
             self.fail_call(state, peer, call_id, QlError::CallProtocol { id: call_id });
             return;
         }
-        if offset < call.inbound.next_offset {
-            self.queue_credit(&mut call, dir);
-            state.calls.insert(key, call);
-            self.drive_call(state, peer, call_id);
-            return;
-        }
-        let end = offset.saturating_add(bytes.len() as u64);
-        if offset != call.inbound.next_offset || end > call.inbound.max_offset {
-            self.queue_local_reset(&mut call, call::ResetTarget::Both, ResetCode::Protocol);
-            state.calls.insert(key, call);
-            self.drive_call(state, peer, call_id);
-            return;
-        }
-
-        call.inbound.next_offset = end;
-        if call.inbound.pending_chunk.is_some() {
-            self.queue_local_reset(&mut call, call::ResetTarget::Both, ResetCode::Protocol);
-            state.calls.insert(key, call);
-            self.drive_call(state, peer, call_id);
-            return;
-        }
-
-        match call
-            .inbound
-            .chunk_tx
-            .try_send(InboundStreamItem::Chunk(bytes))
-        {
-            Ok(()) => {}
-            Err(async_channel::TrySendError::Full(InboundStreamItem::Chunk(chunk))) => {
-                call.inbound.pending_chunk = Some(chunk);
-            }
-            Err(async_channel::TrySendError::Closed(_)) => {
-                self.queue_local_reset(&mut call, call::ResetTarget::Both, ResetCode::Cancelled);
-            }
-            Err(async_channel::TrySendError::Full(_)) => unreachable!(),
-        }
-        self.queue_credit(&mut call, dir);
-        call.last_activity = Instant::now();
-        state.calls.insert(key, call);
         self.drive_call(state, peer, call_id);
     }
 
@@ -1021,28 +1033,26 @@ impl<P: QlPlatform> Runtime<P> {
         max_offset: u64,
     ) {
         let key = (peer, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
-            return;
-        };
-        self.note_accept_seen_from_remote(&mut call);
-        let Some(outbound) = call.outbound.as_mut() else {
-            state.calls.insert(key, call);
-            return;
-        };
-        if outbound.dir != dir
-            || recv_offset < outbound.remote_recv_offset
-            || recv_offset > outbound.next_offset
-            || max_offset < recv_offset
         {
-            self.queue_local_reset(&mut call, call::ResetTarget::Both, ResetCode::Protocol);
-            state.calls.insert(key, call);
-            self.drive_call(state, peer, call_id);
-            return;
+            let Some(call) = state.calls.get_mut(&key) else {
+                return;
+            };
+            self.note_accept_seen_from_remote(call);
+            let Some(outbound) = call.outbound.as_mut() else {
+                return;
+            };
+            if outbound.dir != dir
+                || recv_offset < outbound.remote_recv_offset
+                || recv_offset > outbound.next_offset
+                || max_offset < recv_offset
+            {
+                self.queue_local_reset(call, call::ResetTarget::Both, ResetCode::Protocol);
+            } else {
+                outbound.remote_recv_offset = recv_offset;
+                outbound.remote_max_offset = outbound.remote_max_offset.max(max_offset);
+            }
+            call.last_activity = Instant::now();
         }
-        outbound.remote_recv_offset = recv_offset;
-        outbound.remote_max_offset = outbound.remote_max_offset.max(max_offset);
-        call.last_activity = Instant::now();
-        state.calls.insert(key, call);
         self.drive_call(state, peer, call_id);
     }
 
@@ -1054,18 +1064,16 @@ impl<P: QlPlatform> Runtime<P> {
         dir: Direction,
     ) {
         let key = (peer, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
+        let Some(call) = state.calls.get_mut(&key) else {
             return;
         };
-        self.note_accept_seen_from_remote(&mut call);
+        self.note_accept_seen_from_remote(call);
         if call.inbound.dir != dir || call.inbound.closed {
-            state.calls.insert(key, call);
             return;
         }
         call.inbound.terminal = Some(InboundTerminal::Finished);
         self.flush_inbound_terminal(&mut call.inbound);
         call.last_activity = Instant::now();
-        state.calls.insert(key, call);
     }
 
     fn handle_call_reset(
@@ -1077,10 +1085,10 @@ impl<P: QlPlatform> Runtime<P> {
         code: ResetCode,
     ) {
         let key = (peer, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
+        let Some(call) = state.calls.get_mut(&key) else {
             return;
         };
-        self.note_accept_seen_from_remote(&mut call);
+        self.note_accept_seen_from_remote(call);
         if matches!(dir, call::ResetTarget::Request | call::ResetTarget::Both)
             && call.inbound.dir == Direction::Request
         {
@@ -1127,7 +1135,6 @@ impl<P: QlPlatform> Runtime<P> {
         }
         call.phase = CallPhase::Closed;
         call.last_activity = Instant::now();
-        state.calls.insert(key, call);
     }
 
     fn process_packet_ack(&self, state: &mut RuntimeState, peer: XID, packet_id: PacketId) {
@@ -1143,15 +1150,13 @@ impl<P: QlPlatform> Runtime<P> {
         let Some(key) = key else {
             return;
         };
-        let Some(mut call) = state.calls.remove(&key) else {
+        let Some(call) = state.calls.get_mut(&key) else {
             return;
         };
         let Some(outbound) = call.outbound.as_mut() else {
-            state.calls.insert(key, call);
             return;
         };
         let Some(awaiting) = outbound.awaiting.take() else {
-            state.calls.insert(key, call);
             return;
         };
 
@@ -1195,7 +1200,6 @@ impl<P: QlPlatform> Runtime<P> {
             CallFrame::Data { .. } | CallFrame::Credit { .. } => {}
         }
 
-        state.calls.insert(key, call);
         self.drive_call(state, key.0, key.1);
     }
 
@@ -1208,11 +1212,11 @@ impl<P: QlPlatform> Runtime<P> {
 
     fn drive_call(&self, state: &mut RuntimeState, peer: XID, call_id: CallId) {
         let key = (peer, call_id);
-        let Some(mut call) = state.calls.remove(&key) else {
+        let (calls, core) = (&mut state.calls, &mut state.core);
+        let Some(call) = calls.get_mut(&key) else {
             return;
         };
         let Some(_) = call.outbound.as_ref() else {
-            state.calls.insert(key, call);
             return;
         };
 
@@ -1284,20 +1288,18 @@ impl<P: QlPlatform> Runtime<P> {
         }
 
         if let Some(frame) = next_frame {
-            self.send_tracked_frame(state, &mut call, frame, 0);
+            self.send_tracked_frame(core, call, frame, 0);
         }
-
-        state.calls.insert(key, call);
     }
 
     fn send_tracked_frame(
         &self,
-        state: &mut RuntimeState,
-        call: &mut CallState,
+        core: &mut CoreState,
+        call: &mut CallRecord,
         frame: CallFrame,
         attempt: u8,
     ) {
-        let packet_id = state.next_packet_id();
+        let packet_id = core.next_packet_id();
         let Some(outbound) = call.outbound.as_mut() else {
             return;
         };
@@ -1308,7 +1310,7 @@ impl<P: QlPlatform> Runtime<P> {
         });
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
         self.enqueue_call_body(
-            state,
+            core,
             call.peer,
             Some(call.call_id),
             Some(packet_id),
@@ -1323,7 +1325,7 @@ impl<P: QlPlatform> Runtime<P> {
         );
     }
 
-    fn queue_credit(&self, call: &mut CallState, dir: Direction) {
+    fn queue_credit(&self, call: &mut CallRecord, dir: Direction) {
         if let Some(outbound) = call.outbound.as_mut() {
             outbound.queue.push_back(CallFrame::Credit {
                 call_id: call.call_id,
@@ -1334,7 +1336,7 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
-    fn queue_local_reset(&self, call: &mut CallState, dir: call::ResetTarget, code: ResetCode) {
+    fn queue_local_reset(&self, call: &mut CallRecord, dir: call::ResetTarget, code: ResetCode) {
         if let Some(outbound) = call.outbound.as_mut() {
             outbound.queue.clear();
             outbound.pending_chunk = None;
@@ -1353,7 +1355,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.flush_inbound_terminal(&mut call.inbound);
     }
 
-    fn note_accept_seen_from_remote(&self, call: &mut CallState) {
+    fn note_accept_seen_from_remote(&self, call: &mut CallRecord) {
         if call.role != CallRole::Responder || call.phase != CallPhase::ResponderAccepting {
             return;
         }
@@ -1436,11 +1438,11 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
-    fn send_packet_ack(&self, state: &mut RuntimeState, peer: XID, acked_packet: PacketId) {
-        let packet_id = state.next_packet_id();
+    fn send_packet_ack(&self, core: &mut CoreState, peer: XID, acked_packet: PacketId) {
+        let packet_id = core.next_packet_id();
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
         self.enqueue_call_body(
-            state,
+            core,
             peer,
             None,
             None,
@@ -1459,16 +1461,16 @@ impl<P: QlPlatform> Runtime<P> {
 
     fn send_ephemeral_reset(
         &self,
-        state: &mut RuntimeState,
+        core: &mut CoreState,
         peer: XID,
         call_id: CallId,
         dir: call::ResetTarget,
         code: ResetCode,
     ) {
-        let packet_id = state.next_packet_id();
+        let packet_id = core.next_packet_id();
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
         self.enqueue_call_body(
-            state,
+            core,
             peer,
             None,
             None,
@@ -1485,13 +1487,13 @@ impl<P: QlPlatform> Runtime<P> {
 
     fn enqueue_handshake_message(
         &self,
-        state: &mut RuntimeState,
+        core: &mut CoreState,
         peer: XID,
         token: crate::runtime::Token,
         deadline: Instant,
         bytes: Vec<u8>,
     ) {
-        state.outbound.push_back(OutboundMessage {
+        core.outbound.push_back(OutboundMessage {
             peer,
             token,
             call_id: None,
@@ -1499,11 +1501,11 @@ impl<P: QlPlatform> Runtime<P> {
             track_ack: false,
             payload: OutboundPayload::PreEncoded(bytes),
         });
-        state.timeouts.push(Reverse(TimeoutEntry {
+        core.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Handshake { peer, token },
         }));
-        state.timeouts.push(Reverse(TimeoutEntry {
+        core.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Outbound { token },
         }));
@@ -1511,7 +1513,7 @@ impl<P: QlPlatform> Runtime<P> {
 
     fn enqueue_call_body(
         &self,
-        state: &mut RuntimeState,
+        core: &mut CoreState,
         peer: XID,
         call_id: Option<CallId>,
         packet_id: Option<PacketId>,
@@ -1519,7 +1521,7 @@ impl<P: QlPlatform> Runtime<P> {
         priority: bool,
         body: CallBody,
     ) {
-        let token = state.next_token();
+        let token = core.next_token();
         let message = OutboundMessage {
             peer,
             token,
@@ -1529,11 +1531,11 @@ impl<P: QlPlatform> Runtime<P> {
             payload: OutboundPayload::DeferredCall(body),
         };
         if priority {
-            state.outbound.push_front(message);
+            core.outbound.push_front(message);
         } else {
-            state.outbound.push_back(message);
+            core.outbound.push_back(message);
         }
-        state.timeouts.push(Reverse(TimeoutEntry {
+        core.timeouts.push(Reverse(TimeoutEntry {
             at: Instant::now() + self.config.packet_expiration,
             kind: TimeoutKind::Outbound { token },
         }));
@@ -1546,7 +1548,7 @@ impl<P: QlPlatform> Runtime<P> {
         hello: crate::wire::handshake::Hello,
     ) {
         let peer = header.sender;
-        let action = match state.peers.peer(peer) {
+        let action = match state.core.peers.peer(peer) {
             Some(entry) => match &entry.session {
                 crate::runtime::PeerSession::Initiator {
                     hello: local_hello, ..
@@ -1588,10 +1590,11 @@ impl<P: QlPlatform> Runtime<P> {
                     },
                     payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
                 };
+                let token = state.core.next_token();
                 self.enqueue_handshake_message(
-                    state,
+                    &mut state.core,
                     peer,
-                    state.next_token(),
+                    token,
                     deadline,
                     CBOR::from(record).to_cbor_data(),
                 );
@@ -1607,23 +1610,24 @@ impl<P: QlPlatform> Runtime<P> {
         reply: crate::wire::handshake::HelloReply,
     ) {
         let peer = header.sender;
-        let (hello, initiator_secret, stage, responder_signing_key) = match state.peers.peer(peer) {
-            Some(entry) => match &entry.session {
-                crate::runtime::PeerSession::Initiator {
-                    hello,
-                    session_key,
-                    stage,
-                    ..
-                } => (
-                    hello.clone(),
-                    session_key.clone(),
-                    *stage,
-                    entry.signing_key.clone(),
-                ),
-                _ => return,
-            },
-            None => return,
-        };
+        let (hello, initiator_secret, stage, responder_signing_key) =
+            match state.core.peers.peer(peer) {
+                Some(entry) => match &entry.session {
+                    crate::runtime::PeerSession::Initiator {
+                        hello,
+                        session_key,
+                        stage,
+                        ..
+                    } => (
+                        hello.clone(),
+                        session_key.clone(),
+                        *stage,
+                        entry.signing_key.clone(),
+                    ),
+                    _ => return,
+                },
+                None => return,
+            };
 
         if stage != InitiatorStage::WaitingHelloReply {
             return;
@@ -1639,7 +1643,7 @@ impl<P: QlPlatform> Runtime<P> {
             &initiator_secret,
         ) {
             Ok((confirm, session_key)) => {
-                if let Some(entry) = state.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peers.peer_mut(peer) {
                     entry.session = crate::runtime::PeerSession::Connected {
                         session_key,
                         keepalive: KeepAliveState::new(),
@@ -1650,7 +1654,7 @@ impl<P: QlPlatform> Runtime<P> {
                 confirm
             }
             Err(_) => {
-                if let Some(entry) = state.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peers.peer_mut(peer) {
                     entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
@@ -1665,10 +1669,11 @@ impl<P: QlPlatform> Runtime<P> {
             },
             payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
         };
+        let token = state.core.next_token();
         self.enqueue_handshake_message(
-            state,
+            &mut state.core,
             peer,
-            state.next_token(),
+            token,
             Instant::now() + self.config.handshake_timeout,
             CBOR::from(record).to_cbor_data(),
         );
@@ -1681,7 +1686,7 @@ impl<P: QlPlatform> Runtime<P> {
         confirm: crate::wire::handshake::Confirm,
     ) {
         let peer = header.sender;
-        let (hello, reply, secrets, initiator_signing_key) = match state.peers.peer(peer) {
+        let (hello, reply, secrets, initiator_signing_key) = match state.core.peers.peer(peer) {
             Some(entry) => match &entry.session {
                 crate::runtime::PeerSession::Responder {
                     hello,
@@ -1709,7 +1714,7 @@ impl<P: QlPlatform> Runtime<P> {
             &secrets,
         ) {
             Ok(session_key) => {
-                if let Some(entry) = state.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peers.peer_mut(peer) {
                     entry.session = crate::runtime::PeerSession::Connected {
                         session_key,
                         keepalive: KeepAliveState::new(),
@@ -1719,7 +1724,7 @@ impl<P: QlPlatform> Runtime<P> {
                 self.record_activity(state, peer);
             }
             Err(_) => {
-                if let Some(entry) = state.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peers.peer_mut(peer) {
                     entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
@@ -1733,7 +1738,7 @@ impl<P: QlPlatform> Runtime<P> {
         peer: XID,
         hello: crate::wire::handshake::Hello,
     ) {
-        let encapsulation_key = match state.peers.peer(peer) {
+        let encapsulation_key = match state.core.peers.peer(peer) {
             Some(entry) => entry.encapsulation_key.clone(),
             None => return,
         };
@@ -1746,7 +1751,7 @@ impl<P: QlPlatform> Runtime<P> {
         ) {
             Ok(result) => result,
             Err(_) => {
-                if let Some(entry) = state.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peers.peer_mut(peer) {
                     entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
@@ -1755,8 +1760,8 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         let deadline = Instant::now() + self.config.handshake_timeout;
-        let token = state.next_token();
-        if let Some(entry) = state.peers.peer_mut(peer) {
+        let token = state.core.next_token();
+        if let Some(entry) = state.core.peers.peer_mut(peer) {
             entry.session = crate::runtime::PeerSession::Responder {
                 handshake_token: token,
                 hello: hello.clone(),
@@ -1775,7 +1780,7 @@ impl<P: QlPlatform> Runtime<P> {
             payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
         };
         self.enqueue_handshake_message(
-            state,
+            &mut state.core,
             peer,
             token,
             deadline,
@@ -1796,14 +1801,15 @@ impl<P: QlPlatform> Runtime<P> {
             },
             &session_key,
             HeartbeatBody {
-                message_id: MessageId(state.next_packet_id().0),
+                message_id: MessageId(state.core.next_packet_id().0),
                 valid_until: now_secs().saturating_add(self.config.packet_expiration.as_secs()),
             },
         );
+        let token = state.core.next_token();
         self.enqueue_handshake_message(
-            state,
+            &mut state.core,
             peer,
-            state.next_token(),
+            token,
             Instant::now() + self.config.packet_expiration,
             CBOR::from(message).to_cbor_data(),
         );
@@ -1819,8 +1825,8 @@ impl<P: QlPlatform> Runtime<P> {
         let Some(config) = self.keep_alive_config() else {
             return;
         };
-        let token = state.next_token();
-        let Some(entry) = state.peers.peer_mut(peer) else {
+        let token = state.core.next_token();
+        let Some(entry) = state.core.peers.peer_mut(peer) else {
             return;
         };
         let crate::runtime::PeerSession::Connected { keepalive, .. } = &mut entry.session else {
@@ -1830,7 +1836,7 @@ impl<P: QlPlatform> Runtime<P> {
         keepalive.last_activity = Some(now);
         keepalive.pending = false;
         keepalive.token = token;
-        state.timeouts.push(Reverse(TimeoutEntry {
+        state.core.timeouts.push(Reverse(TimeoutEntry {
             at: now + config.interval,
             kind: TimeoutKind::KeepAliveSend { peer, token },
         }));
@@ -1843,17 +1849,18 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn persist_peers(&self, state: &RuntimeState) {
-        self.platform.persist_peers(state.peers.all());
+        self.platform.persist_peers(state.core.peers.all());
     }
 
     fn drop_outbound_for_peer(&self, state: &mut RuntimeState, peer: XID) {
         let call_ids: Vec<_> = state
+            .core
             .outbound
             .iter()
             .filter(|message| message.peer == peer)
             .filter_map(|message| message.call_id)
             .collect();
-        state.outbound.retain(|message| message.peer != peer);
+        state.core.outbound.retain(|message| message.peer != peer);
         for call_id in call_ids {
             self.fail_call(state, peer, call_id, QlError::SendFailed);
         }
@@ -1894,12 +1901,12 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn unpair_peer(&self, state: &mut RuntimeState, peer: XID) {
-        if state.peers.remove_peer(peer).is_none() {
+        if state.core.peers.remove_peer(peer).is_none() {
             return;
         }
         self.drop_outbound_for_peer(state, peer);
         self.abort_calls_for_peer(state, peer, QlError::SendFailed);
-        state.replay_cache.clear_peer(peer);
+        state.core.replay_cache.clear_peer(peer);
         self.platform
             .handle_peer_status(peer, &crate::runtime::PeerSession::Disconnected);
         self.persist_peers(state);
@@ -1908,14 +1915,14 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_timeouts(&self, state: &mut RuntimeState) {
         let now = Instant::now();
         loop {
-            let Some(entry) = state.timeouts.peek_mut().filter(|e| e.0.at <= now) else {
+            let Some(entry) = state.core.timeouts.peek_mut().filter(|e| e.0.at <= now) else {
                 break;
             };
             let entry = PeekMut::pop(entry).0;
             match entry.kind {
                 TimeoutKind::Outbound { token } => {
                     let mut timed_out_call = None;
-                    state.outbound.retain(|message| {
+                    state.core.outbound.retain(|message| {
                         if message.token == token {
                             timed_out_call = message.call_id.map(|call_id| (message.peer, call_id));
                             false
@@ -1928,7 +1935,7 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                 }
                 TimeoutKind::Handshake { peer, token } => {
-                    let Some(entry) = state.peers.peer(peer) else {
+                    let Some(entry) = state.core.peers.peer(peer) else {
                         continue;
                     };
                     let should_disconnect = match &entry.session {
@@ -1941,7 +1948,7 @@ impl<P: QlPlatform> Runtime<P> {
                         _ => false,
                     };
                     if should_disconnect {
-                        if let Some(entry) = state.peers.peer_mut(peer) {
+                        if let Some(entry) = state.core.peers.peer_mut(peer) {
                             entry.session = crate::runtime::PeerSession::Disconnected;
                             self.platform.handle_peer_status(peer, &entry.session);
                         }
@@ -1954,7 +1961,7 @@ impl<P: QlPlatform> Runtime<P> {
                         continue;
                     };
                     let session_key = {
-                        let Some(entry) = state.peers.peer(peer) else {
+                        let Some(entry) = state.core.peers.peer(peer) else {
                             continue;
                         };
                         let crate::runtime::PeerSession::Connected {
@@ -1971,7 +1978,7 @@ impl<P: QlPlatform> Runtime<P> {
                         }
                     };
                     self.send_heartbeat_message(state, peer, session_key);
-                    if let Some(entry) = state.peers.peer_mut(peer) {
+                    if let Some(entry) = state.core.peers.peer_mut(peer) {
                         if let crate::runtime::PeerSession::Connected { keepalive, .. } =
                             &mut entry.session
                         {
@@ -1980,13 +1987,13 @@ impl<P: QlPlatform> Runtime<P> {
                             }
                         }
                     }
-                    state.timeouts.push(Reverse(TimeoutEntry {
+                    state.core.timeouts.push(Reverse(TimeoutEntry {
                         at: now + config.timeout,
                         kind: TimeoutKind::KeepAliveTimeout { peer, token },
                     }));
                 }
                 TimeoutKind::KeepAliveTimeout { peer, token } => {
-                    let Some(entry) = state.peers.peer(peer) else {
+                    let Some(entry) = state.core.peers.peer(peer) else {
                         continue;
                     };
                     let should_disconnect = match &entry.session {
@@ -1996,7 +2003,7 @@ impl<P: QlPlatform> Runtime<P> {
                         _ => false,
                     };
                     if should_disconnect {
-                        if let Some(entry) = state.peers.peer_mut(peer) {
+                        if let Some(entry) = state.core.peers.peer_mut(peer) {
                             entry.session = crate::runtime::PeerSession::Disconnected;
                             self.platform.handle_peer_status(peer, &entry.session);
                         }
@@ -2025,7 +2032,8 @@ impl<P: QlPlatform> Runtime<P> {
                     attempt,
                 } => {
                     let key = (peer, call_id);
-                    let Some(mut call) = state.calls.remove(&key) else {
+                    let (calls, core) = (&mut state.calls, &mut state.core);
+                    let Some(call) = calls.get_mut(&key) else {
                         continue;
                     };
                     let should_retry = call
@@ -2036,10 +2044,10 @@ impl<P: QlPlatform> Runtime<P> {
                             awaiting.packet_id == packet_id && awaiting.attempt == attempt
                         });
                     if !should_retry {
-                        state.calls.insert(key, call);
                         continue;
                     }
                     if attempt >= CALL_RETRY_LIMIT {
+                        let _ = call;
                         self.fail_call(state, peer, call_id, QlError::Timeout);
                         continue;
                     }
@@ -2049,8 +2057,7 @@ impl<P: QlPlatform> Runtime<P> {
                         .and_then(|outbound| outbound.awaiting.as_ref())
                         .map(|awaiting| awaiting.frame.clone())
                         .unwrap();
-                    self.send_tracked_frame(state, &mut call, frame, attempt.saturating_add(1));
-                    state.calls.insert(key, call);
+                    self.send_tracked_frame(core, call, frame, attempt.saturating_add(1));
                 }
             }
         }
@@ -2071,16 +2078,16 @@ impl<P: QlPlatform> Runtime<P> {
                 self.fail_call(state, peer, call_id, QlError::SendFailed);
             }
             let should_disconnect = matches!(
-                state.peers.peer(peer).map(|entry| &entry.session),
+                state.core.peers.peer(peer).map(|entry| &entry.session),
                 Some(crate::runtime::PeerSession::Initiator { handshake_token, .. })
                     if *handshake_token == token
             ) || matches!(
-                state.peers.peer(peer).map(|entry| &entry.session),
+                state.core.peers.peer(peer).map(|entry| &entry.session),
                 Some(crate::runtime::PeerSession::Responder { handshake_token, .. })
                     if *handshake_token == token
             );
             if should_disconnect {
-                if let Some(entry) = state.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peers.peer_mut(peer) {
                     entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
@@ -2101,7 +2108,7 @@ impl<P: QlPlatform> Runtime<P> {
                         (awaiting.packet_id == packet_id).then_some(awaiting.attempt)
                     })
                     .unwrap_or(0);
-                state.timeouts.push(Reverse(TimeoutEntry {
+                state.core.timeouts.push(Reverse(TimeoutEntry {
                     at: Instant::now() + self.config.packet_ack_timeout,
                     kind: TimeoutKind::CallPacket {
                         peer,

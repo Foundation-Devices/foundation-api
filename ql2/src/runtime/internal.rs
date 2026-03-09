@@ -226,7 +226,7 @@ pub enum InboundTerminal {
     Error(QlError),
 }
 
-pub struct CallState {
+pub struct CallRecord {
     pub peer: XID,
     pub call_id: CallId,
     pub route_id: RouteId,
@@ -303,24 +303,58 @@ pub(crate) enum RuntimeCommand {
     Incoming(Vec<u8>),
 }
 
-pub struct RuntimeState {
+pub struct CallState {
+    by_id: HashMap<(XID, CallId), CallRecord>,
+}
+
+impl CallState {
+    pub fn new() -> Self {
+        Self {
+            by_id: HashMap::new(),
+        }
+    }
+
+    pub fn get(&self, key: &(XID, CallId)) -> Option<&CallRecord> {
+        self.by_id.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &(XID, CallId)) -> Option<&mut CallRecord> {
+        self.by_id.get_mut(key)
+    }
+
+    pub fn insert(&mut self, key: (XID, CallId), call: CallRecord) -> Option<CallRecord> {
+        self.by_id.insert(key, call)
+    }
+
+    pub fn remove(&mut self, key: &(XID, CallId)) -> Option<CallRecord> {
+        self.by_id.remove(key)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &(XID, CallId)> {
+        self.by_id.keys()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&(XID, CallId), &CallRecord)> {
+        self.by_id.iter()
+    }
+}
+
+pub struct CoreState {
     pub peers: PeerStore,
     pub next_token: Cell<Token>,
     pub outbound: VecDeque<OutboundMessage>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
-    pub calls: HashMap<(XID, CallId), CallState>,
     pub next_id: Cell<u64>,
     pub replay_cache: ReplayCache,
 }
 
-impl RuntimeState {
+impl CoreState {
     pub fn new() -> Self {
         Self {
             peers: PeerStore::new(),
             next_token: Cell::new(Token(1)),
             outbound: VecDeque::new(),
             timeouts: BinaryHeap::new(),
-            calls: HashMap::new(),
             next_id: Cell::new(1),
             replay_cache: ReplayCache::new(),
         }
@@ -342,6 +376,20 @@ impl RuntimeState {
         let id = self.next_id.get();
         self.next_id.set(id.wrapping_add(1));
         CallId(id)
+    }
+}
+
+pub struct RuntimeState {
+    pub calls: CallState,
+    pub core: CoreState,
+}
+
+impl RuntimeState {
+    pub fn new() -> Self {
+        Self {
+            calls: CallState::new(),
+            core: CoreState::new(),
+        }
     }
 }
 
@@ -439,10 +487,6 @@ pub enum HelloAction {
     Ignore,
 }
 
-pub fn next_timeout_deadline(state: &RuntimeState) -> Option<Instant> {
-    state.timeouts.peek().map(|entry| entry.0.at)
-}
-
 pub fn peer_hello_wins(
     local_hello: &Hello,
     local_sender: XID,
@@ -465,7 +509,7 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-impl CallState {
+impl CallRecord {
     pub fn local_outbound_dir(&self) -> Direction {
         match self.role {
             CallRole::Initiator => Direction::Request,
@@ -508,18 +552,4 @@ impl InboundCallStreamState {
             closed: false,
         }
     }
-}
-
-pub fn response_delivery(
-    state: &mut CallState,
-    tx: Sender<RuntimeCommand>,
-) -> Option<AcceptedCallDelivery> {
-    let rx = state.response_rx.take()?;
-    Some(AcceptedCallDelivery {
-        peer: state.peer,
-        call_id: state.call_id,
-        response_head: state.response_head.clone().unwrap_or_default(),
-        rx,
-        tx,
-    })
 }
