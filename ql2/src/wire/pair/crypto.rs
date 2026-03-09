@@ -67,7 +67,7 @@ pub fn decrypt_pair_request(
         return Err(QlError::InvalidPayload);
     }
     let decrypted = decrypt_body(&session_key, &encrypted)?;
-    ensure_not_expired(decrypted.message_id, decrypted.valid_until)?;
+    ensure_not_expired(decrypted.valid_until)?;
     if XID::new(SigningPublicKey::MLDSA(decrypted.signing_pub_key.clone())) != header.sender {
         return Err(QlError::InvalidPayload);
     }

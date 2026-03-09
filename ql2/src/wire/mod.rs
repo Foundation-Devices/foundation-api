@@ -1,16 +1,15 @@
 use dcbor::CBOR;
 
+pub mod call;
 pub mod handshake;
 pub mod heartbeat;
-pub mod message;
 pub mod pair;
-pub mod transfer;
 pub mod unpair;
 
 use bc_components::{EncryptedMessage, XID};
 
 use self::{handshake::HandshakeRecord, pair::PairRequestRecord, unpair::UnpairRecord};
-use crate::{MessageId, QlError};
+use crate::QlError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QlRecord {
@@ -35,19 +34,17 @@ pub enum QlPayload {
     Handshake(HandshakeRecord),
     Pair(PairRequestRecord),
     Unpair(UnpairRecord),
-    Message(EncryptedMessage),
     Heartbeat(EncryptedMessage),
-    Transfer(EncryptedMessage),
+    Call(EncryptedMessage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QlTag {
     Handshake = 1,
     Pairing = 2,
-    Record = 3,
+    Call = 3,
     Heartbeat = 4,
     Unpair = 5,
-    Transfer = 6,
 }
 
 impl From<QlTag> for CBOR {
@@ -64,10 +61,9 @@ impl TryFrom<CBOR> for QlTag {
         match tag {
             1 => Ok(Self::Handshake),
             2 => Ok(Self::Pairing),
-            3 => Ok(Self::Record),
+            3 => Ok(Self::Call),
             4 => Ok(Self::Heartbeat),
             5 => Ok(Self::Unpair),
-            6 => Ok(Self::Transfer),
             _ => Err(dcbor::Error::msg("unknown message tag")),
         }
     }
@@ -78,10 +74,9 @@ impl From<QlRecord> for CBOR {
         let (tag, payload) = match value.payload {
             QlPayload::Handshake(message) => (QlTag::Handshake, CBOR::from(message)),
             QlPayload::Pair(message) => (QlTag::Pairing, CBOR::from(message)),
-            QlPayload::Message(message) => (QlTag::Record, CBOR::from(message)),
+            QlPayload::Call(message) => (QlTag::Call, CBOR::from(message)),
             QlPayload::Heartbeat(message) => (QlTag::Heartbeat, CBOR::from(message)),
             QlPayload::Unpair(message) => (QlTag::Unpair, CBOR::from(message)),
-            QlPayload::Transfer(message) => (QlTag::Transfer, CBOR::from(message)),
         };
         CBOR::from(vec![
             CBOR::from(tag as u8),
@@ -100,48 +95,26 @@ impl TryFrom<CBOR> for QlRecord {
         let tag = QlTag::try_from(tag_cbor)?;
         let header = QlHeader::try_from(header_cbor)?;
         match tag {
-            QlTag::Handshake => {
-                let message = HandshakeRecord::try_from(payload)?;
-                Ok(QlRecord {
-                    header,
-                    payload: QlPayload::Handshake(message),
-                })
-            }
-            QlTag::Pairing => {
-                let message = PairRequestRecord::try_from(payload)?;
-                Ok(QlRecord {
-                    header,
-                    payload: QlPayload::Pair(message),
-                })
-            }
-            QlTag::Record => {
-                let message = EncryptedMessage::try_from(payload)?;
-                Ok(QlRecord {
-                    header,
-                    payload: QlPayload::Message(message),
-                })
-            }
-            QlTag::Heartbeat => {
-                let message = EncryptedMessage::try_from(payload)?;
-                Ok(QlRecord {
-                    header,
-                    payload: QlPayload::Heartbeat(message),
-                })
-            }
-            QlTag::Unpair => {
-                let message = UnpairRecord::try_from(payload)?;
-                Ok(QlRecord {
-                    header,
-                    payload: QlPayload::Unpair(message),
-                })
-            }
-            QlTag::Transfer => {
-                let message = EncryptedMessage::try_from(payload)?;
-                Ok(QlRecord {
-                    header,
-                    payload: QlPayload::Transfer(message),
-                })
-            }
+            QlTag::Handshake => Ok(QlRecord {
+                header,
+                payload: QlPayload::Handshake(HandshakeRecord::try_from(payload)?),
+            }),
+            QlTag::Pairing => Ok(QlRecord {
+                header,
+                payload: QlPayload::Pair(PairRequestRecord::try_from(payload)?),
+            }),
+            QlTag::Call => Ok(QlRecord {
+                header,
+                payload: QlPayload::Call(EncryptedMessage::try_from(payload)?),
+            }),
+            QlTag::Heartbeat => Ok(QlRecord {
+                header,
+                payload: QlPayload::Heartbeat(EncryptedMessage::try_from(payload)?),
+            }),
+            QlTag::Unpair => Ok(QlRecord {
+                header,
+                payload: QlPayload::Unpair(UnpairRecord::try_from(payload)?),
+            }),
         }
     }
 }
@@ -187,13 +160,9 @@ pub(crate) fn take_fields<const N: usize>(
     Ok(result)
 }
 
-pub(crate) fn ensure_not_expired(id: MessageId, valid_until: u64) -> Result<(), QlError> {
-    let now = now_secs();
-    if now > valid_until {
-        Err(QlError::Nack {
-            id,
-            nack: message::Nack::Expired,
-        })
+pub(crate) fn ensure_not_expired(valid_until: u64) -> Result<(), QlError> {
+    if now_secs() > valid_until {
+        Err(QlError::Timeout)
     } else {
         Ok(())
     }

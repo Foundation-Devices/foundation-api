@@ -1,6 +1,6 @@
 pub use handle::{
-    InboundByteStream, InboundStream, OutboundTransfer, Response, RuntimeHandle, StreamResponse,
-    UploadRequest,
+    AcceptedCall, CallResponder, InboundByteStream, InboundCall, OutboundByteStream, PendingAccept,
+    PendingCall, RuntimeHandle,
 };
 pub use internal::{InitiatorStage, PeerSession, Token};
 
@@ -12,16 +12,18 @@ pub mod replay_cache;
 use std::time::Duration;
 
 use bc_components::XID;
-use dcbor::CBOR;
 
-use crate::{
-    wire::message::{DecryptedMessage, MessageKind, Nack},
-    MessageId, QlCodec, QlError, RouteId,
-};
+use crate::{platform::QlPlatform, CallId};
 
-#[derive(Debug, Clone, Default)]
-pub struct RequestConfig {
-    pub timeout: Option<Duration>,
+#[derive(Debug, Clone, Copy)]
+pub struct CallConfig {
+    pub open_timeout: Option<Duration>,
+}
+
+impl Default for CallConfig {
+    fn default() -> Self {
+        Self { open_timeout: None }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -33,8 +35,11 @@ pub struct KeepAliveConfig {
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
     pub handshake_timeout: Duration,
-    pub default_request_timeout: Duration,
-    pub message_expiration: Duration,
+    pub default_open_timeout: Duration,
+    pub packet_expiration: Duration,
+    pub packet_ack_timeout: Duration,
+    pub max_payload_bytes: usize,
+    pub initial_credit: u64,
     pub keep_alive: Option<KeepAliveConfig>,
 }
 
@@ -42,19 +47,38 @@ impl RuntimeConfig {
     pub fn new(handshake_timeout: Duration) -> Self {
         Self {
             handshake_timeout,
-            default_request_timeout: Duration::from_secs(5),
-            message_expiration: Duration::from_secs(30),
+            default_open_timeout: Duration::from_secs(5),
+            packet_expiration: Duration::from_secs(30),
+            packet_ack_timeout: Duration::from_millis(150),
+            max_payload_bytes: 1024,
+            initial_credit: 1024,
             keep_alive: None,
         }
     }
 
-    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
-        self.default_request_timeout = timeout;
+    pub fn with_open_timeout(mut self, timeout: Duration) -> Self {
+        self.default_open_timeout = timeout;
         self
     }
 
-    pub fn with_message_expiration(mut self, expiration: Duration) -> Self {
-        self.message_expiration = expiration;
+    pub fn with_packet_expiration(mut self, expiration: Duration) -> Self {
+        self.packet_expiration = expiration;
+        self
+    }
+
+    pub fn with_packet_ack_timeout(mut self, timeout: Duration) -> Self {
+        self.packet_ack_timeout = timeout;
+        self
+    }
+
+    pub fn with_max_payload_bytes(mut self, max_payload_bytes: usize) -> Self {
+        self.max_payload_bytes = max_payload_bytes.max(1);
+        self.initial_credit = self.initial_credit.max(self.max_payload_bytes as u64);
+        self
+    }
+
+    pub fn with_initial_credit(mut self, initial_credit: u64) -> Self {
+        self.initial_credit = initial_credit.max(self.max_payload_bytes as u64);
         self
     }
 
@@ -66,94 +90,15 @@ impl RuntimeConfig {
 
 #[derive(Debug)]
 pub enum HandlerEvent {
-    Request(InboundRequest),
-    UploadRequest(InboundUploadRequest),
-    Event(InboundEvent),
+    Call(InboundCall),
 }
 
-#[derive(Debug)]
-pub struct InboundRequest {
-    pub message: DecryptedMessage,
-    pub respond_to: Responder,
-}
-
-#[derive(Debug)]
-pub struct InboundUploadRequest {
-    pub sender: XID,
-    pub recipient: XID,
-    pub route_id: RouteId,
-    pub message_id: MessageId,
-    pub meta: CBOR,
-    pub body: InboundByteStream,
-    pub respond_to: Responder,
-}
-
-#[derive(Debug)]
-pub struct InboundEvent {
-    pub message: DecryptedMessage,
-}
-
-#[derive(Debug, Clone)]
-pub struct Responder {
-    id: MessageId,
-    recipient: XID,
-    tx: async_channel::Sender<internal::RuntimeCommand>,
-}
-
-impl Responder {
-    pub(crate) fn new(
-        id: MessageId,
-        recipient: XID,
-        tx: async_channel::Sender<internal::RuntimeCommand>,
-    ) -> Self {
-        Self { id, recipient, tx }
-    }
-
-    pub fn respond<R>(self, response: R) -> Result<(), QlError>
-    where
-        R: QlCodec,
-    {
-        self.tx
-            .try_send(internal::RuntimeCommand::SendResponse {
-                id: self.id,
-                recipient: self.recipient,
-                payload: response.into(),
-                kind: MessageKind::Response,
-            })
-            .map_err(|_| QlError::Cancelled)
-    }
-
-    pub fn respond_nack(self, reason: Nack) -> Result<(), QlError> {
-        self.tx
-            .try_send(internal::RuntimeCommand::SendResponse {
-                id: self.id,
-                recipient: self.recipient,
-                payload: CBOR::from(reason),
-                kind: MessageKind::Nack,
-            })
-            .map_err(|_| QlError::Cancelled)
-    }
-
-    pub fn respond_stream<M>(self, meta: M) -> Result<handle::OutboundTransfer, QlError>
-    where
-        M: QlCodec,
-    {
-        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
-        self.tx
-            .send_blocking(internal::RuntimeCommand::StartResponseStream {
-                request_id: self.id,
-                recipient: self.recipient,
-                meta: meta.into(),
-                chunk_rx,
-            })
-            .map_err(|_| QlError::Cancelled)?;
-        Ok(handle::OutboundTransfer::new(
-            self.recipient,
-            self.id,
-            chunk_tx,
-            self.tx,
-        ))
-    }
+pub(crate) struct AcceptedCallDelivery {
+    pub peer: XID,
+    pub call_id: CallId,
+    pub response_head: Vec<u8>,
+    pub rx: async_channel::Receiver<internal::InboundStreamItem>,
+    pub tx: async_channel::Sender<internal::RuntimeCommand>,
 }
 
 pub struct Runtime<P> {
@@ -165,7 +110,7 @@ pub struct Runtime<P> {
 
 pub fn new_runtime<P>(platform: P, config: RuntimeConfig) -> (Runtime<P>, RuntimeHandle)
 where
-    P: crate::platform::QlPlatform,
+    P: QlPlatform,
 {
     let (tx, rx) = async_channel::unbounded();
     (

@@ -1,21 +1,13 @@
-use std::{
-    future::Future,
-    marker::PhantomData,
-    pin::{pin, Pin},
-    task::{Context, Poll},
-};
-
 use async_channel::Sender;
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, XID};
-use dcbor::CBOR;
 
 use crate::{
     runtime::{
-        internal::{InboundStreamDelivery, InboundStreamItem, OutboundStreamInput, RuntimeCommand},
-        RequestConfig,
+        internal::{InboundStreamItem, OutboundStreamInput, RuntimeCommand},
+        AcceptedCallDelivery, CallConfig,
     },
-    wire::message::Ack,
-    Event, MessageId, QlCodec, QlError, QlStream, QlUpload, RequestResponse, RouteId,
+    wire::call::{Direction, RejectCode, ResetCode},
+    CallId, QlError, RouteId,
 };
 
 #[derive(Clone)]
@@ -23,24 +15,45 @@ pub struct RuntimeHandle {
     pub(crate) tx: async_channel::Sender<RuntimeCommand>,
 }
 
-pub struct Response<T> {
-    rx: oneshot::Receiver<Result<CBOR, QlError>>,
-    _type: PhantomData<fn() -> T>,
+pub struct PendingCall {
+    pub request: OutboundByteStream,
+    pub accepted: PendingAccept,
 }
 
-pub struct StreamResponse<T> {
-    rx: oneshot::Receiver<Result<InboundStreamDelivery, QlError>>,
-    _type: PhantomData<fn() -> T>,
+pub struct PendingAccept {
+    rx: oneshot::Receiver<Result<AcceptedCallDelivery, QlError>>,
 }
 
-pub struct InboundStream<T> {
-    pub meta: T,
-    pub body: InboundByteStream,
+#[derive(Debug)]
+pub struct AcceptedCall {
+    pub call_id: CallId,
+    pub response_head: Vec<u8>,
+    pub response: InboundByteStream,
+}
+
+#[derive(Debug)]
+pub struct InboundCall {
+    pub sender: XID,
+    pub recipient: XID,
+    pub route_id: RouteId,
+    pub call_id: CallId,
+    pub request_head: Vec<u8>,
+    pub response_expected: bool,
+    pub request: InboundByteStream,
+    pub respond_to: CallResponder,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallResponder {
+    call_id: CallId,
+    recipient: XID,
+    tx: async_channel::Sender<RuntimeCommand>,
 }
 
 pub struct InboundByteStream {
     sender: XID,
-    transfer_id: MessageId,
+    call_id: CallId,
+    dir: Direction,
     rx: async_channel::Receiver<InboundStreamItem>,
     tx: Sender<RuntimeCommand>,
     finished: bool,
@@ -50,107 +63,51 @@ impl std::fmt::Debug for InboundByteStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InboundByteStream")
             .field("sender", &self.sender)
-            .field("transfer_id", &self.transfer_id)
+            .field("call_id", &self.call_id)
+            .field("dir", &self.dir)
             .field("finished", &self.finished)
             .finish_non_exhaustive()
     }
 }
 
-pub struct OutboundTransfer {
+pub struct OutboundByteStream {
     recipient: XID,
-    transfer_id: MessageId,
+    call_id: CallId,
+    dir: Direction,
     chunk_tx: Option<Sender<OutboundStreamInput>>,
     tx: Sender<RuntimeCommand>,
 }
 
-pub struct UploadRequest<R> {
-    pub transfer: OutboundTransfer,
-    pub response: Response<R>,
-}
-
-impl<T> Response<T> {
-    pub async fn recv(self) -> Result<CBOR, QlError> {
-        self.rx.await.unwrap_or(Err(QlError::Cancelled))
-    }
-}
-
-impl<T> Future for Response<T>
-where
-    T: QlCodec,
-{
-    type Output = Result<T, QlError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        pin!(&mut self.rx).poll(cx).map(|result| {
-            let payload = result.unwrap_or(Err(QlError::Cancelled))?;
-            T::try_from(payload).map_err(|_| QlError::InvalidPayload)
-        })
-    }
-}
-
-impl<T> StreamResponse<T> {
-    pub async fn recv(self) -> Result<InboundStream<CBOR>, QlError> {
+impl PendingAccept {
+    pub async fn recv(self) -> Result<AcceptedCall, QlError> {
         let delivery = self.rx.await.unwrap_or(Err(QlError::Cancelled))?;
-        let InboundStreamDelivery {
+        let AcceptedCallDelivery {
             peer,
-            transfer_id,
-            meta,
+            call_id,
+            response_head,
             rx,
             tx,
         } = delivery;
-        Ok(InboundStream {
-            meta,
-            body: InboundByteStream::new(peer, transfer_id, rx, tx),
+        Ok(AcceptedCall {
+            call_id,
+            response_head,
+            response: InboundByteStream::new(peer, call_id, Direction::Response, rx, tx),
         })
-    }
-}
-
-impl<T> Future for StreamResponse<T>
-where
-    T: QlCodec,
-{
-    type Output = Result<InboundStream<T>, QlError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        pin!(&mut self.rx).poll(cx).map(|result| {
-            let delivery = result.unwrap_or(Err(QlError::Cancelled))?;
-            let InboundStreamDelivery {
-                peer,
-                transfer_id,
-                meta,
-                rx,
-                tx,
-            } = delivery;
-            let meta = T::try_from(meta).map_err(|_| QlError::InvalidPayload)?;
-            Ok(InboundStream {
-                meta,
-                body: InboundByteStream::new(peer, transfer_id, rx, tx),
-            })
-        })
-    }
-}
-
-impl<R> UploadRequest<R>
-where
-    R: QlCodec,
-{
-    pub async fn finish(self) -> Result<R, QlError> {
-        let Self { transfer, response } = self;
-        transfer.finish().await?;
-        response.await
     }
 }
 
 impl InboundByteStream {
     pub(crate) fn new(
         sender: XID,
-        transfer_id: MessageId,
+        call_id: CallId,
+        dir: Direction,
         rx: async_channel::Receiver<InboundStreamItem>,
         tx: Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             sender,
-            transfer_id,
+            call_id,
+            dir,
             rx,
             tx,
             finished: false,
@@ -162,7 +119,19 @@ impl InboundByteStream {
             return Ok(None);
         }
         match self.rx.recv().await {
-            Ok(InboundStreamItem::Chunk(chunk)) => Ok(Some(chunk)),
+            Ok(InboundStreamItem::Chunk(chunk)) => {
+                let len = chunk.len();
+                let _ = self
+                    .tx
+                    .send(RuntimeCommand::AdvanceInboundCredit {
+                        sender: self.sender,
+                        call_id: self.call_id,
+                        dir: self.dir,
+                        amount: len as u64,
+                    })
+                    .await;
+                Ok(Some(chunk))
+            }
             Ok(InboundStreamItem::Finished) => {
                 self.finished = true;
                 Ok(None)
@@ -173,11 +142,22 @@ impl InboundByteStream {
             }
             Err(_) => {
                 self.finished = true;
-                Err(QlError::TransferCancelled {
-                    id: self.transfer_id,
-                })
+                Err(QlError::Cancelled)
             }
         }
+    }
+
+    pub async fn reset(mut self, code: ResetCode) -> Result<(), QlError> {
+        self.finished = true;
+        self.tx
+            .send(RuntimeCommand::ResetInbound {
+                sender: self.sender,
+                call_id: self.call_id,
+                dir: self.dir,
+                code,
+            })
+            .await
+            .map_err(|_| QlError::Cancelled)
     }
 }
 
@@ -186,23 +166,27 @@ impl Drop for InboundByteStream {
         if self.finished {
             return;
         }
-        let _ = self.tx.try_send(RuntimeCommand::CancelInboundTransfer {
+        let _ = self.tx.try_send(RuntimeCommand::ResetInbound {
             sender: self.sender,
-            transfer_id: self.transfer_id,
+            call_id: self.call_id,
+            dir: self.dir,
+            code: ResetCode::Cancelled,
         });
     }
 }
 
-impl OutboundTransfer {
+impl OutboundByteStream {
     pub(crate) fn new(
         recipient: XID,
-        transfer_id: MessageId,
+        call_id: CallId,
+        dir: Direction,
         chunk_tx: Sender<OutboundStreamInput>,
         tx: Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             recipient,
-            transfer_id,
+            call_id,
+            dir,
             chunk_tx: Some(chunk_tx),
             tx,
         }
@@ -212,21 +196,18 @@ impl OutboundTransfer {
         let chunk_tx = self
             .chunk_tx
             .as_ref()
-            .expect("transfer not finished or cancelled");
+            .expect("stream not finished or reset");
         chunk_tx
             .send(OutboundStreamInput::Chunk(chunk))
             .await
-            .map_err(|_| QlError::TransferCancelled {
-                id: self.transfer_id,
-            })?;
+            .map_err(|_| QlError::Cancelled)?;
         self.tx
-            .send(RuntimeCommand::PollOutboundTransfer {
-                recipient: self.recipient,
-                transfer_id: self.transfer_id,
+            .send(RuntimeCommand::PollCall {
+                peer: self.recipient,
+                call_id: self.call_id,
             })
             .await
-            .map_err(|_| QlError::Cancelled)?;
-        Ok(())
+            .map_err(|_| QlError::Cancelled)
     }
 
     pub async fn finish(mut self) -> Result<(), QlError> {
@@ -237,9 +218,9 @@ impl OutboundTransfer {
             return Ok(());
         }
         self.tx
-            .send(RuntimeCommand::PollOutboundTransfer {
-                recipient: self.recipient,
-                transfer_id: self.transfer_id,
+            .send(RuntimeCommand::PollCall {
+                peer: self.recipient,
+                call_id: self.call_id,
             })
             .await
             .map_err(|_| QlError::Cancelled)?;
@@ -247,27 +228,74 @@ impl OutboundTransfer {
         Ok(())
     }
 
-    pub async fn cancel(mut self) -> Result<(), QlError> {
+    pub async fn reset(mut self, code: ResetCode) -> Result<(), QlError> {
         self.chunk_tx.take();
         self.tx
-            .send(RuntimeCommand::CancelOutboundTransfer {
+            .send(RuntimeCommand::ResetOutbound {
                 recipient: self.recipient,
-                transfer_id: self.transfer_id,
+                call_id: self.call_id,
+                dir: self.dir,
+                code,
             })
             .await
             .map_err(|_| QlError::Cancelled)
     }
 }
 
-impl Drop for OutboundTransfer {
+impl Drop for OutboundByteStream {
     fn drop(&mut self) {
         if self.chunk_tx.take().is_none() {
             return;
         }
-        let _ = self.tx.try_send(RuntimeCommand::CancelOutboundTransfer {
+        let _ = self.tx.try_send(RuntimeCommand::ResetOutbound {
             recipient: self.recipient,
-            transfer_id: self.transfer_id,
+            call_id: self.call_id,
+            dir: self.dir,
+            code: ResetCode::Cancelled,
         });
+    }
+}
+
+impl CallResponder {
+    pub(crate) fn new(
+        call_id: CallId,
+        recipient: XID,
+        tx: async_channel::Sender<RuntimeCommand>,
+    ) -> Self {
+        Self {
+            call_id,
+            recipient,
+            tx,
+        }
+    }
+
+    pub fn accept(self, response_head: Vec<u8>) -> Result<OutboundByteStream, QlError> {
+        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
+        self.tx
+            .send_blocking(RuntimeCommand::AcceptCall {
+                recipient: self.recipient,
+                call_id: self.call_id,
+                response_head,
+                response_rx: chunk_rx,
+            })
+            .map_err(|_| QlError::Cancelled)?;
+        Ok(OutboundByteStream::new(
+            self.recipient,
+            self.call_id,
+            Direction::Response,
+            chunk_tx,
+            self.tx,
+        ))
+    }
+
+    pub fn reject(self, code: RejectCode) -> Result<(), QlError> {
+        self.tx
+            .try_send(RuntimeCommand::RejectCall {
+                recipient: self.recipient,
+                call_id: self.call_id,
+                code,
+            })
+            .map_err(|_| QlError::Cancelled)
     }
 }
 
@@ -301,184 +329,42 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::Incoming(bytes))
     }
 
-    pub fn request<M>(
-        &self,
-        message: M,
-        recipient: XID,
-        config: RequestConfig,
-    ) -> Response<M::Response>
-    where
-        M: RequestResponse,
-    {
-        let (tx, rx) = oneshot::channel();
-        self.send(RuntimeCommand::SendRequest {
-            recipient,
-            route_id: M::ID,
-            payload: message.into(),
-            respond_to: tx,
-            config,
-        });
-        Response {
-            rx,
-            _type: PhantomData,
-        }
-    }
-
-    pub fn request_stream<M>(
-        &self,
-        message: M,
-        recipient: XID,
-        config: RequestConfig,
-    ) -> StreamResponse<M::StreamMeta>
-    where
-        M: QlStream,
-    {
-        let (tx, rx) = oneshot::channel();
-        self.send(RuntimeCommand::SendStreamRequest {
-            recipient,
-            route_id: M::ID,
-            payload: message.into(),
-            respond_to: tx,
-            config,
-        });
-        StreamResponse {
-            rx,
-            _type: PhantomData,
-        }
-    }
-
-    pub async fn request_upload<M>(
-        &self,
-        message: M,
-        recipient: XID,
-        config: RequestConfig,
-    ) -> Result<UploadRequest<M::Response>, QlError>
-    where
-        M: QlUpload,
-    {
-        let upload = self
-            .send_request_upload_raw(recipient, M::ID, message.into(), config)
-            .await?;
-        Ok(UploadRequest {
-            transfer: upload.transfer,
-            response: Response {
-                rx: upload.response.rx,
-                _type: PhantomData,
-            },
-        })
-    }
-
-    pub fn send_event<M>(&self, message: M, recipient: XID)
-    where
-        M: Event,
-    {
-        self.send_event_raw(recipient, M::ID, message.into())
-    }
-
-    pub fn send_event_with_ack<M>(
-        &self,
-        message: M,
-        recipient: XID,
-        config: RequestConfig,
-    ) -> Response<Ack>
-    where
-        M: Event,
-    {
-        let (tx, rx) = oneshot::channel();
-        self.send(RuntimeCommand::SendRequest {
-            recipient,
-            route_id: M::ID,
-            payload: message.into(),
-            respond_to: tx,
-            config,
-        });
-        Response {
-            rx,
-            _type: PhantomData,
-        }
-    }
-
-    pub fn send_event_raw(&self, recipient: XID, route_id: RouteId, payload: CBOR) {
-        self.send(RuntimeCommand::SendEvent {
-            recipient,
-            route_id,
-            payload,
-        })
-    }
-
-    pub fn send_request_raw(
+    pub async fn open_call(
         &self,
         recipient: XID,
         route_id: RouteId,
-        payload: CBOR,
-        config: RequestConfig,
-    ) -> Response<CBOR> {
-        let (tx, rx) = oneshot::channel();
-        self.send(RuntimeCommand::SendRequest {
-            recipient,
-            route_id,
-            payload,
-            respond_to: tx,
-            config,
-        });
-        Response {
-            rx,
-            _type: PhantomData,
-        }
-    }
-
-    pub fn send_request_stream_raw(
-        &self,
-        recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
-        config: RequestConfig,
-    ) -> StreamResponse<CBOR> {
-        let (tx, rx) = oneshot::channel();
-        self.send(RuntimeCommand::SendStreamRequest {
-            recipient,
-            route_id,
-            payload,
-            respond_to: tx,
-            config,
-        });
-        StreamResponse {
-            rx,
-            _type: PhantomData,
-        }
-    }
-
-    pub async fn send_request_upload_raw(
-        &self,
-        recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
-        config: RequestConfig,
-    ) -> Result<UploadRequest<CBOR>, QlError> {
-        let (response_tx, response_rx) = oneshot::channel();
+        request_head: Vec<u8>,
+        response_expected: bool,
+        config: CallConfig,
+    ) -> Result<PendingCall, QlError> {
+        let (accepted_tx, accepted_rx) = oneshot::channel();
         let (chunk_tx, chunk_rx) = async_channel::bounded(1);
         let (start_tx, start_rx) = oneshot::channel();
         self.tx
-            .send(RuntimeCommand::SendUploadRequest {
+            .send(RuntimeCommand::OpenCall {
                 recipient,
                 route_id,
-                payload,
-                respond_to: response_tx,
-                chunk_rx,
+                request_head,
+                response_expected,
+                request_rx: chunk_rx,
+                accepted: accepted_tx,
                 start: start_tx,
                 config,
             })
             .await
             .map_err(|_| QlError::Cancelled)?;
 
-        let transfer_id = start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
+        let call_id = start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
 
-        Ok(UploadRequest {
-            transfer: OutboundTransfer::new(recipient, transfer_id, chunk_tx, self.tx.clone()),
-            response: Response {
-                rx: response_rx,
-                _type: PhantomData,
-            },
+        Ok(PendingCall {
+            request: OutboundByteStream::new(
+                recipient,
+                call_id,
+                Direction::Request,
+                chunk_tx,
+                self.tx.clone(),
+            ),
+            accepted: PendingAccept { rx: accepted_rx },
         })
     }
 }

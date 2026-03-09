@@ -1,10 +1,12 @@
+use std::time::Duration;
+
 use super::*;
+use crate::RouteId;
 
 #[tokio::test(flavor = "current_thread")]
 async fn connected_unpair_removes_peer_on_both_sides() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_request_timeout(Duration::from_millis(200));
+        let config = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -20,7 +22,6 @@ async fn connected_unpair_removes_peer_on_both_sides() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-
         handle_a.connect(peer_b.xid).unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
@@ -32,24 +33,24 @@ async fn connected_unpair_removes_peer_on_both_sides() {
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
         let result_a = handle_a
-            .send_request_raw(
+            .open_call(
                 peer_b.xid,
                 RouteId(90),
-                CBOR::from(1u8),
-                RequestConfig::default(),
+                Vec::new(),
+                true,
+                Default::default(),
             )
-            .recv()
             .await;
         assert!(matches!(result_a, Err(QlError::UnknownPeer(peer)) if peer == peer_b.xid));
 
         let result_b = handle_b
-            .send_request_raw(
+            .open_call(
                 peer_a.xid,
                 RouteId(91),
-                CBOR::from(1u8),
-                RequestConfig::default(),
+                Vec::new(),
+                true,
+                Default::default(),
             )
-            .recv()
             .await;
         assert!(matches!(result_b, Err(QlError::UnknownPeer(peer)) if peer == peer_a.xid));
     })
@@ -59,8 +60,7 @@ async fn connected_unpair_removes_peer_on_both_sides() {
 #[tokio::test(flavor = "current_thread")]
 async fn unpair_works_without_session() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_request_timeout(Duration::from_millis(200));
+        let config = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -86,24 +86,24 @@ async fn unpair_works_without_session() {
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
         let result_a = handle_a
-            .send_request_raw(
+            .open_call(
                 peer_b.xid,
                 RouteId(92),
-                CBOR::from(1u8),
-                RequestConfig::default(),
+                Vec::new(),
+                true,
+                Default::default(),
             )
-            .recv()
             .await;
         assert!(matches!(result_a, Err(QlError::UnknownPeer(peer)) if peer == peer_b.xid));
 
         let result_b = handle_b
-            .send_request_raw(
+            .open_call(
                 peer_a.xid,
                 RouteId(93),
-                CBOR::from(1u8),
-                RequestConfig::default(),
+                Vec::new(),
+                true,
+                Default::default(),
             )
-            .recv()
             .await;
         assert!(matches!(result_b, Err(QlError::UnknownPeer(peer)) if peer == peer_a.xid));
     })
@@ -146,13 +146,13 @@ async fn invalid_unpair_signature_is_ignored() {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let result = handle_b
-            .send_request_raw(
+            .open_call(
                 peer_a.xid,
                 RouteId(94),
-                CBOR::from(1u8),
-                RequestConfig::default(),
+                Vec::new(),
+                true,
+                Default::default(),
             )
-            .recv()
             .await;
         assert!(matches!(result, Err(QlError::MissingSession(peer)) if peer == peer_a.xid));
     })

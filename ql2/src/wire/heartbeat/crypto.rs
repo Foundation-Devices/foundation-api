@@ -35,6 +35,6 @@ pub fn decrypt_heartbeat(
         .map_err(|_| QlError::InvalidPayload)?;
     let cbor = CBOR::try_from_data(plaintext).map_err(|_| QlError::InvalidPayload)?;
     let body = HeartbeatBody::try_from(cbor).map_err(|_| QlError::InvalidPayload)?;
-    ensure_not_expired(body.message_id, body.valid_until)?;
+    ensure_not_expired(body.valid_until)?;
     Ok(body)
 }

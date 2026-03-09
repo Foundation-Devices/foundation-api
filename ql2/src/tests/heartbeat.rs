@@ -1,6 +1,7 @@
 use bc_components::SymmetricKey;
 
 use super::*;
+use crate::RouteId;
 
 #[tokio::test(flavor = "current_thread")]
 async fn heartbeat_ignored_without_session() {
@@ -32,8 +33,7 @@ async fn heartbeat_ignored_without_session() {
                 valid_until: now_secs().saturating_add(60),
             },
         );
-        let bytes = CBOR::from(heartbeat).to_cbor_data();
-        handle_a.send_incoming(bytes);
+        handle_a.send_incoming(CBOR::from(heartbeat).to_cbor_data());
 
         let result = tokio::time::timeout(Duration::from_millis(50), outbound_a.recv()).await;
         assert!(result.is_err(), "expected heartbeat to be ignored");
@@ -47,13 +47,8 @@ async fn keepalive_disabled_no_heartbeat() {
         let config = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = platform_a.xid();
-        let peer_b = platform_b.xid();
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -65,13 +60,11 @@ async fn keepalive_disabled_no_heartbeat() {
         spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        handle_a.connect(peer_b.xid).unwrap();
 
-        handle_a.connect(peer_b).unwrap();
-
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let result = tokio::time::timeout(Duration::from_millis(120), heartbeat_rx.recv()).await;
         assert!(result.is_err(), "unexpected heartbeat while disabled");
@@ -90,13 +83,8 @@ async fn heartbeat_sent_after_idle() {
         let config_b = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = platform_a.xid();
-        let peer_b = platform_b.xid();
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -108,13 +96,11 @@ async fn heartbeat_sent_after_idle() {
         spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        handle_a.connect(peer_b.xid).unwrap();
 
-        handle_a.connect(peer_b).unwrap();
-
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
             .await
@@ -135,13 +121,8 @@ async fn heartbeat_reply_when_connected() {
         let config_b = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = platform_a.xid();
-        let peer_b = platform_b.xid();
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -154,13 +135,11 @@ async fn heartbeat_reply_when_connected() {
         spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_ab_tx);
         spawn_heartbeat_tap_forwarder(outbound_b, handle_a.clone(), heartbeat_ba_tx);
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        handle_a.connect(peer_b.xid).unwrap();
 
-        handle_a.connect(peer_b).unwrap();
-
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         tokio::time::timeout(Duration::from_millis(200), heartbeat_ab_rx.recv())
             .await
@@ -175,7 +154,7 @@ async fn heartbeat_reply_when_connected() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn any_message_clears_pending() {
+async fn any_call_clears_pending() {
     run_local_test(async {
         let keep_alive = KeepAliveConfig {
             interval: Duration::from_millis(120),
@@ -183,15 +162,10 @@ async fn any_message_clears_pending() {
         };
         let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
         let config_b = RuntimeConfig::new(Duration::from_millis(200));
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_a, outbound_a, status_a, inbound_a) = InboundPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = platform_a.xid();
-        let peer_b = platform_b.xid();
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -203,26 +177,43 @@ async fn any_message_clears_pending() {
         spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
         spawn_drop_heartbeat_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        handle_a.connect(peer_b.xid).unwrap();
 
-        handle_a.connect(peer_b).unwrap();
-
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
             .await
             .unwrap()
             .unwrap();
 
-        handle_b.send_event_raw(peer_a, RouteId(99), CBOR::from(1u8));
+        let responder_task = tokio::task::spawn_local(async move {
+            let call = match inbound_a.recv().await.unwrap() {
+                HandlerEvent::Call(call) => call,
+            };
+            let response = call.respond_to.accept(Vec::new()).unwrap();
+            response.finish().await.unwrap();
+        });
+
+        let pending = handle_b
+            .open_call(
+                peer_a.xid,
+                RouteId(99),
+                Vec::new(),
+                true,
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        pending.request.finish().await.unwrap();
+        let _ = pending.accepted.recv().await.unwrap();
 
         let window = keep_alive.timeout + Duration::from_millis(20);
         let disconnect = tokio::time::timeout(window, async {
             loop {
                 if let Ok(event) = status_a.recv().await {
-                    if event.peer == peer_b && event.stage == PeerStage::Disconnected {
+                    if event.peer == peer_b.xid && event.stage == PeerStage::Disconnected {
                         return;
                     }
                 }
@@ -230,6 +221,8 @@ async fn any_message_clears_pending() {
         })
         .await;
         assert!(disconnect.is_err(), "unexpected disconnect");
+
+        let _ = responder_task.await;
     })
     .await;
 }
@@ -241,17 +234,14 @@ async fn heartbeat_timeout_disconnects_and_drops_outbound() {
             interval: Duration::from_millis(80),
             timeout: Duration::from_millis(60),
         };
-        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
+        let config_a = RuntimeConfig::new(Duration::from_millis(200))
+            .with_keep_alive(keep_alive)
+            .with_open_timeout(Duration::from_millis(300));
         let config_b = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(2);
-        let (platform_b, outbound_b, status_b) = TestPlatform::new(1);
-
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = platform_a.xid();
-        let peer_b = platform_b.xid();
+        let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(1);
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -263,34 +253,35 @@ async fn heartbeat_timeout_disconnects_and_drops_outbound() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_gated_forwarder(outbound_b, handle_a.clone(), drop_flag.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        handle_a.connect(peer_b.xid).unwrap();
 
-        handle_a.connect(peer_b).unwrap();
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        let responder_task = tokio::task::spawn_local(async move {
+            let call = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Call(call) => call,
+            };
+            let response = call.respond_to.accept(Vec::new()).unwrap();
+            response.finish().await.unwrap();
+        });
 
         drop_flag.store(true, Ordering::Relaxed);
 
-        let response = handle_a.send_request_raw(
-            peer_b,
-            RouteId(9),
-            CBOR::from(9u8),
-            RequestConfig {
-                timeout: Some(Duration::from_millis(200)),
-            },
-        );
-
-        await_status(&status_a, peer_b, PeerStage::Disconnected).await;
-
-        let result = tokio::time::timeout(Duration::from_millis(300), response.recv())
+        let pending = handle_a
+            .open_call(peer_b.xid, RouteId(9), Vec::new(), true, Default::default())
             .await
             .unwrap();
-        assert!(
-            matches!(result, Err(QlError::SendFailed)),
-            "unexpected result: {result:?}"
-        );
+
+        await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
+
+        let result = tokio::time::timeout(Duration::from_millis(300), pending.accepted.recv())
+            .await
+            .unwrap();
+        assert!(matches!(result, Err(QlError::SendFailed)));
+
+        responder_task.abort();
     })
     .await;
 }
@@ -306,13 +297,8 @@ async fn no_ping_pong() {
         let config_b = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = platform_a.xid();
-        let peer_b = platform_b.xid();
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(platform_b, config_b);
@@ -325,13 +311,11 @@ async fn no_ping_pong() {
         spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_ab_tx);
         spawn_heartbeat_tap_forwarder(outbound_b, handle_a.clone(), heartbeat_ba_tx);
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        handle_a.connect(peer_b.xid).unwrap();
 
-        handle_a.connect(peer_b).unwrap();
-
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         tokio::time::timeout(Duration::from_millis(300), heartbeat_ab_rx.recv())
             .await
@@ -355,13 +339,8 @@ async fn invalid_heartbeat_ignored() {
         let config = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-
-        let signing_a = platform_a.signing_public_key().clone();
-        let signing_b = platform_b.signing_public_key().clone();
-        let encap_a = platform_a.encapsulation_public_key().clone();
-        let encap_b = platform_b.encapsulation_public_key().clone();
-        let peer_a = platform_a.xid();
-        let peer_b = platform_b.xid();
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
@@ -373,18 +352,16 @@ async fn invalid_heartbeat_ignored() {
         spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
-        handle_b.register_peer(peer_a, signing_a.clone(), encap_a.clone());
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        handle_a.connect(peer_b.xid).unwrap();
 
-        handle_a.connect(peer_b).unwrap();
-
-        await_status(&status_a, peer_b, PeerStage::Connected).await;
-        await_status(&status_b, peer_a, PeerStage::Connected).await;
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let heartbeat = wire::heartbeat::encrypt_heartbeat(
             QlHeader {
-                sender: peer_b,
-                recipient: peer_a,
+                sender: peer_b.xid,
+                recipient: peer_a.xid,
             },
             &SymmetricKey::new(),
             HeartbeatBody {
@@ -392,8 +369,7 @@ async fn invalid_heartbeat_ignored() {
                 valid_until: now_secs().saturating_add(30),
             },
         );
-        let bytes = CBOR::from(heartbeat).to_cbor_data();
-        handle_a.send_incoming(bytes);
+        handle_a.send_incoming(CBOR::from(heartbeat).to_cbor_data());
 
         let result = tokio::time::timeout(Duration::from_millis(50), heartbeat_rx.recv()).await;
         assert!(result.is_err(), "unexpected heartbeat reply");
@@ -442,8 +418,8 @@ async fn multi_peer_keepalive_disconnect_isolated() {
         });
         spawn_routed_forwarder(outbound_c, vec![(peer_a.xid, handle_a.clone())]);
 
-        let _ = register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        let _ = register_peers(&handle_a, &handle_c, &peer_a, &peer_c);
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        register_peers(&handle_a, &handle_c, &peer_a, &peer_c);
 
         handle_a.connect(peer_b.xid).unwrap();
         handle_a.connect(peer_c.xid).unwrap();
@@ -480,7 +456,9 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
             interval: Duration::from_millis(40),
             timeout: Duration::from_millis(60),
         };
-        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
+        let config_a = RuntimeConfig::new(Duration::from_millis(200))
+            .with_keep_alive(keep_alive)
+            .with_open_timeout(Duration::from_millis(250));
         let config_b = RuntimeConfig::new(Duration::from_millis(200));
         let config_c = RuntimeConfig::new(Duration::from_millis(200));
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
@@ -514,8 +492,8 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
         });
         spawn_routed_forwarder(outbound_c, vec![(peer_a.xid, handle_a.clone())]);
 
-        let _ = register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        let _ = register_peers(&handle_a, &handle_c, &peer_a, &peer_c);
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        register_peers(&handle_a, &handle_c, &peer_a, &peer_c);
 
         handle_a.connect(peer_b.xid).unwrap();
         handle_a.connect(peer_c.xid).unwrap();
@@ -526,40 +504,47 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
         await_status(&status_c, peer_a.xid, PeerStage::Connected).await;
 
         let inbound_task = tokio::task::spawn_local(async move {
-            if let Ok(HandlerEvent::Request(request)) = inbound_c.recv().await {
-                let _ = request.respond_to.respond(55u8);
-            }
+            let call = match inbound_c.recv().await.unwrap() {
+                HandlerEvent::Call(call) => call,
+            };
+            let response = call.respond_to.accept(Vec::new()).unwrap();
+            response.finish().await.unwrap();
         });
 
         drop_b_to_a.store(true, Ordering::Relaxed);
 
-        let request_b = handle_a.send_request_raw(
-            peer_b.xid,
-            RouteId(10),
-            CBOR::from(10u8),
-            RequestConfig {
-                timeout: Some(Duration::from_millis(200)),
-            },
-        );
-        let request_c = handle_a.send_request_raw(
-            peer_c.xid,
-            RouteId(11),
-            CBOR::from(11u8),
-            RequestConfig {
-                timeout: Some(Duration::from_millis(200)),
-            },
-        );
-
-        let response_c = tokio::time::timeout(Duration::from_millis(200), request_c.recv())
+        let pending_b = handle_a
+            .open_call(
+                peer_b.xid,
+                RouteId(10),
+                Vec::new(),
+                true,
+                Default::default(),
+            )
             .await
-            .expect("response wait")
-            .expect("response channel");
-        let value: u8 = response_c.try_into().unwrap();
-        assert_eq!(value, 55u8);
+            .unwrap();
+        let pending_c = handle_a
+            .open_call(
+                peer_c.xid,
+                RouteId(11),
+                Vec::new(),
+                true,
+                Default::default(),
+            )
+            .await
+            .unwrap();
+
+        let accepted_c =
+            tokio::time::timeout(Duration::from_millis(200), pending_c.accepted.recv())
+                .await
+                .expect("response wait")
+                .expect("response channel");
+        pending_c.request.finish().await.unwrap();
+        drop(accepted_c);
 
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
 
-        let result_b = tokio::time::timeout(Duration::from_millis(200), request_b.recv())
+        let result_b = tokio::time::timeout(Duration::from_millis(200), pending_b.accepted.recv())
             .await
             .expect("response wait");
         assert!(matches!(result_b, Err(QlError::SendFailed)));
@@ -579,7 +564,7 @@ async fn multi_peer_activity_is_per_peer() {
         let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
         let config_b = RuntimeConfig::new(Duration::from_millis(200));
         let config_c = RuntimeConfig::new(Duration::from_millis(200));
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_a, outbound_a, status_a, inbound_a) = InboundPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let (platform_c, outbound_c, status_c) = TestPlatform::new(3);
         let peer_a = peer_identity(&platform_a);
@@ -605,8 +590,8 @@ async fn multi_peer_activity_is_per_peer() {
         spawn_drop_heartbeat_forwarder(outbound_b, handle_a.clone());
         spawn_gated_forwarder(outbound_c, handle_a.clone(), drop_all_c.clone());
 
-        let _ = register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        let _ = register_peers(&handle_a, &handle_c, &peer_a, &peer_c);
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        register_peers(&handle_a, &handle_c, &peer_a, &peer_c);
 
         handle_a.connect(peer_b.xid).unwrap();
         handle_a.connect(peer_c.xid).unwrap();
@@ -620,7 +605,26 @@ async fn multi_peer_activity_is_per_peer() {
 
         tokio::time::sleep(keep_alive.interval + Duration::from_millis(5)).await;
 
-        handle_b.send_event_raw(peer_a.xid, RouteId(99), CBOR::from(1u8));
+        let responder_task = tokio::task::spawn_local(async move {
+            let call = match inbound_a.recv().await.unwrap() {
+                HandlerEvent::Call(call) => call,
+            };
+            let response = call.respond_to.accept(Vec::new()).unwrap();
+            response.finish().await.unwrap();
+        });
+
+        let pending = handle_b
+            .open_call(
+                peer_a.xid,
+                RouteId(99),
+                Vec::new(),
+                true,
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        pending.request.finish().await.unwrap();
+        let _ = pending.accepted.recv().await.unwrap();
 
         await_status(&status_a, peer_c.xid, PeerStage::Disconnected).await;
 
@@ -636,6 +640,8 @@ async fn multi_peer_activity_is_per_peer() {
             })
             .await;
         assert!(disconnect.is_err(), "unexpected disconnect for peer B");
+
+        let _ = responder_task.await;
     })
     .await;
 }

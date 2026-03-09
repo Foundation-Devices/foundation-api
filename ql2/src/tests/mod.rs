@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     sync::{
-        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc,
     },
     time::Duration,
@@ -12,29 +12,25 @@ use bc_components::{
     MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, MLDSA, MLKEM, XID,
 };
 use dcbor::CBOR;
-use tokio::{sync::Semaphore, task::LocalSet};
+use tokio::task::LocalSet;
 
 use crate::{
     platform::{PlatformFuture, QlPlatform, QlPlatformExt},
     runtime::{
-        internal::now_secs, new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RequestConfig,
-        RuntimeConfig, RuntimeHandle,
+        internal::now_secs, new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RuntimeConfig,
+        RuntimeHandle,
     },
     wire::{
-        self,
-        handshake::HandshakeRecord,
-        heartbeat::HeartbeatBody,
-        message::{encrypt_message, MessageBody, MessageKind, Nack},
-        pair, QlHeader, QlPayload, QlRecord,
+        self, handshake::HandshakeRecord, heartbeat::HeartbeatBody, pair, QlHeader, QlPayload,
+        QlRecord,
     },
-    MessageId, QlError, RouteId,
+    MessageId, PacketId, Peer, QlError,
 };
 
+mod calls;
 mod handshake;
 mod heartbeat;
 mod persistence;
-mod requests;
-mod streams;
 mod unpair;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,11 +127,11 @@ impl QlPlatform for TestPlatform {
         Box::pin(tokio::time::sleep(duration))
     }
 
-    fn load_peers(&self) -> PlatformFuture<'_, Vec<crate::Peer>> {
+    fn load_peers(&self) -> PlatformFuture<'_, Vec<Peer>> {
         Box::pin(async { Vec::new() })
     }
 
-    fn persist_peers(&self, _peers: Vec<crate::Peer>) {}
+    fn persist_peers(&self, _peers: Vec<Peer>) {}
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
         let stage = match session {
@@ -147,19 +143,7 @@ impl QlPlatform for TestPlatform {
         let _ = self.status.try_send(StatusEvent { peer, stage });
     }
 
-    fn handle_inbound(&self, _event: crate::runtime::HandlerEvent) {}
-}
-
-struct BlockingPlatform {
-    signing_private: MLDSAPrivateKey,
-    signing_public: MLDSAPublicKey,
-    encapsulation_private: MLKEMPrivateKey,
-    encapsulation_public: MLKEMPublicKey,
-    outbound: Sender<Vec<u8>>,
-    status: Sender<StatusEvent>,
-    nonce_seed: u8,
-    nonce_counter: AtomicU8,
-    write_gate: Arc<Semaphore>,
+    fn handle_inbound(&self, _event: HandlerEvent) {}
 }
 
 struct InboundPlatform {
@@ -245,11 +229,11 @@ impl QlPlatform for InboundPlatform {
         Box::pin(tokio::time::sleep(duration))
     }
 
-    fn load_peers(&self) -> PlatformFuture<'_, Vec<crate::Peer>> {
+    fn load_peers(&self) -> PlatformFuture<'_, Vec<Peer>> {
         Box::pin(async { Vec::new() })
     }
 
-    fn persist_peers(&self, _peers: Vec<crate::Peer>) {}
+    fn persist_peers(&self, _peers: Vec<Peer>) {}
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
         let stage = match session {
@@ -264,98 +248,6 @@ impl QlPlatform for InboundPlatform {
     fn handle_inbound(&self, event: HandlerEvent) {
         let _ = self.inbound.try_send(event);
     }
-}
-
-impl BlockingPlatform {
-    fn new(
-        seed: u8,
-    ) -> (
-        Self,
-        Receiver<Vec<u8>>,
-        Receiver<StatusEvent>,
-        Arc<Semaphore>,
-    ) {
-        let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
-        let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
-        let (outbound, outbound_rx) = async_channel::unbounded();
-        let (status, status_rx) = async_channel::unbounded();
-        let write_gate = Arc::new(Semaphore::new(0));
-        (
-            Self {
-                signing_private,
-                signing_public,
-                encapsulation_private,
-                encapsulation_public,
-                outbound,
-                status,
-                nonce_seed: seed,
-                nonce_counter: AtomicU8::new(0),
-                write_gate: write_gate.clone(),
-            },
-            outbound_rx,
-            status_rx,
-            write_gate,
-        )
-    }
-}
-
-impl QlPlatform for BlockingPlatform {
-    fn signing_private_key(&self) -> &MLDSAPrivateKey {
-        &self.signing_private
-    }
-
-    fn signing_public_key(&self) -> &MLDSAPublicKey {
-        &self.signing_public
-    }
-
-    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey {
-        &self.encapsulation_private
-    }
-
-    fn encapsulation_public_key(&self) -> &MLKEMPublicKey {
-        &self.encapsulation_public
-    }
-
-    fn fill_random_bytes(&self, data: &mut [u8]) {
-        let value = self
-            .nonce_seed
-            .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
-        data.fill(value);
-    }
-
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
-        let outbound = self.outbound.clone();
-        let write_gate = self.write_gate.clone();
-        Box::pin(async move {
-            let _permit = write_gate.acquire().await.unwrap();
-            outbound
-                .send(message)
-                .await
-                .map_err(|_| QlError::InvalidPayload)
-        })
-    }
-
-    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
-        Box::pin(tokio::time::sleep(duration))
-    }
-
-    fn load_peers(&self) -> PlatformFuture<'_, Vec<crate::Peer>> {
-        Box::pin(async { Vec::new() })
-    }
-
-    fn persist_peers(&self, _peers: Vec<crate::Peer>) {}
-
-    fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
-        let stage = match session {
-            PeerSession::Disconnected => PeerStage::Disconnected,
-            PeerSession::Initiator { .. } => PeerStage::Initiator,
-            PeerSession::Responder { .. } => PeerStage::Responder,
-            PeerSession::Connected { .. } => PeerStage::Connected,
-        };
-        let _ = self.status.try_send(StatusEvent { peer, stage });
-    }
-
-    fn handle_inbound(&self, _event: crate::runtime::HandlerEvent) {}
 }
 
 async fn run_local_test<F>(future: F)
@@ -374,6 +266,13 @@ fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
     });
 }
 
+fn is_call(bytes: &[u8]) -> bool {
+    let Ok(record) = CBOR::try_from_data(bytes).and_then(QlRecord::try_from) else {
+        return false;
+    };
+    matches!(record.payload, QlPayload::Call(_))
+}
+
 fn is_heartbeat(bytes: &[u8]) -> bool {
     let Ok(record) = CBOR::try_from_data(bytes).and_then(QlRecord::try_from) else {
         return false;
@@ -381,11 +280,47 @@ fn is_heartbeat(bytes: &[u8]) -> bool {
     matches!(record.payload, QlPayload::Heartbeat(_))
 }
 
-fn is_transfer(bytes: &[u8]) -> bool {
-    let Ok(record) = CBOR::try_from_data(bytes).and_then(QlRecord::try_from) else {
-        return false;
-    };
-    matches!(record.payload, QlPayload::Transfer(_))
+fn spawn_drop_first_call_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+    tokio::task::spawn_local(async move {
+        let mut dropped = false;
+        while let Ok(bytes) = outbound.recv().await {
+            if !dropped && is_call(&bytes) {
+                dropped = true;
+                continue;
+            }
+            handle.send_incoming(bytes);
+        }
+    });
+}
+
+fn spawn_drop_first_call_when(
+    outbound: Receiver<Vec<u8>>,
+    handle: RuntimeHandle,
+    armed: Arc<AtomicBool>,
+) {
+    tokio::task::spawn_local(async move {
+        let mut dropped = false;
+        while let Ok(bytes) = outbound.recv().await {
+            if armed.load(Ordering::Relaxed) && !dropped && is_call(&bytes) {
+                dropped = true;
+                continue;
+            }
+            handle.send_incoming(bytes);
+        }
+    });
+}
+
+fn spawn_duplicate_first_call_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+    tokio::task::spawn_local(async move {
+        let mut duplicated = false;
+        while let Ok(bytes) = outbound.recv().await {
+            if !duplicated && is_call(&bytes) {
+                duplicated = true;
+                handle.send_incoming(bytes.clone());
+            }
+            handle.send_incoming(bytes);
+        }
+    });
 }
 
 fn spawn_heartbeat_tap_forwarder(
@@ -408,32 +343,6 @@ fn spawn_drop_heartbeat_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHa
         while let Ok(bytes) = outbound.recv().await {
             if is_heartbeat(&bytes) {
                 continue;
-            }
-            handle.send_incoming(bytes);
-        }
-    });
-}
-
-fn spawn_drop_first_transfer_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
-    tokio::task::spawn_local(async move {
-        let mut dropped = false;
-        while let Ok(bytes) = outbound.recv().await {
-            if !dropped && is_transfer(&bytes) {
-                dropped = true;
-                continue;
-            }
-            handle.send_incoming(bytes);
-        }
-    });
-}
-
-fn spawn_duplicate_first_transfer_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
-    tokio::task::spawn_local(async move {
-        let mut duplicated = false;
-        while let Ok(bytes) = outbound.recv().await {
-            if !duplicated && is_transfer(&bytes) {
-                duplicated = true;
-                handle.send_incoming(bytes.clone());
             }
             handle.send_incoming(bytes);
         }
@@ -504,20 +413,121 @@ fn register_peers(
     handle_b: &RuntimeHandle,
     identity_a: &PeerIdentity,
     identity_b: &PeerIdentity,
-) -> (XID, XID) {
-    let peer_a = identity_a.xid;
-    let peer_b = identity_b.xid;
+) {
     handle_a.register_peer(
-        peer_b,
+        identity_b.xid,
         identity_b.signing_key.clone(),
         identity_b.encapsulation_key.clone(),
     );
     handle_b.register_peer(
-        peer_a,
+        identity_a.xid,
         identity_a.signing_key.clone(),
         identity_a.encapsulation_key.clone(),
     );
-    (peer_a, peer_b)
+}
+
+type PersistPlatformParts = (
+    PersistPlatform,
+    Receiver<Vec<u8>>,
+    Receiver<StatusEvent>,
+    Receiver<Vec<crate::Peer>>,
+);
+
+struct PersistPlatform {
+    signing_private: MLDSAPrivateKey,
+    signing_public: MLDSAPublicKey,
+    encapsulation_private: MLKEMPrivateKey,
+    encapsulation_public: MLKEMPublicKey,
+    outbound: Sender<Vec<u8>>,
+    status: Sender<StatusEvent>,
+    persisted: Sender<Vec<crate::Peer>>,
+    loaded_peers: Vec<crate::Peer>,
+    nonce_seed: u8,
+    nonce_counter: AtomicU8,
+}
+
+impl PersistPlatform {
+    fn new(seed: u8, loaded_peers: Vec<crate::Peer>) -> PersistPlatformParts {
+        let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
+        let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
+        let (outbound, outbound_rx) = async_channel::unbounded();
+        let (status, status_rx) = async_channel::unbounded();
+        let (persisted, persisted_rx) = async_channel::unbounded();
+        (
+            Self {
+                signing_private,
+                signing_public,
+                encapsulation_private,
+                encapsulation_public,
+                outbound,
+                status,
+                persisted,
+                loaded_peers,
+                nonce_seed: seed,
+                nonce_counter: AtomicU8::new(0),
+            },
+            outbound_rx,
+            status_rx,
+            persisted_rx,
+        )
+    }
+}
+
+impl QlPlatform for PersistPlatform {
+    fn signing_private_key(&self) -> &MLDSAPrivateKey {
+        &self.signing_private
+    }
+    fn signing_public_key(&self) -> &MLDSAPublicKey {
+        &self.signing_public
+    }
+    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey {
+        &self.encapsulation_private
+    }
+    fn encapsulation_public_key(&self) -> &MLKEMPublicKey {
+        &self.encapsulation_public
+    }
+
+    fn fill_random_bytes(&self, data: &mut [u8]) {
+        let value = self
+            .nonce_seed
+            .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
+        data.fill(value);
+    }
+
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
+        let outbound = self.outbound.clone();
+        Box::pin(async move {
+            outbound
+                .send(message)
+                .await
+                .map_err(|_| QlError::InvalidPayload)
+        })
+    }
+
+    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
+        Box::pin(tokio::time::sleep(duration))
+    }
+
+    fn load_peers(&self) -> PlatformFuture<'_, Vec<crate::Peer>> {
+        let peers = self.loaded_peers.clone();
+        Box::pin(async move { peers })
+    }
+
+    fn persist_peers(&self, peers: Vec<crate::Peer>) {
+        let _ = self.persisted.try_send(peers);
+    }
+
+    fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
+        let stage = match session {
+            PeerSession::Disconnected => PeerStage::Disconnected,
+            PeerSession::Initiator { .. } => PeerStage::Initiator,
+            PeerSession::Responder { .. } => PeerStage::Responder,
+            PeerSession::Connected { .. } => PeerStage::Connected,
+        };
+        let _ = self.status.try_send(StatusEvent { peer, stage });
+    }
+
+    fn handle_inbound(&self, _event: HandlerEvent) {}
 }
 
 async fn await_status(
@@ -608,53 +618,34 @@ fn protocol_record_size_breakdown() {
     };
     let confirm_size = CBOR::from(confirm_record).to_cbor_data().len();
 
-    let pair_record = pair::build_pair_request(
-        &platform_a,
-        responder,
-        platform_b.encapsulation_public_key(),
-        MessageId(1),
-        Duration::from_secs(60),
-    )
-    .unwrap();
-    let pair_size = CBOR::from(pair_record).to_cbor_data().len();
-
-    let message_record = encrypt_message(
+    let call_record = wire::call::encrypt_call(
         QlHeader {
             sender: initiator,
             recipient: responder,
         },
         &session_key,
-        MessageBody {
-            message_id: MessageId(2),
-            valid_until: now_secs().saturating_add(60),
-            kind: MessageKind::Event,
-            route_id: RouteId(1),
-            payload: CBOR::null(),
+        wire::call::CallBody {
+            packet_id: PacketId(1),
+            valid_until: wire::now_secs().saturating_add(60),
+            packet_ack: None,
+            frame: Some(wire::call::CallFrame::Open {
+                call_id: crate::CallId(2),
+                route_id: crate::RouteId(9),
+                flags: wire::call::OpenFlags::new(true, false),
+                request_head: vec![1, 2, 3],
+                response_max_offset: 1024,
+            }),
         },
     );
-    let message_size = CBOR::from(message_record).to_cbor_data().len();
-
-    let heartbeat_record = wire::heartbeat::encrypt_heartbeat(
-        QlHeader {
-            sender: initiator,
-            recipient: responder,
-        },
-        &session_key,
-        HeartbeatBody {
-            message_id: MessageId(3),
-            valid_until: now_secs().saturating_add(60),
-        },
-    );
-    let heartbeat_size = CBOR::from(heartbeat_record).to_cbor_data().len();
+    let call_size = CBOR::from(call_record).to_cbor_data().len();
 
     let print_size = |label: &str, size: usize| {
         println!("{label:<21}: {size} bytes");
     };
 
-    print_size("ql size hello", hello_size);
-    print_size("ql size hello_reply", reply_size);
-    print_size("ql size confirm", confirm_size);
-    print_size("ql size pair_request", pair_size);
-    print_size("ql size message", message_size);
-    print_size("ql size heartbeat", heartbeat_size);
+    print_size("ql2 size hello", hello_size);
+    print_size("ql2 size hello_reply", reply_size);
+    print_size("ql2 size confirm", confirm_size);
+    print_size("ql2 size call open", call_size);
+    let _ = MessageId(0);
 }

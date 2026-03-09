@@ -9,30 +9,31 @@ use futures_lite::future::poll_fn;
 use crate::{
     platform::{QlPlatform, QlPlatformExt},
     runtime::{
+        handle::{CallResponder, InboundByteStream, InboundCall},
         internal::{
-            next_timeout_deadline, now_secs, peer_hello_wins, HelloAction, InFlightWrite,
-            InboundStreamDelivery, InboundStreamItem, InboundTransferOpen, InboundTransferState,
-            KeepAliveState, LoopStep, OutboundAwaiting, OutboundMessage, OutboundPayload,
-            OutboundStreamInput, OutboundTransferStage, OutboundTransferState, PendingEntry,
-            PendingStreamEntry, RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
+            next_timeout_deadline, now_secs, peer_hello_wins, response_delivery, AwaitingPacket,
+            CallPhase, CallRole, CallState, HelloAction, InFlightWrite, InboundStreamItem,
+            InboundTerminal, InitiatorStage, KeepAliveState, LoopStep, OutboundCallStreamState,
+            OutboundMessage, OutboundPayload, PendingChunk, RuntimeCommand, RuntimeState,
+            TimeoutEntry, TimeoutKind,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
-        HandlerEvent, InboundByteStream, InboundEvent, InboundRequest, InboundUploadRequest,
-        InitiatorStage, KeepAliveConfig, PeerSession, Responder, Runtime, Token,
+        HandlerEvent, KeepAliveConfig, Runtime,
     },
     wire::{
+        call::{
+            self, AcceptStatus, CallBody, CallFrame, Direction, OpenFlags, RejectCode, ResetCode,
+        },
         handshake::{self, HandshakeRecord},
         heartbeat::{self, HeartbeatBody},
-        message::{self, MessageBody, MessageKind, Nack},
         pair::{self, PairRequestRecord},
-        transfer::{self, TransferBody, TransferFrame},
         unpair::{self, UnpairRecord},
         QlHeader, QlPayload, QlRecord,
     },
-    MessageId, QlError, RouteId,
+    CallId, MessageId, PacketId, QlError, RouteId,
 };
 
-const TRANSFER_RETRY_LIMIT: u8 = 5;
+const CALL_RETRY_LIMIT: u8 = 5;
 
 impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
@@ -42,14 +43,14 @@ impl<P: QlPlatform> Runtime<P> {
                 .peers
                 .upsert_peer(peer.peer, peer.signing_key, peer.encapsulation_key);
         }
+
         let mut in_flight: Option<InFlightWrite<'_>> = None;
         while !self.rx.is_closed() {
-            self.drive_outbound_transfers(&mut state);
+            self.drive_calls(&mut state);
             if in_flight.is_none() {
                 in_flight = self.start_next_write(&mut state);
             }
-            let step = self.next_step(&state, in_flight.as_mut()).await;
-            match step {
+            match self.next_step(&state, in_flight.as_mut()).await {
                 LoopStep::Event(command) => match command {
                     RuntimeCommand::RegisterPeer {
                         peer,
@@ -62,86 +63,79 @@ impl<P: QlPlatform> Runtime<P> {
                         self.handle_connect(&mut state, peer);
                     }
                     RuntimeCommand::Unpair { peer } => {
-                        self.handle_send_unpair(&mut state, peer);
+                        self.handle_unpair_local(&mut state, peer);
                     }
-                    RuntimeCommand::SendRequest {
+                    RuntimeCommand::OpenCall {
                         recipient,
                         route_id,
-                        payload,
-                        respond_to,
-                        config,
-                    } => {
-                        self.handle_send_request(
-                            &mut state, recipient, route_id, payload, respond_to, config,
-                        );
-                    }
-                    RuntimeCommand::SendStreamRequest {
-                        recipient,
-                        route_id,
-                        payload,
-                        respond_to,
-                        config,
-                    } => {
-                        self.handle_send_stream_request(
-                            &mut state, recipient, route_id, payload, respond_to, config,
-                        );
-                    }
-                    RuntimeCommand::SendUploadRequest {
-                        recipient,
-                        route_id,
-                        payload,
-                        respond_to,
-                        chunk_rx,
+                        request_head,
+                        response_expected,
+                        request_rx,
+                        accepted,
                         start,
                         config,
                     } => {
-                        self.handle_send_upload_request(
-                            &mut state, recipient, route_id, payload, respond_to, chunk_rx, start,
+                        self.handle_open_call(
+                            &mut state,
+                            recipient,
+                            route_id,
+                            request_head,
+                            response_expected,
+                            request_rx,
+                            accepted,
+                            start,
                             config,
                         );
                     }
-                    RuntimeCommand::SendEvent {
+                    RuntimeCommand::AcceptCall {
                         recipient,
-                        route_id,
-                        payload,
+                        call_id,
+                        response_head,
+                        response_rx,
                     } => {
-                        self.handle_send_event(&mut state, recipient, route_id, payload);
-                    }
-                    RuntimeCommand::SendResponse {
-                        id,
-                        recipient,
-                        payload,
-                        kind,
-                    } => {
-                        self.handle_send_response(&mut state, id, recipient, payload, kind);
-                    }
-                    RuntimeCommand::StartResponseStream {
-                        request_id,
-                        recipient,
-                        meta,
-                        chunk_rx,
-                    } => {
-                        self.handle_start_response_stream(
-                            &mut state, request_id, recipient, meta, chunk_rx,
+                        self.handle_accept_call(
+                            &mut state,
+                            recipient,
+                            call_id,
+                            response_head,
+                            response_rx,
                         );
                     }
-                    RuntimeCommand::PollOutboundTransfer {
+                    RuntimeCommand::RejectCall {
                         recipient,
-                        transfer_id,
+                        call_id,
+                        code,
                     } => {
-                        self.drive_outbound_transfer(&mut state, recipient, transfer_id);
+                        self.handle_reject_call(&mut state, recipient, call_id, code);
                     }
-                    RuntimeCommand::CancelOutboundTransfer {
-                        recipient,
-                        transfer_id,
-                    } => {
-                        self.handle_cancel_outbound_transfer(&mut state, recipient, transfer_id);
+                    RuntimeCommand::PollCall { peer, call_id } => {
+                        self.drive_call(&mut state, peer, call_id);
                     }
-                    RuntimeCommand::CancelInboundTransfer {
+                    RuntimeCommand::AdvanceInboundCredit {
                         sender,
-                        transfer_id,
+                        call_id,
+                        dir,
+                        amount,
                     } => {
-                        self.handle_cancel_inbound_transfer(&mut state, sender, transfer_id);
+                        self.handle_advance_inbound_credit(
+                            &mut state, sender, call_id, dir, amount,
+                        );
+                    }
+                    RuntimeCommand::ResetOutbound {
+                        recipient,
+                        call_id,
+                        dir,
+                        code,
+                    } => {
+                        self.handle_reset_outbound(&mut state, recipient, call_id, dir, code);
+                    }
+                    RuntimeCommand::ResetInbound {
+                        sender,
+                        call_id,
+                        dir,
+                        code,
+                    } => {
+                        self.handle_reset_inbound(&mut state, sender, call_id, dir, code);
                     }
                     RuntimeCommand::Incoming(bytes) => {
                         self.handle_incoming(&mut state, bytes);
@@ -153,11 +147,15 @@ impl<P: QlPlatform> Runtime<P> {
                 LoopStep::WriteDone {
                     peer,
                     token,
-                    message_id,
+                    call_id,
+                    packet_id,
+                    track_ack,
                     result,
                 } => {
                     in_flight = None;
-                    self.handle_write_done(&mut state, peer, token, message_id, result);
+                    self.handle_write_done(
+                        &mut state, peer, token, call_id, packet_id, track_ack, result,
+                    );
                 }
                 LoopStep::Quit => break,
             }
@@ -168,23 +166,18 @@ impl<P: QlPlatform> Runtime<P> {
         while let Some(message) = state.outbound.pop_front() {
             let bytes = match message.payload {
                 OutboundPayload::PreEncoded(bytes) => bytes,
-                OutboundPayload::DeferredMessage(body) => {
+                OutboundPayload::DeferredCall(body) => {
                     let Some(session_key) = state
                         .peers
                         .peer(message.peer)
                         .and_then(|entry| entry.session.session_key())
                     else {
-                        if let Some(id) = message.message_id {
-                            if let Some(entry) = state.pending.remove(&id) {
-                                let _ = entry.tx.send(Err(QlError::SendFailed));
-                            }
-                            if let Some(entry) = state.pending_stream.remove(&id) {
-                                let _ = entry.tx.send(Err(QlError::SendFailed));
-                            }
+                        if let Some(call_id) = message.call_id {
+                            self.fail_call(state, message.peer, call_id, QlError::SendFailed);
                         }
                         continue;
                     };
-                    let message = message::encrypt_message(
+                    let record = call::encrypt_call(
                         QlHeader {
                             sender: self.platform.xid(),
                             recipient: message.peer,
@@ -192,13 +185,15 @@ impl<P: QlPlatform> Runtime<P> {
                         session_key,
                         body,
                     );
-                    CBOR::from(message).to_cbor_data()
+                    CBOR::from(record).to_cbor_data()
                 }
             };
             return Some(InFlightWrite {
                 peer: message.peer,
                 token: message.token,
-                message_id: message.message_id,
+                call_id: message.call_id,
+                packet_id: message.packet_id,
+                track_ack: message.track_ack,
                 future: self.platform.write_message(bytes),
             });
         }
@@ -224,7 +219,9 @@ impl<P: QlPlatform> Runtime<P> {
                     return Poll::Ready(LoopStep::WriteDone {
                         peer: in_flight.peer,
                         token: in_flight.token,
-                        message_id: in_flight.message_id,
+                        call_id: in_flight.call_id,
+                        packet_id: in_flight.packet_id,
+                        track_ack: in_flight.track_ack,
                         result,
                     });
                 }
@@ -244,15 +241,31 @@ impl<P: QlPlatform> Runtime<P> {
         .await
     }
 
+    fn handle_register_peer(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        signing_key: MLDSAPublicKey,
+        encapsulation_key: MLKEMPublicKey,
+    ) {
+        {
+            let entry = state
+                .peers
+                .upsert_peer(peer, signing_key, encapsulation_key);
+            if let crate::runtime::PeerSession::Disconnected = entry.session {
+                self.platform.handle_peer_status(peer, &entry.session);
+            }
+        }
+        self.persist_peers(state);
+    }
+
     fn handle_connect(&self, state: &mut RuntimeState, peer: XID) {
         let encapsulation_key = match state.peers.peer(peer) {
             Some(entry) => match &entry.session {
-                PeerSession::Connected { .. }
-                | PeerSession::Initiator { .. }
-                | PeerSession::Responder { .. } => {
-                    return;
-                }
-                PeerSession::Disconnected => entry.encapsulation_key.clone(),
+                crate::runtime::PeerSession::Connected { .. }
+                | crate::runtime::PeerSession::Initiator { .. }
+                | crate::runtime::PeerSession::Responder { .. } => return,
+                crate::runtime::PeerSession::Disconnected => entry.encapsulation_key.clone(),
             },
             None => return,
         };
@@ -270,7 +283,7 @@ impl<P: QlPlatform> Runtime<P> {
         let deadline = Instant::now() + self.config.handshake_timeout;
         let token = state.next_token();
         if let Some(entry) = state.peers.peer_mut(peer) {
-            entry.session = PeerSession::Initiator {
+            entry.session = crate::runtime::PeerSession::Initiator {
                 handshake_token: token,
                 hello: hello.clone(),
                 session_key,
@@ -280,161 +293,57 @@ impl<P: QlPlatform> Runtime<P> {
             self.platform.handle_peer_status(peer, &entry.session);
         }
 
-        let message = QlRecord {
+        let record = QlRecord {
             header: QlHeader {
                 sender: self.platform.xid(),
                 recipient: peer,
             },
             payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
         };
-        let bytes = CBOR::from(message).to_cbor_data();
-        self.enqueue_handshake_message(state, peer, token, deadline, bytes);
-    }
-
-    fn handle_register_peer(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        signing_key: MLDSAPublicKey,
-        encapsulation_key: MLKEMPublicKey,
-    ) {
-        {
-            let entry = state
-                .peers
-                .upsert_peer(peer, signing_key, encapsulation_key);
-            if let PeerSession::Disconnected = entry.session {
-                self.platform.handle_peer_status(peer, &entry.session);
-            }
-        }
-        self.persist_peers(state);
-    }
-
-    fn handle_send_request(
-        &self,
-        state: &mut RuntimeState,
-        recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
-        respond_to: oneshot::Sender<Result<CBOR, QlError>>,
-        config: super::RequestConfig,
-    ) {
-        let id = state.next_message_id();
-        let timeout = config
-            .timeout
-            .unwrap_or(self.config.default_request_timeout);
-        if timeout.is_zero() {
-            let _ = respond_to.send(Err(QlError::Timeout));
-            return;
-        }
-        let Some(entry) = state.peers.peer(recipient) else {
-            let _ = respond_to.send(Err(QlError::UnknownPeer(recipient)));
-            return;
-        };
-        if !entry.session.is_connected() {
-            let _ = respond_to.send(Err(QlError::MissingSession(recipient)));
-            return;
-        }
-        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
-        let body = MessageBody {
-            message_id: id,
-            valid_until,
-            kind: MessageKind::Request,
-            route_id,
-            payload,
-        };
-        state.pending.insert(
-            id,
-            PendingEntry {
-                recipient,
-                tx: respond_to,
-            },
-        );
-        state.timeouts.push(Reverse(TimeoutEntry {
-            at: Instant::now() + timeout,
-            kind: TimeoutKind::Request { id },
-        }));
-        let outbound_deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(
+        self.enqueue_handshake_message(
             state,
-            recipient,
-            OutboundPayload::DeferredMessage(body),
-            outbound_deadline,
-            Some(id),
+            peer,
+            token,
+            deadline,
+            CBOR::from(record).to_cbor_data(),
         );
     }
 
-    fn handle_send_stream_request(
-        &self,
-        state: &mut RuntimeState,
-        recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
-        respond_to: oneshot::Sender<Result<InboundStreamDelivery, QlError>>,
-        config: super::RequestConfig,
-    ) {
-        let id = state.next_message_id();
-        let timeout = config
-            .timeout
-            .unwrap_or(self.config.default_request_timeout);
-        if timeout.is_zero() {
-            let _ = respond_to.send(Err(QlError::Timeout));
+    fn handle_unpair_local(&self, state: &mut RuntimeState, peer: XID) {
+        if state.peers.peer(peer).is_none() {
             return;
         }
-        let Some(entry) = state.peers.peer(recipient) else {
-            let _ = respond_to.send(Err(QlError::UnknownPeer(recipient)));
-            return;
-        };
-        if !entry.session.is_connected() {
-            let _ = respond_to.send(Err(QlError::MissingSession(recipient)));
-            return;
-        }
-        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
-        let body = MessageBody {
-            message_id: id,
-            valid_until,
-            kind: MessageKind::Request,
-            route_id,
-            payload,
-        };
-        state.pending_stream.insert(
-            id,
-            PendingStreamEntry {
-                recipient,
-                tx: respond_to,
+        let record = unpair::build_unpair_record(
+            &self.platform,
+            QlHeader {
+                sender: self.platform.xid(),
+                recipient: peer,
             },
+            crate::MessageId(state.next_packet_id().0),
+            now_secs().saturating_add(self.config.packet_expiration.as_secs()),
         );
-        state.timeouts.push(Reverse(TimeoutEntry {
-            at: Instant::now() + timeout,
-            kind: TimeoutKind::Request { id },
-        }));
-        let outbound_deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(
+        self.unpair_peer(state, peer);
+        self.enqueue_handshake_message(
             state,
-            recipient,
-            OutboundPayload::DeferredMessage(body),
-            outbound_deadline,
-            Some(id),
+            peer,
+            state.next_token(),
+            Instant::now() + self.config.packet_expiration,
+            CBOR::from(record).to_cbor_data(),
         );
     }
 
-    fn handle_send_upload_request(
+    fn handle_open_call(
         &self,
         state: &mut RuntimeState,
         recipient: XID,
         route_id: RouteId,
-        payload: CBOR,
-        respond_to: oneshot::Sender<Result<CBOR, QlError>>,
-        chunk_rx: async_channel::Receiver<OutboundStreamInput>,
-        start: oneshot::Sender<Result<MessageId, QlError>>,
-        config: super::RequestConfig,
+        request_head: Vec<u8>,
+        response_expected: bool,
+        request_rx: async_channel::Receiver<crate::runtime::internal::OutboundStreamInput>,
+        accepted: oneshot::Sender<Result<crate::runtime::AcceptedCallDelivery, QlError>>,
+        start: oneshot::Sender<Result<CallId, QlError>>,
+        config: crate::runtime::CallConfig,
     ) {
-        let timeout = config
-            .timeout
-            .unwrap_or(self.config.default_request_timeout);
-        if timeout.is_zero() {
-            let _ = start.send(Err(QlError::Timeout));
-            return;
-        }
         let Some(entry) = state.peers.peer(recipient) else {
             let _ = start.send(Err(QlError::UnknownPeer(recipient)));
             return;
@@ -444,208 +353,238 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
 
-        let request_id = state.next_message_id();
-        state.pending.insert(
-            request_id,
-            PendingEntry {
-                recipient,
-                tx: respond_to,
-            },
-        );
+        let timeout = config
+            .open_timeout
+            .unwrap_or(self.config.default_open_timeout);
+        if timeout.is_zero() {
+            let _ = start.send(Err(QlError::Timeout));
+            return;
+        }
+
+        let call_id = state.next_call_id();
+        let (response_tx, response_rx) = async_channel::bounded(1);
+        let open_flags = OpenFlags::new(response_expected, false);
+        let token = state.next_token();
+        let mut outbound = OutboundCallStreamState::new(Direction::Request, request_rx, 0);
+        outbound.queue.push_back(CallFrame::Open {
+            call_id,
+            route_id,
+            flags: open_flags,
+            request_head: request_head.clone(),
+            response_max_offset: self.config.initial_credit,
+        });
+        let call = CallState {
+            peer: recipient,
+            call_id,
+            route_id,
+            role: CallRole::Initiator,
+            phase: CallPhase::InitiatorOpening,
+            open_flags,
+            request_head,
+            response_head: None,
+            response_rx: Some(response_rx),
+            accept_tx: Some(accepted),
+            open_timeout_token: token,
+            initial_remote_credit: 0,
+            outbound: Some(outbound),
+            inbound: crate::runtime::internal::InboundCallStreamState::new(
+                Direction::Response,
+                response_tx,
+                self.config.initial_credit,
+            ),
+            accept_frame: None,
+            last_activity: Instant::now(),
+        };
+        state.calls.insert((recipient, call_id), call);
         state.timeouts.push(Reverse(TimeoutEntry {
             at: Instant::now() + timeout,
-            kind: TimeoutKind::Request { id: request_id },
+            kind: TimeoutKind::CallOpen {
+                peer: recipient,
+                call_id,
+                token,
+            },
         }));
-
-        let transfer_id = request_id;
-        let key = (recipient, transfer_id);
-        if state.outbound_transfers.contains_key(&key) {
-            let _ = state.pending.remove(&request_id);
-            let _ = start.send(Err(QlError::SendFailed));
-            return;
-        }
-
-        state.outbound_transfers.insert(
-            key,
-            OutboundTransferState {
-                request_id,
-                peer: recipient,
-                transfer_id,
-                stage: OutboundTransferStage::Opening,
-                next_seq: 1,
-                open_route_id: Some(route_id),
-                open_meta: Some(payload),
-                chunk_rx,
-                awaiting: None,
-            },
-        );
-
-        let _ = start.send(Ok(request_id));
+        let _ = start.send(Ok(call_id));
+        self.drive_call(state, recipient, call_id);
     }
 
-    fn handle_send_event(
+    fn handle_accept_call(
         &self,
         state: &mut RuntimeState,
         recipient: XID,
-        route_id: RouteId,
-        payload: CBOR,
+        call_id: CallId,
+        response_head: Vec<u8>,
+        response_rx: async_channel::Receiver<crate::runtime::internal::OutboundStreamInput>,
     ) {
-        let id = state.next_message_id();
-        let Some(entry) = state.peers.peer(recipient) else {
+        let key = (recipient, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
             return;
         };
-        if !entry.session.is_connected() {
+        if call.role != CallRole::Responder || call.phase != CallPhase::ResponderPending {
+            state.calls.insert(key, call);
             return;
         }
-        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
-        let body = MessageBody {
-            message_id: id,
-            valid_until,
-            kind: MessageKind::Event,
-            route_id,
-            payload,
-        };
-        let outbound_deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(
-            state,
-            recipient,
-            OutboundPayload::DeferredMessage(body),
-            outbound_deadline,
-            None,
+
+        let mut outbound = OutboundCallStreamState::new(
+            Direction::Response,
+            response_rx,
+            call.initial_remote_credit,
         );
+        let frame = CallFrame::Accept {
+            call_id,
+            status: AcceptStatus::Accepted,
+            response_head: response_head.clone(),
+            request_max_offset: self.config.initial_credit,
+        };
+        outbound.queue.push_back(frame.clone());
+        call.phase = CallPhase::ResponderAccepting;
+        call.response_head = Some(response_head);
+        call.accept_frame = Some(frame);
+        call.inbound.max_offset = self.config.initial_credit;
+        call.outbound = Some(outbound);
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+        self.drive_call(state, recipient, call_id);
     }
 
-    fn handle_send_response(
-        &self,
-        state: &mut RuntimeState,
-        id: MessageId,
-        recipient: XID,
-        payload: CBOR,
-        kind: MessageKind,
-    ) {
-        let kind = match kind {
-            MessageKind::Response | MessageKind::Nack => kind,
-            _ => return,
-        };
-        let Some(entry) = state.peers.peer(recipient) else {
-            return;
-        };
-        if !entry.session.is_connected() {
-            return;
-        }
-
-        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
-        let body = MessageBody {
-            message_id: id,
-            valid_until,
-            kind,
-            route_id: RouteId(0),
-            payload,
-        };
-        let outbound_deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(
-            state,
-            recipient,
-            OutboundPayload::DeferredMessage(body),
-            outbound_deadline,
-            None,
-        );
-    }
-
-    fn handle_start_response_stream(
-        &self,
-        state: &mut RuntimeState,
-        request_id: MessageId,
-        recipient: XID,
-        meta: CBOR,
-        chunk_rx: async_channel::Receiver<OutboundStreamInput>,
-    ) {
-        if !matches!(
-            state.peers.peer(recipient),
-            Some(entry) if entry.session.is_connected()
-        ) {
-            return;
-        }
-
-        let transfer_id = request_id;
-        let key = (recipient, transfer_id);
-        if state.outbound_transfers.contains_key(&key) {
-            return;
-        }
-
-        state.outbound_transfers.insert(
-            key,
-            OutboundTransferState {
-                request_id,
-                peer: recipient,
-                transfer_id,
-                stage: OutboundTransferStage::Opening,
-                next_seq: 1,
-                open_route_id: None,
-                open_meta: Some(meta),
-                chunk_rx,
-                awaiting: None,
-            },
-        );
-    }
-
-    fn handle_cancel_outbound_transfer(
+    fn handle_reject_call(
         &self,
         state: &mut RuntimeState,
         recipient: XID,
-        transfer_id: MessageId,
+        call_id: CallId,
+        code: RejectCode,
     ) {
-        let key = (recipient, transfer_id);
-        let mut found = false;
-        if let Some(transfer) = state.outbound_transfers.get_mut(&key) {
-            found = true;
-            transfer.stage = OutboundTransferStage::Cancelling;
-            transfer.awaiting = None;
-            transfer.chunk_rx.close();
+        let key = (recipient, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        if call.role != CallRole::Responder || call.phase != CallPhase::ResponderPending {
+            state.calls.insert(key, call);
+            return;
         }
-        if found {
-            self.drive_outbound_transfer(state, recipient, transfer_id);
-        }
+        let frame = CallFrame::Accept {
+            call_id,
+            status: AcceptStatus::Rejected(code),
+            response_head: Vec::new(),
+            request_max_offset: 0,
+        };
+        call.phase = CallPhase::ResponderAccepting;
+        call.accept_frame = Some(frame.clone());
+        let mut outbound = OutboundCallStreamState::new(
+            Direction::Response,
+            async_channel::bounded(1).1,
+            call.initial_remote_credit,
+        );
+        outbound.closed = true;
+        outbound.source_finished = true;
+        outbound.queue.push_back(frame);
+        call.outbound = Some(outbound);
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+        self.drive_call(state, recipient, call_id);
     }
 
-    fn handle_cancel_inbound_transfer(
+    fn handle_advance_inbound_credit(
         &self,
         state: &mut RuntimeState,
         sender: XID,
-        transfer_id: MessageId,
+        call_id: CallId,
+        dir: Direction,
+        amount: u64,
     ) {
-        if state
-            .inbound_transfers
-            .remove(&(sender, transfer_id))
-            .is_some()
-        {
-            self.send_transfer_frame(state, sender, transfer_id, TransferFrame::Cancel, false);
-        }
-    }
-
-    fn handle_send_unpair(&self, state: &mut RuntimeState, peer: XID) {
-        if state.peers.peer(peer).is_none() {
+        let key = (sender, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        if call.inbound.dir != dir || call.inbound.closed {
+            state.calls.insert(key, call);
             return;
         }
-        let message = unpair::build_unpair_record(
-            &self.platform,
-            QlHeader {
-                sender: self.platform.xid(),
-                recipient: peer,
-            },
-            state.next_message_id(),
-            now_secs().saturating_add(self.config.message_expiration.as_secs()),
-        );
-        let bytes = CBOR::from(message).to_cbor_data();
-        self.unpair_peer(state, peer);
-        let deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(
-            state,
-            peer,
-            OutboundPayload::PreEncoded(bytes),
-            deadline,
-            None,
-        );
+        call.inbound.max_offset = call.inbound.max_offset.saturating_add(amount);
+        self.flush_inbound_terminal(&mut call.inbound);
+        self.queue_credit(&mut call, dir);
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+        self.drive_call(state, sender, call_id);
+    }
+
+    fn handle_reset_outbound(
+        &self,
+        state: &mut RuntimeState,
+        recipient: XID,
+        call_id: CallId,
+        dir: Direction,
+        code: ResetCode,
+    ) {
+        let key = (recipient, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        if call.local_outbound_dir() != dir {
+            state.calls.insert(key, call);
+            return;
+        }
+        if let Some(outbound) = call.outbound.as_mut() {
+            if !outbound.closed {
+                outbound.closed = true;
+                outbound.source_finished = true;
+                outbound.queue.clear();
+                outbound.pending_chunk = None;
+                outbound.queue.push_back(CallFrame::Reset {
+                    call_id,
+                    dir: match dir {
+                        Direction::Request => call::ResetTarget::Request,
+                        Direction::Response => call::ResetTarget::Response,
+                    },
+                    code,
+                });
+            }
+        }
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+        self.drive_call(state, recipient, call_id);
+    }
+
+    fn handle_reset_inbound(
+        &self,
+        state: &mut RuntimeState,
+        sender: XID,
+        call_id: CallId,
+        dir: Direction,
+        code: ResetCode,
+    ) {
+        let key = (sender, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        if call.inbound.dir != dir || call.inbound.closed {
+            state.calls.insert(key, call);
+            return;
+        }
+        call.inbound.closed = true;
+        call.inbound.pending_chunk = None;
+        let _ = call
+            .inbound
+            .chunk_tx
+            .try_send(InboundStreamItem::Error(QlError::CallReset {
+                id: call_id,
+                dir,
+                code,
+            }));
+        call.inbound.chunk_tx.close();
+        if let Some(outbound) = call.outbound.as_mut() {
+            outbound.queue.push_back(CallFrame::Reset {
+                call_id,
+                dir: match dir {
+                    Direction::Request => call::ResetTarget::Request,
+                    Direction::Response => call::ResetTarget::Response,
+                },
+                code,
+            });
+        }
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+        self.drive_call(state, sender, call_id);
     }
 
     fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
@@ -657,24 +596,11 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
         match payload {
-            QlPayload::Handshake(message) => {
-                self.handle_handshake(state, header, message);
-            }
-            QlPayload::Pair(request) => {
-                self.handle_pairing(state, header, request);
-            }
-            QlPayload::Unpair(unpair) => {
-                self.handle_unpair(state, header, unpair);
-            }
-            QlPayload::Message(encrypted) => {
-                self.handle_record(state, header, encrypted);
-            }
-            QlPayload::Heartbeat(encrypted) => {
-                self.handle_heartbeat(state, header, encrypted);
-            }
-            QlPayload::Transfer(encrypted) => {
-                self.handle_transfer(state, header, encrypted);
-            }
+            QlPayload::Handshake(message) => self.handle_handshake(state, header, message),
+            QlPayload::Call(encrypted) => self.handle_call(state, header, encrypted),
+            QlPayload::Heartbeat(encrypted) => self.handle_heartbeat(state, header, encrypted),
+            QlPayload::Pair(request) => self.handle_pairing(state, header, request),
+            QlPayload::Unpair(record) => self.handle_unpair(state, header, record),
         }
     }
 
@@ -685,15 +611,9 @@ impl<P: QlPlatform> Runtime<P> {
         message: HandshakeRecord,
     ) {
         match message {
-            HandshakeRecord::Hello(hello) => {
-                self.handle_hello(state, header, hello);
-            }
-            HandshakeRecord::HelloReply(reply) => {
-                self.handle_hello_reply(state, header, reply);
-            }
-            HandshakeRecord::Confirm(confirm) => {
-                self.handle_confirm(state, header, confirm);
-            }
+            HandshakeRecord::Hello(hello) => self.handle_hello(state, header, hello),
+            HandshakeRecord::HelloReply(reply) => self.handle_hello_reply(state, header, reply),
+            HandshakeRecord::Confirm(confirm) => self.handle_confirm(state, header, confirm),
         }
     }
 
@@ -727,7 +647,11 @@ impl<P: QlPlatform> Runtime<P> {
         if unpair::verify_unpair_record(&header, &record, &signing_key).is_err() {
             return;
         }
-        let replay_key = ReplayKey::new(peer, ReplayNamespace::Peer, record.message_id);
+        let replay_key = ReplayKey::new(
+            peer,
+            ReplayNamespace::Peer,
+            crate::MessageId(record.message_id.0),
+        );
         if state
             .replay_cache
             .check_and_store_valid_until(replay_key, record.valid_until)
@@ -735,98 +659,6 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
         self.unpair_peer(state, peer);
-    }
-
-    fn unpair_peer(&self, state: &mut RuntimeState, peer: XID) {
-        if state.peers.remove_peer(peer).is_none() {
-            return;
-        }
-        self.drop_outbound_for_peer(state, peer);
-        self.fail_pending_for_peer(state, peer);
-        self.fail_pending_stream_for_peer(state, peer);
-        self.abort_transfers_for_peer(state, peer, QlError::SendFailed);
-        state.replay_cache.clear_peer(peer);
-        self.platform
-            .handle_peer_status(peer, &PeerSession::Disconnected);
-        self.persist_peers(state);
-    }
-
-    fn persist_peers(&self, state: &RuntimeState) {
-        self.platform.persist_peers(state.peers.all());
-    }
-
-    fn handle_record(
-        &self,
-        state: &mut RuntimeState,
-        header: QlHeader,
-        encrypted: bc_components::EncryptedMessage,
-    ) {
-        let peer = header.sender;
-        let session_key = match state.peers.peer(peer) {
-            Some(entry) => match &entry.session {
-                PeerSession::Connected { session_key, .. } => session_key.clone(),
-                _ => return,
-            },
-            None => return,
-        };
-        let record = match message::decrypt_message(&header, &encrypted, &session_key) {
-            Ok(record) => record,
-            Err(message::MessageError::Nack { id, nack, kind }) => {
-                self.handle_message_nack(state, peer, id, nack, kind);
-                return;
-            }
-            Err(message::MessageError::Error(_)) => return,
-        };
-        let namespace = match record.kind {
-            MessageKind::Request | MessageKind::Event => ReplayNamespace::Peer,
-            MessageKind::Response | MessageKind::Nack => ReplayNamespace::Local,
-        };
-        let replay_key = ReplayKey::new(peer, namespace, record.message_id);
-        if state
-            .replay_cache
-            .check_and_store_valid_until(replay_key, record.valid_until)
-        {
-            return;
-        }
-        self.record_activity(state, peer);
-        match record.kind {
-            MessageKind::Response => {
-                self.resolve_pending_ok(state, peer, record.message_id, record.payload);
-            }
-            MessageKind::Nack => {
-                let nack = Nack::from(record.payload);
-                self.resolve_pending_nack(state, peer, record.message_id, nack);
-            }
-            MessageKind::Request => {
-                let Some(tx) = self.tx.upgrade() else {
-                    return;
-                };
-                let responder = Responder::new(record.message_id, record.sender, tx);
-                self.platform
-                    .handle_inbound(HandlerEvent::Request(InboundRequest {
-                        message: record,
-                        respond_to: responder,
-                    }));
-            }
-            MessageKind::Event => {
-                self.platform
-                    .handle_inbound(HandlerEvent::Event(InboundEvent { message: record }));
-            }
-        }
-    }
-
-    fn handle_message_nack(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        id: MessageId,
-        nack: Nack,
-        kind: MessageKind,
-    ) {
-        if kind != MessageKind::Request {
-            return;
-        }
-        self.handle_send_response(state, id, peer, CBOR::from(nack), MessageKind::Nack);
     }
 
     fn handle_heartbeat(
@@ -841,7 +673,7 @@ impl<P: QlPlatform> Runtime<P> {
                 return;
             };
             match &entry.session {
-                PeerSession::Connected {
+                crate::runtime::PeerSession::Connected {
                     session_key,
                     keepalive,
                 } => (session_key.clone(), !keepalive.pending),
@@ -857,7 +689,7 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
-    fn handle_transfer(
+    fn handle_call(
         &self,
         state: &mut RuntimeState,
         header: QlHeader,
@@ -866,17 +698,26 @@ impl<P: QlPlatform> Runtime<P> {
         let peer = header.sender;
         let session_key = match state.peers.peer(peer) {
             Some(entry) => match &entry.session {
-                PeerSession::Connected { session_key, .. } => session_key.clone(),
+                crate::runtime::PeerSession::Connected { session_key, .. } => session_key.clone(),
                 _ => return,
             },
             None => return,
         };
-        let body = match transfer::decrypt_transfer(&header, &encrypted, &session_key) {
+        let body = match call::decrypt_call(&header, &encrypted, &session_key) {
             Ok(body) => body,
             Err(_) => return,
         };
 
-        let replay_key = ReplayKey::new(peer, ReplayNamespace::Transfer, body.message_id);
+        if let Some(ack) = body.packet_ack {
+            self.process_packet_ack(state, peer, ack.packet_id);
+        }
+
+        let Some(frame) = body.frame else {
+            return;
+        };
+
+        let replay_key =
+            ReplayKey::new(peer, ReplayNamespace::Transfer, MessageId(body.packet_id.0));
         if state
             .replay_cache
             .check_and_store_valid_until(replay_key, body.valid_until)
@@ -885,829 +726,817 @@ impl<P: QlPlatform> Runtime<P> {
         }
 
         self.record_activity(state, peer);
-        self.handle_transfer_frame(state, peer, body.transfer_id, body.frame);
-    }
+        self.record_call_activity(state, peer, frame.call_id());
+        self.send_packet_ack(state, peer, body.packet_id);
 
-    fn handle_transfer_frame(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-        frame: TransferFrame,
-    ) {
         match frame {
-            TransferFrame::OpenResponse { request_id, meta } => {
-                self.handle_transfer_open_response(state, peer, transfer_id, request_id, meta);
-            }
-            TransferFrame::OpenRequest {
-                request_id,
+            CallFrame::Open {
+                call_id,
                 route_id,
-                meta,
-            } => {
-                self.handle_transfer_open_request(
-                    state,
-                    peer,
-                    transfer_id,
-                    request_id,
-                    route_id,
-                    meta,
-                );
+                flags,
+                request_head,
+                response_max_offset,
+            } => self.handle_call_open(
+                state,
+                peer,
+                call_id,
+                route_id,
+                flags,
+                request_head,
+                response_max_offset,
+            ),
+            CallFrame::Accept {
+                call_id,
+                status,
+                response_head,
+                request_max_offset,
+            } => self.handle_call_accept(
+                state,
+                peer,
+                call_id,
+                status,
+                response_head,
+                request_max_offset,
+            ),
+            CallFrame::Data {
+                call_id,
+                dir,
+                offset,
+                bytes,
+            } => self.handle_call_data(state, peer, call_id, dir, offset, bytes),
+            CallFrame::Credit {
+                call_id,
+                dir,
+                recv_offset,
+                max_offset,
+            } => self.handle_call_credit(state, peer, call_id, dir, recv_offset, max_offset),
+            CallFrame::Finish { call_id, dir } => {
+                self.handle_call_finish(state, peer, call_id, dir)
             }
-            TransferFrame::Chunk { seq, data } => {
-                self.handle_transfer_chunk(state, peer, transfer_id, seq, data);
-            }
-            TransferFrame::Finish { seq } => {
-                self.handle_transfer_finish(state, peer, transfer_id, seq);
-            }
-            TransferFrame::Ack { next_seq } => {
-                self.handle_transfer_ack(state, peer, transfer_id, next_seq);
-            }
-            TransferFrame::Cancel => {
-                self.handle_transfer_cancel(state, peer, transfer_id);
-            }
-            TransferFrame::CancelAck => {
-                self.handle_transfer_cancel_ack(state, peer, transfer_id);
+            CallFrame::Reset { call_id, dir, code } => {
+                self.handle_call_reset(state, peer, call_id, dir, code)
             }
         }
     }
 
-    fn handle_transfer_open_response(
+    fn handle_call_open(
         &self,
         state: &mut RuntimeState,
         peer: XID,
-        transfer_id: MessageId,
-        request_id: MessageId,
-        meta: CBOR,
-    ) {
-        let open = InboundTransferOpen::Response {
-            request_id,
-            meta: meta.clone(),
-        };
-        if self.handle_duplicate_transfer_open(state, peer, transfer_id, &open) {
-            return;
-        }
-
-        let Some(pending) = state.pending_stream.remove(&request_id) else {
-            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
-            return;
-        };
-        if pending.recipient != peer {
-            let _ = pending.tx.send(Err(QlError::SendFailed));
-            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
-            return;
-        }
-
-        let Some(tx) = self.tx.upgrade() else {
-            let _ = pending.tx.send(Err(QlError::Cancelled));
-            return;
-        };
-
-        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
-
-        let delivery = InboundStreamDelivery {
-            peer,
-            transfer_id,
-            meta,
-            rx: chunk_rx,
-            tx,
-        };
-        if pending.tx.send(Ok(delivery)).is_err() {
-            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
-            return;
-        }
-
-        state.inbound_transfers.insert(
-            (peer, transfer_id),
-            InboundTransferState {
-                open,
-                expected_seq: 1,
-                chunk_tx,
-            },
-        );
-
-        self.send_transfer_frame(
-            state,
-            peer,
-            transfer_id,
-            TransferFrame::Ack { next_seq: 1 },
-            true,
-        );
-    }
-
-    fn handle_transfer_open_request(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-        request_id: MessageId,
+        call_id: CallId,
         route_id: RouteId,
-        meta: CBOR,
+        flags: OpenFlags,
+        request_head: Vec<u8>,
+        response_max_offset: u64,
     ) {
-        let open = InboundTransferOpen::Request {
-            request_id,
-            route_id,
-            meta: meta.clone(),
-        };
-        if self.handle_duplicate_transfer_open(state, peer, transfer_id, &open) {
+        let key = (peer, call_id);
+        if let Some(call) = state.calls.get(&key) {
+            if call.role == CallRole::Responder
+                && call.route_id == route_id
+                && call.open_flags == flags
+                && call.request_head == request_head
+                && call.initial_remote_credit == response_max_offset
+            {
+                return;
+            }
+            self.send_ephemeral_reset(
+                state,
+                peer,
+                call_id,
+                call::ResetTarget::Both,
+                ResetCode::Protocol,
+            );
             return;
         }
 
-        let Some(tx) = self.tx.upgrade() else {
-            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
-            return;
-        };
+        let (request_tx, request_rx) = async_channel::bounded(1);
+        let responder = CallResponder::new(call_id, peer, self.tx.upgrade().expect("runtime tx"));
+        let mut inbound = crate::runtime::internal::InboundCallStreamState::new(
+            Direction::Request,
+            request_tx,
+            0,
+        );
+        if flags.request_finished() {
+            inbound.terminal = Some(InboundTerminal::Finished);
+            self.flush_inbound_terminal(&mut inbound);
+        }
 
-        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
-        let responder = Responder::new(request_id, peer, tx.clone());
-        let body = InboundByteStream::new(peer, transfer_id, chunk_rx, tx);
+        let call = CallState {
+            peer,
+            call_id,
+            route_id,
+            role: CallRole::Responder,
+            phase: CallPhase::ResponderPending,
+            open_flags: flags,
+            request_head: request_head.clone(),
+            response_head: None,
+            response_rx: None,
+            accept_tx: None,
+            open_timeout_token: crate::runtime::Token(0),
+            initial_remote_credit: response_max_offset,
+            outbound: None,
+            inbound,
+            accept_frame: None,
+            last_activity: Instant::now(),
+        };
+        state.calls.insert(key, call);
         self.platform
-            .handle_inbound(HandlerEvent::UploadRequest(InboundUploadRequest {
+            .handle_inbound(HandlerEvent::Call(InboundCall {
                 sender: peer,
                 recipient: self.platform.xid(),
                 route_id,
-                message_id: request_id,
-                meta,
-                body,
+                call_id,
+                request_head,
+                response_expected: flags.response_expected(),
+                request: InboundByteStream::new(
+                    peer,
+                    call_id,
+                    Direction::Request,
+                    request_rx,
+                    self.tx.upgrade().expect("runtime tx"),
+                ),
                 respond_to: responder,
             }));
+    }
 
-        state.inbound_transfers.insert(
-            (peer, transfer_id),
-            InboundTransferState {
-                open,
-                expected_seq: 1,
-                chunk_tx,
-            },
-        );
+    fn handle_call_accept(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        call_id: CallId,
+        status: AcceptStatus,
+        response_head: Vec<u8>,
+        request_max_offset: u64,
+    ) {
+        let key = (peer, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        if call.role != CallRole::Initiator {
+            self.send_ephemeral_reset(
+                state,
+                peer,
+                call_id,
+                call::ResetTarget::Both,
+                ResetCode::Protocol,
+            );
+            state.calls.insert(key, call);
+            return;
+        }
+        if let Some(existing) = &call.accept_frame {
+            if *existing
+                == (CallFrame::Accept {
+                    call_id,
+                    status: status.clone(),
+                    response_head: response_head.clone(),
+                    request_max_offset,
+                })
+            {
+                state.calls.insert(key, call);
+                return;
+            }
+            self.fail_call(state, peer, call_id, QlError::CallProtocol { id: call_id });
+            return;
+        }
 
-        self.send_transfer_frame(
+        if let Some(outbound) = call.outbound.as_mut() {
+            if matches!(
+                outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
+                Some(CallFrame::Open { .. })
+            ) {
+                outbound.awaiting = None;
+            }
+        }
+
+        call.accept_frame = Some(CallFrame::Accept {
+            call_id,
+            status: status.clone(),
+            response_head: response_head.clone(),
+            request_max_offset,
+        });
+
+        match status {
+            AcceptStatus::Accepted => {
+                call.phase = CallPhase::Open;
+                call.response_head = Some(response_head);
+                if let Some(outbound) = call.outbound.as_mut() {
+                    outbound.remote_max_offset = request_max_offset;
+                    outbound.data_enabled = true;
+                }
+                if let Some(tx) = call.accept_tx.take() {
+                    let delivery =
+                        response_delivery(&mut call, self.tx.upgrade().expect("runtime tx"));
+                    let _ = tx.send(delivery.ok_or(QlError::Cancelled));
+                }
+            }
+            AcceptStatus::Rejected(code) => {
+                call.phase = CallPhase::Rejected;
+                if let Some(outbound) = call.outbound.as_mut() {
+                    outbound.closed = true;
+                    outbound.queue.clear();
+                    outbound.pending_chunk = None;
+                    outbound.awaiting = None;
+                    outbound.chunk_rx.close();
+                }
+                if let Some(tx) = call.accept_tx.take() {
+                    let _ = tx.send(Err(QlError::CallRejected { id: call_id, code }));
+                }
+                call.inbound.closed = true;
+                call.inbound.chunk_tx.close();
+            }
+        }
+
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+        self.drive_call(state, peer, call_id);
+    }
+
+    fn handle_call_data(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        call_id: CallId,
+        dir: Direction,
+        offset: u64,
+        bytes: Vec<u8>,
+    ) {
+        let key = (peer, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        self.note_accept_seen_from_remote(&mut call);
+        if call.inbound.dir != dir || call.inbound.closed {
+            self.fail_call(state, peer, call_id, QlError::CallProtocol { id: call_id });
+            return;
+        }
+        if offset < call.inbound.next_offset {
+            self.queue_credit(&mut call, dir);
+            state.calls.insert(key, call);
+            self.drive_call(state, peer, call_id);
+            return;
+        }
+        let end = offset.saturating_add(bytes.len() as u64);
+        if offset != call.inbound.next_offset || end > call.inbound.max_offset {
+            self.queue_local_reset(&mut call, call::ResetTarget::Both, ResetCode::Protocol);
+            state.calls.insert(key, call);
+            self.drive_call(state, peer, call_id);
+            return;
+        }
+
+        call.inbound.next_offset = end;
+        if call.inbound.pending_chunk.is_some() {
+            self.queue_local_reset(&mut call, call::ResetTarget::Both, ResetCode::Protocol);
+            state.calls.insert(key, call);
+            self.drive_call(state, peer, call_id);
+            return;
+        }
+
+        match call
+            .inbound
+            .chunk_tx
+            .try_send(InboundStreamItem::Chunk(bytes))
+        {
+            Ok(()) => {}
+            Err(async_channel::TrySendError::Full(InboundStreamItem::Chunk(chunk))) => {
+                call.inbound.pending_chunk = Some(chunk);
+            }
+            Err(async_channel::TrySendError::Closed(_)) => {
+                self.queue_local_reset(&mut call, call::ResetTarget::Both, ResetCode::Cancelled);
+            }
+            Err(async_channel::TrySendError::Full(_)) => unreachable!(),
+        }
+        self.queue_credit(&mut call, dir);
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+        self.drive_call(state, peer, call_id);
+    }
+
+    fn handle_call_credit(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        call_id: CallId,
+        dir: Direction,
+        recv_offset: u64,
+        max_offset: u64,
+    ) {
+        let key = (peer, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        self.note_accept_seen_from_remote(&mut call);
+        let Some(outbound) = call.outbound.as_mut() else {
+            state.calls.insert(key, call);
+            return;
+        };
+        if outbound.dir != dir
+            || recv_offset < outbound.remote_recv_offset
+            || recv_offset > outbound.next_offset
+            || max_offset < recv_offset
+        {
+            self.queue_local_reset(&mut call, call::ResetTarget::Both, ResetCode::Protocol);
+            state.calls.insert(key, call);
+            self.drive_call(state, peer, call_id);
+            return;
+        }
+        outbound.remote_recv_offset = recv_offset;
+        outbound.remote_max_offset = outbound.remote_max_offset.max(max_offset);
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+        self.drive_call(state, peer, call_id);
+    }
+
+    fn handle_call_finish(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        call_id: CallId,
+        dir: Direction,
+    ) {
+        let key = (peer, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        self.note_accept_seen_from_remote(&mut call);
+        if call.inbound.dir != dir || call.inbound.closed {
+            state.calls.insert(key, call);
+            return;
+        }
+        call.inbound.terminal = Some(InboundTerminal::Finished);
+        self.flush_inbound_terminal(&mut call.inbound);
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+    }
+
+    fn handle_call_reset(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        call_id: CallId,
+        dir: call::ResetTarget,
+        code: ResetCode,
+    ) {
+        let key = (peer, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        self.note_accept_seen_from_remote(&mut call);
+        if matches!(dir, call::ResetTarget::Request | call::ResetTarget::Both)
+            && call.inbound.dir == Direction::Request
+        {
+            call.inbound.pending_chunk = None;
+            call.inbound.terminal = Some(InboundTerminal::Error(QlError::CallReset {
+                id: call_id,
+                dir: Direction::Request,
+                code,
+            }));
+            self.flush_inbound_terminal(&mut call.inbound);
+        }
+        if matches!(dir, call::ResetTarget::Response | call::ResetTarget::Both)
+            && call.inbound.dir == Direction::Response
+        {
+            call.inbound.pending_chunk = None;
+            call.inbound.terminal = Some(InboundTerminal::Error(QlError::CallReset {
+                id: call_id,
+                dir: Direction::Response,
+                code,
+            }));
+            self.flush_inbound_terminal(&mut call.inbound);
+        }
+        if let Some(outbound) = call.outbound.as_mut() {
+            let affects_outbound = match (dir, outbound.dir) {
+                (call::ResetTarget::Request, Direction::Request)
+                | (call::ResetTarget::Response, Direction::Response)
+                | (call::ResetTarget::Both, _) => true,
+                _ => false,
+            };
+            if affects_outbound {
+                outbound.queue.clear();
+                outbound.pending_chunk = None;
+                outbound.awaiting = None;
+                outbound.closed = true;
+                outbound.chunk_rx.close();
+            }
+        }
+        if let Some(tx) = call.accept_tx.take() {
+            let _ = tx.send(Err(QlError::CallReset {
+                id: call_id,
+                dir: call.inbound.dir,
+                code,
+            }));
+        }
+        call.phase = CallPhase::Closed;
+        call.last_activity = Instant::now();
+        state.calls.insert(key, call);
+    }
+
+    fn process_packet_ack(&self, state: &mut RuntimeState, peer: XID, packet_id: PacketId) {
+        let key = state.calls.iter().find_map(|(key, call)| {
+            (key.0 == peer
+                && call
+                    .outbound
+                    .as_ref()
+                    .and_then(|outbound| outbound.awaiting.as_ref())
+                    .is_some_and(|awaiting| awaiting.packet_id == packet_id))
+            .then_some(*key)
+        });
+        let Some(key) = key else {
+            return;
+        };
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        let Some(outbound) = call.outbound.as_mut() else {
+            state.calls.insert(key, call);
+            return;
+        };
+        let Some(awaiting) = outbound.awaiting.take() else {
+            state.calls.insert(key, call);
+            return;
+        };
+
+        match awaiting.frame {
+            CallFrame::Open { .. } => {
+                if call.phase == CallPhase::InitiatorOpening {
+                    call.phase = CallPhase::InitiatorWaitingAccept;
+                }
+            }
+            CallFrame::Accept {
+                status: AcceptStatus::Accepted,
+                ..
+            } => {
+                if call.phase == CallPhase::ResponderAccepting {
+                    call.phase = CallPhase::Open;
+                    outbound.data_enabled = true;
+                }
+            }
+            CallFrame::Accept {
+                status: AcceptStatus::Rejected(_),
+                ..
+            } => {
+                call.phase = CallPhase::Rejected;
+                outbound.closed = true;
+                outbound.chunk_rx.close();
+            }
+            CallFrame::Finish { .. } => {
+                outbound.chunk_rx.close();
+            }
+            CallFrame::Reset { dir, .. } => {
+                let affects_outbound = match (dir, outbound.dir) {
+                    (call::ResetTarget::Request, Direction::Request)
+                    | (call::ResetTarget::Response, Direction::Response)
+                    | (call::ResetTarget::Both, _) => true,
+                    _ => false,
+                };
+                if affects_outbound {
+                    outbound.chunk_rx.close();
+                }
+            }
+            CallFrame::Data { .. } | CallFrame::Credit { .. } => {}
+        }
+
+        state.calls.insert(key, call);
+        self.drive_call(state, key.0, key.1);
+    }
+
+    fn drive_calls(&self, state: &mut RuntimeState) {
+        let keys: Vec<_> = state.calls.keys().copied().collect();
+        for (peer, call_id) in keys {
+            self.drive_call(state, peer, call_id);
+        }
+    }
+
+    fn drive_call(&self, state: &mut RuntimeState, peer: XID, call_id: CallId) {
+        let key = (peer, call_id);
+        let Some(mut call) = state.calls.remove(&key) else {
+            return;
+        };
+        let Some(_) = call.outbound.as_ref() else {
+            state.calls.insert(key, call);
+            return;
+        };
+
+        let mut next_frame = None;
+        {
+            let outbound = call.outbound.as_mut().unwrap();
+            if outbound.awaiting.is_none() {
+                if let Some(frame) = outbound.queue.pop_front() {
+                    next_frame = Some(frame);
+                } else if outbound.data_enabled && !outbound.closed {
+                    if outbound.pending_chunk.is_none() && !outbound.source_finished {
+                        while let Ok(input) = outbound.chunk_rx.try_recv() {
+                            match input {
+                                crate::runtime::internal::OutboundStreamInput::Chunk(chunk) => {
+                                    if chunk.is_empty() {
+                                        continue;
+                                    }
+                                    outbound.pending_chunk = Some(PendingChunk {
+                                        bytes: chunk,
+                                        sent: 0,
+                                    });
+                                    break;
+                                }
+                                crate::runtime::internal::OutboundStreamInput::Finish => {
+                                    outbound.source_finished = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(chunk) = outbound.pending_chunk.as_mut() {
+                        let remaining_credit = outbound
+                            .remote_max_offset
+                            .saturating_sub(outbound.next_offset)
+                            as usize;
+                        if remaining_credit > 0 {
+                            let remaining = chunk.bytes.len().saturating_sub(chunk.sent);
+                            let len = remaining
+                                .min(self.config.max_payload_bytes)
+                                .min(remaining_credit);
+                            if len > 0 {
+                                let offset = outbound.next_offset;
+                                let dir = outbound.dir;
+                                let bytes = chunk.bytes[chunk.sent..chunk.sent + len].to_vec();
+                                chunk.sent += len;
+                                outbound.next_offset =
+                                    outbound.next_offset.saturating_add(len as u64);
+                                if chunk.sent == chunk.bytes.len() {
+                                    outbound.pending_chunk = None;
+                                }
+                                next_frame = Some(CallFrame::Data {
+                                    call_id,
+                                    dir,
+                                    offset,
+                                    bytes,
+                                });
+                            }
+                        }
+                    } else if outbound.source_finished {
+                        outbound.closed = true;
+                        next_frame = Some(CallFrame::Finish {
+                            call_id,
+                            dir: outbound.dir,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(frame) = next_frame {
+            self.send_tracked_frame(state, &mut call, frame, 0);
+        }
+
+        state.calls.insert(key, call);
+    }
+
+    fn send_tracked_frame(
+        &self,
+        state: &mut RuntimeState,
+        call: &mut CallState,
+        frame: CallFrame,
+        attempt: u8,
+    ) {
+        let packet_id = state.next_packet_id();
+        let Some(outbound) = call.outbound.as_mut() else {
+            return;
+        };
+        outbound.awaiting = Some(AwaitingPacket {
+            packet_id,
+            frame: frame.clone(),
+            attempt,
+        });
+        let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
+        self.enqueue_call_body(
             state,
-            peer,
-            transfer_id,
-            TransferFrame::Ack { next_seq: 1 },
+            call.peer,
+            Some(call.call_id),
+            Some(packet_id),
             true,
-        );
-    }
-
-    fn handle_duplicate_transfer_open(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-        open: &InboundTransferOpen,
-    ) -> bool {
-        let key = (peer, transfer_id);
-        let Some(existing) = state.inbound_transfers.get(&key) else {
-            return false;
-        };
-
-        let frame = if &existing.open == open {
-            TransferFrame::Ack { next_seq: 1 }
-        } else {
-            TransferFrame::Cancel
-        };
-        self.send_transfer_frame(state, peer, transfer_id, frame, true);
-        true
-    }
-
-    fn handle_transfer_chunk(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-        seq: u32,
-        data: Vec<u8>,
-    ) {
-        let key = (peer, transfer_id);
-        let Some(mut transfer_state) = state.inbound_transfers.remove(&key) else {
-            return;
-        };
-
-        if seq < transfer_state.expected_seq {
-            self.send_transfer_frame(
-                state,
-                peer,
-                transfer_id,
-                TransferFrame::Ack {
-                    next_seq: transfer_state.expected_seq,
-                },
-                true,
-            );
-            state.inbound_transfers.insert(key, transfer_state);
-            return;
-        }
-
-        if seq > transfer_state.expected_seq {
-            let _ = transfer_state.chunk_tx.try_send(InboundStreamItem::Error(
-                QlError::TransferProtocol { id: transfer_id },
-            ));
-            transfer_state.chunk_tx.close();
-            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
-            return;
-        }
-
-        match transfer_state
-            .chunk_tx
-            .try_send(InboundStreamItem::Chunk(data))
-        {
-            Ok(()) => {
-                transfer_state.expected_seq = transfer_state.expected_seq.saturating_add(1);
-                self.send_transfer_frame(
-                    state,
-                    peer,
-                    transfer_id,
-                    TransferFrame::Ack {
-                        next_seq: transfer_state.expected_seq,
-                    },
-                    true,
-                );
-                state.inbound_transfers.insert(key, transfer_state);
-            }
-            Err(async_channel::TrySendError::Full(_)) => {
-                state.inbound_transfers.insert(key, transfer_state);
-            }
-            Err(async_channel::TrySendError::Closed(_)) => {
-                self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
-            }
-        }
-    }
-
-    fn handle_transfer_finish(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-        seq: u32,
-    ) {
-        let key = (peer, transfer_id);
-        let Some(mut transfer_state) = state.inbound_transfers.remove(&key) else {
-            return;
-        };
-
-        if seq < transfer_state.expected_seq {
-            self.send_transfer_frame(
-                state,
-                peer,
-                transfer_id,
-                TransferFrame::Ack {
-                    next_seq: transfer_state.expected_seq,
-                },
-                true,
-            );
-            state.inbound_transfers.insert(key, transfer_state);
-            return;
-        }
-
-        if seq > transfer_state.expected_seq {
-            let _ = transfer_state.chunk_tx.try_send(InboundStreamItem::Error(
-                QlError::TransferProtocol { id: transfer_id },
-            ));
-            transfer_state.chunk_tx.close();
-            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
-            return;
-        }
-
-        match transfer_state
-            .chunk_tx
-            .try_send(InboundStreamItem::Finished)
-        {
-            Ok(()) => {
-                transfer_state.expected_seq = transfer_state.expected_seq.saturating_add(1);
-                transfer_state.chunk_tx.close();
-                self.send_transfer_frame(
-                    state,
-                    peer,
-                    transfer_id,
-                    TransferFrame::Ack {
-                        next_seq: transfer_state.expected_seq,
-                    },
-                    true,
-                );
-            }
-            Err(async_channel::TrySendError::Full(_)) => {
-                state.inbound_transfers.insert(key, transfer_state);
-            }
-            Err(async_channel::TrySendError::Closed(_)) => {
-                self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
-            }
-        }
-    }
-
-    fn handle_transfer_ack(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-        next_seq: u32,
-    ) {
-        let key = (peer, transfer_id);
-        let Some(mut transfer_state) = state.outbound_transfers.remove(&key) else {
-            return;
-        };
-
-        let matched = match transfer_state.awaiting.as_ref() {
-            Some(OutboundAwaiting::Open { .. }) => next_seq == 1,
-            Some(OutboundAwaiting::Chunk { seq, .. }) => next_seq == seq.saturating_add(1),
-            Some(OutboundAwaiting::Finish { seq }) => next_seq == seq.saturating_add(1),
-            Some(OutboundAwaiting::Cancel) | None => false,
-        };
-        if !matched {
-            state.outbound_transfers.insert(key, transfer_state);
-            return;
-        }
-
-        match transfer_state.awaiting.take() {
-            Some(OutboundAwaiting::Open { .. }) => {
-                transfer_state.stage = OutboundTransferStage::Streaming;
-                state.outbound_transfers.insert(key, transfer_state);
-            }
-            Some(OutboundAwaiting::Chunk { seq, .. }) => {
-                transfer_state.next_seq = seq.saturating_add(1);
-                transfer_state.stage = OutboundTransferStage::Streaming;
-                state.outbound_transfers.insert(key, transfer_state);
-            }
-            Some(OutboundAwaiting::Finish { .. }) => {
-                transfer_state.chunk_rx.close();
-            }
-            Some(OutboundAwaiting::Cancel) | None => {
-                state.outbound_transfers.insert(key, transfer_state);
-            }
-        }
-    }
-
-    fn handle_transfer_cancel(&self, state: &mut RuntimeState, peer: XID, transfer_id: MessageId) {
-        let key = (peer, transfer_id);
-        let mut acknowledged = false;
-
-        if let Some(transfer_state) = state.outbound_transfers.remove(&key) {
-            transfer_state.chunk_rx.close();
-            acknowledged = true;
-        }
-
-        if let Some(transfer_state) = state.inbound_transfers.remove(&key) {
-            let error = QlError::TransferCancelled { id: transfer_id };
-            let _ = transfer_state
-                .chunk_tx
-                .try_send(InboundStreamItem::Error(error));
-            transfer_state.chunk_tx.close();
-            acknowledged = true;
-        }
-
-        if acknowledged {
-            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::CancelAck, true);
-        }
-    }
-
-    fn handle_transfer_cancel_ack(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-    ) {
-        let key = (peer, transfer_id);
-        let Some(transfer_state) = state.outbound_transfers.remove(&key) else {
-            return;
-        };
-        if !matches!(transfer_state.awaiting, Some(OutboundAwaiting::Cancel)) {
-            state.outbound_transfers.insert(key, transfer_state);
-            return;
-        }
-
-        transfer_state.chunk_rx.close();
-    }
-
-    fn drive_outbound_transfers(&self, state: &mut RuntimeState) {
-        let keys: Vec<(XID, MessageId)> = state.outbound_transfers.keys().copied().collect();
-        for (peer, transfer_id) in keys {
-            self.drive_outbound_transfer(state, peer, transfer_id);
-        }
-    }
-
-    fn drive_outbound_transfer(&self, state: &mut RuntimeState, peer: XID, transfer_id: MessageId) {
-        let key = (peer, transfer_id);
-        let Some(mut transfer_state) = state.outbound_transfers.remove(&key) else {
-            return;
-        };
-
-        if transfer_state.awaiting.is_some() {
-            state.outbound_transfers.insert(key, transfer_state);
-            return;
-        }
-
-        match transfer_state.stage {
-            OutboundTransferStage::Opening => {
-                let Some(meta) = transfer_state.open_meta.take() else {
-                    transfer_state.chunk_rx.close();
-                    return;
-                };
-                let awaiting = OutboundAwaiting::Open {
-                    request_id: transfer_state.request_id,
-                    route_id: transfer_state.open_route_id,
-                    meta,
-                };
-                if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
-                    state.outbound_transfers.insert(key, transfer_state);
-                }
-            }
-            OutboundTransferStage::Streaming => match transfer_state.chunk_rx.try_recv() {
-                Ok(OutboundStreamInput::Chunk(data)) => {
-                    let seq = transfer_state.next_seq;
-                    let awaiting = OutboundAwaiting::Chunk { seq, data };
-                    if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
-                        state.outbound_transfers.insert(key, transfer_state);
-                    }
-                }
-                Ok(OutboundStreamInput::Finish) => {
-                    let seq = transfer_state.next_seq;
-                    transfer_state.stage = OutboundTransferStage::Finishing;
-                    let awaiting = OutboundAwaiting::Finish { seq };
-                    if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
-                        state.outbound_transfers.insert(key, transfer_state);
-                    }
-                }
-                Err(async_channel::TryRecvError::Empty) => {
-                    state.outbound_transfers.insert(key, transfer_state);
-                }
-                Err(async_channel::TryRecvError::Closed) => {
-                    transfer_state.stage = OutboundTransferStage::Cancelling;
-                    let awaiting = OutboundAwaiting::Cancel;
-                    if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
-                        state.outbound_transfers.insert(key, transfer_state);
-                    }
-                }
-            },
-            OutboundTransferStage::Finishing => {
-                state.outbound_transfers.insert(key, transfer_state);
-            }
-            OutboundTransferStage::Cancelling => {
-                let awaiting = OutboundAwaiting::Cancel;
-                if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
-                    state.outbound_transfers.insert(key, transfer_state);
-                }
-            }
-        }
-    }
-
-    fn send_outbound_awaiting(
-        &self,
-        state: &mut RuntimeState,
-        transfer_state: &mut OutboundTransferState,
-        awaiting: OutboundAwaiting,
-        attempt: u8,
-    ) -> bool {
-        let frame = match &awaiting {
-            OutboundAwaiting::Open {
-                request_id,
-                route_id,
-                meta,
-            } => match route_id {
-                Some(route_id) => TransferFrame::OpenRequest {
-                    request_id: *request_id,
-                    route_id: *route_id,
-                    meta: meta.clone(),
-                },
-                None => TransferFrame::OpenResponse {
-                    request_id: *request_id,
-                    meta: meta.clone(),
-                },
-            },
-            OutboundAwaiting::Chunk { seq, data } => TransferFrame::Chunk {
-                seq: *seq,
-                data: data.clone(),
-            },
-            OutboundAwaiting::Finish { seq } => TransferFrame::Finish { seq: *seq },
-            OutboundAwaiting::Cancel => TransferFrame::Cancel,
-        };
-
-        let priority = matches!(awaiting, OutboundAwaiting::Cancel);
-        if !self.send_transfer_frame(
-            state,
-            transfer_state.peer,
-            transfer_state.transfer_id,
-            frame,
-            priority,
-        ) {
-            transfer_state.chunk_rx.close();
-            return false;
-        }
-
-        transfer_state.awaiting = Some(awaiting);
-        let at = Instant::now() + self.transfer_ack_timeout();
-        match transfer_state.awaiting.as_ref() {
-            Some(OutboundAwaiting::Open { .. }) => state.timeouts.push(Reverse(TimeoutEntry {
-                at,
-                kind: TimeoutKind::TransferAck {
-                    peer: transfer_state.peer,
-                    transfer_id: transfer_state.transfer_id,
-                    next_seq: 1,
-                    attempt,
-                },
-            })),
-            Some(OutboundAwaiting::Chunk { seq, .. }) => {
-                state.timeouts.push(Reverse(TimeoutEntry {
-                    at,
-                    kind: TimeoutKind::TransferAck {
-                        peer: transfer_state.peer,
-                        transfer_id: transfer_state.transfer_id,
-                        next_seq: seq.saturating_add(1),
-                        attempt,
-                    },
-                }))
-            }
-            Some(OutboundAwaiting::Finish { seq }) => state.timeouts.push(Reverse(TimeoutEntry {
-                at,
-                kind: TimeoutKind::TransferAck {
-                    peer: transfer_state.peer,
-                    transfer_id: transfer_state.transfer_id,
-                    next_seq: seq.saturating_add(1),
-                    attempt,
-                },
-            })),
-            Some(OutboundAwaiting::Cancel) => state.timeouts.push(Reverse(TimeoutEntry {
-                at,
-                kind: TimeoutKind::TransferCancelAck {
-                    peer: transfer_state.peer,
-                    transfer_id: transfer_state.transfer_id,
-                    attempt,
-                },
-            })),
-            None => {}
-        }
-
-        true
-    }
-
-    fn send_transfer_frame(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-        frame: TransferFrame,
-        priority: bool,
-    ) -> bool {
-        let Some(session_key) = state
-            .peers
-            .peer(peer)
-            .and_then(|entry| entry.session.session_key())
-            .cloned()
-        else {
-            return false;
-        };
-
-        let body = TransferBody {
-            message_id: state.next_message_id(),
-            valid_until: now_secs().saturating_add(self.config.message_expiration.as_secs()),
-            transfer_id,
-            frame,
-        };
-        let record = transfer::encrypt_transfer(
-            QlHeader {
-                sender: self.platform.xid(),
-                recipient: peer,
-            },
-            &session_key,
-            body,
-        );
-        let bytes = CBOR::from(record).to_cbor_data();
-        self.enqueue_outbound_preencoded(
-            state,
-            peer,
-            bytes,
-            Instant::now() + self.config.message_expiration,
-            priority,
-        );
-        true
-    }
-
-    fn transfer_ack_timeout(&self) -> std::time::Duration {
-        if self.config.default_request_timeout.is_zero() {
-            std::time::Duration::from_millis(200)
-        } else {
-            self.config.default_request_timeout
-        }
-    }
-
-    fn handle_transfer_ack_timeout(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-        next_seq: u32,
-        attempt: u8,
-    ) {
-        let key = (peer, transfer_id);
-        let Some(mut transfer_state) = state.outbound_transfers.remove(&key) else {
-            return;
-        };
-
-        let expected = match transfer_state.awaiting.as_ref() {
-            Some(OutboundAwaiting::Open { .. }) => Some(1),
-            Some(OutboundAwaiting::Chunk { seq, .. }) => Some(seq.saturating_add(1)),
-            Some(OutboundAwaiting::Finish { seq }) => Some(seq.saturating_add(1)),
-            _ => None,
-        };
-        if expected != Some(next_seq) {
-            state.outbound_transfers.insert(key, transfer_state);
-            return;
-        }
-
-        if attempt >= TRANSFER_RETRY_LIMIT {
-            transfer_state.chunk_rx.close();
-            return;
-        }
-
-        let Some(awaiting) = transfer_state.awaiting.take() else {
-            state.outbound_transfers.insert(key, transfer_state);
-            return;
-        };
-        if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, attempt + 1) {
-            state.outbound_transfers.insert(key, transfer_state);
-        }
-    }
-
-    fn handle_transfer_cancel_ack_timeout(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        transfer_id: MessageId,
-        attempt: u8,
-    ) {
-        let key = (peer, transfer_id);
-        let Some(mut transfer_state) = state.outbound_transfers.remove(&key) else {
-            return;
-        };
-
-        if !matches!(transfer_state.awaiting, Some(OutboundAwaiting::Cancel)) {
-            state.outbound_transfers.insert(key, transfer_state);
-            return;
-        }
-
-        if attempt >= TRANSFER_RETRY_LIMIT {
-            transfer_state.chunk_rx.close();
-            return;
-        }
-
-        transfer_state.awaiting = None;
-        if self.send_outbound_awaiting(
-            state,
-            &mut transfer_state,
-            OutboundAwaiting::Cancel,
-            attempt + 1,
-        ) {
-            state.outbound_transfers.insert(key, transfer_state);
-        }
-    }
-
-    fn send_heartbeat_message(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        session_key: bc_components::SymmetricKey,
-    ) {
-        let message_id = state.next_message_id();
-        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
-        let message = heartbeat::encrypt_heartbeat(
-            QlHeader {
-                sender: self.platform.xid(),
-                recipient: peer,
-            },
-            &session_key,
-            HeartbeatBody {
-                message_id,
+            false,
+            CallBody {
+                packet_id,
                 valid_until,
+                packet_ack: None,
+                frame: Some(frame),
             },
         );
-        let bytes = CBOR::from(message).to_cbor_data();
-        let outbound_deadline = Instant::now() + self.config.message_expiration;
-        self.enqueue_outbound(
+    }
+
+    fn queue_credit(&self, call: &mut CallState, dir: Direction) {
+        if let Some(outbound) = call.outbound.as_mut() {
+            outbound.queue.push_back(CallFrame::Credit {
+                call_id: call.call_id,
+                dir,
+                recv_offset: call.inbound.next_offset,
+                max_offset: call.inbound.max_offset,
+            });
+        }
+    }
+
+    fn queue_local_reset(&self, call: &mut CallState, dir: call::ResetTarget, code: ResetCode) {
+        if let Some(outbound) = call.outbound.as_mut() {
+            outbound.queue.clear();
+            outbound.pending_chunk = None;
+            outbound.queue.push_back(CallFrame::Reset {
+                call_id: call.call_id,
+                dir,
+                code,
+            });
+            outbound.closed = true;
+        }
+        call.inbound.closed = true;
+        call.inbound.pending_chunk = None;
+        call.inbound.terminal = Some(InboundTerminal::Error(QlError::CallProtocol {
+            id: call.call_id,
+        }));
+        self.flush_inbound_terminal(&mut call.inbound);
+    }
+
+    fn note_accept_seen_from_remote(&self, call: &mut CallState) {
+        if call.role != CallRole::Responder || call.phase != CallPhase::ResponderAccepting {
+            return;
+        }
+        let Some(outbound) = call.outbound.as_mut() else {
+            return;
+        };
+        if matches!(
+            outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
+            Some(CallFrame::Accept { .. })
+        ) {
+            outbound.awaiting = None;
+            if matches!(
+                call.accept_frame,
+                Some(CallFrame::Accept {
+                    status: AcceptStatus::Accepted,
+                    ..
+                })
+            ) {
+                call.phase = CallPhase::Open;
+                outbound.data_enabled = true;
+            } else {
+                call.phase = CallPhase::Rejected;
+                outbound.closed = true;
+            }
+        }
+    }
+
+    fn flush_inbound_terminal(
+        &self,
+        inbound: &mut crate::runtime::internal::InboundCallStreamState,
+    ) {
+        if let Some(chunk) = inbound.pending_chunk.take() {
+            match inbound.chunk_tx.try_send(InboundStreamItem::Chunk(chunk)) {
+                Ok(()) => {}
+                Err(async_channel::TrySendError::Full(InboundStreamItem::Chunk(chunk))) => {
+                    inbound.pending_chunk = Some(chunk);
+                    return;
+                }
+                Err(async_channel::TrySendError::Closed(_)) => {
+                    inbound.closed = true;
+                    return;
+                }
+                Err(async_channel::TrySendError::Full(_)) => unreachable!(),
+            }
+        }
+
+        let Some(terminal) = inbound.terminal.take() else {
+            return;
+        };
+        match terminal {
+            InboundTerminal::Finished => {
+                match inbound.chunk_tx.try_send(InboundStreamItem::Finished) {
+                    Ok(()) => {
+                        inbound.closed = true;
+                        inbound.chunk_tx.close();
+                    }
+                    Err(async_channel::TrySendError::Full(_)) => {
+                        inbound.terminal = Some(InboundTerminal::Finished);
+                    }
+                    Err(async_channel::TrySendError::Closed(_)) => {
+                        inbound.closed = true;
+                    }
+                }
+            }
+            InboundTerminal::Error(error) => match inbound
+                .chunk_tx
+                .try_send(InboundStreamItem::Error(error.clone()))
+            {
+                Ok(()) => {
+                    inbound.closed = true;
+                    inbound.chunk_tx.close();
+                }
+                Err(async_channel::TrySendError::Full(_)) => {
+                    inbound.terminal = Some(InboundTerminal::Error(error));
+                }
+                Err(async_channel::TrySendError::Closed(_)) => {
+                    inbound.closed = true;
+                }
+            },
+        }
+    }
+
+    fn send_packet_ack(&self, state: &mut RuntimeState, peer: XID, acked_packet: PacketId) {
+        let packet_id = state.next_packet_id();
+        let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
+        self.enqueue_call_body(
             state,
             peer,
-            OutboundPayload::PreEncoded(bytes),
-            outbound_deadline,
             None,
+            None,
+            false,
+            true,
+            CallBody {
+                packet_id,
+                valid_until,
+                packet_ack: Some(call::PacketAck {
+                    packet_id: acked_packet,
+                }),
+                frame: None,
+            },
         );
     }
 
-    fn keep_alive_config(&self) -> Option<KeepAliveConfig> {
-        self.config
-            .keep_alive
-            .filter(|config| !config.interval.is_zero() && !config.timeout.is_zero())
+    fn send_ephemeral_reset(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        call_id: CallId,
+        dir: call::ResetTarget,
+        code: ResetCode,
+    ) {
+        let packet_id = state.next_packet_id();
+        let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
+        self.enqueue_call_body(
+            state,
+            peer,
+            None,
+            None,
+            false,
+            true,
+            CallBody {
+                packet_id,
+                valid_until,
+                packet_ack: None,
+                frame: Some(CallFrame::Reset { call_id, dir, code }),
+            },
+        );
     }
 
-    fn record_activity(&self, state: &mut RuntimeState, peer: XID) {
-        let Some(config) = self.keep_alive_config() else {
-            return;
-        };
-        let token = state.next_token();
-        let Some(entry) = state.peers.peer_mut(peer) else {
-            return;
-        };
-        let PeerSession::Connected { keepalive, .. } = &mut entry.session else {
-            return;
-        };
-        let now = Instant::now();
-        keepalive.last_activity = Some(now);
-        keepalive.pending = false;
-        keepalive.token = token;
+    fn enqueue_handshake_message(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        token: crate::runtime::Token,
+        deadline: Instant,
+        bytes: Vec<u8>,
+    ) {
+        state.outbound.push_back(OutboundMessage {
+            peer,
+            token,
+            call_id: None,
+            packet_id: None,
+            track_ack: false,
+            payload: OutboundPayload::PreEncoded(bytes),
+        });
         state.timeouts.push(Reverse(TimeoutEntry {
-            at: now + config.interval,
-            kind: TimeoutKind::KeepAliveSend { peer, token },
+            at: deadline,
+            kind: TimeoutKind::Handshake { peer, token },
+        }));
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: deadline,
+            kind: TimeoutKind::Outbound { token },
         }));
     }
 
-    fn drop_outbound_for_peer(&self, state: &mut RuntimeState, peer: XID) {
-        state.outbound.retain(|message| {
-            if message.peer == peer {
-                if let Some(id) = message.message_id {
-                    if let Some(entry) = state.pending.remove(&id) {
-                        let _ = entry.tx.send(Err(QlError::SendFailed));
-                    }
-                    if let Some(entry) = state.pending_stream.remove(&id) {
-                        let _ = entry.tx.send(Err(QlError::SendFailed));
-                    }
-                }
-                false
-            } else {
-                true
-            }
-        });
-    }
-
-    fn fail_pending_for_peer(&self, state: &mut RuntimeState, peer: XID) {
-        state
-            .pending
-            .extract_if(|_id, entry| entry.recipient == peer)
-            .for_each(|(_, entry)| {
-                let _ = entry.tx.send(Err(QlError::SendFailed));
-            });
-    }
-
-    fn fail_pending_stream_for_peer(&self, state: &mut RuntimeState, peer: XID) {
-        state
-            .pending_stream
-            .extract_if(|_id, entry| entry.recipient == peer)
-            .for_each(|(_, entry)| {
-                let _ = entry.tx.send(Err(QlError::SendFailed));
-            });
-    }
-
-    fn abort_transfers_for_peer(&self, state: &mut RuntimeState, peer: XID, error: QlError) {
-        state
-            .outbound_transfers
-            .extract_if(|(transfer_peer, _), _| *transfer_peer == peer)
-            .for_each(|(_, transfer_state)| {
-                transfer_state.chunk_rx.close();
-            });
-
-        state
-            .inbound_transfers
-            .extract_if(|(transfer_peer, _), _| *transfer_peer == peer)
-            .for_each(|(_, transfer_state)| {
-                let _ = transfer_state
-                    .chunk_tx
-                    .try_send(InboundStreamItem::Error(error.clone()));
-                transfer_state.chunk_tx.close();
-            });
-    }
-
-    fn resolve_pending_ok(
+    fn enqueue_call_body(
         &self,
         state: &mut RuntimeState,
-        sender: XID,
-        id: MessageId,
-        payload: CBOR,
+        peer: XID,
+        call_id: Option<CallId>,
+        packet_id: Option<PacketId>,
+        track_ack: bool,
+        priority: bool,
+        body: CallBody,
     ) {
-        if let Some(entry) = state.pending.remove(&id) {
-            if entry.recipient == sender {
-                let _ = entry.tx.send(Ok(payload));
-            }
-            return;
+        let token = state.next_token();
+        let message = OutboundMessage {
+            peer,
+            token,
+            call_id,
+            packet_id,
+            track_ack,
+            payload: OutboundPayload::DeferredCall(body),
+        };
+        if priority {
+            state.outbound.push_front(message);
+        } else {
+            state.outbound.push_back(message);
         }
-        if let Some(entry) = state.pending_stream.remove(&id) {
-            if entry.recipient == sender {
-                let _ = entry.tx.send(Err(QlError::InvalidPayload));
-            }
-        }
-    }
-
-    fn resolve_pending_nack(
-        &self,
-        state: &mut RuntimeState,
-        sender: XID,
-        id: MessageId,
-        nack: Nack,
-    ) {
-        if let Some(entry) = state.pending.remove(&id) {
-            if entry.recipient == sender {
-                let _ = entry.tx.send(Err(QlError::Nack { id, nack }));
-            }
-            return;
-        }
-        if let Some(entry) = state.pending_stream.remove(&id) {
-            if entry.recipient == sender {
-                let _ = entry.tx.send(Err(QlError::Nack { id, nack }));
-            }
-        }
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: Instant::now() + self.config.packet_expiration,
+            kind: TimeoutKind::Outbound { token },
+        }));
     }
 
     fn handle_hello(
@@ -1719,7 +1548,7 @@ impl<P: QlPlatform> Runtime<P> {
         let peer = header.sender;
         let action = match state.peers.peer(peer) {
             Some(entry) => match &entry.session {
-                PeerSession::Initiator {
+                crate::runtime::PeerSession::Initiator {
                     hello: local_hello, ..
                 } => {
                     if peer_hello_wins(local_hello, self.platform.xid(), &hello, peer) {
@@ -1728,7 +1557,7 @@ impl<P: QlPlatform> Runtime<P> {
                         HelloAction::Ignore
                     }
                 }
-                PeerSession::Responder {
+                crate::runtime::PeerSession::Responder {
                     hello: stored,
                     reply,
                     deadline,
@@ -1743,32 +1572,28 @@ impl<P: QlPlatform> Runtime<P> {
                         HelloAction::StartResponder
                     }
                 }
-                PeerSession::Disconnected | PeerSession::Connected { .. } => {
-                    HelloAction::StartResponder
-                }
+                crate::runtime::PeerSession::Disconnected
+                | crate::runtime::PeerSession::Connected { .. } => HelloAction::StartResponder,
             },
             None => return,
         };
 
         match action {
-            HelloAction::StartResponder => {
-                self.start_responder_handshake(state, peer, hello);
-            }
+            HelloAction::StartResponder => self.start_responder_handshake(state, peer, hello),
             HelloAction::ResendReply { reply, deadline } => {
-                let message = QlRecord {
+                let record = QlRecord {
                     header: QlHeader {
                         sender: self.platform.xid(),
                         recipient: peer,
                     },
                     payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
                 };
-                let bytes = CBOR::from(message).to_cbor_data();
-                self.enqueue_outbound(
+                self.enqueue_handshake_message(
                     state,
                     peer,
-                    OutboundPayload::PreEncoded(bytes),
+                    state.next_token(),
                     deadline,
-                    None,
+                    CBOR::from(record).to_cbor_data(),
                 );
             }
             HelloAction::Ignore => {}
@@ -1784,7 +1609,7 @@ impl<P: QlPlatform> Runtime<P> {
         let peer = header.sender;
         let (hello, initiator_secret, stage, responder_signing_key) = match state.peers.peer(peer) {
             Some(entry) => match &entry.session {
-                PeerSession::Initiator {
+                crate::runtime::PeerSession::Initiator {
                     hello,
                     session_key,
                     stage,
@@ -1815,7 +1640,7 @@ impl<P: QlPlatform> Runtime<P> {
         ) {
             Ok((confirm, session_key)) => {
                 if let Some(entry) = state.peers.peer_mut(peer) {
-                    entry.session = PeerSession::Connected {
+                    entry.session = crate::runtime::PeerSession::Connected {
                         session_key,
                         keepalive: KeepAliveState::new(),
                     };
@@ -1826,28 +1651,26 @@ impl<P: QlPlatform> Runtime<P> {
             }
             Err(_) => {
                 if let Some(entry) = state.peers.peer_mut(peer) {
-                    entry.session = PeerSession::Disconnected;
+                    entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
                 return;
             }
         };
 
-        let message = QlRecord {
+        let record = QlRecord {
             header: QlHeader {
                 sender: self.platform.xid(),
                 recipient: peer,
             },
             payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
         };
-        let bytes = CBOR::from(message).to_cbor_data();
-        let deadline = Instant::now() + self.config.handshake_timeout;
-        self.enqueue_outbound(
+        self.enqueue_handshake_message(
             state,
             peer,
-            OutboundPayload::PreEncoded(bytes),
-            deadline,
-            None,
+            state.next_token(),
+            Instant::now() + self.config.handshake_timeout,
+            CBOR::from(record).to_cbor_data(),
         );
     }
 
@@ -1860,7 +1683,7 @@ impl<P: QlPlatform> Runtime<P> {
         let peer = header.sender;
         let (hello, reply, secrets, initiator_signing_key) = match state.peers.peer(peer) {
             Some(entry) => match &entry.session {
-                PeerSession::Responder {
+                crate::runtime::PeerSession::Responder {
                     hello,
                     reply,
                     secrets,
@@ -1887,7 +1710,7 @@ impl<P: QlPlatform> Runtime<P> {
         ) {
             Ok(session_key) => {
                 if let Some(entry) = state.peers.peer_mut(peer) {
-                    entry.session = PeerSession::Connected {
+                    entry.session = crate::runtime::PeerSession::Connected {
                         session_key,
                         keepalive: KeepAliveState::new(),
                     };
@@ -1897,7 +1720,7 @@ impl<P: QlPlatform> Runtime<P> {
             }
             Err(_) => {
                 if let Some(entry) = state.peers.peer_mut(peer) {
-                    entry.session = PeerSession::Disconnected;
+                    entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
             }
@@ -1924,7 +1747,7 @@ impl<P: QlPlatform> Runtime<P> {
             Ok(result) => result,
             Err(_) => {
                 if let Some(entry) = state.peers.peer_mut(peer) {
-                    entry.session = PeerSession::Disconnected;
+                    entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
                 return;
@@ -1934,7 +1757,7 @@ impl<P: QlPlatform> Runtime<P> {
         let deadline = Instant::now() + self.config.handshake_timeout;
         let token = state.next_token();
         if let Some(entry) = state.peers.peer_mut(peer) {
-            entry.session = PeerSession::Responder {
+            entry.session = crate::runtime::PeerSession::Responder {
                 handshake_token: token,
                 hello: hello.clone(),
                 reply: reply.clone(),
@@ -1944,86 +1767,142 @@ impl<P: QlPlatform> Runtime<P> {
             self.platform.handle_peer_status(peer, &entry.session);
         }
 
-        let message = QlRecord {
+        let record = QlRecord {
             header: QlHeader {
                 sender: self.platform.xid(),
                 recipient: peer,
             },
             payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
         };
-        let bytes = CBOR::from(message).to_cbor_data();
-        self.enqueue_handshake_message(state, peer, token, deadline, bytes);
+        self.enqueue_handshake_message(
+            state,
+            peer,
+            token,
+            deadline,
+            CBOR::from(record).to_cbor_data(),
+        );
     }
 
-    fn enqueue_handshake_message(
+    fn send_heartbeat_message(
         &self,
         state: &mut RuntimeState,
         peer: XID,
-        token: Token,
-        deadline: Instant,
-        bytes: Vec<u8>,
+        session_key: bc_components::SymmetricKey,
     ) {
-        state.outbound.push_back(OutboundMessage {
+        let message = heartbeat::encrypt_heartbeat(
+            QlHeader {
+                sender: self.platform.xid(),
+                recipient: peer,
+            },
+            &session_key,
+            HeartbeatBody {
+                message_id: MessageId(state.next_packet_id().0),
+                valid_until: now_secs().saturating_add(self.config.packet_expiration.as_secs()),
+            },
+        );
+        self.enqueue_handshake_message(
+            state,
             peer,
-            token,
-            message_id: None,
-            payload: OutboundPayload::PreEncoded(bytes),
-        });
-        state.timeouts.push(Reverse(TimeoutEntry {
-            at: deadline,
-            kind: TimeoutKind::Handshake { peer, token },
-        }));
-        state.timeouts.push(Reverse(TimeoutEntry {
-            at: deadline,
-            kind: TimeoutKind::Outbound { token },
-        }));
+            state.next_token(),
+            Instant::now() + self.config.packet_expiration,
+            CBOR::from(message).to_cbor_data(),
+        );
     }
 
-    fn enqueue_outbound(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        payload: OutboundPayload,
-        deadline: Instant,
-        message_id: Option<MessageId>,
-    ) {
-        let token = state.next_token();
-        state.outbound.push_back(OutboundMessage {
-            peer,
-            token,
-            message_id,
-            payload,
-        });
-        state.timeouts.push(Reverse(TimeoutEntry {
-            at: deadline,
-            kind: TimeoutKind::Outbound { token },
-        }));
+    fn keep_alive_config(&self) -> Option<KeepAliveConfig> {
+        self.config
+            .keep_alive
+            .filter(|config| !config.interval.is_zero() && !config.timeout.is_zero())
     }
 
-    fn enqueue_outbound_preencoded(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        bytes: Vec<u8>,
-        deadline: Instant,
-        priority: bool,
-    ) {
-        let token = state.next_token();
-        let message = OutboundMessage {
-            peer,
-            token,
-            message_id: None,
-            payload: OutboundPayload::PreEncoded(bytes),
+    fn record_activity(&self, state: &mut RuntimeState, peer: XID) {
+        let Some(config) = self.keep_alive_config() else {
+            return;
         };
-        if priority {
-            state.outbound.push_front(message);
-        } else {
-            state.outbound.push_back(message);
-        }
+        let token = state.next_token();
+        let Some(entry) = state.peers.peer_mut(peer) else {
+            return;
+        };
+        let crate::runtime::PeerSession::Connected { keepalive, .. } = &mut entry.session else {
+            return;
+        };
+        let now = Instant::now();
+        keepalive.last_activity = Some(now);
+        keepalive.pending = false;
+        keepalive.token = token;
         state.timeouts.push(Reverse(TimeoutEntry {
-            at: deadline,
-            kind: TimeoutKind::Outbound { token },
+            at: now + config.interval,
+            kind: TimeoutKind::KeepAliveSend { peer, token },
         }));
+    }
+
+    fn record_call_activity(&self, state: &mut RuntimeState, peer: XID, call_id: CallId) {
+        if let Some(call) = state.calls.get_mut(&(peer, call_id)) {
+            call.last_activity = Instant::now();
+        }
+    }
+
+    fn persist_peers(&self, state: &RuntimeState) {
+        self.platform.persist_peers(state.peers.all());
+    }
+
+    fn drop_outbound_for_peer(&self, state: &mut RuntimeState, peer: XID) {
+        let call_ids: Vec<_> = state
+            .outbound
+            .iter()
+            .filter(|message| message.peer == peer)
+            .filter_map(|message| message.call_id)
+            .collect();
+        state.outbound.retain(|message| message.peer != peer);
+        for call_id in call_ids {
+            self.fail_call(state, peer, call_id, QlError::SendFailed);
+        }
+    }
+
+    fn abort_calls_for_peer(&self, state: &mut RuntimeState, peer: XID, error: QlError) {
+        let keys: Vec<_> = state
+            .calls
+            .keys()
+            .copied()
+            .filter(|(call_peer, _)| *call_peer == peer)
+            .collect();
+        for (_, call_id) in keys {
+            self.fail_call(state, peer, call_id, error.clone());
+        }
+    }
+
+    fn fail_call(&self, state: &mut RuntimeState, peer: XID, call_id: CallId, error: QlError) {
+        let Some(mut call) = state.calls.remove(&(peer, call_id)) else {
+            return;
+        };
+        if let Some(tx) = call.accept_tx.take() {
+            let _ = tx.send(Err(error.clone()));
+        }
+        if let Some(outbound) = call.outbound.as_mut() {
+            outbound.queue.clear();
+            outbound.pending_chunk = None;
+            outbound.awaiting = None;
+            outbound.closed = true;
+            outbound.chunk_rx.close();
+        }
+        call.inbound.pending_chunk = None;
+        let _ = call
+            .inbound
+            .chunk_tx
+            .try_send(InboundStreamItem::Error(error));
+        call.inbound.chunk_tx.close();
+    }
+
+    fn unpair_peer(&self, state: &mut RuntimeState, peer: XID) {
+        if state.peers.remove_peer(peer).is_none() {
+            return;
+        }
+        self.drop_outbound_for_peer(state, peer);
+        self.abort_calls_for_peer(state, peer, QlError::SendFailed);
+        state.replay_cache.clear_peer(peer);
+        self.platform
+            .handle_peer_status(peer, &crate::runtime::PeerSession::Disconnected);
+        self.persist_peers(state);
     }
 
     fn handle_timeouts(&self, state: &mut RuntimeState) {
@@ -2035,22 +1914,17 @@ impl<P: QlPlatform> Runtime<P> {
             let entry = PeekMut::pop(entry).0;
             match entry.kind {
                 TimeoutKind::Outbound { token } => {
-                    let mut message_id = None;
+                    let mut timed_out_call = None;
                     state.outbound.retain(|message| {
                         if message.token == token {
-                            message_id = message.message_id;
+                            timed_out_call = message.call_id.map(|call_id| (message.peer, call_id));
                             false
                         } else {
                             true
                         }
                     });
-                    if let Some(id) = message_id {
-                        if let Some(entry) = state.pending.remove(&id) {
-                            let _ = entry.tx.send(Err(QlError::SendFailed));
-                        }
-                        if let Some(entry) = state.pending_stream.remove(&id) {
-                            let _ = entry.tx.send(Err(QlError::SendFailed));
-                        }
+                    if let Some((peer, call_id)) = timed_out_call {
+                        self.fail_call(state, peer, call_id, QlError::SendFailed);
                     }
                 }
                 TimeoutKind::Handshake { peer, token } => {
@@ -2058,28 +1932,21 @@ impl<P: QlPlatform> Runtime<P> {
                         continue;
                     };
                     let should_disconnect = match &entry.session {
-                        PeerSession::Initiator {
+                        crate::runtime::PeerSession::Initiator {
                             handshake_token, ..
                         }
-                        | PeerSession::Responder {
+                        | crate::runtime::PeerSession::Responder {
                             handshake_token, ..
                         } => *handshake_token == token,
                         _ => false,
                     };
                     if should_disconnect {
                         if let Some(entry) = state.peers.peer_mut(peer) {
-                            entry.session = PeerSession::Disconnected;
+                            entry.session = crate::runtime::PeerSession::Disconnected;
                             self.platform.handle_peer_status(peer, &entry.session);
                         }
-                        state.outbound.retain(|message| message.peer != peer);
-                    }
-                }
-                TimeoutKind::Request { id } => {
-                    if let Some(entry) = state.pending.remove(&id) {
-                        let _ = entry.tx.send(Err(QlError::Timeout));
-                    }
-                    if let Some(entry) = state.pending_stream.remove(&id) {
-                        let _ = entry.tx.send(Err(QlError::Timeout));
+                        self.drop_outbound_for_peer(state, peer);
+                        self.abort_calls_for_peer(state, peer, QlError::SendFailed);
                     }
                 }
                 TimeoutKind::KeepAliveSend { peer, token } => {
@@ -2090,7 +1957,7 @@ impl<P: QlPlatform> Runtime<P> {
                         let Some(entry) = state.peers.peer(peer) else {
                             continue;
                         };
-                        let PeerSession::Connected {
+                        let crate::runtime::PeerSession::Connected {
                             session_key,
                             keepalive,
                         } = &entry.session
@@ -2105,7 +1972,9 @@ impl<P: QlPlatform> Runtime<P> {
                     };
                     self.send_heartbeat_message(state, peer, session_key);
                     if let Some(entry) = state.peers.peer_mut(peer) {
-                        if let PeerSession::Connected { keepalive, .. } = &mut entry.session {
+                        if let crate::runtime::PeerSession::Connected { keepalive, .. } =
+                            &mut entry.session
+                        {
                             if keepalive.token == token {
                                 keepalive.pending = true;
                             }
@@ -2120,39 +1989,68 @@ impl<P: QlPlatform> Runtime<P> {
                     let Some(entry) = state.peers.peer(peer) else {
                         continue;
                     };
-
                     let should_disconnect = match &entry.session {
-                        PeerSession::Connected { keepalive, .. } => {
+                        crate::runtime::PeerSession::Connected { keepalive, .. } => {
                             keepalive.token == token && keepalive.pending
                         }
                         _ => false,
                     };
-
                     if should_disconnect {
                         if let Some(entry) = state.peers.peer_mut(peer) {
-                            entry.session = PeerSession::Disconnected;
+                            entry.session = crate::runtime::PeerSession::Disconnected;
                             self.platform.handle_peer_status(peer, &entry.session);
                         }
                         self.drop_outbound_for_peer(state, peer);
-                        self.fail_pending_for_peer(state, peer);
-                        self.fail_pending_stream_for_peer(state, peer);
-                        self.abort_transfers_for_peer(state, peer, QlError::SendFailed);
+                        self.abort_calls_for_peer(state, peer, QlError::SendFailed);
                     }
                 }
-                TimeoutKind::TransferAck {
+                TimeoutKind::CallOpen {
                     peer,
-                    transfer_id,
-                    next_seq,
-                    attempt,
+                    call_id,
+                    token,
                 } => {
-                    self.handle_transfer_ack_timeout(state, peer, transfer_id, next_seq, attempt);
+                    let should_fail = state.calls.get(&(peer, call_id)).is_some_and(|call| {
+                        call.open_timeout_token == token
+                            && (call.phase == CallPhase::InitiatorOpening
+                                || call.phase == CallPhase::InitiatorWaitingAccept)
+                    });
+                    if should_fail {
+                        self.fail_call(state, peer, call_id, QlError::Timeout);
+                    }
                 }
-                TimeoutKind::TransferCancelAck {
+                TimeoutKind::CallPacket {
                     peer,
-                    transfer_id,
+                    call_id,
+                    packet_id,
                     attempt,
                 } => {
-                    self.handle_transfer_cancel_ack_timeout(state, peer, transfer_id, attempt);
+                    let key = (peer, call_id);
+                    let Some(mut call) = state.calls.remove(&key) else {
+                        continue;
+                    };
+                    let should_retry = call
+                        .outbound
+                        .as_ref()
+                        .and_then(|outbound| outbound.awaiting.as_ref())
+                        .is_some_and(|awaiting| {
+                            awaiting.packet_id == packet_id && awaiting.attempt == attempt
+                        });
+                    if !should_retry {
+                        state.calls.insert(key, call);
+                        continue;
+                    }
+                    if attempt >= CALL_RETRY_LIMIT {
+                        self.fail_call(state, peer, call_id, QlError::Timeout);
+                        continue;
+                    }
+                    let frame = call
+                        .outbound
+                        .as_ref()
+                        .and_then(|outbound| outbound.awaiting.as_ref())
+                        .map(|awaiting| awaiting.frame.clone())
+                        .unwrap();
+                    self.send_tracked_frame(state, &mut call, frame, attempt.saturating_add(1));
+                    state.calls.insert(key, call);
                 }
             }
         }
@@ -2162,40 +2060,74 @@ impl<P: QlPlatform> Runtime<P> {
         &self,
         state: &mut RuntimeState,
         peer: XID,
-        token: Token,
-        message_id: Option<MessageId>,
+        token: crate::runtime::Token,
+        call_id: Option<CallId>,
+        packet_id: Option<PacketId>,
+        track_ack: bool,
         result: Result<(), QlError>,
     ) {
-        if result.is_ok() {
+        if result.is_err() {
+            if let Some(call_id) = call_id {
+                self.fail_call(state, peer, call_id, QlError::SendFailed);
+            }
+            let should_disconnect = matches!(
+                state.peers.peer(peer).map(|entry| &entry.session),
+                Some(crate::runtime::PeerSession::Initiator { handshake_token, .. })
+                    if *handshake_token == token
+            ) || matches!(
+                state.peers.peer(peer).map(|entry| &entry.session),
+                Some(crate::runtime::PeerSession::Responder { handshake_token, .. })
+                    if *handshake_token == token
+            );
+            if should_disconnect {
+                if let Some(entry) = state.peers.peer_mut(peer) {
+                    entry.session = crate::runtime::PeerSession::Disconnected;
+                    self.platform.handle_peer_status(peer, &entry.session);
+                }
+                self.drop_outbound_for_peer(state, peer);
+                self.abort_calls_for_peer(state, peer, QlError::SendFailed);
+            }
             return;
         }
 
-        if let Some(id) = message_id {
-            if let Some(entry) = state.pending.remove(&id) {
-                let _ = entry.tx.send(Err(QlError::SendFailed));
-            }
-            if let Some(entry) = state.pending_stream.remove(&id) {
-                let _ = entry.tx.send(Err(QlError::SendFailed));
+        if track_ack {
+            if let (Some(call_id), Some(packet_id)) = (call_id, packet_id) {
+                let attempt = state
+                    .calls
+                    .get(&(peer, call_id))
+                    .and_then(|call| call.outbound.as_ref())
+                    .and_then(|outbound| outbound.awaiting.as_ref())
+                    .and_then(|awaiting| {
+                        (awaiting.packet_id == packet_id).then_some(awaiting.attempt)
+                    })
+                    .unwrap_or(0);
+                state.timeouts.push(Reverse(TimeoutEntry {
+                    at: Instant::now() + self.config.packet_ack_timeout,
+                    kind: TimeoutKind::CallPacket {
+                        peer,
+                        call_id,
+                        packet_id,
+                        attempt,
+                    },
+                }));
             }
         }
-        let should_disconnect = match state.peers.peer(peer).map(|entry| &entry.session) {
-            Some(PeerSession::Initiator {
-                handshake_token, ..
-            }) if *handshake_token == token => true,
-            Some(PeerSession::Responder {
-                handshake_token, ..
-            }) if *handshake_token == token => true,
-            _ => false,
-        };
-        if should_disconnect {
-            if let Some(entry) = state.peers.peer_mut(peer) {
-                entry.session = PeerSession::Disconnected;
-                self.platform.handle_peer_status(peer, &entry.session);
-            }
-            state.outbound.retain(|message| message.peer != peer);
-            self.fail_pending_for_peer(state, peer);
-            self.fail_pending_stream_for_peer(state, peer);
-            self.abort_transfers_for_peer(state, peer, QlError::SendFailed);
+    }
+}
+
+trait FrameExt {
+    fn call_id(&self) -> CallId;
+}
+
+impl FrameExt for CallFrame {
+    fn call_id(&self) -> CallId {
+        match self {
+            CallFrame::Open { call_id, .. }
+            | CallFrame::Accept { call_id, .. }
+            | CallFrame::Data { call_id, .. }
+            | CallFrame::Credit { call_id, .. }
+            | CallFrame::Finish { call_id, .. }
+            | CallFrame::Reset { call_id, .. } => *call_id,
         }
     }
 }

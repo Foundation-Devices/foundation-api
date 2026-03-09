@@ -1,6 +1,5 @@
 mod id;
 pub mod platform;
-pub mod router;
 pub mod runtime;
 pub mod wire;
 
@@ -14,28 +13,6 @@ pub struct Peer {
     pub peer: bc_components::XID,
     pub signing_key: bc_components::MLDSAPublicKey,
     pub encapsulation_key: bc_components::MLKEMPublicKey,
-}
-
-pub trait QlCodec: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}
-impl<T> QlCodec for T where T: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}
-
-pub trait RequestResponse: QlCodec {
-    const ID: RouteId;
-    type Response: QlCodec;
-}
-
-pub trait Event: QlCodec {
-    const ID: RouteId;
-}
-
-pub trait QlStream: QlCodec {
-    const ID: RouteId;
-    type StreamMeta: QlCodec;
-}
-
-pub trait QlUpload: QlCodec {
-    const ID: RouteId;
-    type Response: QlCodec;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -54,15 +31,19 @@ pub enum QlError {
     Timeout,
     #[error("send failed")]
     SendFailed,
-    #[error("nack {nack:?}")]
-    Nack {
-        id: MessageId,
-        nack: wire::message::Nack,
+    #[error("call rejected {code:?}")]
+    CallRejected {
+        id: CallId,
+        code: wire::call::RejectCode,
     },
+    #[error("call reset {code:?}")]
+    CallReset {
+        id: CallId,
+        dir: wire::call::Direction,
+        code: wire::call::ResetCode,
+    },
+    #[error("call protocol error")]
+    CallProtocol { id: CallId },
     #[error("cancelled")]
     Cancelled,
-    #[error("transfer cancelled")]
-    TransferCancelled { id: MessageId },
-    #[error("transfer protocol error")]
-    TransferProtocol { id: MessageId },
 }

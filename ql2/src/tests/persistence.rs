@@ -1,118 +1,6 @@
-use std::sync::atomic::{AtomicU8, Ordering};
-
-use async_channel::{Receiver, Sender};
-use bc_components::{
-    MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, MLDSA, MLKEM, XID,
-};
+use std::time::Duration;
 
 use super::*;
-
-type PersistPlatformParts = (
-    PersistPlatform,
-    Receiver<Vec<u8>>,
-    Receiver<StatusEvent>,
-    Receiver<Vec<crate::Peer>>,
-);
-
-struct PersistPlatform {
-    signing_private: MLDSAPrivateKey,
-    signing_public: MLDSAPublicKey,
-    encapsulation_private: MLKEMPrivateKey,
-    encapsulation_public: MLKEMPublicKey,
-    outbound: Sender<Vec<u8>>,
-    status: Sender<StatusEvent>,
-    persisted: Sender<Vec<crate::Peer>>,
-    loaded_peers: Vec<crate::Peer>,
-    nonce_seed: u8,
-    nonce_counter: AtomicU8,
-}
-
-impl PersistPlatform {
-    fn new(seed: u8, loaded_peers: Vec<crate::Peer>) -> PersistPlatformParts {
-        let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
-        let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
-        let (outbound, outbound_rx) = async_channel::unbounded();
-        let (status, status_rx) = async_channel::unbounded();
-        let (persisted, persisted_rx) = async_channel::unbounded();
-        (
-            Self {
-                signing_private,
-                signing_public,
-                encapsulation_private,
-                encapsulation_public,
-                outbound,
-                status,
-                persisted,
-                loaded_peers,
-                nonce_seed: seed,
-                nonce_counter: AtomicU8::new(0),
-            },
-            outbound_rx,
-            status_rx,
-            persisted_rx,
-        )
-    }
-}
-
-impl QlPlatform for PersistPlatform {
-    fn signing_private_key(&self) -> &MLDSAPrivateKey {
-        &self.signing_private
-    }
-
-    fn signing_public_key(&self) -> &MLDSAPublicKey {
-        &self.signing_public
-    }
-
-    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey {
-        &self.encapsulation_private
-    }
-
-    fn encapsulation_public_key(&self) -> &MLKEMPublicKey {
-        &self.encapsulation_public
-    }
-
-    fn fill_random_bytes(&self, data: &mut [u8]) {
-        let value = self
-            .nonce_seed
-            .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
-        data.fill(value);
-    }
-
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
-        let outbound = self.outbound.clone();
-        Box::pin(async move {
-            outbound
-                .send(message)
-                .await
-                .map_err(|_| QlError::InvalidPayload)
-        })
-    }
-
-    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
-        Box::pin(tokio::time::sleep(duration))
-    }
-
-    fn load_peers(&self) -> PlatformFuture<'_, Vec<crate::Peer>> {
-        let peers = self.loaded_peers.clone();
-        Box::pin(async move { peers })
-    }
-
-    fn persist_peers(&self, peers: Vec<crate::Peer>) {
-        let _ = self.persisted.try_send(peers);
-    }
-
-    fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
-        let stage = match session {
-            PeerSession::Disconnected => PeerStage::Disconnected,
-            PeerSession::Initiator { .. } => PeerStage::Initiator,
-            PeerSession::Responder { .. } => PeerStage::Responder,
-            PeerSession::Connected { .. } => PeerStage::Connected,
-        };
-        let _ = self.status.try_send(StatusEvent { peer, stage });
-    }
-
-    fn handle_inbound(&self, _event: HandlerEvent) {}
-}
 
 #[tokio::test(flavor = "current_thread")]
 async fn register_peer_persists_snapshot() {
@@ -163,8 +51,7 @@ async fn loaded_peers_can_connect_without_register() {
         let peer_a = peer_identity(&platform_a);
 
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
-        let (runtime_b, handle_b) =
-            new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });

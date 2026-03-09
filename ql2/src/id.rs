@@ -2,50 +2,34 @@ use std::fmt;
 
 use dcbor::CBOR;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MessageId(pub u64);
+macro_rules! define_id {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub struct $name(pub u64);
 
-impl fmt::Display for MessageId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+
+        impl From<$name> for CBOR {
+            fn from(value: $name) -> Self {
+                CBOR::from(value.0)
+            }
+        }
+
+        impl TryFrom<CBOR> for $name {
+            type Error = dcbor::Error;
+
+            fn try_from(value: CBOR) -> Result<Self, Self::Error> {
+                Ok(Self(u64::try_from(value)?))
+            }
+        }
+    };
 }
 
-impl From<MessageId> for CBOR {
-    fn from(value: MessageId) -> Self {
-        CBOR::from(value.0)
-    }
-}
-
-impl TryFrom<CBOR> for MessageId {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let value: u64 = value.try_into()?;
-        Ok(Self(value))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RouteId(pub u64);
-
-impl fmt::Display for RouteId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<RouteId> for CBOR {
-    fn from(value: RouteId) -> Self {
-        CBOR::from(value.0)
-    }
-}
-
-impl TryFrom<CBOR> for RouteId {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let value: u64 = value.try_into()?;
-        Ok(Self(value))
-    }
-}
+define_id!(MessageId);
+define_id!(PacketId);
+define_id!(CallId);
+define_id!(RouteId);
