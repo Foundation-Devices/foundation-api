@@ -876,6 +876,14 @@ impl<P: QlPlatform> Runtime<P> {
             Err(_) => return,
         };
 
+        let replay_key = ReplayKey::new(peer, ReplayNamespace::Transfer, body.message_id);
+        if state
+            .replay_cache
+            .check_and_store_valid_until(replay_key, body.valid_until)
+        {
+            return;
+        }
+
         self.record_activity(state, peer);
         self.handle_transfer_frame(state, peer, body.transfer_id, body.frame);
     }

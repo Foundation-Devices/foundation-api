@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -421,6 +421,19 @@ fn spawn_drop_first_transfer_forwarder(outbound: Receiver<Vec<u8>>, handle: Runt
             if !dropped && is_transfer(&bytes) {
                 dropped = true;
                 continue;
+            }
+            handle.send_incoming(bytes);
+        }
+    });
+}
+
+fn spawn_duplicate_first_transfer_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+    tokio::task::spawn_local(async move {
+        let mut duplicated = false;
+        while let Ok(bytes) = outbound.recv().await {
+            if !duplicated && is_transfer(&bytes) {
+                duplicated = true;
+                handle.send_incoming(bytes.clone());
             }
             handle.send_incoming(bytes);
         }

@@ -381,3 +381,172 @@ async fn duplicate_open_request_retries_without_redispatching_upload() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn replayed_transfer_open_request_is_silently_ignored() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200))
+            .with_request_timeout(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        let transfer_count = Arc::new(AtomicUsize::new(0));
+        spawn_duplicate_first_transfer_forwarder(outbound_a, handle_b.clone());
+        tokio::task::spawn_local({
+            let handle_a = handle_a.clone();
+            let transfer_count = transfer_count.clone();
+            async move {
+                while let Ok(bytes) = outbound_b.recv().await {
+                    if is_transfer(&bytes) {
+                        transfer_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    handle_a.send_incoming(bytes);
+                }
+            }
+        });
+
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+
+        handle_a.connect(peer_b.xid).unwrap();
+
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
+
+        let upload = handle_a
+            .send_request_upload_raw(
+                peer_b.xid,
+                RouteId(207),
+                CBOR::from("meta"),
+                RequestConfig::default(),
+            )
+            .await
+            .unwrap();
+
+        let request = match tokio::time::timeout(Duration::from_secs(1), inbound_b.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            HandlerEvent::UploadRequest(request) => request,
+            other => panic!("unexpected inbound event: {other:?}"),
+        };
+
+        assert_eq!(request.route_id, RouteId(207));
+        assert_eq!(request.meta, CBOR::from("meta"));
+
+        let second = tokio::time::timeout(Duration::from_millis(50), inbound_b.recv()).await;
+        assert!(second.is_err(), "replayed transfer redispatched upload");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while transfer_count.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            transfer_count.load(Ordering::Relaxed),
+            1,
+            "replayed transfer produced extra ack"
+        );
+
+        drop(upload);
+        drop(request);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn replayed_transfer_open_response_is_silently_ignored() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200))
+            .with_request_timeout(Duration::from_millis(200));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        let transfer_count = Arc::new(AtomicUsize::new(0));
+        tokio::task::spawn_local({
+            let handle_b = handle_b.clone();
+            let transfer_count = transfer_count.clone();
+            async move {
+                while let Ok(bytes) = outbound_a.recv().await {
+                    if is_transfer(&bytes) {
+                        transfer_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    handle_b.send_incoming(bytes);
+                }
+            }
+        });
+        spawn_duplicate_first_transfer_forwarder(outbound_b, handle_a.clone());
+
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+
+        handle_a.connect(peer_b.xid).unwrap();
+
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
+
+        let responder_task = tokio::task::spawn_local(async move {
+            if let Ok(HandlerEvent::Request(request)) = inbound_b.recv().await {
+                let stream = request.respond_to.respond_stream(7u8).unwrap();
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                drop(stream);
+            }
+        });
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            handle_a
+                .send_request_stream_raw(
+                    peer_b.xid,
+                    RouteId(208),
+                    CBOR::from(1u8),
+                    RequestConfig::default(),
+                )
+                .recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.meta, CBOR::from(7u8));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while transfer_count.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            transfer_count.load(Ordering::Relaxed),
+            1,
+            "replayed transfer produced extra ack"
+        );
+
+        drop(response);
+        tokio::time::timeout(Duration::from_secs(1), responder_task)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
