@@ -190,6 +190,22 @@ pub(crate) enum InboundStreamItem {
     Error(QlError),
 }
 
+// Identity of an accepted inbound transfer open frame.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InboundTransferOpen {
+    // Streamed response correlated to a prior request.
+    Response {
+        request_id: MessageId,
+        meta: CBOR,
+    },
+    // Streamed upload request with route metadata.
+    Request {
+        request_id: MessageId,
+        route_id: RouteId,
+        meta: CBOR,
+    },
+}
+
 // Runtime-delivered stream metadata and receiver.
 pub(crate) struct InboundStreamDelivery {
     pub peer: XID,
@@ -247,6 +263,7 @@ pub struct OutboundTransferState {
 
 // Runtime state for one inbound transfer.
 pub struct InboundTransferState {
+    pub open: InboundTransferOpen,
     pub expected_seq: u32,
     pub chunk_tx: Sender<InboundStreamItem>,
 }

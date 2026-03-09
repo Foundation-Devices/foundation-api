@@ -11,10 +11,10 @@ use crate::{
     runtime::{
         internal::{
             next_timeout_deadline, now_secs, peer_hello_wins, HelloAction, InFlightWrite,
-            InboundStreamDelivery, InboundStreamItem, InboundTransferState, KeepAliveState,
-            LoopStep, OutboundAwaiting, OutboundMessage, OutboundPayload, OutboundStreamInput,
-            OutboundTransferStage, OutboundTransferState, PendingEntry, PendingStreamEntry,
-            RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
+            InboundStreamDelivery, InboundStreamItem, InboundTransferOpen, InboundTransferState,
+            KeepAliveState, LoopStep, OutboundAwaiting, OutboundMessage, OutboundPayload,
+            OutboundStreamInput, OutboundTransferStage, OutboundTransferState, PendingEntry,
+            PendingStreamEntry, RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
         HandlerEvent, InboundByteStream, InboundEvent, InboundRequest, InboundUploadRequest,
@@ -931,6 +931,14 @@ impl<P: QlPlatform> Runtime<P> {
         request_id: MessageId,
         meta: CBOR,
     ) {
+        let open = InboundTransferOpen::Response {
+            request_id,
+            meta: meta.clone(),
+        };
+        if self.handle_duplicate_transfer_open(state, peer, transfer_id, &open) {
+            return;
+        }
+
         let Some(pending) = state.pending_stream.remove(&request_id) else {
             self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
             return;
@@ -963,6 +971,7 @@ impl<P: QlPlatform> Runtime<P> {
         state.inbound_transfers.insert(
             (peer, transfer_id),
             InboundTransferState {
+                open,
                 expected_seq: 1,
                 chunk_tx,
             },
@@ -986,6 +995,15 @@ impl<P: QlPlatform> Runtime<P> {
         route_id: RouteId,
         meta: CBOR,
     ) {
+        let open = InboundTransferOpen::Request {
+            request_id,
+            route_id,
+            meta: meta.clone(),
+        };
+        if self.handle_duplicate_transfer_open(state, peer, transfer_id, &open) {
+            return;
+        }
+
         let Some(tx) = self.tx.upgrade() else {
             self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
             return;
@@ -1008,6 +1026,7 @@ impl<P: QlPlatform> Runtime<P> {
         state.inbound_transfers.insert(
             (peer, transfer_id),
             InboundTransferState {
+                open,
                 expected_seq: 1,
                 chunk_tx,
             },
@@ -1020,6 +1039,27 @@ impl<P: QlPlatform> Runtime<P> {
             TransferFrame::Ack { next_seq: 1 },
             true,
         );
+    }
+
+    fn handle_duplicate_transfer_open(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        open: &InboundTransferOpen,
+    ) -> bool {
+        let key = (peer, transfer_id);
+        let Some(existing) = state.inbound_transfers.get(&key) else {
+            return false;
+        };
+
+        let frame = if &existing.open == open {
+            TransferFrame::Ack { next_seq: 1 }
+        } else {
+            TransferFrame::Cancel
+        };
+        self.send_transfer_frame(state, peer, transfer_id, frame, true);
+        true
     }
 
     fn handle_transfer_chunk(
