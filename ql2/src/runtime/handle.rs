@@ -197,10 +197,7 @@ impl OutboundByteStream {
     }
 
     pub async fn write(&mut self, bytes: &[u8]) -> Result<usize, QlError> {
-        let pipe = self
-            .pipe
-            .as_mut()
-            .expect("stream not finished or reset");
+        let pipe = self.pipe.as_mut().expect("stream not finished or reset");
         let written = poll_fn(|cx| pipe.poll_write(cx, bytes)).await?;
         // TODO: We currently nudge the runtime after every successful write. If this becomes noisy,
         // add a coalesced readiness bit rather than buffering writes in another queue again.

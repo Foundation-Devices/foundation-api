@@ -1,5 +1,6 @@
 use std::{
-    cmp::Reverse, collections::binary_heap::PeekMut, future::Future, task::Poll, time::Instant,
+    cmp::Reverse, collections::binary_heap::PeekMut, future::Future, io::Read, task::Poll,
+    time::Instant,
 };
 
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SigningPublicKey, XID};
@@ -12,10 +13,9 @@ use crate::{
         handle::{CallResponder, InboundByteStream, InboundCall},
         internal::{
             now_secs, peer_hello_wins, AwaitingFrame, AwaitingPacket, CallPhase, CallRecord,
-            CallRole, CoreState, HelloAction, InFlightWrite, InboundStreamItem,
-            InboundTerminal, InitiatorStage, KeepAliveState, LoopStep, OutboundCallStreamState,
-            OutboundMessage, OutboundPayload, RuntimeCommand, RuntimeState, TimeoutEntry,
-            TimeoutKind,
+            CallRole, CoreState, HelloAction, InFlightWrite, InboundStreamItem, InboundTerminal,
+            InitiatorStage, KeepAliveState, LoopStep, OutboundCallStreamState, OutboundMessage,
+            OutboundPayload, RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
         AcceptedCallDelivery, HandlerEvent, KeepAliveConfig, PeerSession, Runtime,
@@ -427,11 +427,11 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
 
-            let mut outbound = OutboundCallStreamState::new(
-                Direction::Response,
-                response_pipe,
-                call.initial_remote_credit,
-            );
+        let mut outbound = OutboundCallStreamState::new(
+            Direction::Response,
+            response_pipe,
+            call.initial_remote_credit,
+        );
         let frame = CallFrame::Accept {
             call_id,
             status: AcceptStatus::Accepted,
@@ -1064,6 +1064,13 @@ impl<P: QlPlatform> Runtime<P> {
             } else {
                 outbound.pipe.ack_to(recv_offset);
                 outbound.remote_max_offset = outbound.remote_max_offset.max(max_offset);
+                if matches!(
+                    outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
+                    Some(AwaitingFrame::Data { offset, len, .. })
+                        if recv_offset >= offset.saturating_add(*len as u64)
+                ) {
+                    outbound.awaiting = None;
+                }
             }
             call.last_activity = Instant::now();
         }
@@ -1234,39 +1241,39 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         };
 
-        let mut next_frame = None;
+        let mut next_control = None;
+        let mut next_data = None;
         {
             let outbound = call.outbound.as_mut().unwrap();
             if outbound.awaiting.is_none() {
                 if let Some(frame) = outbound.queue.pop_front() {
-                    next_frame = Some(NextFrame::Control(frame));
+                    next_control = Some(frame);
                 } else if outbound.data_enabled && !outbound.closed {
-                    if let Some(send) =
-                        outbound.pipe.reserve_send(outbound.remote_max_offset, self.config.max_payload_bytes)
+                    if let Some(mut send) = outbound
+                        .pipe
+                        .reserve_send(outbound.remote_max_offset, self.config.max_payload_bytes)
                     {
-                        next_frame = Some(NextFrame::Data {
-                            dir: outbound.dir,
-                            offset: send.offset,
-                            len: send.len,
-                        });
+                        let mut bytes = vec![0; send.len()];
+                        // TODO: We still allocate and copy per outbound packet because the wire
+                        // format owns `Vec<u8>`. The ring eliminates the long-lived stream buffer
+                        // allocations but not this packet build step.
+                        send.read_exact(&mut bytes).expect("grant length is exact");
+                        next_data = Some((outbound.dir, send.offset(), send.len(), bytes));
                     } else if outbound.pipe.writer_finished() && outbound.pipe.all_sent() {
                         outbound.closed = true;
-                        next_frame = Some(NextFrame::Control(CallFrame::Finish {
+                        next_control = Some(CallFrame::Finish {
                             call_id,
                             dir: outbound.dir,
-                        }));
+                        });
                     }
                 }
             }
         }
 
-        if let Some(frame) = next_frame {
-            match frame {
-                NextFrame::Control(frame) => self.send_control_frame(core, call, frame, 0),
-                NextFrame::Data { dir, offset, len } => {
-                    self.send_data_frame(core, call, dir, offset, len, 0)
-                }
-            }
+        if let Some(frame) = next_control {
+            self.send_control_frame(core, call, frame, 0);
+        } else if let Some((dir, offset, len, bytes)) = next_data {
+            self.send_data_frame(core, call, dir, offset, len, bytes, 0);
         }
     }
 
@@ -1310,15 +1317,13 @@ impl<P: QlPlatform> Runtime<P> {
         dir: Direction,
         offset: u64,
         len: usize,
+        bytes: Vec<u8>,
         attempt: u8,
     ) {
         let packet_id = core.next_packet_id();
         let Some(outbound) = call.outbound.as_mut() else {
             return;
         };
-        // TODO: We still copy packet-sized slices into a fresh Vec for wire encoding.
-        // The ring removes long-lived chunk allocations, but this per-packet copy remains.
-        let bytes = outbound.pipe.read_range(offset, len);
         outbound.awaiting = Some(AwaitingPacket {
             packet_id,
             frame: AwaitingFrame::Data { dir, offset, len },
@@ -2077,12 +2082,24 @@ impl<P: QlPlatform> Runtime<P> {
                                     );
                                 }
                                 AwaitingFrame::Data { dir, offset, len } => {
+                                    let Some(outbound) = call.outbound.as_ref() else {
+                                        continue;
+                                    };
+                                    let Some(mut grant) = outbound.pipe.retry_send(*offset, *len)
+                                    else {
+                                        // TODO: If a later `Credit` advanced past this range, the
+                                        // bytes are already semantically acked and cannot be retried.
+                                        continue;
+                                    };
+                                    let mut bytes = vec![0; grant.len()];
+                                    grant.read_exact(&mut bytes).expect("grant length is exact");
                                     self.send_data_frame(
                                         core,
                                         call,
                                         *dir,
                                         *offset,
                                         *len,
+                                        bytes,
                                         attempt.saturating_add(1),
                                     );
                                 }
@@ -2154,11 +2171,6 @@ impl<P: QlPlatform> Runtime<P> {
             }
         }
     }
-}
-
-enum NextFrame {
-    Control(CallFrame),
-    Data { dir: Direction, offset: u64, len: usize },
 }
 
 trait FrameExt {

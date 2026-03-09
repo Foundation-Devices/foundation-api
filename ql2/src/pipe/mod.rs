@@ -1,6 +1,6 @@
 use std::{
-    mem,
-    ptr,
+    io::{self, Read},
+    mem, ptr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -81,9 +81,11 @@ pub(crate) struct PipeReader {
     sent: u64,
 }
 
-pub(crate) struct SendSlice {
-    pub offset: u64,
-    pub len: usize,
+pub(crate) struct SendGrant<'a> {
+    inner: &'a PipeInner,
+    offset: u64,
+    len: usize,
+    position: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,7 +176,11 @@ impl PipeWriter {
 }
 
 impl PipeReader {
-    pub fn reserve_send(&mut self, remote_max_offset: u64, max_len: usize) -> Option<SendSlice> {
+    pub fn reserve_send(
+        &mut self,
+        remote_max_offset: u64,
+        max_len: usize,
+    ) -> Option<SendGrant<'_>> {
         self.written = self.inner.written.load(Ordering::Acquire);
         let limit = self.written.min(remote_max_offset);
         if self.sent >= limit {
@@ -183,15 +189,26 @@ impl PipeReader {
         let len = ((limit - self.sent) as usize).min(max_len);
         let offset = self.sent;
         self.sent = self.sent.saturating_add(len as u64);
-        Some(SendSlice { offset, len })
+        Some(SendGrant {
+            inner: self.inner.as_ref(),
+            offset,
+            len,
+            position: 0,
+        })
     }
 
-    pub fn read_range(&self, offset: u64, len: usize) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(len);
-        unsafe {
-            copy_bytes(self.inner.buffer, self.inner.cap, offset, len, &mut bytes);
+    pub fn retry_send(&self, offset: u64, len: usize) -> Option<SendGrant<'_>> {
+        let acked = self.inner.acked.load(Ordering::Acquire);
+        let written = self.inner.written.load(Ordering::Acquire);
+        if offset < acked || offset.saturating_add(len as u64) > written {
+            return None;
         }
-        bytes
+        Some(SendGrant {
+            inner: self.inner.as_ref(),
+            offset,
+            len,
+            position: 0,
+        })
     }
 
     pub fn ack_to(&mut self, recv_offset: u64) {
@@ -225,6 +242,36 @@ impl PipeReader {
     }
 }
 
+impl SendGrant<'_> {
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl Read for SendGrant<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.len.saturating_sub(self.position);
+        if remaining == 0 || buf.is_empty() {
+            return Ok(0);
+        }
+        let n = remaining.min(buf.len());
+        unsafe {
+            copy_bytes(
+                self.inner.buffer,
+                self.inner.cap,
+                self.offset.saturating_add(self.position as u64),
+                &mut buf[..n],
+            );
+        }
+        self.position += n;
+        Ok(n)
+    }
+}
+
 unsafe fn write_bytes(buffer: *mut u8, cap: usize, offset: u64, src: &[u8]) {
     let start = (offset as usize) % cap;
     let first = src.len().min(cap - start);
@@ -234,8 +281,8 @@ unsafe fn write_bytes(buffer: *mut u8, cap: usize, offset: u64, src: &[u8]) {
     }
 }
 
-unsafe fn copy_bytes(buffer: *mut u8, cap: usize, offset: u64, len: usize, dst: &mut Vec<u8>) {
-    dst.set_len(len);
+unsafe fn copy_bytes(buffer: *mut u8, cap: usize, offset: u64, dst: &mut [u8]) {
+    let len = dst.len();
     let start = (offset as usize) % cap;
     let first = len.min(cap - start);
     ptr::copy_nonoverlapping(buffer.add(start), dst.as_mut_ptr(), first);
@@ -246,6 +293,8 @@ unsafe fn copy_bytes(buffer: *mut u8, cap: usize, offset: u64, len: usize, dst: 
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
     use futures_lite::future::poll_fn;
     use tokio::task::yield_now;
 
@@ -254,23 +303,33 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn pipe_writes_reads_and_acks() {
         let (mut reader, mut writer) = pipe(8);
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(), 4);
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(),
+            4
+        );
 
-        let send = reader.reserve_send(8, 8).unwrap();
-        assert_eq!(send.offset, 0);
-        assert_eq!(send.len, 4);
-        assert_eq!(reader.read_range(send.offset, send.len), b"abcd");
+        let mut send = reader.reserve_send(8, 8).unwrap();
+        assert_eq!(send.offset(), 0);
+        assert_eq!(send.len(), 4);
+        let mut bytes = vec![0; send.len()];
+        send.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, b"abcd");
 
         reader.ack_to(4);
         assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"ef")).await.unwrap(), 2);
-        let send = reader.reserve_send(8, 8).unwrap();
-        assert_eq!(reader.read_range(send.offset, send.len), b"ef");
+        let mut send = reader.reserve_send(8, 8).unwrap();
+        let mut bytes = vec![0; send.len()];
+        send.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, b"ef");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn pipe_blocks_until_ack() {
         let (mut reader, mut writer) = pipe(4);
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(), 4);
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(),
+            4
+        );
 
         let mut blocked = false;
         let poll = poll_fn(|cx| match writer.poll_write(cx, b"e") {
@@ -308,21 +367,38 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn pipe_wraparound_reads_correctly() {
         let (mut reader, mut writer) = pipe(8);
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"abcdef")).await.unwrap(), 6);
-        let send = reader.reserve_send(8, 6).unwrap();
-        assert_eq!(reader.read_range(send.offset, send.len), b"abcdef");
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"abcdef"))
+                .await
+                .unwrap(),
+            6
+        );
+        let mut send = reader.reserve_send(8, 6).unwrap();
+        let mut bytes = vec![0; send.len()];
+        send.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, b"abcdef");
         reader.ack_to(6);
 
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"ghijkl")).await.unwrap(), 6);
-        let send = reader.reserve_send(12, 6).unwrap();
-        assert_eq!(reader.read_range(send.offset, send.len), b"ghijkl");
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"ghijkl"))
+                .await
+                .unwrap(),
+            6
+        );
+        let mut send = reader.reserve_send(12, 6).unwrap();
+        let mut bytes = vec![0; send.len()];
+        send.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, b"ghijkl");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn closing_reader_wakes_writer() {
         let (_reader, mut writer) = pipe(4);
         let mut reader = _reader;
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(), 4);
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(),
+            4
+        );
         reader.close();
         let err = poll_fn(|cx| writer.poll_write(cx, b"e")).await.unwrap_err();
         assert_eq!(err, PipeClosed);
