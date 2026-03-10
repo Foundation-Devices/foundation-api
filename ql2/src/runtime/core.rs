@@ -1031,6 +1031,20 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         };
         self.note_setup_seen_from_remote(stream);
+        if dir == Direction::Response
+            && matches!(
+                stream,
+                StreamState::Initiator(crate::runtime::internal::InitiatorStream {
+                    accept: InitiatorAccept::Opening { .. } | InitiatorAccept::WaitingAccept { .. },
+                    ..
+                })
+            )
+        {
+            self.queue_protocol_reset(stream);
+            *stream.last_activity_mut() = Instant::now();
+            self.drive_stream(state, peer, stream_id);
+            return;
+        }
         let Some(inbound) = stream.inbound_mut(dir) else {
             self.queue_protocol_reset(stream);
             self.drive_stream(state, peer, stream_id);

@@ -2,14 +2,15 @@ use std::{
     future::Future,
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
 
 use async_channel::{Receiver, Sender};
 use bc_components::{
-    MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, MLDSA, MLKEM, XID,
+    Digest, MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, MLDSA, MLKEM,
+    SymmetricKey, XID,
 };
 use dcbor::CBOR;
 use tokio::task::LocalSet;
@@ -317,6 +318,133 @@ fn spawn_duplicate_first_stream_forwarder(outbound: Receiver<Vec<u8>>, handle: R
             if !duplicated && is_stream(&bytes) {
                 duplicated = true;
                 handle.send_incoming(bytes.clone());
+            }
+            handle.send_incoming(bytes);
+        }
+    });
+}
+
+#[derive(Clone)]
+struct SessionKeyMaterial {
+    initiator_encapsulation_private: MLKEMPrivateKey,
+    responder_encapsulation_private: MLKEMPrivateKey,
+}
+
+fn session_key_material(
+    initiator: &TestPlatform,
+    responder: &InboundPlatform,
+) -> SessionKeyMaterial {
+    SessionKeyMaterial {
+        initiator_encapsulation_private: initiator.encapsulation_private.clone(),
+        responder_encapsulation_private: responder.encapsulation_private.clone(),
+    }
+}
+
+#[derive(Default)]
+struct SessionTrace {
+    hello_header: Option<QlHeader>,
+    hello: Option<wire::handshake::Hello>,
+    reply: Option<wire::handshake::HelloReply>,
+    session_key: Option<SymmetricKey>,
+}
+
+fn derive_session_key(
+    trace: &SessionTrace,
+    key_material: &SessionKeyMaterial,
+) -> Option<SymmetricKey> {
+    let header = trace.hello_header.as_ref()?;
+    let hello = trace.hello.as_ref()?;
+    let reply = trace.reply.as_ref()?;
+    let initiator_secret = key_material
+        .responder_encapsulation_private
+        .decapsulate_shared_secret(&hello.kem_ct)
+        .ok()?;
+    let responder_secret = key_material
+        .initiator_encapsulation_private
+        .decapsulate_shared_secret(&reply.kem_ct)
+        .ok()?;
+    let transcript = CBOR::from(vec![
+        CBOR::from(header.sender),
+        CBOR::from(header.recipient),
+        CBOR::from(hello.nonce.clone()),
+        CBOR::from(reply.nonce.clone()),
+        CBOR::from(hello.kem_ct.clone()),
+        CBOR::from(reply.kem_ct.clone()),
+    ])
+    .to_cbor_data();
+    let payload = CBOR::from(vec![
+        CBOR::from(initiator_secret.as_bytes()),
+        CBOR::from(responder_secret.as_bytes()),
+        CBOR::from(transcript),
+    ])
+    .to_cbor_data();
+    let digest = Digest::from_image(payload);
+    Some(SymmetricKey::from_data(*digest.data()))
+}
+
+fn spawn_stream_mutating_forwarder<F>(
+    outbound: Receiver<Vec<u8>>,
+    handle: RuntimeHandle,
+    key_material: SessionKeyMaterial,
+    trace: Arc<Mutex<SessionTrace>>,
+    mutator: F,
+) where
+    F: FnMut(&QlHeader, &mut wire::stream::StreamBody) -> bool + 'static,
+{
+    tokio::task::spawn_local(async move {
+        let mut mutator = mutator;
+        while let Ok(bytes) = outbound.recv().await {
+            let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
+                handle.send_incoming(bytes);
+                continue;
+            };
+
+            {
+                let mut trace = trace.lock().unwrap();
+                match &record.payload {
+                    QlPayload::Handshake(HandshakeRecord::Hello(hello)) => {
+                        trace.hello_header = Some(record.header.clone());
+                        trace.hello = Some(hello.clone());
+                    }
+                    QlPayload::Handshake(HandshakeRecord::HelloReply(reply)) => {
+                        trace.reply = Some(reply.clone());
+                    }
+                    _ => {}
+                }
+                if trace.session_key.is_none() {
+                    trace.session_key = derive_session_key(&trace, &key_material);
+                }
+            }
+
+            let session_key = trace.lock().unwrap().session_key.clone();
+            if let (Some(session_key), QlPayload::Stream(encrypted)) = (session_key, &record.payload) {
+                if let Ok(mut body) = wire::stream::decrypt_stream(&record.header, encrypted, &session_key) {
+                    if mutator(&record.header, &mut body) {
+                        let mutated = wire::stream::encrypt_stream(record.header, &session_key, body);
+                        handle.send_incoming(CBOR::from(mutated).to_cbor_data());
+                        continue;
+                    }
+                }
+            }
+
+            handle.send_incoming(bytes);
+        }
+    });
+}
+
+fn spawn_drop_every_nth_stream_forwarder(
+    outbound: Receiver<Vec<u8>>,
+    handle: RuntimeHandle,
+    nth: usize,
+) {
+    tokio::task::spawn_local(async move {
+        let mut stream_count = 0usize;
+        while let Ok(bytes) = outbound.recv().await {
+            if nth > 0 && is_stream(&bytes) {
+                stream_count = stream_count.saturating_add(1);
+                if stream_count % nth == 0 {
+                    continue;
+                }
             }
             handle.send_incoming(bytes);
         }
