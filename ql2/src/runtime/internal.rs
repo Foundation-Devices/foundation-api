@@ -169,7 +169,7 @@ impl PeerSession {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitiatorStage {
     WaitingHelloReply,
-    WaitingConfirmAck,
+    SendingConfirm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -613,12 +613,16 @@ impl RuntimeState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackedWrite {
+    pub stream_id: StreamId,
+    pub packet_id: PacketId,
+}
+
 pub struct InFlightWrite<'a> {
     pub peer: XID,
     pub token: Token,
-    pub stream_id: Option<StreamId>,
-    pub packet_id: Option<PacketId>,
-    pub track_ack: bool,
+    pub tracked: Option<TrackedWrite>,
     pub future: PlatformFuture<'a, Result<(), QlError>>,
 }
 
@@ -691,9 +695,7 @@ pub enum LoopStep {
     WriteDone {
         peer: XID,
         token: Token,
-        stream_id: Option<StreamId>,
-        packet_id: Option<PacketId>,
-        track_ack: bool,
+        tracked: Option<TrackedWrite>,
         result: Result<(), QlError>,
     },
     Quit,

@@ -17,6 +17,7 @@ use crate::{
             KeepAliveState, LoopStep, OutboundBody, OutboundMessage, OutboundPayload,
             PendingAcceptTx, ResponderResponse, ResponderStream, RuntimeCommand, RuntimeState,
             SetupFrame, StreamControl, StreamMeta, StreamState, TimeoutEntry, TimeoutKind,
+            TrackedWrite,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
         AcceptedStreamDelivery, HandlerEvent, KeepAliveConfig, PeerSession, Runtime,
@@ -154,15 +155,11 @@ impl<P: QlPlatform> Runtime<P> {
                 LoopStep::WriteDone {
                     peer,
                     token,
-                    stream_id,
-                    packet_id,
-                    track_ack,
+                    tracked: ack,
                     result,
                 } => {
                     in_flight = None;
-                    self.handle_write_done(
-                        &mut state, peer, token, stream_id, packet_id, track_ack, result,
-                    );
+                    self.handle_write_done(&mut state, peer, token, ack, result);
                 }
                 LoopStep::Quit => break,
             }
@@ -199,10 +196,20 @@ impl<P: QlPlatform> Runtime<P> {
             return Some(InFlightWrite {
                 peer: message.peer,
                 token: message.token,
-                stream_id: message.stream_id,
-                packet_id: message.packet_id,
-                track_ack: message.track_ack,
-                future: self.platform.write_message(message.peer, message.cid, bytes),
+                tracked: if message.track_ack {
+                    message
+                        .stream_id
+                        .zip(message.packet_id)
+                        .map(|(stream_id, packet_id)| TrackedWrite {
+                            stream_id,
+                            packet_id,
+                        })
+                } else {
+                    None
+                },
+                future: self
+                    .platform
+                    .write_message(message.peer, message.cid, bytes),
             });
         }
         None
@@ -228,9 +235,7 @@ impl<P: QlPlatform> Runtime<P> {
                     return Poll::Ready(LoopStep::WriteDone {
                         peer: in_flight.peer,
                         token: in_flight.token,
-                        stream_id: in_flight.stream_id,
-                        packet_id: in_flight.packet_id,
-                        track_ack: in_flight.track_ack,
+                        tracked: in_flight.tracked,
                         result,
                     });
                 }
@@ -495,9 +500,7 @@ impl<P: QlPlatform> Runtime<P> {
             .control
             .pending
             .set_setup(SetupFrame::Reject(StreamFrameReject { stream_id, code }));
-        stream.response = ResponderResponse::Rejecting {
-            initial_credit,
-        };
+        stream.response = ResponderResponse::Rejecting { initial_credit };
         stream.meta.last_activity = Instant::now();
         self.drive_stream(state, recipient, stream_id);
     }
@@ -639,7 +642,9 @@ impl<P: QlPlatform> Runtime<P> {
     ) {
         match message {
             HandshakeRecord::Hello(hello) => self.handle_hello(state, cid, header, hello),
-            HandshakeRecord::HelloReply(reply) => self.handle_hello_reply(state, cid, header, reply),
+            HandshakeRecord::HelloReply(reply) => {
+                self.handle_hello_reply(state, cid, header, reply)
+            }
             HandshakeRecord::Confirm(confirm) => self.handle_confirm(state, cid, header, confirm),
         }
     }
@@ -776,13 +781,9 @@ impl<P: QlPlatform> Runtime<P> {
                 stream_id,
                 request_head,
                 response_max_offset,
-            }) => self.handle_stream_open(
-                state,
-                peer,
-                stream_id,
-                request_head,
-                response_max_offset,
-            ),
+            }) => {
+                self.handle_stream_open(state, peer, stream_id, request_head, response_max_offset)
+            }
             StreamFrame::Accept(StreamFrameAccept {
                 stream_id,
                 response_head,
@@ -1289,7 +1290,12 @@ impl<P: QlPlatform> Runtime<P> {
         };
         match stream {
             StreamState::Initiator(stream) => {
-                self.drive_outbound(core, stream.meta.key, &mut stream.control, Some(&mut stream.request));
+                self.drive_outbound(
+                    core,
+                    stream.meta.key,
+                    &mut stream.control,
+                    Some(&mut stream.request),
+                );
             }
             StreamState::Responder(stream) => {
                 let key = stream.meta.key;
@@ -1581,11 +1587,13 @@ impl<P: QlPlatform> Runtime<P> {
         match stream {
             StreamState::Responder(state) => match &state.response {
                 ResponderResponse::Pending { initial_credit } => {
-                    state.meta.request_head == request_head && *initial_credit == response_max_offset
+                    state.meta.request_head == request_head
+                        && *initial_credit == response_max_offset
                 }
                 ResponderResponse::Accepted { initial_credit, .. }
                 | ResponderResponse::Rejecting { initial_credit, .. } => {
-                    state.meta.request_head == request_head && *initial_credit == response_max_offset
+                    state.meta.request_head == request_head
+                        && *initial_credit == response_max_offset
                 }
             },
             _ => false,
@@ -1749,7 +1757,11 @@ impl<P: QlPlatform> Runtime<P> {
 
         match action {
             HelloAction::StartResponder => self.start_responder_handshake(state, cid, peer, hello),
-            HelloAction::ResendReply { cid, reply, deadline } => {
+            HelloAction::ResendReply {
+                cid,
+                reply,
+                deadline,
+            } => {
                 let record = QlRecord {
                     header: QlHeader {
                         sender: self.platform.xid(),
@@ -1779,6 +1791,8 @@ impl<P: QlPlatform> Runtime<P> {
         reply: crate::wire::handshake::HelloReply,
     ) {
         let peer = header.sender;
+        let token = state.core.next_token();
+        let deadline = Instant::now() + self.config.handshake_timeout;
         let confirm = match {
             let Some(peer_record) = state.core.peers.peer(peer) else {
                 return;
@@ -1804,17 +1818,19 @@ impl<P: QlPlatform> Runtime<P> {
                 &reply,
                 session_key,
             )
+            .map(|(confirm, session_key)| (hello.clone(), confirm, session_key))
         } {
-            Ok((confirm, session_key)) => {
+            Ok((hello, confirm, session_key)) => {
                 if let Some(entry) = state.core.peers.peer_mut(peer) {
-                    entry.session = PeerSession::Connected {
-                        cid,
+                    entry.session = PeerSession::Initiator {
+                        cid: Some(cid),
+                        handshake_token: token,
+                        hello,
                         session_key,
-                        keepalive: KeepAliveState::new(),
+                        deadline,
+                        stage: InitiatorStage::SendingConfirm,
                     };
-                    self.platform.handle_peer_status(peer, &entry.session);
                 }
-                self.record_activity(state, peer);
                 confirm
             }
             Err(_) => {
@@ -1833,13 +1849,12 @@ impl<P: QlPlatform> Runtime<P> {
             },
             payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
         };
-        let token = state.core.next_token();
         self.enqueue_handshake_message(
             &mut state.core,
             peer,
             Some(cid),
             token,
-            Instant::now() + self.config.handshake_timeout,
+            deadline,
             CBOR::from(record).to_cbor_data(),
         );
     }
@@ -2268,16 +2283,18 @@ impl<P: QlPlatform> Runtime<P> {
                                 Retransmit::Data { dir, offset, len } => {
                                     let key = stream.key();
                                     let Some(bytes) = (match stream.outbound_mut(dir) {
-                                        Some(outbound) => match outbound.pipe.retry_send(offset, len) {
-                                            Some(mut grant) => {
-                                                let mut bytes = vec![0; grant.len()];
-                                                grant
-                                                    .read_exact(&mut bytes)
-                                                    .expect("grant length is exact");
-                                                Some(bytes)
+                                        Some(outbound) => {
+                                            match outbound.pipe.retry_send(offset, len) {
+                                                Some(mut grant) => {
+                                                    let mut bytes = vec![0; grant.len()];
+                                                    grant
+                                                        .read_exact(&mut bytes)
+                                                        .expect("grant length is exact");
+                                                    Some(bytes)
+                                                }
+                                                None => None,
                                             }
-                                            None => None,
-                                        },
+                                        }
                                         None => None,
                                     }) else {
                                         continue;
@@ -2308,14 +2325,12 @@ impl<P: QlPlatform> Runtime<P> {
         state: &mut RuntimeState,
         peer: XID,
         token: crate::runtime::Token,
-        stream_id: Option<StreamId>,
-        packet_id: Option<PacketId>,
-        track_ack: bool,
+        ack: Option<TrackedWrite>,
         result: Result<(), QlError>,
     ) {
-        if result.is_err() {
-            if let Some(stream_id) = stream_id {
-                self.fail_stream(state, peer, stream_id, QlError::SendFailed);
+        if let Err(error) = result {
+            if let Some(ack) = ack {
+                self.fail_stream(state, peer, ack.stream_id, error.clone());
             }
             let should_disconnect = matches!(
                 state.core.peers.peer(peer).map(|entry| &entry.session),
@@ -2332,31 +2347,55 @@ impl<P: QlPlatform> Runtime<P> {
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
                 self.drop_outbound_for_peer(state, peer);
-                self.abort_streams_for_peer(state, peer, QlError::SendFailed);
+                self.abort_streams_for_peer(state, peer, error);
             }
             return;
         }
 
-        if track_ack {
-            if let (Some(stream_id), Some(packet_id)) = (stream_id, packet_id) {
-                let attempt = state
-                    .streams
-                    .get(&(peer, stream_id))
-                    .and_then(|stream| stream.control().awaiting.as_ref())
-                    .and_then(|awaiting| {
-                        (awaiting.packet_id == packet_id).then_some(awaiting.attempt)
-                    })
-                    .unwrap_or(0);
-                state.core.timeouts.push(Reverse(TimeoutEntry {
-                    at: Instant::now() + self.config.packet_ack_timeout,
-                    kind: TimeoutKind::StreamPacket {
-                        peer,
-                        stream_id,
-                        packet_id,
-                        attempt,
-                    },
-                }));
+        let connected = state
+            .core
+            .peers
+            .peer(peer)
+            .and_then(|entry| match &entry.session {
+                PeerSession::Initiator {
+                    cid: Some(cid),
+                    session_key,
+                    handshake_token,
+                    stage: InitiatorStage::SendingConfirm,
+                    ..
+                } if *handshake_token == token => Some((*cid, session_key.clone())),
+                _ => None,
+            });
+        if let Some((cid, session_key)) = connected {
+            if let Some(entry) = state.core.peers.peer_mut(peer) {
+                entry.session = PeerSession::Connected {
+                    cid,
+                    session_key,
+                    keepalive: KeepAliveState::new(),
+                };
+                self.platform.handle_peer_status(peer, &entry.session);
             }
+            self.record_activity(state, peer);
+        }
+
+        if let Some(ack) = ack {
+            let attempt = state
+                .streams
+                .get(&(peer, ack.stream_id))
+                .and_then(|stream| stream.control().awaiting.as_ref())
+                .and_then(|awaiting| {
+                    (awaiting.packet_id == ack.packet_id).then_some(awaiting.attempt)
+                })
+                .unwrap_or(0);
+            state.core.timeouts.push(Reverse(TimeoutEntry {
+                at: Instant::now() + self.config.packet_ack_timeout,
+                kind: TimeoutKind::StreamPacket {
+                    peer,
+                    stream_id: ack.stream_id,
+                    packet_id: ack.packet_id,
+                    attempt,
+                },
+            }));
         }
     }
 }

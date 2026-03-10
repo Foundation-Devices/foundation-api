@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -58,10 +58,26 @@ struct TestPlatform {
     status: Sender<StatusEvent>,
     nonce_seed: u8,
     nonce_counter: AtomicU8,
+    fail_on_write: Option<usize>,
+    write_counter: AtomicUsize,
 }
 
 impl TestPlatform {
     fn new(seed: u8) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
+        Self::new_with_fail_on_write(seed, None)
+    }
+
+    fn new_with_failed_write(
+        seed: u8,
+        fail_on_write: usize,
+    ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
+        Self::new_with_fail_on_write(seed, Some(fail_on_write))
+    }
+
+    fn new_with_fail_on_write(
+        seed: u8,
+        fail_on_write: Option<usize>,
+    ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
         let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
         let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
         let (outbound, outbound_rx) = async_channel::unbounded();
@@ -76,6 +92,8 @@ impl TestPlatform {
                 status,
                 nonce_seed: seed,
                 nonce_counter: AtomicU8::new(0),
+                fail_on_write,
+                write_counter: AtomicUsize::new(0),
             },
             outbound_rx,
             status_rx,
@@ -121,8 +139,13 @@ impl QlPlatform for TestPlatform {
         _cid: Option<ConnectionId>,
         message: Vec<u8>,
     ) -> PlatformFuture<'_, Result<(), QlError>> {
+        let fail_on_write = self.fail_on_write;
+        let write_index = self.write_counter.fetch_add(1, Ordering::Relaxed) + 1;
         let outbound = self.outbound.clone();
         Box::pin(async move {
+            if fail_on_write == Some(write_index) {
+                return Err(QlError::SendFailed);
+            }
             outbound
                 .send(message)
                 .await
