@@ -632,7 +632,6 @@ fn protocol_record_size_breakdown() {
                 wire::stream::StreamFrameOpen {
                     stream_id: crate::StreamId(2),
                     route_id: crate::RouteId(9),
-                    flags: wire::stream::OpenFlags::new(true, false),
                     request_head: vec![1, 2, 3],
                     response_max_offset: 1024,
                 },

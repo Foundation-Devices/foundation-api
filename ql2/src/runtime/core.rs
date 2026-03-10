@@ -13,10 +13,10 @@ use crate::{
         handle::{InboundByteStream, InboundStream, StreamResponder},
         internal::{
             now_secs, peer_hello_wins, AwaitingFrame, AwaitingPacket, CoreState, HelloAction,
-            InFlightWrite, InboundStreamItem, InboundTerminal, InitiatorStage, KeepAliveState,
-            LoopStep, OutboundMessage, OutboundPayload, OutboundStreamState, RuntimeCommand,
-            RuntimeState, SetupFrame, StreamPhase, StreamRecord, StreamRole, TimeoutEntry,
-            TimeoutKind,
+            InFlightWrite, InboundBody, InitiatorAccept, InitiatorStage, InitiatorStream,
+            KeepAliveState, LoopStep, OutboundBody, OutboundMessage, OutboundPayload,
+            PendingAcceptTx, ResponderResponse, ResponderStream, RuntimeCommand, RuntimeState,
+            SetupFrame, StreamControl, StreamMeta, StreamState, TimeoutEntry, TimeoutKind,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
         AcceptedStreamDelivery, HandlerEvent, KeepAliveConfig, PeerSession, Runtime,
@@ -26,9 +26,9 @@ use crate::{
         heartbeat::{self, HeartbeatBody},
         pair::{self, PairRequestRecord},
         stream::{
-            self, AcceptStatus, Direction, OpenFlags, RejectCode, ResetCode, StreamBody,
-            StreamFrame, StreamFrameAccept, StreamFrameCredit, StreamFrameData, StreamFrameFinish,
-            StreamFrameOpen, StreamFrameReset,
+            self, Direction, RejectCode, ResetCode, StreamBody, StreamFrame, StreamFrameAccept,
+            StreamFrameCredit, StreamFrameData, StreamFrameFinish, StreamFrameOpen,
+            StreamFrameReject, StreamFrameReset,
         },
         unpair::{self, UnpairRecord},
         QlHeader, QlPayload, QlRecord,
@@ -71,7 +71,6 @@ impl<P: QlPlatform> Runtime<P> {
                         recipient,
                         route_id,
                         request_head,
-                        response_expected,
                         request_pipe,
                         accepted,
                         start,
@@ -82,7 +81,6 @@ impl<P: QlPlatform> Runtime<P> {
                             recipient,
                             route_id,
                             request_head,
-                            response_expected,
                             request_pipe,
                             accepted,
                             start,
@@ -138,6 +136,15 @@ impl<P: QlPlatform> Runtime<P> {
                         code,
                     } => {
                         self.handle_reset_inbound(&mut state, sender, stream_id, dir, code);
+                    }
+                    RuntimeCommand::ResponderDropped { sender, stream_id } => {
+                        self.handle_responder_dropped(&mut state, sender, stream_id);
+                    }
+                    RuntimeCommand::PendingAcceptDropped {
+                        recipient,
+                        stream_id,
+                    } => {
+                        self.handle_pending_accept_dropped(&mut state, recipient, stream_id);
                     }
                     RuntimeCommand::Incoming(bytes) => {
                         self.handle_incoming(&mut state, bytes);
@@ -344,8 +351,7 @@ impl<P: QlPlatform> Runtime<P> {
         recipient: XID,
         route_id: RouteId,
         request_head: Vec<u8>,
-        response_expected: bool,
-        request_pipe: crate::pipe::PipeReader,
+        request_pipe: crate::pipe::PipeReader<QlError>,
         accepted: oneshot::Sender<Result<crate::runtime::AcceptedStreamDelivery, QlError>>,
         start: oneshot::Sender<Result<StreamId, QlError>>,
         config: crate::runtime::StreamConfig,
@@ -368,42 +374,41 @@ impl<P: QlPlatform> Runtime<P> {
         }
 
         let stream_id = state.core.next_stream_id();
-        let (response_tx, response_rx) = async_channel::bounded(1);
-        let open_flags = OpenFlags::new(response_expected, false);
+        let (response_reader, response_writer) = crate::pipe::pipe(self.config.pipe_size_bytes);
         let token = state.core.next_token();
-        let mut outbound = OutboundStreamState::new(Direction::Request, request_pipe, 0);
-        outbound
-            .pending
-            .set_setup(SetupFrame::Open(StreamFrameOpen {
-                stream_id,
-                route_id,
-                flags: open_flags,
-                request_head: request_head.clone(),
-                response_max_offset: self.config.initial_credit,
-            }));
-        let stream = StreamRecord {
-            peer: recipient,
+        let mut control = StreamControl::new();
+        control.pending.set_setup(SetupFrame::Open(StreamFrameOpen {
             stream_id,
             route_id,
-            role: StreamRole::Initiator,
-            phase: StreamPhase::InitiatorOpening,
-            open_flags,
-            request_head,
-            response_head: None,
-            response_rx: Some(response_rx),
-            accept_tx: Some(accepted),
-            open_timeout_token: token,
-            initial_remote_credit: 0,
-            outbound: Some(outbound),
-            inbound: crate::runtime::internal::InboundStreamState::new(
+            request_head: request_head.clone(),
+            response_max_offset: self.config.initial_credit,
+        }));
+        let stream = StreamState::Initiator(InitiatorStream {
+            meta: StreamMeta {
+                key: crate::runtime::internal::StreamKey {
+                    peer: recipient,
+                    stream_id,
+                },
+                route_id,
+                request_head,
+                last_activity: Instant::now(),
+            },
+            control,
+            request: OutboundBody::new(Direction::Request, request_pipe, 0, false),
+            response: InboundBody::new(
                 Direction::Response,
-                response_tx,
+                response_writer,
                 self.config.initial_credit,
             ),
-            accept_frame: None,
-            last_activity: Instant::now(),
-        };
-        state.stream.insert((recipient, stream_id), stream);
+            accept: InitiatorAccept::Opening {
+                accept_waiter: Some(PendingAcceptTx {
+                    tx: Some(accepted),
+                    response_reader: Some(response_reader),
+                }),
+                open_timeout_token: token,
+            },
+        });
+        state.streams.insert((recipient, stream_id), stream);
         state.core.timeouts.push(Reverse(TimeoutEntry {
             at: Instant::now() + timeout,
             kind: TimeoutKind::StreamOpen {
@@ -422,36 +427,29 @@ impl<P: QlPlatform> Runtime<P> {
         recipient: XID,
         stream_id: StreamId,
         response_head: Vec<u8>,
-        response_pipe: crate::pipe::PipeReader,
+        response_pipe: crate::pipe::PipeReader<QlError>,
     ) {
         let key = (recipient, stream_id);
-        let Some(stream) = state.stream.get_mut(&key) else {
+        let Some(StreamState::Responder(stream)) = state.streams.get_mut(&key) else {
             return;
         };
-        if stream.role != StreamRole::Responder || stream.phase != StreamPhase::ResponderPending {
+        let ResponderResponse::Pending { initial_credit } = stream.response else {
             return;
-        }
-
-        let mut outbound = OutboundStreamState::new(
-            Direction::Response,
-            response_pipe,
-            stream.initial_remote_credit,
-        );
+        };
         let frame = StreamFrameAccept {
             stream_id,
-            status: AcceptStatus::Accepted,
             response_head: response_head.clone(),
             request_max_offset: self.config.initial_credit,
         };
-        outbound
-            .pending
-            .set_setup(SetupFrame::Accept(frame.clone()));
-        stream.phase = StreamPhase::ResponderAccepting;
-        stream.response_head = Some(response_head);
-        stream.accept_frame = Some(frame);
-        stream.inbound.max_offset = self.config.initial_credit;
-        stream.outbound = Some(outbound);
-        stream.last_activity = Instant::now();
+        stream.control.pending.set_setup(SetupFrame::Accept(frame));
+        stream.request.max_offset = self.config.initial_credit;
+        stream.response = ResponderResponse::Accepted {
+            response_head,
+            initial_credit,
+            body: OutboundBody::new(Direction::Response, response_pipe, initial_credit, false),
+            acked: false,
+        };
+        stream.meta.last_activity = Instant::now();
         self.drive_stream(state, recipient, stream_id);
     }
 
@@ -463,31 +461,23 @@ impl<P: QlPlatform> Runtime<P> {
         code: RejectCode,
     ) {
         let key = (recipient, stream_id);
-        let Some(stream) = state.stream.get_mut(&key) else {
+        let Some(StreamState::Responder(stream)) = state.streams.get_mut(&key) else {
             return;
         };
-        if stream.role != StreamRole::Responder || stream.phase != StreamPhase::ResponderPending {
+        let ResponderResponse::Pending { initial_credit } = stream.response else {
             return;
-        }
-        let frame = StreamFrameAccept {
-            stream_id,
-            status: AcceptStatus::Rejected(code),
-            response_head: Vec::new(),
-            request_max_offset: 0,
         };
-        stream.phase = StreamPhase::ResponderAccepting;
-        stream.accept_frame = Some(frame.clone());
-        let (mut response_pipe, _response_writer) = crate::pipe::pipe(self.config.pipe_size_bytes);
-        response_pipe.close();
-        let mut outbound = OutboundStreamState::new(
-            Direction::Response,
-            response_pipe,
-            stream.initial_remote_credit,
-        );
-        outbound.closed = true;
-        outbound.pending.set_setup(SetupFrame::Accept(frame));
-        stream.outbound = Some(outbound);
-        stream.last_activity = Instant::now();
+        stream.request.closed = true;
+        stream.request.pipe.fail(QlError::Cancelled);
+        stream
+            .control
+            .pending
+            .set_setup(SetupFrame::Reject(StreamFrameReject { stream_id, code }));
+        stream.response = ResponderResponse::Rejecting {
+            code,
+            initial_credit,
+        };
+        stream.meta.last_activity = Instant::now();
         self.drive_stream(state, recipient, stream_id);
     }
 
@@ -500,16 +490,18 @@ impl<P: QlPlatform> Runtime<P> {
         amount: u64,
     ) {
         let key = (sender, stream_id);
-        let Some(stream) = state.stream.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&key) else {
             return;
         };
-        if stream.inbound.dir != dir || stream.inbound.closed {
+        let Some(inbound) = stream.inbound_mut(dir) else {
+            return;
+        };
+        if inbound.closed {
             return;
         }
-        stream.inbound.max_offset = stream.inbound.max_offset.saturating_add(amount);
-        self.flush_inbound_terminal(&mut stream.inbound);
-        self.queue_credit(stream, dir);
-        stream.last_activity = Instant::now();
+        inbound.max_offset = inbound.max_offset.saturating_add(amount);
+        inbound.credit_dirty = true;
+        *stream.last_activity_mut() = Instant::now();
         self.drive_stream(state, sender, stream_id);
     }
 
@@ -522,26 +514,26 @@ impl<P: QlPlatform> Runtime<P> {
         code: ResetCode,
     ) {
         let key = (recipient, stream_id);
-        let Some(stream) = state.stream.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&key) else {
             return;
         };
-        if stream.local_outbound_dir() != dir {
-            return;
-        }
-        if let Some(outbound) = stream.outbound.as_mut() {
+        let target = reset_target_for_dir(dir);
+        let should_reset = {
+            let Some(outbound) = stream.outbound_mut(dir) else {
+                return;
+            };
             if !outbound.closed {
                 outbound.closed = true;
-                outbound.pending.set_reset(
-                    match dir {
-                        Direction::Request => stream::ResetTarget::Request,
-                        Direction::Response => stream::ResetTarget::Response,
-                    },
-                    code,
-                );
                 outbound.pipe.close();
+                true
+            } else {
+                false
             }
+        };
+        if should_reset {
+            stream.control_mut().pending.set_reset(target, code);
         }
-        stream.last_activity = Instant::now();
+        *stream.last_activity_mut() = Instant::now();
         self.drive_stream(state, recipient, stream_id);
     }
 
@@ -554,35 +546,50 @@ impl<P: QlPlatform> Runtime<P> {
         code: ResetCode,
     ) {
         let key = (sender, stream_id);
-        let Some(stream) = state.stream.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&key) else {
             return;
         };
-        if stream.inbound.dir != dir || stream.inbound.closed {
+        let Some(inbound) = stream.inbound_mut(dir) else {
+            return;
+        };
+        if inbound.closed {
             return;
         }
-        stream.inbound.closed = true;
-        stream.inbound.pending_chunk = None;
-        let _ = stream
-            .inbound
-            .chunk_tx
-            .try_send(InboundStreamItem::Error(QlError::StreamReset {
-                id: stream_id,
-                dir,
-                code,
-            }));
-        stream.inbound.chunk_tx.close();
-        if let Some(outbound) = stream.outbound.as_mut() {
-            outbound.pending.set_reset(
-                match dir {
-                    Direction::Request => stream::ResetTarget::Request,
-                    Direction::Response => stream::ResetTarget::Response,
-                },
-                code,
-            );
-            outbound.pipe.close();
-        }
-        stream.last_activity = Instant::now();
+        inbound.closed = true;
+        inbound.pipe.close();
+        stream
+            .control_mut()
+            .pending
+            .set_reset(reset_target_for_dir(dir), code);
+        *stream.last_activity_mut() = Instant::now();
         self.drive_stream(state, sender, stream_id);
+    }
+
+    fn handle_responder_dropped(&self, state: &mut RuntimeState, sender: XID, stream_id: StreamId) {
+        self.handle_reject_stream(state, sender, stream_id, RejectCode::Unhandled);
+    }
+
+    fn handle_pending_accept_dropped(
+        &self,
+        state: &mut RuntimeState,
+        recipient: XID,
+        stream_id: StreamId,
+    ) {
+        let key = (recipient, stream_id);
+        let Some(stream) = state.streams.get_mut(&key) else {
+            return;
+        };
+        match stream {
+            StreamState::Initiator(stream) => match &mut stream.accept {
+                InitiatorAccept::Opening { accept_waiter, .. }
+                | InitiatorAccept::WaitingAccept { accept_waiter, .. } => {
+                    *accept_waiter = None;
+                }
+                InitiatorAccept::Open { .. } => {}
+            },
+            _ => {}
+        }
+        self.maybe_reap_stream(state, recipient, stream_id);
     }
 
     fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
@@ -734,7 +741,6 @@ impl<P: QlPlatform> Runtime<P> {
             StreamFrame::Open(StreamFrameOpen {
                 stream_id,
                 route_id,
-                flags,
                 request_head,
                 response_max_offset,
             }) => self.handle_stream_open(
@@ -742,23 +748,19 @@ impl<P: QlPlatform> Runtime<P> {
                 peer,
                 stream_id,
                 route_id,
-                flags,
                 request_head,
                 response_max_offset,
             ),
             StreamFrame::Accept(StreamFrameAccept {
                 stream_id,
-                status,
                 response_head,
                 request_max_offset,
-            }) => self.handle_stream_accept(
-                state,
-                peer,
-                stream_id,
-                status,
-                response_head,
-                request_max_offset,
-            ),
+            }) => {
+                self.handle_stream_accept(state, peer, stream_id, response_head, request_max_offset)
+            }
+            StreamFrame::Reject(StreamFrameReject { stream_id, code }) => {
+                self.handle_stream_reject(state, peer, stream_id, code)
+            }
             StreamFrame::Data(StreamFrameData {
                 stream_id,
                 dir,
@@ -788,18 +790,12 @@ impl<P: QlPlatform> Runtime<P> {
         peer: XID,
         stream_id: StreamId,
         route_id: RouteId,
-        flags: OpenFlags,
         request_head: Vec<u8>,
         response_max_offset: u64,
     ) {
         let key = (peer, stream_id);
-        if let Some(stream) = state.stream.get(&key) {
-            if stream.role == StreamRole::Responder
-                && stream.route_id == route_id
-                && stream.open_flags == flags
-                && stream.request_head == request_head
-                && stream.initial_remote_credit == response_max_offset
-            {
+        if let Some(stream) = state.streams.get(&key) {
+            if self.stream_matches_open(stream, route_id, &request_head, response_max_offset) {
                 return;
             }
             self.send_ephemeral_reset(
@@ -812,39 +808,27 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
 
-        let (request_tx, request_rx) = async_channel::bounded(1);
+        let (request_reader, request_writer) = crate::pipe::pipe(self.config.pipe_size_bytes);
         let responder = StreamResponder::new(
             stream_id,
             peer,
             self.config.pipe_size_bytes,
             self.tx.upgrade().expect("runtime tx"),
         );
-        let mut inbound =
-            crate::runtime::internal::InboundStreamState::new(Direction::Request, request_tx, 0);
-        if flags.request_finished() {
-            inbound.terminal = Some(InboundTerminal::Finished);
-            self.flush_inbound_terminal(&mut inbound);
-        }
-
-        let stream = StreamRecord {
-            peer,
-            stream_id,
-            route_id,
-            role: StreamRole::Responder,
-            phase: StreamPhase::ResponderPending,
-            open_flags: flags,
-            request_head: request_head.clone(),
-            response_head: None,
-            response_rx: None,
-            accept_tx: None,
-            open_timeout_token: crate::runtime::Token(0),
-            initial_remote_credit: response_max_offset,
-            outbound: None,
-            inbound,
-            accept_frame: None,
-            last_activity: Instant::now(),
-        };
-        state.stream.insert(key, stream);
+        let stream = StreamState::Responder(ResponderStream {
+            meta: StreamMeta {
+                key: crate::runtime::internal::StreamKey { peer, stream_id },
+                route_id,
+                request_head: request_head.clone(),
+                last_activity: Instant::now(),
+            },
+            control: StreamControl::new(),
+            request: InboundBody::new(Direction::Request, request_writer, 0),
+            response: ResponderResponse::Pending {
+                initial_credit: response_max_offset,
+            },
+        });
+        state.streams.insert(key, stream);
         self.platform
             .handle_inbound(HandlerEvent::Stream(InboundStream {
                 sender: peer,
@@ -852,12 +836,11 @@ impl<P: QlPlatform> Runtime<P> {
                 route_id,
                 stream_id,
                 request_head,
-                response_expected: flags.response_expected(),
                 request: InboundByteStream::new(
                     peer,
                     stream_id,
                     Direction::Request,
-                    request_rx,
+                    request_reader,
                     self.tx.upgrade().expect("runtime tx"),
                 ),
                 respond_to: responder,
@@ -869,100 +852,99 @@ impl<P: QlPlatform> Runtime<P> {
         state: &mut RuntimeState,
         peer: XID,
         stream_id: StreamId,
-        status: AcceptStatus,
         response_head: Vec<u8>,
         request_max_offset: u64,
     ) {
         let key = (peer, stream_id);
-        let mut send_protocol_reset = false;
-        let mut fail_protocol = false;
+        let mut protocol = false;
+        let mut should_drive = false;
         {
-            let Some(stream) = state.stream.get_mut(&key) else {
+            let Some(stream) = state.streams.get_mut(&key) else {
                 return;
             };
-            if stream.role != StreamRole::Initiator {
-                send_protocol_reset = true;
-            } else if let Some(existing) = &stream.accept_frame {
-                match existing {
-                    StreamFrameAccept {
-                        stream_id: existing_stream_id,
-                        status: existing_status,
-                        response_head: existing_response_head,
-                        request_max_offset: existing_request_max_offset,
-                    } if *existing_stream_id == stream_id
-                        && existing_status == &status
-                        && existing_response_head == &response_head
-                        && *existing_request_max_offset == request_max_offset =>
-                    {
-                        return;
-                    }
-                    _ => {}
-                }
-                fail_protocol = true;
-            } else {
-                if let Some(outbound) = stream.outbound.as_mut() {
-                    if matches!(
-                        outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
-                        Some(AwaitingFrame::Control(StreamFrame::Open(_)))
-                    ) {
-                        outbound.awaiting = None;
-                    }
-                }
-
-                match status {
-                    AcceptStatus::Accepted => {
-                        stream.phase = StreamPhase::Open;
-                        stream.accept_frame = Some(StreamFrameAccept {
-                            stream_id,
-                            status: AcceptStatus::Accepted,
-                            response_head: response_head.clone(),
-                            request_max_offset,
-                        });
-                        if let Some(outbound) = stream.outbound.as_mut() {
-                            outbound.remote_max_offset = request_max_offset;
-                            outbound.data_enabled = true;
+            match stream {
+                StreamState::Initiator(stream) => match &mut stream.accept {
+                    InitiatorAccept::Opening { accept_waiter, .. } => {
+                        if matches!(
+                            stream
+                                .control
+                                .awaiting
+                                .as_ref()
+                                .map(|awaiting| &awaiting.frame),
+                            Some(AwaitingFrame::Control(StreamFrame::Open(_)))
+                        ) {
+                            stream.control.awaiting = None;
                         }
-                        if let Some(tx) = stream.accept_tx.take() {
-                            let delivery =
-                                stream.response_rx.take().map(|rx| AcceptedStreamDelivery {
-                                    peer: stream.peer,
-                                    stream_id: stream.stream_id,
-                                    response_head,
-                                    rx,
+                        stream.request.remote_max_offset = request_max_offset;
+                        stream.request.data_enabled = true;
+                        if let Some(mut waiter) = accept_waiter.take() {
+                            if let (Some(tx), Some(response_reader)) =
+                                (waiter.tx.take(), waiter.response_reader.take())
+                            {
+                                let _ = tx.send(Ok(AcceptedStreamDelivery {
+                                    peer,
+                                    stream_id,
+                                    response_head: response_head.clone(),
+                                    response: response_reader,
                                     tx: self.tx.upgrade().expect("runtime tx"),
-                                });
-                            let _ = tx.send(delivery.ok_or(QlError::Cancelled));
+                                }));
+                            } else {
+                                stream.response.closed = true;
+                                stream.response.pipe.close();
+                                stream
+                                    .control
+                                    .pending
+                                    .set_reset(stream::ResetTarget::Response, ResetCode::Cancelled);
+                            }
+                        }
+                        stream.accept = InitiatorAccept::Open { response_head };
+                        stream.meta.last_activity = Instant::now();
+                        should_drive = true;
+                    }
+                    InitiatorAccept::WaitingAccept { accept_waiter, .. } => {
+                        stream.request.remote_max_offset = request_max_offset;
+                        stream.request.data_enabled = true;
+                        if let Some(mut waiter) = accept_waiter.take() {
+                            if let (Some(tx), Some(response_reader)) =
+                                (waiter.tx.take(), waiter.response_reader.take())
+                            {
+                                let _ = tx.send(Ok(AcceptedStreamDelivery {
+                                    peer,
+                                    stream_id,
+                                    response_head: response_head.clone(),
+                                    response: response_reader,
+                                    tx: self.tx.upgrade().expect("runtime tx"),
+                                }));
+                            } else {
+                                stream.response.closed = true;
+                                stream.response.pipe.close();
+                                stream
+                                    .control
+                                    .pending
+                                    .set_reset(stream::ResetTarget::Response, ResetCode::Cancelled);
+                            }
+                        }
+                        stream.accept = InitiatorAccept::Open { response_head };
+                        stream.meta.last_activity = Instant::now();
+                        should_drive = true;
+                    }
+                    InitiatorAccept::Open {
+                        response_head: existing,
+                    } => {
+                        if *existing != response_head
+                            || stream.request.remote_max_offset != request_max_offset
+                        {
+                            protocol = true;
                         }
                     }
-                    AcceptStatus::Rejected(code) => {
-                        stream.phase = StreamPhase::Rejected;
-                        stream.accept_frame = Some(StreamFrameAccept {
-                            stream_id,
-                            status: AcceptStatus::Rejected(code),
-                            response_head,
-                            request_max_offset,
-                        });
-                        if let Some(outbound) = stream.outbound.as_mut() {
-                            outbound.closed = true;
-                            outbound.pending.clear();
-                            outbound.awaiting = None;
-                            outbound.pipe.close();
-                        }
-                        if let Some(tx) = stream.accept_tx.take() {
-                            let _ = tx.send(Err(QlError::StreamRejected {
-                                id: stream_id,
-                                code,
-                            }));
-                        }
-                        stream.inbound.closed = true;
-                        stream.inbound.chunk_tx.close();
-                    }
+                },
+                _ => {
+                    protocol = true;
                 }
-
-                stream.last_activity = Instant::now();
             }
         }
-        if send_protocol_reset {
+
+        if protocol {
             self.send_ephemeral_reset(
                 &mut state.core,
                 peer,
@@ -970,18 +952,66 @@ impl<P: QlPlatform> Runtime<P> {
                 stream::ResetTarget::Both,
                 ResetCode::Protocol,
             );
-            return;
         }
-        if fail_protocol {
-            self.fail_stream(
-                state,
+        if should_drive {
+            let (streams, core) = (&mut state.streams, &mut state.core);
+            if let Some(stream) = streams.get_mut(&key) {
+                self.drive_current_stream(core, stream);
+            }
+        }
+    }
+
+    fn handle_stream_reject(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        stream_id: StreamId,
+        code: RejectCode,
+    ) {
+        let key = (peer, stream_id);
+        let mut protocol = false;
+        let mut remove_after = false;
+        {
+            let Some(stream) = state.streams.get_mut(&key) else {
+                return;
+            };
+            match stream {
+                StreamState::Initiator(stream) => match &mut stream.accept {
+                    InitiatorAccept::Opening { accept_waiter, .. }
+                    | InitiatorAccept::WaitingAccept { accept_waiter, .. } => {
+                        if let Some(mut waiter) = accept_waiter.take() {
+                            if let Some(tx) = waiter.tx.take() {
+                                let _ = tx.send(Err(QlError::StreamRejected {
+                                    id: stream_id,
+                                    code,
+                                }));
+                            }
+                        }
+                        stream.request.pipe.close();
+                        stream.response.pipe.close();
+                        remove_after = true;
+                    }
+                    InitiatorAccept::Open { .. } => {
+                        protocol = true;
+                    }
+                },
+                _ => {
+                    protocol = true;
+                }
+            }
+        }
+        if remove_after {
+            state.streams.remove(&key);
+        }
+        if protocol {
+            self.send_ephemeral_reset(
+                &mut state.core,
                 peer,
                 stream_id,
-                QlError::StreamProtocol { id: stream_id },
+                stream::ResetTarget::Both,
+                ResetCode::Protocol,
             );
-            return;
         }
-        self.drive_stream(state, peer, stream_id);
     }
 
     fn handle_stream_data(
@@ -994,65 +1024,44 @@ impl<P: QlPlatform> Runtime<P> {
         bytes: Vec<u8>,
     ) {
         let key = (peer, stream_id);
-        let mut fail_protocol = false;
-        {
-            let Some(stream) = state.stream.get_mut(&key) else {
-                return;
-            };
-            self.note_accept_seen_from_remote(stream);
-            if stream.inbound.dir != dir || stream.inbound.closed {
-                fail_protocol = true;
-            } else if offset < stream.inbound.next_offset {
-                self.queue_credit(stream, dir);
-                stream.last_activity = Instant::now();
+        let Some(stream) = state.streams.get_mut(&key) else {
+            return;
+        };
+        self.note_setup_seen_from_remote(stream);
+        let Some(inbound) = stream.inbound_mut(dir) else {
+            self.queue_protocol_reset(stream);
+            self.drive_stream(state, peer, stream_id);
+            return;
+        };
+        if inbound.closed {
+            self.queue_protocol_reset(stream);
+        } else if offset < inbound.next_offset {
+            self.queue_credit(stream, dir);
+        } else {
+            let end = offset.saturating_add(bytes.len() as u64);
+            if offset != inbound.next_offset || end > inbound.max_offset {
+                self.queue_protocol_reset(stream);
             } else {
-                let end = offset.saturating_add(bytes.len() as u64);
-                if offset != stream.inbound.next_offset || end > stream.inbound.max_offset {
-                    self.queue_local_reset(stream, stream::ResetTarget::Both, ResetCode::Protocol);
-                } else {
-                    stream.inbound.next_offset = end;
-                    if stream.inbound.pending_chunk.is_some() {
-                        self.queue_local_reset(
-                            stream,
-                            stream::ResetTarget::Both,
-                            ResetCode::Protocol,
-                        );
-                    } else {
-                        match stream
-                            .inbound
-                            .chunk_tx
-                            .try_send(InboundStreamItem::Chunk(bytes))
-                        {
-                            Ok(()) => {}
-                            Err(async_channel::TrySendError::Full(InboundStreamItem::Chunk(
-                                chunk,
-                            ))) => {
-                                stream.inbound.pending_chunk = Some(chunk);
-                            }
-                            Err(async_channel::TrySendError::Closed(_)) => {
-                                self.queue_local_reset(
-                                    stream,
-                                    stream::ResetTarget::Both,
-                                    ResetCode::Cancelled,
-                                );
-                            }
-                            Err(async_channel::TrySendError::Full(_)) => unreachable!(),
-                        }
+                let written = inbound.pipe.try_write(&bytes);
+                match written {
+                    Ok(n) if n == bytes.len() => {
+                        inbound.next_offset = end;
                         self.queue_credit(stream, dir);
                     }
+                    Ok(_) => {
+                        self.queue_protocol_reset(stream);
+                    }
+                    Err(_) => {
+                        inbound.closed = true;
+                        stream
+                            .control_mut()
+                            .pending
+                            .set_reset(reset_target_for_dir(dir), ResetCode::Cancelled);
+                    }
                 }
-                stream.last_activity = Instant::now();
             }
         }
-        if fail_protocol {
-            self.fail_stream(
-                state,
-                peer,
-                stream_id,
-                QlError::StreamProtocol { id: stream_id },
-            );
-            return;
-        }
+        *stream.last_activity_mut() = Instant::now();
         self.drive_stream(state, peer, stream_id);
     }
 
@@ -1066,35 +1075,31 @@ impl<P: QlPlatform> Runtime<P> {
         max_offset: u64,
     ) {
         let key = (peer, stream_id);
-        {
-            let Some(stream) = state.stream.get_mut(&key) else {
-                return;
-            };
-            self.note_accept_seen_from_remote(stream);
-            let Some(outbound) = stream.outbound.as_mut() else {
-                return;
-            };
-            let acked_offset = outbound.pipe.acked_offset();
-            let sent_offset = outbound.pipe.sent_offset();
-            if outbound.dir != dir
-                || recv_offset < acked_offset
-                || recv_offset > sent_offset
-                || max_offset < recv_offset
-            {
-                self.queue_local_reset(stream, stream::ResetTarget::Both, ResetCode::Protocol);
-            } else {
-                outbound.pipe.ack_to(recv_offset);
-                outbound.remote_max_offset = outbound.remote_max_offset.max(max_offset);
-                if matches!(
-                    outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
-                    Some(AwaitingFrame::Data { offset, len, .. })
-                        if recv_offset >= offset.saturating_add(*len as u64)
-                ) {
-                    outbound.awaiting = None;
-                }
+        let Some(stream) = state.streams.get_mut(&key) else {
+            return;
+        };
+        self.note_setup_seen_from_remote(stream);
+        let Some(outbound) = stream.outbound_mut(dir) else {
+            self.queue_protocol_reset(stream);
+            self.drive_stream(state, peer, stream_id);
+            return;
+        };
+        let released_offset = outbound.pipe.released_offset();
+        let sent_offset = outbound.pipe.sent_offset();
+        if recv_offset < released_offset || recv_offset > sent_offset || max_offset < recv_offset {
+            self.queue_protocol_reset(stream);
+        } else {
+            outbound.pipe.release_to(recv_offset);
+            outbound.remote_max_offset = outbound.remote_max_offset.max(max_offset);
+            if matches!(
+                stream.control().awaiting.as_ref().map(|awaiting| &awaiting.frame),
+                Some(AwaitingFrame::Data { offset, len, .. })
+                    if recv_offset >= offset.saturating_add(*len as u64)
+            ) {
+                stream.control_mut().awaiting = None;
             }
-            stream.last_activity = Instant::now();
         }
+        *stream.last_activity_mut() = Instant::now();
         self.drive_stream(state, peer, stream_id);
     }
 
@@ -1106,16 +1111,21 @@ impl<P: QlPlatform> Runtime<P> {
         dir: Direction,
     ) {
         let key = (peer, stream_id);
-        let Some(stream) = state.stream.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&key) else {
             return;
         };
-        self.note_accept_seen_from_remote(stream);
-        if stream.inbound.dir != dir || stream.inbound.closed {
+        self.note_setup_seen_from_remote(stream);
+        let Some(inbound) = stream.inbound_mut(dir) else {
+            self.queue_protocol_reset(stream);
+            self.drive_stream(state, peer, stream_id);
             return;
+        };
+        if !inbound.closed {
+            inbound.closed = true;
+            inbound.pipe.finish();
         }
-        stream.inbound.terminal = Some(InboundTerminal::Finished);
-        self.flush_inbound_terminal(&mut stream.inbound);
-        stream.last_activity = Instant::now();
+        *stream.last_activity_mut() = Instant::now();
+        self.maybe_reap_stream(state, peer, stream_id);
     }
 
     fn handle_stream_reset(
@@ -1127,130 +1137,100 @@ impl<P: QlPlatform> Runtime<P> {
         code: ResetCode,
     ) {
         let key = (peer, stream_id);
-        let Some(stream) = state.stream.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&key) else {
             return;
         };
-        self.note_accept_seen_from_remote(stream);
-        if matches!(
-            dir,
-            stream::ResetTarget::Request | stream::ResetTarget::Both
-        ) && stream.inbound.dir == Direction::Request
-        {
-            stream.inbound.pending_chunk = None;
-            stream.inbound.terminal = Some(InboundTerminal::Error(QlError::StreamReset {
-                id: stream_id,
-                dir: Direction::Request,
-                code,
-            }));
-            self.flush_inbound_terminal(&mut stream.inbound);
-        }
-        if matches!(
-            dir,
-            stream::ResetTarget::Response | stream::ResetTarget::Both
-        ) && stream.inbound.dir == Direction::Response
-        {
-            stream.inbound.pending_chunk = None;
-            stream.inbound.terminal = Some(InboundTerminal::Error(QlError::StreamReset {
-                id: stream_id,
-                dir: Direction::Response,
-                code,
-            }));
-            self.flush_inbound_terminal(&mut stream.inbound);
-        }
-        if let Some(outbound) = stream.outbound.as_mut() {
-            let affects_outbound = match (dir, outbound.dir) {
-                (stream::ResetTarget::Request, Direction::Request)
-                | (stream::ResetTarget::Response, Direction::Response)
-                | (stream::ResetTarget::Both, _) => true,
-                _ => false,
-            };
-            if affects_outbound {
-                outbound.pending.clear();
-                outbound.awaiting = None;
-                outbound.closed = true;
-                outbound.pipe.close();
-            }
-        }
-        if let Some(tx) = stream.accept_tx.take() {
-            let _ = tx.send(Err(QlError::StreamReset {
-                id: stream_id,
-                dir: stream.inbound.dir,
-                code,
-            }));
-        }
-        stream.phase = StreamPhase::Closed;
-        stream.last_activity = Instant::now();
+        self.note_setup_seen_from_remote(stream);
+        self.apply_remote_reset(stream, stream_id, dir, code);
+        *stream.last_activity_mut() = Instant::now();
+        self.maybe_reap_stream(state, peer, stream_id);
     }
 
     fn process_packet_ack(&self, state: &mut RuntimeState, peer: XID, packet_id: PacketId) {
-        let key = state.stream.iter().find_map(|(key, stream)| {
+        let key = state.streams.iter().find_map(|(key, stream)| {
             (key.0 == peer
                 && stream
-                    .outbound
+                    .control()
+                    .awaiting
                     .as_ref()
-                    .and_then(|outbound| outbound.awaiting.as_ref())
                     .is_some_and(|awaiting| awaiting.packet_id == packet_id))
             .then_some(*key)
         });
         let Some(key) = key else {
             return;
         };
-        let Some(stream) = state.stream.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&key) else {
             return;
         };
-        let Some(outbound) = stream.outbound.as_mut() else {
-            return;
-        };
-        let Some(awaiting) = outbound.awaiting.take() else {
+        let Some(awaiting) = stream.control_mut().awaiting.take() else {
             return;
         };
 
+        let mut reap = false;
         match awaiting.frame {
             AwaitingFrame::Control(StreamFrame::Open(_)) => {
-                if stream.phase == StreamPhase::InitiatorOpening {
-                    stream.phase = StreamPhase::InitiatorWaitingAccept;
+                if let StreamState::Initiator(stream) = stream {
+                    if let InitiatorAccept::Opening {
+                        accept_waiter,
+                        open_timeout_token,
+                    } = &mut stream.accept
+                    {
+                        let waiter = accept_waiter.take();
+                        let token = *open_timeout_token;
+                        stream.accept = InitiatorAccept::WaitingAccept {
+                            accept_waiter: waiter,
+                            open_timeout_token: token,
+                        };
+                    }
                 }
             }
-            AwaitingFrame::Control(StreamFrame::Accept(StreamFrameAccept {
-                status: AcceptStatus::Accepted,
-                ..
-            })) => {
-                if stream.phase == StreamPhase::ResponderAccepting {
-                    stream.phase = StreamPhase::Open;
-                    outbound.data_enabled = true;
+            AwaitingFrame::Control(StreamFrame::Accept(_)) => {
+                if let StreamState::Responder(stream) = stream {
+                    if let ResponderResponse::Accepted { body, acked, .. } = &mut stream.response {
+                        *acked = true;
+                        body.data_enabled = true;
+                    }
                 }
             }
-            AwaitingFrame::Control(StreamFrame::Accept(StreamFrameAccept {
-                status: AcceptStatus::Rejected(_),
-                ..
-            })) => {
-                stream.phase = StreamPhase::Rejected;
-                outbound.closed = true;
-                outbound.pipe.close();
+            AwaitingFrame::Control(StreamFrame::Reject(_)) => {
+                reap = true;
             }
             AwaitingFrame::Control(StreamFrame::Finish(_)) => {
-                outbound.pipe.close();
+                if let Some(outbound) = stream.outbound_mut(Direction::Request) {
+                    outbound.pipe.close();
+                }
+                if let Some(outbound) = stream.outbound_mut(Direction::Response) {
+                    outbound.pipe.close();
+                }
             }
             AwaitingFrame::Control(StreamFrame::Reset(StreamFrameReset { dir, .. })) => {
-                let affects_outbound = match (dir, outbound.dir) {
-                    (stream::ResetTarget::Request, Direction::Request)
-                    | (stream::ResetTarget::Response, Direction::Response)
-                    | (stream::ResetTarget::Both, _) => true,
-                    _ => false,
-                };
-                if affects_outbound {
-                    outbound.pipe.close();
+                for outbound_dir in [Direction::Request, Direction::Response] {
+                    let affects_outbound = match (dir, outbound_dir) {
+                        (stream::ResetTarget::Request, Direction::Request)
+                        | (stream::ResetTarget::Response, Direction::Response)
+                        | (stream::ResetTarget::Both, _) => true,
+                        _ => false,
+                    };
+                    if affects_outbound {
+                        if let Some(outbound) = stream.outbound_mut(outbound_dir) {
+                            outbound.pipe.close();
+                        }
+                    }
                 }
             }
             AwaitingFrame::Control(StreamFrame::Data(_) | StreamFrame::Credit(_)) => {}
             AwaitingFrame::Data { .. } => {}
         }
 
-        self.drive_stream(state, key.0, key.1);
+        if reap {
+            self.maybe_reap_stream(state, key.0, key.1);
+        } else {
+            self.drive_stream(state, key.0, key.1);
+        }
     }
 
     fn drive_streams(&self, state: &mut RuntimeState) {
-        let keys: Vec<_> = state.stream.keys().copied().collect();
+        let keys: Vec<_> = state.streams.keys().copied().collect();
         for (peer, stream_id) in keys {
             self.drive_stream(state, peer, stream_id);
         }
@@ -1258,38 +1238,40 @@ impl<P: QlPlatform> Runtime<P> {
 
     fn drive_stream(&self, state: &mut RuntimeState, peer: XID, stream_id: StreamId) {
         let key = (peer, stream_id);
-        let (streams, core) = (&mut state.stream, &mut state.core);
+        let (streams, core) = (&mut state.streams, &mut state.core);
         let Some(stream) = streams.get_mut(&key) else {
-            return;
-        };
-        let Some(_) = stream.outbound.as_ref() else {
             return;
         };
 
         let mut next_control = None;
         let mut next_data = None;
         {
-            let outbound = stream.outbound.as_mut().unwrap();
-            if outbound.awaiting.is_none() {
-                if let Some(frame) = outbound.pending.take_next_control(stream.stream_id) {
+            if stream.control().awaiting.is_none() {
+                if let Some(frame) = stream.control_mut().pending.take_next_control(stream_id) {
                     next_control = Some(frame);
-                } else if outbound.data_enabled && !outbound.closed {
-                    if let Some(mut send) = outbound
-                        .pipe
-                        .reserve_send(outbound.remote_max_offset, self.config.max_payload_bytes)
-                    {
-                        let mut bytes = vec![0; send.len()];
-                        // TODO: We still allocate and copy per outbound packet because the wire
-                        // format owns `Vec<u8>`. The ring eliminates the long-lived stream buffer
-                        // allocations but not this packet build step.
-                        send.read_exact(&mut bytes).expect("grant length is exact");
-                        next_data = Some((outbound.dir, send.offset(), bytes));
-                    } else if outbound.pipe.writer_finished() && outbound.pipe.all_sent() {
-                        outbound.closed = true;
-                        next_control = Some(StreamFrame::Finish(StreamFrameFinish {
-                            stream_id,
-                            dir: outbound.dir,
-                        }));
+                } else {
+                    for dir in [Direction::Request, Direction::Response] {
+                        let Some(outbound) = stream.outbound_mut(dir) else {
+                            continue;
+                        };
+                        if !outbound.data_enabled || outbound.closed {
+                            continue;
+                        }
+                        if let Some(mut send) = outbound
+                            .pipe
+                            .reserve_send(outbound.remote_max_offset, self.config.max_payload_bytes)
+                        {
+                            let mut bytes = vec![0; send.len()];
+                            send.read_exact(&mut bytes).expect("grant length is exact");
+                            next_data = Some((outbound.dir, send.offset(), bytes));
+                        } else if outbound.pipe.writer_finished() && outbound.pipe.all_sent() {
+                            outbound.closed = true;
+                            next_control = Some(StreamFrame::Finish(StreamFrameFinish {
+                                stream_id,
+                                dir: outbound.dir,
+                            }));
+                        }
+                        break;
                     }
                 }
             }
@@ -1305,24 +1287,22 @@ impl<P: QlPlatform> Runtime<P> {
     fn send_control_frame(
         &self,
         core: &mut CoreState,
-        stream: &mut StreamRecord,
+        stream: &mut StreamState,
         frame: StreamFrame,
         attempt: u8,
     ) {
         let packet_id = core.next_packet_id();
-        let Some(outbound) = stream.outbound.as_mut() else {
-            return;
-        };
-        outbound.awaiting = Some(AwaitingPacket {
+        stream.control_mut().awaiting = Some(AwaitingPacket {
             packet_id,
             frame: AwaitingFrame::Control(frame.clone()),
             attempt,
         });
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
+        let key = stream.key();
         self.enqueue_stream_body(
             core,
-            stream.peer,
-            Some(stream.stream_id),
+            key.peer,
+            Some(key.stream_id),
             Some(packet_id),
             true,
             false,
@@ -1338,17 +1318,17 @@ impl<P: QlPlatform> Runtime<P> {
     fn send_data_frame(
         &self,
         core: &mut CoreState,
-        stream: &mut StreamRecord,
+        stream: &mut StreamState,
         dir: Direction,
         offset: u64,
         bytes: Vec<u8>,
         attempt: u8,
     ) {
         let packet_id = core.next_packet_id();
-        let Some(outbound) = stream.outbound.as_mut() else {
+        let Some(_) = stream.outbound_mut(dir) else {
             return;
         };
-        outbound.awaiting = Some(AwaitingPacket {
+        stream.control_mut().awaiting = Some(AwaitingPacket {
             packet_id,
             frame: AwaitingFrame::Data {
                 dir,
@@ -1358,10 +1338,11 @@ impl<P: QlPlatform> Runtime<P> {
             attempt,
         });
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
+        let key = stream.key();
         self.enqueue_stream_body(
             core,
-            stream.peer,
-            Some(stream.stream_id),
+            key.peer,
+            Some(key.stream_id),
             Some(packet_id),
             true,
             false,
@@ -1370,7 +1351,7 @@ impl<P: QlPlatform> Runtime<P> {
                 valid_until,
                 packet_ack: None,
                 frame: Some(StreamFrame::Data(StreamFrameData {
-                    stream_id: stream.stream_id,
+                    stream_id: key.stream_id,
                     dir,
                     offset,
                     bytes,
@@ -1379,116 +1360,184 @@ impl<P: QlPlatform> Runtime<P> {
         );
     }
 
-    fn queue_credit(&self, stream: &mut StreamRecord, dir: Direction) {
-        if let Some(outbound) = stream.outbound.as_mut() {
-            outbound.pending.set_credit(StreamFrameCredit {
-                stream_id: stream.stream_id,
-                dir,
-                recv_offset: stream.inbound.next_offset,
-                max_offset: stream.inbound.max_offset,
-            });
+    fn queue_credit(&self, stream: &mut StreamState, dir: Direction) {
+        let stream_id = stream.key().stream_id;
+        let (recv_offset, max_offset) = {
+            let Some(inbound) = stream.inbound_mut(dir) else {
+                return;
+            };
+            inbound.credit_dirty = false;
+            (inbound.next_offset, inbound.max_offset)
+        };
+        stream.control_mut().pending.set_credit(StreamFrameCredit {
+            stream_id,
+            dir,
+            recv_offset,
+            max_offset,
+        });
+    }
+
+    fn queue_protocol_reset(&self, stream: &mut StreamState) {
+        let id = stream.key().stream_id;
+        stream
+            .control_mut()
+            .pending
+            .set_reset(stream::ResetTarget::Both, ResetCode::Protocol);
+        for dir in [Direction::Request, Direction::Response] {
+            if let Some(outbound) = stream.outbound_mut(dir) {
+                outbound.closed = true;
+                outbound.pipe.close();
+            }
+            if let Some(inbound) = stream.inbound_mut(dir) {
+                if !inbound.closed {
+                    inbound.closed = true;
+                    inbound.pipe.fail(QlError::StreamProtocol { id });
+                }
+            }
+        }
+        if let StreamState::Initiator(stream) = stream {
+            match &mut stream.accept {
+                InitiatorAccept::Opening { accept_waiter, .. }
+                | InitiatorAccept::WaitingAccept { accept_waiter, .. } => {
+                    if let Some(mut waiter) = accept_waiter.take() {
+                        if let Some(tx) = waiter.tx.take() {
+                            let _ = tx.send(Err(QlError::StreamProtocol { id }));
+                        }
+                    }
+                }
+                InitiatorAccept::Open { .. } => {}
+            }
         }
     }
 
-    fn queue_local_reset(
+    fn note_setup_seen_from_remote(&self, stream: &mut StreamState) {
+        if let StreamState::Responder(stream) = stream {
+            if matches!(
+                stream
+                    .control
+                    .awaiting
+                    .as_ref()
+                    .map(|awaiting| &awaiting.frame),
+                Some(AwaitingFrame::Control(StreamFrame::Accept(_)))
+            ) {
+                stream.control.awaiting = None;
+                if let ResponderResponse::Accepted { body, acked, .. } = &mut stream.response {
+                    *acked = true;
+                    body.data_enabled = true;
+                }
+            }
+            if matches!(
+                stream
+                    .control
+                    .awaiting
+                    .as_ref()
+                    .map(|awaiting| &awaiting.frame),
+                Some(AwaitingFrame::Control(StreamFrame::Reject(_)))
+            ) {
+                stream.control.awaiting = None;
+            }
+        }
+    }
+
+    fn apply_remote_reset(
         &self,
-        stream: &mut StreamRecord,
+        stream: &mut StreamState,
+        stream_id: StreamId,
         dir: stream::ResetTarget,
         code: ResetCode,
     ) {
-        if let Some(outbound) = stream.outbound.as_mut() {
-            outbound.pending.set_reset(dir, code);
-            outbound.closed = true;
-            // TODO: This closes the local writer before the reset frame is acknowledged.
-            // That matches the old cancel-fast behavior, but we may want a stricter contract later.
-            outbound.pipe.close();
-        }
-        stream.inbound.closed = true;
-        stream.inbound.pending_chunk = None;
-        stream.inbound.terminal = Some(InboundTerminal::Error(QlError::StreamProtocol {
-            id: stream.stream_id,
-        }));
-        self.flush_inbound_terminal(&mut stream.inbound);
-    }
-
-    fn note_accept_seen_from_remote(&self, stream: &mut StreamRecord) {
-        if stream.role != StreamRole::Responder || stream.phase != StreamPhase::ResponderAccepting {
-            return;
-        }
-        let Some(outbound) = stream.outbound.as_mut() else {
-            return;
+        let request_error = QlError::StreamReset {
+            id: stream_id,
+            dir: Direction::Request,
+            code,
         };
+        let response_error = QlError::StreamReset {
+            id: stream_id,
+            dir: Direction::Response,
+            code,
+        };
+
         if matches!(
-            outbound.awaiting.as_ref().map(|awaiting| &awaiting.frame),
-            Some(AwaitingFrame::Control(StreamFrame::Accept(_)))
+            dir,
+            stream::ResetTarget::Request | stream::ResetTarget::Both
         ) {
-            outbound.awaiting = None;
-            if matches!(
-                stream.accept_frame,
-                Some(StreamFrameAccept {
-                    status: AcceptStatus::Accepted,
-                    ..
-                })
-            ) {
-                stream.phase = StreamPhase::Open;
-                outbound.data_enabled = true;
-            } else {
-                stream.phase = StreamPhase::Rejected;
+            if let Some(inbound) = stream.inbound_mut(Direction::Request) {
+                if !inbound.closed {
+                    inbound.closed = true;
+                    inbound.pipe.fail(request_error.clone());
+                }
+            }
+            if let Some(outbound) = stream.outbound_mut(Direction::Request) {
                 outbound.closed = true;
                 outbound.pipe.close();
             }
         }
-    }
-
-    fn flush_inbound_terminal(&self, inbound: &mut crate::runtime::internal::InboundStreamState) {
-        if let Some(chunk) = inbound.pending_chunk.take() {
-            match inbound.chunk_tx.try_send(InboundStreamItem::Chunk(chunk)) {
-                Ok(()) => {}
-                Err(async_channel::TrySendError::Full(InboundStreamItem::Chunk(chunk))) => {
-                    inbound.pending_chunk = Some(chunk);
-                    return;
-                }
-                Err(async_channel::TrySendError::Closed(_)) => {
+        if matches!(
+            dir,
+            stream::ResetTarget::Response | stream::ResetTarget::Both
+        ) {
+            if let Some(inbound) = stream.inbound_mut(Direction::Response) {
+                if !inbound.closed {
                     inbound.closed = true;
-                    return;
+                    inbound.pipe.fail(response_error.clone());
                 }
-                Err(async_channel::TrySendError::Full(_)) => unreachable!(),
+            }
+            if let Some(outbound) = stream.outbound_mut(Direction::Response) {
+                outbound.closed = true;
+                outbound.pipe.close();
             }
         }
 
-        let Some(terminal) = inbound.terminal.take() else {
-            return;
-        };
-        match terminal {
-            InboundTerminal::Finished => {
-                match inbound.chunk_tx.try_send(InboundStreamItem::Finished) {
-                    Ok(()) => {
-                        inbound.closed = true;
-                        inbound.chunk_tx.close();
-                    }
-                    Err(async_channel::TrySendError::Full(_)) => {
-                        inbound.terminal = Some(InboundTerminal::Finished);
-                    }
-                    Err(async_channel::TrySendError::Closed(_)) => {
-                        inbound.closed = true;
+        if let StreamState::Initiator(stream) = stream {
+            match &mut stream.accept {
+                InitiatorAccept::Opening { accept_waiter, .. }
+                | InitiatorAccept::WaitingAccept { accept_waiter, .. } => {
+                    if let Some(mut waiter) = accept_waiter.take() {
+                        if let Some(tx) = waiter.tx.take() {
+                            let _ = tx.send(Err(match dir {
+                                stream::ResetTarget::Request => request_error,
+                                _ => response_error,
+                            }));
+                        }
                     }
                 }
+                InitiatorAccept::Open { .. } => {}
             }
-            InboundTerminal::Error(error) => match inbound
-                .chunk_tx
-                .try_send(InboundStreamItem::Error(error.clone()))
-            {
-                Ok(()) => {
-                    inbound.closed = true;
-                    inbound.chunk_tx.close();
+        }
+    }
+
+    fn maybe_reap_stream(&self, state: &mut RuntimeState, peer: XID, stream_id: StreamId) {
+        if state
+            .streams
+            .get(&(peer, stream_id))
+            .is_some_and(StreamState::can_reap)
+        {
+            state.streams.remove(&(peer, stream_id));
+        }
+    }
+
+    fn stream_matches_open(
+        &self,
+        stream: &StreamState,
+        route_id: RouteId,
+        request_head: &[u8],
+        response_max_offset: u64,
+    ) -> bool {
+        match stream {
+            StreamState::Responder(state) => match &state.response {
+                ResponderResponse::Pending { initial_credit } => {
+                    state.meta.route_id == route_id
+                        && state.meta.request_head == request_head
+                        && *initial_credit == response_max_offset
                 }
-                Err(async_channel::TrySendError::Full(_)) => {
-                    inbound.terminal = Some(InboundTerminal::Error(error));
-                }
-                Err(async_channel::TrySendError::Closed(_)) => {
-                    inbound.closed = true;
+                ResponderResponse::Accepted { initial_credit, .. }
+                | ResponderResponse::Rejecting { initial_credit, .. } => {
+                    state.meta.route_id == route_id
+                        && state.meta.request_head == request_head
+                        && *initial_credit == response_max_offset
                 }
             },
+            _ => false,
         }
     }
 
@@ -1896,8 +1945,8 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn record_stream_activity(&self, state: &mut RuntimeState, peer: XID, stream_id: StreamId) {
-        if let Some(stream) = state.stream.get_mut(&(peer, stream_id)) {
-            stream.last_activity = Instant::now();
+        if let Some(stream) = state.streams.get_mut(&(peer, stream_id)) {
+            *stream.last_activity_mut() = Instant::now();
         }
     }
 
@@ -1921,7 +1970,7 @@ impl<P: QlPlatform> Runtime<P> {
 
     fn abort_streams_for_peer(&self, state: &mut RuntimeState, peer: XID, error: QlError) {
         let keys: Vec<_> = state
-            .stream
+            .streams
             .keys()
             .copied()
             .filter(|(stream_peer, _)| *stream_peer == peer)
@@ -1938,24 +1987,34 @@ impl<P: QlPlatform> Runtime<P> {
         stream_id: StreamId,
         error: QlError,
     ) {
-        let Some(mut stream) = state.stream.remove(&(peer, stream_id)) else {
+        let Some(mut stream) = state.streams.remove(&(peer, stream_id)) else {
             return;
         };
-        if let Some(tx) = stream.accept_tx.take() {
-            let _ = tx.send(Err(error.clone()));
+        if let StreamState::Initiator(stream) = &mut stream {
+            match &mut stream.accept {
+                InitiatorAccept::Opening { accept_waiter, .. }
+                | InitiatorAccept::WaitingAccept { accept_waiter, .. } => {
+                    if let Some(mut waiter) = accept_waiter.take() {
+                        if let Some(tx) = waiter.tx.take() {
+                            let _ = tx.send(Err(error.clone()));
+                        }
+                    }
+                }
+                InitiatorAccept::Open { .. } => {}
+            }
         }
-        if let Some(outbound) = stream.outbound.as_mut() {
-            outbound.pending.clear();
-            outbound.awaiting = None;
-            outbound.closed = true;
-            outbound.pipe.close();
+        for dir in [Direction::Request, Direction::Response] {
+            if let Some(outbound) = stream.outbound_mut(dir) {
+                outbound.closed = true;
+                outbound.pipe.close();
+            }
+            if let Some(inbound) = stream.inbound_mut(dir) {
+                if !inbound.closed {
+                    inbound.closed = true;
+                    inbound.pipe.fail(error.clone());
+                }
+            }
         }
-        stream.inbound.pending_chunk = None;
-        let _ = stream
-            .inbound
-            .chunk_tx
-            .try_send(InboundStreamItem::Error(error));
-        stream.inbound.chunk_tx.close();
     }
 
     fn unpair_peer(&self, state: &mut RuntimeState, peer: XID) {
@@ -2073,11 +2132,11 @@ impl<P: QlPlatform> Runtime<P> {
                     stream_id,
                     token,
                 } => {
-                    let should_fail = state.stream.get(&(peer, stream_id)).is_some_and(|stream| {
-                        stream.open_timeout_token == token
-                            && (stream.phase == StreamPhase::InitiatorOpening
-                                || stream.phase == StreamPhase::InitiatorWaitingAccept)
-                    });
+                    let should_fail = state
+                        .streams
+                        .get(&(peer, stream_id))
+                        .and_then(StreamState::open_timeout_token)
+                        .is_some_and(|stream_token| stream_token == token);
                     if should_fail {
                         self.fail_stream(state, peer, stream_id, QlError::Timeout);
                     }
@@ -2090,38 +2149,55 @@ impl<P: QlPlatform> Runtime<P> {
                 } => {
                     let key = (peer, stream_id);
                     let mut timed_out = false;
+                    enum Retransmit {
+                        Control(StreamFrame),
+                        Data {
+                            dir: Direction,
+                            offset: u64,
+                            len: usize,
+                        },
+                    }
                     {
-                        let (streams, core) = (&mut state.stream, &mut state.core);
+                        let (streams, core) = (&mut state.streams, &mut state.core);
                         let Some(stream) = streams.get_mut(&key) else {
                             continue;
                         };
-                        let Some(awaiting) = stream
-                            .outbound
-                            .as_ref()
-                            .and_then(|outbound| outbound.awaiting.as_ref())
+                        let Some(retransmit) =
+                            stream.control().awaiting.as_ref().and_then(|awaiting| {
+                                if awaiting.packet_id != packet_id || awaiting.attempt != attempt {
+                                    return None;
+                                }
+                                Some(match &awaiting.frame {
+                                    AwaitingFrame::Control(frame) => {
+                                        Retransmit::Control(frame.clone())
+                                    }
+                                    AwaitingFrame::Data { dir, offset, len } => Retransmit::Data {
+                                        dir: *dir,
+                                        offset: *offset,
+                                        len: *len,
+                                    },
+                                })
+                            })
                         else {
                             continue;
                         };
-                        if awaiting.packet_id != packet_id || awaiting.attempt != attempt {
-                            continue;
-                        }
                         if attempt >= self.config.stream_retry_limit {
                             timed_out = true;
                         } else {
-                            match &awaiting.frame {
-                                AwaitingFrame::Control(frame) => {
+                            match retransmit {
+                                Retransmit::Control(frame) => {
                                     self.send_control_frame(
                                         core,
                                         stream,
-                                        frame.clone(),
+                                        frame,
                                         attempt.saturating_add(1),
                                     );
                                 }
-                                AwaitingFrame::Data { dir, offset, len } => {
-                                    let Some(outbound) = stream.outbound.as_ref() else {
+                                Retransmit::Data { dir, offset, len } => {
+                                    let Some(outbound) = stream.outbound_mut(dir) else {
                                         continue;
                                     };
-                                    let Some(mut grant) = outbound.pipe.retry_send(*offset, *len)
+                                    let Some(mut grant) = outbound.pipe.retry_send(offset, len)
                                     else {
                                         // TODO: If a later `Credit` advanced past this range, the
                                         // bytes are already semantically acked and won't be retried.
@@ -2132,8 +2208,8 @@ impl<P: QlPlatform> Runtime<P> {
                                     self.send_data_frame(
                                         core,
                                         stream,
-                                        *dir,
-                                        *offset,
+                                        dir,
+                                        offset,
                                         bytes,
                                         attempt.saturating_add(1),
                                     );
@@ -2186,10 +2262,9 @@ impl<P: QlPlatform> Runtime<P> {
         if track_ack {
             if let (Some(stream_id), Some(packet_id)) = (stream_id, packet_id) {
                 let attempt = state
-                    .stream
+                    .streams
                     .get(&(peer, stream_id))
-                    .and_then(|stream| stream.outbound.as_ref())
-                    .and_then(|outbound| outbound.awaiting.as_ref())
+                    .and_then(|stream| stream.control().awaiting.as_ref())
                     .and_then(|awaiting| {
                         (awaiting.packet_id == packet_id).then_some(awaiting.attempt)
                     })
@@ -2217,10 +2292,18 @@ impl FrameExt for StreamFrame {
         match self {
             StreamFrame::Open(StreamFrameOpen { stream_id, .. })
             | StreamFrame::Accept(StreamFrameAccept { stream_id, .. })
+            | StreamFrame::Reject(StreamFrameReject { stream_id, .. })
             | StreamFrame::Data(StreamFrameData { stream_id, .. })
             | StreamFrame::Credit(StreamFrameCredit { stream_id, .. })
             | StreamFrame::Finish(StreamFrameFinish { stream_id, .. })
             | StreamFrame::Reset(StreamFrameReset { stream_id, .. }) => *stream_id,
         }
+    }
+}
+
+fn reset_target_for_dir(dir: Direction) -> stream::ResetTarget {
+    match dir {
+        Direction::Request => stream::ResetTarget::Request,
+        Direction::Response => stream::ResetTarget::Response,
     }
 }

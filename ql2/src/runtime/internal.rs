@@ -5,7 +5,6 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use async_channel::{Receiver, Sender};
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
 use crate::{
@@ -15,8 +14,9 @@ use crate::{
     wire::{
         handshake::{Hello, HelloReply},
         stream::{
-            Direction, OpenFlags, RejectCode, ResetCode, ResetTarget, StreamBody, StreamFrame,
-            StreamFrameAccept, StreamFrameCredit, StreamFrameOpen, StreamFrameReset,
+            Direction, RejectCode, ResetCode, ResetTarget, StreamBody, StreamFrame,
+            StreamFrameAccept, StreamFrameCredit, StreamFrameOpen, StreamFrameReject,
+            StreamFrameReset,
         },
     },
     PacketId, Peer, QlError, RouteId, StreamId,
@@ -161,27 +161,23 @@ pub enum InitiatorStage {
     WaitingConfirmAck,
 }
 
-pub(crate) enum InboundStreamItem {
-    Chunk(Vec<u8>),
-    Finished,
-    Error(QlError),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamKey {
+    pub peer: XID,
+    pub stream_id: StreamId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamRole {
-    Initiator,
-    Responder,
+#[derive(Debug)]
+pub struct StreamMeta {
+    pub key: StreamKey,
+    pub route_id: RouteId,
+    pub request_head: Vec<u8>,
+    pub last_activity: Instant,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamPhase {
-    InitiatorOpening,
-    InitiatorWaitingAccept,
-    ResponderPending,
-    ResponderAccepting,
-    Open,
-    Rejected,
-    Closed,
+pub struct PendingAcceptTx {
+    pub tx: Option<oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>>,
+    pub response_reader: Option<pipe::PipeReader<QlError>>,
 }
 
 pub struct AwaitingPacket {
@@ -199,18 +195,19 @@ pub enum AwaitingFrame {
     },
 }
 
-pub struct PendingStreamFrames {
+pub enum SetupFrame {
+    Open(StreamFrameOpen),
+    Accept(StreamFrameAccept),
+    Reject(StreamFrameReject),
+}
+
+pub struct PendingFrames {
     pub setup: Option<SetupFrame>,
     pub credit: Option<StreamFrameCredit>,
     pub reset: Option<StreamFrameReset>,
 }
 
-pub enum SetupFrame {
-    Open(StreamFrameOpen),
-    Accept(StreamFrameAccept),
-}
-
-impl PendingStreamFrames {
+impl PendingFrames {
     pub fn new() -> Self {
         Self {
             setup: None,
@@ -224,6 +221,7 @@ impl PendingStreamFrames {
             return Some(match setup {
                 SetupFrame::Open(frame) => StreamFrame::Open(frame),
                 SetupFrame::Accept(frame) => StreamFrame::Accept(frame),
+                SetupFrame::Reject(frame) => StreamFrame::Reject(frame),
             });
         }
         if let Some(reset) = self.reset.take() {
@@ -232,8 +230,8 @@ impl PendingStreamFrames {
         self.credit.take().map(StreamFrame::Credit)
     }
 
-    pub fn set_setup(&mut self, frame: SetupFrame) {
-        self.setup = Some(frame);
+    pub fn set_setup(&mut self, setup: SetupFrame) {
+        self.setup = Some(setup);
     }
 
     pub fn set_credit(&mut self, frame: StreamFrameCredit) {
@@ -251,55 +249,200 @@ impl PendingStreamFrames {
         });
     }
 
-    pub fn clear(&mut self) {
-        self.setup = None;
-        self.credit = None;
-        self.reset = None;
+    pub fn is_empty(&self) -> bool {
+        self.setup.is_none() && self.credit.is_none() && self.reset.is_none()
     }
 }
 
-pub struct OutboundStreamState {
-    pub dir: Direction,
-    pub pipe: pipe::PipeReader,
-    pub pending: PendingStreamFrames,
+pub struct StreamControl {
+    pub pending: PendingFrames,
     pub awaiting: Option<AwaitingPacket>,
+}
+
+impl StreamControl {
+    pub fn new() -> Self {
+        Self {
+            pending: PendingFrames::new(),
+            awaiting: None,
+        }
+    }
+}
+
+pub struct OutboundBody {
+    pub dir: Direction,
+    pub pipe: pipe::PipeReader<QlError>,
     pub remote_max_offset: u64,
     pub data_enabled: bool,
     pub closed: bool,
 }
 
-pub struct InboundStreamState {
-    pub dir: Direction,
-    pub chunk_tx: Sender<InboundStreamItem>,
-    pub pending_chunk: Option<Vec<u8>>,
+impl OutboundBody {
+    pub fn new(
+        dir: Direction,
+        pipe: pipe::PipeReader<QlError>,
+        remote_max_offset: u64,
+        data_enabled: bool,
+    ) -> Self {
+        Self {
+            dir,
+            pipe,
+            remote_max_offset,
+            data_enabled,
+            closed: false,
+        }
+    }
+}
+
+pub struct InboundBody {
+    pub pipe: pipe::PipeWriter<QlError>,
     pub next_offset: u64,
     pub max_offset: u64,
-    pub terminal: Option<InboundTerminal>,
+    pub credit_dirty: bool,
     pub closed: bool,
 }
 
-pub enum InboundTerminal {
-    Finished,
-    Error(QlError),
+impl InboundBody {
+    pub fn new(_dir: Direction, pipe: pipe::PipeWriter<QlError>, max_offset: u64) -> Self {
+        Self {
+            pipe,
+            next_offset: 0,
+            max_offset,
+            credit_dirty: false,
+            closed: false,
+        }
+    }
 }
 
-pub struct StreamRecord {
-    pub peer: XID,
-    pub stream_id: StreamId,
-    pub route_id: RouteId,
-    pub role: StreamRole,
-    pub phase: StreamPhase,
-    pub open_flags: OpenFlags,
-    pub request_head: Vec<u8>,
-    pub response_head: Option<Vec<u8>>,
-    pub response_rx: Option<Receiver<InboundStreamItem>>,
-    pub accept_tx: Option<oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>>,
-    pub open_timeout_token: Token,
-    pub initial_remote_credit: u64,
-    pub outbound: Option<OutboundStreamState>,
-    pub inbound: InboundStreamState,
-    pub accept_frame: Option<StreamFrameAccept>,
-    pub last_activity: Instant,
+pub struct InitiatorStream {
+    pub meta: StreamMeta,
+    pub control: StreamControl,
+    pub request: OutboundBody,
+    pub response: InboundBody,
+    pub accept: InitiatorAccept,
+}
+
+pub enum InitiatorAccept {
+    Opening {
+        accept_waiter: Option<PendingAcceptTx>,
+        open_timeout_token: Token,
+    },
+    WaitingAccept {
+        accept_waiter: Option<PendingAcceptTx>,
+        open_timeout_token: Token,
+    },
+    Open {
+        response_head: Vec<u8>,
+    },
+}
+
+pub struct ResponderStream {
+    pub meta: StreamMeta,
+    pub control: StreamControl,
+    pub request: InboundBody,
+    pub response: ResponderResponse,
+}
+
+pub enum ResponderResponse {
+    Pending {
+        initial_credit: u64,
+    },
+    Accepted {
+        response_head: Vec<u8>,
+        initial_credit: u64,
+        body: OutboundBody,
+        acked: bool,
+    },
+    Rejecting {
+        code: RejectCode,
+        initial_credit: u64,
+    },
+}
+
+pub enum StreamState {
+    Initiator(InitiatorStream),
+    Responder(ResponderStream),
+}
+
+impl StreamState {
+    pub fn key(&self) -> StreamKey {
+        match self {
+            Self::Initiator(state) => state.meta.key,
+            Self::Responder(state) => state.meta.key,
+        }
+    }
+
+    pub fn last_activity_mut(&mut self) -> &mut Instant {
+        match self {
+            Self::Initiator(state) => &mut state.meta.last_activity,
+            Self::Responder(state) => &mut state.meta.last_activity,
+        }
+    }
+
+    pub fn control(&self) -> &StreamControl {
+        match self {
+            Self::Initiator(state) => &state.control,
+            Self::Responder(state) => &state.control,
+        }
+    }
+
+    pub fn control_mut(&mut self) -> &mut StreamControl {
+        match self {
+            Self::Initiator(state) => &mut state.control,
+            Self::Responder(state) => &mut state.control,
+        }
+    }
+
+    pub fn outbound_mut(&mut self, dir: Direction) -> Option<&mut OutboundBody> {
+        match self {
+            Self::Initiator(state) if dir == Direction::Request => Some(&mut state.request),
+            Self::Responder(state) if dir == Direction::Response => match &mut state.response {
+                ResponderResponse::Accepted { body, .. } => Some(body),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn inbound_mut(&mut self, dir: Direction) -> Option<&mut InboundBody> {
+        match self {
+            Self::Initiator(state) if dir == Direction::Response => Some(&mut state.response),
+            Self::Responder(state) if dir == Direction::Request => Some(&mut state.request),
+            _ => None,
+        }
+    }
+
+    pub fn open_timeout_token(&self) -> Option<Token> {
+        match self {
+            Self::Initiator(state) => match &state.accept {
+                InitiatorAccept::Opening {
+                    open_timeout_token, ..
+                }
+                | InitiatorAccept::WaitingAccept {
+                    open_timeout_token, ..
+                } => Some(*open_timeout_token),
+                InitiatorAccept::Open { .. } => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn can_reap(&self) -> bool {
+        if self.control().awaiting.is_some() || !self.control().pending.is_empty() {
+            return false;
+        }
+        match self {
+            Self::Initiator(state) => {
+                matches!(state.accept, InitiatorAccept::Open { .. })
+                    && state.request.closed
+                    && state.response.closed
+            }
+            Self::Responder(state) => match &state.response {
+                ResponderResponse::Accepted { body, .. } => state.request.closed && body.closed,
+                ResponderResponse::Rejecting { .. } => true,
+                _ => false,
+            },
+        }
+    }
 }
 
 pub(crate) enum RuntimeCommand {
@@ -318,8 +461,7 @@ pub(crate) enum RuntimeCommand {
         recipient: XID,
         route_id: RouteId,
         request_head: Vec<u8>,
-        response_expected: bool,
-        request_pipe: pipe::PipeReader,
+        request_pipe: pipe::PipeReader<QlError>,
         accepted: oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>,
         start: oneshot::Sender<Result<StreamId, QlError>>,
         config: StreamConfig,
@@ -328,7 +470,7 @@ pub(crate) enum RuntimeCommand {
         recipient: XID,
         stream_id: StreamId,
         response_head: Vec<u8>,
-        response_pipe: pipe::PipeReader,
+        response_pipe: pipe::PipeReader<QlError>,
     },
     RejectStream {
         recipient: XID,
@@ -357,33 +499,41 @@ pub(crate) enum RuntimeCommand {
         dir: Direction,
         code: ResetCode,
     },
+    ResponderDropped {
+        sender: XID,
+        stream_id: StreamId,
+    },
+    PendingAcceptDropped {
+        recipient: XID,
+        stream_id: StreamId,
+    },
     Incoming(Vec<u8>),
 }
 
-pub struct StreamState {
-    by_id: HashMap<(XID, StreamId), StreamRecord>,
+pub struct StreamStore {
+    by_id: HashMap<(XID, StreamId), StreamState>,
 }
 
-impl StreamState {
+impl StreamStore {
     pub fn new() -> Self {
         Self {
             by_id: HashMap::new(),
         }
     }
 
-    pub fn get(&self, key: &(XID, StreamId)) -> Option<&StreamRecord> {
+    pub fn get(&self, key: &(XID, StreamId)) -> Option<&StreamState> {
         self.by_id.get(key)
     }
 
-    pub fn get_mut(&mut self, key: &(XID, StreamId)) -> Option<&mut StreamRecord> {
+    pub fn get_mut(&mut self, key: &(XID, StreamId)) -> Option<&mut StreamState> {
         self.by_id.get_mut(key)
     }
 
-    pub fn insert(&mut self, key: (XID, StreamId), stream: StreamRecord) -> Option<StreamRecord> {
+    pub fn insert(&mut self, key: (XID, StreamId), stream: StreamState) -> Option<StreamState> {
         self.by_id.insert(key, stream)
     }
 
-    pub fn remove(&mut self, key: &(XID, StreamId)) -> Option<StreamRecord> {
+    pub fn remove(&mut self, key: &(XID, StreamId)) -> Option<StreamState> {
         self.by_id.remove(key)
     }
 
@@ -391,7 +541,7 @@ impl StreamState {
         self.by_id.keys()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&(XID, StreamId), &StreamRecord)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&(XID, StreamId), &StreamState)> {
         self.by_id.iter()
     }
 }
@@ -437,14 +587,14 @@ impl CoreState {
 }
 
 pub struct RuntimeState {
-    pub stream: StreamState,
+    pub streams: StreamStore,
     pub core: CoreState,
 }
 
 impl RuntimeState {
     pub fn new() -> Self {
         Self {
-            stream: StreamState::new(),
+            streams: StreamStore::new(),
             core: CoreState::new(),
         }
     }
@@ -566,39 +716,63 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-impl StreamRecord {
-    pub fn local_outbound_dir(&self) -> Direction {
-        match self.role {
-            StreamRole::Initiator => Direction::Request,
-            StreamRole::Responder => Direction::Response,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stream_key() -> StreamKey {
+        StreamKey {
+            peer: XID::from_data([7; XID::XID_SIZE]),
+            stream_id: StreamId(42),
         }
     }
-}
 
-impl OutboundStreamState {
-    pub fn new(dir: Direction, pipe: pipe::PipeReader, remote_max_offset: u64) -> Self {
-        Self {
-            dir,
-            pipe,
-            pending: PendingStreamFrames::new(),
-            awaiting: None,
-            remote_max_offset,
-            data_enabled: false,
-            closed: false,
+    fn stream_meta() -> StreamMeta {
+        StreamMeta {
+            key: stream_key(),
+            route_id: RouteId(9),
+            request_head: vec![1, 2, 3],
+            last_activity: Instant::now(),
         }
     }
-}
 
-impl InboundStreamState {
-    pub fn new(dir: Direction, chunk_tx: Sender<InboundStreamItem>, max_offset: u64) -> Self {
-        Self {
-            dir,
-            chunk_tx,
-            pending_chunk: None,
-            next_offset: 0,
-            max_offset,
-            terminal: None,
-            closed: false,
+    #[test]
+    fn open_stream_reaps_when_both_halves_are_closed() {
+        let (request_reader, mut request_writer) = pipe::pipe(8);
+        let (_response_reader, response_writer) = pipe::pipe(8);
+        request_writer.finish();
+
+        let mut state = StreamState::Initiator(InitiatorState::Open(
+            crate::runtime::internal::InitiatorOpen {
+                meta: AcceptedMeta {
+                    stream: stream_meta(),
+                    response_head: Vec::new(),
+                    response_initial_credit: 0,
+                },
+                control: StreamControl::new(),
+                request: OutboundBody::new(Direction::Request, request_reader, 0, true),
+                response: InboundBody::new(Direction::Response, response_writer, 8),
+            },
+        ));
+
+        if let Some(outbound) = state.outbound_mut(Direction::Request) {
+            outbound.closed = true;
         }
+        if let Some(inbound) = state.inbound_mut(Direction::Response) {
+            inbound.closed = true;
+            inbound.pipe.finish();
+        }
+
+        assert!(state.can_reap());
+    }
+
+    #[test]
+    fn rejecting_stream_reaps_once_control_is_idle() {
+        let state = StreamState::Responder(ResponderState::Rejecting(ResponderRejecting {
+            meta: stream_meta(),
+            control: StreamControl::new(),
+            response_initial_credit: 8,
+        }));
+        assert!(state.can_reap());
     }
 }

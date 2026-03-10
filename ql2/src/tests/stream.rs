@@ -54,13 +54,7 @@ async fn duplex_stream_round_trip() {
         });
 
         let pending = handle_a
-            .open_stream(
-                peer_b.xid,
-                RouteId(11),
-                b"req-head".to_vec(),
-                true,
-                StreamConfig::default(),
-            )
+            .open_stream(peer_b.xid, RouteId(11), b"req-head".to_vec(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream {
@@ -127,13 +121,7 @@ async fn duplicate_open_is_idempotent() {
         });
 
         let pending = handle_a
-            .open_stream(
-                peer_b.xid,
-                RouteId(12),
-                Vec::new(),
-                true,
-                StreamConfig::default(),
-            )
+            .open_stream(peer_b.xid, RouteId(12), Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream { request, accepted } = pending;
@@ -189,13 +177,7 @@ async fn duplicate_accept_is_idempotent() {
         });
 
         let pending = handle_a
-            .open_stream(
-                peer_b.xid,
-                RouteId(13),
-                Vec::new(),
-                true,
-                StreamConfig::default(),
-            )
+            .open_stream(peer_b.xid, RouteId(13), Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream { request, accepted } = pending;
@@ -252,13 +234,7 @@ async fn replayed_open_packet_is_ignored() {
         });
 
         let pending = handle_a
-            .open_stream(
-                peer_b.xid,
-                RouteId(14),
-                Vec::new(),
-                true,
-                StreamConfig::default(),
-            )
+            .open_stream(peer_b.xid, RouteId(14), Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream { request, accepted } = pending;
@@ -315,13 +291,7 @@ async fn request_reset_can_keep_response_alive() {
         });
 
         let pending = handle_a
-            .open_stream(
-                peer_b.xid,
-                RouteId(15),
-                Vec::new(),
-                true,
-                StreamConfig::default(),
-            )
+            .open_stream(peer_b.xid, RouteId(15), Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream {
@@ -373,13 +343,7 @@ async fn open_timeout_returns_error() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let pending = handle_a
-            .open_stream(
-                peer_b.xid,
-                RouteId(16),
-                Vec::new(),
-                true,
-                StreamConfig::default(),
-            )
+            .open_stream(peer_b.xid, RouteId(16), Vec::new(), StreamConfig::default())
             .await
             .unwrap();
 
@@ -426,13 +390,7 @@ async fn reject_surfaces_stream_rejected() {
         });
 
         let pending = handle_a
-            .open_stream(
-                peer_b.xid,
-                RouteId(17),
-                Vec::new(),
-                true,
-                StreamConfig::default(),
-            )
+            .open_stream(peer_b.xid, RouteId(17), Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let err = pending.accepted.await.unwrap_err();
@@ -443,6 +401,141 @@ async fn reject_surfaces_stream_rejected() {
                 ..
             }
         ));
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_responder_rejects_unhandled() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200))
+            .with_open_timeout(Duration::from_millis(300));
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        spawn_forwarder(outbound_a, handle_b.clone());
+        spawn_forwarder(outbound_b, handle_a.clone());
+
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        handle_a.connect(peer_b.xid).unwrap();
+
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
+
+        let responder_task = tokio::task::spawn_local(async move {
+            let stream = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
+            };
+            let mut request = stream.request;
+            drop(stream.respond_to);
+            assert_eq!(request.next_chunk().await.unwrap(), None);
+        });
+
+        let PendingStream { request, accepted } = handle_a
+            .open_stream(peer_b.xid, RouteId(18), Vec::new(), StreamConfig::default())
+            .await
+            .unwrap();
+        request.finish().await.unwrap();
+
+        let err = tokio::time::timeout(Duration::from_secs(1), accepted)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            QlError::StreamRejected {
+                code: RejectCode::Unhandled,
+                ..
+            }
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), responder_task)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_larger_than_ring_buffer_streams_with_backpressure() {
+    run_local_test(async {
+        let config = RuntimeConfig::new(Duration::from_millis(200))
+            .with_open_timeout(Duration::from_millis(400))
+            .with_packet_ack_timeout(Duration::from_millis(30))
+            .with_max_payload_bytes(4)
+            .with_pipe_size_bytes(4)
+            .with_initial_credit(4);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
+        let peer_a = peer_identity(&platform_a);
+        let peer_b = peer_identity(&platform_b);
+        let payload: Vec<u8> = (0..24).collect();
+        let (done_tx, done_rx) = async_channel::bounded(1);
+
+        let (runtime_a, handle_a) = new_runtime(platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        spawn_forwarder(outbound_a, handle_b.clone());
+        spawn_forwarder(outbound_b, handle_a.clone());
+
+        register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
+        handle_a.connect(peer_b.xid).unwrap();
+
+        await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
+        await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
+
+        let responder_task = tokio::task::spawn_local(async move {
+            let stream = match inbound_b.recv().await.unwrap() {
+                HandlerEvent::Stream(stream) => stream,
+            };
+            let mut request = stream.request;
+            let response = stream.respond_to.accept(Vec::new()).unwrap();
+            let mut received = Vec::new();
+            while let Some(chunk) = request.next_chunk().await.unwrap() {
+                received.extend_from_slice(&chunk);
+            }
+            done_tx.send(received).await.unwrap();
+            response.finish().await.unwrap();
+        });
+
+        let PendingStream {
+            mut request,
+            accepted,
+        } = handle_a
+            .open_stream(peer_b.xid, RouteId(19), Vec::new(), StreamConfig::default())
+            .await
+            .unwrap();
+        request.write_all(&payload).await.unwrap();
+        request.finish().await.unwrap();
+
+        let mut accepted = tokio::time::timeout(Duration::from_secs(1), accepted)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(accepted.response.next_chunk().await.unwrap(), None);
+
+        let received = tokio::time::timeout(Duration::from_secs(1), done_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received, payload);
+
+        tokio::time::timeout(Duration::from_secs(1), responder_task)
+            .await
+            .unwrap()
+            .unwrap();
     })
     .await;
 }

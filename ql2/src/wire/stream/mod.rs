@@ -23,6 +23,7 @@ pub struct PacketAck {
 pub enum StreamFrame {
     Open(StreamFrameOpen),
     Accept(StreamFrameAccept),
+    Reject(StreamFrameReject),
     Data(StreamFrameData),
     Credit(StreamFrameCredit),
     Finish(StreamFrameFinish),
@@ -33,7 +34,6 @@ pub enum StreamFrame {
 pub struct StreamFrameOpen {
     pub stream_id: StreamId,
     pub route_id: RouteId,
-    pub flags: OpenFlags,
     pub request_head: Vec<u8>,
     pub response_max_offset: u64,
 }
@@ -41,9 +41,14 @@ pub struct StreamFrameOpen {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrameAccept {
     pub stream_id: StreamId,
-    pub status: AcceptStatus,
     pub response_head: Vec<u8>,
     pub request_max_offset: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamFrameReject {
+    pub stream_id: StreamId,
+    pub code: RejectCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,41 +81,6 @@ pub struct StreamFrameReset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpenFlags {
-    bits: u8,
-}
-
-impl OpenFlags {
-    const RESPONSE_EXPECTED: u8 = 0b0000_0001;
-    const REQUEST_FINISHED: u8 = 0b0000_0010;
-
-    pub const fn new(response_expected: bool, request_finished: bool) -> Self {
-        let mut bits = 0;
-        if response_expected {
-            bits |= Self::RESPONSE_EXPECTED;
-        }
-        if request_finished {
-            bits |= Self::REQUEST_FINISHED;
-        }
-        Self { bits }
-    }
-
-    pub const fn response_expected(self) -> bool {
-        self.bits & Self::RESPONSE_EXPECTED != 0
-    }
-
-    pub const fn request_finished(self) -> bool {
-        self.bits & Self::REQUEST_FINISHED != 0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AcceptStatus {
-    Accepted,
-    Rejected(RejectCode),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Request = 1,
     Response = 2,
@@ -129,6 +99,7 @@ pub enum RejectCode {
     UnknownRoute = 1,
     InvalidHead = 2,
     Busy = 3,
+    Unhandled = 4,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,28 +166,29 @@ impl From<StreamFrame> for CBOR {
             StreamFrame::Open(StreamFrameOpen {
                 stream_id,
                 route_id,
-                flags,
                 request_head,
                 response_max_offset,
             }) => CBOR::from(vec![
                 CBOR::from(1u8),
                 CBOR::from(stream_id),
                 CBOR::from(route_id),
-                CBOR::from(flags),
                 CBOR::from(request_head),
                 CBOR::from(response_max_offset),
             ]),
             StreamFrame::Accept(StreamFrameAccept {
                 stream_id,
-                status,
                 response_head,
                 request_max_offset,
             }) => CBOR::from(vec![
                 CBOR::from(2u8),
                 CBOR::from(stream_id),
-                CBOR::from(status),
                 CBOR::from(response_head),
                 CBOR::from(request_max_offset),
+            ]),
+            StreamFrame::Reject(StreamFrameReject { stream_id, code }) => CBOR::from(vec![
+                CBOR::from(3u8),
+                CBOR::from(stream_id),
+                CBOR::from(code),
             ]),
             StreamFrame::Data(StreamFrameData {
                 stream_id,
@@ -224,7 +196,7 @@ impl From<StreamFrame> for CBOR {
                 offset,
                 bytes,
             }) => CBOR::from(vec![
-                CBOR::from(3u8),
+                CBOR::from(4u8),
                 CBOR::from(stream_id),
                 CBOR::from(dir),
                 CBOR::from(offset),
@@ -236,14 +208,14 @@ impl From<StreamFrame> for CBOR {
                 recv_offset,
                 max_offset,
             }) => CBOR::from(vec![
-                CBOR::from(4u8),
+                CBOR::from(5u8),
                 CBOR::from(stream_id),
                 CBOR::from(dir),
                 CBOR::from(recv_offset),
                 CBOR::from(max_offset),
             ]),
             StreamFrame::Finish(StreamFrameFinish { stream_id, dir }) => CBOR::from(vec![
-                CBOR::from(5u8),
+                CBOR::from(6u8),
                 CBOR::from(stream_id),
                 CBOR::from(dir),
             ]),
@@ -252,7 +224,7 @@ impl From<StreamFrame> for CBOR {
                 dir,
                 code,
             }) => CBOR::from(vec![
-                CBOR::from(6u8),
+                CBOR::from(7u8),
                 CBOR::from(stream_id),
                 CBOR::from(dir),
                 CBOR::from(code),
@@ -272,26 +244,30 @@ impl TryFrom<CBOR> for StreamFrame {
             .try_into()?;
         match tag {
             1 => {
-                let [stream_id, route_id, flags, request_head, response_max_offset] =
-                    take_fields(iter)?;
+                let [stream_id, route_id, request_head, response_max_offset] = take_fields(iter)?;
                 Ok(Self::Open(StreamFrameOpen {
                     stream_id: stream_id.try_into()?,
                     route_id: route_id.try_into()?,
-                    flags: flags.try_into()?,
                     request_head: request_head.try_into()?,
                     response_max_offset: response_max_offset.try_into()?,
                 }))
             }
             2 => {
-                let [stream_id, status, response_head, request_max_offset] = take_fields(iter)?;
+                let [stream_id, response_head, request_max_offset] = take_fields(iter)?;
                 Ok(Self::Accept(StreamFrameAccept {
                     stream_id: stream_id.try_into()?,
-                    status: status.try_into()?,
                     response_head: response_head.try_into()?,
                     request_max_offset: request_max_offset.try_into()?,
                 }))
             }
             3 => {
+                let [stream_id, code] = take_fields(iter)?;
+                Ok(Self::Reject(StreamFrameReject {
+                    stream_id: stream_id.try_into()?,
+                    code: code.try_into()?,
+                }))
+            }
+            4 => {
                 let [stream_id, dir, offset, bytes] = take_fields(iter)?;
                 Ok(Self::Data(StreamFrameData {
                     stream_id: stream_id.try_into()?,
@@ -300,7 +276,7 @@ impl TryFrom<CBOR> for StreamFrame {
                     bytes: bytes.try_into()?,
                 }))
             }
-            4 => {
+            5 => {
                 let [stream_id, dir, recv_offset, max_offset] = take_fields(iter)?;
                 Ok(Self::Credit(StreamFrameCredit {
                     stream_id: stream_id.try_into()?,
@@ -309,14 +285,14 @@ impl TryFrom<CBOR> for StreamFrame {
                     max_offset: max_offset.try_into()?,
                 }))
             }
-            5 => {
+            6 => {
                 let [stream_id, dir] = take_fields(iter)?;
                 Ok(Self::Finish(StreamFrameFinish {
                     stream_id: stream_id.try_into()?,
                     dir: dir.try_into()?,
                 }))
             }
-            6 => {
+            7 => {
                 let [stream_id, dir, code] = take_fields(iter)?;
                 Ok(Self::Reset(StreamFrameReset {
                     stream_id: stream_id.try_into()?,
@@ -325,57 +301,6 @@ impl TryFrom<CBOR> for StreamFrame {
                 }))
             }
             _ => Err(dcbor::Error::msg("unknown stream frame tag")),
-        }
-    }
-}
-
-impl From<OpenFlags> for CBOR {
-    fn from(value: OpenFlags) -> Self {
-        CBOR::from(value.bits)
-    }
-}
-
-impl TryFrom<CBOR> for OpenFlags {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        Ok(Self {
-            bits: value.try_into()?,
-        })
-    }
-}
-
-impl From<AcceptStatus> for CBOR {
-    fn from(value: AcceptStatus) -> Self {
-        match value {
-            AcceptStatus::Accepted => CBOR::from(vec![CBOR::from(0u8)]),
-            AcceptStatus::Rejected(code) => CBOR::from(vec![CBOR::from(1u8), CBOR::from(code)]),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for AcceptStatus {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let mut iter = value.try_into_array()?.into_iter();
-        let tag: u8 = iter
-            .next()
-            .ok_or_else(|| dcbor::Error::msg("missing accept status tag"))?
-            .try_into()?;
-        match tag {
-            0 => {
-                if iter.next().is_some() {
-                    Err(dcbor::Error::msg("array too long"))
-                } else {
-                    Ok(Self::Accepted)
-                }
-            }
-            1 => {
-                let [code] = take_fields(iter)?;
-                Ok(Self::Rejected(code.try_into()?))
-            }
-            _ => Err(dcbor::Error::msg("unknown accept status tag")),
         }
     }
 }
@@ -428,10 +353,11 @@ impl TryFrom<CBOR> for RejectCode {
 
     fn try_from(value: CBOR) -> Result<Self, Self::Error> {
         Ok(match u8::try_from(value)? {
+            0 => Self::Unknown,
             1 => Self::UnknownRoute,
             2 => Self::InvalidHead,
             3 => Self::Busy,
-            0 => Self::Unknown,
+            4 => Self::Unhandled,
             _ => return Err(dcbor::Error::msg("unknown reject code")),
         })
     }

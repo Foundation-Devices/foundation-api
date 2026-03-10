@@ -112,7 +112,7 @@ pub(crate) struct AcceptedStreamDelivery {
     pub peer: XID,
     pub stream_id: StreamId,
     pub response_head: Vec<u8>,
-    pub rx: async_channel::Receiver<internal::InboundStreamItem>,
+    pub response: crate::pipe::PipeReader<crate::QlError>,
     pub tx: async_channel::Sender<internal::RuntimeCommand>,
 }
 
