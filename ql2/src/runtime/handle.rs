@@ -14,7 +14,7 @@ use crate::{
         AcceptedStreamDelivery, StreamConfig,
     },
     wire::stream::{Direction, RejectCode, ResetCode},
-    QlError, StreamId,
+    ConnectionId, QlError, StreamId,
 };
 
 #[derive(Clone)]
@@ -391,8 +391,12 @@ impl RuntimeHandle {
             .map_err(|_| QlError::Cancelled)
     }
 
+    pub fn send_incoming_on(&self, cid: ConnectionId, bytes: Vec<u8>) {
+        self.send(RuntimeCommand::Incoming { cid, bytes })
+    }
+
     pub fn send_incoming(&self, bytes: Vec<u8>) {
-        self.send(RuntimeCommand::Incoming(bytes))
+        self.send_incoming_on(ConnectionId(0), bytes)
     }
 
     pub async fn open_stream(

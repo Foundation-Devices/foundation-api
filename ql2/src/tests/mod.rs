@@ -25,7 +25,7 @@ use crate::{
         self, handshake::HandshakeRecord, heartbeat::HeartbeatBody, pair, QlHeader, QlPayload,
         QlRecord,
     },
-    MessageId, PacketId, Peer, QlError,
+    ConnectionId, MessageId, PacketId, Peer, QlError,
 };
 
 mod handshake;
@@ -115,7 +115,12 @@ impl QlPlatform for TestPlatform {
         data.fill(value);
     }
 
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
+    fn write_message(
+        &self,
+        _peer: XID,
+        _cid: Option<ConnectionId>,
+        message: Vec<u8>,
+    ) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         Box::pin(async move {
             outbound
@@ -217,7 +222,12 @@ impl QlPlatform for InboundPlatform {
         data.fill(value);
     }
 
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
+    fn write_message(
+        &self,
+        _peer: XID,
+        _cid: Option<ConnectionId>,
+        message: Vec<u8>,
+    ) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         Box::pin(async move {
             outbound
@@ -623,7 +633,12 @@ impl QlPlatform for PersistPlatform {
         data.fill(value);
     }
 
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
+    fn write_message(
+        &self,
+        _peer: XID,
+        _cid: Option<ConnectionId>,
+        message: Vec<u8>,
+    ) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         Box::pin(async move {
             outbound

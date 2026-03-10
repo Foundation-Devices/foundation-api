@@ -33,7 +33,7 @@ use crate::{
         unpair::{self, UnpairRecord},
         QlHeader, QlPayload, QlRecord,
     },
-    MessageId, PacketId, QlError, StreamId,
+    ConnectionId, MessageId, PacketId, QlError, StreamId,
 };
 
 impl<P: QlPlatform> Runtime<P> {
@@ -62,7 +62,7 @@ impl<P: QlPlatform> Runtime<P> {
                         self.handle_register_peer(&mut state, peer, signing_key, encapsulation_key);
                     }
                     RuntimeCommand::Connect { peer } => {
-                        self.handle_connect(&mut state, peer);
+                        self.handle_connect(&mut state, peer, None);
                     }
                     RuntimeCommand::Unpair { peer } => {
                         self.handle_unpair_local(&mut state, peer);
@@ -144,8 +144,8 @@ impl<P: QlPlatform> Runtime<P> {
                     } => {
                         self.handle_pending_accept_dropped(&mut state, recipient, stream_id);
                     }
-                    RuntimeCommand::Incoming(bytes) => {
-                        self.handle_incoming(&mut state, bytes);
+                    RuntimeCommand::Incoming { cid, bytes } => {
+                        self.handle_incoming(&mut state, cid, bytes);
                     }
                 },
                 LoopStep::Timeout => {
@@ -202,7 +202,7 @@ impl<P: QlPlatform> Runtime<P> {
                 stream_id: message.stream_id,
                 packet_id: message.packet_id,
                 track_ack: message.track_ack,
-                future: self.platform.write_message(bytes),
+                future: self.platform.write_message(message.peer, message.cid, bytes),
             });
         }
         None
@@ -250,6 +250,35 @@ impl<P: QlPlatform> Runtime<P> {
         .await
     }
 
+    fn peer_connection_id(&self, core: &CoreState, peer: XID) -> Option<ConnectionId> {
+        core.peers
+            .peer(peer)
+            .and_then(|entry| entry.session.connection_id())
+    }
+
+    fn bind_authenticated_connection(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        cid: ConnectionId,
+    ) {
+        let Some(entry) = state.core.peers.peer_mut(peer) else {
+            return;
+        };
+        match &mut entry.session {
+            PeerSession::Disconnected => {}
+            PeerSession::Initiator {
+                cid: session_cid, ..
+            } => *session_cid = Some(cid),
+            PeerSession::Responder {
+                cid: session_cid, ..
+            }
+            | PeerSession::Connected {
+                cid: session_cid, ..
+            } => *session_cid = cid,
+        }
+    }
+
     fn handle_register_peer(
         &self,
         state: &mut RuntimeState,
@@ -269,7 +298,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.persist_peers(state);
     }
 
-    fn handle_connect(&self, state: &mut RuntimeState, peer: XID) {
+    fn handle_connect(&self, state: &mut RuntimeState, peer: XID, cid: Option<ConnectionId>) {
         let (hello, session_key) = {
             let Some(peer_record) = state.core.peers.peer(peer) else {
                 return;
@@ -294,6 +323,7 @@ impl<P: QlPlatform> Runtime<P> {
         let token = state.core.next_token();
         if let Some(entry) = state.core.peers.peer_mut(peer) {
             entry.session = crate::runtime::PeerSession::Initiator {
+                cid,
                 handshake_token: token,
                 hello: hello.clone(),
                 session_key,
@@ -313,6 +343,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.enqueue_handshake_message(
             &mut state.core,
             peer,
+            cid,
             token,
             deadline,
             CBOR::from(record).to_cbor_data(),
@@ -323,6 +354,7 @@ impl<P: QlPlatform> Runtime<P> {
         if state.core.peers.peer(peer).is_none() {
             return;
         }
+        let cid = self.peer_connection_id(&state.core, peer);
         let record = unpair::build_unpair_record(
             &self.platform,
             QlHeader {
@@ -337,6 +369,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.enqueue_handshake_message(
             &mut state.core,
             peer,
+            cid,
             token,
             Instant::now() + self.config.packet_expiration,
             CBOR::from(record).to_cbor_data(),
@@ -580,7 +613,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.maybe_reap_stream(state, recipient, stream_id);
     }
 
-    fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
+    fn handle_incoming(&self, state: &mut RuntimeState, cid: ConnectionId, bytes: Vec<u8>) {
         let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
             return;
         };
@@ -589,30 +622,32 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
         match payload {
-            QlPayload::Handshake(message) => self.handle_handshake(state, header, message),
-            QlPayload::Stream(encrypted) => self.handle_stream(state, header, encrypted),
-            QlPayload::Heartbeat(encrypted) => self.handle_heartbeat(state, header, encrypted),
-            QlPayload::Pair(request) => self.handle_pairing(state, header, request),
-            QlPayload::Unpair(record) => self.handle_unpair(state, header, record),
+            QlPayload::Handshake(message) => self.handle_handshake(state, cid, header, message),
+            QlPayload::Stream(encrypted) => self.handle_stream(state, cid, header, encrypted),
+            QlPayload::Heartbeat(encrypted) => self.handle_heartbeat(state, cid, header, encrypted),
+            QlPayload::Pair(request) => self.handle_pairing(state, cid, header, request),
+            QlPayload::Unpair(record) => self.handle_unpair(state, cid, header, record),
         }
     }
 
     fn handle_handshake(
         &self,
         state: &mut RuntimeState,
+        cid: ConnectionId,
         header: QlHeader,
         message: HandshakeRecord,
     ) {
         match message {
-            HandshakeRecord::Hello(hello) => self.handle_hello(state, header, hello),
-            HandshakeRecord::HelloReply(reply) => self.handle_hello_reply(state, header, reply),
-            HandshakeRecord::Confirm(confirm) => self.handle_confirm(state, header, confirm),
+            HandshakeRecord::Hello(hello) => self.handle_hello(state, cid, header, hello),
+            HandshakeRecord::HelloReply(reply) => self.handle_hello_reply(state, cid, header, reply),
+            HandshakeRecord::Confirm(confirm) => self.handle_confirm(state, cid, header, confirm),
         }
     }
 
     fn handle_pairing(
         &self,
         state: &mut RuntimeState,
+        cid: ConnectionId,
         header: QlHeader,
         request: PairRequestRecord,
     ) {
@@ -626,10 +661,16 @@ impl<P: QlPlatform> Runtime<P> {
             .peers
             .upsert_peer(peer, payload.signing_pub_key, payload.encapsulation_pub_key);
         self.persist_peers(state);
-        self.handle_connect(state, peer);
+        self.handle_connect(state, peer, Some(cid));
     }
 
-    fn handle_unpair(&self, state: &mut RuntimeState, header: QlHeader, record: UnpairRecord) {
+    fn handle_unpair(
+        &self,
+        state: &mut RuntimeState,
+        _cid: ConnectionId,
+        header: QlHeader,
+        record: UnpairRecord,
+    ) {
         let peer = header.sender;
         {
             let Some(peer_record) = state.core.peers.peer(peer) else {
@@ -657,6 +698,7 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_heartbeat(
         &self,
         state: &mut RuntimeState,
+        cid: ConnectionId,
         header: QlHeader,
         encrypted: bc_components::EncryptedMessage,
     ) {
@@ -668,6 +710,7 @@ impl<P: QlPlatform> Runtime<P> {
             let PeerSession::Connected {
                 session_key,
                 keepalive,
+                ..
             } = &peer_record.session
             else {
                 return;
@@ -677,6 +720,7 @@ impl<P: QlPlatform> Runtime<P> {
             }
             !keepalive.pending
         };
+        self.bind_authenticated_connection(state, peer, cid);
         self.record_activity(state, peer);
         if should_reply {
             self.send_heartbeat_message(&mut state.core, peer);
@@ -686,6 +730,7 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_stream(
         &self,
         state: &mut RuntimeState,
+        cid: ConnectionId,
         header: QlHeader,
         encrypted: bc_components::EncryptedMessage,
     ) {
@@ -721,6 +766,7 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
 
+        self.bind_authenticated_connection(state, peer, cid);
         self.record_activity(state, peer);
         self.record_stream_activity(state, peer, frame.stream_id());
         self.send_packet_ack(&mut state.core, peer, body.packet_id);
@@ -1315,6 +1361,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.enqueue_stream_body(
             core,
             key.peer,
+            self.peer_connection_id(core, key.peer),
             Some(key.stream_id),
             Some(packet_id),
             true,
@@ -1352,6 +1399,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.enqueue_stream_body(
             core,
             key.peer,
+            self.peer_connection_id(core, key.peer),
             Some(key.stream_id),
             Some(packet_id),
             true,
@@ -1550,6 +1598,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.enqueue_stream_body(
             core,
             peer,
+            self.peer_connection_id(core, peer),
             None,
             None,
             false,
@@ -1578,6 +1627,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.enqueue_stream_body(
             core,
             peer,
+            self.peer_connection_id(core, peer),
             None,
             None,
             false,
@@ -1599,12 +1649,14 @@ impl<P: QlPlatform> Runtime<P> {
         &self,
         core: &mut CoreState,
         peer: XID,
+        cid: Option<ConnectionId>,
         token: crate::runtime::Token,
         deadline: Instant,
         bytes: Vec<u8>,
     ) {
         core.outbound.push_back(OutboundMessage {
             peer,
+            cid,
             token,
             stream_id: None,
             packet_id: None,
@@ -1625,6 +1677,7 @@ impl<P: QlPlatform> Runtime<P> {
         &self,
         core: &mut CoreState,
         peer: XID,
+        cid: Option<ConnectionId>,
         stream_id: Option<StreamId>,
         packet_id: Option<PacketId>,
         track_ack: bool,
@@ -1634,6 +1687,7 @@ impl<P: QlPlatform> Runtime<P> {
         let token = core.next_token();
         let message = OutboundMessage {
             peer,
+            cid,
             token,
             stream_id,
             packet_id,
@@ -1654,6 +1708,7 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_hello(
         &self,
         state: &mut RuntimeState,
+        cid: ConnectionId,
         header: QlHeader,
         hello: crate::wire::handshake::Hello,
     ) {
@@ -1670,6 +1725,7 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                 }
                 crate::runtime::PeerSession::Responder {
+                    cid: responder_cid,
                     hello: stored,
                     reply,
                     deadline,
@@ -1677,6 +1733,7 @@ impl<P: QlPlatform> Runtime<P> {
                 } => {
                     if stored.nonce == hello.nonce {
                         HelloAction::ResendReply {
+                            cid: *responder_cid,
                             reply: reply.clone(),
                             deadline: *deadline,
                         }
@@ -1691,8 +1748,8 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         match action {
-            HelloAction::StartResponder => self.start_responder_handshake(state, peer, hello),
-            HelloAction::ResendReply { reply, deadline } => {
+            HelloAction::StartResponder => self.start_responder_handshake(state, cid, peer, hello),
+            HelloAction::ResendReply { cid, reply, deadline } => {
                 let record = QlRecord {
                     header: QlHeader {
                         sender: self.platform.xid(),
@@ -1704,6 +1761,7 @@ impl<P: QlPlatform> Runtime<P> {
                 self.enqueue_handshake_message(
                     &mut state.core,
                     peer,
+                    Some(cid),
                     token,
                     deadline,
                     CBOR::from(record).to_cbor_data(),
@@ -1716,6 +1774,7 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_hello_reply(
         &self,
         state: &mut RuntimeState,
+        cid: ConnectionId,
         header: QlHeader,
         reply: crate::wire::handshake::HelloReply,
     ) {
@@ -1749,6 +1808,7 @@ impl<P: QlPlatform> Runtime<P> {
             Ok((confirm, session_key)) => {
                 if let Some(entry) = state.core.peers.peer_mut(peer) {
                     entry.session = PeerSession::Connected {
+                        cid,
                         session_key,
                         keepalive: KeepAliveState::new(),
                     };
@@ -1777,6 +1837,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.enqueue_handshake_message(
             &mut state.core,
             peer,
+            Some(cid),
             token,
             Instant::now() + self.config.handshake_timeout,
             CBOR::from(record).to_cbor_data(),
@@ -1786,6 +1847,7 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_confirm(
         &self,
         state: &mut RuntimeState,
+        cid: ConnectionId,
         header: QlHeader,
         confirm: crate::wire::handshake::Confirm,
     ) {
@@ -1815,6 +1877,7 @@ impl<P: QlPlatform> Runtime<P> {
             Ok(session_key) => {
                 if let Some(entry) = state.core.peers.peer_mut(peer) {
                     entry.session = crate::runtime::PeerSession::Connected {
+                        cid,
                         session_key,
                         keepalive: KeepAliveState::new(),
                     };
@@ -1834,6 +1897,7 @@ impl<P: QlPlatform> Runtime<P> {
     fn start_responder_handshake(
         &self,
         state: &mut RuntimeState,
+        cid: ConnectionId,
         peer: XID,
         hello: crate::wire::handshake::Hello,
     ) {
@@ -1863,6 +1927,7 @@ impl<P: QlPlatform> Runtime<P> {
         let token = state.core.next_token();
         if let Some(entry) = state.core.peers.peer_mut(peer) {
             entry.session = PeerSession::Responder {
+                cid,
                 handshake_token: token,
                 hello,
                 reply: reply.clone(),
@@ -1882,6 +1947,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.enqueue_handshake_message(
             &mut state.core,
             peer,
+            Some(cid),
             token,
             deadline,
             CBOR::from(record).to_cbor_data(),
@@ -1914,6 +1980,7 @@ impl<P: QlPlatform> Runtime<P> {
         self.enqueue_handshake_message(
             core,
             peer,
+            self.peer_connection_id(core, peer),
             token,
             deadline,
             CBOR::from(message).to_cbor_data(),

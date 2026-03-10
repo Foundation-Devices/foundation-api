@@ -32,3 +32,12 @@ macro_rules! define_id {
 define_id!(MessageId);
 define_id!(PacketId);
 define_id!(StreamId);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ConnectionId(pub u64);
+
+impl fmt::Display for ConnectionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}

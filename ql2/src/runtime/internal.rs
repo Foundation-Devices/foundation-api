@@ -19,7 +19,7 @@ use crate::{
             StreamFrameReset,
         },
     },
-    PacketId, Peer, QlError, StreamId,
+    ConnectionId, PacketId, Peer, QlError, StreamId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -123,6 +123,7 @@ impl PeerStore {
 pub enum PeerSession {
     Disconnected,
     Initiator {
+        cid: Option<ConnectionId>,
         handshake_token: Token,
         hello: Hello,
         session_key: SymmetricKey,
@@ -130,6 +131,7 @@ pub enum PeerSession {
         stage: InitiatorStage,
     },
     Responder {
+        cid: ConnectionId,
         handshake_token: Token,
         hello: Hello,
         reply: HelloReply,
@@ -137,6 +139,7 @@ pub enum PeerSession {
         deadline: Instant,
     },
     Connected {
+        cid: ConnectionId,
         session_key: SymmetricKey,
         keepalive: KeepAliveState,
     },
@@ -151,6 +154,14 @@ impl PeerSession {
         match self {
             PeerSession::Connected { session_key, .. } => Some(session_key),
             _ => None,
+        }
+    }
+
+    pub fn connection_id(&self) -> Option<ConnectionId> {
+        match self {
+            PeerSession::Disconnected => None,
+            PeerSession::Initiator { cid, .. } => *cid,
+            PeerSession::Responder { cid, .. } | PeerSession::Connected { cid, .. } => Some(*cid),
         }
     }
 }
@@ -506,7 +517,10 @@ pub(crate) enum RuntimeCommand {
         recipient: XID,
         stream_id: StreamId,
     },
-    Incoming(Vec<u8>),
+    Incoming {
+        cid: ConnectionId,
+        bytes: Vec<u8>,
+    },
 }
 
 pub struct StreamStore {
@@ -615,6 +629,7 @@ pub enum OutboundPayload {
 
 pub struct OutboundMessage {
     pub peer: XID,
+    pub cid: Option<ConnectionId>,
     pub token: Token,
     pub stream_id: Option<StreamId>,
     pub packet_id: Option<PacketId>,
@@ -687,6 +702,7 @@ pub enum LoopStep {
 pub enum HelloAction {
     StartResponder,
     ResendReply {
+        cid: ConnectionId,
         reply: HelloReply,
         deadline: Instant,
     },

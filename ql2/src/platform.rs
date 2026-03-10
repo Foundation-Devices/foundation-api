@@ -6,7 +6,7 @@ use bc_components::{
 
 use crate::{
     runtime::{HandlerEvent, PeerSession},
-    Peer, QlError,
+    ConnectionId, Peer, QlError,
 };
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -18,7 +18,12 @@ pub trait QlPlatform {
     fn encapsulation_public_key(&self) -> &MLKEMPublicKey;
 
     fn fill_random_bytes(&self, data: &mut [u8]);
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
+    fn write_message(
+        &self,
+        peer: XID,
+        cid: Option<ConnectionId>,
+        message: Vec<u8>,
+    ) -> PlatformFuture<'_, Result<(), QlError>>;
     fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()>;
 
     fn load_peers(&self) -> PlatformFuture<'_, Vec<Peer>>;
