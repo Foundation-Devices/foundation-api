@@ -11,8 +11,6 @@ pub mod replay_cache;
 
 use std::time::Duration;
 
-use bc_components::XID;
-
 use crate::{platform::QlPlatform, StreamId};
 
 #[derive(Debug, Clone, Copy)]
@@ -109,7 +107,6 @@ pub enum HandlerEvent {
 }
 
 pub(crate) struct AcceptedStreamDelivery {
-    pub peer: XID,
     pub stream_id: StreamId,
     pub response_head: Vec<u8>,
     pub response: crate::pipe::PipeReader<crate::QlError>,

@@ -19,7 +19,7 @@ use crate::{
             StreamFrameReset,
         },
     },
-    ConnectionId, PacketId, Peer, QlError, StreamId,
+    PacketId, Peer, QlError, StreamId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -65,57 +65,13 @@ impl PeerRecord {
             session: PeerSession::Disconnected,
         }
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct PeerStore {
-    peers: Vec<PeerRecord>,
-}
-
-impl PeerStore {
-    pub fn new() -> Self {
-        Self { peers: Vec::new() }
-    }
-
-    pub fn peer(&self, peer: XID) -> Option<&PeerRecord> {
-        self.peers.iter().find(|record| record.peer == peer)
-    }
-
-    pub fn peer_mut(&mut self, peer: XID) -> Option<&mut PeerRecord> {
-        self.peers.iter_mut().find(|record| record.peer == peer)
-    }
-
-    pub fn upsert_peer(
-        &mut self,
-        peer: XID,
-        signing_key: MLDSAPublicKey,
-        encapsulation_key: MLKEMPublicKey,
-    ) -> &mut PeerRecord {
-        if let Some(index) = self.peers.iter().position(|record| record.peer == peer) {
-            let record = &mut self.peers[index];
-            record.signing_key = signing_key;
-            record.encapsulation_key = encapsulation_key;
-            return record;
+    pub fn snapshot(&self) -> Peer {
+        Peer {
+            peer: self.peer,
+            signing_key: self.signing_key.clone(),
+            encapsulation_key: self.encapsulation_key.clone(),
         }
-        self.peers
-            .push(PeerRecord::new(peer, signing_key, encapsulation_key));
-        self.peers.last_mut().expect("peer record just inserted")
-    }
-
-    pub fn all(&self) -> Vec<Peer> {
-        self.peers
-            .iter()
-            .map(|record| Peer {
-                peer: record.peer,
-                signing_key: record.signing_key.clone(),
-                encapsulation_key: record.encapsulation_key.clone(),
-            })
-            .collect()
-    }
-
-    pub fn remove_peer(&mut self, peer: XID) -> Option<PeerRecord> {
-        let index = self.peers.iter().position(|record| record.peer == peer)?;
-        Some(self.peers.remove(index))
     }
 }
 
@@ -123,7 +79,6 @@ impl PeerStore {
 pub enum PeerSession {
     Disconnected,
     Initiator {
-        cid: Option<ConnectionId>,
         handshake_token: Token,
         hello: Hello,
         session_key: SymmetricKey,
@@ -131,7 +86,6 @@ pub enum PeerSession {
         stage: InitiatorStage,
     },
     Responder {
-        cid: ConnectionId,
         handshake_token: Token,
         hello: Hello,
         reply: HelloReply,
@@ -139,7 +93,6 @@ pub enum PeerSession {
         deadline: Instant,
     },
     Connected {
-        cid: ConnectionId,
         session_key: SymmetricKey,
         keepalive: KeepAliveState,
     },
@@ -156,14 +109,6 @@ impl PeerSession {
             _ => None,
         }
     }
-
-    pub fn connection_id(&self) -> Option<ConnectionId> {
-        match self {
-            PeerSession::Disconnected => None,
-            PeerSession::Initiator { cid, .. } => *cid,
-            PeerSession::Responder { cid, .. } | PeerSession::Connected { cid, .. } => Some(*cid),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,7 +119,6 @@ pub enum InitiatorStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamKey {
-    pub peer: XID,
     pub stream_id: StreamId,
 }
 
@@ -457,19 +401,13 @@ impl StreamState {
 }
 
 pub(crate) enum RuntimeCommand {
-    RegisterPeer {
-        peer: XID,
-        signing_key: MLDSAPublicKey,
-        encapsulation_key: MLKEMPublicKey,
+    BindPeer {
+        peer: Peer,
     },
-    Connect {
-        peer: XID,
-    },
-    Unpair {
-        peer: XID,
-    },
+    Pair,
+    Connect,
+    Unpair,
     OpenStream {
-        recipient: XID,
         request_head: Vec<u8>,
         request_pipe: pipe::PipeReader<QlError>,
         accepted: oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>,
@@ -477,54 +415,43 @@ pub(crate) enum RuntimeCommand {
         config: StreamConfig,
     },
     AcceptStream {
-        recipient: XID,
         stream_id: StreamId,
         response_head: Vec<u8>,
         response_pipe: pipe::PipeReader<QlError>,
     },
     RejectStream {
-        recipient: XID,
         stream_id: StreamId,
         code: RejectCode,
     },
     PollStream {
-        peer: XID,
         stream_id: StreamId,
     },
     AdvanceInboundCredit {
-        sender: XID,
         stream_id: StreamId,
         dir: Direction,
         amount: u64,
     },
     ResetOutbound {
-        recipient: XID,
         stream_id: StreamId,
         dir: Direction,
         code: ResetCode,
     },
     ResetInbound {
-        sender: XID,
         stream_id: StreamId,
         dir: Direction,
         code: ResetCode,
     },
     ResponderDropped {
-        sender: XID,
         stream_id: StreamId,
     },
     PendingAcceptDropped {
-        recipient: XID,
         stream_id: StreamId,
     },
-    Incoming {
-        cid: ConnectionId,
-        bytes: Vec<u8>,
-    },
+    Incoming(Vec<u8>),
 }
 
 pub struct StreamStore {
-    by_id: HashMap<(XID, StreamId), StreamState>,
+    by_id: HashMap<StreamId, StreamState>,
 }
 
 impl StreamStore {
@@ -534,33 +461,33 @@ impl StreamStore {
         }
     }
 
-    pub fn get(&self, key: &(XID, StreamId)) -> Option<&StreamState> {
-        self.by_id.get(key)
+    pub fn get(&self, stream_id: &StreamId) -> Option<&StreamState> {
+        self.by_id.get(stream_id)
     }
 
-    pub fn get_mut(&mut self, key: &(XID, StreamId)) -> Option<&mut StreamState> {
-        self.by_id.get_mut(key)
+    pub fn get_mut(&mut self, stream_id: &StreamId) -> Option<&mut StreamState> {
+        self.by_id.get_mut(stream_id)
     }
 
-    pub fn insert(&mut self, key: (XID, StreamId), stream: StreamState) -> Option<StreamState> {
-        self.by_id.insert(key, stream)
+    pub fn insert(&mut self, stream_id: StreamId, stream: StreamState) -> Option<StreamState> {
+        self.by_id.insert(stream_id, stream)
     }
 
-    pub fn remove(&mut self, key: &(XID, StreamId)) -> Option<StreamState> {
-        self.by_id.remove(key)
+    pub fn remove(&mut self, stream_id: &StreamId) -> Option<StreamState> {
+        self.by_id.remove(stream_id)
     }
 
-    pub fn keys(&self) -> impl Iterator<Item = &(XID, StreamId)> {
+    pub fn keys(&self) -> impl Iterator<Item = &StreamId> {
         self.by_id.keys()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&(XID, StreamId), &StreamState)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&StreamId, &StreamState)> {
         self.by_id.iter()
     }
 }
 
 pub struct CoreState {
-    pub peers: PeerStore,
+    pub peer: Option<PeerRecord>,
     pub next_token: Cell<Token>,
     pub outbound: VecDeque<OutboundMessage>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
@@ -571,7 +498,7 @@ pub struct CoreState {
 impl CoreState {
     pub fn new() -> Self {
         Self {
-            peers: PeerStore::new(),
+            peer: None,
             next_token: Cell::new(Token(1)),
             outbound: VecDeque::new(),
             timeouts: BinaryHeap::new(),
@@ -620,7 +547,6 @@ pub struct TrackedWrite {
 }
 
 pub struct InFlightWrite<'a> {
-    pub peer: XID,
     pub token: Token,
     pub tracked: Option<TrackedWrite>,
     pub future: PlatformFuture<'a, Result<(), QlError>>,
@@ -632,8 +558,6 @@ pub enum OutboundPayload {
 }
 
 pub struct OutboundMessage {
-    pub peer: XID,
-    pub cid: Option<ConnectionId>,
     pub token: Token,
     pub stream_id: Option<StreamId>,
     pub packet_id: Option<PacketId>,
@@ -647,24 +571,19 @@ pub enum TimeoutKind {
         token: Token,
     },
     Handshake {
-        peer: XID,
         token: Token,
     },
     KeepAliveSend {
-        peer: XID,
         token: Token,
     },
     KeepAliveTimeout {
-        peer: XID,
         token: Token,
     },
     StreamOpen {
-        peer: XID,
         stream_id: StreamId,
         token: Token,
     },
     StreamPacket {
-        peer: XID,
         stream_id: StreamId,
         packet_id: PacketId,
         attempt: u8,
@@ -693,7 +612,6 @@ pub enum LoopStep {
     Event(RuntimeCommand),
     Timeout,
     WriteDone {
-        peer: XID,
         token: Token,
         tracked: Option<TrackedWrite>,
         result: Result<(), QlError>,
@@ -704,7 +622,6 @@ pub enum LoopStep {
 pub enum HelloAction {
     StartResponder,
     ResendReply {
-        cid: ConnectionId,
         reply: HelloReply,
         deadline: Instant,
     },
@@ -739,7 +656,6 @@ mod tests {
 
     fn stream_key() -> StreamKey {
         StreamKey {
-            peer: XID::from_data([7; XID::XID_SIZE]),
             stream_id: StreamId(42),
         }
     }

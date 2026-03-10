@@ -21,7 +21,7 @@ async fn handshake_initiator_connects() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -45,7 +45,7 @@ async fn handshake_timeout_disconnects() {
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
     })
@@ -71,7 +71,7 @@ async fn confirm_write_failure_disconnects_initiator() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Initiator).await;
         await_status(&status_b, peer_a.xid, PeerStage::Responder).await;

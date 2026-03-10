@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SigningPublicKey, XID};
+use bc_components::{SigningPublicKey, XID};
 use dcbor::CBOR;
 use futures_lite::future::poll_fn;
 
@@ -15,9 +15,9 @@ use crate::{
             now_secs, peer_hello_wins, AwaitingFrame, AwaitingPacket, CoreState, HelloAction,
             InFlightWrite, InboundBody, InitiatorAccept, InitiatorStage, InitiatorStream,
             KeepAliveState, LoopStep, OutboundBody, OutboundMessage, OutboundPayload,
-            PendingAcceptTx, ResponderResponse, ResponderStream, RuntimeCommand, RuntimeState,
-            SetupFrame, StreamControl, StreamMeta, StreamState, TimeoutEntry, TimeoutKind,
-            TrackedWrite,
+            PeerRecord, PendingAcceptTx, ResponderResponse, ResponderStream, RuntimeCommand,
+            RuntimeState, SetupFrame, StreamControl, StreamMeta, StreamState, TimeoutEntry,
+            TimeoutKind, TrackedWrite,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
         AcceptedStreamDelivery, HandlerEvent, KeepAliveConfig, PeerSession, Runtime,
@@ -34,17 +34,18 @@ use crate::{
         unpair::{self, UnpairRecord},
         QlHeader, QlPayload, QlRecord,
     },
-    ConnectionId, MessageId, PacketId, QlError, StreamId,
+    MessageId, PacketId, Peer, QlError, StreamId,
 };
 
 impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
         let mut state = RuntimeState::new();
-        for peer in self.platform.load_peers().await {
-            state
-                .core
-                .peers
-                .upsert_peer(peer.peer, peer.signing_key, peer.encapsulation_key);
+        if let Some(peer) = self.platform.load_peer().await {
+            state.core.peer = Some(PeerRecord::new(
+                peer.peer,
+                peer.signing_key,
+                peer.encapsulation_key,
+            ));
         }
 
         let mut in_flight: Option<InFlightWrite<'_>> = None;
@@ -55,21 +56,11 @@ impl<P: QlPlatform> Runtime<P> {
             }
             match self.next_step(&state.core, in_flight.as_mut()).await {
                 LoopStep::Event(command) => match command {
-                    RuntimeCommand::RegisterPeer {
-                        peer,
-                        signing_key,
-                        encapsulation_key,
-                    } => {
-                        self.handle_register_peer(&mut state, peer, signing_key, encapsulation_key);
-                    }
-                    RuntimeCommand::Connect { peer } => {
-                        self.handle_connect(&mut state, peer, None);
-                    }
-                    RuntimeCommand::Unpair { peer } => {
-                        self.handle_unpair_local(&mut state, peer);
-                    }
+                    RuntimeCommand::BindPeer { peer } => self.handle_bind_peer(&mut state, peer),
+                    RuntimeCommand::Pair => self.handle_pair_local(&mut state),
+                    RuntimeCommand::Connect => self.handle_connect(&mut state),
+                    RuntimeCommand::Unpair => self.handle_unpair_local(&mut state),
                     RuntimeCommand::OpenStream {
-                        recipient,
                         request_head,
                         request_pipe,
                         accepted,
@@ -78,7 +69,6 @@ impl<P: QlPlatform> Runtime<P> {
                     } => {
                         self.handle_open_stream(
                             &mut state,
-                            recipient,
                             request_head,
                             request_pipe,
                             accepted,
@@ -87,79 +77,45 @@ impl<P: QlPlatform> Runtime<P> {
                         );
                     }
                     RuntimeCommand::AcceptStream {
-                        recipient,
                         stream_id,
                         response_head,
                         response_pipe,
                     } => {
-                        self.handle_accept_stream(
-                            &mut state,
-                            recipient,
-                            stream_id,
-                            response_head,
-                            response_pipe,
-                        );
+                        self.handle_accept_stream(&mut state, stream_id, response_head, response_pipe);
                     }
-                    RuntimeCommand::RejectStream {
-                        recipient,
-                        stream_id,
-                        code,
-                    } => {
-                        self.handle_reject_stream(&mut state, recipient, stream_id, code);
+                    RuntimeCommand::RejectStream { stream_id, code } => {
+                        self.handle_reject_stream(&mut state, stream_id, code);
                     }
-                    RuntimeCommand::PollStream { peer, stream_id } => {
-                        self.drive_stream(&mut state, peer, stream_id);
+                    RuntimeCommand::PollStream { stream_id } => {
+                        self.drive_stream(&mut state, stream_id);
                     }
-                    RuntimeCommand::AdvanceInboundCredit {
-                        sender,
-                        stream_id,
-                        dir,
-                        amount,
-                    } => {
-                        self.handle_advance_inbound_credit(
-                            &mut state, sender, stream_id, dir, amount,
-                        );
+                    RuntimeCommand::AdvanceInboundCredit { stream_id, dir, amount } => {
+                        self.handle_advance_inbound_credit(&mut state, stream_id, dir, amount);
                     }
-                    RuntimeCommand::ResetOutbound {
-                        recipient,
-                        stream_id,
-                        dir,
-                        code,
-                    } => {
-                        self.handle_reset_outbound(&mut state, recipient, stream_id, dir, code);
+                    RuntimeCommand::ResetOutbound { stream_id, dir, code } => {
+                        self.handle_reset_outbound(&mut state, stream_id, dir, code);
                     }
-                    RuntimeCommand::ResetInbound {
-                        sender,
-                        stream_id,
-                        dir,
-                        code,
-                    } => {
-                        self.handle_reset_inbound(&mut state, sender, stream_id, dir, code);
+                    RuntimeCommand::ResetInbound { stream_id, dir, code } => {
+                        self.handle_reset_inbound(&mut state, stream_id, dir, code);
                     }
-                    RuntimeCommand::ResponderDropped { sender, stream_id } => {
-                        self.handle_responder_dropped(&mut state, sender, stream_id);
+                    RuntimeCommand::ResponderDropped { stream_id } => {
+                        self.handle_responder_dropped(&mut state, stream_id);
                     }
-                    RuntimeCommand::PendingAcceptDropped {
-                        recipient,
-                        stream_id,
-                    } => {
-                        self.handle_pending_accept_dropped(&mut state, recipient, stream_id);
+                    RuntimeCommand::PendingAcceptDropped { stream_id } => {
+                        self.handle_pending_accept_dropped(&mut state, stream_id);
                     }
-                    RuntimeCommand::Incoming { cid, bytes } => {
-                        self.handle_incoming(&mut state, cid, bytes);
-                    }
+                    RuntimeCommand::Incoming(bytes) => self.handle_incoming(&mut state, bytes),
                 },
                 LoopStep::Timeout => {
                     self.handle_timeouts(&mut state);
                 }
                 LoopStep::WriteDone {
-                    peer,
                     token,
                     tracked: ack,
                     result,
                 } => {
                     in_flight = None;
-                    self.handle_write_done(&mut state, peer, token, ack, result);
+                    self.handle_write_done(&mut state, token, ack, result);
                 }
                 LoopStep::Quit => break,
             }
@@ -171,21 +127,23 @@ impl<P: QlPlatform> Runtime<P> {
             let bytes = match message.payload {
                 OutboundPayload::PreEncoded(bytes) => bytes,
                 OutboundPayload::DeferredStream(body) => {
-                    let Some(session_key) = state
-                        .core
-                        .peers
-                        .peer(message.peer)
-                        .and_then(|entry| entry.session.session_key())
+                    let Some(peer) = state.core.peer.as_ref() else {
+                        if let Some(stream_id) = message.stream_id {
+                            self.fail_stream(state, stream_id, QlError::SendFailed);
+                        }
+                        continue;
+                    };
+                    let Some(session_key) = peer.session.session_key()
                     else {
                         if let Some(stream_id) = message.stream_id {
-                            self.fail_stream(state, message.peer, stream_id, QlError::SendFailed);
+                            self.fail_stream(state, stream_id, QlError::SendFailed);
                         }
                         continue;
                     };
                     let record = stream::encrypt_stream(
                         QlHeader {
                             sender: self.platform.xid(),
-                            recipient: message.peer,
+                            recipient: peer.peer,
                         },
                         session_key,
                         body,
@@ -194,7 +152,6 @@ impl<P: QlPlatform> Runtime<P> {
                 }
             };
             return Some(InFlightWrite {
-                peer: message.peer,
                 token: message.token,
                 tracked: if message.track_ack {
                     message
@@ -207,9 +164,7 @@ impl<P: QlPlatform> Runtime<P> {
                 } else {
                     None
                 },
-                future: self
-                    .platform
-                    .write_message(message.peer, message.cid, bytes),
+                future: self.platform.write_message(bytes),
             });
         }
         None
@@ -233,7 +188,6 @@ impl<P: QlPlatform> Runtime<P> {
             if let Some(in_flight) = in_flight.as_mut() {
                 if let Poll::Ready(result) = in_flight.future.as_mut().poll(cx) {
                     return Poll::Ready(LoopStep::WriteDone {
-                        peer: in_flight.peer,
                         token: in_flight.token,
                         tracked: in_flight.tracked,
                         result,
@@ -255,59 +209,67 @@ impl<P: QlPlatform> Runtime<P> {
         .await
     }
 
-    fn peer_connection_id(&self, core: &CoreState, peer: XID) -> Option<ConnectionId> {
-        core.peers
-            .peer(peer)
-            .and_then(|entry| entry.session.connection_id())
+    fn bind_peer_record(&self, state: &mut RuntimeState, peer: Peer) {
+        self.reset_runtime(state, QlError::Cancelled);
+        state.core.peer = Some(PeerRecord::new(peer.peer, peer.signing_key, peer.encapsulation_key));
+        if let Some(entry) = state.core.peer.as_ref() {
+            self.platform.handle_peer_status(entry.peer, &entry.session);
+            self.platform.persist_peer(entry.snapshot());
+        }
     }
 
-    fn bind_authenticated_connection(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        cid: ConnectionId,
-    ) {
-        let Some(entry) = state.core.peers.peer_mut(peer) else {
+    fn reset_runtime(&self, state: &mut RuntimeState, error: QlError) {
+        let stream_ids: Vec<_> = state.core.outbound.iter().filter_map(|message| message.stream_id).collect();
+        state.core.outbound.clear();
+        for stream_id in stream_ids {
+            self.fail_stream(state, stream_id, error.clone());
+        }
+        let stream_ids: Vec<_> = state.streams.keys().copied().collect();
+        for stream_id in stream_ids {
+            self.fail_stream(state, stream_id, error.clone());
+        }
+        state.core.timeouts.clear();
+        if let Some(peer) = state.core.peer.as_ref().map(|peer| peer.peer) {
+            state.core.replay_cache.clear_peer(peer);
+        }
+    }
+
+    fn handle_bind_peer(&self, state: &mut RuntimeState, peer: Peer) {
+        if let Some(existing) = state.core.peer.as_ref() {
+            self.platform
+                .handle_peer_status(existing.peer, &PeerSession::Disconnected);
+        }
+        self.bind_peer_record(state, peer);
+    }
+
+    fn handle_pair_local(&self, state: &mut RuntimeState) {
+        let Some(peer) = state.core.peer.as_ref() else {
             return;
         };
-        match &mut entry.session {
-            PeerSession::Disconnected => {}
-            PeerSession::Initiator {
-                cid: session_cid, ..
-            } => *session_cid = Some(cid),
-            PeerSession::Responder {
-                cid: session_cid, ..
-            }
-            | PeerSession::Connected {
-                cid: session_cid, ..
-            } => *session_cid = cid,
-        }
+        let Ok(record) = pair::build_pair_request(
+            &self.platform,
+            peer.peer,
+            &peer.encapsulation_key,
+            MessageId(state.core.next_packet_id().0),
+            self.config.packet_expiration,
+        ) else {
+            return;
+        };
+        let token = state.core.next_token();
+        self.enqueue_handshake_message(
+            &mut state.core,
+            token,
+            Instant::now() + self.config.packet_expiration,
+            CBOR::from(record).to_cbor_data(),
+        );
     }
 
-    fn handle_register_peer(
-        &self,
-        state: &mut RuntimeState,
-        peer: XID,
-        signing_key: MLDSAPublicKey,
-        encapsulation_key: MLKEMPublicKey,
-    ) {
-        {
-            let entry = state
-                .core
-                .peers
-                .upsert_peer(peer, signing_key, encapsulation_key);
-            if let crate::runtime::PeerSession::Disconnected = entry.session {
-                self.platform.handle_peer_status(peer, &entry.session);
-            }
-        }
-        self.persist_peers(state);
-    }
-
-    fn handle_connect(&self, state: &mut RuntimeState, peer: XID, cid: Option<ConnectionId>) {
+    fn handle_connect(&self, state: &mut RuntimeState) {
+        let Some(peer_record) = state.core.peer.as_ref() else {
+            return;
+        };
+        let peer = peer_record.peer;
         let (hello, session_key) = {
-            let Some(peer_record) = state.core.peers.peer(peer) else {
-                return;
-            };
             match &peer_record.session {
                 PeerSession::Connected { .. }
                 | PeerSession::Initiator { .. }
@@ -326,9 +288,8 @@ impl<P: QlPlatform> Runtime<P> {
 
         let deadline = Instant::now() + self.config.handshake_timeout;
         let token = state.core.next_token();
-        if let Some(entry) = state.core.peers.peer_mut(peer) {
+        if let Some(entry) = state.core.peer.as_mut() {
             entry.session = crate::runtime::PeerSession::Initiator {
-                cid,
                 handshake_token: token,
                 hello: hello.clone(),
                 session_key,
@@ -347,19 +308,16 @@ impl<P: QlPlatform> Runtime<P> {
         };
         self.enqueue_handshake_message(
             &mut state.core,
-            peer,
-            cid,
             token,
             deadline,
             CBOR::from(record).to_cbor_data(),
         );
     }
 
-    fn handle_unpair_local(&self, state: &mut RuntimeState, peer: XID) {
-        if state.core.peers.peer(peer).is_none() {
+    fn handle_unpair_local(&self, state: &mut RuntimeState) {
+        let Some(peer) = state.core.peer.as_ref().map(|peer| peer.peer) else {
             return;
-        }
-        let cid = self.peer_connection_id(&state.core, peer);
+        };
         let record = unpair::build_unpair_record(
             &self.platform,
             QlHeader {
@@ -369,12 +327,10 @@ impl<P: QlPlatform> Runtime<P> {
             crate::MessageId(state.core.next_packet_id().0),
             now_secs().saturating_add(self.config.packet_expiration.as_secs()),
         );
-        self.unpair_peer(state, peer);
+        self.unpair_peer(state);
         let token = state.core.next_token();
         self.enqueue_handshake_message(
             &mut state.core,
-            peer,
-            cid,
             token,
             Instant::now() + self.config.packet_expiration,
             CBOR::from(record).to_cbor_data(),
@@ -384,19 +340,18 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_open_stream(
         &self,
         state: &mut RuntimeState,
-        recipient: XID,
         request_head: Vec<u8>,
         request_pipe: crate::pipe::PipeReader<QlError>,
         accepted: oneshot::Sender<Result<crate::runtime::AcceptedStreamDelivery, QlError>>,
         start: oneshot::Sender<Result<StreamId, QlError>>,
         config: crate::runtime::StreamConfig,
     ) {
-        let Some(entry) = state.core.peers.peer(recipient) else {
-            let _ = start.send(Err(QlError::UnknownPeer(recipient)));
+        let Some(entry) = state.core.peer.as_ref() else {
+            let _ = start.send(Err(QlError::NoPeerBound));
             return;
         };
         if !entry.session.is_connected() {
-            let _ = start.send(Err(QlError::MissingSession(recipient)));
+            let _ = start.send(Err(QlError::MissingSession(entry.peer)));
             return;
         }
 
@@ -419,10 +374,7 @@ impl<P: QlPlatform> Runtime<P> {
         }));
         let stream = StreamState::Initiator(InitiatorStream {
             meta: StreamMeta {
-                key: crate::runtime::internal::StreamKey {
-                    peer: recipient,
-                    stream_id,
-                },
+                key: crate::runtime::internal::StreamKey { stream_id },
                 request_head,
                 last_activity: Instant::now(),
             },
@@ -437,29 +389,23 @@ impl<P: QlPlatform> Runtime<P> {
                 open_timeout_token: token,
             },
         });
-        state.streams.insert((recipient, stream_id), stream);
+        state.streams.insert(stream_id, stream);
         state.core.timeouts.push(Reverse(TimeoutEntry {
             at: Instant::now() + timeout,
-            kind: TimeoutKind::StreamOpen {
-                peer: recipient,
-                stream_id,
-                token,
-            },
+            kind: TimeoutKind::StreamOpen { stream_id, token },
         }));
         let _ = start.send(Ok(stream_id));
-        self.drive_stream(state, recipient, stream_id);
+        self.drive_stream(state, stream_id);
     }
 
     fn handle_accept_stream(
         &self,
         state: &mut RuntimeState,
-        recipient: XID,
         stream_id: StreamId,
         response_head: Vec<u8>,
         response_pipe: crate::pipe::PipeReader<QlError>,
     ) {
-        let key = (recipient, stream_id);
-        let Some(StreamState::Responder(stream)) = state.streams.get_mut(&key) else {
+        let Some(StreamState::Responder(stream)) = state.streams.get_mut(&stream_id) else {
             return;
         };
         let ResponderResponse::Pending { initial_credit } = stream.response else {
@@ -477,18 +423,16 @@ impl<P: QlPlatform> Runtime<P> {
             body: OutboundBody::new(Direction::Response, response_pipe, initial_credit, false),
         };
         stream.meta.last_activity = Instant::now();
-        self.drive_stream(state, recipient, stream_id);
+        self.drive_stream(state, stream_id);
     }
 
     fn handle_reject_stream(
         &self,
         state: &mut RuntimeState,
-        recipient: XID,
         stream_id: StreamId,
         code: RejectCode,
     ) {
-        let key = (recipient, stream_id);
-        let Some(StreamState::Responder(stream)) = state.streams.get_mut(&key) else {
+        let Some(StreamState::Responder(stream)) = state.streams.get_mut(&stream_id) else {
             return;
         };
         let ResponderResponse::Pending { initial_credit } = stream.response else {
@@ -502,19 +446,17 @@ impl<P: QlPlatform> Runtime<P> {
             .set_setup(SetupFrame::Reject(StreamFrameReject { stream_id, code }));
         stream.response = ResponderResponse::Rejecting { initial_credit };
         stream.meta.last_activity = Instant::now();
-        self.drive_stream(state, recipient, stream_id);
+        self.drive_stream(state, stream_id);
     }
 
     fn handle_advance_inbound_credit(
         &self,
         state: &mut RuntimeState,
-        sender: XID,
         stream_id: StreamId,
         dir: Direction,
         amount: u64,
     ) {
-        let key = (sender, stream_id);
-        let Some(stream) = state.streams.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&stream_id) else {
             return;
         };
         let Some(inbound) = stream.inbound_mut(dir) else {
@@ -526,19 +468,17 @@ impl<P: QlPlatform> Runtime<P> {
         inbound.max_offset = inbound.max_offset.saturating_add(amount);
         self.queue_credit(stream, dir);
         *stream.last_activity_mut() = Instant::now();
-        self.drive_stream(state, sender, stream_id);
+        self.drive_stream(state, stream_id);
     }
 
     fn handle_reset_outbound(
         &self,
         state: &mut RuntimeState,
-        recipient: XID,
         stream_id: StreamId,
         dir: Direction,
         code: ResetCode,
     ) {
-        let key = (recipient, stream_id);
-        let Some(stream) = state.streams.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&stream_id) else {
             return;
         };
         let target = reset_target_for_dir(dir);
@@ -558,19 +498,17 @@ impl<P: QlPlatform> Runtime<P> {
             stream.control_mut().pending.set_reset(target, code);
         }
         *stream.last_activity_mut() = Instant::now();
-        self.drive_stream(state, recipient, stream_id);
+        self.drive_stream(state, stream_id);
     }
 
     fn handle_reset_inbound(
         &self,
         state: &mut RuntimeState,
-        sender: XID,
         stream_id: StreamId,
         dir: Direction,
         code: ResetCode,
     ) {
-        let key = (sender, stream_id);
-        let Some(stream) = state.streams.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&stream_id) else {
             return;
         };
         let Some(inbound) = stream.inbound_mut(dir) else {
@@ -586,21 +524,15 @@ impl<P: QlPlatform> Runtime<P> {
             .pending
             .set_reset(reset_target_for_dir(dir), code);
         *stream.last_activity_mut() = Instant::now();
-        self.drive_stream(state, sender, stream_id);
+        self.drive_stream(state, stream_id);
     }
 
-    fn handle_responder_dropped(&self, state: &mut RuntimeState, sender: XID, stream_id: StreamId) {
-        self.handle_reject_stream(state, sender, stream_id, RejectCode::Unhandled);
+    fn handle_responder_dropped(&self, state: &mut RuntimeState, stream_id: StreamId) {
+        self.handle_reject_stream(state, stream_id, RejectCode::Unhandled);
     }
 
-    fn handle_pending_accept_dropped(
-        &self,
-        state: &mut RuntimeState,
-        recipient: XID,
-        stream_id: StreamId,
-    ) {
-        let key = (recipient, stream_id);
-        let Some(stream) = state.streams.get_mut(&key) else {
+    fn handle_pending_accept_dropped(&self, state: &mut RuntimeState, stream_id: StreamId) {
+        let Some(stream) = state.streams.get_mut(&stream_id) else {
             return;
         };
         match stream {
@@ -613,10 +545,10 @@ impl<P: QlPlatform> Runtime<P> {
             },
             _ => {}
         }
-        self.maybe_reap_stream(state, recipient, stream_id);
+        self.maybe_reap_stream(state, stream_id);
     }
 
-    fn handle_incoming(&self, state: &mut RuntimeState, cid: ConnectionId, bytes: Vec<u8>) {
+    fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
         let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
             return;
         };
@@ -624,35 +556,39 @@ impl<P: QlPlatform> Runtime<P> {
         if header.recipient != self.platform.xid() {
             return;
         }
+        if !matches!(payload, QlPayload::Pair(_)) {
+            let Some(peer) = state.core.peer.as_ref().map(|peer| peer.peer) else {
+                return;
+            };
+            if header.sender != peer {
+                return;
+            }
+        }
         match payload {
-            QlPayload::Handshake(message) => self.handle_handshake(state, cid, header, message),
-            QlPayload::Stream(encrypted) => self.handle_stream(state, cid, header, encrypted),
-            QlPayload::Heartbeat(encrypted) => self.handle_heartbeat(state, cid, header, encrypted),
-            QlPayload::Pair(request) => self.handle_pairing(state, cid, header, request),
-            QlPayload::Unpair(record) => self.handle_unpair(state, cid, header, record),
+            QlPayload::Handshake(message) => self.handle_handshake(state, header, message),
+            QlPayload::Stream(encrypted) => self.handle_stream(state, header, encrypted),
+            QlPayload::Heartbeat(encrypted) => self.handle_heartbeat(state, header, encrypted),
+            QlPayload::Pair(request) => self.handle_pairing(state, header, request),
+            QlPayload::Unpair(record) => self.handle_unpair(state, header, record),
         }
     }
 
     fn handle_handshake(
         &self,
         state: &mut RuntimeState,
-        cid: ConnectionId,
         header: QlHeader,
         message: HandshakeRecord,
     ) {
         match message {
-            HandshakeRecord::Hello(hello) => self.handle_hello(state, cid, header, hello),
-            HandshakeRecord::HelloReply(reply) => {
-                self.handle_hello_reply(state, cid, header, reply)
-            }
-            HandshakeRecord::Confirm(confirm) => self.handle_confirm(state, cid, header, confirm),
+            HandshakeRecord::Hello(hello) => self.handle_hello(state, header, hello),
+            HandshakeRecord::HelloReply(reply) => self.handle_hello_reply(state, header, reply),
+            HandshakeRecord::Confirm(confirm) => self.handle_confirm(state, header, confirm),
         }
     }
 
     fn handle_pairing(
         &self,
         state: &mut RuntimeState,
-        cid: ConnectionId,
         header: QlHeader,
         request: PairRequestRecord,
     ) {
@@ -661,24 +597,30 @@ impl<P: QlPlatform> Runtime<P> {
             Err(_) => return,
         };
         let peer = XID::new(SigningPublicKey::MLDSA(payload.signing_pub_key.clone()));
-        state
-            .core
-            .peers
-            .upsert_peer(peer, payload.signing_pub_key, payload.encapsulation_pub_key);
-        self.persist_peers(state);
-        self.handle_connect(state, peer, Some(cid));
+        if let Some(existing) = state.core.peer.as_ref() {
+            if existing.peer != peer
+                || existing.signing_key != payload.signing_pub_key
+                || existing.encapsulation_key != payload.encapsulation_pub_key
+            {
+                return;
+            }
+        } else {
+            self.bind_peer_record(
+                state,
+                Peer {
+                    peer,
+                    signing_key: payload.signing_pub_key,
+                    encapsulation_key: payload.encapsulation_pub_key,
+                },
+            );
+        }
+        self.handle_connect(state);
     }
 
-    fn handle_unpair(
-        &self,
-        state: &mut RuntimeState,
-        _cid: ConnectionId,
-        header: QlHeader,
-        record: UnpairRecord,
-    ) {
+    fn handle_unpair(&self, state: &mut RuntimeState, header: QlHeader, record: UnpairRecord) {
         let peer = header.sender;
         {
-            let Some(peer_record) = state.core.peers.peer(peer) else {
+            let Some(peer_record) = state.core.peer.as_ref() else {
                 return;
             };
             if unpair::verify_unpair_record(&header, &record, &peer_record.signing_key).is_err() {
@@ -697,19 +639,17 @@ impl<P: QlPlatform> Runtime<P> {
         {
             return;
         }
-        self.unpair_peer(state, peer);
+        self.unpair_peer(state);
     }
 
     fn handle_heartbeat(
         &self,
         state: &mut RuntimeState,
-        cid: ConnectionId,
         header: QlHeader,
         encrypted: bc_components::EncryptedMessage,
     ) {
-        let peer = header.sender;
         let should_reply = {
-            let Some(peer_record) = state.core.peers.peer(peer) else {
+            let Some(peer_record) = state.core.peer.as_ref() else {
                 return;
             };
             let PeerSession::Connected {
@@ -725,23 +665,21 @@ impl<P: QlPlatform> Runtime<P> {
             }
             !keepalive.pending
         };
-        self.bind_authenticated_connection(state, peer, cid);
-        self.record_activity(state, peer);
+        self.record_activity(state);
         if should_reply {
-            self.send_heartbeat_message(&mut state.core, peer);
+            self.send_heartbeat_message(&mut state.core);
         }
     }
 
     fn handle_stream(
         &self,
         state: &mut RuntimeState,
-        cid: ConnectionId,
         header: QlHeader,
         encrypted: bc_components::EncryptedMessage,
     ) {
         let peer = header.sender;
         let body = {
-            let Some(peer_record) = state.core.peers.peer(peer) else {
+            let Some(peer_record) = state.core.peer.as_ref() else {
                 return;
             };
             let PeerSession::Connected { session_key, .. } = &peer_record.session else {
@@ -754,7 +692,7 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         if let Some(ack) = body.packet_ack {
-            self.process_packet_ack(state, peer, ack.packet_id);
+            self.process_packet_ack(state, ack.packet_id);
         }
 
         let Some(frame) = body.frame else {
@@ -771,68 +709,57 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
 
-        self.bind_authenticated_connection(state, peer, cid);
-        self.record_activity(state, peer);
-        self.record_stream_activity(state, peer, frame.stream_id());
-        self.send_packet_ack(&mut state.core, peer, body.packet_id);
+        self.record_activity(state);
+        self.record_stream_activity(state, frame.stream_id());
+        self.send_packet_ack(&mut state.core, body.packet_id);
 
         match frame {
             StreamFrame::Open(StreamFrameOpen {
                 stream_id,
                 request_head,
                 response_max_offset,
-            }) => {
-                self.handle_stream_open(state, peer, stream_id, request_head, response_max_offset)
-            }
+            }) => self.handle_stream_open(state, stream_id, request_head, response_max_offset),
             StreamFrame::Accept(StreamFrameAccept {
                 stream_id,
                 response_head,
                 request_max_offset,
-            }) => {
-                self.handle_stream_accept(state, peer, stream_id, response_head, request_max_offset)
-            }
+            }) => self.handle_stream_accept(state, stream_id, response_head, request_max_offset),
             StreamFrame::Reject(StreamFrameReject { stream_id, code }) => {
-                self.handle_stream_reject(state, peer, stream_id, code)
+                self.handle_stream_reject(state, stream_id, code)
             }
-            StreamFrame::Data(StreamFrameData {
-                stream_id,
-                dir,
-                offset,
-                bytes,
-            }) => self.handle_stream_data(state, peer, stream_id, dir, offset, bytes),
+            StreamFrame::Data(StreamFrameData { stream_id, dir, offset, bytes }) => {
+                self.handle_stream_data(state, stream_id, dir, offset, bytes)
+            }
             StreamFrame::Credit(StreamFrameCredit {
                 stream_id,
                 dir,
                 recv_offset,
                 max_offset,
-            }) => self.handle_stream_credit(state, peer, stream_id, dir, recv_offset, max_offset),
+            }) => self.handle_stream_credit(state, stream_id, dir, recv_offset, max_offset),
             StreamFrame::Finish(StreamFrameFinish { stream_id, dir }) => {
-                self.handle_stream_finish(state, peer, stream_id, dir)
+                self.handle_stream_finish(state, stream_id, dir)
             }
             StreamFrame::Reset(StreamFrameReset {
                 stream_id,
                 dir,
                 code,
-            }) => self.handle_stream_reset(state, peer, stream_id, dir, code),
+            }) => self.handle_stream_reset(state, stream_id, dir, code),
         }
     }
 
     fn handle_stream_open(
         &self,
         state: &mut RuntimeState,
-        peer: XID,
         stream_id: StreamId,
         request_head: Vec<u8>,
         response_max_offset: u64,
     ) {
-        let key = (peer, stream_id);
-        if let Some(stream) = state.streams.get(&key) {
+        if let Some(stream) = state.streams.get(&stream_id) {
             if self.stream_matches_open(stream, &request_head, response_max_offset) {
                 return;
             }
             self.send_ephemeral_reset(
                 &mut state.core,
-                peer,
                 stream_id,
                 stream::ResetTarget::Both,
                 ResetCode::Protocol,
@@ -843,13 +770,12 @@ impl<P: QlPlatform> Runtime<P> {
         let (request_reader, request_writer) = crate::pipe::pipe(self.config.pipe_size_bytes);
         let responder = StreamResponder::new(
             stream_id,
-            peer,
             self.config.pipe_size_bytes,
             self.tx.upgrade().expect("runtime tx"),
         );
         let stream = StreamState::Responder(ResponderStream {
             meta: StreamMeta {
-                key: crate::runtime::internal::StreamKey { peer, stream_id },
+                key: crate::runtime::internal::StreamKey { stream_id },
                 request_head: request_head.clone(),
                 last_activity: Instant::now(),
             },
@@ -859,15 +785,12 @@ impl<P: QlPlatform> Runtime<P> {
                 initial_credit: response_max_offset,
             },
         });
-        state.streams.insert(key, stream);
+        state.streams.insert(stream_id, stream);
         self.platform
             .handle_inbound(HandlerEvent::Stream(InboundStream {
-                sender: peer,
-                recipient: self.platform.xid(),
                 stream_id,
                 request_head,
                 request: InboundByteStream::new(
-                    peer,
                     stream_id,
                     Direction::Request,
                     request_reader,
@@ -880,16 +803,14 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_stream_accept(
         &self,
         state: &mut RuntimeState,
-        peer: XID,
         stream_id: StreamId,
         response_head: Vec<u8>,
         request_max_offset: u64,
     ) {
-        let key = (peer, stream_id);
         let mut protocol = false;
         {
             let (streams, core) = (&mut state.streams, &mut state.core);
-            let Some(stream) = streams.get_mut(&key) else {
+            let Some(stream) = streams.get_mut(&stream_id) else {
                 return;
             };
             match stream {
@@ -912,7 +833,6 @@ impl<P: QlPlatform> Runtime<P> {
                                 (waiter.tx.take(), waiter.response_reader.take())
                             {
                                 let _ = tx.send(Ok(AcceptedStreamDelivery {
-                                    peer,
                                     stream_id,
                                     response_head: response_head.clone(),
                                     response: response_reader,
@@ -944,7 +864,6 @@ impl<P: QlPlatform> Runtime<P> {
                                 (waiter.tx.take(), waiter.response_reader.take())
                             {
                                 let _ = tx.send(Ok(AcceptedStreamDelivery {
-                                    peer,
                                     stream_id,
                                     response_head: response_head.clone(),
                                     response: response_reader,
@@ -987,7 +906,6 @@ impl<P: QlPlatform> Runtime<P> {
         if protocol {
             self.send_ephemeral_reset(
                 &mut state.core,
-                peer,
                 stream_id,
                 stream::ResetTarget::Both,
                 ResetCode::Protocol,
@@ -998,15 +916,13 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_stream_reject(
         &self,
         state: &mut RuntimeState,
-        peer: XID,
         stream_id: StreamId,
         code: RejectCode,
     ) {
-        let key = (peer, stream_id);
         let mut protocol = false;
         let mut remove_after = false;
         {
-            let Some(stream) = state.streams.get_mut(&key) else {
+            let Some(stream) = state.streams.get_mut(&stream_id) else {
                 return;
             };
             match stream {
@@ -1035,12 +951,11 @@ impl<P: QlPlatform> Runtime<P> {
             }
         }
         if remove_after {
-            state.streams.remove(&key);
+            state.streams.remove(&stream_id);
         }
         if protocol {
             self.send_ephemeral_reset(
                 &mut state.core,
-                peer,
                 stream_id,
                 stream::ResetTarget::Both,
                 ResetCode::Protocol,
@@ -1051,14 +966,12 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_stream_data(
         &self,
         state: &mut RuntimeState,
-        peer: XID,
         stream_id: StreamId,
         dir: Direction,
         offset: u64,
         bytes: Vec<u8>,
     ) {
-        let key = (peer, stream_id);
-        let Some(stream) = state.streams.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&stream_id) else {
             return;
         };
         self.note_setup_seen_from_remote(stream);
@@ -1073,12 +986,12 @@ impl<P: QlPlatform> Runtime<P> {
         {
             self.queue_protocol_reset(stream);
             *stream.last_activity_mut() = Instant::now();
-            self.drive_stream(state, peer, stream_id);
+            self.drive_stream(state, stream_id);
             return;
         }
         let Some(inbound) = stream.inbound_mut(dir) else {
             self.queue_protocol_reset(stream);
-            self.drive_stream(state, peer, stream_id);
+            self.drive_stream(state, stream_id);
             return;
         };
         if inbound.closed {
@@ -1110,26 +1023,24 @@ impl<P: QlPlatform> Runtime<P> {
             }
         }
         *stream.last_activity_mut() = Instant::now();
-        self.drive_stream(state, peer, stream_id);
+        self.drive_stream(state, stream_id);
     }
 
     fn handle_stream_credit(
         &self,
         state: &mut RuntimeState,
-        peer: XID,
         stream_id: StreamId,
         dir: Direction,
         recv_offset: u64,
         max_offset: u64,
     ) {
-        let key = (peer, stream_id);
-        let Some(stream) = state.streams.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&stream_id) else {
             return;
         };
         self.note_setup_seen_from_remote(stream);
         let Some(outbound) = stream.outbound_mut(dir) else {
             self.queue_protocol_reset(stream);
-            self.drive_stream(state, peer, stream_id);
+            self.drive_stream(state, stream_id);
             return;
         };
         let released_offset = outbound.pipe.released_offset();
@@ -1148,24 +1059,22 @@ impl<P: QlPlatform> Runtime<P> {
             }
         }
         *stream.last_activity_mut() = Instant::now();
-        self.drive_stream(state, peer, stream_id);
+        self.drive_stream(state, stream_id);
     }
 
     fn handle_stream_finish(
         &self,
         state: &mut RuntimeState,
-        peer: XID,
         stream_id: StreamId,
         dir: Direction,
     ) {
-        let key = (peer, stream_id);
-        let Some(stream) = state.streams.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&stream_id) else {
             return;
         };
         self.note_setup_seen_from_remote(stream);
         let Some(inbound) = stream.inbound_mut(dir) else {
             self.queue_protocol_reset(stream);
-            self.drive_stream(state, peer, stream_id);
+            self.drive_stream(state, stream_id);
             return;
         };
         if !inbound.closed {
@@ -1173,31 +1082,28 @@ impl<P: QlPlatform> Runtime<P> {
             inbound.pipe.finish();
         }
         *stream.last_activity_mut() = Instant::now();
-        self.maybe_reap_stream(state, peer, stream_id);
+        self.maybe_reap_stream(state, stream_id);
     }
 
     fn handle_stream_reset(
         &self,
         state: &mut RuntimeState,
-        peer: XID,
         stream_id: StreamId,
         dir: stream::ResetTarget,
         code: ResetCode,
     ) {
-        let key = (peer, stream_id);
-        let Some(stream) = state.streams.get_mut(&key) else {
+        let Some(stream) = state.streams.get_mut(&stream_id) else {
             return;
         };
         self.note_setup_seen_from_remote(stream);
         self.apply_remote_reset(stream, stream_id, dir, code);
         *stream.last_activity_mut() = Instant::now();
-        self.maybe_reap_stream(state, peer, stream_id);
+        self.maybe_reap_stream(state, stream_id);
     }
 
-    fn process_packet_ack(&self, state: &mut RuntimeState, peer: XID, packet_id: PacketId) {
+    fn process_packet_ack(&self, state: &mut RuntimeState, packet_id: PacketId) {
         let key = state.streams.iter().find_map(|(key, stream)| {
-            (key.0 == peer
-                && stream
+            (stream
                     .control()
                     .awaiting
                     .as_ref()
@@ -1270,22 +1176,22 @@ impl<P: QlPlatform> Runtime<P> {
         }
 
         if reap {
-            self.maybe_reap_stream(state, key.0, key.1);
+            self.maybe_reap_stream(state, key);
         } else {
-            self.drive_stream(state, key.0, key.1);
+            self.drive_stream(state, key);
         }
     }
 
     fn drive_streams(&self, state: &mut RuntimeState) {
         let keys: Vec<_> = state.streams.keys().copied().collect();
-        for (peer, stream_id) in keys {
-            self.drive_stream(state, peer, stream_id);
+        for stream_id in keys {
+            self.drive_stream(state, stream_id);
         }
     }
 
-    fn drive_stream(&self, state: &mut RuntimeState, peer: XID, stream_id: StreamId) {
+    fn drive_stream(&self, state: &mut RuntimeState, stream_id: StreamId) {
         let (streams, core) = (&mut state.streams, &mut state.core);
-        let Some(stream) = streams.get_mut(&(peer, stream_id)) else {
+        let Some(stream) = streams.get_mut(&stream_id) else {
             return;
         };
         match stream {
@@ -1366,8 +1272,6 @@ impl<P: QlPlatform> Runtime<P> {
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
         self.enqueue_stream_body(
             core,
-            key.peer,
-            self.peer_connection_id(core, key.peer),
             Some(key.stream_id),
             Some(packet_id),
             true,
@@ -1404,8 +1308,6 @@ impl<P: QlPlatform> Runtime<P> {
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
         self.enqueue_stream_body(
             core,
-            key.peer,
-            self.peer_connection_id(core, key.peer),
             Some(key.stream_id),
             Some(packet_id),
             true,
@@ -1568,13 +1470,9 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
-    fn maybe_reap_stream(&self, state: &mut RuntimeState, peer: XID, stream_id: StreamId) {
-        if state
-            .streams
-            .get(&(peer, stream_id))
-            .is_some_and(StreamState::can_reap)
-        {
-            state.streams.remove(&(peer, stream_id));
+    fn maybe_reap_stream(&self, state: &mut RuntimeState, stream_id: StreamId) {
+        if state.streams.get(&stream_id).is_some_and(StreamState::can_reap) {
+            state.streams.remove(&stream_id);
         }
     }
 
@@ -1600,13 +1498,11 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
-    fn send_packet_ack(&self, core: &mut CoreState, peer: XID, acked_packet: PacketId) {
+    fn send_packet_ack(&self, core: &mut CoreState, acked_packet: PacketId) {
         let packet_id = core.next_packet_id();
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
         self.enqueue_stream_body(
             core,
-            peer,
-            self.peer_connection_id(core, peer),
             None,
             None,
             false,
@@ -1625,7 +1521,6 @@ impl<P: QlPlatform> Runtime<P> {
     fn send_ephemeral_reset(
         &self,
         core: &mut CoreState,
-        peer: XID,
         stream_id: StreamId,
         dir: stream::ResetTarget,
         code: ResetCode,
@@ -1634,8 +1529,6 @@ impl<P: QlPlatform> Runtime<P> {
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
         self.enqueue_stream_body(
             core,
-            peer,
-            self.peer_connection_id(core, peer),
             None,
             None,
             false,
@@ -1656,15 +1549,11 @@ impl<P: QlPlatform> Runtime<P> {
     fn enqueue_handshake_message(
         &self,
         core: &mut CoreState,
-        peer: XID,
-        cid: Option<ConnectionId>,
         token: crate::runtime::Token,
         deadline: Instant,
         bytes: Vec<u8>,
     ) {
         core.outbound.push_back(OutboundMessage {
-            peer,
-            cid,
             token,
             stream_id: None,
             packet_id: None,
@@ -1673,7 +1562,7 @@ impl<P: QlPlatform> Runtime<P> {
         });
         core.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
-            kind: TimeoutKind::Handshake { peer, token },
+            kind: TimeoutKind::Handshake { token },
         }));
         core.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
@@ -1684,8 +1573,6 @@ impl<P: QlPlatform> Runtime<P> {
     fn enqueue_stream_body(
         &self,
         core: &mut CoreState,
-        peer: XID,
-        cid: Option<ConnectionId>,
         stream_id: Option<StreamId>,
         packet_id: Option<PacketId>,
         track_ack: bool,
@@ -1694,8 +1581,6 @@ impl<P: QlPlatform> Runtime<P> {
     ) {
         let token = core.next_token();
         let message = OutboundMessage {
-            peer,
-            cid,
             token,
             stream_id,
             packet_id,
@@ -1716,12 +1601,11 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_hello(
         &self,
         state: &mut RuntimeState,
-        cid: ConnectionId,
         header: QlHeader,
         hello: crate::wire::handshake::Hello,
     ) {
         let peer = header.sender;
-        let action = match state.core.peers.peer(peer) {
+        let action = match state.core.peer.as_ref() {
             Some(entry) => match &entry.session {
                 crate::runtime::PeerSession::Initiator {
                     hello: local_hello, ..
@@ -1733,7 +1617,6 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                 }
                 crate::runtime::PeerSession::Responder {
-                    cid: responder_cid,
                     hello: stored,
                     reply,
                     deadline,
@@ -1741,7 +1624,6 @@ impl<P: QlPlatform> Runtime<P> {
                 } => {
                     if stored.nonce == hello.nonce {
                         HelloAction::ResendReply {
-                            cid: *responder_cid,
                             reply: reply.clone(),
                             deadline: *deadline,
                         }
@@ -1756,12 +1638,8 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         match action {
-            HelloAction::StartResponder => self.start_responder_handshake(state, cid, peer, hello),
-            HelloAction::ResendReply {
-                cid,
-                reply,
-                deadline,
-            } => {
+            HelloAction::StartResponder => self.start_responder_handshake(state, peer, hello),
+            HelloAction::ResendReply { reply, deadline } => {
                 let record = QlRecord {
                     header: QlHeader {
                         sender: self.platform.xid(),
@@ -1772,8 +1650,6 @@ impl<P: QlPlatform> Runtime<P> {
                 let token = state.core.next_token();
                 self.enqueue_handshake_message(
                     &mut state.core,
-                    peer,
-                    Some(cid),
                     token,
                     deadline,
                     CBOR::from(record).to_cbor_data(),
@@ -1786,7 +1662,6 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_hello_reply(
         &self,
         state: &mut RuntimeState,
-        cid: ConnectionId,
         header: QlHeader,
         reply: crate::wire::handshake::HelloReply,
     ) {
@@ -1794,7 +1669,7 @@ impl<P: QlPlatform> Runtime<P> {
         let token = state.core.next_token();
         let deadline = Instant::now() + self.config.handshake_timeout;
         let confirm = match {
-            let Some(peer_record) = state.core.peers.peer(peer) else {
+            let Some(peer_record) = state.core.peer.as_ref() else {
                 return;
             };
             let PeerSession::Initiator {
@@ -1821,9 +1696,8 @@ impl<P: QlPlatform> Runtime<P> {
             .map(|(confirm, session_key)| (hello.clone(), confirm, session_key))
         } {
             Ok((hello, confirm, session_key)) => {
-                if let Some(entry) = state.core.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peer.as_mut() {
                     entry.session = PeerSession::Initiator {
-                        cid: Some(cid),
                         handshake_token: token,
                         hello,
                         session_key,
@@ -1834,7 +1708,7 @@ impl<P: QlPlatform> Runtime<P> {
                 confirm
             }
             Err(_) => {
-                if let Some(entry) = state.core.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peer.as_mut() {
                     entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
@@ -1851,8 +1725,6 @@ impl<P: QlPlatform> Runtime<P> {
         };
         self.enqueue_handshake_message(
             &mut state.core,
-            peer,
-            Some(cid),
             token,
             deadline,
             CBOR::from(record).to_cbor_data(),
@@ -1862,12 +1734,11 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_confirm(
         &self,
         state: &mut RuntimeState,
-        cid: ConnectionId,
         header: QlHeader,
         confirm: crate::wire::handshake::Confirm,
     ) {
         let peer = header.sender;
-        let Some(peer_record) = state.core.peers.peer(peer) else {
+        let Some(peer_record) = state.core.peer.as_ref() else {
             return;
         };
         let PeerSession::Responder {
@@ -1890,18 +1761,17 @@ impl<P: QlPlatform> Runtime<P> {
             &secrets,
         ) {
             Ok(session_key) => {
-                if let Some(entry) = state.core.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peer.as_mut() {
                     entry.session = crate::runtime::PeerSession::Connected {
-                        cid,
                         session_key,
                         keepalive: KeepAliveState::new(),
                     };
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
-                self.record_activity(state, peer);
+                self.record_activity(state);
             }
             Err(_) => {
-                if let Some(entry) = state.core.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peer.as_mut() {
                     entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
@@ -1912,12 +1782,11 @@ impl<P: QlPlatform> Runtime<P> {
     fn start_responder_handshake(
         &self,
         state: &mut RuntimeState,
-        cid: ConnectionId,
         peer: XID,
         hello: crate::wire::handshake::Hello,
     ) {
         let (reply, secrets) = match {
-            let Some(peer_record) = state.core.peers.peer(peer) else {
+            let Some(peer_record) = state.core.peer.as_ref() else {
                 return;
             };
             handshake::respond_hello(
@@ -1930,7 +1799,7 @@ impl<P: QlPlatform> Runtime<P> {
         } {
             Ok(result) => result,
             Err(_) => {
-                if let Some(entry) = state.core.peers.peer_mut(peer) {
+                if let Some(entry) = state.core.peer.as_mut() {
                     entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
@@ -1940,9 +1809,8 @@ impl<P: QlPlatform> Runtime<P> {
 
         let deadline = Instant::now() + self.config.handshake_timeout;
         let token = state.core.next_token();
-        if let Some(entry) = state.core.peers.peer_mut(peer) {
+        if let Some(entry) = state.core.peer.as_mut() {
             entry.session = PeerSession::Responder {
-                cid,
                 handshake_token: token,
                 hello,
                 reply: reply.clone(),
@@ -1961,20 +1829,21 @@ impl<P: QlPlatform> Runtime<P> {
         };
         self.enqueue_handshake_message(
             &mut state.core,
-            peer,
-            Some(cid),
             token,
             deadline,
             CBOR::from(record).to_cbor_data(),
         );
     }
 
-    fn send_heartbeat_message(&self, core: &mut CoreState, peer: XID) {
+    fn send_heartbeat_message(&self, core: &mut CoreState) {
+        let Some(peer) = core.peer.as_ref().map(|peer| peer.peer) else {
+            return;
+        };
         let message_id = MessageId(core.next_packet_id().0);
         let token = core.next_token();
         let deadline = Instant::now() + self.config.packet_expiration;
         let message = {
-            let Some(peer_record) = core.peers.peer(peer) else {
+            let Some(peer_record) = core.peer.as_ref() else {
                 return;
             };
             let PeerSession::Connected { session_key, .. } = &peer_record.session else {
@@ -1994,8 +1863,6 @@ impl<P: QlPlatform> Runtime<P> {
         };
         self.enqueue_handshake_message(
             core,
-            peer,
-            self.peer_connection_id(core, peer),
             token,
             deadline,
             CBOR::from(message).to_cbor_data(),
@@ -2008,12 +1875,12 @@ impl<P: QlPlatform> Runtime<P> {
             .filter(|config| !config.interval.is_zero() && !config.timeout.is_zero())
     }
 
-    fn record_activity(&self, state: &mut RuntimeState, peer: XID) {
+    fn record_activity(&self, state: &mut RuntimeState) {
         let Some(config) = self.keep_alive_config() else {
             return;
         };
         let token = state.core.next_token();
-        let Some(entry) = state.core.peers.peer_mut(peer) else {
+        let Some(entry) = state.core.peer.as_mut() else {
             return;
         };
         let crate::runtime::PeerSession::Connected { keepalive, .. } = &mut entry.session else {
@@ -2025,54 +1892,43 @@ impl<P: QlPlatform> Runtime<P> {
         keepalive.token = token;
         state.core.timeouts.push(Reverse(TimeoutEntry {
             at: now + config.interval,
-            kind: TimeoutKind::KeepAliveSend { peer, token },
+            kind: TimeoutKind::KeepAliveSend { token },
         }));
     }
 
-    fn record_stream_activity(&self, state: &mut RuntimeState, peer: XID, stream_id: StreamId) {
-        if let Some(stream) = state.streams.get_mut(&(peer, stream_id)) {
+    fn record_stream_activity(&self, state: &mut RuntimeState, stream_id: StreamId) {
+        if let Some(stream) = state.streams.get_mut(&stream_id) {
             *stream.last_activity_mut() = Instant::now();
         }
     }
 
-    fn persist_peers(&self, state: &RuntimeState) {
-        self.platform.persist_peers(state.core.peers.all());
-    }
-
-    fn drop_outbound_for_peer(&self, state: &mut RuntimeState, peer: XID) {
+    fn drop_outbound(&self, state: &mut RuntimeState) {
         let stream_ids: Vec<_> = state
             .core
             .outbound
             .iter()
-            .filter(|message| message.peer == peer)
             .filter_map(|message| message.stream_id)
             .collect();
-        state.core.outbound.retain(|message| message.peer != peer);
+        state.core.outbound.clear();
         for stream_id in stream_ids {
-            self.fail_stream(state, peer, stream_id, QlError::SendFailed);
+            self.fail_stream(state, stream_id, QlError::SendFailed);
         }
     }
 
-    fn abort_streams_for_peer(&self, state: &mut RuntimeState, peer: XID, error: QlError) {
-        let keys: Vec<_> = state
-            .streams
-            .keys()
-            .copied()
-            .filter(|(stream_peer, _)| *stream_peer == peer)
-            .collect();
-        for (_, stream_id) in keys {
-            self.fail_stream(state, peer, stream_id, error.clone());
+    fn abort_streams(&self, state: &mut RuntimeState, error: QlError) {
+        let keys: Vec<_> = state.streams.keys().copied().collect();
+        for stream_id in keys {
+            self.fail_stream(state, stream_id, error.clone());
         }
     }
 
     fn fail_stream(
         &self,
         state: &mut RuntimeState,
-        peer: XID,
         stream_id: StreamId,
         error: QlError,
     ) {
-        let Some(mut stream) = state.streams.remove(&(peer, stream_id)) else {
+        let Some(mut stream) = state.streams.remove(&stream_id) else {
             return;
         };
         if let StreamState::Initiator(stream) = &mut stream {
@@ -2102,16 +1958,17 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
-    fn unpair_peer(&self, state: &mut RuntimeState, peer: XID) {
-        if state.core.peers.remove_peer(peer).is_none() {
+    fn unpair_peer(&self, state: &mut RuntimeState) {
+        let Some(peer) = state.core.peer.as_ref().map(|peer| peer.peer) else {
             return;
-        }
-        self.drop_outbound_for_peer(state, peer);
-        self.abort_streams_for_peer(state, peer, QlError::SendFailed);
+        };
+        self.drop_outbound(state);
+        self.abort_streams(state, QlError::SendFailed);
         state.core.replay_cache.clear_peer(peer);
+        state.core.peer = None;
         self.platform
             .handle_peer_status(peer, &crate::runtime::PeerSession::Disconnected);
-        self.persist_peers(state);
+        self.platform.clear_peer();
     }
 
     fn handle_timeouts(&self, state: &mut RuntimeState) {
@@ -2126,21 +1983,21 @@ impl<P: QlPlatform> Runtime<P> {
                     let mut timed_out_stream = None;
                     state.core.outbound.retain(|message| {
                         if message.token == token {
-                            timed_out_stream =
-                                message.stream_id.map(|stream_id| (message.peer, stream_id));
+                            timed_out_stream = message.stream_id;
                             false
                         } else {
                             true
                         }
                     });
-                    if let Some((peer, stream_id)) = timed_out_stream {
-                        self.fail_stream(state, peer, stream_id, QlError::SendFailed);
+                    if let Some(stream_id) = timed_out_stream {
+                        self.fail_stream(state, stream_id, QlError::SendFailed);
                     }
                 }
-                TimeoutKind::Handshake { peer, token } => {
-                    let Some(entry) = state.core.peers.peer(peer) else {
+                TimeoutKind::Handshake { token } => {
+                    let Some(entry) = state.core.peer.as_ref() else {
                         continue;
                     };
+                    let peer = entry.peer;
                     let should_disconnect = match &entry.session {
                         crate::runtime::PeerSession::Initiator {
                             handshake_token, ..
@@ -2151,20 +2008,20 @@ impl<P: QlPlatform> Runtime<P> {
                         _ => false,
                     };
                     if should_disconnect {
-                        if let Some(entry) = state.core.peers.peer_mut(peer) {
+                        if let Some(entry) = state.core.peer.as_mut() {
                             entry.session = crate::runtime::PeerSession::Disconnected;
                             self.platform.handle_peer_status(peer, &entry.session);
                         }
-                        self.drop_outbound_for_peer(state, peer);
-                        self.abort_streams_for_peer(state, peer, QlError::SendFailed);
+                        self.drop_outbound(state);
+                        self.abort_streams(state, QlError::SendFailed);
                     }
                 }
-                TimeoutKind::KeepAliveSend { peer, token } => {
+                TimeoutKind::KeepAliveSend { token } => {
                     let Some(config) = self.keep_alive_config() else {
                         continue;
                     };
                     let should_send = {
-                        let Some(entry) = state.core.peers.peer(peer) else {
+                        let Some(entry) = state.core.peer.as_ref() else {
                             continue;
                         };
                         let PeerSession::Connected { keepalive, .. } = &entry.session else {
@@ -2177,9 +2034,9 @@ impl<P: QlPlatform> Runtime<P> {
                         }
                     };
                     if should_send {
-                        self.send_heartbeat_message(&mut state.core, peer);
+                        self.send_heartbeat_message(&mut state.core);
                     }
-                    if let Some(entry) = state.core.peers.peer_mut(peer) {
+                    if let Some(entry) = state.core.peer.as_mut() {
                         if let crate::runtime::PeerSession::Connected { keepalive, .. } =
                             &mut entry.session
                         {
@@ -2190,13 +2047,14 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                     state.core.timeouts.push(Reverse(TimeoutEntry {
                         at: now + config.timeout,
-                        kind: TimeoutKind::KeepAliveTimeout { peer, token },
+                        kind: TimeoutKind::KeepAliveTimeout { token },
                     }));
                 }
-                TimeoutKind::KeepAliveTimeout { peer, token } => {
-                    let Some(entry) = state.core.peers.peer(peer) else {
+                TimeoutKind::KeepAliveTimeout { token } => {
+                    let Some(entry) = state.core.peer.as_ref() else {
                         continue;
                     };
+                    let peer = entry.peer;
                     let should_disconnect = match &entry.session {
                         crate::runtime::PeerSession::Connected { keepalive, .. } => {
                             keepalive.token == token && keepalive.pending
@@ -2204,35 +2062,29 @@ impl<P: QlPlatform> Runtime<P> {
                         _ => false,
                     };
                     if should_disconnect {
-                        if let Some(entry) = state.core.peers.peer_mut(peer) {
+                        if let Some(entry) = state.core.peer.as_mut() {
                             entry.session = crate::runtime::PeerSession::Disconnected;
                             self.platform.handle_peer_status(peer, &entry.session);
                         }
-                        self.drop_outbound_for_peer(state, peer);
-                        self.abort_streams_for_peer(state, peer, QlError::SendFailed);
+                        self.drop_outbound(state);
+                        self.abort_streams(state, QlError::SendFailed);
                     }
                 }
-                TimeoutKind::StreamOpen {
-                    peer,
-                    stream_id,
-                    token,
-                } => {
+                TimeoutKind::StreamOpen { stream_id, token } => {
                     let should_fail = state
                         .streams
-                        .get(&(peer, stream_id))
+                        .get(&stream_id)
                         .and_then(StreamState::open_timeout_token)
                         .is_some_and(|stream_token| stream_token == token);
                     if should_fail {
-                        self.fail_stream(state, peer, stream_id, QlError::Timeout);
+                        self.fail_stream(state, stream_id, QlError::Timeout);
                     }
                 }
                 TimeoutKind::StreamPacket {
-                    peer,
                     stream_id,
                     packet_id,
                     attempt,
                 } => {
-                    let key = (peer, stream_id);
                     let mut timed_out = false;
                     enum Retransmit {
                         Control(StreamFrame),
@@ -2244,7 +2096,7 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                     {
                         let (streams, core) = (&mut state.streams, &mut state.core);
-                        let Some(stream) = streams.get_mut(&key) else {
+                        let Some(stream) = streams.get_mut(&stream_id) else {
                             continue;
                         };
                         let Some(retransmit) =
@@ -2313,7 +2165,7 @@ impl<P: QlPlatform> Runtime<P> {
                         }
                     }
                     if timed_out {
-                        self.fail_stream(state, peer, stream_id, QlError::Timeout);
+                        self.fail_stream(state, stream_id, QlError::Timeout);
                     }
                 }
             }
@@ -2323,65 +2175,68 @@ impl<P: QlPlatform> Runtime<P> {
     fn handle_write_done(
         &self,
         state: &mut RuntimeState,
-        peer: XID,
         token: crate::runtime::Token,
         ack: Option<TrackedWrite>,
         result: Result<(), QlError>,
     ) {
         if let Err(error) = result {
             if let Some(ack) = ack {
-                self.fail_stream(state, peer, ack.stream_id, error.clone());
+                self.fail_stream(state, ack.stream_id, error.clone());
             }
             let should_disconnect = matches!(
-                state.core.peers.peer(peer).map(|entry| &entry.session),
+                state.core.peer.as_ref().map(|entry| &entry.session),
                 Some(crate::runtime::PeerSession::Initiator { handshake_token, .. })
                     if *handshake_token == token
             ) || matches!(
-                state.core.peers.peer(peer).map(|entry| &entry.session),
+                state.core.peer.as_ref().map(|entry| &entry.session),
                 Some(crate::runtime::PeerSession::Responder { handshake_token, .. })
                     if *handshake_token == token
             );
             if should_disconnect {
-                if let Some(entry) = state.core.peers.peer_mut(peer) {
+                let Some(peer) = state.core.peer.as_ref().map(|peer| peer.peer) else {
+                    return;
+                };
+                if let Some(entry) = state.core.peer.as_mut() {
                     entry.session = crate::runtime::PeerSession::Disconnected;
                     self.platform.handle_peer_status(peer, &entry.session);
                 }
-                self.drop_outbound_for_peer(state, peer);
-                self.abort_streams_for_peer(state, peer, error);
+                self.drop_outbound(state);
+                self.abort_streams(state, error);
             }
             return;
         }
 
         let connected = state
             .core
-            .peers
-            .peer(peer)
+            .peer
+            .as_ref()
             .and_then(|entry| match &entry.session {
                 PeerSession::Initiator {
-                    cid: Some(cid),
                     session_key,
                     handshake_token,
                     stage: InitiatorStage::SendingConfirm,
                     ..
-                } if *handshake_token == token => Some((*cid, session_key.clone())),
+                } if *handshake_token == token => Some(session_key.clone()),
                 _ => None,
             });
-        if let Some((cid, session_key)) = connected {
-            if let Some(entry) = state.core.peers.peer_mut(peer) {
+        if let Some(session_key) = connected {
+            let Some(peer) = state.core.peer.as_ref().map(|peer| peer.peer) else {
+                return;
+            };
+            if let Some(entry) = state.core.peer.as_mut() {
                 entry.session = PeerSession::Connected {
-                    cid,
                     session_key,
                     keepalive: KeepAliveState::new(),
                 };
                 self.platform.handle_peer_status(peer, &entry.session);
             }
-            self.record_activity(state, peer);
+            self.record_activity(state);
         }
 
         if let Some(ack) = ack {
             let attempt = state
                 .streams
-                .get(&(peer, ack.stream_id))
+                .get(&ack.stream_id)
                 .and_then(|stream| stream.control().awaiting.as_ref())
                 .and_then(|awaiting| {
                     (awaiting.packet_id == ack.packet_id).then_some(awaiting.attempt)
@@ -2390,7 +2245,6 @@ impl<P: QlPlatform> Runtime<P> {
             state.core.timeouts.push(Reverse(TimeoutEntry {
                 at: Instant::now() + self.config.packet_ack_timeout,
                 kind: TimeoutKind::StreamPacket {
-                    peer,
                     stream_id: ack.stream_id,
                     packet_id: ack.packet_id,
                     attempt,

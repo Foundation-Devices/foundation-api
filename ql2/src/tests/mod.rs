@@ -25,7 +25,7 @@ use crate::{
         self, handshake::HandshakeRecord, heartbeat::HeartbeatBody, pair, QlHeader, QlPayload,
         QlRecord,
     },
-    ConnectionId, MessageId, PacketId, Peer, QlError,
+    MessageId, PacketId, Peer, QlError,
 };
 
 mod handshake;
@@ -133,12 +133,7 @@ impl QlPlatform for TestPlatform {
         data.fill(value);
     }
 
-    fn write_message(
-        &self,
-        _peer: XID,
-        _cid: Option<ConnectionId>,
-        message: Vec<u8>,
-    ) -> PlatformFuture<'_, Result<(), QlError>> {
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let fail_on_write = self.fail_on_write;
         let write_index = self.write_counter.fetch_add(1, Ordering::Relaxed) + 1;
         let outbound = self.outbound.clone();
@@ -157,11 +152,13 @@ impl QlPlatform for TestPlatform {
         Box::pin(tokio::time::sleep(duration))
     }
 
-    fn load_peers(&self) -> PlatformFuture<'_, Vec<Peer>> {
-        Box::pin(async { Vec::new() })
+    fn load_peer(&self) -> PlatformFuture<'_, Option<Peer>> {
+        Box::pin(async { None })
     }
 
-    fn persist_peers(&self, _peers: Vec<Peer>) {}
+    fn persist_peer(&self, _peer: Peer) {}
+
+    fn clear_peer(&self) {}
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
         let stage = match session {
@@ -245,12 +242,7 @@ impl QlPlatform for InboundPlatform {
         data.fill(value);
     }
 
-    fn write_message(
-        &self,
-        _peer: XID,
-        _cid: Option<ConnectionId>,
-        message: Vec<u8>,
-    ) -> PlatformFuture<'_, Result<(), QlError>> {
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         Box::pin(async move {
             outbound
@@ -264,11 +256,13 @@ impl QlPlatform for InboundPlatform {
         Box::pin(tokio::time::sleep(duration))
     }
 
-    fn load_peers(&self) -> PlatformFuture<'_, Vec<Peer>> {
-        Box::pin(async { Vec::new() })
+    fn load_peer(&self) -> PlatformFuture<'_, Option<Peer>> {
+        Box::pin(async { None })
     }
 
-    fn persist_peers(&self, _peers: Vec<Peer>) {}
+    fn persist_peer(&self, _peer: Peer) {}
+
+    fn clear_peer(&self) {}
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession) {
         let stage = match session {
@@ -526,35 +520,6 @@ fn spawn_gated_forwarder(
     });
 }
 
-fn spawn_routed_forwarder(outbound: Receiver<Vec<u8>>, routes: Vec<(XID, RuntimeHandle)>) {
-    spawn_routed_forwarder_with_filter(outbound, routes, |_| true);
-}
-
-fn spawn_routed_forwarder_with_filter<F>(
-    outbound: Receiver<Vec<u8>>,
-    routes: Vec<(XID, RuntimeHandle)>,
-    filter: F,
-) where
-    F: Fn(&QlRecord) -> bool + Send + Sync + 'static,
-{
-    tokio::task::spawn_local(async move {
-        while let Ok(bytes) = outbound.recv().await {
-            let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
-                continue;
-            };
-            if !filter(&record) {
-                continue;
-            }
-            if let Some((_, handle)) = routes
-                .iter()
-                .find(|(peer, _)| *peer == record.header.recipient)
-            {
-                handle.send_incoming(bytes);
-            }
-        }
-    });
-}
-
 #[derive(Clone)]
 struct PeerIdentity {
     xid: XID,
@@ -576,23 +541,23 @@ fn register_peers(
     identity_a: &PeerIdentity,
     identity_b: &PeerIdentity,
 ) {
-    handle_a.register_peer(
-        identity_b.xid,
-        identity_b.signing_key.clone(),
-        identity_b.encapsulation_key.clone(),
-    );
-    handle_b.register_peer(
-        identity_a.xid,
-        identity_a.signing_key.clone(),
-        identity_a.encapsulation_key.clone(),
-    );
+    handle_a.bind_peer(Peer {
+        peer: identity_b.xid,
+        signing_key: identity_b.signing_key.clone(),
+        encapsulation_key: identity_b.encapsulation_key.clone(),
+    });
+    handle_b.bind_peer(Peer {
+        peer: identity_a.xid,
+        signing_key: identity_a.signing_key.clone(),
+        encapsulation_key: identity_a.encapsulation_key.clone(),
+    });
 }
 
 type PersistPlatformParts = (
     PersistPlatform,
     Receiver<Vec<u8>>,
     Receiver<StatusEvent>,
-    Receiver<Vec<crate::Peer>>,
+    Receiver<Option<crate::Peer>>,
 );
 
 struct PersistPlatform {
@@ -602,14 +567,14 @@ struct PersistPlatform {
     encapsulation_public: MLKEMPublicKey,
     outbound: Sender<Vec<u8>>,
     status: Sender<StatusEvent>,
-    persisted: Sender<Vec<crate::Peer>>,
-    loaded_peers: Vec<crate::Peer>,
+    persisted: Sender<Option<crate::Peer>>,
+    loaded_peer: Option<crate::Peer>,
     nonce_seed: u8,
     nonce_counter: AtomicU8,
 }
 
 impl PersistPlatform {
-    fn new(seed: u8, loaded_peers: Vec<crate::Peer>) -> PersistPlatformParts {
+    fn new(seed: u8, loaded_peer: Option<crate::Peer>) -> PersistPlatformParts {
         let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
         let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
         let (outbound, outbound_rx) = async_channel::unbounded();
@@ -624,7 +589,7 @@ impl PersistPlatform {
                 outbound,
                 status,
                 persisted,
-                loaded_peers,
+                loaded_peer,
                 nonce_seed: seed,
                 nonce_counter: AtomicU8::new(0),
             },
@@ -656,12 +621,7 @@ impl QlPlatform for PersistPlatform {
         data.fill(value);
     }
 
-    fn write_message(
-        &self,
-        _peer: XID,
-        _cid: Option<ConnectionId>,
-        message: Vec<u8>,
-    ) -> PlatformFuture<'_, Result<(), QlError>> {
+    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         Box::pin(async move {
             outbound
@@ -675,13 +635,17 @@ impl QlPlatform for PersistPlatform {
         Box::pin(tokio::time::sleep(duration))
     }
 
-    fn load_peers(&self) -> PlatformFuture<'_, Vec<crate::Peer>> {
-        let peers = self.loaded_peers.clone();
-        Box::pin(async move { peers })
+    fn load_peer(&self) -> PlatformFuture<'_, Option<crate::Peer>> {
+        let peer = self.loaded_peer.clone();
+        Box::pin(async move { peer })
     }
 
-    fn persist_peers(&self, peers: Vec<crate::Peer>) {
-        let _ = self.persisted.try_send(peers);
+    fn persist_peer(&self, peer: crate::Peer) {
+        let _ = self.persisted.try_send(Some(peer));
+    }
+
+    fn clear_peer(&self) {
+        let _ = self.persisted.try_send(None);
     }
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession) {

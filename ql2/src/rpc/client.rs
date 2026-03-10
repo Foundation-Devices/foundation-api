@@ -1,4 +1,3 @@
-use bc_components::XID;
 use dcbor::CBOR;
 
 use crate::runtime::{RuntimeHandle, StreamConfig};
@@ -21,7 +20,6 @@ impl RpcHandle {
 
     pub async fn request<M: RequestResponse>(
         &self,
-        peer: XID,
         request: M,
         config: StreamConfig,
     ) -> Result<M::Response, RpcError> {
@@ -35,7 +33,7 @@ impl RpcHandle {
         let crate::runtime::PendingStream {
             mut request,
             accepted,
-        } = self.inner.open_stream(peer, request_head, config).await?;
+        } = self.inner.open_stream(request_head, config).await?;
         let accepted = accepted.await?;
         request.write_all(&request_body).await?;
         request.finish().await?;

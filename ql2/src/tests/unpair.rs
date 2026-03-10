@@ -21,25 +21,25 @@ async fn connected_unpair_removes_peer_on_both_sides() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
-        handle_a.unpair(peer_b.xid).unwrap();
+        handle_a.unpair().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
         let result_a = handle_a
-            .open_stream(peer_b.xid, Vec::new(), Default::default())
+            .open_stream(Vec::new(), Default::default())
             .await;
-        assert!(matches!(result_a, Err(QlError::UnknownPeer(peer)) if peer == peer_b.xid));
+        assert!(matches!(result_a, Err(QlError::NoPeerBound)));
 
         let result_b = handle_b
-            .open_stream(peer_a.xid, Vec::new(), Default::default())
+            .open_stream(Vec::new(), Default::default())
             .await;
-        assert!(matches!(result_b, Err(QlError::UnknownPeer(peer)) if peer == peer_a.xid));
+        assert!(matches!(result_b, Err(QlError::NoPeerBound)));
     })
     .await;
 }
@@ -67,20 +67,20 @@ async fn unpair_works_without_session() {
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
-        handle_a.unpair(peer_b.xid).unwrap();
+        handle_a.unpair().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
         let result_a = handle_a
-            .open_stream(peer_b.xid, Vec::new(), Default::default())
+            .open_stream(Vec::new(), Default::default())
             .await;
-        assert!(matches!(result_a, Err(QlError::UnknownPeer(peer)) if peer == peer_b.xid));
+        assert!(matches!(result_a, Err(QlError::NoPeerBound)));
 
         let result_b = handle_b
-            .open_stream(peer_a.xid, Vec::new(), Default::default())
+            .open_stream(Vec::new(), Default::default())
             .await;
-        assert!(matches!(result_b, Err(QlError::UnknownPeer(peer)) if peer == peer_a.xid));
+        assert!(matches!(result_b, Err(QlError::NoPeerBound)));
     })
     .await;
 }
@@ -109,11 +109,11 @@ async fn invalid_unpair_signature_is_ignored() {
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        handle_b.register_peer(
-            peer_a.xid,
-            peer_a.signing_key.clone(),
-            peer_a.encapsulation_key.clone(),
-        );
+        handle_b.bind_peer(Peer {
+            peer: peer_a.xid,
+            signing_key: peer_a.signing_key.clone(),
+            encapsulation_key: peer_a.encapsulation_key.clone(),
+        });
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
         handle_b.send_incoming(forged_bytes);
@@ -121,7 +121,7 @@ async fn invalid_unpair_signature_is_ignored() {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let result = handle_b
-            .open_stream(peer_a.xid, Vec::new(), Default::default())
+            .open_stream(Vec::new(), Default::default())
             .await;
         assert!(matches!(result, Err(QlError::MissingSession(peer)) if peer == peer_a.xid));
     })

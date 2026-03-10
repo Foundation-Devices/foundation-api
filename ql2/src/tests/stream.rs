@@ -31,7 +31,7 @@ async fn duplex_stream_round_trip() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -54,7 +54,7 @@ async fn duplex_stream_round_trip() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, b"req-head".to_vec(), StreamConfig::default())
+            .open_stream(b"req-head".to_vec(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream {
@@ -104,7 +104,7 @@ async fn duplicate_open_is_idempotent() {
         spawn_drop_first_stream_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -121,7 +121,7 @@ async fn duplicate_open_is_idempotent() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream { request, accepted } = pending;
@@ -161,7 +161,7 @@ async fn duplicate_accept_is_idempotent() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -177,7 +177,7 @@ async fn duplicate_accept_is_idempotent() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream { request, accepted } = pending;
@@ -218,7 +218,7 @@ async fn replayed_open_packet_is_ignored() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -234,7 +234,7 @@ async fn replayed_open_packet_is_ignored() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream { request, accepted } = pending;
@@ -273,7 +273,7 @@ async fn request_reset_can_keep_response_alive() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -291,7 +291,7 @@ async fn request_reset_can_keep_response_alive() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream {
@@ -337,13 +337,13 @@ async fn open_timeout_returns_error() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let pending = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
 
@@ -377,7 +377,7 @@ async fn reject_surfaces_stream_rejected() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -390,7 +390,7 @@ async fn reject_surfaces_stream_rejected() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let err = pending.accepted.await.unwrap_err();
@@ -425,7 +425,7 @@ async fn dropping_responder_rejects_unhandled() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -443,7 +443,7 @@ async fn dropping_responder_rejects_unhandled() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -494,7 +494,7 @@ async fn request_larger_than_ring_buffer_streams_with_backpressure() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -517,7 +517,7 @@ async fn request_larger_than_ring_buffer_streams_with_backpressure() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&payload).await.unwrap();
@@ -569,7 +569,7 @@ async fn response_larger_than_ring_buffer_streams_with_backpressure() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -586,7 +586,7 @@ async fn response_larger_than_ring_buffer_streams_with_backpressure() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -633,7 +633,7 @@ async fn dropping_pending_accept_cancels_response_side() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -653,7 +653,7 @@ async fn dropping_pending_accept_cancels_response_side() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         drop(accepted);
@@ -690,7 +690,7 @@ async fn dropping_request_writer_sends_cancel() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -718,7 +718,7 @@ async fn dropping_request_writer_sends_cancel() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&[1, 2, 3, 4]).await.unwrap();
@@ -757,7 +757,7 @@ async fn dropping_response_writer_sends_cancel() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -773,7 +773,7 @@ async fn dropping_response_writer_sends_cancel() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -823,7 +823,7 @@ async fn dropping_request_reader_sends_cancel() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -843,7 +843,7 @@ async fn dropping_request_reader_sends_cancel() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&[1, 2, 3, 4]).await.unwrap();
@@ -887,7 +887,7 @@ async fn dropping_response_reader_sends_cancel() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -907,7 +907,7 @@ async fn dropping_response_reader_sends_cancel() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -943,7 +943,7 @@ async fn empty_request_finishes_cleanly() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -960,7 +960,7 @@ async fn empty_request_finishes_cleanly() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -999,7 +999,7 @@ async fn empty_response_finishes_cleanly() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -1019,7 +1019,7 @@ async fn empty_response_finishes_cleanly() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&[1]).await.unwrap();
@@ -1064,7 +1064,7 @@ async fn stream_survives_every_third_packet_drop() {
         spawn_drop_every_nth_stream_forwarder(outbound_b, handle_a.clone(), 3);
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -1088,7 +1088,7 @@ async fn stream_survives_every_third_packet_drop() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&request_payload).await.unwrap();
@@ -1169,7 +1169,7 @@ async fn response_data_before_accept_is_protocol_error() {
         });
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -1184,7 +1184,7 @@ async fn response_data_before_accept_is_protocol_error() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -1254,7 +1254,7 @@ async fn data_offset_gap_is_protocol_error() {
         );
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -1274,7 +1274,7 @@ async fn data_offset_gap_is_protocol_error() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let _accepted = accepted.await.unwrap();
@@ -1340,7 +1340,7 @@ async fn data_beyond_credit_is_protocol_error() {
         );
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -1360,7 +1360,7 @@ async fn data_beyond_credit_is_protocol_error() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let _accepted = accepted.await.unwrap();
@@ -1427,7 +1427,7 @@ async fn credit_regression_is_protocol_error() {
         });
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -1455,7 +1455,7 @@ async fn credit_regression_is_protocol_error() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let mut accepted = accepted.await.unwrap();
@@ -1497,7 +1497,7 @@ async fn disconnect_during_active_stream_aborts_both_halves() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -1519,19 +1519,19 @@ async fn disconnect_during_active_stream_aborts_both_halves() {
                     | Err(QlError::StreamReset { .. })
                     | Err(QlError::StreamProtocol { .. })
             ));
-            handle_b_for_disconnect.unpair(peer_a.xid).unwrap();
+            handle_b_for_disconnect.unpair().unwrap();
         });
 
         let PendingStream {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
+            .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&[1, 2, 3, 4]).await.unwrap();
         let mut accepted = accepted.await.unwrap();
-        handle_a.unpair(peer_b.xid).unwrap();
+        handle_a.unpair().unwrap();
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
         tokio::time::sleep(Duration::from_millis(20)).await;

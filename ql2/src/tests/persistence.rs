@@ -6,7 +6,7 @@ use super::*;
 async fn register_peer_persists_snapshot() {
     run_local_test(async {
         let config = RuntimeConfig::new(Duration::from_millis(200));
-        let (platform_a, _outbound_a, _status_a, persisted_a) = PersistPlatform::new(1, Vec::new());
+        let (platform_a, _outbound_a, _status_a, persisted_a) = PersistPlatform::new(1, None);
         let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
         let peer_b = platform_b.xid();
         let signing_b = platform_b.signing_public_key().clone();
@@ -15,7 +15,11 @@ async fn register_peer_persists_snapshot() {
         let (runtime_a, handle_a) = new_runtime(platform_a, config);
         tokio::task::spawn_local(async move { runtime_a.run().await });
 
-        handle_a.register_peer(peer_b, signing_b.clone(), encap_b.clone());
+        handle_a.bind_peer(crate::Peer {
+            peer: peer_b,
+            signing_key: signing_b.clone(),
+            encapsulation_key: encap_b.clone(),
+        });
 
         let snapshot = tokio::time::timeout(Duration::from_secs(1), persisted_a.recv())
             .await
@@ -23,11 +27,11 @@ async fn register_peer_persists_snapshot() {
             .unwrap();
         assert_eq!(
             snapshot,
-            vec![crate::Peer {
+            Some(crate::Peer {
                 peer: peer_b,
                 signing_key: signing_b,
                 encapsulation_key: encap_b,
-            }]
+            })
         );
     })
     .await;
@@ -42,11 +46,11 @@ async fn loaded_peers_can_connect_without_register() {
 
         let (platform_a, outbound_a, status_a, _persisted_a) = PersistPlatform::new(
             1,
-            vec![crate::Peer {
+            Some(crate::Peer {
                 peer: peer_b.xid,
                 signing_key: peer_b.signing_key.clone(),
                 encapsulation_key: peer_b.encapsulation_key.clone(),
-            }],
+            }),
         );
         let peer_a = peer_identity(&platform_a);
 
@@ -59,13 +63,13 @@ async fn loaded_peers_can_connect_without_register() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_b.register_peer(
-            peer_a.xid,
-            peer_a.signing_key.clone(),
-            peer_a.encapsulation_key.clone(),
-        );
+        handle_b.bind_peer(crate::Peer {
+            peer: peer_a.xid,
+            signing_key: peer_a.signing_key.clone(),
+            encapsulation_key: peer_a.encapsulation_key.clone(),
+        });
 
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -79,7 +83,7 @@ async fn pairing_persists_snapshot() {
         let (platform_a, _outbound_a, _status_a) = TestPlatform::new(1);
         let peer_a = peer_identity(&platform_a);
 
-        let (platform_b, _outbound_b, _status_b, persisted_b) = PersistPlatform::new(2, Vec::new());
+        let (platform_b, _outbound_b, _status_b, persisted_b) = PersistPlatform::new(2, None);
         let peer_b = peer_identity(&platform_b);
 
         let pairing_message = pair::build_pair_request(
@@ -104,11 +108,11 @@ async fn pairing_persists_snapshot() {
             .unwrap();
         assert_eq!(
             snapshot,
-            vec![crate::Peer {
+            Some(crate::Peer {
                 peer: peer_a.xid,
                 signing_key: peer_a.signing_key,
                 encapsulation_key: peer_a.encapsulation_key,
-            }]
+            })
         );
     })
     .await;

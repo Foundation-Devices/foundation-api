@@ -70,7 +70,7 @@ async fn rpc_request_response_round_trip() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -102,7 +102,7 @@ async fn rpc_request_response_round_trip() {
         });
 
         let response = rpc_a
-            .request(peer_b.xid, AddOne(41), StreamConfig::default())
+            .request(AddOne(41), StreamConfig::default())
             .await
             .unwrap();
         assert_eq!(response, AddOneResponse(42));
@@ -136,7 +136,7 @@ async fn rpc_request_response_reject_propagates() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -152,7 +152,7 @@ async fn rpc_request_response_reject_propagates() {
         });
 
         let err = rpc_a
-            .request(peer_b.xid, AddOne(1), StreamConfig::default())
+            .request(AddOne(1), StreamConfig::default())
             .await
             .unwrap_err();
         assert!(matches!(
@@ -192,7 +192,7 @@ async fn rpc_request_response_content_length_mismatch_errors() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &peer_a, &peer_b);
-        handle_a.connect(peer_b.xid).unwrap();
+        handle_a.connect().unwrap();
 
         await_status(&status_a, peer_b.xid, PeerStage::Connected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
@@ -214,7 +214,7 @@ async fn rpc_request_response_content_length_mismatch_errors() {
         });
 
         let err = rpc_a
-            .request(peer_b.xid, AddOne(1), StreamConfig::default())
+            .request(AddOne(1), StreamConfig::default())
             .await
             .unwrap_err();
         assert!(matches!(

@@ -21,14 +21,12 @@ pub struct Peer {
 pub enum QlError {
     #[error("invalid payload")]
     InvalidPayload,
-    #[error("invalid handshake role")]
-    InvalidRole,
     #[error("invalid signature")]
     InvalidSignature,
     #[error("missing session for {0}")]
     MissingSession(bc_components::XID),
-    #[error("unknown peer {0}")]
-    UnknownPeer(bc_components::XID),
+    #[error("no peer bound")]
+    NoPeerBound,
     #[error("timeout")]
     Timeout,
     #[error("send failed")]
