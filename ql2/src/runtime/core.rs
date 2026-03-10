@@ -351,7 +351,7 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         };
         if !entry.session.is_connected() {
-            let _ = start.send(Err(QlError::MissingSession(entry.peer)));
+            let _ = start.send(Err(QlError::MissingSession));
             return;
         }
 
@@ -931,10 +931,7 @@ impl<P: QlPlatform> Runtime<P> {
                     | InitiatorAccept::WaitingAccept { accept_waiter, .. } => {
                         if let Some(mut waiter) = accept_waiter.take() {
                             if let Some(tx) = waiter.tx.take() {
-                                let _ = tx.send(Err(QlError::StreamRejected {
-                                    id: stream_id,
-                                    code,
-                                }));
+                                let _ = tx.send(Err(QlError::StreamRejected { code }));
                             }
                         }
                         stream.request.pipe.close();
@@ -1343,7 +1340,6 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn queue_protocol_reset(&self, stream: &mut StreamState) {
-        let id = stream.key().stream_id;
         stream
             .control_mut()
             .pending
@@ -1356,7 +1352,7 @@ impl<P: QlPlatform> Runtime<P> {
             if let Some(inbound) = stream.inbound_mut(dir) {
                 if !inbound.closed {
                     inbound.closed = true;
-                    inbound.pipe.fail(QlError::StreamProtocol { id });
+                    inbound.pipe.fail(QlError::StreamProtocol);
                 }
             }
         }
@@ -1366,7 +1362,7 @@ impl<P: QlPlatform> Runtime<P> {
                 | InitiatorAccept::WaitingAccept { accept_waiter, .. } => {
                     if let Some(mut waiter) = accept_waiter.take() {
                         if let Some(tx) = waiter.tx.take() {
-                            let _ = tx.send(Err(QlError::StreamProtocol { id }));
+                            let _ = tx.send(Err(QlError::StreamProtocol));
                         }
                     }
                 }
@@ -1406,17 +1402,15 @@ impl<P: QlPlatform> Runtime<P> {
     fn apply_remote_reset(
         &self,
         stream: &mut StreamState,
-        stream_id: StreamId,
+        _stream_id: StreamId,
         dir: stream::ResetTarget,
         code: ResetCode,
     ) {
         let request_error = QlError::StreamReset {
-            id: stream_id,
             dir: Direction::Request,
             code,
         };
         let response_error = QlError::StreamReset {
-            id: stream_id,
             dir: Direction::Response,
             code,
         };

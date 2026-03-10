@@ -123,7 +123,7 @@ async fn invalid_unpair_signature_is_ignored() {
         let result = handle_b
             .open_stream(Vec::new(), Default::default())
             .await;
-        assert!(matches!(result, Err(QlError::MissingSession(peer)) if peer == peer_a.xid));
+        assert!(matches!(result, Err(QlError::MissingSession)));
     })
     .await;
 }

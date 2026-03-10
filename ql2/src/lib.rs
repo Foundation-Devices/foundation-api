@@ -23,8 +23,8 @@ pub enum QlError {
     InvalidPayload,
     #[error("invalid signature")]
     InvalidSignature,
-    #[error("missing session for {0}")]
-    MissingSession(bc_components::XID),
+    #[error("missing session")]
+    MissingSession,
     #[error("no peer bound")]
     NoPeerBound,
     #[error("timeout")]
@@ -33,17 +33,15 @@ pub enum QlError {
     SendFailed,
     #[error("stream rejected {code:?}")]
     StreamRejected {
-        id: StreamId,
         code: wire::stream::RejectCode,
     },
     #[error("stream reset {code:?}")]
     StreamReset {
-        id: StreamId,
         dir: wire::stream::Direction,
         code: wire::stream::ResetCode,
     },
     #[error("stream protocol error")]
-    StreamProtocol { id: StreamId },
+    StreamProtocol,
     #[error("cancelled")]
     Cancelled,
 }

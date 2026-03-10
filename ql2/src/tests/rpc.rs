@@ -158,8 +158,7 @@ async fn rpc_request_response_reject_propagates() {
         assert!(matches!(
             err,
             crate::rpc::RpcError::Transport(QlError::StreamRejected {
-                code: RejectCode::UnknownRoute,
-                ..
+                code: RejectCode::UnknownRoute
             })
         ));
 

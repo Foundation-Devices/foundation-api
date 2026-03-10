@@ -397,8 +397,7 @@ async fn reject_surfaces_stream_rejected() {
         assert!(matches!(
             err,
             QlError::StreamRejected {
-                code: RejectCode::UnknownRoute,
-                ..
+                code: RejectCode::UnknownRoute
             }
         ));
     })
@@ -455,8 +454,7 @@ async fn dropping_responder_rejects_unhandled() {
         assert!(matches!(
             err,
             QlError::StreamRejected {
-                code: RejectCode::Unhandled,
-                ..
+                code: RejectCode::Unhandled
             }
         ));
 
@@ -704,13 +702,12 @@ async fn dropping_request_writer_sends_cancel() {
             assert_eq!(request.next_chunk().await.unwrap(), Some(vec![1, 2, 3, 4]));
             let err = request.next_chunk().await.unwrap_err();
             assert!(matches!(
-                err,
-                QlError::StreamReset {
-                    dir: Direction::Request,
-                    code: ResetCode::Cancelled,
-                    ..
-                }
-            ));
+            err,
+            QlError::StreamReset {
+                dir: Direction::Request,
+                code: ResetCode::Cancelled,
+            }
+        ));
             response.finish().await.unwrap();
         });
 
@@ -788,7 +785,6 @@ async fn dropping_response_writer_sends_cancel() {
             QlError::StreamReset {
                 dir: Direction::Response,
                 code: ResetCode::Cancelled,
-                ..
             }
         ));
 
@@ -1192,7 +1188,7 @@ async fn response_data_before_accept_is_protocol_error() {
             .await
             .unwrap()
             .unwrap_err();
-        assert!(matches!(err, QlError::StreamProtocol { .. }));
+        assert!(matches!(err, QlError::StreamProtocol));
 
         tokio::time::timeout(Duration::from_secs(1), responder_task)
             .await
@@ -1266,7 +1262,7 @@ async fn data_offset_gap_is_protocol_error() {
             let mut request = stream.request;
             let response = stream.respond_to.accept(Vec::new()).unwrap();
             let err = request.next_chunk().await.unwrap_err();
-            assert!(matches!(err, QlError::StreamProtocol { .. }));
+            assert!(matches!(err, QlError::StreamProtocol));
             let _ = response.finish().await;
         });
 
@@ -1352,7 +1348,7 @@ async fn data_beyond_credit_is_protocol_error() {
             let mut request = stream.request;
             let response = stream.respond_to.accept(Vec::new()).unwrap();
             let err = request.next_chunk().await.unwrap_err();
-            assert!(matches!(err, QlError::StreamProtocol { .. }));
+            assert!(matches!(err, QlError::StreamProtocol));
             let _ = response.finish().await;
         });
 
@@ -1445,7 +1441,6 @@ async fn credit_regression_is_protocol_error() {
                 QlError::StreamReset {
                     code: ResetCode::Protocol,
                     dir: Direction::Request,
-                    ..
                 }
             ));
             let _ = response.finish().await;
@@ -1517,7 +1512,7 @@ async fn disconnect_during_active_stream_aborts_both_halves() {
                     | Err(QlError::Cancelled)
                     | Err(QlError::SendFailed)
                     | Err(QlError::StreamReset { .. })
-                    | Err(QlError::StreamProtocol { .. })
+                    | Err(QlError::StreamProtocol)
             ));
             handle_b_for_disconnect.unpair().unwrap();
         });
