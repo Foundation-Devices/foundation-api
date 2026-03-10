@@ -1,6 +1,7 @@
 mod id;
 mod pipe;
 pub mod platform;
+pub mod rpc;
 pub mod runtime;
 pub mod wire;
 

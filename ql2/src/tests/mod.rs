@@ -31,6 +31,7 @@ use crate::{
 mod handshake;
 mod heartbeat;
 mod persistence;
+mod rpc;
 mod stream;
 mod unpair;
 
