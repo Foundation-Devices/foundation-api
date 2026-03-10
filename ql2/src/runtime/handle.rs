@@ -6,7 +6,6 @@ use std::{
 
 use async_channel::Sender;
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, XID};
-use futures_lite::future::poll_fn;
 
 use crate::{
     pipe::{self, ReadReady},
@@ -167,7 +166,7 @@ impl InboundByteStream {
         if self.finished {
             return Ok(None);
         }
-        match poll_fn(|cx| self.pipe.poll_ready(cx)).await {
+        match self.pipe.ready().await {
             ReadReady::Data => {
                 let chunk = self.pipe.peek_buf().to_vec();
                 let len = chunk.len();
@@ -243,7 +242,7 @@ impl OutboundByteStream {
 
     pub async fn write(&mut self, bytes: &[u8]) -> Result<usize, QlError> {
         let pipe = self.pipe.as_mut().expect("stream not finished or reset");
-        let written = poll_fn(|cx| pipe.poll_write(cx, bytes)).await?;
+        let written = pipe.write(bytes).await?;
         self.tx
             .try_send(RuntimeCommand::PollStream {
                 peer: self.recipient,

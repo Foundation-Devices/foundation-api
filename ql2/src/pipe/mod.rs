@@ -20,7 +20,7 @@ const PIPE_FAILED_TAKEN: u8 = 3;
 const PIPE_CLOSED: u8 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PipeState {
+pub enum PipeState {
     Open,
     Finished,
     Failed,
@@ -51,7 +51,7 @@ impl PipeState {
     }
 }
 
-pub(crate) fn pipe<E>(cap: usize) -> (PipeReader<E>, PipeWriter<E>) {
+pub fn pipe<E>(cap: usize) -> (PipeReader<E>, PipeWriter<E>) {
     assert!(cap > 0, "pipe capacity must be positive");
 
     let mut storage = Vec::<u8>::with_capacity(cap);
@@ -114,14 +114,14 @@ impl<E> Drop for PipeInner<E> {
     }
 }
 
-pub(crate) struct PipeWriter<E> {
+pub struct PipeWriter<E> {
     inner: Arc<PipeInner<E>>,
     released: u64,
     produced: u64,
     sealed: bool,
 }
 
-pub(crate) struct PipeReader<E> {
+pub struct PipeReader<E> {
     inner: Arc<PipeInner<E>>,
     released: u64,
     produced: u64,
@@ -140,21 +140,21 @@ impl<E> std::fmt::Debug for PipeReader<E> {
     }
 }
 
-pub(crate) struct SendGrant<'a, E> {
+pub struct SendGrant<'a, E> {
     inner: &'a PipeInner<E>,
     offset: u64,
     len: usize,
     position: usize,
 }
 
-pub(crate) enum ReadReady<E> {
+pub enum ReadReady<E> {
     Data,
     Eof,
     Error(E),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PipeClosed;
+pub struct PipeClosed;
 
 impl<E> PipeWriter<E> {
     pub fn try_write(&mut self, src: &[u8]) -> Result<usize, PipeClosed> {
@@ -178,31 +178,8 @@ impl<E> PipeWriter<E> {
         Ok(n)
     }
 
-    pub fn poll_write(
-        &mut self,
-        cx: &mut Context<'_>,
-        src: &[u8],
-    ) -> Poll<Result<usize, PipeClosed>> {
-        if src.is_empty() {
-            return Poll::Ready(Ok(0));
-        }
-        if self.sealed || self.is_closed() {
-            return Poll::Ready(Err(PipeClosed));
-        }
-
-        let n = match self.poll_reserve(cx, src.len()) {
-            Poll::Ready(Ok(n)) => n,
-            Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-            Poll::Pending => return Poll::Pending,
-        };
-
-        unsafe {
-            write_bytes(self.inner.buffer, self.inner.cap, self.produced, &src[..n]);
-        }
-        self.produced = self.produced.saturating_add(n as u64);
-        self.inner.produced.store(self.produced, Ordering::Release);
-        self.inner.readable.wake();
-        Poll::Ready(Ok(n))
+    pub async fn write(&mut self, src: &[u8]) -> Result<usize, PipeClosed> {
+        poll_fn(|cx| self.poll_write(cx, src)).await
     }
 
     pub fn finish(&mut self) {
@@ -246,12 +223,17 @@ impl<E> PipeWriter<E> {
             match current {
                 PipeState::Closed => return,
                 PipeState::Failed => {
-                    if self.inner.state.compare_exchange(
-                        PIPE_FAILED,
-                        PIPE_CLOSED,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ).is_ok() {
+                    if self
+                        .inner
+                        .state
+                        .compare_exchange(
+                            PIPE_FAILED,
+                            PIPE_CLOSED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
                         unsafe {
                             (*self.inner.error.get()).assume_init_drop();
                         }
@@ -262,12 +244,17 @@ impl<E> PipeWriter<E> {
                     }
                 }
                 _ => {
-                    if self.inner.state.compare_exchange(
-                        current.as_u8(),
-                        PIPE_CLOSED,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ).is_ok() {
+                    if self
+                        .inner
+                        .state
+                        .compare_exchange(
+                            current.as_u8(),
+                            PIPE_CLOSED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
                         self.inner.readable.wake();
                         self.inner.writable.wake();
                         self.inner.closed.wake();
@@ -278,7 +265,34 @@ impl<E> PipeWriter<E> {
         }
     }
 
-    pub fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub async fn closed(&mut self) {
+        poll_fn(|cx| self.poll_closed(cx)).await
+    }
+
+    fn poll_write(&mut self, cx: &mut Context<'_>, src: &[u8]) -> Poll<Result<usize, PipeClosed>> {
+        if src.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        if self.sealed || self.is_closed() {
+            return Poll::Ready(Err(PipeClosed));
+        }
+
+        let n = match self.poll_reserve(cx, src.len()) {
+            Poll::Ready(Ok(n)) => n,
+            Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+            Poll::Pending => return Poll::Pending,
+        };
+
+        unsafe {
+            write_bytes(self.inner.buffer, self.inner.cap, self.produced, &src[..n]);
+        }
+        self.produced = self.produced.saturating_add(n as u64);
+        self.inner.produced.store(self.produced, Ordering::Release);
+        self.inner.readable.wake();
+        Poll::Ready(Ok(n))
+    }
+
+    fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if self.is_closed() {
             return Poll::Ready(());
         }
@@ -289,10 +303,6 @@ impl<E> PipeWriter<E> {
         } else {
             Poll::Pending
         }
-    }
-
-    pub async fn closed(&mut self) {
-        poll_fn(|cx| self.poll_closed(cx)).await
     }
 
     fn poll_reserve(
@@ -341,12 +351,12 @@ impl<E> PipeWriter<E> {
     }
 
     #[cfg(test)]
-    pub fn state(&self) -> PipeState {
+    fn state(&self) -> PipeState {
         PipeState::from_u8(self.inner.state.load(Ordering::Acquire))
     }
 
     #[cfg(test)]
-    pub fn is_drained(&self) -> bool {
+    fn is_drained(&self) -> bool {
         self.inner.released.load(Ordering::Acquire) >= self.inner.produced.load(Ordering::Acquire)
     }
 }
@@ -362,53 +372,31 @@ impl<E> Drop for PipeWriter<E> {
 }
 
 impl<E> PipeReader<E> {
-    pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<ReadReady<E>> {
-        self.produced = self.inner.produced.load(Ordering::Acquire);
-        if self.available_data() > 0 {
-            return Poll::Ready(ReadReady::Data);
-        }
-
-        loop {
-            match PipeState::from_u8(self.inner.state.load(Ordering::Acquire)) {
-                PipeState::Open => {
-                    self.inner.readable.register(cx.waker());
-                    self.produced = self.inner.produced.load(Ordering::Acquire);
-                    if self.available_data() > 0 {
-                        self.inner.readable.take();
-                        return Poll::Ready(ReadReady::Data);
-                    }
-                    if PipeState::from_u8(self.inner.state.load(Ordering::Acquire))
-                        == PipeState::Open
-                    {
-                        return Poll::Pending;
-                    }
-                    self.inner.readable.take();
-                }
-                PipeState::Finished | PipeState::Closed => return Poll::Ready(ReadReady::Eof),
-                PipeState::Failed => {
-                    let err = match self.inner.state.compare_exchange(
-                        PIPE_FAILED,
-                        PIPE_FAILED_TAKEN,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ) {
-                        Ok(_) => unsafe { (*self.inner.error.get()).assume_init_read() },
-                        Err(_) => continue,
-                    };
-                    return Poll::Ready(ReadReady::Error(err));
-                }
-                PipeState::FailedTaken => return Poll::Ready(ReadReady::Eof),
-            }
-        }
+    pub async fn ready(&mut self) -> ReadReady<E> {
+        poll_fn(|cx| self.poll_ready(cx)).await
     }
 
     pub fn peek_buf(&self) -> &[u8] {
-        let len = self.available_data().min(self.inner.cap - ((self.released as usize) % self.inner.cap));
-        unsafe { ptr::slice_from_raw_parts(self.inner.buffer.add((self.released as usize) % self.inner.cap), len).as_ref().unwrap() }
+        let len = self
+            .available_data()
+            .min(self.inner.cap - ((self.released as usize) % self.inner.cap));
+        unsafe {
+            ptr::slice_from_raw_parts(
+                self.inner
+                    .buffer
+                    .add((self.released as usize) % self.inner.cap),
+                len,
+            )
+            .as_ref()
+            .unwrap()
+        }
     }
 
     pub fn consume(&mut self, amt: usize) {
-        assert!(amt <= self.available_data(), "cannot consume more bytes than available");
+        assert!(
+            amt <= self.available_data(),
+            "cannot consume more bytes than available"
+        );
         self.released = self.released.saturating_add(amt as u64);
         self.inner.released.store(self.released, Ordering::Release);
         if self.sent < self.released {
@@ -417,7 +405,11 @@ impl<E> PipeReader<E> {
         self.inner.writable.wake();
     }
 
-    pub fn reserve_send(&mut self, remote_max_offset: u64, max_len: usize) -> Option<SendGrant<'_, E>> {
+    pub fn reserve_send(
+        &mut self,
+        remote_max_offset: u64,
+        max_len: usize,
+    ) -> Option<SendGrant<'_, E>> {
         self.produced = self.inner.produced.load(Ordering::Acquire);
         let limit = self.produced.min(remote_max_offset);
         if self.sent >= limit {
@@ -476,12 +468,17 @@ impl<E> PipeReader<E> {
             match PipeState::from_u8(self.inner.state.load(Ordering::Acquire)) {
                 PipeState::Closed => return,
                 PipeState::Failed => {
-                    if self.inner.state.compare_exchange(
-                        PIPE_FAILED,
-                        PIPE_CLOSED,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ).is_ok() {
+                    if self
+                        .inner
+                        .state
+                        .compare_exchange(
+                            PIPE_FAILED,
+                            PIPE_CLOSED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
                         unsafe {
                             (*self.inner.error.get()).assume_init_drop();
                         }
@@ -491,17 +488,62 @@ impl<E> PipeReader<E> {
                     }
                 }
                 current => {
-                    if self.inner.state.compare_exchange(
-                        current.as_u8(),
-                        PIPE_CLOSED,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ).is_ok() {
+                    if self
+                        .inner
+                        .state
+                        .compare_exchange(
+                            current.as_u8(),
+                            PIPE_CLOSED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
                         self.inner.writable.wake();
                         self.inner.closed.wake();
                         return;
                     }
                 }
+            }
+        }
+    }
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<ReadReady<E>> {
+        self.produced = self.inner.produced.load(Ordering::Acquire);
+        if self.available_data() > 0 {
+            return Poll::Ready(ReadReady::Data);
+        }
+
+        loop {
+            match PipeState::from_u8(self.inner.state.load(Ordering::Acquire)) {
+                PipeState::Open => {
+                    self.inner.readable.register(cx.waker());
+                    self.produced = self.inner.produced.load(Ordering::Acquire);
+                    if self.available_data() > 0 {
+                        self.inner.readable.take();
+                        return Poll::Ready(ReadReady::Data);
+                    }
+                    if PipeState::from_u8(self.inner.state.load(Ordering::Acquire))
+                        == PipeState::Open
+                    {
+                        return Poll::Pending;
+                    }
+                    self.inner.readable.take();
+                }
+                PipeState::Finished | PipeState::Closed => return Poll::Ready(ReadReady::Eof),
+                PipeState::Failed => {
+                    let err = match self.inner.state.compare_exchange(
+                        PIPE_FAILED,
+                        PIPE_FAILED_TAKEN,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => unsafe { (*self.inner.error.get()).assume_init_read() },
+                        Err(_) => continue,
+                    };
+                    return Poll::Ready(ReadReady::Error(err));
+                }
+                PipeState::FailedTaken => return Poll::Ready(ReadReady::Eof),
             }
         }
     }
@@ -583,7 +625,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn pipe_writes_reads_and_releases() {
         let (mut reader, mut writer) = pipe::<Infallible>(8);
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(), 4);
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(),
+            4
+        );
 
         let mut send = reader.reserve_send(8, 8).unwrap();
         assert_eq!(send.offset(), 0);
@@ -604,7 +649,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn pipe_blocks_until_released() {
         let (mut reader, mut writer) = pipe::<Infallible>(4);
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(), 4);
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(),
+            4
+        );
 
         let mut blocked = false;
         let poll = poll_fn(|cx| match writer.poll_write(cx, b"e") {
@@ -643,14 +691,24 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn pipe_wraparound_reads_correctly() {
         let (mut reader, mut writer) = pipe::<Infallible>(8);
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"abcdef")).await.unwrap(), 6);
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"abcdef"))
+                .await
+                .unwrap(),
+            6
+        );
         let mut send = reader.reserve_send(8, 6).unwrap();
         let mut bytes = vec![0; send.len()];
         send.read_exact(&mut bytes).unwrap();
         assert_eq!(bytes, b"abcdef");
         reader.release_to(6);
 
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"ghijkl")).await.unwrap(), 6);
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"ghijkl"))
+                .await
+                .unwrap(),
+            6
+        );
         let mut send = reader.reserve_send(12, 6).unwrap();
         let mut bytes = vec![0; send.len()];
         send.read_exact(&mut bytes).unwrap();
@@ -660,7 +718,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn closing_reader_wakes_writer() {
         let (mut reader, mut writer) = pipe::<Infallible>(4);
-        assert_eq!(poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(), 4);
+        assert_eq!(
+            poll_fn(|cx| writer.poll_write(cx, b"abcd")).await.unwrap(),
+            4
+        );
         reader.close();
         assert_eq!(reader.state(), PipeState::Closed);
         let err = poll_fn(|cx| writer.poll_write(cx, b"e")).await.unwrap_err();
@@ -673,10 +734,16 @@ mod tests {
         poll_fn(|cx| writer.poll_write(cx, b"abc")).await.unwrap();
         writer.finish();
 
-        assert!(matches!(poll_fn(|cx| reader.poll_ready(cx)).await, ReadReady::Data));
+        assert!(matches!(
+            poll_fn(|cx| reader.poll_ready(cx)).await,
+            ReadReady::Data
+        ));
         assert_eq!(reader.peek_buf(), b"abc");
         reader.consume(3);
-        assert!(matches!(poll_fn(|cx| reader.poll_ready(cx)).await, ReadReady::Eof));
+        assert!(matches!(
+            poll_fn(|cx| reader.poll_ready(cx)).await,
+            ReadReady::Eof
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -685,7 +752,10 @@ mod tests {
         poll_fn(|cx| writer.poll_write(cx, b"abc")).await.unwrap();
         writer.fail("boom");
 
-        assert!(matches!(poll_fn(|cx| reader.poll_ready(cx)).await, ReadReady::Data));
+        assert!(matches!(
+            poll_fn(|cx| reader.poll_ready(cx)).await,
+            ReadReady::Data
+        ));
         assert_eq!(reader.peek_buf(), b"abc");
         reader.consume(3);
         match poll_fn(|cx| reader.poll_ready(cx)).await {
