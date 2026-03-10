@@ -30,6 +30,20 @@ pub enum StreamFrame {
     Reset(StreamFrameReset),
 }
 
+impl StreamFrame {
+    pub fn stream_id(&self) -> StreamId {
+        match self {
+            StreamFrame::Open(StreamFrameOpen { stream_id, .. })
+            | StreamFrame::Accept(StreamFrameAccept { stream_id, .. })
+            | StreamFrame::Reject(StreamFrameReject { stream_id, .. })
+            | StreamFrame::Data(StreamFrameData { stream_id, .. })
+            | StreamFrame::Credit(StreamFrameCredit { stream_id, .. })
+            | StreamFrame::Finish(StreamFrameFinish { stream_id, .. })
+            | StreamFrame::Reset(StreamFrameReset { stream_id, .. }) => *stream_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrameOpen {
     pub stream_id: StreamId,

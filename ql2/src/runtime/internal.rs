@@ -347,13 +347,11 @@ pub enum ResponderResponse {
         initial_credit: u64,
     },
     Accepted {
-        response_head: Vec<u8>,
         initial_credit: u64,
         body: OutboundBody,
         acked: bool,
     },
     Rejecting {
-        code: RejectCode,
         initial_credit: u64,
     },
 }
@@ -742,18 +740,15 @@ mod tests {
         let (_response_reader, response_writer) = pipe::pipe(8);
         request_writer.finish();
 
-        let mut state = StreamState::Initiator(InitiatorState::Open(
-            crate::runtime::internal::InitiatorOpen {
-                meta: AcceptedMeta {
-                    stream: stream_meta(),
-                    response_head: Vec::new(),
-                    response_initial_credit: 0,
-                },
-                control: StreamControl::new(),
-                request: OutboundBody::new(Direction::Request, request_reader, 0, true),
-                response: InboundBody::new(Direction::Response, response_writer, 8),
+        let mut state = StreamState::Initiator(InitiatorStream {
+            meta: stream_meta(),
+            control: StreamControl::new(),
+            request: OutboundBody::new(Direction::Request, request_reader, 0, true),
+            response: InboundBody::new(Direction::Response, response_writer, 8),
+            accept: InitiatorAccept::Open {
+                response_head: Vec::new(),
             },
-        ));
+        });
 
         if let Some(outbound) = state.outbound_mut(Direction::Request) {
             outbound.closed = true;
@@ -768,11 +763,12 @@ mod tests {
 
     #[test]
     fn rejecting_stream_reaps_once_control_is_idle() {
-        let state = StreamState::Responder(ResponderState::Rejecting(ResponderRejecting {
+        let state = StreamState::Responder(ResponderStream {
             meta: stream_meta(),
             control: StreamControl::new(),
-            response_initial_credit: 8,
-        }));
+            request: InboundBody::new(Direction::Request, pipe::pipe(8).1, 8),
+            response: ResponderResponse::Rejecting { initial_credit: 8 },
+        });
         assert!(state.can_reap());
     }
 }

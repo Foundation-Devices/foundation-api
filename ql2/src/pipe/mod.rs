@@ -340,10 +340,12 @@ impl<E> PipeWriter<E> {
         PipeState::from_u8(self.inner.state.load(Ordering::Acquire)) == PipeState::Closed
     }
 
+    #[cfg(test)]
     pub fn state(&self) -> PipeState {
         PipeState::from_u8(self.inner.state.load(Ordering::Acquire))
     }
 
+    #[cfg(test)]
     pub fn is_drained(&self) -> bool {
         self.inner.released.load(Ordering::Acquire) >= self.inner.produced.load(Ordering::Acquire)
     }
@@ -508,6 +510,7 @@ impl<E> PipeReader<E> {
         self.produced.saturating_sub(self.released) as usize
     }
 
+    #[cfg(test)]
     pub fn state(&self) -> PipeState {
         PipeState::from_u8(self.inner.state.load(Ordering::Acquire))
     }

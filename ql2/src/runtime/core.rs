@@ -444,7 +444,6 @@ impl<P: QlPlatform> Runtime<P> {
         stream.control.pending.set_setup(SetupFrame::Accept(frame));
         stream.request.max_offset = self.config.initial_credit;
         stream.response = ResponderResponse::Accepted {
-            response_head,
             initial_credit,
             body: OutboundBody::new(Direction::Response, response_pipe, initial_credit, false),
             acked: false,
@@ -474,7 +473,6 @@ impl<P: QlPlatform> Runtime<P> {
             .pending
             .set_setup(SetupFrame::Reject(StreamFrameReject { stream_id, code }));
         stream.response = ResponderResponse::Rejecting {
-            code,
             initial_credit,
         };
         stream.meta.last_activity = Instant::now();
@@ -501,6 +499,7 @@ impl<P: QlPlatform> Runtime<P> {
         }
         inbound.max_offset = inbound.max_offset.saturating_add(amount);
         inbound.credit_dirty = true;
+        self.queue_credit(stream, dir);
         *stream.last_activity_mut() = Instant::now();
         self.drive_stream(state, sender, stream_id);
     }
@@ -857,9 +856,9 @@ impl<P: QlPlatform> Runtime<P> {
     ) {
         let key = (peer, stream_id);
         let mut protocol = false;
-        let mut should_drive = false;
         {
-            let Some(stream) = state.streams.get_mut(&key) else {
+            let (streams, core) = (&mut state.streams, &mut state.core);
+            let Some(stream) = streams.get_mut(&key) else {
                 return;
             };
             match stream {
@@ -899,7 +898,12 @@ impl<P: QlPlatform> Runtime<P> {
                         }
                         stream.accept = InitiatorAccept::Open { response_head };
                         stream.meta.last_activity = Instant::now();
-                        should_drive = true;
+                        self.drive_outbound(
+                            core,
+                            stream.meta.key,
+                            &mut stream.control,
+                            Some(&mut stream.request),
+                        );
                     }
                     InitiatorAccept::WaitingAccept { accept_waiter, .. } => {
                         stream.request.remote_max_offset = request_max_offset;
@@ -926,7 +930,12 @@ impl<P: QlPlatform> Runtime<P> {
                         }
                         stream.accept = InitiatorAccept::Open { response_head };
                         stream.meta.last_activity = Instant::now();
-                        should_drive = true;
+                        self.drive_outbound(
+                            core,
+                            stream.meta.key,
+                            &mut stream.control,
+                            Some(&mut stream.request),
+                        );
                     }
                     InitiatorAccept::Open {
                         response_head: existing,
@@ -952,12 +961,6 @@ impl<P: QlPlatform> Runtime<P> {
                 stream::ResetTarget::Both,
                 ResetCode::Protocol,
             );
-        }
-        if should_drive {
-            let (streams, core) = (&mut state.streams, &mut state.core);
-            if let Some(stream) = streams.get_mut(&key) {
-                self.drive_current_stream(core, stream);
-            }
         }
     }
 
@@ -1237,68 +1240,81 @@ impl<P: QlPlatform> Runtime<P> {
     }
 
     fn drive_stream(&self, state: &mut RuntimeState, peer: XID, stream_id: StreamId) {
-        let key = (peer, stream_id);
         let (streams, core) = (&mut state.streams, &mut state.core);
-        let Some(stream) = streams.get_mut(&key) else {
+        let Some(stream) = streams.get_mut(&(peer, stream_id)) else {
             return;
         };
+        match stream {
+            StreamState::Initiator(stream) => {
+                self.drive_outbound(core, stream.meta.key, &mut stream.control, Some(&mut stream.request));
+            }
+            StreamState::Responder(stream) => {
+                let key = stream.meta.key;
+                match &mut stream.response {
+                    ResponderResponse::Accepted { body, .. } => {
+                        self.drive_outbound(core, key, &mut stream.control, Some(body));
+                    }
+                    _ => self.drive_outbound(core, key, &mut stream.control, None),
+                }
+            }
+        }
+    }
 
+    fn drive_outbound(
+        &self,
+        core: &mut CoreState,
+        key: crate::runtime::internal::StreamKey,
+        control: &mut StreamControl,
+        outbound: Option<&mut OutboundBody>,
+    ) {
+        let stream_id = key.stream_id;
         let mut next_control = None;
         let mut next_data = None;
-        {
-            if stream.control().awaiting.is_none() {
-                if let Some(frame) = stream.control_mut().pending.take_next_control(stream_id) {
-                    next_control = Some(frame);
-                } else {
-                    for dir in [Direction::Request, Direction::Response] {
-                        let Some(outbound) = stream.outbound_mut(dir) else {
-                            continue;
-                        };
-                        if !outbound.data_enabled || outbound.closed {
-                            continue;
-                        }
-                        if let Some(mut send) = outbound
-                            .pipe
-                            .reserve_send(outbound.remote_max_offset, self.config.max_payload_bytes)
-                        {
-                            let mut bytes = vec![0; send.len()];
-                            send.read_exact(&mut bytes).expect("grant length is exact");
-                            next_data = Some((outbound.dir, send.offset(), bytes));
-                        } else if outbound.pipe.writer_finished() && outbound.pipe.all_sent() {
-                            outbound.closed = true;
-                            next_control = Some(StreamFrame::Finish(StreamFrameFinish {
-                                stream_id,
-                                dir: outbound.dir,
-                            }));
-                        }
-                        break;
+        if control.awaiting.is_none() {
+            if let Some(frame) = control.pending.take_next_control(stream_id) {
+                next_control = Some(frame);
+            } else if let Some(outbound) = outbound {
+                if outbound.data_enabled && !outbound.closed {
+                    if let Some(mut send) = outbound
+                        .pipe
+                        .reserve_send(outbound.remote_max_offset, self.config.max_payload_bytes)
+                    {
+                        let mut bytes = vec![0; send.len()];
+                        send.read_exact(&mut bytes).expect("grant length is exact");
+                        next_data = Some((outbound.dir, send.offset(), bytes));
+                    } else if outbound.pipe.writer_finished() && outbound.pipe.all_sent() {
+                        outbound.closed = true;
+                        next_control = Some(StreamFrame::Finish(StreamFrameFinish {
+                            stream_id,
+                            dir: outbound.dir,
+                        }));
                     }
                 }
             }
         }
 
         if let Some(frame) = next_control {
-            self.send_control_frame(core, stream, frame, 0);
+            self.send_control_frame(core, key, control, frame, 0);
         } else if let Some((dir, offset, bytes)) = next_data {
-            self.send_data_frame(core, stream, dir, offset, bytes, 0);
+            self.send_data_frame(core, key, control, dir, offset, bytes, 0);
         }
     }
 
     fn send_control_frame(
         &self,
         core: &mut CoreState,
-        stream: &mut StreamState,
+        key: crate::runtime::internal::StreamKey,
+        control: &mut StreamControl,
         frame: StreamFrame,
         attempt: u8,
     ) {
         let packet_id = core.next_packet_id();
-        stream.control_mut().awaiting = Some(AwaitingPacket {
+        control.awaiting = Some(AwaitingPacket {
             packet_id,
             frame: AwaitingFrame::Control(frame.clone()),
             attempt,
         });
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
-        let key = stream.key();
         self.enqueue_stream_body(
             core,
             key.peer,
@@ -1318,17 +1334,15 @@ impl<P: QlPlatform> Runtime<P> {
     fn send_data_frame(
         &self,
         core: &mut CoreState,
-        stream: &mut StreamState,
+        key: crate::runtime::internal::StreamKey,
+        control: &mut StreamControl,
         dir: Direction,
         offset: u64,
         bytes: Vec<u8>,
         attempt: u8,
     ) {
         let packet_id = core.next_packet_id();
-        let Some(_) = stream.outbound_mut(dir) else {
-            return;
-        };
-        stream.control_mut().awaiting = Some(AwaitingPacket {
+        control.awaiting = Some(AwaitingPacket {
             packet_id,
             frame: AwaitingFrame::Data {
                 dir,
@@ -1338,7 +1352,6 @@ impl<P: QlPlatform> Runtime<P> {
             attempt,
         });
         let valid_until = now_secs().saturating_add(self.config.packet_expiration.as_secs());
-        let key = stream.key();
         self.enqueue_stream_body(
             core,
             key.peer,
@@ -2186,28 +2199,36 @@ impl<P: QlPlatform> Runtime<P> {
                         } else {
                             match retransmit {
                                 Retransmit::Control(frame) => {
+                                    let key = stream.key();
                                     self.send_control_frame(
                                         core,
-                                        stream,
+                                        key,
+                                        stream.control_mut(),
                                         frame,
                                         attempt.saturating_add(1),
                                     );
                                 }
                                 Retransmit::Data { dir, offset, len } => {
-                                    let Some(outbound) = stream.outbound_mut(dir) else {
+                                    let key = stream.key();
+                                    let Some(bytes) = (match stream.outbound_mut(dir) {
+                                        Some(outbound) => match outbound.pipe.retry_send(offset, len) {
+                                            Some(mut grant) => {
+                                                let mut bytes = vec![0; grant.len()];
+                                                grant
+                                                    .read_exact(&mut bytes)
+                                                    .expect("grant length is exact");
+                                                Some(bytes)
+                                            }
+                                            None => None,
+                                        },
+                                        None => None,
+                                    }) else {
                                         continue;
                                     };
-                                    let Some(mut grant) = outbound.pipe.retry_send(offset, len)
-                                    else {
-                                        // TODO: If a later `Credit` advanced past this range, the
-                                        // bytes are already semantically acked and won't be retried.
-                                        continue;
-                                    };
-                                    let mut bytes = vec![0; grant.len()];
-                                    grant.read_exact(&mut bytes).expect("grant length is exact");
                                     self.send_data_frame(
                                         core,
-                                        stream,
+                                        key,
+                                        stream.control_mut(),
                                         dir,
                                         offset,
                                         bytes,
@@ -2279,24 +2300,6 @@ impl<P: QlPlatform> Runtime<P> {
                     },
                 }));
             }
-        }
-    }
-}
-
-trait FrameExt {
-    fn stream_id(&self) -> StreamId;
-}
-
-impl FrameExt for StreamFrame {
-    fn stream_id(&self) -> StreamId {
-        match self {
-            StreamFrame::Open(StreamFrameOpen { stream_id, .. })
-            | StreamFrame::Accept(StreamFrameAccept { stream_id, .. })
-            | StreamFrame::Reject(StreamFrameReject { stream_id, .. })
-            | StreamFrame::Data(StreamFrameData { stream_id, .. })
-            | StreamFrame::Credit(StreamFrameCredit { stream_id, .. })
-            | StreamFrame::Finish(StreamFrameFinish { stream_id, .. })
-            | StreamFrame::Reset(StreamFrameReset { stream_id, .. }) => *stream_id,
         }
     }
 }

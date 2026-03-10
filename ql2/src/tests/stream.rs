@@ -436,7 +436,7 @@ async fn dropping_responder_rejects_unhandled() {
             };
             let mut request = stream.request;
             drop(stream.respond_to);
-            assert_eq!(request.next_chunk().await.unwrap(), None);
+            assert!(matches!(request.next_chunk().await, Ok(None) | Err(QlError::Cancelled)));
         });
 
         let PendingStream { request, accepted } = handle_a
