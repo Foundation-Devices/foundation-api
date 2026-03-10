@@ -273,6 +273,9 @@ pub struct OutboundBody {
     pub pipe: pipe::PipeReader<QlError>,
     pub remote_max_offset: u64,
     pub data_enabled: bool,
+    /// Tracks terminal inbound transition for this stream half.
+    /// Separate from the pipe state because the pipe can be locally closed before the
+    /// runtime has finished scheduling the matching `Finish` or `Reset` frame.
     pub closed: bool,
 }
 
@@ -297,17 +300,18 @@ pub struct InboundBody {
     pub pipe: pipe::PipeWriter<QlError>,
     pub next_offset: u64,
     pub max_offset: u64,
-    pub credit_dirty: bool,
+    /// Tracks terminal inbound transition for this stream half.
+    /// Separate from the pipe state because the pipe can be locally closed
+    /// first, and the runtime still needs to emit or suppress the corresponding protocol action.
     pub closed: bool,
 }
 
 impl InboundBody {
-    pub fn new(_dir: Direction, pipe: pipe::PipeWriter<QlError>, max_offset: u64) -> Self {
+    pub fn new(pipe: pipe::PipeWriter<QlError>, max_offset: u64) -> Self {
         Self {
             pipe,
             next_offset: 0,
             max_offset,
-            credit_dirty: false,
             closed: false,
         }
     }
@@ -349,7 +353,6 @@ pub enum ResponderResponse {
     Accepted {
         initial_credit: u64,
         body: OutboundBody,
-        acked: bool,
     },
     Rejecting {
         initial_credit: u64,
@@ -744,7 +747,7 @@ mod tests {
             meta: stream_meta(),
             control: StreamControl::new(),
             request: OutboundBody::new(Direction::Request, request_reader, 0, true),
-            response: InboundBody::new(Direction::Response, response_writer, 8),
+            response: InboundBody::new(response_writer, 8),
             accept: InitiatorAccept::Open {
                 response_head: Vec::new(),
             },
@@ -766,7 +769,7 @@ mod tests {
         let state = StreamState::Responder(ResponderStream {
             meta: stream_meta(),
             control: StreamControl::new(),
-            request: InboundBody::new(Direction::Request, pipe::pipe(8).1, 8),
+            request: InboundBody::new(pipe::pipe(8).1, 8),
             response: ResponderResponse::Rejecting { initial_credit: 8 },
         });
         assert!(state.can_reap());

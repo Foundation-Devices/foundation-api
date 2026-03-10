@@ -395,11 +395,7 @@ impl<P: QlPlatform> Runtime<P> {
             },
             control,
             request: OutboundBody::new(Direction::Request, request_pipe, 0, false),
-            response: InboundBody::new(
-                Direction::Response,
-                response_writer,
-                self.config.initial_credit,
-            ),
+            response: InboundBody::new(response_writer, self.config.initial_credit),
             accept: InitiatorAccept::Opening {
                 accept_waiter: Some(PendingAcceptTx {
                     tx: Some(accepted),
@@ -446,7 +442,6 @@ impl<P: QlPlatform> Runtime<P> {
         stream.response = ResponderResponse::Accepted {
             initial_credit,
             body: OutboundBody::new(Direction::Response, response_pipe, initial_credit, false),
-            acked: false,
         };
         stream.meta.last_activity = Instant::now();
         self.drive_stream(state, recipient, stream_id);
@@ -498,7 +493,6 @@ impl<P: QlPlatform> Runtime<P> {
             return;
         }
         inbound.max_offset = inbound.max_offset.saturating_add(amount);
-        inbound.credit_dirty = true;
         self.queue_credit(stream, dir);
         *stream.last_activity_mut() = Instant::now();
         self.drive_stream(state, sender, stream_id);
@@ -822,7 +816,7 @@ impl<P: QlPlatform> Runtime<P> {
                 last_activity: Instant::now(),
             },
             control: StreamControl::new(),
-            request: InboundBody::new(Direction::Request, request_writer, 0),
+            request: InboundBody::new(request_writer, 0),
             response: ResponderResponse::Pending {
                 initial_credit: response_max_offset,
             },
@@ -1203,8 +1197,7 @@ impl<P: QlPlatform> Runtime<P> {
             }
             AwaitingFrame::Control(StreamFrame::Accept(_)) => {
                 if let StreamState::Responder(stream) = stream {
-                    if let ResponderResponse::Accepted { body, acked, .. } = &mut stream.response {
-                        *acked = true;
+                    if let ResponderResponse::Accepted { body, .. } = &mut stream.response {
                         body.data_enabled = true;
                     }
                 }
@@ -1393,7 +1386,6 @@ impl<P: QlPlatform> Runtime<P> {
             let Some(inbound) = stream.inbound_mut(dir) else {
                 return;
             };
-            inbound.credit_dirty = false;
             (inbound.next_offset, inbound.max_offset)
         };
         stream.control_mut().pending.set_credit(StreamFrameCredit {
@@ -1448,8 +1440,7 @@ impl<P: QlPlatform> Runtime<P> {
                 Some(AwaitingFrame::Control(StreamFrame::Accept(_)))
             ) {
                 stream.control.awaiting = None;
-                if let ResponderResponse::Accepted { body, acked, .. } = &mut stream.response {
-                    *acked = true;
+                if let ResponderResponse::Accepted { body, .. } = &mut stream.response {
                     body.data_enabled = true;
                 }
             }
