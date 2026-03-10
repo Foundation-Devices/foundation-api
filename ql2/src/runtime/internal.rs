@@ -19,7 +19,7 @@ use crate::{
             StreamFrameReset,
         },
     },
-    PacketId, Peer, QlError, RouteId, StreamId,
+    PacketId, Peer, QlError, StreamId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -170,7 +170,6 @@ pub struct StreamKey {
 #[derive(Debug)]
 pub struct StreamMeta {
     pub key: StreamKey,
-    pub route_id: RouteId,
     pub request_head: Vec<u8>,
     pub last_activity: Instant,
 }
@@ -460,7 +459,6 @@ pub(crate) enum RuntimeCommand {
     },
     OpenStream {
         recipient: XID,
-        route_id: RouteId,
         request_head: Vec<u8>,
         request_pipe: pipe::PipeReader<QlError>,
         accepted: oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>,
@@ -731,7 +729,6 @@ mod tests {
     fn stream_meta() -> StreamMeta {
         StreamMeta {
             key: stream_key(),
-            route_id: RouteId(9),
             request_head: vec![1, 2, 3],
             last_activity: Instant::now(),
         }

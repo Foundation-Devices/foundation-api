@@ -1,7 +1,7 @@
 use dcbor::CBOR;
 
 use super::take_fields;
-use crate::{PacketId, RouteId, StreamId};
+use crate::{PacketId, StreamId};
 
 mod crypto;
 pub use crypto::*;
@@ -47,7 +47,6 @@ impl StreamFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrameOpen {
     pub stream_id: StreamId,
-    pub route_id: RouteId,
     pub request_head: Vec<u8>,
     pub response_max_offset: u64,
 }
@@ -179,13 +178,11 @@ impl From<StreamFrame> for CBOR {
         match value {
             StreamFrame::Open(StreamFrameOpen {
                 stream_id,
-                route_id,
                 request_head,
                 response_max_offset,
             }) => CBOR::from(vec![
                 CBOR::from(1u8),
                 CBOR::from(stream_id),
-                CBOR::from(route_id),
                 CBOR::from(request_head),
                 CBOR::from(response_max_offset),
             ]),
@@ -258,10 +255,9 @@ impl TryFrom<CBOR> for StreamFrame {
             .try_into()?;
         match tag {
             1 => {
-                let [stream_id, route_id, request_head, response_max_offset] = take_fields(iter)?;
+                let [stream_id, request_head, response_max_offset] = take_fields(iter)?;
                 Ok(Self::Open(StreamFrameOpen {
                     stream_id: stream_id.try_into()?,
-                    route_id: route_id.try_into()?,
                     request_head: request_head.try_into()?,
                     response_max_offset: response_max_offset.try_into()?,
                 }))

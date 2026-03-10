@@ -6,7 +6,6 @@ use crate::{
     wire::stream::{
         Direction, RejectCode, ResetCode, StreamFrame, StreamFrameCredit, StreamFrameData,
     },
-    RouteId,
 };
 
 #[tokio::test(flavor = "current_thread")]
@@ -41,7 +40,6 @@ async fn duplex_stream_round_trip() {
             let stream = match inbound_b.recv().await.unwrap() {
                 HandlerEvent::Stream(stream) => stream,
             };
-            assert_eq!(stream.route_id, RouteId(11));
             assert_eq!(stream.request_head, b"req-head".to_vec());
 
             let mut request = stream.request;
@@ -56,12 +54,7 @@ async fn duplex_stream_round_trip() {
         });
 
         let pending = handle_a
-            .open_stream(
-                peer_b.xid,
-                RouteId(11),
-                b"req-head".to_vec(),
-                StreamConfig::default(),
-            )
+            .open_stream(peer_b.xid, b"req-head".to_vec(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream {
@@ -128,7 +121,7 @@ async fn duplicate_open_is_idempotent() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, RouteId(12), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream { request, accepted } = pending;
@@ -184,7 +177,7 @@ async fn duplicate_accept_is_idempotent() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, RouteId(13), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream { request, accepted } = pending;
@@ -241,7 +234,7 @@ async fn replayed_open_packet_is_ignored() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, RouteId(14), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream { request, accepted } = pending;
@@ -298,7 +291,7 @@ async fn request_reset_can_keep_response_alive() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, RouteId(15), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let PendingStream {
@@ -350,7 +343,7 @@ async fn open_timeout_returns_error() {
         await_status(&status_b, peer_a.xid, PeerStage::Connected).await;
 
         let pending = handle_a
-            .open_stream(peer_b.xid, RouteId(16), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
 
@@ -397,7 +390,7 @@ async fn reject_surfaces_stream_rejected() {
         });
 
         let pending = handle_a
-            .open_stream(peer_b.xid, RouteId(17), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let err = pending.accepted.await.unwrap_err();
@@ -450,7 +443,7 @@ async fn dropping_responder_rejects_unhandled() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, RouteId(18), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -524,7 +517,7 @@ async fn request_larger_than_ring_buffer_streams_with_backpressure() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, RouteId(19), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&payload).await.unwrap();
@@ -593,7 +586,7 @@ async fn response_larger_than_ring_buffer_streams_with_backpressure() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, RouteId(20), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -660,7 +653,7 @@ async fn dropping_pending_accept_cancels_response_side() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, RouteId(21), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         drop(accepted);
@@ -725,7 +718,7 @@ async fn dropping_request_writer_sends_cancel() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, RouteId(22), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&[1, 2, 3, 4]).await.unwrap();
@@ -780,7 +773,7 @@ async fn dropping_response_writer_sends_cancel() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, RouteId(23), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -850,7 +843,7 @@ async fn dropping_request_reader_sends_cancel() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, RouteId(24), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&[1, 2, 3, 4]).await.unwrap();
@@ -914,7 +907,7 @@ async fn dropping_response_reader_sends_cancel() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, RouteId(25), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -967,7 +960,7 @@ async fn empty_request_finishes_cleanly() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, RouteId(26), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -1026,7 +1019,7 @@ async fn empty_response_finishes_cleanly() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, RouteId(27), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&[1]).await.unwrap();
@@ -1095,7 +1088,7 @@ async fn stream_survives_every_third_packet_drop() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, RouteId(28), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&request_payload).await.unwrap();
@@ -1191,7 +1184,7 @@ async fn response_data_before_accept_is_protocol_error() {
         });
 
         let PendingStream { request, accepted } = handle_a
-            .open_stream(peer_b.xid, RouteId(34), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.finish().await.unwrap();
@@ -1281,7 +1274,7 @@ async fn data_offset_gap_is_protocol_error() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, RouteId(35), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let _accepted = accepted.await.unwrap();
@@ -1367,7 +1360,7 @@ async fn data_beyond_credit_is_protocol_error() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, RouteId(36), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let _accepted = accepted.await.unwrap();
@@ -1462,7 +1455,7 @@ async fn credit_regression_is_protocol_error() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, RouteId(37), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         let mut accepted = accepted.await.unwrap();
@@ -1533,7 +1526,7 @@ async fn disconnect_during_active_stream_aborts_both_halves() {
             mut request,
             accepted,
         } = handle_a
-            .open_stream(peer_b.xid, RouteId(38), Vec::new(), StreamConfig::default())
+            .open_stream(peer_b.xid, Vec::new(), StreamConfig::default())
             .await
             .unwrap();
         request.write_all(&[1, 2, 3, 4]).await.unwrap();

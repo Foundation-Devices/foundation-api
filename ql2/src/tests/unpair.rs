@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use super::*;
-use crate::RouteId;
 
 #[tokio::test(flavor = "current_thread")]
 async fn connected_unpair_removes_peer_on_both_sides() {
@@ -33,12 +32,12 @@ async fn connected_unpair_removes_peer_on_both_sides() {
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
         let result_a = handle_a
-            .open_stream(peer_b.xid, RouteId(90), Vec::new(), Default::default())
+            .open_stream(peer_b.xid, Vec::new(), Default::default())
             .await;
         assert!(matches!(result_a, Err(QlError::UnknownPeer(peer)) if peer == peer_b.xid));
 
         let result_b = handle_b
-            .open_stream(peer_a.xid, RouteId(91), Vec::new(), Default::default())
+            .open_stream(peer_a.xid, Vec::new(), Default::default())
             .await;
         assert!(matches!(result_b, Err(QlError::UnknownPeer(peer)) if peer == peer_a.xid));
     })
@@ -74,12 +73,12 @@ async fn unpair_works_without_session() {
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
         let result_a = handle_a
-            .open_stream(peer_b.xid, RouteId(92), Vec::new(), Default::default())
+            .open_stream(peer_b.xid, Vec::new(), Default::default())
             .await;
         assert!(matches!(result_a, Err(QlError::UnknownPeer(peer)) if peer == peer_b.xid));
 
         let result_b = handle_b
-            .open_stream(peer_a.xid, RouteId(93), Vec::new(), Default::default())
+            .open_stream(peer_a.xid, Vec::new(), Default::default())
             .await;
         assert!(matches!(result_b, Err(QlError::UnknownPeer(peer)) if peer == peer_a.xid));
     })
@@ -122,7 +121,7 @@ async fn invalid_unpair_signature_is_ignored() {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let result = handle_b
-            .open_stream(peer_a.xid, RouteId(94), Vec::new(), Default::default())
+            .open_stream(peer_a.xid, Vec::new(), Default::default())
             .await;
         assert!(matches!(result, Err(QlError::MissingSession(peer)) if peer == peer_a.xid));
     })

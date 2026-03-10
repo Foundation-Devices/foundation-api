@@ -32,4 +32,3 @@ macro_rules! define_id {
 define_id!(MessageId);
 define_id!(PacketId);
 define_id!(StreamId);
-define_id!(RouteId);

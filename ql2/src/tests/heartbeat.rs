@@ -1,7 +1,6 @@
 use bc_components::SymmetricKey;
 
 use super::*;
-use crate::RouteId;
 
 #[tokio::test(flavor = "current_thread")]
 async fn heartbeat_ignored_without_session() {
@@ -197,7 +196,7 @@ async fn any_stream_clears_pending() {
         });
 
         let pending = handle_b
-            .open_stream(peer_a.xid, RouteId(99), Vec::new(), Default::default())
+            .open_stream(peer_a.xid, Vec::new(), Default::default())
             .await
             .unwrap();
         pending.request.finish().await.unwrap();
@@ -264,7 +263,7 @@ async fn heartbeat_timeout_disconnects_and_drops_outbound() {
         drop_flag.store(true, Ordering::Relaxed);
 
         let pending = handle_a
-            .open_stream(peer_b.xid, RouteId(9), Vec::new(), Default::default())
+            .open_stream(peer_b.xid, Vec::new(), Default::default())
             .await
             .unwrap();
 
@@ -508,11 +507,11 @@ async fn multi_peer_disconnect_drops_outbound_for_one() {
         drop_b_to_a.store(true, Ordering::Relaxed);
 
         let pending_b = handle_a
-            .open_stream(peer_b.xid, RouteId(10), Vec::new(), Default::default())
+            .open_stream(peer_b.xid, Vec::new(), Default::default())
             .await
             .unwrap();
         let pending_c = handle_a
-            .open_stream(peer_c.xid, RouteId(11), Vec::new(), Default::default())
+            .open_stream(peer_c.xid, Vec::new(), Default::default())
             .await
             .unwrap();
 
@@ -595,7 +594,7 @@ async fn multi_peer_activity_is_per_peer() {
         });
 
         let pending = handle_b
-            .open_stream(peer_a.xid, RouteId(99), Vec::new(), Default::default())
+            .open_stream(peer_a.xid, Vec::new(), Default::default())
             .await
             .unwrap();
         pending.request.finish().await.unwrap();

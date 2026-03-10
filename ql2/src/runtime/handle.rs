@@ -14,7 +14,7 @@ use crate::{
         AcceptedStreamDelivery, StreamConfig,
     },
     wire::stream::{Direction, RejectCode, ResetCode},
-    QlError, RouteId, StreamId,
+    QlError, StreamId,
 };
 
 #[derive(Clone)]
@@ -39,7 +39,6 @@ pub struct AcceptedStream {
 pub struct InboundStream {
     pub sender: XID,
     pub recipient: XID,
-    pub route_id: RouteId,
     pub stream_id: StreamId,
     pub request_head: Vec<u8>,
     pub request: InboundByteStream,
@@ -399,7 +398,6 @@ impl RuntimeHandle {
     pub async fn open_stream(
         &self,
         recipient: XID,
-        route_id: RouteId,
         request_head: Vec<u8>,
         config: StreamConfig,
     ) -> Result<PendingStream, QlError> {
@@ -410,7 +408,6 @@ impl RuntimeHandle {
         self.tx
             .send(RuntimeCommand::OpenStream {
                 recipient,
-                route_id,
                 request_head,
                 request_pipe,
                 accepted: accepted_tx,

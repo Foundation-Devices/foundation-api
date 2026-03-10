@@ -33,7 +33,7 @@ use crate::{
         unpair::{self, UnpairRecord},
         QlHeader, QlPayload, QlRecord,
     },
-    MessageId, PacketId, QlError, RouteId, StreamId,
+    MessageId, PacketId, QlError, StreamId,
 };
 
 impl<P: QlPlatform> Runtime<P> {
@@ -69,7 +69,6 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                     RuntimeCommand::OpenStream {
                         recipient,
-                        route_id,
                         request_head,
                         request_pipe,
                         accepted,
@@ -79,7 +78,6 @@ impl<P: QlPlatform> Runtime<P> {
                         self.handle_open_stream(
                             &mut state,
                             recipient,
-                            route_id,
                             request_head,
                             request_pipe,
                             accepted,
@@ -349,7 +347,6 @@ impl<P: QlPlatform> Runtime<P> {
         &self,
         state: &mut RuntimeState,
         recipient: XID,
-        route_id: RouteId,
         request_head: Vec<u8>,
         request_pipe: crate::pipe::PipeReader<QlError>,
         accepted: oneshot::Sender<Result<crate::runtime::AcceptedStreamDelivery, QlError>>,
@@ -379,7 +376,6 @@ impl<P: QlPlatform> Runtime<P> {
         let mut control = StreamControl::new();
         control.pending.set_setup(SetupFrame::Open(StreamFrameOpen {
             stream_id,
-            route_id,
             request_head: request_head.clone(),
             response_max_offset: self.config.initial_credit,
         }));
@@ -389,7 +385,6 @@ impl<P: QlPlatform> Runtime<P> {
                     peer: recipient,
                     stream_id,
                 },
-                route_id,
                 request_head,
                 last_activity: Instant::now(),
             },
@@ -733,14 +728,12 @@ impl<P: QlPlatform> Runtime<P> {
         match frame {
             StreamFrame::Open(StreamFrameOpen {
                 stream_id,
-                route_id,
                 request_head,
                 response_max_offset,
             }) => self.handle_stream_open(
                 state,
                 peer,
                 stream_id,
-                route_id,
                 request_head,
                 response_max_offset,
             ),
@@ -782,13 +775,12 @@ impl<P: QlPlatform> Runtime<P> {
         state: &mut RuntimeState,
         peer: XID,
         stream_id: StreamId,
-        route_id: RouteId,
         request_head: Vec<u8>,
         response_max_offset: u64,
     ) {
         let key = (peer, stream_id);
         if let Some(stream) = state.streams.get(&key) {
-            if self.stream_matches_open(stream, route_id, &request_head, response_max_offset) {
+            if self.stream_matches_open(stream, &request_head, response_max_offset) {
                 return;
             }
             self.send_ephemeral_reset(
@@ -811,7 +803,6 @@ impl<P: QlPlatform> Runtime<P> {
         let stream = StreamState::Responder(ResponderStream {
             meta: StreamMeta {
                 key: crate::runtime::internal::StreamKey { peer, stream_id },
-                route_id,
                 request_head: request_head.clone(),
                 last_activity: Instant::now(),
             },
@@ -826,7 +817,6 @@ impl<P: QlPlatform> Runtime<P> {
             .handle_inbound(HandlerEvent::Stream(InboundStream {
                 sender: peer,
                 recipient: self.platform.xid(),
-                route_id,
                 stream_id,
                 request_head,
                 request: InboundByteStream::new(
@@ -1537,22 +1527,17 @@ impl<P: QlPlatform> Runtime<P> {
     fn stream_matches_open(
         &self,
         stream: &StreamState,
-        route_id: RouteId,
         request_head: &[u8],
         response_max_offset: u64,
     ) -> bool {
         match stream {
             StreamState::Responder(state) => match &state.response {
                 ResponderResponse::Pending { initial_credit } => {
-                    state.meta.route_id == route_id
-                        && state.meta.request_head == request_head
-                        && *initial_credit == response_max_offset
+                    state.meta.request_head == request_head && *initial_credit == response_max_offset
                 }
                 ResponderResponse::Accepted { initial_credit, .. }
                 | ResponderResponse::Rejecting { initial_credit, .. } => {
-                    state.meta.route_id == route_id
-                        && state.meta.request_head == request_head
-                        && *initial_credit == response_max_offset
+                    state.meta.request_head == request_head && *initial_credit == response_max_offset
                 }
             },
             _ => false,
