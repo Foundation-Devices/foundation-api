@@ -282,6 +282,10 @@ pub enum EngineOutput {
     },
 }
 
+pub trait OutputFn: FnMut(EngineOutput) {}
+
+impl<T> OutputFn for T where T: FnMut(EngineOutput) {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StreamKey {
     stream_id: StreamId,
@@ -834,14 +838,13 @@ impl Engine {
         self.state.next_deadline()
     }
 
-    pub fn run_tick<F>(
+    pub fn run_tick(
         &mut self,
         now: Instant,
         input: EngineInput,
         crypto: &impl EngineCrypto,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         match input {
             EngineInput::BindPeer(peer) => self.handle_bind_peer(peer, emit),
@@ -906,9 +909,7 @@ impl Engine {
         emit(EngineOutput::SetTimer(self.state.next_deadline()));
     }
 
-    fn emit_peer_status<F>(&self, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn emit_peer_status(&self, emit: &mut impl OutputFn)
     {
         if let Some(peer) = self.state.peer.as_ref() {
             emit(EngineOutput::PeerStatusChanged {
@@ -918,9 +919,7 @@ impl Engine {
         }
     }
 
-    fn bind_peer_record<F>(&mut self, peer: Peer, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn bind_peer_record(&mut self, peer: Peer, emit: &mut impl OutputFn)
     {
         self.reset_runtime(QlError::Cancelled, emit);
         self.state.peer = Some(PeerRecord::new(
@@ -934,9 +933,7 @@ impl Engine {
         }
     }
 
-    fn reset_runtime<F>(&mut self, error: QlError, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn reset_runtime(&mut self, error: QlError, emit: &mut impl OutputFn)
     {
         let stream_ids: Vec<_> = self.streams.keys().copied().collect();
         for stream_id in stream_ids {
@@ -950,9 +947,7 @@ impl Engine {
         }
     }
 
-    fn handle_bind_peer<F>(&mut self, peer: Peer, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_bind_peer(&mut self, peer: Peer, emit: &mut impl OutputFn)
     {
         if let Some(existing) = self.state.peer.as_ref() {
             emit(EngineOutput::PeerStatusChanged {
@@ -984,9 +979,7 @@ impl Engine {
         );
     }
 
-    fn handle_connect<F>(&mut self, now: Instant, crypto: &impl EngineCrypto, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_connect(&mut self, now: Instant, crypto: &impl EngineCrypto, emit: &mut impl OutputFn)
     {
         let Some(peer_record) = self.state.peer.as_ref() else {
             return;
@@ -1029,9 +1022,7 @@ impl Engine {
         self.enqueue_handshake_message(token, deadline, CBOR::from(record).to_cbor_data());
     }
 
-    fn handle_unpair_local<F>(&mut self, now: Instant, crypto: &impl EngineCrypto, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_unpair_local(&mut self, now: Instant, crypto: &impl EngineCrypto, emit: &mut impl OutputFn)
     {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
@@ -1054,15 +1045,14 @@ impl Engine {
         );
     }
 
-    fn handle_open_stream<F>(
+    fn handle_open_stream(
         &mut self,
         now: Instant,
         open_id: OpenId,
         request_head: Vec<u8>,
         config: StreamConfig,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let Some(entry) = self.state.peer.as_ref() else {
             emit(EngineOutput::OpenFailed {
@@ -1279,9 +1269,7 @@ impl Engine {
         self.handle_reject_stream(now, stream_id, RejectCode::Unhandled);
     }
 
-    fn handle_pending_accept_dropped<F>(&mut self, stream_id: StreamId, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_pending_accept_dropped(&mut self, stream_id: StreamId, emit: &mut impl OutputFn)
     {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
@@ -1297,14 +1285,13 @@ impl Engine {
         self.maybe_reap_stream(stream_id, emit);
     }
 
-    fn handle_incoming<F>(
+    fn handle_incoming(
         &mut self,
         now: Instant,
         bytes: Vec<u8>,
         crypto: &impl EngineCrypto,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
             return;
@@ -1334,15 +1321,14 @@ impl Engine {
         }
     }
 
-    fn handle_handshake<F>(
+    fn handle_handshake(
         &mut self,
         now: Instant,
         header: QlHeader,
         message: HandshakeRecord,
         crypto: &impl EngineCrypto,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         match message {
             HandshakeRecord::Hello(hello) => self.handle_hello(now, header, hello, crypto, emit),
@@ -1355,15 +1341,14 @@ impl Engine {
         }
     }
 
-    fn handle_pairing<F>(
+    fn handle_pairing(
         &mut self,
         now: Instant,
         header: QlHeader,
         request: PairRequestRecord,
         crypto: &impl EngineCrypto,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let payload = match decrypt_pair_request(crypto, &header, request) {
             Ok(payload) => payload,
@@ -1390,9 +1375,7 @@ impl Engine {
         self.handle_connect(now, crypto, emit);
     }
 
-    fn handle_unpair<F>(&mut self, header: QlHeader, record: UnpairRecord, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_unpair(&mut self, header: QlHeader, record: UnpairRecord, emit: &mut impl OutputFn)
     {
         let peer = header.sender;
         {
@@ -1415,15 +1398,14 @@ impl Engine {
         self.unpair_peer(emit);
     }
 
-    fn handle_heartbeat<F>(
+    fn handle_heartbeat(
         &mut self,
         now: Instant,
         header: QlHeader,
         encrypted: bc_components::EncryptedMessage,
         crypto: &impl EngineCrypto,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let should_reply = {
             let Some(peer_record) = self.state.peer.as_ref() else {
@@ -1448,14 +1430,13 @@ impl Engine {
         self.emit_peer_status(emit);
     }
 
-    fn handle_stream<F>(
+    fn handle_stream(
         &mut self,
         now: Instant,
         header: QlHeader,
         encrypted: bc_components::EncryptedMessage,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let peer = header.sender;
         let body = {
@@ -1504,9 +1485,7 @@ impl Engine {
         }
     }
 
-    fn handle_stream_open<F>(&mut self, now: Instant, frame: StreamFrameOpen, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_stream_open(&mut self, now: Instant, frame: StreamFrameOpen, emit: &mut impl OutputFn)
     {
         let StreamFrameOpen {
             stream_id,
@@ -1540,13 +1519,12 @@ impl Engine {
         });
     }
 
-    fn handle_stream_accept_from_peer<F>(
+    fn handle_stream_accept_from_peer(
         &mut self,
         now: Instant,
         frame: StreamFrameAccept,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let StreamFrameAccept {
             stream_id,
@@ -1627,9 +1605,7 @@ impl Engine {
         }
     }
 
-    fn handle_stream_reject_from_peer<F>(&mut self, frame: StreamFrameReject, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_stream_reject_from_peer(&mut self, frame: StreamFrameReject, emit: &mut impl OutputFn)
     {
         let StreamFrameReject { stream_id, code } = frame;
         let mut protocol = false;
@@ -1675,9 +1651,7 @@ impl Engine {
         }
     }
 
-    fn handle_stream_data<F>(&mut self, now: Instant, frame: StreamFrameData, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_stream_data(&mut self, now: Instant, frame: StreamFrameData, emit: &mut impl OutputFn)
     {
         let StreamFrameData {
             stream_id,
@@ -1727,9 +1701,7 @@ impl Engine {
         *stream.last_activity_mut() = now;
     }
 
-    fn handle_stream_credit<F>(&mut self, now: Instant, frame: StreamFrameCredit, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_stream_credit(&mut self, now: Instant, frame: StreamFrameCredit, emit: &mut impl OutputFn)
     {
         let StreamFrameCredit {
             stream_id,
@@ -1768,9 +1740,7 @@ impl Engine {
         *stream.last_activity_mut() = now;
     }
 
-    fn handle_stream_finish<F>(&mut self, now: Instant, frame: StreamFrameFinish, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_stream_finish(&mut self, now: Instant, frame: StreamFrameFinish, emit: &mut impl OutputFn)
     {
         let StreamFrameFinish { stream_id, dir } = frame;
         let Some(stream) = self.streams.get_mut(&stream_id) else {
@@ -1789,9 +1759,7 @@ impl Engine {
         self.maybe_reap_stream(stream_id, emit);
     }
 
-    fn handle_stream_reset<F>(&mut self, now: Instant, frame: StreamFrameReset, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_stream_reset(&mut self, now: Instant, frame: StreamFrameReset, emit: &mut impl OutputFn)
     {
         let StreamFrameReset {
             stream_id,
@@ -1807,9 +1775,7 @@ impl Engine {
         self.maybe_reap_stream(stream_id, emit);
     }
 
-    fn process_packet_ack<F>(&mut self, packet_id: PacketId, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn process_packet_ack(&mut self, packet_id: PacketId, emit: &mut impl OutputFn)
     {
         let key = self.streams.iter().find_map(|(key, stream)| {
             stream
@@ -1892,9 +1858,7 @@ impl Engine {
         }
     }
 
-    fn drive_streams<F>(&mut self, now: Instant, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn drive_streams(&mut self, now: Instant, emit: &mut impl OutputFn)
     {
         let keys: Vec<_> = self.streams.keys().copied().collect();
         for stream_id in keys {
@@ -1902,9 +1866,7 @@ impl Engine {
         }
     }
 
-    fn drive_stream<F>(&mut self, _now: Instant, stream_id: StreamId, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn drive_stream(&mut self, _now: Instant, stream_id: StreamId, emit: &mut impl OutputFn)
     {
         let (streams, state) = (&mut self.streams, &mut self.state);
         let Some(stream) = streams.get_mut(&stream_id) else {
@@ -1973,15 +1935,13 @@ impl Engine {
         }
     }
 
-    fn plan_drive_outbound<F>(
+    fn plan_drive_outbound(
         config: &RuntimeConfig,
         key: StreamKey,
         control: &mut StreamControl,
         outbound: Option<&mut OutboundState>,
-        emit: &mut F,
+        emit: &mut impl OutputFn,
     ) -> Option<StreamFrame>
-    where
-        F: FnMut(EngineOutput),
     {
         let stream_id = key.stream_id;
         if control.awaiting.is_some() {
@@ -2109,9 +2069,7 @@ impl Engine {
         });
     }
 
-    fn queue_protocol_reset<F>(stream: &mut StreamState, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn queue_protocol_reset(stream: &mut StreamState, emit: &mut impl OutputFn)
     {
         let stream_id = stream.key().stream_id;
         stream
@@ -2183,13 +2141,12 @@ impl Engine {
         }
     }
 
-    fn apply_remote_reset<F>(
+    fn apply_remote_reset(
         stream: &mut StreamState,
         dir: ResetTarget,
         code: ResetCode,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let stream_id = stream.key().stream_id;
         let request_error = QlError::StreamReset {
@@ -2263,9 +2220,7 @@ impl Engine {
         }
     }
 
-    fn maybe_reap_stream<F>(&mut self, stream_id: StreamId, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn maybe_reap_stream(&mut self, stream_id: StreamId, emit: &mut impl OutputFn)
     {
         if self
             .streams
@@ -2359,15 +2314,14 @@ impl Engine {
         );
     }
 
-    fn handle_hello<F>(
+    fn handle_hello(
         &mut self,
         now: Instant,
         header: QlHeader,
         hello: Hello,
         crypto: &impl EngineCrypto,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let peer = header.sender;
         let action = match self.state.peer.as_ref() {
@@ -2422,15 +2376,14 @@ impl Engine {
         }
     }
 
-    fn handle_hello_reply<F>(
+    fn handle_hello_reply(
         &mut self,
         now: Instant,
         header: QlHeader,
         reply: HelloReply,
         crypto: &impl EngineCrypto,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let peer = header.sender;
         let token = self.state.next_token();
@@ -2493,15 +2446,14 @@ impl Engine {
         self.enqueue_handshake_message(token, deadline, CBOR::from(record).to_cbor_data());
     }
 
-    fn handle_confirm<F>(
+    fn handle_confirm(
         &mut self,
         now: Instant,
         header: QlHeader,
         confirm: Confirm,
         crypto: &impl EngineCrypto,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let peer = header.sender;
         let Some(peer_record) = self.state.peer.as_ref() else {
@@ -2545,15 +2497,14 @@ impl Engine {
         }
     }
 
-    fn start_responder_handshake<F>(
+    fn start_responder_handshake(
         &mut self,
         now: Instant,
         peer: XID,
         hello: Hello,
         crypto: &impl EngineCrypto,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         let (reply, secrets) = match {
             let Some(peer_record) = self.state.peer.as_ref() else {
@@ -2662,9 +2613,7 @@ impl Engine {
         }
     }
 
-    fn drop_outbound<F>(&mut self, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn drop_outbound(&mut self, emit: &mut impl OutputFn)
     {
         let stream_ids: Vec<_> = self
             .state
@@ -2678,9 +2627,7 @@ impl Engine {
         }
     }
 
-    fn abort_streams<F>(&mut self, error: QlError, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn abort_streams(&mut self, error: QlError, emit: &mut impl OutputFn)
     {
         let keys: Vec<_> = self.streams.keys().copied().collect();
         for stream_id in keys {
@@ -2688,9 +2635,7 @@ impl Engine {
         }
     }
 
-    fn fail_stream<F>(&mut self, stream_id: StreamId, error: QlError, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn fail_stream(&mut self, stream_id: StreamId, error: QlError, emit: &mut impl OutputFn)
     {
         let Some(stream) = self.streams.remove(&stream_id) else {
             return;
@@ -2738,9 +2683,7 @@ impl Engine {
         emit(EngineOutput::StreamReaped { stream_id });
     }
 
-    fn unpair_peer<F>(&mut self, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn unpair_peer(&mut self, emit: &mut impl OutputFn)
     {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
@@ -2756,9 +2699,7 @@ impl Engine {
         emit(EngineOutput::ClearPeer);
     }
 
-    fn handle_timeouts<F>(&mut self, now: Instant, crypto: &impl EngineCrypto, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn handle_timeouts(&mut self, now: Instant, crypto: &impl EngineCrypto, emit: &mut impl OutputFn)
     {
         loop {
             let Some(entry) = self
@@ -2937,15 +2878,14 @@ impl Engine {
         }
     }
 
-    fn handle_write_done<F>(
+    fn handle_write_done(
         &mut self,
         now: Instant,
         token: Token,
         tracked: Option<TrackedWrite>,
         result: Result<(), QlError>,
-        emit: &mut F,
-    ) where
-        F: FnMut(EngineOutput),
+        emit: &mut impl OutputFn,
+    )
     {
         if self.state.write_in_flight == Some(token) {
             self.state.write_in_flight = None;
@@ -3013,9 +2953,7 @@ impl Engine {
         }
     }
 
-    fn maybe_start_next_write<F>(&mut self, crypto: &impl EngineCrypto, emit: &mut F)
-    where
-        F: FnMut(EngineOutput),
+    fn maybe_start_next_write(&mut self, crypto: &impl EngineCrypto, emit: &mut impl OutputFn)
     {
         if self.state.write_in_flight.is_some() {
             return;
