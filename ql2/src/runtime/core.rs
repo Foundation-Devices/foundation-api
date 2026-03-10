@@ -8,7 +8,7 @@ use dcbor::CBOR;
 use futures_lite::future::poll_fn;
 
 use crate::{
-    platform::{QlPlatform, QlPlatformExt},
+    platform::QlPlatform,
     runtime::{
         handle::{InboundByteStream, InboundStream, StreamResponder},
         internal::{

@@ -16,7 +16,7 @@ use dcbor::CBOR;
 use tokio::task::LocalSet;
 
 use crate::{
-    platform::{PlatformFuture, QlPlatform, QlPlatformExt},
+    platform::{PlatformFuture, QlCrypto, QlPlatform},
     runtime::{
         internal::now_secs, new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RuntimeConfig,
         RuntimeHandle,
@@ -109,7 +109,7 @@ impl TestPlatform {
     }
 }
 
-impl QlPlatform for TestPlatform {
+impl QlCrypto for TestPlatform {
     fn signing_private_key(&self) -> &MLDSAPrivateKey {
         &self.signing_private
     }
@@ -132,6 +132,9 @@ impl QlPlatform for TestPlatform {
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
         data.fill(value);
     }
+}
+
+impl QlPlatform for TestPlatform {
 
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let fail_on_write = self.fail_on_write;
@@ -218,7 +221,7 @@ impl InboundPlatform {
     }
 }
 
-impl QlPlatform for InboundPlatform {
+impl QlCrypto for InboundPlatform {
     fn signing_private_key(&self) -> &MLDSAPrivateKey {
         &self.signing_private
     }
@@ -241,6 +244,9 @@ impl QlPlatform for InboundPlatform {
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
         data.fill(value);
     }
+}
+
+impl QlPlatform for InboundPlatform {
 
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
@@ -527,7 +533,7 @@ struct PeerIdentity {
     encapsulation_key: MLKEMPublicKey,
 }
 
-fn peer_identity(platform: &impl QlPlatformExt) -> PeerIdentity {
+fn peer_identity(platform: &impl QlCrypto) -> PeerIdentity {
     PeerIdentity {
         xid: platform.xid(),
         signing_key: platform.signing_public_key().clone(),
@@ -600,7 +606,7 @@ impl PersistPlatform {
     }
 }
 
-impl QlPlatform for PersistPlatform {
+impl QlCrypto for PersistPlatform {
     fn signing_private_key(&self) -> &MLDSAPrivateKey {
         &self.signing_private
     }
@@ -620,6 +626,9 @@ impl QlPlatform for PersistPlatform {
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
         data.fill(value);
     }
+}
+
+impl QlPlatform for PersistPlatform {
 
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();

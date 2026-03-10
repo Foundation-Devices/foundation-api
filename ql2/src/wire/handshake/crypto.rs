@@ -4,7 +4,7 @@ use bc_components::{
 use dcbor::CBOR;
 
 use super::{verify_transcript_signature, Confirm, Hello, HelloReply};
-use crate::{platform::QlPlatform, QlError};
+use crate::{platform::QlCrypto, QlError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponderSecrets {
@@ -13,7 +13,7 @@ pub struct ResponderSecrets {
 }
 
 pub fn build_hello(
-    platform: &impl QlPlatform,
+    platform: &impl QlCrypto,
     _sender: XID,
     _recipient: XID,
     recipient_encapsulation_key: &MLKEMPublicKey,
@@ -24,7 +24,7 @@ pub fn build_hello(
 }
 
 pub fn respond_hello(
-    platform: &impl QlPlatform,
+    platform: &impl QlCrypto,
     initiator: XID,
     responder: XID,
     initiator_encapsulation_key: &MLKEMPublicKey,
@@ -53,7 +53,7 @@ pub fn respond_hello(
 }
 
 pub fn build_confirm(
-    platform: &impl QlPlatform,
+    platform: &impl QlCrypto,
     initiator: XID,
     responder: XID,
     responder_signing_key: &MLDSAPublicKey,
@@ -109,7 +109,7 @@ fn handshake_transcript(
     .to_cbor_data()
 }
 
-fn next_nonce(platform: &impl QlPlatform) -> Nonce {
+fn next_nonce(platform: &impl QlCrypto) -> Nonce {
     let mut data = [0u8; Nonce::NONCE_SIZE];
     platform.fill_random_bytes(&mut data);
     Nonce::from_data(data)

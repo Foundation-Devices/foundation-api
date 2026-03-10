@@ -7,13 +7,13 @@ use dcbor::CBOR;
 
 use super::{PairRequestBody, PairRequestRecord};
 use crate::{
-    platform::{QlPlatform, QlPlatformExt},
+    platform::QlCrypto,
     wire::{ensure_not_expired, now_secs, QlHeader, QlPayload, QlRecord},
     MessageId, QlError,
 };
 
 pub fn build_pair_request(
-    platform: &impl QlPlatform,
+    platform: &impl QlCrypto,
     recipient: XID,
     recipient_encapsulation_key: &MLKEMPublicKey,
     message_id: MessageId,
@@ -53,7 +53,7 @@ pub fn build_pair_request(
 }
 
 pub fn decrypt_pair_request(
-    platform: &impl QlPlatform,
+    platform: &impl QlCrypto,
     header: &QlHeader,
     request: PairRequestRecord,
 ) -> Result<PairRequestBody, QlError> {

@@ -2,16 +2,14 @@ use std::{
     cell::Cell,
     cmp::Reverse,
     collections::{BinaryHeap, HashMap, VecDeque},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use bc_components::{
-    Digest, MLDSAPrivateKey, MLDSAPublicKey, MLKEMCiphertext, MLKEMPrivateKey, MLKEMPublicKey,
-    Nonce, SigningPublicKey, SymmetricKey, XID,
-};
+use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SigningPublicKey, SymmetricKey, XID};
 use dcbor::CBOR;
 
 use crate::{
+    platform::QlCrypto,
     runtime::{
         replay_cache::{ReplayCache, ReplayKey, ReplayNamespace},
         KeepAliveConfig, RuntimeConfig, StreamConfig,
@@ -20,7 +18,7 @@ use crate::{
         self,
         handshake::{self, Confirm, HandshakeRecord, Hello, HelloReply, ResponderSecrets},
         heartbeat::{self, HeartbeatBody},
-        pair::{PairRequestBody, PairRequestRecord},
+        pair::PairRequestRecord,
         stream::{
             self, Direction, RejectCode, ResetCode, ResetTarget, StreamBody, StreamFrame,
             StreamFrameAccept, StreamFrameCredit, StreamFrameData, StreamFrameFinish,
@@ -31,18 +29,6 @@ use crate::{
     },
     MessageId, PacketId, Peer, QlError, StreamId,
 };
-
-pub trait EngineCrypto {
-    fn signing_private_key(&self) -> &MLDSAPrivateKey;
-    fn signing_public_key(&self) -> &MLDSAPublicKey;
-    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey;
-    fn encapsulation_public_key(&self) -> &MLKEMPublicKey;
-    fn fill_random_bytes(&self, data: &mut [u8]);
-
-    fn xid(&self) -> XID {
-        XID::new(SigningPublicKey::MLDSA(self.signing_public_key().clone()))
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Token(pub u64);
@@ -842,10 +828,9 @@ impl Engine {
         &mut self,
         now: Instant,
         input: EngineInput,
-        crypto: &impl EngineCrypto,
+        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         match input {
             EngineInput::BindPeer(peer) => self.handle_bind_peer(peer, emit),
             EngineInput::Pair => self.handle_pair_local(now, crypto),
@@ -909,8 +894,7 @@ impl Engine {
         emit(EngineOutput::SetTimer(self.state.next_deadline()));
     }
 
-    fn emit_peer_status(&self, emit: &mut impl OutputFn)
-    {
+    fn emit_peer_status(&self, emit: &mut impl OutputFn) {
         if let Some(peer) = self.state.peer.as_ref() {
             emit(EngineOutput::PeerStatusChanged {
                 peer: peer.peer,
@@ -919,8 +903,7 @@ impl Engine {
         }
     }
 
-    fn bind_peer_record(&mut self, peer: Peer, emit: &mut impl OutputFn)
-    {
+    fn bind_peer_record(&mut self, peer: Peer, emit: &mut impl OutputFn) {
         self.reset_runtime(QlError::Cancelled, emit);
         self.state.peer = Some(PeerRecord::new(
             peer.peer,
@@ -933,8 +916,7 @@ impl Engine {
         }
     }
 
-    fn reset_runtime(&mut self, error: QlError, emit: &mut impl OutputFn)
-    {
+    fn reset_runtime(&mut self, error: QlError, emit: &mut impl OutputFn) {
         let stream_ids: Vec<_> = self.streams.keys().copied().collect();
         for stream_id in stream_ids {
             self.fail_stream(stream_id, error.clone(), emit);
@@ -947,8 +929,7 @@ impl Engine {
         }
     }
 
-    fn handle_bind_peer(&mut self, peer: Peer, emit: &mut impl OutputFn)
-    {
+    fn handle_bind_peer(&mut self, peer: Peer, emit: &mut impl OutputFn) {
         if let Some(existing) = self.state.peer.as_ref() {
             emit(EngineOutput::PeerStatusChanged {
                 peer: existing.peer,
@@ -958,11 +939,11 @@ impl Engine {
         self.bind_peer_record(peer, emit);
     }
 
-    fn handle_pair_local(&mut self, now: Instant, crypto: &impl EngineCrypto) {
+    fn handle_pair_local(&mut self, now: Instant, crypto: &impl QlCrypto) {
         let Some(peer) = self.state.peer.as_ref() else {
             return;
         };
-        let Ok(record) = build_pair_request(
+        let Ok(record) = wire::pair::build_pair_request(
             crypto,
             peer.peer,
             &peer.encapsulation_key,
@@ -979,8 +960,7 @@ impl Engine {
         );
     }
 
-    fn handle_connect(&mut self, now: Instant, crypto: &impl EngineCrypto, emit: &mut impl OutputFn)
-    {
+    fn handle_connect(&mut self, now: Instant, crypto: &impl QlCrypto, emit: &mut impl OutputFn) {
         let Some(peer_record) = self.state.peer.as_ref() else {
             return;
         };
@@ -992,7 +972,12 @@ impl Engine {
                 return;
             }
             PeerSession::Disconnected => {
-                match build_hello(crypto, &peer_record.encapsulation_key) {
+                match handshake::build_hello(
+                    crypto,
+                    crypto.xid(),
+                    peer,
+                    &peer_record.encapsulation_key,
+                ) {
                     Ok(result) => result,
                     Err(_) => return,
                 }
@@ -1022,12 +1007,16 @@ impl Engine {
         self.enqueue_handshake_message(token, deadline, CBOR::from(record).to_cbor_data());
     }
 
-    fn handle_unpair_local(&mut self, now: Instant, crypto: &impl EngineCrypto, emit: &mut impl OutputFn)
-    {
+    fn handle_unpair_local(
+        &mut self,
+        now: Instant,
+        crypto: &impl QlCrypto,
+        emit: &mut impl OutputFn,
+    ) {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
-        let record = build_unpair_record(
+        let record = unpair::build_unpair_record(
             crypto,
             QlHeader {
                 sender: crypto.xid(),
@@ -1052,8 +1041,7 @@ impl Engine {
         request_head: Vec<u8>,
         config: StreamConfig,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let Some(entry) = self.state.peer.as_ref() else {
             emit(EngineOutput::OpenFailed {
                 open_id,
@@ -1269,8 +1257,7 @@ impl Engine {
         self.handle_reject_stream(now, stream_id, RejectCode::Unhandled);
     }
 
-    fn handle_pending_accept_dropped(&mut self, stream_id: StreamId, emit: &mut impl OutputFn)
-    {
+    fn handle_pending_accept_dropped(&mut self, stream_id: StreamId, emit: &mut impl OutputFn) {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
@@ -1289,10 +1276,9 @@ impl Engine {
         &mut self,
         now: Instant,
         bytes: Vec<u8>,
-        crypto: &impl EngineCrypto,
+        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
             return;
         };
@@ -1326,10 +1312,9 @@ impl Engine {
         now: Instant,
         header: QlHeader,
         message: HandshakeRecord,
-        crypto: &impl EngineCrypto,
+        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         match message {
             HandshakeRecord::Hello(hello) => self.handle_hello(now, header, hello, crypto, emit),
             HandshakeRecord::HelloReply(reply) => {
@@ -1346,11 +1331,10 @@ impl Engine {
         now: Instant,
         header: QlHeader,
         request: PairRequestRecord,
-        crypto: &impl EngineCrypto,
+        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
-    )
-    {
-        let payload = match decrypt_pair_request(crypto, &header, request) {
+    ) {
+        let payload = match wire::pair::decrypt_pair_request(crypto, &header, request) {
             Ok(payload) => payload,
             Err(_) => return,
         };
@@ -1375,8 +1359,7 @@ impl Engine {
         self.handle_connect(now, crypto, emit);
     }
 
-    fn handle_unpair(&mut self, header: QlHeader, record: UnpairRecord, emit: &mut impl OutputFn)
-    {
+    fn handle_unpair(&mut self, header: QlHeader, record: UnpairRecord, emit: &mut impl OutputFn) {
         let peer = header.sender;
         {
             let Some(peer_record) = self.state.peer.as_ref() else {
@@ -1403,10 +1386,9 @@ impl Engine {
         now: Instant,
         header: QlHeader,
         encrypted: bc_components::EncryptedMessage,
-        crypto: &impl EngineCrypto,
+        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let should_reply = {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
@@ -1436,8 +1418,7 @@ impl Engine {
         header: QlHeader,
         encrypted: bc_components::EncryptedMessage,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let peer = header.sender;
         let body = {
             let Some(peer_record) = self.state.peer.as_ref() else {
@@ -1485,8 +1466,12 @@ impl Engine {
         }
     }
 
-    fn handle_stream_open(&mut self, now: Instant, frame: StreamFrameOpen, emit: &mut impl OutputFn)
-    {
+    fn handle_stream_open(
+        &mut self,
+        now: Instant,
+        frame: StreamFrameOpen,
+        emit: &mut impl OutputFn,
+    ) {
         let StreamFrameOpen {
             stream_id,
             request_head,
@@ -1524,8 +1509,7 @@ impl Engine {
         now: Instant,
         frame: StreamFrameAccept,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let StreamFrameAccept {
             stream_id,
             response_head,
@@ -1605,8 +1589,11 @@ impl Engine {
         }
     }
 
-    fn handle_stream_reject_from_peer(&mut self, frame: StreamFrameReject, emit: &mut impl OutputFn)
-    {
+    fn handle_stream_reject_from_peer(
+        &mut self,
+        frame: StreamFrameReject,
+        emit: &mut impl OutputFn,
+    ) {
         let StreamFrameReject { stream_id, code } = frame;
         let mut protocol = false;
         let mut remove_after = false;
@@ -1651,8 +1638,12 @@ impl Engine {
         }
     }
 
-    fn handle_stream_data(&mut self, now: Instant, frame: StreamFrameData, emit: &mut impl OutputFn)
-    {
+    fn handle_stream_data(
+        &mut self,
+        now: Instant,
+        frame: StreamFrameData,
+        emit: &mut impl OutputFn,
+    ) {
         let StreamFrameData {
             stream_id,
             dir,
@@ -1701,8 +1692,12 @@ impl Engine {
         *stream.last_activity_mut() = now;
     }
 
-    fn handle_stream_credit(&mut self, now: Instant, frame: StreamFrameCredit, emit: &mut impl OutputFn)
-    {
+    fn handle_stream_credit(
+        &mut self,
+        now: Instant,
+        frame: StreamFrameCredit,
+        emit: &mut impl OutputFn,
+    ) {
         let StreamFrameCredit {
             stream_id,
             dir,
@@ -1740,8 +1735,12 @@ impl Engine {
         *stream.last_activity_mut() = now;
     }
 
-    fn handle_stream_finish(&mut self, now: Instant, frame: StreamFrameFinish, emit: &mut impl OutputFn)
-    {
+    fn handle_stream_finish(
+        &mut self,
+        now: Instant,
+        frame: StreamFrameFinish,
+        emit: &mut impl OutputFn,
+    ) {
         let StreamFrameFinish { stream_id, dir } = frame;
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
@@ -1759,8 +1758,12 @@ impl Engine {
         self.maybe_reap_stream(stream_id, emit);
     }
 
-    fn handle_stream_reset(&mut self, now: Instant, frame: StreamFrameReset, emit: &mut impl OutputFn)
-    {
+    fn handle_stream_reset(
+        &mut self,
+        now: Instant,
+        frame: StreamFrameReset,
+        emit: &mut impl OutputFn,
+    ) {
         let StreamFrameReset {
             stream_id,
             dir,
@@ -1775,8 +1778,7 @@ impl Engine {
         self.maybe_reap_stream(stream_id, emit);
     }
 
-    fn process_packet_ack(&mut self, packet_id: PacketId, emit: &mut impl OutputFn)
-    {
+    fn process_packet_ack(&mut self, packet_id: PacketId, emit: &mut impl OutputFn) {
         let key = self.streams.iter().find_map(|(key, stream)| {
             stream
                 .control()
@@ -1858,16 +1860,14 @@ impl Engine {
         }
     }
 
-    fn drive_streams(&mut self, now: Instant, emit: &mut impl OutputFn)
-    {
+    fn drive_streams(&mut self, now: Instant, emit: &mut impl OutputFn) {
         let keys: Vec<_> = self.streams.keys().copied().collect();
         for stream_id in keys {
             self.drive_stream(now, stream_id, emit);
         }
     }
 
-    fn drive_stream(&mut self, _now: Instant, stream_id: StreamId, emit: &mut impl OutputFn)
-    {
+    fn drive_stream(&mut self, _now: Instant, stream_id: StreamId, emit: &mut impl OutputFn) {
         let (streams, state) = (&mut self.streams, &mut self.state);
         let Some(stream) = streams.get_mut(&stream_id) else {
             return;
@@ -1941,8 +1941,7 @@ impl Engine {
         control: &mut StreamControl,
         outbound: Option<&mut OutboundState>,
         emit: &mut impl OutputFn,
-    ) -> Option<StreamFrame>
-    {
+    ) -> Option<StreamFrame> {
         let stream_id = key.stream_id;
         if control.awaiting.is_some() {
             return None;
@@ -2069,8 +2068,7 @@ impl Engine {
         });
     }
 
-    fn queue_protocol_reset(stream: &mut StreamState, emit: &mut impl OutputFn)
-    {
+    fn queue_protocol_reset(stream: &mut StreamState, emit: &mut impl OutputFn) {
         let stream_id = stream.key().stream_id;
         stream
             .control_mut()
@@ -2146,8 +2144,7 @@ impl Engine {
         dir: ResetTarget,
         code: ResetCode,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let stream_id = stream.key().stream_id;
         let request_error = QlError::StreamReset {
             dir: Direction::Request,
@@ -2220,8 +2217,7 @@ impl Engine {
         }
     }
 
-    fn maybe_reap_stream(&mut self, stream_id: StreamId, emit: &mut impl OutputFn)
-    {
+    fn maybe_reap_stream(&mut self, stream_id: StreamId, emit: &mut impl OutputFn) {
         if self
             .streams
             .get(&stream_id)
@@ -2319,10 +2315,9 @@ impl Engine {
         now: Instant,
         header: QlHeader,
         hello: Hello,
-        crypto: &impl EngineCrypto,
+        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let peer = header.sender;
         let action = match self.state.peer.as_ref() {
             Some(entry) => match &entry.session {
@@ -2381,10 +2376,9 @@ impl Engine {
         now: Instant,
         header: QlHeader,
         reply: HelloReply,
-        crypto: &impl EngineCrypto,
+        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let peer = header.sender;
         let token = self.state.next_token();
         let deadline = now + self.config.handshake_timeout;
@@ -2404,7 +2398,7 @@ impl Engine {
             if *stage != InitiatorStage::WaitingHelloReply {
                 return;
             }
-            build_confirm(
+            handshake::build_confirm(
                 crypto,
                 crypto.xid(),
                 peer,
@@ -2451,10 +2445,9 @@ impl Engine {
         now: Instant,
         header: QlHeader,
         confirm: Confirm,
-        crypto: &impl EngineCrypto,
+        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let peer = header.sender;
         let Some(peer_record) = self.state.peer.as_ref() else {
             return;
@@ -2502,15 +2495,14 @@ impl Engine {
         now: Instant,
         peer: XID,
         hello: Hello,
-        crypto: &impl EngineCrypto,
+        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         let (reply, secrets) = match {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
             };
-            respond_hello(
+            handshake::respond_hello(
                 crypto,
                 peer,
                 crypto.xid(),
@@ -2551,7 +2543,7 @@ impl Engine {
         self.enqueue_handshake_message(token, deadline, CBOR::from(record).to_cbor_data());
     }
 
-    fn send_heartbeat_message(&mut self, now: Instant, crypto: &impl EngineCrypto) {
+    fn send_heartbeat_message(&mut self, now: Instant, crypto: &impl QlCrypto) {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
@@ -2613,8 +2605,7 @@ impl Engine {
         }
     }
 
-    fn drop_outbound(&mut self, emit: &mut impl OutputFn)
-    {
+    fn drop_outbound(&mut self, emit: &mut impl OutputFn) {
         let stream_ids: Vec<_> = self
             .state
             .outbound
@@ -2627,16 +2618,14 @@ impl Engine {
         }
     }
 
-    fn abort_streams(&mut self, error: QlError, emit: &mut impl OutputFn)
-    {
+    fn abort_streams(&mut self, error: QlError, emit: &mut impl OutputFn) {
         let keys: Vec<_> = self.streams.keys().copied().collect();
         for stream_id in keys {
             self.fail_stream(stream_id, error.clone(), emit);
         }
     }
 
-    fn fail_stream(&mut self, stream_id: StreamId, error: QlError, emit: &mut impl OutputFn)
-    {
+    fn fail_stream(&mut self, stream_id: StreamId, error: QlError, emit: &mut impl OutputFn) {
         let Some(stream) = self.streams.remove(&stream_id) else {
             return;
         };
@@ -2683,8 +2672,7 @@ impl Engine {
         emit(EngineOutput::StreamReaped { stream_id });
     }
 
-    fn unpair_peer(&mut self, emit: &mut impl OutputFn)
-    {
+    fn unpair_peer(&mut self, emit: &mut impl OutputFn) {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
@@ -2699,8 +2687,7 @@ impl Engine {
         emit(EngineOutput::ClearPeer);
     }
 
-    fn handle_timeouts(&mut self, now: Instant, crypto: &impl EngineCrypto, emit: &mut impl OutputFn)
-    {
+    fn handle_timeouts(&mut self, now: Instant, crypto: &impl QlCrypto, emit: &mut impl OutputFn) {
         loop {
             let Some(entry) = self
                 .state
@@ -2885,8 +2872,7 @@ impl Engine {
         tracked: Option<TrackedWrite>,
         result: Result<(), QlError>,
         emit: &mut impl OutputFn,
-    )
-    {
+    ) {
         if self.state.write_in_flight == Some(token) {
             self.state.write_in_flight = None;
         }
@@ -2953,8 +2939,7 @@ impl Engine {
         }
     }
 
-    fn maybe_start_next_write(&mut self, crypto: &impl EngineCrypto, emit: &mut impl OutputFn)
-    {
+    fn maybe_start_next_write(&mut self, crypto: &impl QlCrypto, emit: &mut impl OutputFn) {
         if self.state.write_in_flight.is_some() {
             return;
         }
@@ -3049,236 +3034,4 @@ fn reset_target_for_dir(dir: Direction) -> ResetTarget {
         Direction::Request => ResetTarget::Request,
         Direction::Response => ResetTarget::Response,
     }
-}
-
-fn build_pair_request(
-    crypto: &impl EngineCrypto,
-    recipient: XID,
-    recipient_encapsulation_key: &MLKEMPublicKey,
-    message_id: MessageId,
-    valid_for: Duration,
-) -> Result<QlRecord, QlError> {
-    let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
-    let header = QlHeader {
-        sender: crypto.xid(),
-        recipient,
-    };
-    let valid_until = wire::now_secs().saturating_add(valid_for.as_secs());
-    let signing_pub_key = crypto.signing_public_key().clone();
-    let sender_encapsulation_key = crypto.encapsulation_public_key().clone();
-    let proof_data = pairing_proof_data(
-        &header,
-        &kem_ct,
-        message_id,
-        valid_until,
-        &signing_pub_key,
-        &sender_encapsulation_key,
-    );
-    let proof = crypto.signing_private_key().sign(&proof_data);
-    let body = PairRequestBody {
-        message_id,
-        valid_until,
-        signing_pub_key,
-        encapsulation_pub_key: sender_encapsulation_key,
-        proof,
-    };
-    let body_bytes = CBOR::from(body).to_cbor_data();
-    let aad = pairing_aad(&header, &kem_ct);
-    let encrypted = session_key.encrypt(body_bytes, Some(aad), None::<Nonce>);
-    Ok(QlRecord {
-        header,
-        payload: QlPayload::Pair(PairRequestRecord { kem_ct, encrypted }),
-    })
-}
-
-fn decrypt_pair_request(
-    crypto: &impl EngineCrypto,
-    header: &QlHeader,
-    request: PairRequestRecord,
-) -> Result<PairRequestBody, QlError> {
-    let PairRequestRecord { kem_ct, encrypted } = request;
-    let session_key = crypto
-        .encapsulation_private_key()
-        .decapsulate_shared_secret(&kem_ct)
-        .map_err(|_| QlError::InvalidPayload)?;
-    let aad = pairing_aad(header, &kem_ct);
-    if encrypted.aad() != aad {
-        return Err(QlError::InvalidPayload);
-    }
-    let plaintext = session_key
-        .decrypt(&encrypted)
-        .map_err(|_| QlError::InvalidPayload)?;
-    let cbor = CBOR::try_from_data(plaintext).map_err(|_| QlError::InvalidPayload)?;
-    let decrypted = PairRequestBody::try_from(cbor).map_err(|_| QlError::InvalidPayload)?;
-    wire::ensure_not_expired(decrypted.valid_until)?;
-    if XID::new(SigningPublicKey::MLDSA(decrypted.signing_pub_key.clone())) != header.sender {
-        return Err(QlError::InvalidPayload);
-    }
-    let proof_data = pairing_proof_data(
-        header,
-        &kem_ct,
-        decrypted.message_id,
-        decrypted.valid_until,
-        &decrypted.signing_pub_key,
-        &decrypted.encapsulation_pub_key,
-    );
-    if decrypted
-        .signing_pub_key
-        .verify(&decrypted.proof, &proof_data)
-        .unwrap_or(false)
-    {
-        Ok(decrypted)
-    } else {
-        Err(QlError::InvalidSignature)
-    }
-}
-
-fn build_hello(
-    crypto: &impl EngineCrypto,
-    recipient_encapsulation_key: &MLKEMPublicKey,
-) -> Result<(Hello, SymmetricKey), QlError> {
-    let nonce = next_nonce(crypto);
-    let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
-    Ok((Hello { nonce, kem_ct }, session_key))
-}
-
-fn respond_hello(
-    crypto: &impl EngineCrypto,
-    initiator: XID,
-    responder: XID,
-    initiator_encapsulation_key: &MLKEMPublicKey,
-    hello: &Hello,
-) -> Result<(HelloReply, ResponderSecrets), QlError> {
-    let initiator_secret = crypto
-        .encapsulation_private_key()
-        .decapsulate_shared_secret(&hello.kem_ct)
-        .map_err(|_| QlError::InvalidPayload)?;
-    let nonce = next_nonce(crypto);
-    let (responder_secret, kem_ct) = initiator_encapsulation_key.encapsulate_new_shared_secret();
-    let transcript = handshake_transcript(initiator, responder, hello, &nonce, &kem_ct);
-    let signature = crypto.signing_private_key().sign(&transcript);
-    let reply = HelloReply {
-        nonce,
-        kem_ct,
-        signature,
-    };
-    Ok((
-        reply,
-        ResponderSecrets {
-            initiator_secret,
-            responder_secret,
-        },
-    ))
-}
-
-fn build_confirm(
-    crypto: &impl EngineCrypto,
-    initiator: XID,
-    responder: XID,
-    responder_signing_key: &MLDSAPublicKey,
-    hello: &Hello,
-    reply: &HelloReply,
-    initiator_secret: &SymmetricKey,
-) -> Result<(Confirm, SymmetricKey), QlError> {
-    let transcript = handshake_transcript(initiator, responder, hello, &reply.nonce, &reply.kem_ct);
-    handshake::verify_transcript_signature(responder_signing_key, &reply.signature, &transcript)?;
-    let responder_secret = crypto
-        .encapsulation_private_key()
-        .decapsulate_shared_secret(&reply.kem_ct)
-        .map_err(|_| QlError::InvalidPayload)?;
-    let signature = crypto.signing_private_key().sign(&transcript);
-    let confirm = Confirm { signature };
-    let session_key = derive_session_key(initiator_secret, &responder_secret, &transcript);
-    Ok((confirm, session_key))
-}
-
-fn build_unpair_record(
-    crypto: &impl EngineCrypto,
-    header: QlHeader,
-    message_id: MessageId,
-    valid_until: u64,
-) -> QlRecord {
-    let signature =
-        crypto
-            .signing_private_key()
-            .sign(&unpair_proof_data(&header, message_id, valid_until));
-    QlRecord {
-        header,
-        payload: QlPayload::Unpair(UnpairRecord {
-            message_id,
-            valid_until,
-            signature,
-        }),
-    }
-}
-
-fn pairing_proof_data(
-    header: &QlHeader,
-    kem_ct: &MLKEMCiphertext,
-    message_id: MessageId,
-    valid_until: u64,
-    signing_pub_key: &MLDSAPublicKey,
-    encapsulation_pub_key: &MLKEMPublicKey,
-) -> Vec<u8> {
-    CBOR::from(vec![
-        CBOR::from(pairing_aad(header, kem_ct)),
-        CBOR::from(message_id),
-        CBOR::from(valid_until),
-        CBOR::from(signing_pub_key.clone()),
-        CBOR::from(encapsulation_pub_key.clone()),
-    ])
-    .to_cbor_data()
-}
-
-fn pairing_aad(header: &QlHeader, kem_ct: &MLKEMCiphertext) -> Vec<u8> {
-    CBOR::from(vec![CBOR::from(header.clone()), CBOR::from(kem_ct.clone())]).to_cbor_data()
-}
-
-fn handshake_transcript(
-    initiator: XID,
-    responder: XID,
-    hello: &Hello,
-    responder_nonce: &Nonce,
-    responder_kem_ct: &MLKEMCiphertext,
-) -> Vec<u8> {
-    CBOR::from(vec![
-        CBOR::from(initiator),
-        CBOR::from(responder),
-        CBOR::from(hello.nonce.clone()),
-        CBOR::from(responder_nonce.clone()),
-        CBOR::from(hello.kem_ct.clone()),
-        CBOR::from(responder_kem_ct.clone()),
-    ])
-    .to_cbor_data()
-}
-
-fn next_nonce(crypto: &impl EngineCrypto) -> Nonce {
-    let mut data = [0u8; Nonce::NONCE_SIZE];
-    crypto.fill_random_bytes(&mut data);
-    Nonce::from_data(data)
-}
-
-fn derive_session_key(
-    initiator_secret: &SymmetricKey,
-    responder_secret: &SymmetricKey,
-    transcript: &[u8],
-) -> SymmetricKey {
-    let payload = CBOR::from(vec![
-        CBOR::from(initiator_secret.as_bytes()),
-        CBOR::from(responder_secret.as_bytes()),
-        CBOR::from(transcript),
-    ])
-    .to_cbor_data();
-    let digest = Digest::from_image(payload);
-    SymmetricKey::from_data(*digest.data())
-}
-
-fn unpair_proof_data(header: &QlHeader, message_id: MessageId, valid_until: u64) -> Vec<u8> {
-    CBOR::from(vec![
-        CBOR::from("ql-unpair-v1"),
-        CBOR::from(header.clone()),
-        CBOR::from(message_id),
-        CBOR::from(valid_until),
-    ])
-    .to_cbor_data()
 }

@@ -3,13 +3,13 @@ use dcbor::CBOR;
 
 use super::UnpairRecord;
 use crate::{
-    platform::QlPlatform,
+    platform::QlCrypto,
     wire::{now_secs, QlHeader, QlPayload, QlRecord},
     MessageId, QlError,
 };
 
 pub fn build_unpair_record(
-    platform: &impl QlPlatform,
+    platform: &impl QlCrypto,
     header: QlHeader,
     message_id: MessageId,
     valid_until: u64,
