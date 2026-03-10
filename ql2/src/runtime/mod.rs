@@ -5,6 +5,7 @@ pub use handle::{
 pub use internal::{InitiatorStage, PeerSession, Token};
 
 mod core;
+mod engine;
 pub mod handle;
 pub(crate) mod internal;
 pub mod replay_cache;
