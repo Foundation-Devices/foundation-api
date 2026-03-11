@@ -2,10 +2,10 @@ pub use handle::{
     AcceptedStream, InboundByteStream, InboundStream, OutboundByteStream, PendingAccept,
     PendingStream, RuntimeHandle, StreamResponder,
 };
-pub use internal::{InitiatorStage, PeerSession, Token};
+pub use engine::{InitiatorStage, PeerSession, Token};
 
-mod core;
-mod engine;
+mod driver;
+pub mod engine;
 pub mod handle;
 pub(crate) mod internal;
 pub mod replay_cache;

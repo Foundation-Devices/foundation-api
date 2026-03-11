@@ -440,6 +440,16 @@ impl<E> PipeReader<E> {
         })
     }
 
+    pub fn reserve_at(&mut self, offset: u64, max_len: usize) -> Option<SendGrant<'_, E>> {
+        if offset < self.sent {
+            return self.retry_send(offset, max_len);
+        }
+        if offset == self.sent {
+            return self.reserve_send(offset.saturating_add(max_len as u64), max_len);
+        }
+        None
+    }
+
     pub fn release_to(&mut self, released: u64) {
         self.released = released;
         self.inner.released.store(released, Ordering::Release);

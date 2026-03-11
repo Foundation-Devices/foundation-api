@@ -1164,7 +1164,9 @@ impl Engine {
             outbound.pending_pull = Some(pull);
             return;
         }
-        outbound.sent_offset = outbound.sent_offset.saturating_add(bytes.len() as u64);
+        outbound.sent_offset = outbound
+            .sent_offset
+            .max(offset.saturating_add(bytes.len() as u64));
         let key = stream.key();
         let control = stream.control_mut();
         state.enqueue_data_frame(&self.config, key, control, dir, offset, bytes, 0);
@@ -1180,6 +1182,7 @@ impl Engine {
         if final_offset < outbound.sent_offset {
             return;
         }
+        outbound.pending_pull = None;
         outbound.final_offset = Some(final_offset);
     }
 
