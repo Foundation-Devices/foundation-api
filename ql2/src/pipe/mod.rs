@@ -456,10 +456,6 @@ impl<E> PipeReader<E> {
         self.inner.writable.wake();
     }
 
-    pub fn released_offset(&self) -> u64 {
-        self.released
-    }
-
     pub fn sent_offset(&self) -> u64 {
         self.sent
     }

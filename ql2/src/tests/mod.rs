@@ -9,8 +9,8 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 use bc_components::{
-    Digest, MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, MLDSA, MLKEM,
-    SymmetricKey, XID,
+    Digest, MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SymmetricKey, MLDSA,
+    MLKEM, XID,
 };
 use dcbor::CBOR;
 use tokio::task::LocalSet;
@@ -18,12 +18,11 @@ use tokio::task::LocalSet;
 use crate::{
     platform::{PlatformFuture, QlCrypto, QlPlatform},
     runtime::{
-        internal::now_secs, new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RuntimeConfig,
-        RuntimeHandle,
+        new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RuntimeConfig, RuntimeHandle,
     },
     wire::{
-        self, handshake::HandshakeRecord, heartbeat::HeartbeatBody, pair, QlHeader, QlPayload,
-        QlRecord,
+        self, handshake::HandshakeRecord, heartbeat::HeartbeatBody, now_secs, pair, QlHeader,
+        QlPayload, QlRecord,
     },
     MessageId, PacketId, Peer, QlError,
 };
@@ -135,7 +134,6 @@ impl QlCrypto for TestPlatform {
 }
 
 impl QlPlatform for TestPlatform {
-
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let fail_on_write = self.fail_on_write;
         let write_index = self.write_counter.fetch_add(1, Ordering::Relaxed) + 1;
@@ -247,7 +245,6 @@ impl QlCrypto for InboundPlatform {
 }
 
 impl QlPlatform for InboundPlatform {
-
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         Box::pin(async move {
@@ -451,10 +448,15 @@ fn spawn_stream_mutating_forwarder<F>(
             }
 
             let session_key = trace.lock().unwrap().session_key.clone();
-            if let (Some(session_key), QlPayload::Stream(encrypted)) = (session_key, &record.payload) {
-                if let Ok(mut body) = wire::stream::decrypt_stream(&record.header, encrypted, &session_key) {
+            if let (Some(session_key), QlPayload::Stream(encrypted)) =
+                (session_key, &record.payload)
+            {
+                if let Ok(mut body) =
+                    wire::stream::decrypt_stream(&record.header, encrypted, &session_key)
+                {
                     if mutator(&record.header, &mut body) {
-                        let mutated = wire::stream::encrypt_stream(record.header, &session_key, body);
+                        let mutated =
+                            wire::stream::encrypt_stream(record.header, &session_key, body);
                         handle.send_incoming(CBOR::from(mutated).to_cbor_data());
                         continue;
                     }
@@ -629,7 +631,6 @@ impl QlCrypto for PersistPlatform {
 }
 
 impl QlPlatform for PersistPlatform {
-
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         Box::pin(async move {

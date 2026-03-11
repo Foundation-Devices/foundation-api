@@ -10,7 +10,7 @@ use crate::{
     pipe::{self, ReadReady},
     Peer,
     runtime::{
-        internal::RuntimeCommand,
+        driver::RuntimeCommand,
         AcceptedStreamDelivery, StreamConfig,
     },
     wire::stream::{Direction, RejectCode, ResetCode},

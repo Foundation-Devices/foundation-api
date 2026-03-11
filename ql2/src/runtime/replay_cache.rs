@@ -1,11 +1,12 @@
 use std::{
     cmp::Reverse,
     collections::{binary_heap::PeekMut, BinaryHeap, HashSet},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use bc_components::XID;
 
-use crate::{runtime::internal::now_secs, MessageId};
+use crate::MessageId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReplayNamespace {
@@ -120,6 +121,13 @@ impl ReplayCache {
             self.entries.remove(&entry.key);
         }
     }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
