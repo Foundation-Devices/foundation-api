@@ -4,16 +4,21 @@ use super::StreamBody;
 use crate::{
     wire::{
         access_value, deserialize_value, encode_value,
-        encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage},
+        encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage, NONCE_SIZE},
         ensure_not_expired, QlHeader, QlPayload, QlRecord,
     },
     QlError,
 };
 
-pub fn encrypt_stream(header: QlHeader, session_key: &SymmetricKey, body: StreamBody) -> QlRecord {
+pub fn encrypt_stream(
+    header: QlHeader,
+    session_key: &SymmetricKey,
+    body: StreamBody,
+    nonce: [u8; NONCE_SIZE],
+) -> QlRecord {
     let aad = header.aad();
     let body_bytes = encode_value(&body);
-    let encrypted = EncryptedMessage::encrypt(session_key, body_bytes, &aad);
+    let encrypted = EncryptedMessage::encrypt(session_key, body_bytes, &aad, nonce);
     QlRecord {
         header,
         payload: QlPayload::Stream(encrypted),

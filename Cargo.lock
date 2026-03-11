@@ -1969,7 +1969,6 @@ dependencies = [
  "async-channel",
  "atomic-waker",
  "bc-components",
- "bc-rand",
  "chacha20poly1305",
  "dcbor",
  "futures-lite",

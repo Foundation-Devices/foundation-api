@@ -10,7 +10,7 @@ use crate::{
     platform::QlCrypto,
     wire::{
         access_value, deserialize_value, encode_value,
-        encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage},
+        encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage, NONCE_SIZE},
         ensure_not_expired, mlkem_ciphertext_from_archived, now_secs, AsWireMlDsaPublicKey,
         AsWireMlKemCiphertext, AsWireMlKemPublicKey, QlHeader, QlPayload, QlRecord,
     },
@@ -68,7 +68,9 @@ pub fn build_pair_request(
     };
     let body_bytes = encode_value(&body);
     let aad = pairing_aad(&header, &kem_ct);
-    let encrypted = EncryptedMessage::encrypt(&session_key, body_bytes, &aad);
+    let mut nonce = [0u8; NONCE_SIZE];
+    platform.fill_random_bytes(&mut nonce);
+    let encrypted = EncryptedMessage::encrypt(&session_key, body_bytes, &aad, nonce);
     Ok(QlRecord {
         header,
         payload: QlPayload::Pair(PairRequestRecord { kem_ct, encrypted }),

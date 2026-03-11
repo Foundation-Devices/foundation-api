@@ -21,7 +21,7 @@ use crate::{
     runtime::{KeepAliveConfig, RuntimeConfig, StreamConfig},
     wire::{
         self,
-        encrypted_message::ArchivedEncryptedMessage,
+        encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
         handshake::{self, HandshakeRecord, Hello},
         heartbeat::{self, HeartbeatBody},
         stream::{
@@ -1735,6 +1735,7 @@ impl Engine {
                     valid_until: wire::now_secs()
                         .saturating_add(self.config.packet_expiration.as_secs()),
                 },
+                next_encrypted_message_nonce(crypto),
             )
         };
         self.enqueue_handshake_message(token, deadline, wire::encode_record(&message));
@@ -2138,6 +2139,7 @@ impl Engine {
                         },
                         session_key,
                         body,
+                        next_encrypted_message_nonce(crypto),
                     );
                     wire::encode_record(&record)
                 }
@@ -2163,6 +2165,12 @@ impl Engine {
             break;
         }
     }
+}
+
+fn next_encrypted_message_nonce(crypto: &impl QlCrypto) -> [u8; NONCE_SIZE] {
+    let mut nonce = [0u8; NONCE_SIZE];
+    crypto.fill_random_bytes(&mut nonce);
+    nonce
 }
 
 fn peer_hello_wins(

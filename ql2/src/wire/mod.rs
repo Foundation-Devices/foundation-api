@@ -134,10 +134,13 @@ fn ql_record_round_trip() {
             sender: XID::from_data([1; XID::XID_SIZE]),
             recipient: XID::from_data([2; XID::XID_SIZE]),
         },
-        payload: QlPayload::Heartbeat(encrypted_message::EncryptedMessage::new(
+        payload: QlPayload::Heartbeat(encrypted_message::EncryptedMessage::encrypt(
+            &bc_components::SymmetricKey::from_data(
+                [7; bc_components::SymmetricKey::SYMMETRIC_KEY_SIZE],
+            ),
             vec![3u8, 4, 5],
+            b"roundtrip",
             [8; encrypted_message::NONCE_SIZE],
-            [9; encrypted_message::AUTH_SIZE],
         )),
     };
 

@@ -434,6 +434,10 @@ fn derive_session_key(
     Some(SymmetricKey::from_data(*digest.data()))
 }
 
+fn test_encryption_nonce(seed: u8) -> [u8; wire::encrypted_message::NONCE_SIZE] {
+    [seed; wire::encrypted_message::NONCE_SIZE]
+}
+
 fn spawn_stream_mutating_forwarder<F>(
     outbound: Receiver<Vec<u8>>,
     handle: RuntimeHandle,
@@ -484,7 +488,12 @@ fn spawn_stream_mutating_forwarder<F>(
                         .and_then(wire::deserialize_value);
                     if let Ok(mut body) = body {
                         if mutator(&header, &mut body) {
-                            let mutated = wire::stream::encrypt_stream(header, &session_key, body);
+                            let mutated = wire::stream::encrypt_stream(
+                                header,
+                                &session_key,
+                                body.clone(),
+                                test_encryption_nonce(body.packet_id.0 as u8),
+                            );
                             handle.send_incoming(wire::encode_record(&mutated));
                             continue;
                         }
@@ -818,6 +827,7 @@ fn protocol_record_size_breakdown() {
             message_id: MessageId(12),
             valid_until: wire::now_secs().saturating_add(60),
         },
+        test_encryption_nonce(12),
     ))
     .len();
 
@@ -848,6 +858,7 @@ fn protocol_record_size_breakdown() {
                     packet_ack,
                     frame,
                 },
+                test_encryption_nonce(packet_id.0 as u8),
             ))
             .len()
         };
@@ -864,8 +875,12 @@ fn protocol_record_size_breakdown() {
         }),
         frame: None,
     };
-    let stream_ack_record =
-        wire::stream::encrypt_stream(stream_header.clone(), &session_key, stream_ack_body.clone());
+    let stream_ack_record = wire::stream::encrypt_stream(
+        stream_header.clone(),
+        &session_key,
+        stream_ack_body.clone(),
+        test_encryption_nonce(20),
+    );
     let stream_ack_encrypted = match &stream_ack_record.payload {
         QlPayload::Stream(encrypted) => encrypted,
         _ => unreachable!(),
@@ -997,7 +1012,7 @@ fn protocol_record_size_breakdown() {
         stream_ack_header_size,
         stream_header.aad().len(),
         stream_ack_body_size,
-        stream_ack_encrypted.ciphertext.len(),
+        stream_ack_body_size,
         stream_ack_envelope_size,
         stream_ack_payload_size,
         stream_ack_size,
