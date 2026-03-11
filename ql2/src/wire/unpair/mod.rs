@@ -1,39 +1,36 @@
 use bc_components::MLDSASignature;
-use dcbor::CBOR;
+use rkyv::{Archive, Serialize};
 
-use super::take_fields;
-use crate::MessageId;
+use super::{mldsa_signature_from_archived, AsWireMlDsaSignature};
+use crate::{MessageId, QlError};
 
 mod crypto;
 pub use crypto::*;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub struct UnpairRecord {
     pub message_id: MessageId,
     pub valid_until: u64,
+    #[rkyv(with = AsWireMlDsaSignature)]
     pub signature: MLDSASignature,
 }
 
-impl From<UnpairRecord> for CBOR {
-    fn from(value: UnpairRecord) -> Self {
-        CBOR::from(vec![
-            CBOR::from(value.message_id),
-            CBOR::from(value.valid_until),
-            CBOR::from(value.signature),
-        ])
+impl TryFrom<&ArchivedUnpairRecord> for UnpairRecord {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedUnpairRecord) -> Result<Self, Self::Error> {
+        Ok(Self {
+            message_id: (&value.message_id).into(),
+            valid_until: value.valid_until.to_native(),
+            signature: mldsa_signature_from_archived(&value.signature)?,
+        })
     }
 }
 
-impl TryFrom<CBOR> for UnpairRecord {
-    type Error = dcbor::Error;
+impl TryFrom<&UnpairRecord> for UnpairRecord {
+    type Error = QlError;
 
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let iter = value.try_into_array()?.into_iter();
-        let [message_id, valid_until, signature] = take_fields(iter)?;
-        Ok(Self {
-            message_id: message_id.try_into()?,
-            valid_until: valid_until.try_into()?,
-            signature: signature.try_into()?,
-        })
+    fn try_from(value: &UnpairRecord) -> Result<Self, Self::Error> {
+        Ok(value.clone())
     }
 }

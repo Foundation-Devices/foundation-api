@@ -1,35 +1,23 @@
-use dcbor::CBOR;
+use rkyv::{Archive, Serialize};
 
-use super::take_fields;
-use crate::MessageId;
+use crate::{MessageId, QlError};
 
 mod crypto;
 pub use crypto::*;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub struct HeartbeatBody {
     pub message_id: MessageId,
     pub valid_until: u64,
 }
 
-impl From<HeartbeatBody> for CBOR {
-    fn from(value: HeartbeatBody) -> Self {
-        CBOR::from(vec![
-            CBOR::from(value.message_id),
-            CBOR::from(value.valid_until),
-        ])
-    }
-}
+impl TryFrom<&ArchivedHeartbeatBody> for HeartbeatBody {
+    type Error = QlError;
 
-impl TryFrom<CBOR> for HeartbeatBody {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let iter = value.try_into_array()?.into_iter();
-        let [message_id, valid_until] = take_fields(iter)?;
+    fn try_from(value: &ArchivedHeartbeatBody) -> Result<Self, Self::Error> {
         Ok(Self {
-            message_id: message_id.try_into()?,
-            valid_until: valid_until.try_into()?,
+            message_id: (&value.message_id).into(),
+            valid_until: value.valid_until.to_native(),
         })
     }
 }

@@ -1972,6 +1972,7 @@ dependencies = [
  "dcbor",
  "futures-lite",
  "oneshot",
+ "rkyv",
  "thiserror",
  "tokio",
 ]

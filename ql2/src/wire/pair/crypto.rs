@@ -3,14 +3,35 @@ use std::time::Duration;
 use bc_components::{
     MLDSAPublicKey, MLKEMCiphertext, MLKEMPublicKey, Nonce, SigningPublicKey, SymmetricKey, XID,
 };
-use dcbor::CBOR;
+use rkyv::{Archive, Serialize};
 
 use super::{PairRequestBody, PairRequestRecord};
 use crate::{
     platform::QlCrypto,
-    wire::{ensure_not_expired, now_secs, QlHeader, QlPayload, QlRecord},
+    wire::{
+        access_value, encode_value, ensure_not_expired, now_secs, AsWireMlDsaPublicKey,
+        AsWireMlKemCiphertext, AsWireMlKemPublicKey, QlHeader, QlPayload, QlRecord,
+    },
     MessageId, QlError,
 };
+
+#[derive(Archive, Serialize)]
+struct PairingAad {
+    header: QlHeader,
+    #[rkyv(with = AsWireMlKemCiphertext)]
+    kem_ct: MLKEMCiphertext,
+}
+
+#[derive(Archive, Serialize)]
+struct PairingProofData {
+    aad: Vec<u8>,
+    message_id: MessageId,
+    valid_until: u64,
+    #[rkyv(with = AsWireMlDsaPublicKey)]
+    signing_pub_key: MLDSAPublicKey,
+    #[rkyv(with = AsWireMlKemPublicKey)]
+    encapsulation_pub_key: MLKEMPublicKey,
+}
 
 pub fn build_pair_request(
     platform: &impl QlCrypto,
@@ -43,7 +64,7 @@ pub fn build_pair_request(
         encapsulation_pub_key: sender_encapsulation_key,
         proof,
     };
-    let body_bytes = CBOR::from(body).to_cbor_data();
+    let body_bytes = encode_value(&body);
     let aad = pairing_aad(&header, &kem_ct);
     let encrypted = session_key.encrypt(body_bytes, Some(aad), None::<Nonce>);
     Ok(QlRecord {
@@ -52,17 +73,22 @@ pub fn build_pair_request(
     })
 }
 
-pub fn decrypt_pair_request(
+pub fn decrypt_pair_request<H, R>(
     platform: &impl QlCrypto,
-    header: &QlHeader,
-    request: PairRequestRecord,
-) -> Result<PairRequestBody, QlError> {
-    let PairRequestRecord { kem_ct, encrypted } = request;
+    header: H,
+    request: R,
+) -> Result<PairRequestBody, QlError>
+where
+    H: TryInto<QlHeader, Error = QlError>,
+    R: TryInto<PairRequestRecord, Error = QlError>,
+{
+    let header = header.try_into()?;
+    let PairRequestRecord { kem_ct, encrypted } = request.try_into()?;
     let session_key = platform
         .encapsulation_private_key()
         .decapsulate_shared_secret(&kem_ct)
         .map_err(|_| QlError::InvalidPayload)?;
-    let aad = pairing_aad(header, &kem_ct);
+    let aad = pairing_aad(&header, &kem_ct);
     if encrypted.aad() != aad {
         return Err(QlError::InvalidPayload);
     }
@@ -72,7 +98,7 @@ pub fn decrypt_pair_request(
         return Err(QlError::InvalidPayload);
     }
     let proof_data = pairing_proof_data(
-        header,
+        &header,
         &kem_ct,
         decrypted.message_id,
         decrypted.valid_until,
@@ -98,14 +124,13 @@ fn pairing_proof_data(
     signing_pub_key: &MLDSAPublicKey,
     encapsulation_pub_key: &MLKEMPublicKey,
 ) -> Vec<u8> {
-    CBOR::from(vec![
-        CBOR::from(pairing_aad(header, kem_ct)),
-        CBOR::from(message_id),
-        CBOR::from(valid_until),
-        CBOR::from(signing_pub_key.clone()),
-        CBOR::from(encapsulation_pub_key.clone()),
-    ])
-    .to_cbor_data()
+    encode_value(&PairingProofData {
+        aad: pairing_aad(header, kem_ct),
+        message_id,
+        valid_until,
+        signing_pub_key: signing_pub_key.clone(),
+        encapsulation_pub_key: encapsulation_pub_key.clone(),
+    })
 }
 
 fn decrypt_body(
@@ -115,10 +140,13 @@ fn decrypt_body(
     let plaintext = key
         .decrypt(encrypted)
         .map_err(|_| QlError::InvalidPayload)?;
-    let cbor = CBOR::try_from_data(plaintext).map_err(|_| QlError::InvalidPayload)?;
-    PairRequestBody::try_from(cbor).map_err(|_| QlError::InvalidPayload)
+    let body = access_value::<super::ArchivedPairRequestBody>(&plaintext)?;
+    body.try_into()
 }
 
 fn pairing_aad(header: &QlHeader, kem_ct: &MLKEMCiphertext) -> Vec<u8> {
-    CBOR::from(vec![CBOR::from(header.clone()), CBOR::from(kem_ct.clone())]).to_cbor_data()
+    encode_value(&PairingAad {
+        header: header.clone(),
+        kem_ct: kem_ct.clone(),
+    })
 }

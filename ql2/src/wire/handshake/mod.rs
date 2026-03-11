@@ -1,55 +1,114 @@
 use bc_components::{MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, Nonce};
-use dcbor::CBOR;
+use rkyv::{Archive, Serialize};
 
-use super::take_fields;
+use super::{
+    mldsa_signature_from_archived, mlkem_ciphertext_from_archived, nonce_from_archived,
+    AsWireMlDsaSignature, AsWireMlKemCiphertext, AsWireNonce,
+};
 use crate::QlError;
 
 mod crypto;
 pub use crypto::*;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub enum HandshakeRecord {
     Hello(Hello),
     HelloReply(HelloReply),
     Confirm(Confirm),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Hello {
-    pub nonce: Nonce,
-    pub kem_ct: MLKEMCiphertext,
-}
+impl TryFrom<&ArchivedHandshakeRecord> for HandshakeRecord {
+    type Error = QlError;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct HelloReply {
-    pub nonce: Nonce,
-    pub kem_ct: MLKEMCiphertext,
-    pub signature: MLDSASignature,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Confirm {
-    pub signature: MLDSASignature,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandshakeKind {
-    Hello = 1,
-    HelloReply,
-    Confirm,
-}
-
-impl TryFrom<CBOR> for HandshakeKind {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let tag: u8 = value.try_into()?;
-        match tag {
-            1 => Ok(Self::Hello),
-            2 => Ok(Self::HelloReply),
-            3 => Ok(Self::Confirm),
-            _ => Err(dcbor::Error::msg("unknown message tag")),
+    fn try_from(value: &ArchivedHandshakeRecord) -> Result<Self, Self::Error> {
+        match value {
+            ArchivedHandshakeRecord::Hello(message) => Ok(Self::Hello(message.try_into()?)),
+            ArchivedHandshakeRecord::HelloReply(message) => {
+                Ok(Self::HelloReply(message.try_into()?))
+            }
+            ArchivedHandshakeRecord::Confirm(message) => Ok(Self::Confirm(message.try_into()?)),
         }
+    }
+}
+
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
+pub struct Hello {
+    #[rkyv(with = AsWireNonce)]
+    pub nonce: Nonce,
+    #[rkyv(with = AsWireMlKemCiphertext)]
+    pub kem_ct: MLKEMCiphertext,
+}
+
+impl TryFrom<&ArchivedHello> for Hello {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedHello) -> Result<Self, Self::Error> {
+        Ok(Self {
+            nonce: nonce_from_archived(&value.nonce),
+            kem_ct: mlkem_ciphertext_from_archived(&value.kem_ct)?,
+        })
+    }
+}
+
+impl TryFrom<&Hello> for Hello {
+    type Error = QlError;
+
+    fn try_from(value: &Hello) -> Result<Self, Self::Error> {
+        Ok(value.clone())
+    }
+}
+
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
+pub struct HelloReply {
+    #[rkyv(with = AsWireNonce)]
+    pub nonce: Nonce,
+    #[rkyv(with = AsWireMlKemCiphertext)]
+    pub kem_ct: MLKEMCiphertext,
+    #[rkyv(with = AsWireMlDsaSignature)]
+    pub signature: MLDSASignature,
+}
+
+impl TryFrom<&ArchivedHelloReply> for HelloReply {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedHelloReply) -> Result<Self, Self::Error> {
+        Ok(Self {
+            nonce: nonce_from_archived(&value.nonce),
+            kem_ct: mlkem_ciphertext_from_archived(&value.kem_ct)?,
+            signature: mldsa_signature_from_archived(&value.signature)?,
+        })
+    }
+}
+
+impl TryFrom<&HelloReply> for HelloReply {
+    type Error = QlError;
+
+    fn try_from(value: &HelloReply) -> Result<Self, Self::Error> {
+        Ok(value.clone())
+    }
+}
+
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
+pub struct Confirm {
+    #[rkyv(with = AsWireMlDsaSignature)]
+    pub signature: MLDSASignature,
+}
+
+impl TryFrom<&ArchivedConfirm> for Confirm {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedConfirm) -> Result<Self, Self::Error> {
+        Ok(Self {
+            signature: mldsa_signature_from_archived(&value.signature)?,
+        })
+    }
+}
+
+impl TryFrom<&Confirm> for Confirm {
+    type Error = QlError;
+
+    fn try_from(value: &Confirm) -> Result<Self, Self::Error> {
+        Ok(value.clone())
     }
 }
 
@@ -61,62 +120,5 @@ pub fn verify_transcript_signature(
     match signing_key.verify(signature, transcript) {
         Ok(true) => Ok(()),
         _ => Err(QlError::InvalidSignature),
-    }
-}
-
-impl From<HandshakeRecord> for CBOR {
-    fn from(value: HandshakeRecord) -> Self {
-        match value {
-            HandshakeRecord::Hello(message) => CBOR::from(vec![
-                CBOR::from(HandshakeKind::Hello as u8),
-                CBOR::from(message.nonce),
-                CBOR::from(message.kem_ct),
-            ]),
-            HandshakeRecord::HelloReply(message) => CBOR::from(vec![
-                CBOR::from(HandshakeKind::HelloReply as u8),
-                CBOR::from(message.nonce),
-                CBOR::from(message.kem_ct),
-                CBOR::from(message.signature),
-            ]),
-            HandshakeRecord::Confirm(message) => CBOR::from(vec![
-                CBOR::from(HandshakeKind::Confirm as u8),
-                CBOR::from(message.signature),
-            ]),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for HandshakeRecord {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let mut iter = value.try_into_array()?.into_iter();
-        let tag: HandshakeKind = iter
-            .next()
-            .ok_or_else(|| dcbor::Error::msg("missing handshake tag"))?
-            .try_into()?;
-        match tag {
-            HandshakeKind::Hello => {
-                let [nonce_cbor, kem_ct_cbor] = take_fields(iter)?;
-                Ok(HandshakeRecord::Hello(Hello {
-                    nonce: nonce_cbor.try_into()?,
-                    kem_ct: kem_ct_cbor.try_into()?,
-                }))
-            }
-            HandshakeKind::HelloReply => {
-                let [nonce_cbor, kem_ct_cbor, signature_cbor] = take_fields(iter)?;
-                Ok(HandshakeRecord::HelloReply(HelloReply {
-                    nonce: nonce_cbor.try_into()?,
-                    kem_ct: kem_ct_cbor.try_into()?,
-                    signature: signature_cbor.try_into()?,
-                }))
-            }
-            HandshakeKind::Confirm => {
-                let [signature_cbor] = take_fields(iter)?;
-                Ok(HandshakeRecord::Confirm(Confirm {
-                    signature: signature_cbor.try_into()?,
-                }))
-            }
-        }
     }
 }

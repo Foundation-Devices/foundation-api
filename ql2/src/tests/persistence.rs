@@ -94,7 +94,7 @@ async fn pairing_persists_snapshot() {
             Duration::from_secs(1),
         )
         .unwrap();
-        let pairing_bytes = CBOR::from(pairing_message).to_cbor_data();
+        let pairing_bytes = wire::encode_record(&pairing_message);
 
         let (runtime_b, handle_b) =
             new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));

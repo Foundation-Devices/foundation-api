@@ -32,7 +32,7 @@ async fn heartbeat_ignored_without_session() {
                 valid_until: now_secs().saturating_add(60),
             },
         );
-        handle_a.send_incoming(CBOR::from(heartbeat).to_cbor_data());
+        handle_a.send_incoming(wire::encode_record(&heartbeat));
 
         let result = tokio::time::timeout(Duration::from_millis(50), outbound_a.recv()).await;
         assert!(result.is_err(), "expected heartbeat to be ignored");
@@ -362,7 +362,7 @@ async fn invalid_heartbeat_ignored() {
                 valid_until: now_secs().saturating_add(30),
             },
         );
-        handle_a.send_incoming(CBOR::from(heartbeat).to_cbor_data());
+        handle_a.send_incoming(wire::encode_record(&heartbeat));
 
         let result = tokio::time::timeout(Duration::from_millis(50), heartbeat_rx.recv()).await;
         assert!(result.is_err(), "unexpected heartbeat reply");

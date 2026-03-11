@@ -1,12 +1,20 @@
 use bc_components::MLDSAPublicKey;
-use dcbor::CBOR;
+use rkyv::{Archive, Serialize};
 
 use super::UnpairRecord;
 use crate::{
     platform::QlCrypto,
-    wire::{now_secs, QlHeader, QlPayload, QlRecord},
+    wire::{encode_value, now_secs, QlHeader, QlPayload, QlRecord},
     MessageId, QlError,
 };
+
+#[derive(Archive, Serialize)]
+struct UnpairProofData {
+    domain: Vec<u8>,
+    header: QlHeader,
+    message_id: MessageId,
+    valid_until: u64,
+}
 
 pub fn build_unpair_record(
     platform: &impl QlCrypto,
@@ -28,15 +36,21 @@ pub fn build_unpair_record(
     }
 }
 
-pub fn verify_unpair_record(
-    header: &QlHeader,
-    record: &UnpairRecord,
+pub fn verify_unpair_record<H, R>(
+    header: H,
+    record: R,
     signing_key: &MLDSAPublicKey,
-) -> Result<(), QlError> {
+) -> Result<(), QlError>
+where
+    H: TryInto<QlHeader, Error = QlError>,
+    R: TryInto<UnpairRecord, Error = QlError>,
+{
+    let header = header.try_into()?;
+    let record = record.try_into()?;
     if now_secs() > record.valid_until {
         return Err(QlError::InvalidPayload);
     }
-    let proof_data = unpair_proof_data(header, record.message_id, record.valid_until);
+    let proof_data = unpair_proof_data(&header, record.message_id, record.valid_until);
     if signing_key
         .verify(&record.signature, &proof_data)
         .unwrap_or(false)
@@ -48,11 +62,10 @@ pub fn verify_unpair_record(
 }
 
 fn unpair_proof_data(header: &QlHeader, message_id: MessageId, valid_until: u64) -> Vec<u8> {
-    CBOR::from(vec![
-        CBOR::from("ql-unpair-v1"),
-        CBOR::from(header.clone()),
-        CBOR::from(message_id),
-        CBOR::from(valid_until),
-    ])
-    .to_cbor_data()
+    encode_value(&UnpairProofData {
+        domain: b"ql-unpair-v1".to_vec(),
+        header: header.clone(),
+        message_id,
+        valid_until,
+    })
 }

@@ -12,7 +12,7 @@ use bc_components::{
     Digest, MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SymmetricKey, MLDSA,
     MLKEM, XID,
 };
-use dcbor::CBOR;
+use rkyv::{Archive, Serialize};
 use tokio::task::LocalSet;
 
 use crate::{
@@ -21,8 +21,8 @@ use crate::{
         new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RuntimeConfig, RuntimeHandle,
     },
     wire::{
-        self, handshake::HandshakeRecord, heartbeat::HeartbeatBody, now_secs, pair, QlHeader,
-        QlPayload, QlRecord,
+        self, AsWireMlKemCiphertext, AsWireNonce, AsWireXid, handshake::HandshakeRecord,
+        heartbeat::HeartbeatBody, now_secs, pair, QlHeader, QlPayload, QlRecord,
     },
     MessageId, PacketId, Peer, QlError,
 };
@@ -299,14 +299,14 @@ fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
 }
 
 fn is_stream(bytes: &[u8]) -> bool {
-    let Ok(record) = CBOR::try_from_data(bytes).and_then(QlRecord::try_from) else {
+    let Ok(record) = wire::decode_record(bytes) else {
         return false;
     };
     matches!(record.payload, QlPayload::Stream(_))
 }
 
 fn is_heartbeat(bytes: &[u8]) -> bool {
-    let Ok(record) = CBOR::try_from_data(bytes).and_then(QlRecord::try_from) else {
+    let Ok(record) = wire::decode_record(bytes) else {
         return false;
     };
     matches!(record.payload, QlPayload::Heartbeat(_))
@@ -379,6 +379,29 @@ struct SessionTrace {
     session_key: Option<SymmetricKey>,
 }
 
+#[derive(Archive, Serialize)]
+struct TestHandshakeTranscript {
+    #[rkyv(with = AsWireXid)]
+    initiator: XID,
+    #[rkyv(with = AsWireXid)]
+    responder: XID,
+    #[rkyv(with = AsWireNonce)]
+    initiator_nonce: bc_components::Nonce,
+    #[rkyv(with = AsWireNonce)]
+    responder_nonce: bc_components::Nonce,
+    #[rkyv(with = AsWireMlKemCiphertext)]
+    initiator_kem_ct: bc_components::MLKEMCiphertext,
+    #[rkyv(with = AsWireMlKemCiphertext)]
+    responder_kem_ct: bc_components::MLKEMCiphertext,
+}
+
+#[derive(Archive, Serialize)]
+struct TestSessionKeyMaterial {
+    initiator_secret: Vec<u8>,
+    responder_secret: Vec<u8>,
+    transcript: Vec<u8>,
+}
+
 fn derive_session_key(
     trace: &SessionTrace,
     key_material: &SessionKeyMaterial,
@@ -394,21 +417,19 @@ fn derive_session_key(
         .initiator_encapsulation_private
         .decapsulate_shared_secret(&reply.kem_ct)
         .ok()?;
-    let transcript = CBOR::from(vec![
-        CBOR::from(header.sender),
-        CBOR::from(header.recipient),
-        CBOR::from(hello.nonce.clone()),
-        CBOR::from(reply.nonce.clone()),
-        CBOR::from(hello.kem_ct.clone()),
-        CBOR::from(reply.kem_ct.clone()),
-    ])
-    .to_cbor_data();
-    let payload = CBOR::from(vec![
-        CBOR::from(initiator_secret.as_bytes()),
-        CBOR::from(responder_secret.as_bytes()),
-        CBOR::from(transcript),
-    ])
-    .to_cbor_data();
+    let transcript = wire::encode_value(&TestHandshakeTranscript {
+        initiator: header.sender,
+        responder: header.recipient,
+        initiator_nonce: hello.nonce.clone(),
+        responder_nonce: reply.nonce.clone(),
+        initiator_kem_ct: hello.kem_ct.clone(),
+        responder_kem_ct: reply.kem_ct.clone(),
+    });
+    let payload = wire::encode_value(&TestSessionKeyMaterial {
+        initiator_secret: initiator_secret.as_bytes().to_vec(),
+        responder_secret: responder_secret.as_bytes().to_vec(),
+        transcript,
+    });
     let digest = Digest::from_image(payload);
     Some(SymmetricKey::from_data(*digest.data()))
 }
@@ -425,7 +446,7 @@ fn spawn_stream_mutating_forwarder<F>(
     tokio::task::spawn_local(async move {
         let mut mutator = mutator;
         while let Ok(bytes) = outbound.recv().await {
-            let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
+            let Ok(record) = wire::decode_record(&bytes) else {
                 handle.send_incoming(bytes);
                 continue;
             };
@@ -451,13 +472,11 @@ fn spawn_stream_mutating_forwarder<F>(
             if let (Some(session_key), QlPayload::Stream(encrypted)) =
                 (session_key, &record.payload)
             {
-                if let Ok(mut body) =
-                    wire::stream::decrypt_stream(&record.header, encrypted, &session_key)
+                if let Ok(mut body) = wire::stream::decrypt_stream(&record.header, encrypted, &session_key)
                 {
                     if mutator(&record.header, &mut body) {
-                        let mutated =
-                            wire::stream::encrypt_stream(record.header, &session_key, body);
-                        handle.send_incoming(CBOR::from(mutated).to_cbor_data());
+                        let mutated = wire::stream::encrypt_stream(record.header, &session_key, body);
+                        handle.send_incoming(wire::encode_record(&mutated));
                         continue;
                     }
                 }
@@ -711,7 +730,7 @@ fn protocol_record_size_breakdown() {
         },
         payload: QlPayload::Handshake(HandshakeRecord::Hello(hello.clone())),
     };
-    let hello_size = CBOR::from(hello_record).to_cbor_data().len();
+    let hello_size = wire::encode_record(&hello_record).len();
 
     let (hello_reply, responder_secrets) = wire::handshake::respond_hello(
         &platform_b,
@@ -728,7 +747,7 @@ fn protocol_record_size_breakdown() {
         },
         payload: QlPayload::Handshake(HandshakeRecord::HelloReply(hello_reply.clone())),
     };
-    let reply_size = CBOR::from(reply_record).to_cbor_data().len();
+    let reply_size = wire::encode_record(&reply_record).len();
 
     let (confirm, session_key) = wire::handshake::build_confirm(
         &platform_a,
@@ -757,7 +776,7 @@ fn protocol_record_size_breakdown() {
         },
         payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
     };
-    let confirm_size = CBOR::from(confirm_record).to_cbor_data().len();
+    let confirm_size = wire::encode_record(&confirm_record).len();
 
     let stream_record = wire::stream::encrypt_stream(
         QlHeader {
@@ -778,7 +797,7 @@ fn protocol_record_size_breakdown() {
             )),
         },
     );
-    let stream_size = CBOR::from(stream_record).to_cbor_data().len();
+    let stream_size = wire::encode_record(&stream_record).len();
 
     let print_size = |label: &str, size: usize| {
         println!("{label:<21}: {size} bytes");

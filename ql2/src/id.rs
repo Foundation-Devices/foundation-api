@@ -1,10 +1,11 @@
 use std::fmt;
 
 use dcbor::CBOR;
+use rkyv::{Archive, Serialize};
 
 macro_rules! define_id {
     ($name:ident) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(pub u64);
 
         impl fmt::Display for $name {
@@ -33,7 +34,25 @@ define_id!(MessageId);
 define_id!(PacketId);
 define_id!(StreamId);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+impl From<&ArchivedMessageId> for MessageId {
+    fn from(value: &ArchivedMessageId) -> Self {
+        Self(value.0.to_native())
+    }
+}
+
+impl From<&ArchivedPacketId> for PacketId {
+    fn from(value: &ArchivedPacketId) -> Self {
+        Self(value.0.to_native())
+    }
+}
+
+impl From<&ArchivedStreamId> for StreamId {
+    fn from(value: &ArchivedStreamId) -> Self {
+        Self(value.0.to_native())
+    }
+}
+
+#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionId(pub u64);
 
 impl fmt::Display for ConnectionId {

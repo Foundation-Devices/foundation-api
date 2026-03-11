@@ -1,4 +1,11 @@
+use bc_components::{EncryptedMessage, XID};
 use dcbor::CBOR;
+use rkyv::{
+    api::high::{to_bytes_in, HighSerializer, HighValidator},
+    bytecheck::CheckBytes,
+    ser::allocator::ArenaHandle,
+    Archive, Portable, Serialize,
+};
 
 pub mod handshake;
 pub mod heartbeat;
@@ -6,135 +13,123 @@ pub mod pair;
 pub mod stream;
 pub mod unpair;
 
-use bc_components::{EncryptedMessage, XID};
+mod codec;
+
+pub(crate) use codec::*;
 
 use self::{handshake::HandshakeRecord, pair::PairRequestRecord, unpair::UnpairRecord};
 use crate::QlError;
 
-#[derive(Debug, Clone, PartialEq)]
+pub(crate) type WireArchiveError = rkyv::rancor::Error;
+
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub struct QlRecord {
     pub header: QlHeader,
     pub payload: QlPayload,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl TryFrom<&ArchivedQlRecord> for QlRecord {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedQlRecord) -> Result<Self, Self::Error> {
+        Ok(Self {
+            header: (&value.header).try_into()?,
+            payload: (&value.payload).try_into()?,
+        })
+    }
+}
+
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub struct QlHeader {
+    #[rkyv(with = AsWireXid)]
     pub sender: XID,
+    #[rkyv(with = AsWireXid)]
     pub recipient: XID,
 }
 
 impl QlHeader {
     pub fn aad(&self) -> Vec<u8> {
-        CBOR::from(self.clone()).to_cbor_data()
+        encode_value(self)
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl TryFrom<&ArchivedQlHeader> for QlHeader {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedQlHeader) -> Result<Self, Self::Error> {
+        Ok(Self {
+            sender: xid_from_archived(&value.sender),
+            recipient: xid_from_archived(&value.recipient),
+        })
+    }
+}
+
+impl TryFrom<&QlHeader> for QlHeader {
+    type Error = QlError;
+
+    fn try_from(value: &QlHeader) -> Result<Self, Self::Error> {
+        Ok(value.clone())
+    }
+}
+
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub enum QlPayload {
     Handshake(HandshakeRecord),
     Pair(PairRequestRecord),
     Unpair(UnpairRecord),
-    Heartbeat(EncryptedMessage),
-    Stream(EncryptedMessage),
+    Heartbeat(#[rkyv(with = AsWireEncryptedMessage)] EncryptedMessage),
+    Stream(#[rkyv(with = AsWireEncryptedMessage)] EncryptedMessage),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QlTag {
-    Handshake = 1,
-    Pairing = 2,
-    Stream = 3,
-    Heartbeat = 4,
-    Unpair = 5,
-}
+impl TryFrom<&ArchivedQlPayload> for QlPayload {
+    type Error = QlError;
 
-impl From<QlTag> for CBOR {
-    fn from(value: QlTag) -> Self {
-        CBOR::from(value as u8)
-    }
-}
-
-impl TryFrom<CBOR> for QlTag {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let tag: u8 = value.try_into()?;
-        match tag {
-            1 => Ok(Self::Handshake),
-            2 => Ok(Self::Pairing),
-            3 => Ok(Self::Stream),
-            4 => Ok(Self::Heartbeat),
-            5 => Ok(Self::Unpair),
-            _ => Err(dcbor::Error::msg("unknown message tag")),
+    fn try_from(value: &ArchivedQlPayload) -> Result<Self, Self::Error> {
+        match value {
+            ArchivedQlPayload::Handshake(message) => Ok(Self::Handshake(message.try_into()?)),
+            ArchivedQlPayload::Pair(message) => Ok(Self::Pair(message.try_into()?)),
+            ArchivedQlPayload::Unpair(message) => Ok(Self::Unpair(message.try_into()?)),
+            ArchivedQlPayload::Heartbeat(message) => {
+                Ok(Self::Heartbeat(encrypted_message_from_archived(message)))
+            }
+            ArchivedQlPayload::Stream(message) => {
+                Ok(Self::Stream(encrypted_message_from_archived(message)))
+            }
         }
     }
 }
 
-impl From<QlRecord> for CBOR {
-    fn from(value: QlRecord) -> Self {
-        let (tag, payload) = match value.payload {
-            QlPayload::Handshake(message) => (QlTag::Handshake, CBOR::from(message)),
-            QlPayload::Pair(message) => (QlTag::Pairing, CBOR::from(message)),
-            QlPayload::Stream(message) => (QlTag::Stream, CBOR::from(message)),
-            QlPayload::Heartbeat(message) => (QlTag::Heartbeat, CBOR::from(message)),
-            QlPayload::Unpair(message) => (QlTag::Unpair, CBOR::from(message)),
-        };
-        CBOR::from(vec![
-            CBOR::from(tag as u8),
-            CBOR::from(value.header),
-            payload,
-        ])
-    }
+pub fn encode_record(record: &QlRecord) -> Vec<u8> {
+    encode_value(record)
 }
 
-impl TryFrom<CBOR> for QlRecord {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let iter = value.try_into_array()?.into_iter();
-        let [tag_cbor, header_cbor, payload] = take_fields(iter)?;
-        let tag = QlTag::try_from(tag_cbor)?;
-        let header = QlHeader::try_from(header_cbor)?;
-        match tag {
-            QlTag::Handshake => Ok(QlRecord {
-                header,
-                payload: QlPayload::Handshake(HandshakeRecord::try_from(payload)?),
-            }),
-            QlTag::Pairing => Ok(QlRecord {
-                header,
-                payload: QlPayload::Pair(PairRequestRecord::try_from(payload)?),
-            }),
-            QlTag::Stream => Ok(QlRecord {
-                header,
-                payload: QlPayload::Stream(EncryptedMessage::try_from(payload)?),
-            }),
-            QlTag::Heartbeat => Ok(QlRecord {
-                header,
-                payload: QlPayload::Heartbeat(EncryptedMessage::try_from(payload)?),
-            }),
-            QlTag::Unpair => Ok(QlRecord {
-                header,
-                payload: QlPayload::Unpair(UnpairRecord::try_from(payload)?),
-            }),
-        }
-    }
+pub fn access_record(bytes: &[u8]) -> Result<&ArchivedQlRecord, QlError> {
+    access_value(bytes)
 }
 
-impl From<QlHeader> for CBOR {
-    fn from(value: QlHeader) -> Self {
-        CBOR::from(vec![CBOR::from(value.sender), CBOR::from(value.recipient)])
-    }
+pub fn decode_record(bytes: &[u8]) -> Result<QlRecord, QlError> {
+    access_record(bytes)?.try_into()
 }
 
-impl TryFrom<CBOR> for QlHeader {
-    type Error = dcbor::Error;
+pub(crate) fn encode_value(
+    value: &impl for<'a> Serialize<HighSerializer<Vec<u8>, ArenaHandle<'a>, WireArchiveError>>,
+) -> Vec<u8> {
+    to_bytes_in::<_, WireArchiveError>(value, Vec::new())
+        .expect("wire serialization should not fail")
+}
 
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let iter = value.try_into_array()?.into_iter();
-        let [sender_cbor, recipient_cbor] = take_fields(iter)?;
-        Ok(Self {
-            sender: sender_cbor.try_into()?,
-            recipient: recipient_cbor.try_into()?,
-        })
+pub(crate) fn access_value<T>(bytes: &[u8]) -> Result<&T, QlError>
+where
+    T: Portable + for<'a> CheckBytes<HighValidator<'a, WireArchiveError>>,
+{
+    rkyv::access::<T, WireArchiveError>(bytes).map_err(|_| QlError::InvalidPayload)
+}
+
+pub(crate) fn ensure_not_expired(valid_until: u64) -> Result<(), QlError> {
+    if now_secs() > valid_until {
+        Err(QlError::Timeout)
+    } else {
+        Ok(())
     }
 }
 
@@ -160,19 +155,34 @@ pub(crate) fn take_fields<const N: usize>(
     Ok(result)
 }
 
-pub(crate) fn ensure_not_expired(valid_until: u64) -> Result<(), QlError> {
-    if now_secs() > valid_until {
-        Err(QlError::Timeout)
-    } else {
-        Ok(())
-    }
-}
-
 pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+#[test]
+fn ql_record_round_trip() {
+    let record = QlRecord {
+        header: QlHeader {
+            sender: XID::from_data([1; XID::XID_SIZE]),
+            recipient: XID::from_data([2; XID::XID_SIZE]),
+        },
+        payload: QlPayload::Heartbeat(EncryptedMessage::new(
+            [3u8, 4, 5],
+            [6u8, 7],
+            bc_components::Nonce::from_data([8; bc_components::Nonce::NONCE_SIZE]),
+            bc_components::AuthenticationTag::from_data(
+                [9; bc_components::AuthenticationTag::AUTHENTICATION_TAG_SIZE],
+            ),
+        )),
+    };
+
+    let bytes = encode_record(&record);
+    let decoded = decode_record(&bytes).unwrap();
+
+    assert_eq!(decoded, record);
 }
 
 #[test]
@@ -184,12 +194,4 @@ fn take_fields_reads_exact_count() {
     assert_eq!(u8::try_from(second).unwrap(), 2);
     assert_eq!(u8::try_from(third).unwrap(), 3);
     assert!(iter.next().is_none());
-}
-
-#[test]
-fn take_fields_rejects_short_arrays() {
-    let values = vec![CBOR::from(1u8)];
-    let mut iter = values.into_iter();
-    let result: Result<[CBOR; 2], _> = take_fields(&mut iter);
-    assert!(result.is_err());
 }

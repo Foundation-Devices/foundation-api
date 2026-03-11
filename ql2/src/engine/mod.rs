@@ -5,7 +5,6 @@ mod stream;
 use std::{cmp::Reverse, collections::HashMap, mem, time::Instant};
 
 use bc_components::{SigningPublicKey, XID};
-use dcbor::CBOR;
 pub use state::{
     Engine, EngineInput, EngineOutput, EngineState, InitiatorStage, KeepAliveState, OpenId,
     OutputFn, PeerRecord, PeerSession, Token, TrackedWrite,
@@ -21,9 +20,8 @@ use crate::{
     runtime::{KeepAliveConfig, RuntimeConfig, StreamConfig},
     wire::{
         self,
-        handshake::{self, Confirm, HandshakeRecord, Hello, HelloReply},
+        handshake::{self, HandshakeRecord, Hello},
         heartbeat::{self, HeartbeatBody},
-        pair::PairRequestRecord,
         stream::{
             decrypt_stream, encrypt_stream, Direction, PacketAck, RejectCode, ResetCode,
             ResetTarget, StreamBody, StreamFrame, StreamFrameAccept, StreamFrameCredit,
@@ -177,7 +175,7 @@ impl Engine {
         self.enqueue_handshake_message(
             token,
             now + self.config.packet_expiration,
-            CBOR::from(record).to_cbor_data(),
+            wire::encode_record(&record),
         );
     }
 
@@ -225,7 +223,7 @@ impl Engine {
             },
             payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
         };
-        self.enqueue_handshake_message(token, deadline, CBOR::from(record).to_cbor_data());
+        self.enqueue_handshake_message(token, deadline, wire::encode_record(&record));
     }
 
     fn handle_unpair_local(
@@ -251,7 +249,7 @@ impl Engine {
         self.enqueue_handshake_message(
             token,
             now + self.config.packet_expiration,
-            CBOR::from(record).to_cbor_data(),
+            wire::encode_record(&record),
         );
     }
 
@@ -503,14 +501,16 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
+        let Ok(record) = wire::access_record(&bytes) else {
             return;
         };
-        let QlRecord { header, payload } = record;
+        let Ok(header) = QlHeader::try_from(&record.header) else {
+            return;
+        };
         if header.recipient != crypto.xid() {
             return;
         }
-        if !matches!(payload, QlPayload::Pair(_)) {
+        if !matches!(&record.payload, wire::ArchivedQlPayload::Pair(_)) {
             let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
                 return;
             };
@@ -518,16 +518,20 @@ impl Engine {
                 return;
             }
         }
-        match payload {
-            QlPayload::Handshake(message) => {
+        match &record.payload {
+            wire::ArchivedQlPayload::Handshake(message) => {
                 self.handle_handshake(now, header, message, crypto, emit)
             }
-            QlPayload::Stream(encrypted) => self.handle_stream(now, header, encrypted, emit),
-            QlPayload::Heartbeat(encrypted) => {
+            wire::ArchivedQlPayload::Stream(encrypted) => {
+                self.handle_stream(now, header, encrypted, emit)
+            }
+            wire::ArchivedQlPayload::Heartbeat(encrypted) => {
                 self.handle_heartbeat(now, header, encrypted, crypto, emit)
             }
-            QlPayload::Pair(request) => self.handle_pairing(now, header, request, crypto, emit),
-            QlPayload::Unpair(record) => self.handle_unpair(header, record, emit),
+            wire::ArchivedQlPayload::Pair(request) => {
+                self.handle_pairing(now, header, request, crypto, emit)
+            }
+            wire::ArchivedQlPayload::Unpair(record) => self.handle_unpair(header, record, emit),
         }
     }
 
@@ -535,16 +539,21 @@ impl Engine {
         &mut self,
         now: Instant,
         header: QlHeader,
-        message: HandshakeRecord,
+        message: &wire::handshake::ArchivedHandshakeRecord,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
         match message {
-            HandshakeRecord::Hello(hello) => self.handle_hello(now, header, hello, crypto, emit),
-            HandshakeRecord::HelloReply(reply) => {
+            wire::handshake::ArchivedHandshakeRecord::Hello(hello) => {
+                let Ok(hello) = Hello::try_from(hello) else {
+                    return;
+                };
+                self.handle_hello(now, header, hello, crypto, emit)
+            }
+            wire::handshake::ArchivedHandshakeRecord::HelloReply(reply) => {
                 self.handle_hello_reply(now, header, reply, crypto, emit)
             }
-            HandshakeRecord::Confirm(confirm) => {
+            wire::handshake::ArchivedHandshakeRecord::Confirm(confirm) => {
                 self.handle_confirm(now, header, confirm, crypto, emit)
             }
         }
@@ -554,7 +563,7 @@ impl Engine {
         &mut self,
         now: Instant,
         header: QlHeader,
-        request: PairRequestRecord,
+        request: &wire::pair::ArchivedPairRequestRecord,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
@@ -583,16 +592,24 @@ impl Engine {
         self.handle_connect(now, crypto, emit);
     }
 
-    fn handle_unpair(&mut self, header: QlHeader, record: UnpairRecord, emit: &mut impl OutputFn) {
+    fn handle_unpair(
+        &mut self,
+        header: QlHeader,
+        record: &wire::unpair::ArchivedUnpairRecord,
+        emit: &mut impl OutputFn,
+    ) {
         let peer = header.sender;
         {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
             };
-            if unpair::verify_unpair_record(&header, &record, &peer_record.signing_key).is_err() {
+            if unpair::verify_unpair_record(&header, record, &peer_record.signing_key).is_err() {
                 return;
             }
         }
+        let Ok(record) = UnpairRecord::try_from(record) else {
+            return;
+        };
         let replay_key =
             ReplayKey::new(peer, ReplayNamespace::Peer, MessageId(record.message_id.0));
         if self
@@ -609,7 +626,7 @@ impl Engine {
         &mut self,
         now: Instant,
         header: QlHeader,
-        encrypted: bc_components::EncryptedMessage,
+        encrypted: &wire::ArchivedWireEncryptedMessage,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
@@ -624,7 +641,7 @@ impl Engine {
             else {
                 return;
             };
-            if heartbeat::decrypt_heartbeat(&header, &encrypted, session_key).is_err() {
+            if heartbeat::decrypt_heartbeat(&header, encrypted, session_key).is_err() {
                 return;
             }
             !keepalive.pending
@@ -640,7 +657,7 @@ impl Engine {
         &mut self,
         now: Instant,
         header: QlHeader,
-        encrypted: bc_components::EncryptedMessage,
+        encrypted: &wire::ArchivedWireEncryptedMessage,
         emit: &mut impl OutputFn,
     ) {
         let peer = header.sender;
@@ -651,7 +668,7 @@ impl Engine {
             let PeerSession::Connected { session_key, .. } = &peer_record.session else {
                 return;
             };
-            match decrypt_stream(&header, &encrypted, session_key) {
+            match decrypt_stream(&header, encrypted, session_key) {
                 Ok(body) => body,
                 Err(_) => return,
             }
@@ -1508,7 +1525,7 @@ impl Engine {
                     payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
                 };
                 let token = self.state.next_token();
-                self.enqueue_handshake_message(token, deadline, CBOR::from(record).to_cbor_data());
+                self.enqueue_handshake_message(token, deadline, wire::encode_record(&record));
             }
             HelloAction::Ignore => {}
         }
@@ -1518,7 +1535,7 @@ impl Engine {
         &mut self,
         now: Instant,
         header: QlHeader,
-        reply: HelloReply,
+        reply: &wire::handshake::ArchivedHelloReply,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
@@ -1547,7 +1564,7 @@ impl Engine {
                 peer,
                 &peer_record.signing_key,
                 hello,
-                &reply,
+                reply,
                 session_key,
             )
             .map(|(confirm, session_key)| (hello.clone(), confirm, session_key))
@@ -1580,14 +1597,14 @@ impl Engine {
             },
             payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
         };
-        self.enqueue_handshake_message(token, deadline, CBOR::from(record).to_cbor_data());
+        self.enqueue_handshake_message(token, deadline, wire::encode_record(&record));
     }
 
     fn handle_confirm(
         &mut self,
         now: Instant,
         header: QlHeader,
-        confirm: Confirm,
+        confirm: &wire::handshake::ArchivedConfirm,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
@@ -1611,7 +1628,7 @@ impl Engine {
             &peer_record.signing_key,
             hello,
             reply,
-            &confirm,
+            confirm,
             secrets,
         ) {
             Ok(session_key) => {
@@ -1683,7 +1700,7 @@ impl Engine {
             },
             payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
         };
-        self.enqueue_handshake_message(token, deadline, CBOR::from(record).to_cbor_data());
+        self.enqueue_handshake_message(token, deadline, wire::encode_record(&record));
     }
 
     fn send_heartbeat_message(&mut self, now: Instant, crypto: &impl QlCrypto) {
@@ -1713,7 +1730,7 @@ impl Engine {
                 },
             )
         };
-        self.enqueue_handshake_message(token, deadline, CBOR::from(message).to_cbor_data());
+        self.enqueue_handshake_message(token, deadline, wire::encode_record(&message));
     }
 
     fn keep_alive_config(&self) -> Option<KeepAliveConfig> {
@@ -2115,7 +2132,7 @@ impl Engine {
                         session_key,
                         body,
                     );
-                    CBOR::from(record).to_cbor_data()
+                    wire::encode_record(&record)
                 }
             };
 

@@ -104,7 +104,7 @@ async fn invalid_unpair_signature_is_ignored() {
             MessageId(777),
             now_secs().saturating_add(60),
         );
-        let forged_bytes = CBOR::from(forged_unpair).to_cbor_data();
+        let forged_bytes = wire::encode_record(&forged_unpair);
 
         let (runtime_b, handle_b) = new_runtime(platform_b, config);
         tokio::task::spawn_local(async move { runtime_b.run().await });

@@ -1,71 +1,67 @@
-use bc_components::{MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, MLKEMPublicKey};
-use dcbor::CBOR;
+use bc_components::{
+    EncryptedMessage, MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, MLKEMPublicKey,
+};
+use rkyv::{Archive, Serialize};
 
-use super::take_fields;
-use crate::MessageId;
+use super::{
+    encrypted_message_from_archived, mldsa_public_key_from_archived, mldsa_signature_from_archived,
+    mlkem_ciphertext_from_archived, mlkem_public_key_from_archived, AsWireEncryptedMessage,
+    AsWireMlDsaPublicKey, AsWireMlDsaSignature, AsWireMlKemCiphertext, AsWireMlKemPublicKey,
+};
+use crate::{MessageId, QlError};
 
 mod crypto;
 pub use crypto::*;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub struct PairRequestRecord {
+    #[rkyv(with = AsWireMlKemCiphertext)]
     pub kem_ct: MLKEMCiphertext,
-    pub encrypted: bc_components::EncryptedMessage,
+    #[rkyv(with = AsWireEncryptedMessage)]
+    pub encrypted: EncryptedMessage,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PairRequestBody {
-    pub message_id: MessageId,
-    pub valid_until: u64,
-    pub signing_pub_key: MLDSAPublicKey,
-    pub encapsulation_pub_key: MLKEMPublicKey,
-    pub proof: MLDSASignature,
-}
+impl TryFrom<&ArchivedPairRequestRecord> for PairRequestRecord {
+    type Error = QlError;
 
-impl From<PairRequestRecord> for CBOR {
-    fn from(value: PairRequestRecord) -> Self {
-        CBOR::from(vec![CBOR::from(value.kem_ct), CBOR::from(value.encrypted)])
-    }
-}
-
-impl TryFrom<CBOR> for PairRequestRecord {
-    type Error = dcbor::Error;
-
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let iter = value.try_into_array()?.into_iter();
-        let [kem_ct_cbor, encrypted_cbor] = take_fields(iter)?;
+    fn try_from(value: &ArchivedPairRequestRecord) -> Result<Self, Self::Error> {
         Ok(Self {
-            kem_ct: kem_ct_cbor.try_into()?,
-            encrypted: encrypted_cbor.try_into()?,
+            kem_ct: mlkem_ciphertext_from_archived(&value.kem_ct)?,
+            encrypted: encrypted_message_from_archived(&value.encrypted),
         })
     }
 }
 
-impl From<PairRequestBody> for CBOR {
-    fn from(value: PairRequestBody) -> Self {
-        CBOR::from(vec![
-            CBOR::from(value.message_id),
-            CBOR::from(value.valid_until),
-            CBOR::from(value.signing_pub_key),
-            CBOR::from(value.encapsulation_pub_key),
-            CBOR::from(value.proof),
-        ])
+impl TryFrom<&PairRequestRecord> for PairRequestRecord {
+    type Error = QlError;
+
+    fn try_from(value: &PairRequestRecord) -> Result<Self, Self::Error> {
+        Ok(value.clone())
     }
 }
 
-impl TryFrom<CBOR> for PairRequestBody {
-    type Error = dcbor::Error;
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
+pub struct PairRequestBody {
+    pub message_id: MessageId,
+    pub valid_until: u64,
+    #[rkyv(with = AsWireMlDsaPublicKey)]
+    pub signing_pub_key: MLDSAPublicKey,
+    #[rkyv(with = AsWireMlKemPublicKey)]
+    pub encapsulation_pub_key: MLKEMPublicKey,
+    #[rkyv(with = AsWireMlDsaSignature)]
+    pub proof: MLDSASignature,
+}
 
-    fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-        let iter = value.try_into_array()?.into_iter();
-        let [message_id, valid_until, signing_pub_key, encapsulation_pub_key, proof] =
-            take_fields(iter)?;
+impl TryFrom<&ArchivedPairRequestBody> for PairRequestBody {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedPairRequestBody) -> Result<Self, Self::Error> {
         Ok(Self {
-            message_id: message_id.try_into()?,
-            valid_until: valid_until.try_into()?,
-            signing_pub_key: signing_pub_key.try_into()?,
-            encapsulation_pub_key: encapsulation_pub_key.try_into()?,
-            proof: proof.try_into()?,
+            message_id: (&value.message_id).into(),
+            valid_until: value.valid_until.to_native(),
+            signing_pub_key: mldsa_public_key_from_archived(&value.signing_pub_key)?,
+            encapsulation_pub_key: mlkem_public_key_from_archived(&value.encapsulation_pub_key)?,
+            proof: mldsa_signature_from_archived(&value.proof)?,
         })
     }
 }
