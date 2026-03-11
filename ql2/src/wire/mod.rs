@@ -25,7 +25,7 @@ use crate::QlError;
 
 pub(crate) type WireArchiveError = rkyv::rancor::Error;
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub struct QlRecord {
     pub header: QlHeader,
     pub payload: QlPayload,
@@ -45,7 +45,7 @@ impl QlHeader {
     }
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub enum QlPayload {
     Handshake(HandshakeRecord),
     Pair(PairRequestRecord),
@@ -63,7 +63,22 @@ pub fn access_record(bytes: &[u8]) -> Result<&ArchivedQlRecord, QlError> {
 }
 
 pub fn decode_record(bytes: &[u8]) -> Result<QlRecord, QlError> {
-    deserialize_value(access_record(bytes)?)
+    let record = access_record(bytes)?;
+    let header = deserialize_value(&record.header)?;
+    let payload = match &record.payload {
+        ArchivedQlPayload::Handshake(message) => QlPayload::Handshake(deserialize_value(message)?),
+        ArchivedQlPayload::Pair(message) => {
+            QlPayload::Pair(pair::decode_pair_request_record(&header, message)?)
+        }
+        ArchivedQlPayload::Unpair(message) => QlPayload::Unpair(deserialize_value(message)?),
+        ArchivedQlPayload::Heartbeat(message) => {
+            QlPayload::Heartbeat(encrypted_message_from_archived(message, &header.aad()))
+        }
+        ArchivedQlPayload::Stream(message) => {
+            QlPayload::Stream(encrypted_message_from_archived(message, &header.aad()))
+        }
+    };
+    Ok(QlRecord { header, payload })
 }
 
 pub(crate) fn encode_value(
@@ -125,14 +140,15 @@ pub(crate) fn now_secs() -> u64 {
 
 #[test]
 fn ql_record_round_trip() {
+    let header = QlHeader {
+        sender: XID::from_data([1; XID::XID_SIZE]),
+        recipient: XID::from_data([2; XID::XID_SIZE]),
+    };
     let record = QlRecord {
-        header: QlHeader {
-            sender: XID::from_data([1; XID::XID_SIZE]),
-            recipient: XID::from_data([2; XID::XID_SIZE]),
-        },
+        header: header.clone(),
         payload: QlPayload::Heartbeat(EncryptedMessage::new(
             [3u8, 4, 5],
-            [6u8, 7],
+            header.aad(),
             bc_components::Nonce::from_data([8; bc_components::Nonce::NONCE_SIZE]),
             bc_components::AuthenticationTag::from_data(
                 [9; bc_components::AuthenticationTag::AUTHENTICATION_TAG_SIZE],

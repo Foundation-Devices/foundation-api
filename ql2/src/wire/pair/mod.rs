@@ -4,15 +4,15 @@ use bc_components::{
 use rkyv::{Archive, Deserialize, Serialize};
 
 use super::{
-    AsWireEncryptedMessage, AsWireMlDsaPublicKey, AsWireMlDsaSignature, AsWireMlKemCiphertext,
-    AsWireMlKemPublicKey,
+    encrypted_message_from_archived, mlkem_ciphertext_from_archived, AsWireEncryptedMessage,
+    AsWireMlDsaPublicKey, AsWireMlDsaSignature, AsWireMlKemCiphertext, AsWireMlKemPublicKey,
 };
-use crate::MessageId;
+use crate::{MessageId, QlError};
 
 mod crypto;
 pub use crypto::*;
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
 pub struct PairRequestRecord {
     #[rkyv(with = AsWireMlKemCiphertext)]
     pub kem_ct: MLKEMCiphertext,
@@ -30,4 +30,16 @@ pub struct PairRequestBody {
     pub encapsulation_pub_key: MLKEMPublicKey,
     #[rkyv(with = AsWireMlDsaSignature)]
     pub proof: MLDSASignature,
+}
+
+pub(crate) fn decode_pair_request_record(
+    header: &super::QlHeader,
+    value: &ArchivedPairRequestRecord,
+) -> Result<PairRequestRecord, QlError> {
+    let kem_ct = mlkem_ciphertext_from_archived(&value.kem_ct)?;
+    let aad = crypto::pairing_aad(header, &kem_ct);
+    Ok(PairRequestRecord {
+        kem_ct,
+        encrypted: encrypted_message_from_archived(&value.encrypted, &aad),
+    })
 }

@@ -136,7 +136,6 @@ pub(crate) fn authentication_tag_from_archived(
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WireEncryptedMessage {
     pub(crate) ciphertext: Vec<u8>,
-    pub(crate) aad: Vec<u8>,
     pub(crate) nonce: WireNonce,
     pub(crate) auth: WireAuthenticationTag,
 }
@@ -145,42 +144,51 @@ impl From<&EncryptedMessage> for WireEncryptedMessage {
     fn from(value: &EncryptedMessage) -> Self {
         Self {
             ciphertext: value.ciphertext().to_vec(),
-            aad: value.aad().to_vec(),
             nonce: value.nonce().into(),
             auth: value.authentication_tag().into(),
         }
     }
 }
 
-impl TryFrom<WireEncryptedMessage> for EncryptedMessage {
-    type Error = QlError;
-
-    fn try_from(value: WireEncryptedMessage) -> Result<Self, Self::Error> {
-        Ok(EncryptedMessage::new(
-            value.ciphertext,
-            value.aad,
-            value.nonce.try_into()?,
-            value.auth.try_into()?,
-        ))
-    }
-}
-
 pub(crate) fn encrypted_message_from_archived(
     value: &ArchivedWireEncryptedMessage,
+    aad: &[u8],
 ) -> EncryptedMessage {
     EncryptedMessage::new(
         value.ciphertext.as_slice(),
-        value.aad.as_slice(),
+        aad,
         nonce_from_archived(&value.nonce),
         authentication_tag_from_archived(&value.auth),
     )
 }
 
-impl_wire_wrapper!(
-    AsWireEncryptedMessage,
-    EncryptedMessage,
-    WireEncryptedMessage
-);
+pub(crate) struct AsWireEncryptedMessage;
+
+impl ArchiveWith<EncryptedMessage> for AsWireEncryptedMessage {
+    type Archived = Archived<WireEncryptedMessage>;
+    type Resolver = Resolver<WireEncryptedMessage>;
+
+    fn resolve_with(
+        field: &EncryptedMessage,
+        resolver: Self::Resolver,
+        out: Place<Self::Archived>,
+    ) {
+        WireEncryptedMessage::from(field).resolve(resolver, out);
+    }
+}
+
+impl<S> SerializeWith<EncryptedMessage, S> for AsWireEncryptedMessage
+where
+    S: Fallible + ?Sized,
+    WireEncryptedMessage: Serialize<S>,
+{
+    fn serialize_with(
+        field: &EncryptedMessage,
+        serializer: &mut S,
+    ) -> Result<Self::Resolver, S::Error> {
+        WireEncryptedMessage::from(field).serialize(serializer)
+    }
+}
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]

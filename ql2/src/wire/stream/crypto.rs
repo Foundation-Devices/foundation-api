@@ -26,11 +26,8 @@ pub(crate) fn decrypt_stream(
     session_key: &SymmetricKey,
 ) -> Result<StreamBody, QlError> {
     let header = deserialize_value(header)?;
-    let encrypted = encrypted_message_from_archived(encrypted);
     let aad = header.aad();
-    if encrypted.aad() != aad {
-        return Err(QlError::InvalidPayload);
-    }
+    let encrypted = encrypted_message_from_archived(encrypted, &aad);
     let plaintext = session_key
         .decrypt(&encrypted)
         .map_err(|_| QlError::InvalidPayload)?;
