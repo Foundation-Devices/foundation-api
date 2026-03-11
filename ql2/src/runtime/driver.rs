@@ -12,13 +12,13 @@ use crate::{
     engine::{self, Engine, EngineInput, EngineOutput, OpenId},
     platform::{PlatformFuture, QlPlatform},
     runtime::{
-        pipe,
+        command::RuntimeCommand,
         handle::{InboundByteStream, InboundStream, StreamResponder},
-        command::RuntimeCommand, AcceptedStreamDelivery, HandlerEvent, Runtime,
+        pipe, AcceptedStreamDelivery, HandlerEvent, Runtime,
     },
+    wire::stream::{Direction, ResetCode},
     QlError, StreamId,
 };
-use crate::wire::stream::{Direction, ResetCode};
 
 struct InFlightWrite<'a> {
     token: engine::Token,
@@ -280,11 +280,10 @@ struct DriverState {
 impl DriverState {
     fn new(config: crate::runtime::RuntimeConfig, peer: Option<crate::Peer>) -> Self {
         let engine = Engine::new(config, peer);
-        let next_timer = engine.next_deadline();
         Self {
             engine,
             pending_inputs: VecDeque::new(),
-            next_timer,
+            next_timer: None,
             next_open_id: 1,
             pending_opens: HashMap::new(),
             streams: HashMap::new(),
@@ -330,9 +329,13 @@ impl DriverState {
                 response_head,
                 response_pipe,
             } => {
-                if let Some(DriverStreamIo::Responder { response, .. }) = self.streams.get_mut(&stream_id)
+                if let Some(DriverStreamIo::Responder { response, .. }) =
+                    self.streams.get_mut(&stream_id)
                 {
-                    *response = ResponderResponseIo::Streaming(OutboundIo::new(Direction::Response, response_pipe));
+                    *response = ResponderResponseIo::Streaming(OutboundIo::new(
+                        Direction::Response,
+                        response_pipe,
+                    ));
                 }
                 self.push_input(EngineInput::AcceptStream {
                     stream_id,
@@ -340,7 +343,8 @@ impl DriverState {
                 });
             }
             RuntimeCommand::RejectStream { stream_id, code } => {
-                if let Some(DriverStreamIo::Responder { response, .. }) = self.streams.get_mut(&stream_id)
+                if let Some(DriverStreamIo::Responder { response, .. }) =
+                    self.streams.get_mut(&stream_id)
                 {
                     *response = ResponderResponseIo::Rejected;
                 }
@@ -378,7 +382,8 @@ impl DriverState {
                 self.push_input(EngineInput::ResponderDropped { stream_id });
             }
             RuntimeCommand::PendingAcceptDropped { stream_id } => {
-                if let Some(DriverStreamIo::Initiator { pending_accept, .. }) = self.streams.get_mut(&stream_id)
+                if let Some(DriverStreamIo::Initiator { pending_accept, .. }) =
+                    self.streams.get_mut(&stream_id)
                 {
                     if matches!(pending_accept, PendingAcceptState::Waiting(_)) {
                         *pending_accept = PendingAcceptState::Dropped;
@@ -423,17 +428,19 @@ impl<P: QlPlatform> Runtime<P> {
                 let next_timer = &mut state.next_timer;
                 let pending_opens = &mut state.pending_opens;
                 let streams = &mut state.streams;
-                state.engine.run_tick(now, input, &self.platform, &mut |output| {
-                    self.apply_output(
-                        pending_inputs,
-                        next_timer,
-                        pending_opens,
-                        streams,
-                        &runtime_tx,
-                        &mut in_flight,
-                        output,
-                    );
-                });
+                state
+                    .engine
+                    .run_tick(now, input, &self.platform, &mut |output| {
+                        self.apply_output(
+                            pending_inputs,
+                            next_timer,
+                            pending_opens,
+                            streams,
+                            &runtime_tx,
+                            &mut in_flight,
+                            output,
+                        );
+                    });
                 continue;
             }
 
@@ -441,7 +448,10 @@ impl<P: QlPlatform> Runtime<P> {
                 break;
             }
 
-            match self.next_driver_event(state.next_timer, in_flight.as_mut()).await {
+            match self
+                .next_driver_event(state.next_timer, in_flight.as_mut())
+                .await
+            {
                 DriverEvent::Command(command) => state.translate_command(command),
                 DriverEvent::WriteCompleted {
                     token,
@@ -550,7 +560,8 @@ impl<P: QlPlatform> Runtime<P> {
                 response_head,
                 ..
             } => {
-                let Some(DriverStreamIo::Initiator { pending_accept, .. }) = streams.get_mut(&stream_id)
+                let Some(DriverStreamIo::Initiator { pending_accept, .. }) =
+                    streams.get_mut(&stream_id)
                 else {
                     return;
                 };
@@ -578,7 +589,8 @@ impl<P: QlPlatform> Runtime<P> {
                     let _ = pending.start_tx.send(Err(error));
                     return;
                 }
-                let Some(DriverStreamIo::Initiator { pending_accept, .. }) = streams.get_mut(&stream_id)
+                let Some(DriverStreamIo::Initiator { pending_accept, .. }) =
+                    streams.get_mut(&stream_id)
                 else {
                     return;
                 };
@@ -604,21 +616,22 @@ impl<P: QlPlatform> Runtime<P> {
                         response: ResponderResponseIo::Pending,
                     },
                 );
-                self.platform.handle_inbound(HandlerEvent::Stream(InboundStream {
-                    stream_id,
-                    request_head,
-                    request: InboundByteStream::new(
+                self.platform
+                    .handle_inbound(HandlerEvent::Stream(InboundStream {
                         stream_id,
-                        Direction::Request,
-                        request_reader,
-                        runtime_tx.clone(),
-                    ),
-                    respond_to: StreamResponder::new(
-                        stream_id,
-                        self.config.pipe_size_bytes,
-                        runtime_tx.clone(),
-                    ),
-                }));
+                        request_head,
+                        request: InboundByteStream::new(
+                            stream_id,
+                            Direction::Request,
+                            request_reader,
+                            runtime_tx.clone(),
+                        ),
+                        respond_to: StreamResponder::new(
+                            stream_id,
+                            self.config.pipe_size_bytes,
+                            runtime_tx.clone(),
+                        ),
+                    }));
             }
             EngineOutput::InboundData {
                 stream_id,
@@ -674,9 +687,7 @@ impl<P: QlPlatform> Runtime<P> {
                 }
             }
             EngineOutput::OutboundClosed { stream_id, dir }
-            | EngineOutput::OutboundFailed {
-                stream_id, dir, ..
-            } => {
+            | EngineOutput::OutboundFailed { stream_id, dir, .. } => {
                 if let Some(stream) = streams.get_mut(&stream_id) {
                     if let Some(outbound) = stream.outbound_mut(dir) {
                         outbound.close();
@@ -692,7 +703,6 @@ impl<P: QlPlatform> Runtime<P> {
     }
 }
 
-
 fn poll_stream(
     streams: &mut HashMap<StreamId, DriverStreamIo>,
     pending_inputs: &mut VecDeque<EngineInput>,
@@ -700,7 +710,9 @@ fn poll_stream(
 ) {
     if let Some(stream) = streams.get_mut(&stream_id) {
         match stream {
-            DriverStreamIo::Initiator { request, .. } => request.poll_pending(stream_id, pending_inputs),
+            DriverStreamIo::Initiator { request, .. } => {
+                request.poll_pending(stream_id, pending_inputs)
+            }
             DriverStreamIo::Responder { response, .. } => {
                 if let ResponderResponseIo::Streaming(outbound) = response {
                     outbound.poll_pending(stream_id, pending_inputs);
