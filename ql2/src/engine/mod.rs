@@ -28,7 +28,7 @@ use crate::{
             StreamFrameData, StreamFrameFinish, StreamFrameOpen, StreamFrameReject,
             StreamFrameReset,
         },
-        unpair::{self, UnpairRecord},
+        unpair::{self},
         QlHeader, QlPayload, QlRecord,
     },
     MessageId, PacketId, Peer, QlError, StreamId,
@@ -504,57 +504,55 @@ impl Engine {
         let Ok(record) = wire::access_record(&bytes) else {
             return;
         };
-        let Ok(header) = QlHeader::try_from(&record.header) else {
-            return;
-        };
-        if header.recipient != crypto.xid() {
+        let sender = wire::xid_from_archived(&record.header.sender);
+        let recipient = wire::xid_from_archived(&record.header.recipient);
+        if recipient != crypto.xid() {
             return;
         }
         if !matches!(&record.payload, wire::ArchivedQlPayload::Pair(_)) {
             let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
                 return;
             };
-            if header.sender != peer {
+            if sender != peer {
                 return;
             }
         }
         match &record.payload {
             wire::ArchivedQlPayload::Handshake(message) => {
-                self.handle_handshake(now, header, message, crypto, emit)
+                self.handle_handshake(now, sender, message, crypto, emit)
             }
             wire::ArchivedQlPayload::Stream(encrypted) => {
-                self.handle_stream(now, header, encrypted, emit)
+                self.handle_stream(now, sender, &record.header, encrypted, emit)
             }
             wire::ArchivedQlPayload::Heartbeat(encrypted) => {
-                self.handle_heartbeat(now, header, encrypted, crypto, emit)
+                self.handle_heartbeat(now, &record.header, encrypted, crypto, emit)
             }
             wire::ArchivedQlPayload::Pair(request) => {
-                self.handle_pairing(now, header, request, crypto, emit)
+                self.handle_pairing(now, &record.header, request, crypto, emit)
             }
-            wire::ArchivedQlPayload::Unpair(record) => self.handle_unpair(header, record, emit),
+            wire::ArchivedQlPayload::Unpair(unpair_record) => {
+                self.handle_unpair(sender, &record.header, unpair_record, emit)
+            }
         }
     }
 
     fn handle_handshake(
         &mut self,
         now: Instant,
-        header: QlHeader,
+        peer: XID,
         message: &wire::handshake::ArchivedHandshakeRecord,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
         match message {
             wire::handshake::ArchivedHandshakeRecord::Hello(hello) => {
-                let Ok(hello) = Hello::try_from(hello) else {
-                    return;
-                };
-                self.handle_hello(now, header, hello, crypto, emit)
+                self.handle_hello(now, peer, hello, crypto, emit)
             }
             wire::handshake::ArchivedHandshakeRecord::HelloReply(reply) => {
-                self.handle_hello_reply(now, header, reply, crypto, emit)
+                self.handle_hello_reply(now, peer, reply, crypto, emit)
             }
             wire::handshake::ArchivedHandshakeRecord::Confirm(confirm) => {
-                self.handle_confirm(now, header, confirm, crypto, emit)
+                self.handle_confirm(now, peer, confirm, crypto, emit)
             }
         }
     }
@@ -562,12 +560,12 @@ impl Engine {
     fn handle_pairing(
         &mut self,
         now: Instant,
-        header: QlHeader,
+        header: &wire::ArchivedQlHeader,
         request: &wire::pair::ArchivedPairRequestRecord,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let payload = match wire::pair::decrypt_pair_request(crypto, &header, request) {
+        let payload = match wire::pair::decrypt_pair_request(crypto, header, request) {
             Ok(payload) => payload,
             Err(_) => return,
         };
@@ -594,28 +592,26 @@ impl Engine {
 
     fn handle_unpair(
         &mut self,
-        header: QlHeader,
+        peer: XID,
+        header: &wire::ArchivedQlHeader,
         record: &wire::unpair::ArchivedUnpairRecord,
         emit: &mut impl OutputFn,
     ) {
-        let peer = header.sender;
         {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
             };
-            if unpair::verify_unpair_record(&header, record, &peer_record.signing_key).is_err() {
+            if unpair::verify_unpair_record(header, record, &peer_record.signing_key).is_err() {
                 return;
             }
         }
-        let Ok(record) = UnpairRecord::try_from(record) else {
-            return;
-        };
-        let replay_key =
-            ReplayKey::new(peer, ReplayNamespace::Peer, MessageId(record.message_id.0));
+        let message_id: MessageId = (&record.message_id).into();
+        let valid_until = record.valid_until.to_native();
+        let replay_key = ReplayKey::new(peer, ReplayNamespace::Peer, message_id);
         if self
             .state
             .replay_cache
-            .check_and_store_valid_until(replay_key, record.valid_until)
+            .check_and_store_valid_until(replay_key, valid_until)
         {
             return;
         }
@@ -625,7 +621,7 @@ impl Engine {
     fn handle_heartbeat(
         &mut self,
         now: Instant,
-        header: QlHeader,
+        header: &wire::ArchivedQlHeader,
         encrypted: &wire::ArchivedWireEncryptedMessage,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
@@ -641,7 +637,7 @@ impl Engine {
             else {
                 return;
             };
-            if heartbeat::decrypt_heartbeat(&header, encrypted, session_key).is_err() {
+            if heartbeat::decrypt_heartbeat(header, encrypted, session_key).is_err() {
                 return;
             }
             !keepalive.pending
@@ -656,11 +652,11 @@ impl Engine {
     fn handle_stream(
         &mut self,
         now: Instant,
-        header: QlHeader,
+        peer: XID,
+        header: &wire::ArchivedQlHeader,
         encrypted: &wire::ArchivedWireEncryptedMessage,
         emit: &mut impl OutputFn,
     ) {
-        let peer = header.sender;
         let body = {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
@@ -668,7 +664,7 @@ impl Engine {
             let PeerSession::Connected { session_key, .. } = &peer_record.session else {
                 return;
             };
-            match decrypt_stream(&header, encrypted, session_key) {
+            match decrypt_stream(header, encrypted, session_key) {
                 Ok(body) => body,
                 Err(_) => return,
             }
@@ -1473,18 +1469,17 @@ impl Engine {
     fn handle_hello(
         &mut self,
         now: Instant,
-        header: QlHeader,
-        hello: Hello,
+        peer: XID,
+        hello: &wire::handshake::ArchivedHello,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let peer = header.sender;
         let action = match self.state.peer.as_ref() {
             Some(entry) => match &entry.session {
                 PeerSession::Initiator {
                     hello: local_hello, ..
                 } => {
-                    if peer_hello_wins(local_hello, crypto.xid(), &hello, peer) {
+                    if peer_hello_wins(local_hello, crypto.xid(), hello, peer) {
                         HelloAction::StartResponder
                     } else {
                         HelloAction::Ignore
@@ -1496,7 +1491,7 @@ impl Engine {
                     deadline,
                     ..
                 } => {
-                    if stored.nonce == hello.nonce {
+                    if stored.nonce == wire::nonce_from_archived(&hello.nonce) {
                         HelloAction::ResendReply {
                             reply: reply.clone(),
                             deadline: *deadline,
@@ -1534,12 +1529,11 @@ impl Engine {
     fn handle_hello_reply(
         &mut self,
         now: Instant,
-        header: QlHeader,
+        peer: XID,
         reply: &wire::handshake::ArchivedHelloReply,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let peer = header.sender;
         let token = self.state.next_token();
         let deadline = now + self.config.handshake_timeout;
         let confirm = match {
@@ -1603,12 +1597,11 @@ impl Engine {
     fn handle_confirm(
         &mut self,
         now: Instant,
-        header: QlHeader,
+        peer: XID,
         confirm: &wire::handshake::ArchivedConfirm,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let peer = header.sender;
         let Some(peer_record) = self.state.peer.as_ref() else {
             return;
         };
@@ -1654,7 +1647,7 @@ impl Engine {
         &mut self,
         now: Instant,
         peer: XID,
-        hello: Hello,
+        hello: &wire::handshake::ArchivedHello,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
@@ -1667,7 +1660,7 @@ impl Engine {
                 peer,
                 crypto.xid(),
                 &peer_record.encapsulation_key,
-                &hello,
+                hello,
             )
         } {
             Ok(result) => result,
@@ -1678,6 +1671,13 @@ impl Engine {
                 self.emit_peer_status(emit);
                 return;
             }
+        };
+        let Ok(hello) = wire::deserialize_value(hello) else {
+            if let Some(entry) = self.state.peer.as_mut() {
+                entry.session = PeerSession::Disconnected;
+            }
+            self.emit_peer_status(emit);
+            return;
         };
 
         let deadline = now + self.config.handshake_timeout;
@@ -2161,12 +2161,13 @@ impl Engine {
 fn peer_hello_wins(
     local_hello: &Hello,
     local_sender: XID,
-    peer_hello: &Hello,
+    peer_hello: &wire::handshake::ArchivedHello,
     peer_sender: XID,
 ) -> bool {
     use std::cmp::Ordering;
 
-    match peer_hello.nonce.data().cmp(local_hello.nonce.data()) {
+    let peer_nonce = wire::nonce_from_archived(&peer_hello.nonce);
+    match peer_nonce.data().cmp(local_hello.nonce.data()) {
         Ordering::Less => true,
         Ordering::Greater => false,
         Ordering::Equal => peer_sender.data().cmp(local_sender.data()) == Ordering::Less,

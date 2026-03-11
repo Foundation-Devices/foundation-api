@@ -1,10 +1,16 @@
 use bc_components::{Digest, MLDSAPublicKey, MLKEMPublicKey, Nonce, SymmetricKey, XID};
 use rkyv::{Archive, Serialize};
 
-use super::{verify_transcript_signature, Confirm, Hello, HelloReply};
+use super::{
+    verify_transcript_signature, ArchivedConfirm, ArchivedHello, ArchivedHelloReply, Confirm,
+    Hello, HelloReply,
+};
 use crate::{
     platform::QlCrypto,
-    wire::{encode_value, AsWireMlKemCiphertext, AsWireNonce, AsWireXid},
+    wire::{
+        encode_value, mldsa_signature_from_archived, mlkem_ciphertext_from_archived,
+        nonce_from_archived, AsWireMlKemCiphertext, AsWireNonce, AsWireXid,
+    },
     QlError,
 };
 
@@ -48,24 +54,29 @@ pub fn build_hello(
     Ok((Hello { nonce, kem_ct }, session_key))
 }
 
-pub fn respond_hello<H>(
+pub fn respond_hello(
     platform: &impl QlCrypto,
     initiator: XID,
     responder: XID,
     initiator_encapsulation_key: &MLKEMPublicKey,
-    hello: H,
-) -> Result<(HelloReply, ResponderSecrets), QlError>
-where
-    H: TryInto<Hello, Error = QlError>,
-{
-    let hello = hello.try_into()?;
+    hello: &ArchivedHello,
+) -> Result<(HelloReply, ResponderSecrets), QlError> {
+    let initiator_nonce = nonce_from_archived(&hello.nonce);
+    let initiator_kem_ct = mlkem_ciphertext_from_archived(&hello.kem_ct)?;
     let initiator_secret = platform
         .encapsulation_private_key()
-        .decapsulate_shared_secret(&hello.kem_ct)
+        .decapsulate_shared_secret(&initiator_kem_ct)
         .map_err(|_| QlError::InvalidPayload)?;
     let nonce = next_nonce(platform);
     let (responder_secret, kem_ct) = initiator_encapsulation_key.encapsulate_new_shared_secret();
-    let transcript = handshake_transcript(initiator, responder, &hello, &nonce, &kem_ct);
+    let transcript = handshake_transcript(
+        initiator,
+        responder,
+        &initiator_nonce,
+        &nonce,
+        &initiator_kem_ct,
+        &kem_ct,
+    );
     let signature = platform.signing_private_key().sign(&transcript);
     let reply = HelloReply {
         nonce,
@@ -81,24 +92,30 @@ where
     ))
 }
 
-pub fn build_confirm<R>(
+pub fn build_confirm(
     platform: &impl QlCrypto,
     initiator: XID,
     responder: XID,
     responder_signing_key: &MLDSAPublicKey,
     hello: &Hello,
-    reply: R,
+    reply: &ArchivedHelloReply,
     initiator_secret: &SymmetricKey,
-) -> Result<(Confirm, SymmetricKey), QlError>
-where
-    R: TryInto<HelloReply, Error = QlError>,
-{
-    let reply = reply.try_into()?;
-    let transcript = handshake_transcript(initiator, responder, hello, &reply.nonce, &reply.kem_ct);
-    verify_transcript_signature(responder_signing_key, &reply.signature, &transcript)?;
+) -> Result<(Confirm, SymmetricKey), QlError> {
+    let reply_nonce = nonce_from_archived(&reply.nonce);
+    let reply_kem_ct = mlkem_ciphertext_from_archived(&reply.kem_ct)?;
+    let reply_signature = mldsa_signature_from_archived(&reply.signature)?;
+    let transcript = handshake_transcript(
+        initiator,
+        responder,
+        &hello.nonce,
+        &reply_nonce,
+        &hello.kem_ct,
+        &reply_kem_ct,
+    );
+    verify_transcript_signature(responder_signing_key, &reply_signature, &transcript)?;
     let responder_secret = platform
         .encapsulation_private_key()
-        .decapsulate_shared_secret(&reply.kem_ct)
+        .decapsulate_shared_secret(&reply_kem_ct)
         .map_err(|_| QlError::InvalidPayload)?;
     let signature = platform.signing_private_key().sign(&transcript);
     let confirm = Confirm { signature };
@@ -106,21 +123,25 @@ where
     Ok((confirm, session_key))
 }
 
-pub fn finalize_confirm<C>(
+pub fn finalize_confirm(
     initiator: XID,
     responder: XID,
     initiator_signing_key: &MLDSAPublicKey,
     hello: &Hello,
-    reply: &HelloReply,
-    confirm: C,
+    reply: &super::HelloReply,
+    confirm: &ArchivedConfirm,
     secrets: &ResponderSecrets,
-) -> Result<SymmetricKey, QlError>
-where
-    C: TryInto<Confirm, Error = QlError>,
-{
-    let confirm = confirm.try_into()?;
-    let transcript = handshake_transcript(initiator, responder, hello, &reply.nonce, &reply.kem_ct);
-    verify_transcript_signature(initiator_signing_key, &confirm.signature, &transcript)?;
+) -> Result<SymmetricKey, QlError> {
+    let confirm_signature = mldsa_signature_from_archived(&confirm.signature)?;
+    let transcript = handshake_transcript(
+        initiator,
+        responder,
+        &hello.nonce,
+        &reply.nonce,
+        &hello.kem_ct,
+        &reply.kem_ct,
+    );
+    verify_transcript_signature(initiator_signing_key, &confirm_signature, &transcript)?;
     Ok(derive_session_key(
         &secrets.initiator_secret,
         &secrets.responder_secret,
@@ -131,16 +152,17 @@ where
 fn handshake_transcript(
     initiator: XID,
     responder: XID,
-    hello: &Hello,
+    initiator_nonce: &Nonce,
     responder_nonce: &Nonce,
+    initiator_kem_ct: &bc_components::MLKEMCiphertext,
     responder_kem_ct: &bc_components::MLKEMCiphertext,
 ) -> Vec<u8> {
     encode_value(&HandshakeTranscript {
         initiator,
         responder,
-        initiator_nonce: hello.nonce.clone(),
+        initiator_nonce: initiator_nonce.clone(),
         responder_nonce: responder_nonce.clone(),
-        initiator_kem_ct: hello.kem_ct.clone(),
+        initiator_kem_ct: initiator_kem_ct.clone(),
         responder_kem_ct: responder_kem_ct.clone(),
     })
 }

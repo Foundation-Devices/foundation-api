@@ -4,7 +4,10 @@ use rkyv::{Archive, Serialize};
 use super::UnpairRecord;
 use crate::{
     platform::QlCrypto,
-    wire::{encode_value, now_secs, QlHeader, QlPayload, QlRecord},
+    wire::{
+        deserialize_value, encode_value, mldsa_signature_from_archived, now_secs, ArchivedQlHeader,
+        QlHeader, QlPayload, QlRecord,
+    },
     MessageId, QlError,
 };
 
@@ -36,25 +39,20 @@ pub fn build_unpair_record(
     }
 }
 
-pub fn verify_unpair_record<H, R>(
-    header: H,
-    record: R,
+pub fn verify_unpair_record(
+    header: &ArchivedQlHeader,
+    record: &super::ArchivedUnpairRecord,
     signing_key: &MLDSAPublicKey,
-) -> Result<(), QlError>
-where
-    H: TryInto<QlHeader, Error = QlError>,
-    R: TryInto<UnpairRecord, Error = QlError>,
-{
-    let header = header.try_into()?;
-    let record = record.try_into()?;
-    if now_secs() > record.valid_until {
+) -> Result<(), QlError> {
+    let header = deserialize_value(header)?;
+    let message_id = (&record.message_id).into();
+    let valid_until = record.valid_until.to_native();
+    let signature = mldsa_signature_from_archived(&record.signature)?;
+    if now_secs() > valid_until {
         return Err(QlError::InvalidPayload);
     }
-    let proof_data = unpair_proof_data(&header, record.message_id, record.valid_until);
-    if signing_key
-        .verify(&record.signature, &proof_data)
-        .unwrap_or(false)
-    {
+    let proof_data = unpair_proof_data(&header, message_id, valid_until);
+    if signing_key.verify(&signature, &proof_data).unwrap_or(false) {
         Ok(())
     } else {
         Err(QlError::InvalidSignature)

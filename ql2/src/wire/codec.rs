@@ -3,9 +3,9 @@ use bc_components::{
     MLKEMPublicKey, Nonce, MLDSA, MLKEM, XID,
 };
 use rkyv::{
-    rancor::Fallible,
-    with::{ArchiveWith, SerializeWith},
-    Archive, Archived, Place, Resolver, Serialize,
+    rancor::{Fallible, Source},
+    with::{ArchiveWith, DeserializeWith, SerializeWith},
+    Archive, Archived, Deserialize, Place, Resolver, Serialize,
 };
 
 use crate::QlError;
@@ -39,15 +39,43 @@ macro_rules! impl_wire_wrapper {
                 <$wire>::from(field).serialize(serializer)
             }
         }
+
+        impl<D> DeserializeWith<Archived<$wire>, $external, D> for $marker
+        where
+            D: Fallible + ?Sized,
+            D::Error: Source,
+            Archived<$wire>: Deserialize<$wire, D>,
+            $wire: TryInto<$external, Error = QlError>,
+        {
+            fn deserialize_with(
+                field: &Archived<$wire>,
+                deserializer: &mut D,
+            ) -> Result<$external, D::Error> {
+                field
+                    .deserialize(deserializer)?
+                    .try_into()
+                    .map_err(D::Error::new)
+            }
+        }
     };
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 pub(crate) struct WireXid(pub(crate) [u8; XID::XID_SIZE]);
 
 impl From<&XID> for WireXid {
     fn from(value: &XID) -> Self {
         Self(*value.data())
+    }
+}
+
+impl TryFrom<WireXid> for XID {
+    type Error = QlError;
+
+    fn try_from(value: WireXid) -> Result<Self, Self::Error> {
+        Ok(XID::from_data(value.0))
     }
 }
 
@@ -57,12 +85,20 @@ pub(crate) fn xid_from_archived(value: &ArchivedWireXid) -> XID {
 
 impl_wire_wrapper!(AsWireXid, XID, WireXid);
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WireNonce(pub(crate) [u8; Nonce::NONCE_SIZE]);
 
 impl From<&Nonce> for WireNonce {
     fn from(value: &Nonce) -> Self {
         Self(*value.data())
+    }
+}
+
+impl TryFrom<WireNonce> for Nonce {
+    type Error = QlError;
+
+    fn try_from(value: WireNonce) -> Result<Self, Self::Error> {
+        Ok(Nonce::from_data(value.0))
     }
 }
 
@@ -72,7 +108,7 @@ pub(crate) fn nonce_from_archived(value: &ArchivedWireNonce) -> Nonce {
 
 impl_wire_wrapper!(AsWireNonce, Nonce, WireNonce);
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WireAuthenticationTag(
     pub(crate) [u8; AuthenticationTag::AUTHENTICATION_TAG_SIZE],
 );
@@ -83,13 +119,21 @@ impl From<&AuthenticationTag> for WireAuthenticationTag {
     }
 }
 
+impl TryFrom<WireAuthenticationTag> for AuthenticationTag {
+    type Error = QlError;
+
+    fn try_from(value: WireAuthenticationTag) -> Result<Self, Self::Error> {
+        Ok(AuthenticationTag::from_data(value.0))
+    }
+}
+
 pub(crate) fn authentication_tag_from_archived(
     value: &ArchivedWireAuthenticationTag,
 ) -> AuthenticationTag {
     AuthenticationTag::from_data(value.0)
 }
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WireEncryptedMessage {
     pub(crate) ciphertext: Vec<u8>,
     pub(crate) aad: Vec<u8>,
@@ -105,6 +149,19 @@ impl From<&EncryptedMessage> for WireEncryptedMessage {
             nonce: value.nonce().into(),
             auth: value.authentication_tag().into(),
         }
+    }
+}
+
+impl TryFrom<WireEncryptedMessage> for EncryptedMessage {
+    type Error = QlError;
+
+    fn try_from(value: WireEncryptedMessage) -> Result<Self, Self::Error> {
+        Ok(EncryptedMessage::new(
+            value.ciphertext,
+            value.aad,
+            value.nonce.try_into()?,
+            value.auth.try_into()?,
+        ))
     }
 }
 
@@ -125,12 +182,24 @@ impl_wire_wrapper!(
     WireEncryptedMessage
 );
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub(crate) enum WireMlDsaLevel {
     MlDsa44 = 2,
     MlDsa65 = 3,
     MlDsa87 = 5,
+}
+
+impl TryFrom<WireMlDsaLevel> for MLDSA {
+    type Error = QlError;
+
+    fn try_from(value: WireMlDsaLevel) -> Result<Self, Self::Error> {
+        Ok(match value {
+            WireMlDsaLevel::MlDsa44 => MLDSA::MLDSA44,
+            WireMlDsaLevel::MlDsa65 => MLDSA::MLDSA65,
+            WireMlDsaLevel::MlDsa87 => MLDSA::MLDSA87,
+        })
+    }
 }
 
 impl From<MLDSA> for WireMlDsaLevel {
@@ -151,12 +220,24 @@ pub(crate) fn mldsa_level_from_archived(value: &ArchivedWireMlDsaLevel) -> MLDSA
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub(crate) enum WireMlKemLevel {
     MlKem512 = 1,
     MlKem768 = 2,
     MlKem1024 = 3,
+}
+
+impl TryFrom<WireMlKemLevel> for MLKEM {
+    type Error = QlError;
+
+    fn try_from(value: WireMlKemLevel) -> Result<Self, Self::Error> {
+        Ok(match value {
+            WireMlKemLevel::MlKem512 => MLKEM::MLKEM512,
+            WireMlKemLevel::MlKem768 => MLKEM::MLKEM768,
+            WireMlKemLevel::MlKem1024 => MLKEM::MLKEM1024,
+        })
+    }
 }
 
 impl From<MLKEM> for WireMlKemLevel {
@@ -177,10 +258,19 @@ pub(crate) fn mlkem_level_from_archived(value: &ArchivedWireMlKemLevel) -> MLKEM
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WireMlDsaPublicKey {
     pub(crate) level: WireMlDsaLevel,
     pub(crate) bytes: Vec<u8>,
+}
+
+impl TryFrom<WireMlDsaPublicKey> for MLDSAPublicKey {
+    type Error = QlError;
+
+    fn try_from(value: WireMlDsaPublicKey) -> Result<Self, Self::Error> {
+        MLDSAPublicKey::from_bytes(value.level.try_into()?, &value.bytes)
+            .map_err(|_| QlError::InvalidPayload)
+    }
 }
 
 impl From<&MLDSAPublicKey> for WireMlDsaPublicKey {
@@ -192,22 +282,21 @@ impl From<&MLDSAPublicKey> for WireMlDsaPublicKey {
     }
 }
 
-pub(crate) fn mldsa_public_key_from_archived(
-    value: &ArchivedWireMlDsaPublicKey,
-) -> Result<MLDSAPublicKey, QlError> {
-    MLDSAPublicKey::from_bytes(
-        mldsa_level_from_archived(&value.level),
-        value.bytes.as_slice(),
-    )
-    .map_err(|_| QlError::InvalidPayload)
-}
-
 impl_wire_wrapper!(AsWireMlDsaPublicKey, MLDSAPublicKey, WireMlDsaPublicKey);
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WireMlDsaSignature {
     pub(crate) level: WireMlDsaLevel,
     pub(crate) bytes: Vec<u8>,
+}
+
+impl TryFrom<WireMlDsaSignature> for MLDSASignature {
+    type Error = QlError;
+
+    fn try_from(value: WireMlDsaSignature) -> Result<Self, Self::Error> {
+        MLDSASignature::from_bytes(value.level.try_into()?, &value.bytes)
+            .map_err(|_| QlError::InvalidPayload)
+    }
 }
 
 impl From<&MLDSASignature> for WireMlDsaSignature {
@@ -231,10 +320,19 @@ pub(crate) fn mldsa_signature_from_archived(
 
 impl_wire_wrapper!(AsWireMlDsaSignature, MLDSASignature, WireMlDsaSignature);
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WireMlKemPublicKey {
     pub(crate) level: WireMlKemLevel,
     pub(crate) bytes: Vec<u8>,
+}
+
+impl TryFrom<WireMlKemPublicKey> for MLKEMPublicKey {
+    type Error = QlError;
+
+    fn try_from(value: WireMlKemPublicKey) -> Result<Self, Self::Error> {
+        MLKEMPublicKey::from_bytes(value.level.try_into()?, &value.bytes)
+            .map_err(|_| QlError::InvalidPayload)
+    }
 }
 
 impl From<&MLKEMPublicKey> for WireMlKemPublicKey {
@@ -246,22 +344,21 @@ impl From<&MLKEMPublicKey> for WireMlKemPublicKey {
     }
 }
 
-pub(crate) fn mlkem_public_key_from_archived(
-    value: &ArchivedWireMlKemPublicKey,
-) -> Result<MLKEMPublicKey, QlError> {
-    MLKEMPublicKey::from_bytes(
-        mlkem_level_from_archived(&value.level),
-        value.bytes.as_slice(),
-    )
-    .map_err(|_| QlError::InvalidPayload)
-}
-
 impl_wire_wrapper!(AsWireMlKemPublicKey, MLKEMPublicKey, WireMlKemPublicKey);
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WireMlKemCiphertext {
     pub(crate) level: WireMlKemLevel,
     pub(crate) bytes: Vec<u8>,
+}
+
+impl TryFrom<WireMlKemCiphertext> for MLKEMCiphertext {
+    type Error = QlError;
+
+    fn try_from(value: WireMlKemCiphertext) -> Result<Self, Self::Error> {
+        MLKEMCiphertext::from_bytes(value.level.try_into()?, &value.bytes)
+            .map_err(|_| QlError::InvalidPayload)
+    }
 }
 
 impl From<&MLKEMCiphertext> for WireMlKemCiphertext {

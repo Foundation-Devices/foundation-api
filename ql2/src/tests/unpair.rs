@@ -31,14 +31,10 @@ async fn connected_unpair_removes_peer_on_both_sides() {
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
-        let result_a = handle_a
-            .open_stream(Vec::new(), Default::default())
-            .await;
+        let result_a = handle_a.open_stream(Vec::new(), Default::default()).await;
         assert!(matches!(result_a, Err(QlError::NoPeerBound)));
 
-        let result_b = handle_b
-            .open_stream(Vec::new(), Default::default())
-            .await;
+        let result_b = handle_b.open_stream(Vec::new(), Default::default()).await;
         assert!(matches!(result_b, Err(QlError::NoPeerBound)));
     })
     .await;
@@ -72,14 +68,10 @@ async fn unpair_works_without_session() {
         await_status(&status_a, peer_b.xid, PeerStage::Disconnected).await;
         await_status(&status_b, peer_a.xid, PeerStage::Disconnected).await;
 
-        let result_a = handle_a
-            .open_stream(Vec::new(), Default::default())
-            .await;
+        let result_a = handle_a.open_stream(Vec::new(), Default::default()).await;
         assert!(matches!(result_a, Err(QlError::NoPeerBound)));
 
-        let result_b = handle_b
-            .open_stream(Vec::new(), Default::default())
-            .await;
+        let result_b = handle_b.open_stream(Vec::new(), Default::default()).await;
         assert!(matches!(result_b, Err(QlError::NoPeerBound)));
     })
     .await;
@@ -120,9 +112,7 @@ async fn invalid_unpair_signature_is_ignored() {
 
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        let result = handle_b
-            .open_stream(Vec::new(), Default::default())
-            .await;
+        let result = handle_b.open_stream(Vec::new(), Default::default()).await;
         assert!(matches!(result, Err(QlError::MissingSession)));
     })
     .await;

@@ -81,14 +81,18 @@ async fn rpc_request_response_round_trip() {
             };
             let request_body = CBOR::from(AddOne(41)).to_cbor_data();
             let response_body = CBOR::from(AddOneResponse(42)).to_cbor_data();
-            let request_head = RpcRequestHead::try_from(CBOR::try_from_data(&stream.request_head).unwrap())
-                .unwrap();
+            let request_head =
+                RpcRequestHead::try_from(CBOR::try_from_data(&stream.request_head).unwrap())
+                    .unwrap();
             assert_eq!(request_head.method, AddOne::METHOD);
             assert_eq!(request_head.content_length, Some(request_body.len() as u64));
 
             let mut response = stream
                 .respond_to
-                .accept(CBOR::from(RpcResponseHead::new(Some(response_body.len() as u64))).to_cbor_data())
+                .accept(
+                    CBOR::from(RpcResponseHead::new(Some(response_body.len() as u64)))
+                        .to_cbor_data(),
+                )
                 .unwrap();
 
             let request_body = read_body(stream.request).await.unwrap();
@@ -145,8 +149,9 @@ async fn rpc_request_response_reject_propagates() {
             let stream = match inbound_b.recv().await.unwrap() {
                 HandlerEvent::Stream(stream) => stream,
             };
-            let request_head = RpcRequestHead::try_from(CBOR::try_from_data(&stream.request_head).unwrap())
-                .unwrap();
+            let request_head =
+                RpcRequestHead::try_from(CBOR::try_from_data(&stream.request_head).unwrap())
+                    .unwrap();
             assert_eq!(request_head.method, AddOne::METHOD);
             stream.respond_to.reject(RejectCode::UnknownRoute).unwrap();
         });

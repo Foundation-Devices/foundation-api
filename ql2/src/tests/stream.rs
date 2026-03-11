@@ -702,12 +702,12 @@ async fn dropping_request_writer_sends_cancel() {
             assert_eq!(request.next_chunk().await.unwrap(), Some(vec![1, 2, 3, 4]));
             let err = request.next_chunk().await.unwrap_err();
             assert!(matches!(
-            err,
-            QlError::StreamReset {
-                dir: Direction::Request,
-                code: ResetCode::Cancelled,
-            }
-        ));
+                err,
+                QlError::StreamReset {
+                    dir: Direction::Request,
+                    code: ResetCode::Cancelled,
+                }
+            ));
             response.finish().await.unwrap();
         });
 

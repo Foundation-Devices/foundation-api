@@ -1,10 +1,13 @@
 use bc_components::{EncryptedMessage, XID};
 use dcbor::CBOR;
 use rkyv::{
-    api::high::{to_bytes_in, HighSerializer, HighValidator},
+    api::{
+        high::{to_bytes_in, HighSerializer, HighValidator},
+        low::{self, LowDeserializer},
+    },
     bytecheck::CheckBytes,
     ser::allocator::ArenaHandle,
-    Archive, Portable, Serialize,
+    Archive, Deserialize, Portable, Serialize,
 };
 
 pub mod handshake;
@@ -22,24 +25,13 @@ use crate::QlError;
 
 pub(crate) type WireArchiveError = rkyv::rancor::Error;
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct QlRecord {
     pub header: QlHeader,
     pub payload: QlPayload,
 }
 
-impl TryFrom<&ArchivedQlRecord> for QlRecord {
-    type Error = QlError;
-
-    fn try_from(value: &ArchivedQlRecord) -> Result<Self, Self::Error> {
-        Ok(Self {
-            header: (&value.header).try_into()?,
-            payload: (&value.payload).try_into()?,
-        })
-    }
-}
-
-#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct QlHeader {
     #[rkyv(with = AsWireXid)]
     pub sender: XID,
@@ -53,50 +45,13 @@ impl QlHeader {
     }
 }
 
-impl TryFrom<&ArchivedQlHeader> for QlHeader {
-    type Error = QlError;
-
-    fn try_from(value: &ArchivedQlHeader) -> Result<Self, Self::Error> {
-        Ok(Self {
-            sender: xid_from_archived(&value.sender),
-            recipient: xid_from_archived(&value.recipient),
-        })
-    }
-}
-
-impl TryFrom<&QlHeader> for QlHeader {
-    type Error = QlError;
-
-    fn try_from(value: &QlHeader) -> Result<Self, Self::Error> {
-        Ok(value.clone())
-    }
-}
-
-#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum QlPayload {
     Handshake(HandshakeRecord),
     Pair(PairRequestRecord),
     Unpair(UnpairRecord),
     Heartbeat(#[rkyv(with = AsWireEncryptedMessage)] EncryptedMessage),
     Stream(#[rkyv(with = AsWireEncryptedMessage)] EncryptedMessage),
-}
-
-impl TryFrom<&ArchivedQlPayload> for QlPayload {
-    type Error = QlError;
-
-    fn try_from(value: &ArchivedQlPayload) -> Result<Self, Self::Error> {
-        match value {
-            ArchivedQlPayload::Handshake(message) => Ok(Self::Handshake(message.try_into()?)),
-            ArchivedQlPayload::Pair(message) => Ok(Self::Pair(message.try_into()?)),
-            ArchivedQlPayload::Unpair(message) => Ok(Self::Unpair(message.try_into()?)),
-            ArchivedQlPayload::Heartbeat(message) => {
-                Ok(Self::Heartbeat(encrypted_message_from_archived(message)))
-            }
-            ArchivedQlPayload::Stream(message) => {
-                Ok(Self::Stream(encrypted_message_from_archived(message)))
-            }
-        }
-    }
 }
 
 pub fn encode_record(record: &QlRecord) -> Vec<u8> {
@@ -108,7 +63,7 @@ pub fn access_record(bytes: &[u8]) -> Result<&ArchivedQlRecord, QlError> {
 }
 
 pub fn decode_record(bytes: &[u8]) -> Result<QlRecord, QlError> {
-    access_record(bytes)?.try_into()
+    deserialize_value(access_record(bytes)?)
 }
 
 pub(crate) fn encode_value(
@@ -123,6 +78,12 @@ where
     T: Portable + for<'a> CheckBytes<HighValidator<'a, WireArchiveError>>,
 {
     rkyv::access::<T, WireArchiveError>(bytes).map_err(|_| QlError::InvalidPayload)
+}
+
+pub(crate) fn deserialize_value<T>(
+    value: &impl rkyv::Deserialize<T, LowDeserializer<WireArchiveError>>,
+) -> Result<T, QlError> {
+    low::deserialize::<T, WireArchiveError>(value).map_err(|_| QlError::InvalidPayload)
 }
 
 pub(crate) fn ensure_not_expired(valid_until: u64) -> Result<(), QlError> {

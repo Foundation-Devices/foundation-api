@@ -9,8 +9,10 @@ use super::{PairRequestBody, PairRequestRecord};
 use crate::{
     platform::QlCrypto,
     wire::{
-        access_value, encode_value, ensure_not_expired, now_secs, AsWireMlDsaPublicKey,
-        AsWireMlKemCiphertext, AsWireMlKemPublicKey, QlHeader, QlPayload, QlRecord,
+        access_value, deserialize_value, encode_value, encrypted_message_from_archived,
+        ensure_not_expired, mlkem_ciphertext_from_archived, now_secs, ArchivedQlHeader,
+        AsWireMlDsaPublicKey, AsWireMlKemCiphertext, AsWireMlKemPublicKey, QlHeader, QlPayload,
+        QlRecord,
     },
     MessageId, QlError,
 };
@@ -73,17 +75,14 @@ pub fn build_pair_request(
     })
 }
 
-pub fn decrypt_pair_request<H, R>(
+pub fn decrypt_pair_request(
     platform: &impl QlCrypto,
-    header: H,
-    request: R,
-) -> Result<PairRequestBody, QlError>
-where
-    H: TryInto<QlHeader, Error = QlError>,
-    R: TryInto<PairRequestRecord, Error = QlError>,
-{
-    let header = header.try_into()?;
-    let PairRequestRecord { kem_ct, encrypted } = request.try_into()?;
+    header: &ArchivedQlHeader,
+    request: &super::ArchivedPairRequestRecord,
+) -> Result<PairRequestBody, QlError> {
+    let header = deserialize_value(header)?;
+    let kem_ct = mlkem_ciphertext_from_archived(&request.kem_ct)?;
+    let encrypted = encrypted_message_from_archived(&request.encrypted);
     let session_key = platform
         .encapsulation_private_key()
         .decapsulate_shared_secret(&kem_ct)
@@ -141,7 +140,7 @@ fn decrypt_body(
         .decrypt(encrypted)
         .map_err(|_| QlError::InvalidPayload)?;
     let body = access_value::<super::ArchivedPairRequestBody>(&plaintext)?;
-    body.try_into()
+    deserialize_value(body)
 }
 
 fn pairing_aad(header: &QlHeader, kem_ct: &MLKEMCiphertext) -> Vec<u8> {

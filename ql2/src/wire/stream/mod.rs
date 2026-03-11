@@ -1,11 +1,11 @@
-use rkyv::{Archive, Serialize};
+use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::{PacketId, QlError, StreamId};
+use crate::{PacketId, StreamId};
 
 mod crypto;
 pub use crypto::*;
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StreamBody {
     pub packet_id: PacketId,
     pub valid_until: u64,
@@ -13,24 +13,7 @@ pub struct StreamBody {
     pub frame: Option<StreamFrame>,
 }
 
-impl TryFrom<&ArchivedStreamBody> for StreamBody {
-    type Error = QlError;
-
-    fn try_from(value: &ArchivedStreamBody) -> Result<Self, Self::Error> {
-        Ok(Self {
-            packet_id: (&value.packet_id).into(),
-            valid_until: value.valid_until.to_native(),
-            packet_ack: value.packet_ack.as_ref().map(PacketAck::from),
-            frame: value
-                .frame
-                .as_ref()
-                .map(StreamFrame::try_from)
-                .transpose()?,
-        })
-    }
-}
-
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PacketAck {
     pub packet_id: PacketId,
 }
@@ -43,7 +26,7 @@ impl From<&ArchivedPacketAck> for PacketAck {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum StreamFrame {
     Open(StreamFrameOpen),
     Accept(StreamFrameAccept),
@@ -68,23 +51,7 @@ impl StreamFrame {
     }
 }
 
-impl TryFrom<&ArchivedStreamFrame> for StreamFrame {
-    type Error = QlError;
-
-    fn try_from(value: &ArchivedStreamFrame) -> Result<Self, Self::Error> {
-        match value {
-            ArchivedStreamFrame::Open(frame) => Ok(Self::Open(frame.into())),
-            ArchivedStreamFrame::Accept(frame) => Ok(Self::Accept(frame.into())),
-            ArchivedStreamFrame::Reject(frame) => Ok(Self::Reject(frame.into())),
-            ArchivedStreamFrame::Data(frame) => Ok(Self::Data(frame.into())),
-            ArchivedStreamFrame::Credit(frame) => Ok(Self::Credit(frame.into())),
-            ArchivedStreamFrame::Finish(frame) => Ok(Self::Finish(frame.into())),
-            ArchivedStreamFrame::Reset(frame) => Ok(Self::Reset(frame.into())),
-        }
-    }
-}
-
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrameOpen {
     pub stream_id: StreamId,
     pub request_head: Vec<u8>,
@@ -101,7 +68,7 @@ impl From<&ArchivedStreamFrameOpen> for StreamFrameOpen {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrameAccept {
     pub stream_id: StreamId,
     pub response_head: Vec<u8>,
@@ -118,7 +85,7 @@ impl From<&ArchivedStreamFrameAccept> for StreamFrameAccept {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrameReject {
     pub stream_id: StreamId,
     pub code: RejectCode,
@@ -133,7 +100,7 @@ impl From<&ArchivedStreamFrameReject> for StreamFrameReject {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrameCredit {
     pub stream_id: StreamId,
     pub dir: Direction,
@@ -152,7 +119,7 @@ impl From<&ArchivedStreamFrameCredit> for StreamFrameCredit {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrameData {
     pub stream_id: StreamId,
     pub dir: Direction,
@@ -171,7 +138,7 @@ impl From<&ArchivedStreamFrameData> for StreamFrameData {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrameFinish {
     pub stream_id: StreamId,
     pub dir: Direction,
@@ -186,7 +153,7 @@ impl From<&ArchivedStreamFrameFinish> for StreamFrameFinish {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrameReset {
     pub stream_id: StreamId,
     pub dir: ResetTarget,
@@ -203,7 +170,7 @@ impl From<&ArchivedStreamFrameReset> for StreamFrameReset {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Direction {
     Request = 1,
@@ -219,7 +186,7 @@ impl From<&ArchivedDirection> for Direction {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ResetTarget {
     Request = 1,
@@ -237,7 +204,7 @@ impl From<&ArchivedResetTarget> for ResetTarget {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RejectCode {
     Unknown = 0,
@@ -259,7 +226,7 @@ impl From<&ArchivedRejectCode> for RejectCode {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ResetCode {
     Cancelled = 0,

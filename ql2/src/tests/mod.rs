@@ -21,8 +21,8 @@ use crate::{
         new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RuntimeConfig, RuntimeHandle,
     },
     wire::{
-        self, AsWireMlKemCiphertext, AsWireNonce, AsWireXid, handshake::HandshakeRecord,
-        heartbeat::HeartbeatBody, now_secs, pair, QlHeader, QlPayload, QlRecord,
+        self, handshake::HandshakeRecord, heartbeat::HeartbeatBody, now_secs, pair,
+        AsWireMlKemCiphertext, AsWireNonce, AsWireXid, QlHeader, QlPayload, QlRecord,
     },
     MessageId, PacketId, Peer, QlError,
 };
@@ -446,7 +446,7 @@ fn spawn_stream_mutating_forwarder<F>(
     tokio::task::spawn_local(async move {
         let mut mutator = mutator;
         while let Ok(bytes) = outbound.recv().await {
-            let Ok(record) = wire::decode_record(&bytes) else {
+            let Ok(record) = wire::access_record(&bytes) else {
                 handle.send_incoming(bytes);
                 continue;
             };
@@ -454,12 +454,16 @@ fn spawn_stream_mutating_forwarder<F>(
             {
                 let mut trace = trace.lock().unwrap();
                 match &record.payload {
-                    QlPayload::Handshake(HandshakeRecord::Hello(hello)) => {
-                        trace.hello_header = Some(record.header.clone());
-                        trace.hello = Some(hello.clone());
+                    wire::ArchivedQlPayload::Handshake(
+                        wire::handshake::ArchivedHandshakeRecord::Hello(hello),
+                    ) => {
+                        trace.hello_header = Some(wire::deserialize_value(&record.header).unwrap());
+                        trace.hello = Some(wire::deserialize_value(hello).unwrap());
                     }
-                    QlPayload::Handshake(HandshakeRecord::HelloReply(reply)) => {
-                        trace.reply = Some(reply.clone());
+                    wire::ArchivedQlPayload::Handshake(
+                        wire::handshake::ArchivedHandshakeRecord::HelloReply(reply),
+                    ) => {
+                        trace.reply = Some(wire::deserialize_value(reply).unwrap());
                     }
                     _ => {}
                 }
@@ -469,13 +473,15 @@ fn spawn_stream_mutating_forwarder<F>(
             }
 
             let session_key = trace.lock().unwrap().session_key.clone();
-            if let (Some(session_key), QlPayload::Stream(encrypted)) =
+            if let (Some(session_key), wire::ArchivedQlPayload::Stream(encrypted)) =
                 (session_key, &record.payload)
             {
-                if let Ok(mut body) = wire::stream::decrypt_stream(&record.header, encrypted, &session_key)
+                if let Ok(mut body) =
+                    wire::stream::decrypt_stream(&record.header, encrypted, &session_key)
                 {
-                    if mutator(&record.header, &mut body) {
-                        let mutated = wire::stream::encrypt_stream(record.header, &session_key, body);
+                    let header = wire::deserialize_value(&record.header).unwrap();
+                    if mutator(&header, &mut body) {
+                        let mutated = wire::stream::encrypt_stream(header, &session_key, body);
                         handle.send_incoming(wire::encode_record(&mutated));
                         continue;
                     }
@@ -731,13 +737,15 @@ fn protocol_record_size_breakdown() {
         payload: QlPayload::Handshake(HandshakeRecord::Hello(hello.clone())),
     };
     let hello_size = wire::encode_record(&hello_record).len();
+    let hello_bytes = wire::encode_value(&hello);
+    let hello_view = wire::access_value::<wire::handshake::ArchivedHello>(&hello_bytes).unwrap();
 
     let (hello_reply, responder_secrets) = wire::handshake::respond_hello(
         &platform_b,
         initiator,
         responder,
         platform_a.encapsulation_public_key(),
-        &hello,
+        hello_view,
     )
     .unwrap();
     let reply_record = QlRecord {
@@ -748,6 +756,9 @@ fn protocol_record_size_breakdown() {
         payload: QlPayload::Handshake(HandshakeRecord::HelloReply(hello_reply.clone())),
     };
     let reply_size = wire::encode_record(&reply_record).len();
+    let reply_bytes = wire::encode_value(&hello_reply);
+    let reply_view =
+        wire::access_value::<wire::handshake::ArchivedHelloReply>(&reply_bytes).unwrap();
 
     let (confirm, session_key) = wire::handshake::build_confirm(
         &platform_a,
@@ -755,28 +766,31 @@ fn protocol_record_size_breakdown() {
         responder,
         platform_b.signing_public_key(),
         &hello,
-        &hello_reply,
+        reply_view,
         &initiator_secret,
     )
     .unwrap();
+    let confirm_bytes = wire::encode_value(&confirm);
+    let confirm_view =
+        wire::access_value::<wire::handshake::ArchivedConfirm>(&confirm_bytes).unwrap();
+    let confirm_record = QlRecord {
+        header: QlHeader {
+            sender: initiator,
+            recipient: responder,
+        },
+        payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm.clone())),
+    };
+    let confirm_size = wire::encode_record(&confirm_record).len();
     let _session_key_b = wire::handshake::finalize_confirm(
         initiator,
         responder,
         platform_a.signing_public_key(),
         &hello,
         &hello_reply,
-        &confirm,
+        confirm_view,
         &responder_secrets,
     )
     .unwrap();
-    let confirm_record = QlRecord {
-        header: QlHeader {
-            sender: initiator,
-            recipient: responder,
-        },
-        payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
-    };
-    let confirm_size = wire::encode_record(&confirm_record).len();
 
     let stream_record = wire::stream::encrypt_stream(
         QlHeader {

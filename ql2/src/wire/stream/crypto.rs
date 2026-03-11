@@ -3,27 +3,12 @@ use bc_components::SymmetricKey;
 use super::StreamBody;
 use crate::{
     wire::{
-        access_value, encode_value, encrypted_message_from_archived, ensure_not_expired,
-        ArchivedWireEncryptedMessage, QlHeader, QlPayload, QlRecord,
+        access_value, deserialize_value, encode_value, encrypted_message_from_archived,
+        ensure_not_expired, ArchivedQlHeader, ArchivedWireEncryptedMessage, QlHeader, QlPayload,
+        QlRecord,
     },
     QlError,
 };
-
-pub(crate) trait EncryptedInput {
-    fn into_encrypted(self) -> Result<bc_components::EncryptedMessage, QlError>;
-}
-
-impl EncryptedInput for &bc_components::EncryptedMessage {
-    fn into_encrypted(self) -> Result<bc_components::EncryptedMessage, QlError> {
-        Ok(self.clone())
-    }
-}
-
-impl EncryptedInput for &ArchivedWireEncryptedMessage {
-    fn into_encrypted(self) -> Result<bc_components::EncryptedMessage, QlError> {
-        Ok(encrypted_message_from_archived(self))
-    }
-}
 
 pub fn encrypt_stream(header: QlHeader, session_key: &SymmetricKey, body: StreamBody) -> QlRecord {
     let aad = header.aad();
@@ -35,17 +20,13 @@ pub fn encrypt_stream(header: QlHeader, session_key: &SymmetricKey, body: Stream
     }
 }
 
-pub(crate) fn decrypt_stream<H, E>(
-    header: H,
-    encrypted: E,
+pub(crate) fn decrypt_stream(
+    header: &ArchivedQlHeader,
+    encrypted: &ArchivedWireEncryptedMessage,
     session_key: &SymmetricKey,
-) -> Result<StreamBody, QlError>
-where
-    H: TryInto<QlHeader, Error = QlError>,
-    E: EncryptedInput,
-{
-    let header = header.try_into()?;
-    let encrypted = encrypted.into_encrypted()?;
+) -> Result<StreamBody, QlError> {
+    let header = deserialize_value(header)?;
+    let encrypted = encrypted_message_from_archived(encrypted);
     let aad = header.aad();
     if encrypted.aad() != aad {
         return Err(QlError::InvalidPayload);
@@ -54,7 +35,7 @@ where
         .decrypt(&encrypted)
         .map_err(|_| QlError::InvalidPayload)?;
     let body = access_value::<super::ArchivedStreamBody>(&plaintext)?;
-    let body = StreamBody::try_from(body)?;
+    let body = deserialize_value(body)?;
     ensure_not_expired(body.valid_until)?;
     Ok(body)
 }
