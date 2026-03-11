@@ -476,14 +476,18 @@ fn spawn_stream_mutating_forwarder<F>(
             if let (Some(session_key), wire::ArchivedQlPayload::Stream(encrypted)) =
                 (session_key, &record.payload)
             {
-                if let Ok(mut body) =
-                    wire::stream::decrypt_stream(&record.header, encrypted, &session_key)
-                {
-                    let header = wire::deserialize_value(&record.header).unwrap();
-                    if mutator(&header, &mut body) {
-                        let mutated = wire::stream::encrypt_stream(header, &session_key, body);
-                        handle.send_incoming(wire::encode_record(&mutated));
-                        continue;
+                let header = wire::deserialize_value(&record.header).unwrap();
+                let encrypted = wire::deserialize_value(encrypted).unwrap();
+                let plaintext = encrypted.decrypt(&session_key, &header.aad());
+                if let Ok(plaintext) = plaintext {
+                    let body = wire::access_value::<wire::stream::ArchivedStreamBody>(&plaintext)
+                        .and_then(wire::deserialize_value);
+                    if let Ok(mut body) = body {
+                        if mutator(&header, &mut body) {
+                            let mutated = wire::stream::encrypt_stream(header, &session_key, body);
+                            handle.send_incoming(wire::encode_record(&mutated));
+                            continue;
+                        }
                     }
                 }
             }
@@ -792,34 +796,216 @@ fn protocol_record_size_breakdown() {
     )
     .unwrap();
 
-    let stream_record = wire::stream::encrypt_stream(
+    let pair_size = wire::encode_record(
+        &pair::build_pair_request(
+            &platform_a,
+            responder,
+            platform_b.encapsulation_public_key(),
+            MessageId(11),
+            Duration::from_secs(60),
+        )
+        .unwrap(),
+    )
+    .len();
+
+    let heartbeat_size = wire::encode_record(&wire::heartbeat::encrypt_heartbeat(
         QlHeader {
             sender: initiator,
             recipient: responder,
         },
         &session_key,
-        wire::stream::StreamBody {
-            packet_id: PacketId(1),
+        HeartbeatBody {
+            message_id: MessageId(12),
             valid_until: wire::now_secs().saturating_add(60),
-            packet_ack: None,
-            frame: Some(wire::stream::StreamFrame::Open(
-                wire::stream::StreamFrameOpen {
-                    stream_id: crate::StreamId(2),
-                    request_head: vec![1, 2, 3],
-                    response_max_offset: 1024,
-                },
-            )),
         },
+    ))
+    .len();
+
+    let unpair_size = wire::encode_record(&wire::unpair::build_unpair_record(
+        &platform_a,
+        QlHeader {
+            sender: initiator,
+            recipient: responder,
+        },
+        MessageId(13),
+        wire::now_secs().saturating_add(60),
+    ))
+    .len();
+
+    let stream_record_size =
+        |packet_id: PacketId,
+         packet_ack: Option<wire::stream::PacketAck>,
+         frame: Option<wire::stream::StreamFrame>| {
+            wire::encode_record(&wire::stream::encrypt_stream(
+                QlHeader {
+                    sender: initiator,
+                    recipient: responder,
+                },
+                &session_key,
+                wire::stream::StreamBody {
+                    packet_id,
+                    valid_until: wire::now_secs().saturating_add(60),
+                    packet_ack,
+                    frame,
+                },
+            ))
+            .len()
+        };
+
+    let stream_header = QlHeader {
+        sender: initiator,
+        recipient: responder,
+    };
+    let stream_ack_body = wire::stream::StreamBody {
+        packet_id: PacketId(20),
+        valid_until: wire::now_secs().saturating_add(60),
+        packet_ack: Some(wire::stream::PacketAck {
+            packet_id: PacketId(19),
+        }),
+        frame: None,
+    };
+    let stream_ack_record =
+        wire::stream::encrypt_stream(stream_header.clone(), &session_key, stream_ack_body.clone());
+    let stream_ack_encrypted = match &stream_ack_record.payload {
+        QlPayload::Stream(encrypted) => encrypted,
+        _ => unreachable!(),
+    };
+    let stream_ack_header_size = wire::encode_value(&stream_header).len();
+    let stream_ack_body_size = wire::encode_value(&stream_ack_body).len();
+    let stream_ack_envelope_size = wire::encode_value(stream_ack_encrypted).len();
+    let stream_ack_payload_size = wire::encode_value(&stream_ack_record.payload).len();
+
+    let stream_open_body = wire::stream::StreamBody {
+        packet_id: PacketId(21),
+        valid_until: wire::now_secs().saturating_add(60),
+        packet_ack: None,
+        frame: Some(wire::stream::StreamFrame::Open(
+            wire::stream::StreamFrameOpen {
+                stream_id: crate::StreamId(2),
+                request_head: vec![1, 2, 3],
+                response_max_offset: 1024,
+            },
+        )),
+    };
+    let stream_open_body_size = wire::encode_value(&stream_open_body).len();
+
+    let stream_ack_size = stream_record_size(
+        PacketId(20),
+        Some(wire::stream::PacketAck {
+            packet_id: PacketId(19),
+        }),
+        None,
     );
-    let stream_size = wire::encode_record(&stream_record).len();
+    let stream_open_size = stream_record_size(
+        PacketId(21),
+        None,
+        Some(wire::stream::StreamFrame::Open(
+            wire::stream::StreamFrameOpen {
+                stream_id: crate::StreamId(2),
+                request_head: vec![1, 2, 3],
+                response_max_offset: 1024,
+            },
+        )),
+    );
+    let stream_accept_size = stream_record_size(
+        PacketId(22),
+        None,
+        Some(wire::stream::StreamFrame::Accept(
+            wire::stream::StreamFrameAccept {
+                stream_id: crate::StreamId(2),
+                response_head: vec![4, 5, 6],
+                request_max_offset: 2048,
+            },
+        )),
+    );
+    let stream_reject_size = stream_record_size(
+        PacketId(23),
+        None,
+        Some(wire::stream::StreamFrame::Reject(
+            wire::stream::StreamFrameReject {
+                stream_id: crate::StreamId(2),
+                code: wire::stream::RejectCode::InvalidHead,
+            },
+        )),
+    );
+    let stream_data_size = stream_record_size(
+        PacketId(24),
+        None,
+        Some(wire::stream::StreamFrame::Data(
+            wire::stream::StreamFrameData {
+                stream_id: crate::StreamId(2),
+                dir: wire::stream::Direction::Request,
+                offset: 128,
+                bytes: vec![7, 8, 9, 10],
+            },
+        )),
+    );
+    let stream_credit_size = stream_record_size(
+        PacketId(25),
+        None,
+        Some(wire::stream::StreamFrame::Credit(
+            wire::stream::StreamFrameCredit {
+                stream_id: crate::StreamId(2),
+                dir: wire::stream::Direction::Response,
+                recv_offset: 256,
+                max_offset: 4096,
+            },
+        )),
+    );
+    let stream_finish_size = stream_record_size(
+        PacketId(26),
+        None,
+        Some(wire::stream::StreamFrame::Finish(
+            wire::stream::StreamFrameFinish {
+                stream_id: crate::StreamId(2),
+                dir: wire::stream::Direction::Response,
+            },
+        )),
+    );
+    let stream_reset_size = stream_record_size(
+        PacketId(27),
+        None,
+        Some(wire::stream::StreamFrame::Reset(
+            wire::stream::StreamFrameReset {
+                stream_id: crate::StreamId(2),
+                dir: wire::stream::ResetTarget::Both,
+                code: wire::stream::ResetCode::Protocol,
+            },
+        )),
+    );
 
     let print_size = |label: &str, size: usize| {
-        println!("{label:<21}: {size} bytes");
+        println!("{label:<23}: {size} bytes");
     };
 
     print_size("ql2 size hello", hello_size);
     print_size("ql2 size hello_reply", reply_size);
     print_size("ql2 size confirm", confirm_size);
-    print_size("ql2 size stream open", stream_size);
-    let _ = MessageId(0);
+    print_size("ql2 size pair", pair_size);
+    print_size("ql2 size heartbeat", heartbeat_size);
+    print_size("ql2 size unpair", unpair_size);
+    print_size("ql2 size stream ack", stream_ack_size);
+    print_size("ql2 size stream open", stream_open_size);
+    print_size("ql2 size stream accept", stream_accept_size);
+    print_size("ql2 size stream reject", stream_reject_size);
+    print_size("ql2 size stream data", stream_data_size);
+    print_size("ql2 size stream credit", stream_credit_size);
+    print_size("ql2 size stream finish", stream_finish_size);
+    print_size("ql2 size stream reset", stream_reset_size);
+    println!(
+        "ql2 stream ack breakdown : header={} derived_aad={} plaintext={} ciphertext={} envelope(no aad)={} payload={} full={}",
+        stream_ack_header_size,
+        stream_header.aad().len(),
+        stream_ack_body_size,
+        stream_ack_encrypted.ciphertext.len(),
+        stream_ack_envelope_size,
+        stream_ack_payload_size,
+        stream_ack_size,
+    );
+    println!(
+        "ql2 stream open delta    : open_body={} ack_body={} (+{} request_head bytes)",
+        stream_open_body_size,
+        stream_ack_body_size,
+        stream_open_body_size.saturating_sub(stream_ack_body_size),
+    );
 }

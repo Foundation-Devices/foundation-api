@@ -1,4 +1,4 @@
-use bc_components::{EncryptedMessage, XID};
+use bc_components::XID;
 use dcbor::CBOR;
 use rkyv::{
     api::{
@@ -10,6 +10,7 @@ use rkyv::{
     Archive, Deserialize, Portable, Serialize,
 };
 
+pub mod encrypted_message;
 pub mod handshake;
 pub mod heartbeat;
 pub mod pair;
@@ -20,12 +21,15 @@ mod codec;
 
 pub(crate) use codec::*;
 
-use self::{handshake::HandshakeRecord, pair::PairRequestRecord, unpair::UnpairRecord};
+use self::{
+    encrypted_message::EncryptedMessage, handshake::HandshakeRecord, pair::PairRequestRecord,
+    unpair::UnpairRecord,
+};
 use crate::QlError;
 
 pub(crate) type WireArchiveError = rkyv::rancor::Error;
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct QlRecord {
     pub header: QlHeader,
     pub payload: QlPayload,
@@ -45,13 +49,13 @@ impl QlHeader {
     }
 }
 
-#[derive(Archive, Serialize, Debug, Clone, PartialEq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum QlPayload {
     Handshake(HandshakeRecord),
     Pair(PairRequestRecord),
     Unpair(UnpairRecord),
-    Heartbeat(#[rkyv(with = AsWireEncryptedMessage)] EncryptedMessage),
-    Stream(#[rkyv(with = AsWireEncryptedMessage)] EncryptedMessage),
+    Heartbeat(EncryptedMessage),
+    Stream(EncryptedMessage),
 }
 
 pub fn encode_record(record: &QlRecord) -> Vec<u8> {
@@ -63,22 +67,7 @@ pub fn access_record(bytes: &[u8]) -> Result<&ArchivedQlRecord, QlError> {
 }
 
 pub fn decode_record(bytes: &[u8]) -> Result<QlRecord, QlError> {
-    let record = access_record(bytes)?;
-    let header = deserialize_value(&record.header)?;
-    let payload = match &record.payload {
-        ArchivedQlPayload::Handshake(message) => QlPayload::Handshake(deserialize_value(message)?),
-        ArchivedQlPayload::Pair(message) => {
-            QlPayload::Pair(pair::decode_pair_request_record(&header, message)?)
-        }
-        ArchivedQlPayload::Unpair(message) => QlPayload::Unpair(deserialize_value(message)?),
-        ArchivedQlPayload::Heartbeat(message) => {
-            QlPayload::Heartbeat(encrypted_message_from_archived(message, &header.aad()))
-        }
-        ArchivedQlPayload::Stream(message) => {
-            QlPayload::Stream(encrypted_message_from_archived(message, &header.aad()))
-        }
-    };
-    Ok(QlRecord { header, payload })
+    deserialize_value(access_record(bytes)?)
 }
 
 pub(crate) fn encode_value(
@@ -140,19 +129,15 @@ pub(crate) fn now_secs() -> u64 {
 
 #[test]
 fn ql_record_round_trip() {
-    let header = QlHeader {
-        sender: XID::from_data([1; XID::XID_SIZE]),
-        recipient: XID::from_data([2; XID::XID_SIZE]),
-    };
     let record = QlRecord {
-        header: header.clone(),
-        payload: QlPayload::Heartbeat(EncryptedMessage::new(
-            [3u8, 4, 5],
-            header.aad(),
-            bc_components::Nonce::from_data([8; bc_components::Nonce::NONCE_SIZE]),
-            bc_components::AuthenticationTag::from_data(
-                [9; bc_components::AuthenticationTag::AUTHENTICATION_TAG_SIZE],
-            ),
+        header: QlHeader {
+            sender: XID::from_data([1; XID::XID_SIZE]),
+            recipient: XID::from_data([2; XID::XID_SIZE]),
+        },
+        payload: QlPayload::Heartbeat(encrypted_message::EncryptedMessage::new(
+            vec![3u8, 4, 5],
+            [8; encrypted_message::NONCE_SIZE],
+            [9; encrypted_message::AUTH_SIZE],
         )),
     };
 

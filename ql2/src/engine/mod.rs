@@ -5,6 +5,7 @@ mod stream;
 use std::{cmp::Reverse, collections::HashMap, mem, time::Instant};
 
 use bc_components::{SigningPublicKey, XID};
+use rkyv::access_mut;
 pub use state::{
     Engine, EngineInput, EngineOutput, EngineState, InitiatorStage, KeepAliveState, OpenId,
     OutputFn, PeerRecord, PeerSession, Token, TrackedWrite,
@@ -20,6 +21,7 @@ use crate::{
     runtime::{KeepAliveConfig, RuntimeConfig, StreamConfig},
     wire::{
         self,
+        encrypted_message::ArchivedEncryptedMessage,
         handshake::{self, HandshakeRecord, Hello},
         heartbeat::{self, HeartbeatBody},
         stream::{
@@ -497,13 +499,15 @@ impl Engine {
     fn handle_incoming(
         &mut self,
         now: Instant,
-        bytes: Vec<u8>,
+        mut bytes: Vec<u8>,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let Ok(record) = wire::access_record(&bytes) else {
+        let Ok(record) = access_mut::<wire::ArchivedQlRecord, wire::WireArchiveError>(&mut bytes)
+        else {
             return;
         };
+        let record = unsafe { record.unseal_unchecked() };
         let sender = wire::xid_from_archived(&record.header.sender);
         let recipient = wire::xid_from_archived(&record.header.recipient);
         if recipient != crypto.xid() {
@@ -517,21 +521,24 @@ impl Engine {
                 return;
             }
         }
-        match &record.payload {
+        let Ok(header) = wire::deserialize_value(&record.header) else {
+            return;
+        };
+        match &mut record.payload {
             wire::ArchivedQlPayload::Handshake(message) => {
                 self.handle_handshake(now, sender, message, crypto, emit)
             }
             wire::ArchivedQlPayload::Stream(encrypted) => {
-                self.handle_stream(now, sender, &record.header, encrypted, emit)
+                self.handle_stream(now, sender, &header, encrypted, emit)
             }
             wire::ArchivedQlPayload::Heartbeat(encrypted) => {
-                self.handle_heartbeat(now, &record.header, encrypted, crypto, emit)
+                self.handle_heartbeat(now, &header, encrypted, crypto, emit)
             }
             wire::ArchivedQlPayload::Pair(request) => {
-                self.handle_pairing(now, &record.header, request, crypto, emit)
+                self.handle_pairing(now, &header, request, crypto, emit)
             }
             wire::ArchivedQlPayload::Unpair(unpair_record) => {
-                self.handle_unpair(sender, &record.header, unpair_record, emit)
+                self.handle_unpair(sender, &header, unpair_record, emit)
             }
         }
     }
@@ -560,8 +567,8 @@ impl Engine {
     fn handle_pairing(
         &mut self,
         now: Instant,
-        header: &wire::ArchivedQlHeader,
-        request: &wire::pair::ArchivedPairRequestRecord,
+        header: &QlHeader,
+        request: &mut wire::pair::ArchivedPairRequestRecord,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
@@ -593,7 +600,7 @@ impl Engine {
     fn handle_unpair(
         &mut self,
         peer: XID,
-        header: &wire::ArchivedQlHeader,
+        header: &QlHeader,
         record: &wire::unpair::ArchivedUnpairRecord,
         emit: &mut impl OutputFn,
     ) {
@@ -621,8 +628,8 @@ impl Engine {
     fn handle_heartbeat(
         &mut self,
         now: Instant,
-        header: &wire::ArchivedQlHeader,
-        encrypted: &wire::ArchivedWireEncryptedMessage,
+        header: &QlHeader,
+        encrypted: &mut ArchivedEncryptedMessage,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
@@ -653,8 +660,8 @@ impl Engine {
         &mut self,
         now: Instant,
         peer: XID,
-        header: &wire::ArchivedQlHeader,
-        encrypted: &wire::ArchivedWireEncryptedMessage,
+        header: &QlHeader,
+        encrypted: &mut ArchivedEncryptedMessage,
         emit: &mut impl OutputFn,
     ) {
         let body = {

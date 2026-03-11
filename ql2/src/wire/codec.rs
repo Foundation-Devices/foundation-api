@@ -1,6 +1,5 @@
 use bc_components::{
-    AuthenticationTag, EncryptedMessage, MLDSAPublicKey, MLDSASignature, MLKEMCiphertext,
-    MLKEMPublicKey, Nonce, MLDSA, MLKEM, XID,
+    MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, MLKEMPublicKey, Nonce, MLDSA, MLKEM, XID,
 };
 use rkyv::{
     rancor::{Fallible, Source},
@@ -107,88 +106,6 @@ pub(crate) fn nonce_from_archived(value: &ArchivedWireNonce) -> Nonce {
 }
 
 impl_wire_wrapper!(AsWireNonce, Nonce, WireNonce);
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WireAuthenticationTag(
-    pub(crate) [u8; AuthenticationTag::AUTHENTICATION_TAG_SIZE],
-);
-
-impl From<&AuthenticationTag> for WireAuthenticationTag {
-    fn from(value: &AuthenticationTag) -> Self {
-        Self(*value.data())
-    }
-}
-
-impl TryFrom<WireAuthenticationTag> for AuthenticationTag {
-    type Error = QlError;
-
-    fn try_from(value: WireAuthenticationTag) -> Result<Self, Self::Error> {
-        Ok(AuthenticationTag::from_data(value.0))
-    }
-}
-
-pub(crate) fn authentication_tag_from_archived(
-    value: &ArchivedWireAuthenticationTag,
-) -> AuthenticationTag {
-    AuthenticationTag::from_data(value.0)
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WireEncryptedMessage {
-    pub(crate) ciphertext: Vec<u8>,
-    pub(crate) nonce: WireNonce,
-    pub(crate) auth: WireAuthenticationTag,
-}
-
-impl From<&EncryptedMessage> for WireEncryptedMessage {
-    fn from(value: &EncryptedMessage) -> Self {
-        Self {
-            ciphertext: value.ciphertext().to_vec(),
-            nonce: value.nonce().into(),
-            auth: value.authentication_tag().into(),
-        }
-    }
-}
-
-pub(crate) fn encrypted_message_from_archived(
-    value: &ArchivedWireEncryptedMessage,
-    aad: &[u8],
-) -> EncryptedMessage {
-    EncryptedMessage::new(
-        value.ciphertext.as_slice(),
-        aad,
-        nonce_from_archived(&value.nonce),
-        authentication_tag_from_archived(&value.auth),
-    )
-}
-
-pub(crate) struct AsWireEncryptedMessage;
-
-impl ArchiveWith<EncryptedMessage> for AsWireEncryptedMessage {
-    type Archived = Archived<WireEncryptedMessage>;
-    type Resolver = Resolver<WireEncryptedMessage>;
-
-    fn resolve_with(
-        field: &EncryptedMessage,
-        resolver: Self::Resolver,
-        out: Place<Self::Archived>,
-    ) {
-        WireEncryptedMessage::from(field).resolve(resolver, out);
-    }
-}
-
-impl<S> SerializeWith<EncryptedMessage, S> for AsWireEncryptedMessage
-where
-    S: Fallible + ?Sized,
-    WireEncryptedMessage: Serialize<S>,
-{
-    fn serialize_with(
-        field: &EncryptedMessage,
-        serializer: &mut S,
-    ) -> Result<Self::Resolver, S::Error> {
-        WireEncryptedMessage::from(field).serialize(serializer)
-    }
-}
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]

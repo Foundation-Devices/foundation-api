@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bc_components::{
-    MLDSAPublicKey, MLKEMCiphertext, MLKEMPublicKey, Nonce, SigningPublicKey, SymmetricKey, XID,
+    MLDSAPublicKey, MLKEMCiphertext, MLKEMPublicKey, SigningPublicKey, SymmetricKey, XID,
 };
 use rkyv::{Archive, Serialize};
 
@@ -9,10 +9,10 @@ use super::{PairRequestBody, PairRequestRecord};
 use crate::{
     platform::QlCrypto,
     wire::{
-        access_value, deserialize_value, encode_value, encrypted_message_from_archived,
-        ensure_not_expired, mlkem_ciphertext_from_archived, now_secs, ArchivedQlHeader,
-        AsWireMlDsaPublicKey, AsWireMlKemCiphertext, AsWireMlKemPublicKey, QlHeader, QlPayload,
-        QlRecord,
+        access_value, deserialize_value, encode_value,
+        encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage},
+        ensure_not_expired, mlkem_ciphertext_from_archived, now_secs, AsWireMlDsaPublicKey,
+        AsWireMlKemCiphertext, AsWireMlKemPublicKey, QlHeader, QlPayload, QlRecord,
     },
     MessageId, QlError,
 };
@@ -68,7 +68,7 @@ pub fn build_pair_request(
     };
     let body_bytes = encode_value(&body);
     let aad = pairing_aad(&header, &kem_ct);
-    let encrypted = session_key.encrypt(body_bytes, Some(aad), None::<Nonce>);
+    let encrypted = EncryptedMessage::encrypt(&session_key, body_bytes, &aad);
     Ok(QlRecord {
         header,
         payload: QlPayload::Pair(PairRequestRecord { kem_ct, encrypted }),
@@ -77,18 +77,16 @@ pub fn build_pair_request(
 
 pub fn decrypt_pair_request(
     platform: &impl QlCrypto,
-    header: &ArchivedQlHeader,
-    request: &super::ArchivedPairRequestRecord,
+    header: &QlHeader,
+    request: &mut super::ArchivedPairRequestRecord,
 ) -> Result<PairRequestBody, QlError> {
-    let header = deserialize_value(header)?;
     let kem_ct = mlkem_ciphertext_from_archived(&request.kem_ct)?;
     let aad = pairing_aad(&header, &kem_ct);
-    let encrypted = encrypted_message_from_archived(&request.encrypted, &aad);
     let session_key = platform
         .encapsulation_private_key()
         .decapsulate_shared_secret(&kem_ct)
         .map_err(|_| QlError::InvalidPayload)?;
-    let decrypted = decrypt_body(&session_key, &encrypted)?;
+    let decrypted = decrypt_body(&session_key, &mut request.encrypted, &aad)?;
     ensure_not_expired(decrypted.valid_until)?;
     if XID::new(SigningPublicKey::MLDSA(decrypted.signing_pub_key.clone())) != header.sender {
         return Err(QlError::InvalidPayload);
@@ -131,11 +129,10 @@ fn pairing_proof_data(
 
 fn decrypt_body(
     key: &SymmetricKey,
-    encrypted: &bc_components::EncryptedMessage,
+    encrypted: &mut ArchivedEncryptedMessage,
+    aad: &[u8],
 ) -> Result<PairRequestBody, QlError> {
-    let plaintext = key
-        .decrypt(encrypted)
-        .map_err(|_| QlError::InvalidPayload)?;
+    let plaintext = encrypted.decrypt(key, aad)?;
     let body = access_value::<super::ArchivedPairRequestBody>(&plaintext)?;
     deserialize_value(body)
 }

@@ -1,5 +1,5 @@
-mod id;
 pub mod engine;
+mod id;
 pub mod platform;
 pub mod rpc;
 pub mod runtime;
@@ -32,9 +32,7 @@ pub enum QlError {
     #[error("send failed")]
     SendFailed,
     #[error("stream rejected {code:?}")]
-    StreamRejected {
-        code: wire::stream::RejectCode,
-    },
+    StreamRejected { code: wire::stream::RejectCode },
     #[error("stream reset {code:?}")]
     StreamReset {
         dir: wire::stream::Direction,

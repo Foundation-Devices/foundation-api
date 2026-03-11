@@ -4,10 +4,7 @@ use rkyv::{Archive, Serialize};
 use super::UnpairRecord;
 use crate::{
     platform::QlCrypto,
-    wire::{
-        deserialize_value, encode_value, mldsa_signature_from_archived, now_secs, ArchivedQlHeader,
-        QlHeader, QlPayload, QlRecord,
-    },
+    wire::{encode_value, mldsa_signature_from_archived, now_secs, QlHeader, QlPayload, QlRecord},
     MessageId, QlError,
 };
 
@@ -40,11 +37,10 @@ pub fn build_unpair_record(
 }
 
 pub fn verify_unpair_record(
-    header: &ArchivedQlHeader,
+    header: &QlHeader,
     record: &super::ArchivedUnpairRecord,
     signing_key: &MLDSAPublicKey,
 ) -> Result<(), QlError> {
-    let header = deserialize_value(header)?;
     let message_id = (&record.message_id).into();
     let valid_until = record.valid_until.to_native();
     let signature = mldsa_signature_from_archived(&record.signature)?;
