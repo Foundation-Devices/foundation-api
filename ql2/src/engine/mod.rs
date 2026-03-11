@@ -1,3 +1,5 @@
+pub mod replay_cache;
+
 use std::{
     cell::Cell,
     cmp::Reverse,
@@ -8,12 +10,10 @@ use std::{
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SigningPublicKey, SymmetricKey, XID};
 use dcbor::CBOR;
 
+use self::replay_cache::{ReplayCache, ReplayKey, ReplayNamespace};
 use crate::{
     platform::QlCrypto,
-    runtime::{
-        replay_cache::{ReplayCache, ReplayKey, ReplayNamespace},
-        KeepAliveConfig, RuntimeConfig, StreamConfig,
-    },
+    runtime::{KeepAliveConfig, RuntimeConfig, StreamConfig},
     wire::{
         self,
         handshake::{self, Confirm, HandshakeRecord, Hello, HelloReply, ResponderSecrets},

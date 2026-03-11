@@ -7,10 +7,10 @@ use std::{
 use async_channel::Sender;
 
 use crate::{
-    pipe::{self, ReadReady},
+    runtime::pipe::{self, ReadReady},
     Peer,
     runtime::{
-        driver::RuntimeCommand,
+        command::RuntimeCommand,
         AcceptedStreamDelivery, StreamConfig,
     },
     wire::stream::{Direction, RejectCode, ResetCode},

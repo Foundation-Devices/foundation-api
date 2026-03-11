@@ -2,12 +2,12 @@ pub use handle::{
     AcceptedStream, InboundByteStream, InboundStream, OutboundByteStream, PendingAccept,
     PendingStream, RuntimeHandle, StreamResponder,
 };
-pub use engine::{InitiatorStage, PeerSession, Token};
+pub use crate::engine::{InitiatorStage, PeerSession, Token};
 
+pub(crate) mod command;
 pub(crate) mod driver;
-pub mod engine;
 pub mod handle;
-pub mod replay_cache;
+pub(crate) mod pipe;
 
 use std::time::Duration;
 
@@ -109,15 +109,15 @@ pub enum HandlerEvent {
 pub(crate) struct AcceptedStreamDelivery {
     pub stream_id: StreamId,
     pub response_head: Vec<u8>,
-    pub response: crate::pipe::PipeReader<crate::QlError>,
-    pub tx: async_channel::Sender<driver::RuntimeCommand>,
+    pub response: crate::runtime::pipe::PipeReader<crate::QlError>,
+    pub tx: async_channel::Sender<command::RuntimeCommand>,
 }
 
 pub struct Runtime<P> {
     platform: P,
     config: RuntimeConfig,
-    rx: async_channel::Receiver<driver::RuntimeCommand>,
-    tx: async_channel::WeakSender<driver::RuntimeCommand>,
+    rx: async_channel::Receiver<command::RuntimeCommand>,
+    tx: async_channel::WeakSender<command::RuntimeCommand>,
 }
 
 pub fn new_runtime<P>(platform: P, config: RuntimeConfig) -> (Runtime<P>, RuntimeHandle)

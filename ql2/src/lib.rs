@@ -1,5 +1,5 @@
 mod id;
-mod pipe;
+pub mod engine;
 pub mod platform;
 pub mod rpc;
 pub mod runtime;
@@ -46,8 +46,8 @@ pub enum QlError {
     Cancelled,
 }
 
-impl From<crate::pipe::PipeClosed> for QlError {
-    fn from(_: crate::pipe::PipeClosed) -> Self {
+impl From<crate::runtime::pipe::PipeClosed> for QlError {
+    fn from(_: crate::runtime::pipe::PipeClosed) -> Self {
         Self::Cancelled
     }
 }
