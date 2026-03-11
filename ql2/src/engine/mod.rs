@@ -734,7 +734,7 @@ impl Engine {
                 request_head: request_head.clone(),
                 last_activity: now,
             },
-            control: StreamControl::new(),
+            control: StreamControl::default(),
             request: InboundState::new(0),
             response: ResponderResponse::Pending {
                 initial_credit: response_max_offset,
@@ -1178,9 +1178,7 @@ impl Engine {
         if let Some(frame) = control.pending.take_next_control(stream_id) {
             return Some(frame);
         }
-        let Some(outbound) = outbound else {
-            return None;
-        };
+        let outbound = outbound?;
         if outbound.can_request_data() {
             let max_len = (outbound.remote_max_offset - outbound.sent_offset)
                 .min(config.max_payload_bytes as u64) as usize;
@@ -1542,7 +1540,7 @@ impl Engine {
     ) {
         let token = self.state.next_token();
         let deadline = now + self.config.handshake_timeout;
-        let confirm = match {
+        let res = {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
             };
@@ -1568,7 +1566,8 @@ impl Engine {
                 session_key,
             )
             .map(|(confirm, session_key)| (hello.clone(), confirm, session_key))
-        } {
+        };
+        let confirm = match res {
             Ok((hello, confirm, session_key)) => {
                 if let Some(entry) = self.state.peer.as_mut() {
                     entry.session = PeerSession::Initiator {
@@ -1634,7 +1633,7 @@ impl Engine {
                 if let Some(entry) = self.state.peer.as_mut() {
                     entry.session = PeerSession::Connected {
                         session_key,
-                        keepalive: KeepAliveState::new(),
+                        keepalive: KeepAliveState::default(),
                     };
                 }
                 self.record_activity(now);
@@ -1657,7 +1656,7 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let (reply, secrets) = match {
+        let res = {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
             };
@@ -1668,7 +1667,8 @@ impl Engine {
                 &peer_record.encapsulation_key,
                 hello,
             )
-        } {
+        };
+        let (reply, secrets) = match res {
             Ok(result) => result,
             Err(_) => {
                 if let Some(entry) = self.state.peer.as_mut() {
@@ -2084,7 +2084,7 @@ impl Engine {
             if let Some(entry) = self.state.peer.as_mut() {
                 entry.session = PeerSession::Connected {
                     session_key,
-                    keepalive: KeepAliveState::new(),
+                    keepalive: KeepAliveState::default(),
                 };
             }
             self.emit_peer_status(emit);

@@ -14,15 +14,9 @@ use std::time::Duration;
 
 use crate::{platform::QlPlatform, StreamId};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct StreamConfig {
     pub open_timeout: Option<Duration>,
-}
-
-impl Default for StreamConfig {
-    fn default() -> Self {
-        Self { open_timeout: None }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]

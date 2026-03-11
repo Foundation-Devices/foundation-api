@@ -83,7 +83,7 @@ pub fn decrypt_pair_request(
     request: &mut super::ArchivedPairRequestRecord,
 ) -> Result<PairRequestBody, QlError> {
     let kem_ct = mlkem_ciphertext_from_archived(&request.kem_ct)?;
-    let aad = pairing_aad(&header, &kem_ct);
+    let aad = pairing_aad(header, &kem_ct);
     let session_key = platform
         .encapsulation_private_key()
         .decapsulate_shared_secret(&kem_ct)
@@ -94,7 +94,7 @@ pub fn decrypt_pair_request(
         return Err(QlError::InvalidPayload);
     }
     let proof_data = pairing_proof_data(
-        &header,
+        header,
         &kem_ct,
         decrypted.packet_id,
         decrypted.valid_until,
@@ -135,7 +135,7 @@ fn decrypt_body(
     aad: &[u8],
 ) -> Result<PairRequestBody, QlError> {
     let plaintext = encrypted.decrypt(key, aad)?;
-    let body = access_value::<super::ArchivedPairRequestBody>(&plaintext)?;
+    let body = access_value::<super::ArchivedPairRequestBody>(plaintext)?;
     deserialize_value(body)
 }
 

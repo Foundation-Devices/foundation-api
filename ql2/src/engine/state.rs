@@ -39,8 +39,8 @@ pub struct KeepAliveState {
     pub last_activity: Option<Instant>,
 }
 
-impl KeepAliveState {
-    pub fn new() -> Self {
+impl Default for KeepAliveState {
+    fn default() -> Self {
         Self {
             token: Token(0),
             pending: false,

@@ -1,5 +1,4 @@
 use bc_components::XID;
-use dcbor::CBOR;
 use rkyv::{
     api::{
         high::{to_bytes_in, HighSerializer, HighValidator},

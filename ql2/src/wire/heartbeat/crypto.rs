@@ -32,7 +32,7 @@ pub(crate) fn decrypt_heartbeat(
 ) -> Result<HeartbeatBody, QlError> {
     let aad = header.aad();
     let plaintext = encrypted.decrypt(session_key, &aad)?;
-    let body = access_value::<super::ArchivedHeartbeatBody>(&plaintext)?;
+    let body = access_value::<super::ArchivedHeartbeatBody>(plaintext)?;
     let body = deserialize_value(body)?;
     ensure_not_expired(body.valid_until)?;
     Ok(body)

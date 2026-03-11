@@ -25,7 +25,7 @@ pub fn build_unpair_record(
     let signature =
         platform
             .signing_private_key()
-            .sign(&unpair_proof_data(&header, packet_id, valid_until));
+            .sign(unpair_proof_data(&header, packet_id, valid_until));
     QlRecord {
         header,
         payload: QlPayload::Unpair(UnpairRecord {

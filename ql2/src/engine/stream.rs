@@ -234,7 +234,7 @@ pub enum SetupFrame {
     Reject(StreamFrameReject),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PendingFrames {
     pub setup: Option<SetupFrame>,
     pub credit: Option<StreamFrameCredit>,
@@ -242,14 +242,6 @@ pub struct PendingFrames {
 }
 
 impl PendingFrames {
-    pub fn new() -> Self {
-        Self {
-            setup: None,
-            credit: None,
-            reset: None,
-        }
-    }
-
     pub fn take_next_control(&mut self, stream_id: StreamId) -> Option<StreamFrame> {
         if let Some(setup) = self.setup.take() {
             return Some(match setup {
@@ -288,19 +280,10 @@ impl PendingFrames {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct StreamControl {
     pub pending: PendingFrames,
     pub awaiting: Option<AwaitingPacket>,
-}
-
-impl StreamControl {
-    pub fn new() -> Self {
-        Self {
-            pending: PendingFrames::new(),
-            awaiting: None,
-        }
-    }
 }
 
 #[derive(Debug)]
