@@ -326,7 +326,8 @@ pub struct EngineState {
     pub replay_cache: ReplayCache,
 
     pub next_token: Cell<u64>,
-    pub next_id: Cell<u64>,
+    pub next_packet_id: Cell<u32>,
+    pub next_stream_id: Cell<u64>,
     pub outbound: VecDeque<QueuedWrite>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     pub write_in_flight: Option<Token>,
@@ -339,7 +340,8 @@ impl EngineState {
                 .map(|peer| PeerRecord::new(peer.peer, peer.signing_key, peer.encapsulation_key)),
             replay_cache: ReplayCache::new(),
             next_token: Cell::new(1),
-            next_id: Cell::new(1),
+            next_packet_id: Cell::new(1),
+            next_stream_id: Cell::new(1),
             outbound: VecDeque::new(),
             timeouts: BinaryHeap::new(),
             write_in_flight: None,
@@ -357,14 +359,14 @@ impl EngineState {
     }
 
     pub fn next_packet_id(&self) -> PacketId {
-        let id = self.next_id.get();
-        self.next_id.set(id.wrapping_add(1));
+        let id = self.next_packet_id.get();
+        self.next_packet_id.set(id.wrapping_add(1));
         PacketId(id)
     }
 
     pub fn next_stream_id(&self) -> StreamId {
-        let id = self.next_id.get();
-        self.next_id.set(id.wrapping_add(1));
+        let id = self.next_stream_id.get();
+        self.next_stream_id.set(id.wrapping_add(1));
         StreamId(id)
     }
 

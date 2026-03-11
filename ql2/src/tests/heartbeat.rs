@@ -28,7 +28,7 @@ async fn heartbeat_ignored_without_session() {
             },
             &SymmetricKey::new(),
             HeartbeatBody {
-                message_id: MessageId(1),
+                packet_id: PacketId(1),
                 valid_until: now_secs().saturating_add(60),
             },
             test_encryption_nonce(1),
@@ -359,7 +359,7 @@ async fn invalid_heartbeat_ignored() {
             },
             &SymmetricKey::new(),
             HeartbeatBody {
-                message_id: MessageId(42),
+                packet_id: PacketId(42),
                 valid_until: now_secs().saturating_add(30),
             },
             test_encryption_nonce(42),

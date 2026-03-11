@@ -24,7 +24,7 @@ use crate::{
         self, handshake::HandshakeRecord, heartbeat::HeartbeatBody, now_secs, pair,
         AsWireMlKemCiphertext, AsWireNonce, AsWireXid, QlHeader, QlPayload, QlRecord,
     },
-    MessageId, PacketId, Peer, QlError,
+    PacketId, Peer, QlError,
 };
 
 mod handshake;
@@ -810,7 +810,7 @@ fn protocol_record_size_breakdown() {
             &platform_a,
             responder,
             platform_b.encapsulation_public_key(),
-            MessageId(11),
+            PacketId(11),
             Duration::from_secs(60),
         )
         .unwrap(),
@@ -824,7 +824,7 @@ fn protocol_record_size_breakdown() {
         },
         &session_key,
         HeartbeatBody {
-            message_id: MessageId(12),
+            packet_id: PacketId(12),
             valid_until: wire::now_secs().saturating_add(60),
         },
         test_encryption_nonce(12),
@@ -837,7 +837,7 @@ fn protocol_record_size_breakdown() {
             sender: initiator,
             recipient: responder,
         },
-        MessageId(13),
+        PacketId(13),
         wire::now_secs().saturating_add(60),
     ))
     .len();

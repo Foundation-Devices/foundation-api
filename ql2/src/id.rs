@@ -4,7 +4,7 @@ use dcbor::CBOR;
 use rkyv::{Archive, Deserialize, Serialize};
 
 macro_rules! define_id {
-    ($name:ident) => {
+    ($name:ident, $ty:ty) => {
         #[derive(
             Archive,
             Serialize,
@@ -18,7 +18,7 @@ macro_rules! define_id {
             PartialOrd,
             Ord,
         )]
-        pub struct $name(pub u64);
+        pub struct $name(pub $ty);
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -36,21 +36,14 @@ macro_rules! define_id {
             type Error = dcbor::Error;
 
             fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-                Ok(Self(u64::try_from(value)?))
+                Ok(Self(<$ty>::try_from(value)?))
             }
         }
     };
 }
 
-define_id!(MessageId);
-define_id!(PacketId);
-define_id!(StreamId);
-
-impl From<&ArchivedMessageId> for MessageId {
-    fn from(value: &ArchivedMessageId) -> Self {
-        Self(value.0.to_native())
-    }
-}
+define_id!(PacketId, u32);
+define_id!(StreamId, u64);
 
 impl From<&ArchivedPacketId> for PacketId {
     fn from(value: &ArchivedPacketId) -> Self {

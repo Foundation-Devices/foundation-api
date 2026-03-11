@@ -33,7 +33,7 @@ use crate::{
         unpair::{self},
         QlHeader, QlPayload, QlRecord,
     },
-    MessageId, PacketId, Peer, QlError, StreamId,
+    PacketId, Peer, QlError, StreamId,
 };
 
 impl Engine {
@@ -168,7 +168,7 @@ impl Engine {
             crypto,
             peer.peer,
             &peer.encapsulation_key,
-            MessageId(self.state.next_packet_id().0),
+            self.state.next_packet_id(),
             self.config.packet_expiration,
         ) else {
             return;
@@ -243,7 +243,7 @@ impl Engine {
                 sender: crypto.xid(),
                 recipient: peer,
             },
-            MessageId(self.state.next_packet_id().0),
+            self.state.next_packet_id(),
             wire::now_secs().saturating_add(self.config.packet_expiration.as_secs()),
         );
         self.unpair_peer(emit);
@@ -612,9 +612,9 @@ impl Engine {
                 return;
             }
         }
-        let message_id: MessageId = (&record.message_id).into();
+        let packet_id: PacketId = (&record.packet_id).into();
         let valid_until = record.valid_until.to_native();
-        let replay_key = ReplayKey::new(peer, ReplayNamespace::Peer, message_id);
+        let replay_key = ReplayKey::new(peer, ReplayNamespace::Peer, packet_id);
         if self
             .state
             .replay_cache
@@ -685,8 +685,7 @@ impl Engine {
             return;
         };
 
-        let replay_key =
-            ReplayKey::new(peer, ReplayNamespace::Transfer, MessageId(body.packet_id.0));
+        let replay_key = ReplayKey::new(peer, ReplayNamespace::Transfer, body.packet_id);
         if self
             .state
             .replay_cache
@@ -1714,7 +1713,7 @@ impl Engine {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
-        let message_id = MessageId(self.state.next_packet_id().0);
+        let packet_id = self.state.next_packet_id();
         let token = self.state.next_token();
         let deadline = now + self.config.packet_expiration;
         let message = {
@@ -1731,7 +1730,7 @@ impl Engine {
                 },
                 session_key,
                 HeartbeatBody {
-                    message_id,
+                    packet_id,
                     valid_until: wire::now_secs()
                         .saturating_add(self.config.packet_expiration.as_secs()),
                 },

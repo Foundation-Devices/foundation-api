@@ -5,7 +5,7 @@ use super::{
     encrypted_message::EncryptedMessage, AsWireMlDsaPublicKey, AsWireMlDsaSignature,
     AsWireMlKemCiphertext, AsWireMlKemPublicKey,
 };
-use crate::MessageId;
+use crate::PacketId;
 
 mod crypto;
 pub use crypto::*;
@@ -19,7 +19,7 @@ pub struct PairRequestRecord {
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PairRequestBody {
-    pub message_id: MessageId,
+    pub packet_id: PacketId,
     pub valid_until: u64,
     #[rkyv(with = AsWireMlDsaPublicKey)]
     pub signing_pub_key: MLDSAPublicKey,

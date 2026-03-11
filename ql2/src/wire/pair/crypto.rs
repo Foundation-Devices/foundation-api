@@ -14,7 +14,7 @@ use crate::{
         ensure_not_expired, mlkem_ciphertext_from_archived, now_secs, AsWireMlDsaPublicKey,
         AsWireMlKemCiphertext, AsWireMlKemPublicKey, QlHeader, QlPayload, QlRecord,
     },
-    MessageId, QlError,
+    PacketId, QlError,
 };
 
 #[derive(Archive, Serialize)]
@@ -27,7 +27,7 @@ struct PairingAad {
 #[derive(Archive, Serialize)]
 struct PairingProofData {
     aad: Vec<u8>,
-    message_id: MessageId,
+    packet_id: PacketId,
     valid_until: u64,
     #[rkyv(with = AsWireMlDsaPublicKey)]
     signing_pub_key: MLDSAPublicKey,
@@ -39,7 +39,7 @@ pub fn build_pair_request(
     platform: &impl QlCrypto,
     recipient: XID,
     recipient_encapsulation_key: &MLKEMPublicKey,
-    message_id: MessageId,
+    packet_id: PacketId,
     valid_for: Duration,
 ) -> Result<QlRecord, QlError> {
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
@@ -53,14 +53,14 @@ pub fn build_pair_request(
     let proof_data = pairing_proof_data(
         &header,
         &kem_ct,
-        message_id,
+        packet_id,
         valid_until,
         &signing_pub_key,
         &sender_encapsulation_key,
     );
     let proof = platform.signing_private_key().sign(&proof_data);
     let body = PairRequestBody {
-        message_id,
+        packet_id,
         valid_until,
         signing_pub_key,
         encapsulation_pub_key: sender_encapsulation_key,
@@ -96,7 +96,7 @@ pub fn decrypt_pair_request(
     let proof_data = pairing_proof_data(
         &header,
         &kem_ct,
-        decrypted.message_id,
+        decrypted.packet_id,
         decrypted.valid_until,
         &decrypted.signing_pub_key,
         &decrypted.encapsulation_pub_key,
@@ -115,14 +115,14 @@ pub fn decrypt_pair_request(
 fn pairing_proof_data(
     header: &QlHeader,
     kem_ct: &MLKEMCiphertext,
-    message_id: MessageId,
+    packet_id: PacketId,
     valid_until: u64,
     signing_pub_key: &MLDSAPublicKey,
     encapsulation_pub_key: &MLKEMPublicKey,
 ) -> Vec<u8> {
     encode_value(&PairingProofData {
         aad: pairing_aad(header, kem_ct),
-        message_id,
+        packet_id,
         valid_until,
         signing_pub_key: signing_pub_key.clone(),
         encapsulation_pub_key: encapsulation_pub_key.clone(),

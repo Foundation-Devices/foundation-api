@@ -6,7 +6,7 @@ use std::{
 
 use bc_components::XID;
 
-use crate::MessageId;
+use crate::PacketId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReplayNamespace {
@@ -19,15 +19,15 @@ pub enum ReplayNamespace {
 pub struct ReplayKey {
     pub peer: XID,
     pub namespace: ReplayNamespace,
-    pub message_id: MessageId,
+    pub packet_id: PacketId,
 }
 
 impl ReplayKey {
-    pub const fn new(peer: XID, namespace: ReplayNamespace, message_id: MessageId) -> Self {
+    pub const fn new(peer: XID, namespace: ReplayNamespace, packet_id: PacketId) -> Self {
         Self {
             peer,
             namespace,
-            message_id,
+            packet_id,
         }
     }
 }
@@ -142,7 +142,7 @@ mod tests {
     fn check_and_store_detects_replay() {
         let mut cache = ReplayCache::new();
         let peer = peer_with_byte(1);
-        let key = ReplayKey::new(peer, ReplayNamespace::Peer, MessageId(1));
+        let key = ReplayKey::new(peer, ReplayNamespace::Peer, PacketId(1));
         let now_secs = 100;
         let expires_at = 110;
 
@@ -157,8 +157,8 @@ mod tests {
         let expired_at = 99;
         let future_at = 110;
 
-        let key_old = ReplayKey::new(peer_with_byte(2), ReplayNamespace::Peer, MessageId(2));
-        let key_new = ReplayKey::new(peer_with_byte(3), ReplayNamespace::Peer, MessageId(3));
+        let key_old = ReplayKey::new(peer_with_byte(2), ReplayNamespace::Peer, PacketId(2));
+        let key_new = ReplayKey::new(peer_with_byte(3), ReplayNamespace::Peer, PacketId(3));
 
         cache.add(key_old, expired_at);
         cache.add(key_new, future_at);
@@ -176,8 +176,8 @@ mod tests {
 
         let peer_a = peer_with_byte(4);
         let peer_b = peer_with_byte(5);
-        let key_a = ReplayKey::new(peer_a, ReplayNamespace::Peer, MessageId(4));
-        let key_b = ReplayKey::new(peer_b, ReplayNamespace::Peer, MessageId(5));
+        let key_a = ReplayKey::new(peer_a, ReplayNamespace::Peer, PacketId(4));
+        let key_b = ReplayKey::new(peer_b, ReplayNamespace::Peer, PacketId(5));
 
         cache.add(key_a, expires_at);
         cache.add(key_b, expires_at);

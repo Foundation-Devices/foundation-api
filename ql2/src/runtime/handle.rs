@@ -7,14 +7,13 @@ use std::{
 use async_channel::Sender;
 
 use crate::{
-    runtime::pipe::{self, ReadReady},
-    Peer,
     runtime::{
         command::RuntimeCommand,
+        pipe::{self, ReadReady},
         AcceptedStreamDelivery, StreamConfig,
     },
     wire::stream::{Direction, RejectCode, ResetCode},
-    QlError, StreamId,
+    Peer, QlError, StreamId,
 };
 
 #[derive(Clone)]
@@ -221,7 +220,9 @@ impl OutboundByteStream {
         let pipe = self.pipe.as_mut().expect("stream not finished or reset");
         let written = pipe.write(bytes).await?;
         self.tx
-            .try_send(RuntimeCommand::PollStream { stream_id: self.stream_id })
+            .try_send(RuntimeCommand::PollStream {
+                stream_id: self.stream_id,
+            })
             .map_err(|_| QlError::Cancelled)?;
         Ok(written)
     }
@@ -243,7 +244,9 @@ impl OutboundByteStream {
         };
         pipe.finish();
         self.tx
-            .try_send(RuntimeCommand::PollStream { stream_id: self.stream_id })
+            .try_send(RuntimeCommand::PollStream {
+                stream_id: self.stream_id,
+            })
             .map_err(|_| QlError::Cancelled)?;
         pipe.closed().await;
         Ok(())
@@ -323,9 +326,9 @@ impl Drop for StreamResponder {
         if !self.armed {
             return;
         }
-        let _ = self
-            .tx
-            .try_send(RuntimeCommand::ResponderDropped { stream_id: self.stream_id });
+        let _ = self.tx.try_send(RuntimeCommand::ResponderDropped {
+            stream_id: self.stream_id,
+        });
     }
 }
 
@@ -356,7 +359,11 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::Incoming(bytes))
     }
 
-    pub async fn open_stream(&self, request_head: Vec<u8>, config: StreamConfig) -> Result<PendingStream, QlError> {
+    pub async fn open_stream(
+        &self,
+        request_head: Vec<u8>,
+        config: StreamConfig,
+    ) -> Result<PendingStream, QlError> {
         let (request_pipe, request_writer) = pipe::pipe(self.pipe_size_bytes);
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let (start_tx, start_rx) = oneshot::channel();

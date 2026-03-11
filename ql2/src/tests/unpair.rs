@@ -93,7 +93,7 @@ async fn invalid_unpair_signature_is_ignored() {
                 sender: peer_a.xid,
                 recipient: peer_b.xid,
             },
-            MessageId(777),
+            PacketId(777),
             now_secs().saturating_add(60),
         );
         let forged_bytes = wire::encode_record(&forged_unpair);
