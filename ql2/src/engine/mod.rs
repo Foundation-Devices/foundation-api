@@ -2,7 +2,7 @@ pub mod replay_cache;
 mod state;
 mod stream;
 
-use std::{cmp::Reverse, collections::HashMap, time::Instant};
+use std::{cmp::Reverse, collections::HashMap, mem, time::Instant};
 
 use bc_components::{SigningPublicKey, XID};
 use dcbor::CBOR;
@@ -138,9 +138,9 @@ impl Engine {
     }
 
     fn reset_runtime(&mut self, error: QlError, emit: &mut impl OutputFn) {
-        let stream_ids: Vec<_> = self.streams.keys().copied().collect();
-        for stream_id in stream_ids {
-            self.fail_stream(stream_id, error.clone(), emit);
+        let streams = mem::take(&mut self.streams);
+        for (stream_id, stream) in streams {
+            self.fail_stream(stream_id, stream, error.clone(), emit);
         }
         self.state.outbound.clear();
         self.state.timeouts.clear();
@@ -1085,21 +1085,24 @@ impl Engine {
     }
 
     fn drive_streams(&mut self, now: Instant, emit: &mut impl OutputFn) {
-        let keys: Vec<_> = self.streams.keys().copied().collect();
-        for stream_id in keys {
-            self.drive_stream(now, stream_id, emit);
+        let config = &self.config;
+        let state = &mut self.state;
+        for stream in self.streams.values_mut() {
+            Self::drive_stream(config, state, now, stream, emit);
         }
     }
 
-    fn drive_stream(&mut self, _now: Instant, stream_id: StreamId, emit: &mut impl OutputFn) {
-        let (streams, state) = (&mut self.streams, &mut self.state);
-        let Some(stream) = streams.get_mut(&stream_id) else {
-            return;
-        };
+    fn drive_stream(
+        config: &RuntimeConfig,
+        state: &mut EngineState,
+        _now: Instant,
+        stream: &mut StreamState,
+        emit: &mut impl OutputFn,
+    ) {
         match stream {
             StreamState::Initiator(stream) => {
                 let action = Self::plan_drive_outbound(
-                    &self.config,
+                    config,
                     stream.meta.key,
                     &mut stream.control,
                     Some(&mut stream.request),
@@ -1107,7 +1110,7 @@ impl Engine {
                 );
                 if let Some(frame) = action {
                     state.enqueue_control_frame(
-                        &self.config,
+                        config,
                         stream.meta.key,
                         &mut stream.control,
                         frame,
@@ -1120,38 +1123,21 @@ impl Engine {
                 match &mut stream.response {
                     ResponderResponse::Accepted { body, .. } => {
                         let action = Self::plan_drive_outbound(
-                            &self.config,
+                            config,
                             key,
                             &mut stream.control,
                             Some(body),
                             emit,
                         );
                         if let Some(frame) = action {
-                            state.enqueue_control_frame(
-                                &self.config,
-                                key,
-                                &mut stream.control,
-                                frame,
-                                0,
-                            );
+                            state.enqueue_control_frame(config, key, &mut stream.control, frame, 0);
                         }
                     }
                     _ => {
-                        let action = Self::plan_drive_outbound(
-                            &self.config,
-                            key,
-                            &mut stream.control,
-                            None,
-                            emit,
-                        );
+                        let action =
+                            Self::plan_drive_outbound(config, key, &mut stream.control, None, emit);
                         if let Some(frame) = action {
-                            state.enqueue_control_frame(
-                                &self.config,
-                                key,
-                                &mut stream.control,
-                                frame,
-                                0,
-                            );
+                            state.enqueue_control_frame(config, key, &mut stream.control, frame, 0);
                         }
                     }
                 }
@@ -1763,29 +1749,34 @@ impl Engine {
     }
 
     fn drop_outbound(&mut self, emit: &mut impl OutputFn) {
-        let stream_ids: Vec<_> = self
-            .state
-            .outbound
-            .iter()
-            .filter_map(|message| message.stream_id)
-            .collect();
-        self.state.outbound.clear();
-        for stream_id in stream_ids {
-            self.fail_stream(stream_id, QlError::SendFailed, emit);
+        while let Some(message) = self.state.outbound.pop_front() {
+            if let Some(stream_id) = message.stream_id {
+                self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
+            }
         }
     }
 
     fn abort_streams(&mut self, error: QlError, emit: &mut impl OutputFn) {
-        let keys: Vec<_> = self.streams.keys().copied().collect();
-        for stream_id in keys {
-            self.fail_stream(stream_id, error.clone(), emit);
+        let streams = mem::take(&mut self.streams);
+        for (stream_id, stream) in streams {
+            self.fail_stream(stream_id, stream, error.clone(), emit);
         }
     }
 
-    fn fail_stream(&mut self, stream_id: StreamId, error: QlError, emit: &mut impl OutputFn) {
+    fn fail_stream_by_id(&mut self, stream_id: StreamId, error: QlError, emit: &mut impl OutputFn) {
         let Some(stream) = self.streams.remove(&stream_id) else {
             return;
         };
+        self.fail_stream(stream_id, stream, error, emit);
+    }
+
+    fn fail_stream(
+        &mut self,
+        stream_id: StreamId,
+        stream: StreamState,
+        error: QlError,
+        emit: &mut impl OutputFn,
+    ) {
         match stream {
             StreamState::Initiator(stream) => {
                 match stream.accept {
@@ -1867,7 +1858,7 @@ impl Engine {
                         }
                     });
                     if let Some(stream_id) = timed_out_stream {
-                        self.fail_stream(stream_id, QlError::SendFailed, emit);
+                        self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
                     }
                 }
                 TimeoutKind::Handshake { token } => {
@@ -1937,7 +1928,7 @@ impl Engine {
                         .and_then(StreamState::open_timeout_token)
                         .is_some_and(|stream_token| stream_token == token);
                     if should_fail {
-                        self.fail_stream(stream_id, QlError::Timeout, emit);
+                        self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
                     }
                 }
                 TimeoutKind::StreamPacket {
@@ -1988,7 +1979,7 @@ impl Engine {
                         }
                     }
                     if timed_out {
-                        self.fail_stream(stream_id, QlError::Timeout, emit);
+                        self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
                     } else if let Some(frame) = retransmit_control {
                         let (streams, state) = (&mut self.streams, &mut self.state);
                         if let Some(stream) = streams.get_mut(&stream_id) {
@@ -2035,7 +2026,7 @@ impl Engine {
         }
         if let Err(error) = result {
             if let Some(tracked) = tracked {
-                self.fail_stream(tracked.stream_id, error.clone(), emit);
+                self.fail_stream_by_id(tracked.stream_id, error.clone(), emit);
             }
             let should_disconnect = matches!(self.state.peer.as_ref().map(|entry| &entry.session),
                 Some(PeerSession::Initiator { handshake_token, .. }) if *handshake_token == token)
@@ -2106,13 +2097,13 @@ impl Engine {
                 QueuedPayload::StreamBody(body) => {
                     let Some(peer) = self.state.peer.as_ref() else {
                         if let Some(stream_id) = message.stream_id {
-                            self.fail_stream(stream_id, QlError::SendFailed, emit);
+                            self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
                         }
                         continue;
                     };
                     let Some(session_key) = peer.session.session_key() else {
                         if let Some(stream_id) = message.stream_id {
-                            self.fail_stream(stream_id, QlError::SendFailed, emit);
+                            self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
                         }
                         continue;
                     };
