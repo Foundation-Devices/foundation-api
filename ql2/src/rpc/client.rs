@@ -1,8 +1,7 @@
 use dcbor::CBOR;
 
-use crate::runtime::{RuntimeHandle, StreamConfig};
-
 use super::{modality::RequestResponse, RpcError, RpcRequestHead, RpcResponseHead};
+use crate::runtime::{RuntimeHandle, StreamConfig};
 
 #[derive(Clone)]
 pub struct RpcHandle {
@@ -38,12 +37,14 @@ impl RpcHandle {
         request.write_all(&request_body).await?;
         request.finish().await?;
 
-        let response_head = RpcResponseHead::try_from(CBOR::try_from_data(&accepted.response_head)?)?;
+        let response_head =
+            RpcResponseHead::try_from(CBOR::try_from_data(&accepted.response_head)?)?;
         if response_head.version != super::RPC_VERSION {
             return Err(RpcError::BadVersion(response_head.version));
         }
 
-        let response_body = read_stream_to_end(accepted.response, response_head.content_length).await?;
+        let response_body =
+            read_stream_to_end(accepted.response, response_head.content_length).await?;
         Ok(CBOR::try_from_data(&response_body)?.try_into()?)
     }
 }

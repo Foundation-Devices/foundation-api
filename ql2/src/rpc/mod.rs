@@ -4,11 +4,10 @@ pub mod client;
 pub mod modality;
 
 pub use client::RpcHandle;
+use dcbor::CBOR;
 pub use modality::{MethodId, QlCodec, RequestResponse};
 
-use dcbor::CBOR;
-
-use crate::{wire::take_fields, QlError};
+use crate::QlError;
 
 pub(crate) const RPC_VERSION: u16 = 1;
 
@@ -67,7 +66,10 @@ impl From<RpcRequestHead> for CBOR {
         CBOR::from(vec![
             CBOR::from(value.version),
             CBOR::from(value.method),
-            value.content_length.map(CBOR::from).unwrap_or_else(CBOR::null),
+            value
+                .content_length
+                .map(CBOR::from)
+                .unwrap_or_else(CBOR::null),
         ])
     }
 }
@@ -93,7 +95,10 @@ impl From<RpcResponseHead> for CBOR {
     fn from(value: RpcResponseHead) -> Self {
         CBOR::from(vec![
             CBOR::from(value.version),
-            value.content_length.map(CBOR::from).unwrap_or_else(CBOR::null),
+            value
+                .content_length
+                .map(CBOR::from)
+                .unwrap_or_else(CBOR::null),
         ])
     }
 }
@@ -112,4 +117,37 @@ impl TryFrom<CBOR> for RpcResponseHead {
             },
         })
     }
+}
+
+fn take_fields<const N: usize>(
+    mut iter: impl Iterator<Item = CBOR>,
+) -> Result<[CBOR; N], dcbor::Error> {
+    use std::mem::MaybeUninit;
+
+    let mut fields: [MaybeUninit<CBOR>; N] = [const { MaybeUninit::uninit() }; N];
+    for (index, slot) in fields.iter_mut().enumerate() {
+        let Some(value) = iter.next() else {
+            for init in &mut fields[..index] {
+                unsafe { init.assume_init_drop() };
+            }
+            return Err(dcbor::Error::msg("array too short"));
+        };
+        slot.write(value);
+    }
+    let result = unsafe { std::ptr::read(&fields as *const _ as *const [CBOR; N]) };
+    if iter.next().is_some() {
+        return Err(dcbor::Error::msg("array too long"));
+    }
+    Ok(result)
+}
+
+#[test]
+fn take_fields_reads_exact_count() {
+    let values = vec![CBOR::from(1u8), CBOR::from(2u8), CBOR::from(3u8)];
+    let mut iter = values.into_iter();
+    let [first, second, third] = take_fields(&mut iter).unwrap();
+    assert_eq!(u8::try_from(first).unwrap(), 1);
+    assert_eq!(u8::try_from(second).unwrap(), 2);
+    assert_eq!(u8::try_from(third).unwrap(), 3);
+    assert!(iter.next().is_none());
 }
