@@ -20,11 +20,7 @@ pub use state::{
     OutputFn, PeerRecord, PeerSession, Token, TrackedWrite,
 };
 
-use self::{
-    replay_cache::{ReplayKey, ReplayNamespace},
-    state::*,
-    stream::*,
-};
+use self::{replay_cache::ReplayKey, state::*, stream::*};
 use crate::{
     platform::QlCrypto,
     wire::{
@@ -38,9 +34,9 @@ use crate::{
             StreamFrameData, StreamFrameOpen, StreamFrameReject, StreamFrameReset, StreamMessage,
         },
         unpair::{self},
-        QlHeader, QlPayload, QlRecord,
+        ControlMeta, QlHeader, QlPayload, QlRecord,
     },
-    PacketId, Peer, QlError, StreamId, StreamSeq,
+    Peer, QlError, StreamId, StreamSeq,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -170,6 +166,19 @@ impl Engine {
         }
     }
 
+    fn next_control_meta(&self, valid_for: Duration) -> ControlMeta {
+        ControlMeta {
+            packet_id: self.state.next_packet_id(),
+            valid_until: wire::now_secs() + valid_for.as_secs(),
+        }
+    }
+
+    fn is_replayed_control(&mut self, peer: XID, meta: ControlMeta) -> bool {
+        self.state
+            .replay_cache
+            .check_and_store_valid_until(ReplayKey::new(peer, meta.packet_id), meta.valid_until)
+    }
+
     fn bind_peer_record(&mut self, peer: Peer, emit: &mut impl OutputFn) {
         self.reset_runtime(QlError::Cancelled, emit);
         self.state.peer = Some(PeerRecord::new(
@@ -191,9 +200,6 @@ impl Engine {
         self.state.outbound.clear();
         self.state.timeouts.clear();
         self.state.write_in_flight = None;
-        if let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) {
-            self.state.replay_cache.clear_peer(peer);
-        }
     }
 
     fn handle_bind_peer(&mut self, peer: Peer, emit: &mut impl OutputFn) {
@@ -210,13 +216,10 @@ impl Engine {
         let Some(peer) = self.state.peer.as_ref() else {
             return;
         };
-        let Ok(record) = wire::pair::build_pair_request(
-            crypto,
-            peer.peer,
-            &peer.encapsulation_key,
-            self.state.next_packet_id(),
-            self.config.packet_expiration,
-        ) else {
+        let meta = self.next_control_meta(self.config.packet_expiration);
+        let Ok(record) =
+            wire::pair::build_pair_request(crypto, peer.peer, &peer.encapsulation_key, meta)
+        else {
             return;
         };
         let token = self.state.next_token();
@@ -232,6 +235,7 @@ impl Engine {
             return;
         };
         let peer = peer_record.peer;
+        let meta = self.next_control_meta(self.config.handshake_timeout);
         let (hello, session_key) = match &peer_record.session {
             PeerSession::Connected { .. }
             | PeerSession::Initiator { .. }
@@ -244,6 +248,7 @@ impl Engine {
                     crypto.xid(),
                     peer,
                     &peer_record.encapsulation_key,
+                    meta,
                 ) {
                     Ok(result) => result,
                     Err(_) => return,
@@ -283,14 +288,14 @@ impl Engine {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
+        let meta = self.next_control_meta(self.config.packet_expiration);
         let record = unpair::build_unpair_record(
             crypto,
             QlHeader {
                 sender: crypto.xid(),
                 recipient: peer,
             },
-            self.state.next_packet_id(),
-            wire::now_secs().saturating_add(self.config.packet_expiration.as_secs()),
+            meta,
         );
         self.unpair_peer(emit);
         let token = self.state.next_token();
@@ -520,8 +525,8 @@ impl Engine {
             return;
         };
         let record = unsafe { record.unseal_unchecked() };
-        let sender = wire::xid_from_archived(&record.header.sender);
-        let recipient = wire::xid_from_archived(&record.header.recipient);
+        let sender: XID = (&record.header.sender).into();
+        let recipient: XID = (&record.header.recipient).into();
         if recipient != crypto.xid() {
             return;
         }
@@ -589,6 +594,9 @@ impl Engine {
             Err(_) => return,
         };
         let peer = XID::new(SigningPublicKey::MLDSA(payload.signing_pub_key.clone()));
+        if self.is_replayed_control(peer, payload.meta) {
+            return;
+        }
         if let Some(existing) = self.state.peer.as_ref() {
             if existing.peer != peer
                 || existing.signing_key != payload.signing_pub_key
@@ -624,14 +632,8 @@ impl Engine {
                 return;
             }
         }
-        let packet_id: PacketId = (&record.packet_id).into();
-        let valid_until = record.valid_until.to_native();
-        let replay_key = ReplayKey::new(peer, ReplayNamespace::Peer, packet_id);
-        if self
-            .state
-            .replay_cache
-            .check_and_store_valid_until(replay_key, valid_until)
-        {
+        let meta: ControlMeta = (&record.meta).into();
+        if self.is_replayed_control(peer, meta) {
             return;
         }
         self.unpair_peer(emit);
@@ -645,7 +647,7 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let should_reply = {
+        let (body, should_reply) = {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
             };
@@ -657,11 +659,14 @@ impl Engine {
             else {
                 return;
             };
-            if heartbeat::decrypt_heartbeat(header, encrypted, session_key).is_err() {
+            let Ok(body) = heartbeat::decrypt_heartbeat(header, encrypted, session_key) else {
                 return;
-            }
-            !keepalive.pending
+            };
+            (body, !keepalive.pending)
         };
+        if self.is_replayed_control(header.sender, body.meta) {
+            return;
+        }
         self.record_activity(now);
         if should_reply {
             self.send_heartbeat_message(now, crypto);
@@ -1588,37 +1593,46 @@ impl Engine {
         emit: &mut impl OutputFn,
     ) {
         let action = match self.state.peer.as_ref() {
-            Some(entry) => match &entry.session {
-                PeerSession::Initiator {
-                    hello: local_hello, ..
-                } => {
-                    if peer_hello_wins(local_hello, crypto.xid(), hello, peer) {
-                        HelloAction::StartResponder
-                    } else {
-                        HelloAction::Ignore
-                    }
+            Some(entry) => {
+                if handshake::verify_hello(peer, crypto.xid(), &entry.signing_key, hello).is_err() {
+                    return;
                 }
-                PeerSession::Responder {
-                    hello: stored,
-                    reply,
-                    deadline,
-                    ..
-                } => {
-                    if stored.nonce == wire::nonce_from_archived(&hello.nonce) {
-                        HelloAction::ResendReply {
-                            reply: reply.clone(),
-                            deadline: *deadline,
+                match &entry.session {
+                    PeerSession::Initiator {
+                        hello: local_hello, ..
+                    } => {
+                        if peer_hello_wins(local_hello, crypto.xid(), hello, peer) {
+                            HelloAction::StartResponder
+                        } else {
+                            HelloAction::Ignore
                         }
-                    } else {
+                    }
+                    PeerSession::Responder {
+                        hello: stored,
+                        reply,
+                        deadline,
+                        ..
+                    } => {
+                        if stored.nonce == (&hello.nonce).into() {
+                            HelloAction::ResendReply {
+                                reply: reply.clone(),
+                                deadline: *deadline,
+                            }
+                        } else {
+                            HelloAction::StartResponder
+                        }
+                    }
+                    PeerSession::Disconnected | PeerSession::Connected { .. } => {
                         HelloAction::StartResponder
                     }
                 }
-                PeerSession::Disconnected | PeerSession::Connected { .. } => {
-                    HelloAction::StartResponder
-                }
-            },
+            }
             None => return,
         };
+        let meta: ControlMeta = (&hello.meta).into();
+        if self.is_replayed_control(peer, meta) {
+            return;
+        }
 
         match action {
             HelloAction::StartResponder => {
@@ -1647,8 +1661,8 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let token = self.state.next_token();
         let deadline = now + self.config.handshake_timeout;
+        let confirm_meta = self.next_control_meta(self.config.handshake_timeout);
         let res = {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
@@ -1673,22 +1687,12 @@ impl Engine {
                 hello,
                 reply,
                 session_key,
+                confirm_meta,
             )
             .map(|(confirm, session_key)| (hello.clone(), confirm, session_key))
         };
-        let confirm = match res {
-            Ok((hello, confirm, session_key)) => {
-                if let Some(entry) = self.state.peer.as_mut() {
-                    entry.session = PeerSession::Initiator {
-                        handshake_token: token,
-                        hello,
-                        session_key,
-                        deadline,
-                        stage: InitiatorStage::SendingConfirm,
-                    };
-                }
-                confirm
-            }
+        let (hello, confirm, session_key) = match res {
+            Ok(result) => result,
             Err(_) => {
                 if let Some(entry) = self.state.peer.as_mut() {
                     entry.session = PeerSession::Disconnected;
@@ -1697,6 +1701,20 @@ impl Engine {
                 return;
             }
         };
+        let reply_meta: ControlMeta = (&reply.meta).into();
+        if self.is_replayed_control(peer, reply_meta) {
+            return;
+        }
+        let token = self.state.next_token();
+        if let Some(entry) = self.state.peer.as_mut() {
+            entry.session = PeerSession::Initiator {
+                handshake_token: token,
+                hello,
+                session_key,
+                deadline,
+                stage: InitiatorStage::SendingConfirm,
+            };
+        }
 
         let record = QlRecord {
             header: QlHeader {
@@ -1739,6 +1757,10 @@ impl Engine {
             secrets,
         ) {
             Ok(session_key) => {
+                let meta: ControlMeta = (&confirm.meta).into();
+                if self.is_replayed_control(peer, meta) {
+                    return;
+                }
                 if let Some(entry) = self.state.peer.as_mut() {
                     entry.session = PeerSession::Connected {
                         session_key,
@@ -1765,6 +1787,7 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
+        let reply_meta = self.next_control_meta(self.config.handshake_timeout);
         let res = {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
@@ -1773,8 +1796,10 @@ impl Engine {
                 crypto,
                 peer,
                 crypto.xid(),
+                &peer_record.signing_key,
                 &peer_record.encapsulation_key,
                 hello,
+                reply_meta,
             )
         };
         let (reply, secrets) = match res {
@@ -1822,7 +1847,7 @@ impl Engine {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
-        let packet_id = self.state.next_packet_id();
+        let meta = self.next_control_meta(self.config.packet_expiration);
         let token = self.state.next_token();
         let deadline = now + self.config.packet_expiration;
         let message = {
@@ -1838,11 +1863,7 @@ impl Engine {
                     recipient: peer,
                 },
                 session_key,
-                HeartbeatBody {
-                    packet_id,
-                    valid_until: wire::now_secs()
-                        .saturating_add(self.config.packet_expiration.as_secs()),
-                },
+                HeartbeatBody { meta },
                 next_encrypted_message_nonce(crypto),
             )
         };
@@ -1966,7 +1987,6 @@ impl Engine {
         };
         self.drop_outbound(emit);
         self.abort_streams(QlError::SendFailed, emit);
-        self.state.replay_cache.clear_peer(peer);
         self.state.peer = None;
         emit(EngineOutput::PeerStatusChanged {
             peer,
@@ -2297,7 +2317,7 @@ fn peer_hello_wins(
 ) -> bool {
     use std::cmp::Ordering;
 
-    let peer_nonce = wire::nonce_from_archived(&peer_hello.nonce);
+    let peer_nonce: bc_components::Nonce = (&peer_hello.nonce).into();
     match peer_nonce.data().cmp(local_hello.nonce.data()) {
         Ordering::Less => true,
         Ordering::Greater => false,

@@ -78,8 +78,10 @@ impl TryFrom<WireXid> for XID {
     }
 }
 
-pub(crate) fn xid_from_archived(value: &ArchivedWireXid) -> XID {
-    XID::from_data(value.0)
+impl From<&ArchivedWireXid> for XID {
+    fn from(value: &ArchivedWireXid) -> Self {
+        XID::from_data(value.0)
+    }
 }
 
 impl_wire_wrapper!(AsWireXid, XID, WireXid);
@@ -101,8 +103,10 @@ impl TryFrom<WireNonce> for Nonce {
     }
 }
 
-pub(crate) fn nonce_from_archived(value: &ArchivedWireNonce) -> Nonce {
-    Nonce::from_data(value.0)
+impl From<&ArchivedWireNonce> for Nonce {
+    fn from(value: &ArchivedWireNonce) -> Self {
+        Nonce::from_data(value.0)
+    }
 }
 
 impl_wire_wrapper!(AsWireNonce, Nonce, WireNonce);
@@ -137,11 +141,13 @@ impl From<MLDSA> for WireMlDsaLevel {
     }
 }
 
-pub(crate) fn mldsa_level_from_archived(value: &ArchivedWireMlDsaLevel) -> MLDSA {
-    match value {
-        ArchivedWireMlDsaLevel::MlDsa44 => MLDSA::MLDSA44,
-        ArchivedWireMlDsaLevel::MlDsa65 => MLDSA::MLDSA65,
-        ArchivedWireMlDsaLevel::MlDsa87 => MLDSA::MLDSA87,
+impl From<&ArchivedWireMlDsaLevel> for MLDSA {
+    fn from(value: &ArchivedWireMlDsaLevel) -> Self {
+        match value {
+            ArchivedWireMlDsaLevel::MlDsa44 => MLDSA::MLDSA44,
+            ArchivedWireMlDsaLevel::MlDsa65 => MLDSA::MLDSA65,
+            ArchivedWireMlDsaLevel::MlDsa87 => MLDSA::MLDSA87,
+        }
     }
 }
 
@@ -175,11 +181,13 @@ impl From<MLKEM> for WireMlKemLevel {
     }
 }
 
-pub(crate) fn mlkem_level_from_archived(value: &ArchivedWireMlKemLevel) -> MLKEM {
-    match value {
-        ArchivedWireMlKemLevel::MlKem512 => MLKEM::MLKEM512,
-        ArchivedWireMlKemLevel::MlKem768 => MLKEM::MLKEM768,
-        ArchivedWireMlKemLevel::MlKem1024 => MLKEM::MLKEM1024,
+impl From<&ArchivedWireMlKemLevel> for MLKEM {
+    fn from(value: &ArchivedWireMlKemLevel) -> Self {
+        match value {
+            ArchivedWireMlKemLevel::MlKem512 => MLKEM::MLKEM512,
+            ArchivedWireMlKemLevel::MlKem768 => MLKEM::MLKEM768,
+            ArchivedWireMlKemLevel::MlKem1024 => MLKEM::MLKEM1024,
+        }
     }
 }
 
@@ -204,6 +212,15 @@ impl From<&MLDSAPublicKey> for WireMlDsaPublicKey {
             level: value.level().into(),
             bytes: value.as_bytes().to_vec(),
         }
+    }
+}
+
+impl TryFrom<&ArchivedWireMlDsaPublicKey> for MLDSAPublicKey {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedWireMlDsaPublicKey) -> Result<Self, Self::Error> {
+        MLDSAPublicKey::from_bytes((&value.level).into(), value.bytes.as_slice())
+            .map_err(|_| QlError::InvalidPayload)
     }
 }
 
@@ -233,14 +250,13 @@ impl From<&MLDSASignature> for WireMlDsaSignature {
     }
 }
 
-pub(crate) fn mldsa_signature_from_archived(
-    value: &ArchivedWireMlDsaSignature,
-) -> Result<MLDSASignature, QlError> {
-    MLDSASignature::from_bytes(
-        mldsa_level_from_archived(&value.level),
-        value.bytes.as_slice(),
-    )
-    .map_err(|_| QlError::InvalidPayload)
+impl TryFrom<&ArchivedWireMlDsaSignature> for MLDSASignature {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedWireMlDsaSignature) -> Result<Self, Self::Error> {
+        MLDSASignature::from_bytes((&value.level).into(), value.bytes.as_slice())
+            .map_err(|_| QlError::InvalidPayload)
+    }
 }
 
 impl_wire_wrapper!(AsWireMlDsaSignature, MLDSASignature, WireMlDsaSignature);
@@ -266,6 +282,15 @@ impl From<&MLKEMPublicKey> for WireMlKemPublicKey {
             level: value.level().into(),
             bytes: value.as_bytes().to_vec(),
         }
+    }
+}
+
+impl TryFrom<&ArchivedWireMlKemPublicKey> for MLKEMPublicKey {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedWireMlKemPublicKey) -> Result<Self, Self::Error> {
+        MLKEMPublicKey::from_bytes((&value.level).into(), value.bytes.as_slice())
+            .map_err(|_| QlError::InvalidPayload)
     }
 }
 
@@ -295,14 +320,13 @@ impl From<&MLKEMCiphertext> for WireMlKemCiphertext {
     }
 }
 
-pub(crate) fn mlkem_ciphertext_from_archived(
-    value: &ArchivedWireMlKemCiphertext,
-) -> Result<MLKEMCiphertext, QlError> {
-    MLKEMCiphertext::from_bytes(
-        mlkem_level_from_archived(&value.level),
-        value.bytes.as_slice(),
-    )
-    .map_err(|_| QlError::InvalidPayload)
+impl TryFrom<&ArchivedWireMlKemCiphertext> for MLKEMCiphertext {
+    type Error = QlError;
+
+    fn try_from(value: &ArchivedWireMlKemCiphertext) -> Result<Self, Self::Error> {
+        MLKEMCiphertext::from_bytes((&value.level).into(), value.bytes.as_slice())
+            .map_err(|_| QlError::InvalidPayload)
+    }
 }
 
 impl_wire_wrapper!(AsWireMlKemCiphertext, MLKEMCiphertext, WireMlKemCiphertext);

@@ -15,7 +15,7 @@ use crate::{
         },
         QlHeader, QlPayload,
     },
-    Peer,
+    PacketId, Peer,
 };
 
 struct TestCrypto {
@@ -1136,10 +1136,7 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
             last_activity: now,
         },
         control: StreamControl::default(),
-        request: OutboundState {
-            dir: Direction::Request,
-            phase: OutboundPhase::Ready,
-        },
+        request: OutboundState::from_prefix(Direction::Request, false),
         response: InboundState::new(),
         accept: InitiatorAccept::Opening(OpenWaiter {
             open_id: Some(OpenId(1)),
@@ -1290,5 +1287,89 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
             .unwrap()
             .attempt,
         1
+    );
+}
+
+#[test]
+fn replayed_heartbeat_is_ignored() {
+    let crypto_a = TestCrypto::new(101);
+    let crypto_b = TestCrypto::new(102);
+    let session_key = SymmetricKey::from_data([4; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+    let peer_b = crypto_b.peer();
+    let mut a = connected_engine(&crypto_a, peer_b, session_key.clone());
+    let now = Instant::now();
+    let heartbeat = wire::heartbeat::encrypt_heartbeat(
+        QlHeader {
+            sender: crypto_b.xid(),
+            recipient: crypto_a.xid(),
+        },
+        &session_key,
+        wire::heartbeat::HeartbeatBody {
+            meta: wire::ControlMeta {
+                packet_id: PacketId(7),
+                valid_until: wire::now_secs().saturating_add(60),
+            },
+        },
+        [3; wire::encrypted_message::NONCE_SIZE],
+    );
+    let bytes = wire::encode_record(&heartbeat);
+
+    let first = run_engine(&mut a, now, EngineInput::Incoming(bytes.clone()), &crypto_a);
+    assert!(first
+        .iter()
+        .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
+
+    let second = run_engine(&mut a, now, EngineInput::Incoming(bytes), &crypto_a);
+    assert!(!second
+        .iter()
+        .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
+}
+
+#[test]
+fn replayed_unpair_is_ignored_after_rebind() {
+    let config = EngineConfig::default();
+    let crypto_a = TestCrypto::new(111);
+    let crypto_b = TestCrypto::new(112);
+    let peer_b = crypto_b.peer();
+    let session_key = SymmetricKey::from_data([5; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b.clone()));
+    a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
+        session_key,
+        keepalive: KeepAliveState::default(),
+    };
+    let now = Instant::now();
+    let bytes = wire::encode_record(&wire::unpair::build_unpair_record(
+        &crypto_b,
+        QlHeader {
+            sender: crypto_b.xid(),
+            recipient: crypto_a.xid(),
+        },
+        wire::ControlMeta {
+            packet_id: PacketId(9),
+            valid_until: wire::now_secs().saturating_add(60),
+        },
+    ));
+
+    let first = run_engine(&mut a, now, EngineInput::Incoming(bytes.clone()), &crypto_a);
+    assert!(first
+        .iter()
+        .any(|output| matches!(output, EngineOutput::ClearPeer)));
+    assert!(a.state.peer.is_none());
+
+    let _ = run_engine(
+        &mut a,
+        now,
+        EngineInput::BindPeer(peer_b.clone()),
+        &crypto_a,
+    );
+    assert!(a.state.peer.is_some());
+
+    let second = run_engine(&mut a, now, EngineInput::Incoming(bytes), &crypto_a);
+    assert!(!second
+        .iter()
+        .any(|output| matches!(output, EngineOutput::ClearPeer)));
+    assert_eq!(
+        a.state.peer.as_ref().map(|peer| peer.peer),
+        Some(peer_b.peer)
     );
 }

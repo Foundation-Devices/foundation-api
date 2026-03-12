@@ -1,38 +1,31 @@
-use bc_components::MLDSAPublicKey;
+use bc_components::{MLDSAPublicKey, MLDSASignature};
 use rkyv::{Archive, Serialize};
 
 use super::UnpairRecord;
 use crate::{
     platform::QlCrypto,
-    wire::{encode_value, mldsa_signature_from_archived, now_secs, QlHeader, QlPayload, QlRecord},
-    PacketId, QlError,
+    wire::{encode_value, ensure_not_expired, ControlMeta, QlHeader, QlPayload, QlRecord},
+    QlError,
 };
 
 #[derive(Archive, Serialize)]
 struct UnpairProofData {
     domain: Vec<u8>,
     header: QlHeader,
-    packet_id: PacketId,
-    valid_until: u64,
+    meta: ControlMeta,
 }
 
 pub fn build_unpair_record(
     platform: &impl QlCrypto,
     header: QlHeader,
-    packet_id: PacketId,
-    valid_until: u64,
+    meta: ControlMeta,
 ) -> QlRecord {
-    let signature =
-        platform
-            .signing_private_key()
-            .sign(unpair_proof_data(&header, packet_id, valid_until));
+    let signature = platform
+        .signing_private_key()
+        .sign(unpair_proof_data(&header, &meta));
     QlRecord {
         header,
-        payload: QlPayload::Unpair(UnpairRecord {
-            packet_id,
-            valid_until,
-            signature,
-        }),
+        payload: QlPayload::Unpair(UnpairRecord { meta, signature }),
     }
 }
 
@@ -41,13 +34,10 @@ pub fn verify_unpair_record(
     record: &super::ArchivedUnpairRecord,
     signing_key: &MLDSAPublicKey,
 ) -> Result<(), QlError> {
-    let packet_id = (&record.packet_id).into();
-    let valid_until = record.valid_until.to_native();
-    let signature = mldsa_signature_from_archived(&record.signature)?;
-    if now_secs() > valid_until {
-        return Err(QlError::InvalidPayload);
-    }
-    let proof_data = unpair_proof_data(header, packet_id, valid_until);
+    let meta: ControlMeta = (&record.meta).into();
+    let signature = MLDSASignature::try_from(&record.signature)?;
+    ensure_not_expired(meta.valid_until)?;
+    let proof_data = unpair_proof_data(header, &meta);
     if signing_key.verify(&signature, &proof_data).unwrap_or(false) {
         Ok(())
     } else {
@@ -55,11 +45,10 @@ pub fn verify_unpair_record(
     }
 }
 
-fn unpair_proof_data(header: &QlHeader, packet_id: PacketId, valid_until: u64) -> Vec<u8> {
+fn unpair_proof_data(header: &QlHeader, meta: &ControlMeta) -> Vec<u8> {
     encode_value(&UnpairProofData {
         domain: b"ql-unpair-v1".to_vec(),
         header: header.clone(),
-        packet_id,
-        valid_until,
+        meta: *meta,
     })
 }
