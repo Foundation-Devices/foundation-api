@@ -8,19 +8,16 @@ use std::{
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
 use super::{
-    replay_cache::ReplayCache,
-    stream::{AwaitingMessage, QueuedWrite, StreamControl, StreamState},
     EngineConfig, StreamConfig,
+    replay_cache::ReplayCache,
+    stream::{QueuedWrite, StreamState},
 };
 use crate::{
+    PacketId, Peer, QlError, StreamId, StreamSeq,
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
-        stream::{
-            BodyChunk, Direction, RejectCode, ResetCode, StreamFrame, StreamFrameData,
-            StreamMessage,
-        },
+        stream::{BodyChunk, Direction, RejectCode, ResetCode, StreamBody},
     },
-    PacketId, Peer, QlError, StreamId, StreamSeq,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -316,6 +313,14 @@ pub enum TimeoutKind {
         tx_seq: StreamSeq,
         attempt: u8,
     },
+    StreamAckDelay {
+        stream_id: StreamId,
+        token: Token,
+    },
+    StreamProvisional {
+        stream_id: StreamId,
+        token: Token,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,17 +428,16 @@ impl EngineState {
         }));
     }
 
-    pub fn enqueue_stream_message(
+    pub fn enqueue_stream_body(
         &mut self,
         config: &EngineConfig,
-        track_ack: bool,
         priority: bool,
-        message: StreamMessage,
-    ) {
+        body: StreamBody,
+    ) -> Token {
         let token = self.next_token();
         let message = QueuedWrite {
             token,
-            payload: super::stream::QueuedPayload::Stream { track_ack, message },
+            payload: super::stream::QueuedPayload::Stream { body },
         };
         if priority {
             self.outbound.push_front(message);
@@ -444,73 +448,6 @@ impl EngineState {
             at: Instant::now() + config.packet_expiration,
             kind: TimeoutKind::Outbound { token },
         }));
-    }
-
-    pub fn enqueue_stream_frame(
-        &mut self,
-        config: &EngineConfig,
-        control: &mut StreamControl,
-        frame: StreamFrame,
-        attempt: u8,
-    ) {
-        let tx_seq = control.take_tx_seq();
-        let ack_seq = control.take_ack_seq();
-        let track_ack = !matches!(frame, StreamFrame::Ack(_));
-        if track_ack {
-            control.awaiting = Some(AwaitingMessage {
-                tx_seq,
-                frame: frame.clone(),
-                attempt,
-            });
-        }
-        let valid_until =
-            crate::wire::now_secs().saturating_add(config.packet_expiration.as_secs());
-        self.enqueue_stream_message(
-            config,
-            track_ack,
-            false,
-            StreamMessage {
-                tx_seq,
-                ack_seq,
-                valid_until,
-                frame,
-            },
-        );
-    }
-
-    pub fn enqueue_data_frame(
-        &mut self,
-        config: &EngineConfig,
-        stream_id: StreamId,
-        control: &mut StreamControl,
-        dir: Direction,
-        chunk: BodyChunk,
-        attempt: u8,
-    ) {
-        let tx_seq = control.take_tx_seq();
-        let ack_seq = control.take_ack_seq();
-        let frame = StreamFrame::Data(StreamFrameData {
-            stream_id,
-            dir,
-            chunk,
-        });
-        control.awaiting = Some(AwaitingMessage {
-            tx_seq,
-            frame: frame.clone(),
-            attempt,
-        });
-        let valid_until =
-            crate::wire::now_secs().saturating_add(config.packet_expiration.as_secs());
-        self.enqueue_stream_message(
-            config,
-            true,
-            false,
-            StreamMessage {
-                tx_seq,
-                ack_seq,
-                valid_until,
-                frame,
-            },
-        );
+        token
     }
 }

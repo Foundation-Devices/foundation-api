@@ -6,11 +6,65 @@ mod crypto;
 pub use crypto::*;
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum StreamBody {
+    Ack(StreamAckBody),
+    Message(StreamMessage),
+}
+
+impl StreamBody {
+    pub fn stream_id(&self) -> StreamId {
+        match self {
+            Self::Ack(StreamAckBody { stream_id, .. }) => *stream_id,
+            Self::Message(message) => message.frame.stream_id(),
+        }
+    }
+
+    pub fn valid_until(&self) -> u64 {
+        match self {
+            Self::Ack(body) => body.valid_until,
+            Self::Message(message) => message.valid_until,
+        }
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamAckBody {
+    pub stream_id: StreamId,
+    pub ack: StreamAck,
+    pub valid_until: u64,
+}
+
+impl From<&ArchivedStreamAckBody> for StreamAckBody {
+    fn from(value: &ArchivedStreamAckBody) -> Self {
+        Self {
+            stream_id: (&value.stream_id).into(),
+            ack: (&value.ack).into(),
+            valid_until: value.valid_until.to_native(),
+        }
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StreamMessage {
     pub tx_seq: StreamSeq,
-    pub ack_seq: Option<StreamSeq>,
+    pub ack: Option<StreamAck>,
     pub valid_until: u64,
     pub frame: StreamFrame,
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamAck {
+    pub base: StreamSeq,
+    pub bitmap: u8,
+}
+
+impl From<&ArchivedStreamAck> for StreamAck {
+    fn from(value: &ArchivedStreamAck) -> Self {
+        Self {
+            base: (&value.base).into(),
+            bitmap: value.bitmap,
+        }
+    }
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -20,7 +74,6 @@ pub enum StreamFrame {
     Reject(StreamFrameReject),
     Data(StreamFrameData),
     Reset(StreamFrameReset),
-    Ack(StreamFrameAck),
 }
 
 impl StreamFrame {
@@ -30,8 +83,7 @@ impl StreamFrame {
             | StreamFrame::Accept(StreamFrameAccept { stream_id, .. })
             | StreamFrame::Reject(StreamFrameReject { stream_id, .. })
             | StreamFrame::Data(StreamFrameData { stream_id, .. })
-            | StreamFrame::Reset(StreamFrameReset { stream_id, .. })
-            | StreamFrame::Ack(StreamFrameAck { stream_id }) => *stream_id,
+            | StreamFrame::Reset(StreamFrameReset { stream_id, .. }) => *stream_id,
         }
     }
 }
@@ -132,19 +184,6 @@ impl From<&ArchivedStreamFrameReset> for StreamFrameReset {
             stream_id: (&value.stream_id).into(),
             target: (&value.target).into(),
             code: (&value.code).into(),
-        }
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamFrameAck {
-    pub stream_id: StreamId,
-}
-
-impl From<&ArchivedStreamFrameAck> for StreamFrameAck {
-    fn from(value: &ArchivedStreamFrameAck) -> Self {
-        Self {
-            stream_id: (&value.stream_id).into(),
         }
     }
 }

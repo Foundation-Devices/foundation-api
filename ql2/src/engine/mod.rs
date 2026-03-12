@@ -25,21 +25,20 @@ use self::{
     stream::*,
 };
 use crate::{
+    PacketId, Peer, QlError, StreamId, StreamSeq,
     platform::QlCrypto,
     wire::{
-        self,
+        self, QlHeader, QlPayload, QlRecord,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
         handshake::{self, HandshakeRecord, Hello},
         heartbeat::{self, HeartbeatBody},
         stream::{
-            decrypt_stream, encrypt_stream, BodyChunk, Direction, RejectCode, ResetCode,
-            ResetTarget, StreamFrame, StreamFrameAccept, StreamFrameData, StreamFrameOpen,
-            StreamFrameReject, StreamFrameReset, StreamMessage,
+            BodyChunk, Direction, RejectCode, ResetCode, ResetTarget, StreamAck, StreamAckBody,
+            StreamBody, StreamFrame, StreamFrameAccept, StreamFrameData, StreamFrameOpen,
+            StreamFrameReject, StreamFrameReset, StreamMessage, decrypt_stream, encrypt_stream,
         },
         unpair::{self},
-        QlHeader, QlPayload, QlRecord,
     },
-    PacketId, Peer, QlError, StreamId, StreamSeq,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -58,6 +57,7 @@ pub struct EngineConfig {
     pub handshake_timeout: Duration,
     pub default_open_timeout: Duration,
     pub packet_expiration: Duration,
+    pub stream_ack_delay: Duration,
     pub stream_ack_timeout: Duration,
     pub stream_retry_limit: u8,
     pub keep_alive: Option<KeepAliveConfig>,
@@ -69,6 +69,7 @@ impl Default for EngineConfig {
             handshake_timeout: Duration::from_secs(5),
             default_open_timeout: Duration::from_secs(5),
             packet_expiration: Duration::from_secs(30),
+            stream_ack_delay: Duration::from_millis(5),
             stream_ack_timeout: Duration::from_millis(150),
             stream_retry_limit: 5,
             keep_alive: None,
@@ -349,10 +350,7 @@ impl Engine {
                 last_activity: now,
             },
             control: StreamControl {
-                pending: PendingFrames {
-                    setup: Some(StreamFrame::Open(frame)),
-                    ..Default::default()
-                },
+                pending: std::collections::VecDeque::from([StreamFrame::Open(frame)]),
                 ..Default::default()
             },
             request: OutboundState {
@@ -361,6 +359,7 @@ impl Engine {
                 final_offset: request_prefix_fin.then_some(request_prefix_end),
                 closed: false,
                 pending_pull: None,
+                fin_queued: request_prefix_fin,
             },
             response: InboundState::new(),
             accept: InitiatorAccept::Opening(OpenWaiter {
@@ -397,7 +396,7 @@ impl Engine {
         stream
             .control
             .pending
-            .set_setup(StreamFrame::Accept(StreamFrameAccept {
+            .push_back(StreamFrame::Accept(StreamFrameAccept {
                 stream_id,
                 response_head,
                 response_prefix,
@@ -409,6 +408,7 @@ impl Engine {
                 final_offset: response_prefix_fin.then_some(response_prefix_end),
                 closed: false,
                 pending_pull: None,
+                fin_queued: response_prefix_fin,
             },
         };
         stream.meta.last_activity = now;
@@ -424,7 +424,7 @@ impl Engine {
         stream
             .control
             .pending
-            .set_setup(StreamFrame::Reject(StreamFrameReject { stream_id, code }));
+            .push_back(StreamFrame::Reject(StreamFrameReject { stream_id, code }));
         stream.response = ResponderResponse::Rejecting;
         stream.meta.last_activity = now;
     }
@@ -439,8 +439,7 @@ impl Engine {
         if bytes.is_empty() {
             return;
         }
-        let (streams, state) = (&mut self.streams, &mut self.state);
-        let Some(stream) = streams.get_mut(&stream_id) else {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
         let Some(outbound) = stream.outbound_mut(dir) else {
@@ -463,11 +462,15 @@ impl Engine {
         }
         outbound.sent_offset = outbound.sent_offset.max(end);
         let fin = final_offset.is_some_and(|final_offset| final_offset == end);
+        outbound.fin_queued |= fin;
         let chunk = BodyChunk { offset, fin, bytes };
-        let _ = outbound;
-        let stream_id = stream.stream_id();
-        let control = stream.control_mut();
-        state.enqueue_data_frame(&self.config, stream_id, control, dir, chunk, 0);
+        stream
+            .control_mut()
+            .queue_frame_back(StreamFrame::Data(StreamFrameData {
+                stream_id,
+                dir,
+                chunk,
+            }));
     }
 
     fn handle_outbound_finished(&mut self, stream_id: StreamId, dir: Direction, final_offset: u64) {
@@ -502,10 +505,11 @@ impl Engine {
         }
         outbound.closed = true;
         outbound.pending_pull = None;
-        stream
-            .control_mut()
-            .pending
-            .set_reset(reset_target_for_dir(dir), code);
+        stream.control_mut().queue_frame_front(reset_frame(
+            stream_id,
+            reset_target_for_dir(dir),
+            code,
+        ));
         *stream.last_activity_mut() = now;
     }
 
@@ -526,10 +530,11 @@ impl Engine {
             return;
         }
         inbound.closed = true;
-        stream
-            .control_mut()
-            .pending
-            .set_reset(reset_target_for_dir(dir), code);
+        stream.control_mut().queue_frame_front(reset_frame(
+            stream_id,
+            reset_target_for_dir(dir),
+            code,
+        ));
         *stream.last_activity_mut() = now;
     }
 
@@ -721,7 +726,7 @@ impl Engine {
         encrypted: &mut ArchivedEncryptedMessage,
         emit: &mut impl OutputFn,
     ) {
-        let message = {
+        let body = {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
             };
@@ -729,77 +734,163 @@ impl Engine {
                 return;
             };
             match decrypt_stream(header, encrypted, session_key) {
-                Ok(message) => message,
+                Ok(body) => body,
                 Err(_) => return,
             }
         };
 
-        let stream_id = message.frame.stream_id();
-        let Some(stream) = self.streams.get_mut(&stream_id) else {
-            if !matches!(message.frame, StreamFrame::Open(_)) || message.tx_seq != StreamSeq(1) {
+        let message = match body {
+            StreamBody::Ack(StreamAckBody { stream_id, ack, .. }) => {
+                self.process_stream_ack(stream_id, ack, emit);
+                self.record_activity(now);
+                if self.streams.contains_key(&stream_id) {
+                    self.record_stream_activity(stream_id, now);
+                    self.maybe_reap_stream(stream_id, emit);
+                }
                 return;
             }
-            // if we have a disagreement over stream namespace, close stream
-            if self.state.peer.as_ref().is_some_and(|peer_record| {
-                let local_namespace = StreamNamespace::for_local(self.local_xid, peer_record.peer);
-                !local_namespace.remote().matches(stream_id)
-            }) {
+            StreamBody::Message(message) => message,
+        };
+
+        let stream_id = message.frame.stream_id();
+        if let Some(ack) = message.ack {
+            self.process_stream_ack(stream_id, ack, emit);
+        }
+
+        if !self.streams.contains_key(&stream_id) {
+            let Some(peer_record) = self.state.peer.as_ref() else {
+                return;
+            };
+            let local_namespace = StreamNamespace::for_local(self.local_xid, peer_record.peer);
+            if !local_namespace.remote().matches(stream_id) {
+                return;
+            }
+            let token = self.state.next_token();
+            self.streams.insert(
+                stream_id,
+                StreamState::Provisional(ProvisionalStream {
+                    meta: StreamMeta {
+                        stream_id,
+                        last_activity: now,
+                    },
+                    control: StreamControl::default(),
+                    timeout_token: token,
+                }),
+            );
+            self.state.timeouts.push(Reverse(TimeoutEntry {
+                at: now + self.config.default_open_timeout,
+                kind: TimeoutKind::StreamProvisional { stream_id, token },
+            }));
+        }
+
+        let buffer_result = {
+            let Some(stream) = self.streams.get_mut(&stream_id) else {
+                return;
+            };
+            *stream.last_activity_mut() = now;
+            stream
+                .control_mut()
+                .buffer_incoming(message.tx_seq, message.frame)
+        };
+
+        match buffer_result {
+            BufferIncomingResult::OutOfWindow => {
+                if self
+                    .streams
+                    .get(&stream_id)
+                    .is_some_and(StreamState::is_provisional)
+                {
+                    self.streams.remove(&stream_id);
+                    self.send_ephemeral_reset(stream_id, ResetTarget::Both, ResetCode::Protocol);
+                } else if let Some(stream) = self.streams.get_mut(&stream_id) {
+                    Self::queue_protocol_reset(stream, emit);
+                    *stream.last_activity_mut() = now;
+                }
+                return;
+            }
+            BufferIncomingResult::Duplicate | BufferIncomingResult::AlreadyBuffered => {
+                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                    stream.control_mut().note_ack(true);
+                }
+                self.schedule_stream_ack(stream_id, now);
+                self.record_activity(now);
+                self.record_stream_activity(stream_id, now);
+                return;
+            }
+            BufferIncomingResult::Buffered { out_of_order } => {
+                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                    stream.control_mut().note_ack(out_of_order);
+                }
+            }
+        }
+
+        self.schedule_stream_ack(stream_id, now);
+        self.record_activity(now);
+        self.record_stream_activity(stream_id, now);
+        self.drain_committed_stream_frames(now, stream_id, emit);
+    }
+
+    fn schedule_stream_ack(&mut self, stream_id: StreamId, now: Instant) {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
+            return;
+        };
+        let control = stream.control_mut();
+        if !control.ack_dirty {
+            return;
+        }
+        if control.ack_immediate || self.config.stream_ack_delay.is_zero() {
+            control.ack_delay_token = None;
+            return;
+        }
+        if control.ack_delay_token.is_some() {
+            return;
+        }
+        let token = self.state.next_token();
+        control.ack_delay_token = Some(token);
+        self.state.timeouts.push(Reverse(TimeoutEntry {
+            at: now + self.config.stream_ack_delay,
+            kind: TimeoutKind::StreamAckDelay { stream_id, token },
+        }));
+    }
+
+    fn drain_committed_stream_frames(
+        &mut self,
+        now: Instant,
+        stream_id: StreamId,
+        emit: &mut impl OutputFn,
+    ) {
+        loop {
+            let next = {
+                let Some(stream) = self.streams.get_mut(&stream_id) else {
+                    return;
+                };
+                stream.control_mut().pop_next_committable()
+            };
+            let Some((_tx_seq, frame)) = next else {
+                break;
+            };
+            if self
+                .streams
+                .get(&stream_id)
+                .is_some_and(StreamState::is_provisional)
+                && !matches!(frame, StreamFrame::Open(_))
+            {
+                self.streams.remove(&stream_id);
                 self.send_ephemeral_reset(stream_id, ResetTarget::Both, ResetCode::Protocol);
                 return;
             }
-            self.record_activity(now);
-            self.record_stream_activity(stream_id, now);
-            match message.frame {
-                StreamFrame::Open(frame) => {
-                    self.handle_stream_open(now, frame, emit);
-                    if let Some(stream) = self.streams.get_mut(&stream_id) {
-                        stream.control_mut().next_rx_seq = StreamSeq(2);
-                        stream.control_mut().mark_ack(StreamSeq(1));
-                    }
-                }
-                _ => unreachable!(),
+            match frame {
+                StreamFrame::Open(frame) => self.handle_stream_open(now, frame, emit),
+                StreamFrame::Accept(frame) => self.handle_stream_accept_from_peer(now, frame, emit),
+                StreamFrame::Reject(frame) => self.handle_stream_reject_from_peer(frame, emit),
+                StreamFrame::Data(frame) => self.handle_stream_data(now, frame, emit),
+                StreamFrame::Reset(frame) => self.handle_stream_reset(now, frame, emit),
             }
-            return;
-        };
-
-        let expected = stream.control().next_rx_seq;
-        if message.tx_seq.0 < expected.0 {
-            if !matches!(message.frame, StreamFrame::Ack(_)) {
-                stream
-                    .control_mut()
-                    .mark_ack(StreamSeq(expected.0.saturating_sub(1)));
+            if !self.streams.contains_key(&stream_id) {
+                return;
             }
-            if let Some(ack_seq) = message.ack_seq {
-                self.process_stream_ack(stream_id, ack_seq, emit);
-            }
-            return;
-        } else if message.tx_seq != expected {
-            // can never happen with stop & wait windowing
-            Self::queue_protocol_reset(stream, emit);
-            *stream.last_activity_mut() = now;
-            return;
         }
-
-        stream.control_mut().next_rx_seq = StreamSeq(expected.0.wrapping_add(1));
-        if !matches!(message.frame, StreamFrame::Ack(_)) {
-            stream.control_mut().mark_ack(message.tx_seq);
-        }
-
-        if let Some(ack_seq) = message.ack_seq {
-            self.process_stream_ack(stream_id, ack_seq, emit);
-        }
-
-        self.record_activity(now);
-        self.record_stream_activity(stream_id, now);
-
-        match message.frame {
-            StreamFrame::Open(frame) => self.handle_stream_open(now, frame, emit),
-            StreamFrame::Accept(frame) => self.handle_stream_accept_from_peer(now, frame, emit),
-            StreamFrame::Reject(frame) => self.handle_stream_reject_from_peer(frame, emit),
-            StreamFrame::Data(frame) => self.handle_stream_data(now, frame, emit),
-            StreamFrame::Reset(frame) => self.handle_stream_reset(now, frame, emit),
-            StreamFrame::Ack(_) => {}
-        }
+        self.maybe_reap_stream(stream_id, emit);
     }
 
     fn handle_stream_open(
@@ -813,18 +904,22 @@ impl Engine {
             request_head,
             request_prefix,
         } = frame;
-        if let Some(stream) = self.streams.get(&stream_id) {
-            let _ = stream;
-            self.send_ephemeral_reset(stream_id, ResetTarget::Both, ResetCode::Protocol);
-            return;
-        }
+        let control = match self.streams.remove(&stream_id) {
+            Some(StreamState::Provisional(stream)) => stream.control,
+            Some(mut stream) => {
+                Self::queue_protocol_reset(&mut stream, emit);
+                self.streams.insert(stream_id, stream);
+                return;
+            }
+            None => StreamControl::default(),
+        };
 
         let mut stream = StreamState::Responder(ResponderStream {
             meta: StreamMeta {
                 stream_id,
                 last_activity: now,
             },
-            control: StreamControl::default(),
+            control,
             request: InboundState::new(),
             response: ResponderResponse::Pending,
         });
@@ -879,10 +974,11 @@ impl Engine {
                             });
                         } else {
                             stream.response.closed = true;
-                            stream
-                                .control
-                                .pending
-                                .set_reset(ResetTarget::Response, ResetCode::Cancelled);
+                            stream.control.queue_frame_front(reset_frame(
+                                stream_id,
+                                ResetTarget::Response,
+                                ResetCode::Cancelled,
+                            ));
                         }
                         stream.accept = InitiatorAccept::Open { response_head };
                         stream.meta.last_activity = now;
@@ -898,10 +994,11 @@ impl Engine {
                             });
                         } else {
                             stream.response.closed = true;
-                            stream
-                                .control
-                                .pending
-                                .set_reset(ResetTarget::Response, ResetCode::Cancelled);
+                            stream.control.queue_frame_front(reset_frame(
+                                stream_id,
+                                ResetTarget::Response,
+                                ResetCode::Cancelled,
+                            ));
                         }
                         stream.accept = InitiatorAccept::Open { response_head };
                         stream.meta.last_activity = now;
@@ -1072,93 +1169,103 @@ impl Engine {
     fn process_stream_ack(
         &mut self,
         stream_id: StreamId,
-        ack_seq: StreamSeq,
+        ack: StreamAck,
         emit: &mut impl OutputFn,
     ) {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
-        let should_clear = stream
+        let acked: Vec<_> = stream
             .control()
-            .awaiting
-            .as_ref()
-            .is_some_and(|awaiting| awaiting.tx_seq.0 <= ack_seq.0);
-        if !should_clear {
+            .in_flight
+            .keys()
+            .copied()
+            .filter(|tx_seq| StreamControl::ack_covers(ack, *tx_seq))
+            .collect();
+        if acked.is_empty() {
             return;
         }
-        let Some(awaiting) = stream.control_mut().awaiting.take() else {
-            return;
-        };
-
-        match awaiting.frame {
-            StreamFrame::Open(StreamFrameOpen { request_prefix, .. }) => {
-                if let StreamState::Initiator(stream) = stream {
-                    if let InitiatorAccept::Opening(waiter) = &stream.accept {
-                        stream.accept = InitiatorAccept::WaitingAccept(OpenWaiter {
-                            open_id: waiter.open_id,
-                            open_timeout_token: waiter.open_timeout_token,
-                        });
-                    }
-                    if request_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
-                        stream.request.closed = true;
-                        emit(EngineOutput::OutboundClosed {
-                            stream_id,
-                            dir: Direction::Request,
-                        });
-                    }
-                }
+        let mut acked_frames = Vec::with_capacity(acked.len());
+        for tx_seq in acked {
+            if let Some(in_flight) = stream.control_mut().in_flight.remove(&tx_seq) {
+                acked_frames.push(in_flight.frame);
             }
-            StreamFrame::Accept(StreamFrameAccept {
-                response_prefix, ..
-            }) => {
-                if let StreamState::Responder(stream) = stream {
-                    if response_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
-                        if let ResponderResponse::Accepted { body } = &mut stream.response {
-                            body.closed = true;
+        }
+        let _ = stream;
+
+        for frame in acked_frames {
+            let Some(stream) = self.streams.get_mut(&stream_id) else {
+                return;
+            };
+            match frame {
+                StreamFrame::Open(StreamFrameOpen { request_prefix, .. }) => {
+                    if let StreamState::Initiator(stream) = stream {
+                        if let InitiatorAccept::Opening(waiter) = &stream.accept {
+                            stream.accept = InitiatorAccept::WaitingAccept(OpenWaiter {
+                                open_id: waiter.open_id,
+                                open_timeout_token: waiter.open_timeout_token,
+                            });
+                        }
+                        if request_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
+                            stream.request.closed = true;
                             emit(EngineOutput::OutboundClosed {
                                 stream_id,
-                                dir: Direction::Response,
+                                dir: Direction::Request,
                             });
                         }
                     }
                 }
-            }
-            StreamFrame::Reject(_) => {}
-            StreamFrame::Data(StreamFrameData {
-                dir,
-                chunk: BodyChunk { fin: true, .. },
-                ..
-            }) => {
-                if let Some(outbound) = stream.outbound_mut(dir) {
-                    outbound.closed = true;
-                    emit(EngineOutput::OutboundClosed { stream_id, dir });
+                StreamFrame::Accept(StreamFrameAccept {
+                    response_prefix, ..
+                }) => {
+                    if let StreamState::Responder(stream) = stream {
+                        if response_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
+                            if let ResponderResponse::Accepted { body } = &mut stream.response {
+                                body.closed = true;
+                                emit(EngineOutput::OutboundClosed {
+                                    stream_id,
+                                    dir: Direction::Response,
+                                });
+                            }
+                        }
+                    }
                 }
-            }
-            StreamFrame::Reset(StreamFrameReset { target, code, .. }) => {
-                for outbound_dir in [Direction::Request, Direction::Response] {
-                    let affects_outbound = matches!(
-                        (target, outbound_dir),
-                        (ResetTarget::Request, Direction::Request)
-                            | (ResetTarget::Response, Direction::Response)
-                            | (ResetTarget::Both, _)
-                    );
-                    if affects_outbound {
-                        if let Some(outbound) = stream.outbound_mut(outbound_dir) {
-                            outbound.closed = true;
-                            emit(EngineOutput::OutboundFailed {
-                                stream_id,
-                                dir: outbound_dir,
-                                error: QlError::StreamReset {
+                StreamFrame::Reject(_) => {}
+                StreamFrame::Data(StreamFrameData {
+                    dir,
+                    chunk: BodyChunk { fin: true, .. },
+                    ..
+                }) => {
+                    if let Some(outbound) = stream.outbound_mut(dir) {
+                        outbound.closed = true;
+                        emit(EngineOutput::OutboundClosed { stream_id, dir });
+                    }
+                }
+                StreamFrame::Reset(StreamFrameReset { target, code, .. }) => {
+                    for outbound_dir in [Direction::Request, Direction::Response] {
+                        let affects_outbound = matches!(
+                            (target, outbound_dir),
+                            (ResetTarget::Request, Direction::Request)
+                                | (ResetTarget::Response, Direction::Response)
+                                | (ResetTarget::Both, _)
+                        );
+                        if affects_outbound {
+                            if let Some(outbound) = stream.outbound_mut(outbound_dir) {
+                                outbound.closed = true;
+                                emit(EngineOutput::OutboundFailed {
+                                    stream_id,
                                     dir: outbound_dir,
-                                    code,
-                                },
-                            });
+                                    error: QlError::StreamReset {
+                                        dir: outbound_dir,
+                                        code,
+                                    },
+                                });
+                            }
                         }
                     }
                 }
+                StreamFrame::Data(_) => {}
             }
-            StreamFrame::Data(_) => {}
-            StreamFrame::Ack(_) => {}
         }
 
         self.maybe_reap_stream(stream_id, emit);
@@ -1181,96 +1288,197 @@ impl Engine {
     ) {
         match stream {
             StreamState::Initiator(stream) => {
-                let action = Self::plan_drive_outbound(
+                Self::drive_stream_outbound(
+                    config,
+                    state,
                     stream.meta.stream_id,
                     &mut stream.control,
                     Some(&mut stream.request),
                     emit,
                 );
-                if let Some(frame) = action {
-                    state.enqueue_stream_frame(config, &mut stream.control, frame, 0);
-                }
             }
             StreamState::Responder(stream) => {
                 let stream_id = stream.meta.stream_id;
                 match &mut stream.response {
                     ResponderResponse::Accepted { body, .. } => {
-                        let action = Self::plan_drive_outbound(
+                        Self::drive_stream_outbound(
+                            config,
+                            state,
                             stream_id,
                             &mut stream.control,
                             Some(body),
                             emit,
                         );
-                        if let Some(frame) = action {
-                            state.enqueue_stream_frame(config, &mut stream.control, frame, 0);
-                        }
                     }
                     _ => {
-                        let action =
-                            Self::plan_drive_outbound(stream_id, &mut stream.control, None, emit);
-                        if let Some(frame) = action {
-                            state.enqueue_stream_frame(config, &mut stream.control, frame, 0);
-                        }
+                        Self::drive_stream_outbound(
+                            config,
+                            state,
+                            stream_id,
+                            &mut stream.control,
+                            None,
+                            emit,
+                        );
                     }
                 }
             }
+            StreamState::Provisional(stream) => Self::drive_stream_outbound(
+                config,
+                state,
+                stream.meta.stream_id,
+                &mut stream.control,
+                None,
+                emit,
+            ),
         }
     }
 
-    fn plan_drive_outbound(
+    fn drive_stream_outbound(
+        config: &EngineConfig,
+        state: &mut EngineState,
         stream_id: StreamId,
         control: &mut StreamControl,
-        outbound: Option<&mut OutboundState>,
+        mut outbound: Option<&mut OutboundState>,
         emit: &mut impl OutputFn,
-    ) -> Option<StreamFrame> {
-        if control.awaiting.is_some() {
-            return None;
-        }
-        if let Some(frame) = control.pending.take_next_control(stream_id) {
-            return Some(frame);
-        }
-        if control.pending_ack_seq.is_some() {
-            return Some(StreamFrame::Ack(crate::wire::stream::StreamFrameAck {
-                stream_id,
-            }));
-        }
-        let outbound = outbound?;
-        if outbound.can_request_data() {
-            outbound.pending_pull = Some(PendingPull {
-                offset: outbound.sent_offset,
-            });
-            emit(EngineOutput::NeedOutboundData {
-                stream_id,
-                dir: outbound.dir,
-                offset: outbound.sent_offset,
-            });
-            return None;
-        }
-        if !outbound.closed
-            && outbound.pending_pull.is_none()
-            && outbound
-                .final_offset
-                .is_some_and(|final_offset| final_offset == outbound.sent_offset)
-        {
-            return Some(StreamFrame::Data(StreamFrameData {
-                stream_id,
-                dir: outbound.dir,
-                chunk: BodyChunk {
+    ) {
+        loop {
+            if control.send_window_has_space() {
+                if let Some(frame) = control.pending.pop_front() {
+                    Self::enqueue_stream_frame(config, state, control, frame, 0, false);
+                    continue;
+                }
+            }
+            if control.ack_dirty && control.ack_immediate && control.ack_outbound_token.is_none() {
+                Self::enqueue_stream_ack_body(config, state, control, stream_id, false);
+                continue;
+            }
+            if !control.send_window_has_space() {
+                return;
+            }
+
+            let Some(outbound) = outbound.as_deref_mut() else {
+                return;
+            };
+            if outbound.can_request_data() {
+                outbound.pending_pull = Some(PendingPull {
                     offset: outbound.sent_offset,
-                    bytes: Vec::new(),
-                    fin: true,
-                },
-            }));
+                });
+                emit(EngineOutput::NeedOutboundData {
+                    stream_id,
+                    dir: outbound.dir,
+                    offset: outbound.sent_offset,
+                });
+                return;
+            }
+            if outbound.needs_fin_frame() {
+                outbound.fin_queued = true;
+                Self::enqueue_stream_frame(
+                    config,
+                    state,
+                    control,
+                    StreamFrame::Data(StreamFrameData {
+                        stream_id,
+                        dir: outbound.dir,
+                        chunk: BodyChunk {
+                            offset: outbound.sent_offset,
+                            bytes: Vec::new(),
+                            fin: true,
+                        },
+                    }),
+                    0,
+                    false,
+                );
+                continue;
+            }
+            return;
         }
-        None
+    }
+
+    fn enqueue_stream_frame(
+        config: &EngineConfig,
+        state: &mut EngineState,
+        control: &mut StreamControl,
+        frame: StreamFrame,
+        attempt: u8,
+        priority: bool,
+    ) {
+        let tx_seq = control.take_tx_seq();
+        Self::enqueue_stream_frame_with_seq(
+            config, state, control, tx_seq, frame, attempt, priority,
+        );
+    }
+
+    fn enqueue_stream_frame_with_seq(
+        config: &EngineConfig,
+        state: &mut EngineState,
+        control: &mut StreamControl,
+        tx_seq: StreamSeq,
+        frame: StreamFrame,
+        attempt: u8,
+        priority: bool,
+    ) {
+        control.in_flight.insert(
+            tx_seq,
+            InFlightFrame {
+                tx_seq,
+                frame: frame.clone(),
+                attempt,
+            },
+        );
+        let ack = control.ack_dirty.then(|| control.current_ack());
+        if ack.is_some() {
+            control.clear_ack_schedule();
+        }
+        let valid_until = wire::now_secs().saturating_add(config.packet_expiration.as_secs());
+        state.enqueue_stream_body(
+            config,
+            priority,
+            StreamBody::Message(StreamMessage {
+                tx_seq,
+                ack,
+                valid_until,
+                frame,
+            }),
+        );
+    }
+
+    fn enqueue_stream_ack_body(
+        config: &EngineConfig,
+        state: &mut EngineState,
+        control: &mut StreamControl,
+        stream_id: StreamId,
+        priority: bool,
+    ) {
+        if !control.ack_dirty {
+            return;
+        }
+        let ack = control.current_ack();
+        control.clear_ack_schedule();
+        let valid_until = wire::now_secs().saturating_add(config.packet_expiration.as_secs());
+        let token = state.enqueue_stream_body(
+            config,
+            priority,
+            StreamBody::Ack(StreamAckBody {
+                stream_id,
+                ack,
+                valid_until,
+            }),
+        );
+        control.ack_outbound_token = Some(token);
     }
 
     fn queue_protocol_reset(stream: &mut StreamState, emit: &mut impl OutputFn) {
         let stream_id = stream.stream_id();
-        stream
-            .control_mut()
-            .pending
-            .set_reset(ResetTarget::Both, ResetCode::Protocol);
+        let control = stream.control_mut();
+        control.pending.clear();
+        control.in_flight.clear();
+        control.recv_buffer.clear();
+        control.clear_ack_schedule();
+        control.queue_frame_front(reset_frame(
+            stream_id,
+            ResetTarget::Both,
+            ResetCode::Protocol,
+        ));
         for dir in [Direction::Request, Direction::Response] {
             if let Some(outbound) = stream.outbound_mut(dir) {
                 outbound.closed = true;
@@ -1397,21 +1605,33 @@ impl Engine {
         }
     }
 
+    fn clear_ack_outbound_token(&mut self, token: Token, retry: bool) {
+        for stream in self.streams.values_mut() {
+            let control = stream.control_mut();
+            if control.ack_outbound_token == Some(token) {
+                control.ack_outbound_token = None;
+                if retry {
+                    control.note_ack(true);
+                }
+                break;
+            }
+        }
+    }
+
     fn send_ephemeral_reset(&mut self, stream_id: StreamId, dir: ResetTarget, code: ResetCode) {
         let valid_until = wire::now_secs().saturating_add(self.config.packet_expiration.as_secs());
-        self.enqueue_stream_message(
-            false,
+        self.enqueue_stream_body(
             true,
-            StreamMessage {
+            StreamBody::Message(StreamMessage {
                 tx_seq: StreamSeq(1),
-                ack_seq: None,
+                ack: None,
                 valid_until,
                 frame: StreamFrame::Reset(StreamFrameReset {
                     stream_id,
                     target: dir,
                     code,
                 }),
-            },
+            }),
         );
     }
 
@@ -1420,9 +1640,8 @@ impl Engine {
             .enqueue_handshake_message(&self.config, token, deadline, bytes);
     }
 
-    fn enqueue_stream_message(&mut self, track_ack: bool, priority: bool, message: StreamMessage) {
-        self.state
-            .enqueue_stream_message(&self.config, track_ack, priority, message);
+    fn enqueue_stream_body(&mut self, priority: bool, body: StreamBody) -> Token {
+        self.state.enqueue_stream_body(&self.config, priority, body)
     }
 
     fn handle_hello(
@@ -1729,13 +1948,14 @@ impl Engine {
 
     fn drop_outbound(&mut self, emit: &mut impl OutputFn) {
         while let Some(message) = self.state.outbound.pop_front() {
-            if let QueuedPayload::Stream {
-                message: stream_message,
-                ..
-            } = message.payload
-            {
-                let stream_id = stream_message.frame.stream_id();
-                self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
+            if let QueuedPayload::Stream { body } = message.payload {
+                match body {
+                    StreamBody::Ack(_) => self.clear_ack_outbound_token(message.token, false),
+                    StreamBody::Message(message) => {
+                        let stream_id = message.frame.stream_id();
+                        self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
+                    }
+                }
             }
         }
     }
@@ -1800,6 +2020,7 @@ impl Engine {
                     });
                 }
             }
+            StreamState::Provisional(_) => {}
         }
         emit(EngineOutput::StreamReaped { stream_id });
     }
@@ -1833,14 +2054,16 @@ impl Engine {
             match entry.kind {
                 TimeoutKind::Outbound { token } => {
                     let mut timed_out_stream = None;
+                    let mut timed_out_ack = false;
                     self.state.outbound.retain(|message| {
                         if message.token == token {
-                            if let QueuedPayload::Stream {
-                                message: stream_message,
-                                ..
-                            } = &message.payload
-                            {
-                                timed_out_stream = Some(stream_message.frame.stream_id());
+                            if let QueuedPayload::Stream { body } = &message.payload {
+                                match body {
+                                    StreamBody::Ack(_) => timed_out_ack = true,
+                                    StreamBody::Message(message) => {
+                                        timed_out_stream = Some(message.frame.stream_id())
+                                    }
+                                }
                             }
                             false
                         } else {
@@ -1849,6 +2072,8 @@ impl Engine {
                     });
                     if let Some(stream_id) = timed_out_stream {
                         self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
+                    } else if timed_out_ack {
+                        self.clear_ack_outbound_token(token, true);
                     }
                 }
                 TimeoutKind::Handshake { token } => {
@@ -1921,16 +2146,48 @@ impl Engine {
                         self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
                     }
                 }
+                TimeoutKind::StreamAckDelay { stream_id, token } => {
+                    let should_flush = self
+                        .streams
+                        .get(&stream_id)
+                        .and_then(|stream| stream.control().ack_delay_token)
+                        .is_some_and(|ack_token| ack_token == token);
+                    if should_flush {
+                        if let Some(stream) = self.streams.get_mut(&stream_id) {
+                            let control = stream.control_mut();
+                            control.ack_delay_token = None;
+                            control.ack_immediate = true;
+                        }
+                    }
+                }
+                TimeoutKind::StreamProvisional { stream_id, token } => {
+                    let should_reset = self
+                        .streams
+                        .get(&stream_id)
+                        .and_then(StreamState::provisional_timeout_token)
+                        .is_some_and(|stream_token| stream_token == token);
+                    if should_reset {
+                        self.streams.remove(&stream_id);
+                        self.send_ephemeral_reset(
+                            stream_id,
+                            ResetTarget::Both,
+                            ResetCode::Protocol,
+                        );
+                    }
+                }
                 TimeoutKind::StreamMessage {
                     stream_id,
                     tx_seq,
                     attempt,
                 } => {
                     let Some(frame) = self.streams.get(&stream_id).and_then(|stream| {
-                        stream.control().awaiting.as_ref().and_then(|awaiting| {
-                            (awaiting.tx_seq == tx_seq && awaiting.attempt == attempt)
-                                .then_some(awaiting.frame.clone())
-                        })
+                        stream
+                            .control()
+                            .in_flight
+                            .get(&tx_seq)
+                            .and_then(|in_flight| {
+                                (in_flight.attempt == attempt).then_some(in_flight.frame.clone())
+                            })
                     }) else {
                         continue;
                     };
@@ -1938,13 +2195,15 @@ impl Engine {
                     if attempt >= self.config.stream_retry_limit {
                         self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
                     } else {
-                        let (streams, state) = (&mut self.streams, &mut self.state);
-                        if let Some(stream) = streams.get_mut(&stream_id) {
-                            state.enqueue_stream_frame(
+                        if let Some(stream) = self.streams.get_mut(&stream_id) {
+                            Self::enqueue_stream_frame_with_seq(
                                 &self.config,
+                                &mut self.state,
                                 stream.control_mut(),
+                                tx_seq,
                                 frame,
                                 attempt.saturating_add(1),
+                                true,
                             );
                         }
                     }
@@ -1964,6 +2223,7 @@ impl Engine {
         if self.state.write_in_flight == Some(token) {
             self.state.write_in_flight = None;
         }
+        self.clear_ack_outbound_token(token, result.is_err());
         if let Err(error) = result {
             if let Some(tracked) = tracked {
                 self.fail_stream_by_id(tracked.stream_id, error.clone(), emit);
@@ -2011,10 +2271,8 @@ impl Engine {
             let attempt = self
                 .streams
                 .get(&tracked.stream_id)
-                .and_then(|stream| stream.control().awaiting.as_ref())
-                .and_then(|awaiting| {
-                    (awaiting.tx_seq == tracked.tx_seq).then_some(awaiting.attempt)
-                })
+                .and_then(|stream| stream.control().in_flight.get(&tracked.tx_seq))
+                .map(|in_flight| in_flight.attempt)
                 .unwrap_or(0);
             self.state.timeouts.push(Reverse(TimeoutEntry {
                 at: now + self.config.stream_ack_timeout,
@@ -2034,24 +2292,35 @@ impl Engine {
         while let Some(message) = self.state.outbound.pop_front() {
             let bytes = match &message.payload {
                 QueuedPayload::PreEncoded(bytes) => bytes.clone(),
-                QueuedPayload::Stream {
-                    message: stream_message,
-                    ..
-                } => {
+                QueuedPayload::Stream { body } => {
                     let Some(peer) = self.state.peer.as_ref() else {
-                        self.fail_stream_by_id(
-                            stream_message.frame.stream_id(),
-                            QlError::SendFailed,
-                            emit,
-                        );
+                        match body {
+                            StreamBody::Ack(_) => {
+                                self.clear_ack_outbound_token(message.token, false)
+                            }
+                            StreamBody::Message(stream_message) => {
+                                self.fail_stream_by_id(
+                                    stream_message.frame.stream_id(),
+                                    QlError::SendFailed,
+                                    emit,
+                                );
+                            }
+                        }
                         continue;
                     };
                     let Some(session_key) = peer.session.session_key() else {
-                        self.fail_stream_by_id(
-                            stream_message.frame.stream_id(),
-                            QlError::SendFailed,
-                            emit,
-                        );
+                        match body {
+                            StreamBody::Ack(_) => {
+                                self.clear_ack_outbound_token(message.token, false)
+                            }
+                            StreamBody::Message(stream_message) => {
+                                self.fail_stream_by_id(
+                                    stream_message.frame.stream_id(),
+                                    QlError::SendFailed,
+                                    emit,
+                                );
+                            }
+                        }
                         continue;
                     };
                     let record = encrypt_stream(
@@ -2060,7 +2329,7 @@ impl Engine {
                             recipient: peer.peer,
                         },
                         session_key,
-                        stream_message,
+                        body,
                         next_encrypted_message_nonce(crypto),
                     );
                     wire::encode_record(&record)
@@ -2069,8 +2338,7 @@ impl Engine {
 
             let tracked = match &message.payload {
                 QueuedPayload::Stream {
-                    track_ack: true,
-                    message: stream_message,
+                    body: StreamBody::Message(stream_message),
                 } => Some(TrackedWrite {
                     stream_id: stream_message.frame.stream_id(),
                     tx_seq: stream_message.tx_seq,
