@@ -9,7 +9,7 @@ use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
 use super::{
     replay_cache::ReplayCache,
-    stream::{AwaitingMessage, QueuedWrite, StreamControl, StreamKey, StreamState},
+    stream::{AwaitingMessage, QueuedWrite, StreamControl, StreamState},
     EngineConfig, StreamConfig,
 };
 use crate::{
@@ -422,7 +422,7 @@ impl EngineState {
     pub fn enqueue_stream_frame(
         &mut self,
         config: &EngineConfig,
-        key: StreamKey,
+        stream_id: StreamId,
         control: &mut StreamControl,
         frame: StreamFrame,
         attempt: u8,
@@ -441,7 +441,7 @@ impl EngineState {
             crate::wire::now_secs().saturating_add(config.packet_expiration.as_secs());
         self.enqueue_stream_message(
             config,
-            Some(key.stream_id),
+            Some(stream_id),
             Some(tx_seq),
             track_ack,
             false,
@@ -457,7 +457,7 @@ impl EngineState {
     pub fn enqueue_data_frame(
         &mut self,
         config: &EngineConfig,
-        key: StreamKey,
+        stream_id: StreamId,
         control: &mut StreamControl,
         dir: Direction,
         chunk: BodyChunk,
@@ -466,7 +466,7 @@ impl EngineState {
         let tx_seq = control.take_tx_seq();
         let ack_seq = control.take_ack_seq();
         let frame = StreamFrame::Data(StreamFrameData {
-            stream_id: key.stream_id,
+            stream_id,
             dir,
             chunk,
         });
@@ -479,7 +479,7 @@ impl EngineState {
             crate::wire::now_secs().saturating_add(config.packet_expiration.as_secs());
         self.enqueue_stream_message(
             config,
-            Some(key.stream_id),
+            Some(stream_id),
             Some(tx_seq),
             true,
             false,

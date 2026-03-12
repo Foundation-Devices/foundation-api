@@ -345,8 +345,7 @@ impl Engine {
         };
         let stream = StreamState::Initiator(InitiatorStream {
             meta: StreamMeta {
-                key: StreamKey { stream_id },
-                request_head,
+                stream_id,
                 last_activity: now,
             },
             control: StreamControl {
@@ -470,9 +469,9 @@ impl Engine {
         let fin = final_offset.is_some_and(|final_offset| final_offset == end);
         let chunk = BodyChunk { offset, fin, bytes };
         let _ = outbound;
-        let key = stream.key();
+        let stream_id = stream.stream_id();
         let control = stream.control_mut();
-        state.enqueue_data_frame(&self.config, key, control, dir, chunk, 0);
+        state.enqueue_data_frame(&self.config, stream_id, control, dir, chunk, 0);
     }
 
     fn handle_outbound_finished(&mut self, stream_id: StreamId, dir: Direction, final_offset: u64) {
@@ -815,8 +814,7 @@ impl Engine {
         let request_prefix_output = request_prefix.clone();
         let mut stream = StreamState::Responder(ResponderStream {
             meta: StreamMeta {
-                key: StreamKey { stream_id },
-                request_head: request_head.clone(),
+                stream_id,
                 last_activity: now,
             },
             control: StreamControl::default(),
@@ -1178,7 +1176,7 @@ impl Engine {
             StreamState::Initiator(stream) => {
                 let action = Self::plan_drive_outbound(
                     config,
-                    stream.meta.key,
+                    stream.meta.stream_id,
                     &mut stream.control,
                     Some(&mut stream.request),
                     emit,
@@ -1186,7 +1184,7 @@ impl Engine {
                 if let Some(frame) = action {
                     state.enqueue_stream_frame(
                         config,
-                        stream.meta.key,
+                        stream.meta.stream_id,
                         &mut stream.control,
                         frame,
                         0,
@@ -1194,25 +1192,42 @@ impl Engine {
                 }
             }
             StreamState::Responder(stream) => {
-                let key = stream.meta.key;
+                let stream_id = stream.meta.stream_id;
                 match &mut stream.response {
                     ResponderResponse::Accepted { body, .. } => {
                         let action = Self::plan_drive_outbound(
                             config,
-                            key,
+                            stream_id,
                             &mut stream.control,
                             Some(body),
                             emit,
                         );
                         if let Some(frame) = action {
-                            state.enqueue_stream_frame(config, key, &mut stream.control, frame, 0);
+                            state.enqueue_stream_frame(
+                                config,
+                                stream_id,
+                                &mut stream.control,
+                                frame,
+                                0,
+                            );
                         }
                     }
                     _ => {
-                        let action =
-                            Self::plan_drive_outbound(config, key, &mut stream.control, None, emit);
+                        let action = Self::plan_drive_outbound(
+                            config,
+                            stream_id,
+                            &mut stream.control,
+                            None,
+                            emit,
+                        );
                         if let Some(frame) = action {
-                            state.enqueue_stream_frame(config, key, &mut stream.control, frame, 0);
+                            state.enqueue_stream_frame(
+                                config,
+                                stream_id,
+                                &mut stream.control,
+                                frame,
+                                0,
+                            );
                         }
                     }
                 }
@@ -1222,12 +1237,11 @@ impl Engine {
 
     fn plan_drive_outbound(
         config: &EngineConfig,
-        key: StreamKey,
+        stream_id: StreamId,
         control: &mut StreamControl,
         outbound: Option<&mut OutboundState>,
         emit: &mut impl OutputFn,
     ) -> Option<StreamFrame> {
-        let stream_id = key.stream_id;
         if control.awaiting.is_some() {
             return None;
         }
@@ -1276,7 +1290,7 @@ impl Engine {
     }
 
     fn queue_protocol_reset(stream: &mut StreamState, emit: &mut impl OutputFn) {
-        let stream_id = stream.key().stream_id;
+        let stream_id = stream.stream_id();
         stream
             .control_mut()
             .pending
@@ -1324,7 +1338,7 @@ impl Engine {
         code: ResetCode,
         emit: &mut impl OutputFn,
     ) {
-        let stream_id = stream.key().stream_id;
+        let stream_id = stream.stream_id();
         let request_error = QlError::StreamReset {
             dir: Direction::Request,
             code,
@@ -1954,10 +1968,9 @@ impl Engine {
                     } else {
                         let (streams, state) = (&mut self.streams, &mut self.state);
                         if let Some(stream) = streams.get_mut(&stream_id) {
-                            let key = stream.key();
                             state.enqueue_stream_frame(
                                 &self.config,
-                                key,
+                                stream.stream_id(),
                                 stream.control_mut(),
                                 frame,
                                 attempt.saturating_add(1),

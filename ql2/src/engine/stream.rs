@@ -8,15 +8,9 @@ use crate::{
     StreamId, StreamSeq,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamKey {
-    pub stream_id: StreamId,
-}
-
 #[derive(Debug)]
 pub struct StreamMeta {
-    pub key: StreamKey,
-    pub request_head: Vec<u8>,
+    pub stream_id: StreamId,
     pub last_activity: Instant,
 }
 
@@ -114,10 +108,10 @@ pub enum StreamState {
 }
 
 impl StreamState {
-    pub fn key(&self) -> StreamKey {
+    pub fn stream_id(&self) -> StreamId {
         match self {
-            Self::Initiator(state) => state.meta.key,
-            Self::Responder(state) => state.meta.key,
+            Self::Initiator(state) => state.meta.stream_id,
+            Self::Responder(state) => state.meta.stream_id,
         }
     }
 
