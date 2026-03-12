@@ -1,17 +1,18 @@
 use std::{cell::Cell, mem, time::Instant};
 
 use bc_components::{
-    MLDSA, MLDSAPrivateKey, MLDSAPublicKey, MLKEM, MLKEMPrivateKey, MLKEMPublicKey, SymmetricKey,
+    MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SymmetricKey, MLDSA, MLKEM,
 };
 
 use super::*;
 use crate::{
-    Peer,
     platform::QlCrypto,
     wire::{
-        self, QlHeader,
+        self,
         stream::{BodyChunk, StreamBody, StreamFrame, StreamFrameAccept, StreamMessage},
+        QlHeader,
     },
+    Peer,
 };
 
 struct TestCrypto {
@@ -277,16 +278,12 @@ fn open_prefix_is_delivered_on_setup_output() {
             Some(request_prefix.clone()),
         ))
     );
-    assert!(
-        !outputs_b
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
-    );
-    assert!(
-        !outputs_b
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundFinished { .. }))
-    );
+    assert!(!outputs_b
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(!outputs_b
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundFinished { .. })));
 }
 
 #[test]
@@ -363,16 +360,12 @@ fn unary_exchange_uses_open_and_accept_prefixes() {
             Some(response_prefix.clone()),
         ))
     );
-    assert!(
-        !outputs_a
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
-    );
-    assert!(
-        !outputs_a
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundFinished { .. }))
-    );
+    assert!(!outputs_a
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(!outputs_a
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundFinished { .. })));
     assert!(outputs_b.iter().any(|output| matches!(
         output,
         EngineOutput::OutboundClosed {
@@ -558,11 +551,9 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
         &crypto_a,
     );
 
-    assert!(
-        !outputs_incoming
-            .iter()
-            .any(|output| matches!(output, EngineOutput::OpenAccepted { .. }))
-    );
+    assert!(!outputs_incoming
+        .iter()
+        .any(|output| matches!(output, EngineOutput::OpenAccepted { .. })));
 
     let stream = a.streams.get(&stream_id).unwrap();
     assert!(stream.control().in_flight.contains_key(&StreamSeq(1)));
@@ -622,21 +613,15 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
         &crypto_a,
     );
 
-    assert!(
-        !outputs_data
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundStreamOpened { .. }))
-    );
-    assert!(
-        !outputs_data
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
-    );
-    assert!(
-        outputs_data
-            .iter()
-            .any(|output| matches!(output, EngineOutput::WriteMessage { .. }))
-    );
+    assert!(!outputs_data
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundStreamOpened { .. })));
+    assert!(!outputs_data
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(outputs_data
+        .iter()
+        .any(|output| matches!(output, EngineOutput::WriteMessage { .. })));
     assert!(matches!(
         a.streams.get(&stream_id),
         Some(StreamState::Provisional(_))
@@ -752,16 +737,12 @@ fn out_of_order_response_data_waits_for_accept() {
         EngineInput::Incoming(wire::encode_record(&data_record)),
         &crypto_a,
     );
-    assert!(
-        !outputs_data
-            .iter()
-            .any(|output| matches!(output, EngineOutput::OpenAccepted { .. }))
-    );
-    assert!(
-        !outputs_data
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
-    );
+    assert!(!outputs_data
+        .iter()
+        .any(|output| matches!(output, EngineOutput::OpenAccepted { .. })));
+    assert!(!outputs_data
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
 
     let accept_message = StreamMessage {
         tx_seq: StreamSeq(1),
@@ -835,11 +816,9 @@ fn delayed_ack_only_does_not_consume_sequence_space() {
     harness.send_b(EngineInput::TimerExpired);
 
     let outputs_b = harness.drain_b();
-    assert!(
-        outputs_b
-            .iter()
-            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
-    );
+    assert!(outputs_b
+        .iter()
+        .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
 
     let stream = harness.b.streams.get(&stream_id).unwrap();
     assert!(stream.control().in_flight.is_empty());
@@ -933,11 +912,9 @@ fn half_window_progress_flushes_ack_before_timer() {
             EngineInput::Incoming(wire::encode_record(&record)),
             &crypto_a,
         );
-        assert!(
-            !outputs
-                .iter()
-                .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
-        );
+        assert!(!outputs
+            .iter()
+            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
     }
 
     let body = StreamBody::Message(messages[3].clone());
@@ -957,9 +934,7 @@ fn half_window_progress_flushes_ack_before_timer() {
         &crypto_a,
     );
 
-    assert!(
-        outputs
-            .iter()
-            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
-    );
+    assert!(outputs
+        .iter()
+        .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
 }

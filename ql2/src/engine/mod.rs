@@ -1,4 +1,5 @@
 pub mod replay_cache;
+mod ring;
 mod state;
 mod stream;
 
@@ -25,20 +26,21 @@ use self::{
     stream::*,
 };
 use crate::{
-    PacketId, Peer, QlError, StreamId, StreamSeq,
     platform::QlCrypto,
     wire::{
-        self, QlHeader, QlPayload, QlRecord,
+        self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
         handshake::{self, HandshakeRecord, Hello},
         heartbeat::{self, HeartbeatBody},
         stream::{
-            BodyChunk, Direction, RejectCode, ResetCode, ResetTarget, StreamAck, StreamAckBody,
-            StreamBody, StreamFrame, StreamFrameAccept, StreamFrameData, StreamFrameOpen,
-            StreamFrameReject, StreamFrameReset, StreamMessage, decrypt_stream, encrypt_stream,
+            decrypt_stream, encrypt_stream, BodyChunk, Direction, RejectCode, ResetCode,
+            ResetTarget, StreamAck, StreamAckBody, StreamBody, StreamFrame, StreamFrameAccept,
+            StreamFrameData, StreamFrameOpen, StreamFrameReject, StreamFrameReset, StreamMessage,
         },
         unpair::{self},
+        QlHeader, QlPayload, QlRecord,
     },
+    PacketId, Peer, QlError, StreamId, StreamSeq,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -1180,8 +1182,8 @@ impl Engine {
         let acked: Vec<_> = stream
             .control()
             .in_flight
-            .keys()
-            .copied()
+            .iter()
+            .map(|(tx_seq, _)| tx_seq)
             .filter(|tx_seq| StreamControl::ack_covers(ack, *tx_seq))
             .collect();
         if acked.is_empty() {
@@ -1189,7 +1191,7 @@ impl Engine {
         }
         let mut acked_frames = Vec::with_capacity(acked.len());
         for tx_seq in acked {
-            if let Some(in_flight) = stream.control_mut().in_flight.remove(&tx_seq) {
+            if let Some(in_flight) = stream.control_mut().remove_in_flight(tx_seq) {
                 acked_frames.push(in_flight.frame);
             }
         }
@@ -1419,14 +1421,11 @@ impl Engine {
         attempt: u8,
         priority: bool,
     ) {
-        control.in_flight.insert(
+        control.insert_in_flight(InFlightFrame {
             tx_seq,
-            InFlightFrame {
-                tx_seq,
-                frame: frame.clone(),
-                attempt,
-            },
-        );
+            frame: frame.clone(),
+            attempt,
+        });
         let ack = control.ack_dirty.then(|| control.current_ack());
         if ack.is_some() {
             control.clear_ack_schedule();
@@ -1472,10 +1471,7 @@ impl Engine {
     fn queue_protocol_reset(stream: &mut StreamState, emit: &mut impl OutputFn) {
         let stream_id = stream.stream_id();
         let control = stream.control_mut();
-        control.pending.clear();
-        control.in_flight.clear();
-        control.recv_buffer.clear();
-        control.clear_ack_schedule();
+        control.clear_transient_buffers();
         control.queue_frame_front(reset_frame(
             stream_id,
             ResetTarget::Both,

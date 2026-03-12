@@ -1,6 +1,6 @@
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, HashSet, binary_heap::PeekMut},
+    collections::{binary_heap::PeekMut, BinaryHeap, HashSet},
     time::{SystemTime, UNIX_EPOCH},
 };
 

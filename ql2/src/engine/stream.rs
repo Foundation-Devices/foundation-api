@@ -1,9 +1,6 @@
-use std::{
-    collections::{BTreeMap, VecDeque},
-    time::Instant,
-};
+use std::{collections::VecDeque, time::Instant};
 
-use super::{OpenId, Token};
+use super::{OpenId, Token, ring::SeqRing};
 use crate::{
     StreamId, StreamSeq,
     wire::stream::{
@@ -11,7 +8,8 @@ use crate::{
     },
 };
 
-pub const STREAM_WINDOW_SIZE: u32 = 8;
+pub const STREAM_WINDOW_CAPACITY: usize = 8;
+pub const STREAM_WINDOW_SIZE: u32 = STREAM_WINDOW_CAPACITY as u32;
 pub const STREAM_ACK_EAGER_THRESHOLD: u32 = STREAM_WINDOW_SIZE / 2;
 
 #[derive(Debug)]
@@ -111,10 +109,9 @@ pub enum BufferIncomingResult {
 #[derive(Debug)]
 pub struct StreamControl {
     pub pending: VecDeque<StreamFrame>,
-    pub in_flight: BTreeMap<StreamSeq, InFlightFrame>,
+    pub in_flight: SeqRing<STREAM_WINDOW_CAPACITY, InFlightFrame>,
     pub next_tx_seq: StreamSeq,
-    pub committed_rx_seq: StreamSeq,
-    pub recv_buffer: BTreeMap<StreamSeq, StreamFrame>,
+    pub recv_buffer: SeqRing<STREAM_WINDOW_CAPACITY, StreamFrame>,
     pub ack_dirty: bool,
     pub ack_immediate: bool,
     pub ack_delay_token: Option<Token>,
@@ -126,10 +123,9 @@ impl Default for StreamControl {
     fn default() -> Self {
         Self {
             pending: VecDeque::new(),
-            in_flight: BTreeMap::new(),
+            in_flight: SeqRing::new(StreamSeq(1)),
             next_tx_seq: StreamSeq(1),
-            committed_rx_seq: StreamSeq(0),
-            recv_buffer: BTreeMap::new(),
+            recv_buffer: SeqRing::new(StreamSeq(1)),
             ack_dirty: false,
             ack_immediate: false,
             ack_delay_token: None,
@@ -147,7 +143,11 @@ impl StreamControl {
     }
 
     pub fn send_window_has_space(&self) -> bool {
-        self.in_flight.len() < STREAM_WINDOW_SIZE as usize
+        self.in_flight.accepts_seq(self.next_tx_seq)
+    }
+
+    pub fn committed_rx_seq(&self) -> StreamSeq {
+        StreamSeq(self.recv_buffer.base_seq().0.saturating_sub(1))
     }
 
     pub fn queue_frame_back(&mut self, frame: StreamFrame) {
@@ -174,7 +174,7 @@ impl StreamControl {
             return;
         }
         let progressed = self
-            .committed_rx_seq
+            .committed_rx_seq()
             .0
             .saturating_sub(self.last_sent_ack_base.0);
         if progressed >= STREAM_ACK_EAGER_THRESHOLD {
@@ -189,16 +189,9 @@ impl StreamControl {
     }
 
     pub fn current_ack(&self) -> StreamAck {
-        let mut bitmap = 0u8;
-        for tx_seq in self.recv_buffer.keys().copied() {
-            let delta = tx_seq.0.saturating_sub(self.committed_rx_seq.0);
-            if (1..=STREAM_WINDOW_SIZE).contains(&delta) {
-                bitmap |= 1u8 << (delta - 1);
-            }
-        }
         StreamAck {
-            base: self.committed_rx_seq,
-            bitmap,
+            base: self.committed_rx_seq(),
+            bitmap: self.recv_buffer.bitmap(),
         }
     }
 
@@ -207,29 +200,41 @@ impl StreamControl {
         tx_seq: StreamSeq,
         frame: StreamFrame,
     ) -> BufferIncomingResult {
-        if tx_seq.0 <= self.committed_rx_seq.0 {
+        if tx_seq.0 < self.recv_buffer.base_seq().0 {
             return BufferIncomingResult::Duplicate;
         }
-
-        let delta = tx_seq.0.saturating_sub(self.committed_rx_seq.0);
-        if !(1..=STREAM_WINDOW_SIZE).contains(&delta) {
+        if !self.recv_buffer.accepts_seq(tx_seq) {
             return BufferIncomingResult::OutOfWindow;
         }
-
         if self.recv_buffer.contains_key(&tx_seq) {
             return BufferIncomingResult::AlreadyBuffered;
         }
 
-        let out_of_order = delta > 1;
-        self.recv_buffer.insert(tx_seq, frame);
+        let out_of_order = tx_seq != self.recv_buffer.base_seq();
+        let _ = self.recv_buffer.insert(tx_seq, frame);
         BufferIncomingResult::Buffered { out_of_order }
     }
 
     pub fn pop_next_committable(&mut self) -> Option<(StreamSeq, StreamFrame)> {
-        let next_seq = StreamSeq(self.committed_rx_seq.0.wrapping_add(1));
-        let frame = self.recv_buffer.remove(&next_seq)?;
-        self.committed_rx_seq = next_seq;
-        Some((next_seq, frame))
+        self.recv_buffer.take_front()
+    }
+
+    pub fn insert_in_flight(&mut self, frame: InFlightFrame) {
+        let _ = self.in_flight.set(frame.tx_seq, frame);
+    }
+
+    pub fn remove_in_flight(&mut self, tx_seq: StreamSeq) -> Option<InFlightFrame> {
+        let removed = self.in_flight.remove(&tx_seq);
+        self.in_flight.advance_empty_front_until(self.next_tx_seq);
+        removed
+    }
+
+    pub fn clear_transient_buffers(&mut self) {
+        self.pending.clear();
+        self.in_flight.clear_with_base(self.next_tx_seq);
+        self.recv_buffer
+            .clear_with_base(StreamSeq(self.committed_rx_seq().0.wrapping_add(1)));
+        self.clear_ack_schedule();
     }
 
     pub fn ack_covers(ack: StreamAck, tx_seq: StreamSeq) -> bool {
