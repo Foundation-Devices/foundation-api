@@ -18,32 +18,73 @@ pub struct StreamMeta {
     pub last_activity: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboundPhase {
+    Ready,
+    PendingPull,
+    FinPending,
+    FinQueued,
+    Closed,
+}
+
 #[derive(Debug)]
 pub struct OutboundState {
     pub dir: Direction,
-    pub closed: bool,
-    pub finished: bool,
-    pub pending_pull: bool,
-    pub fin_queued: bool,
+    pub phase: OutboundPhase,
 }
 
 impl OutboundState {
-    pub fn new(dir: Direction) -> Self {
+    pub fn from_prefix(dir: Direction, fin: bool) -> Self {
         Self {
             dir,
-            closed: false,
-            finished: false,
-            pending_pull: false,
-            fin_queued: false,
+            phase: if fin {
+                OutboundPhase::FinQueued
+            } else {
+                OutboundPhase::Ready
+            },
         }
     }
 
-    pub fn can_request_data(&self) -> bool {
-        !self.closed && !self.finished && !self.pending_pull
+    pub fn is_closed(&self) -> bool {
+        self.phase == OutboundPhase::Closed
     }
 
-    pub fn needs_fin_frame(&self) -> bool {
-        !self.closed && self.finished && !self.fin_queued && !self.pending_pull
+    pub fn request_data(&mut self) -> bool {
+        if self.phase != OutboundPhase::Ready {
+            return false;
+        }
+        self.phase = OutboundPhase::PendingPull;
+        true
+    }
+
+    pub fn take_pending_pull(&mut self) -> bool {
+        if self.phase != OutboundPhase::PendingPull {
+            return false;
+        }
+        self.phase = OutboundPhase::Ready;
+        true
+    }
+
+    pub fn finish(&mut self) {
+        self.phase = match self.phase {
+            OutboundPhase::Ready | OutboundPhase::PendingPull | OutboundPhase::FinPending => {
+                OutboundPhase::FinPending
+            }
+            OutboundPhase::FinQueued => OutboundPhase::FinQueued,
+            OutboundPhase::Closed => OutboundPhase::Closed,
+        };
+    }
+
+    pub fn queue_fin(&mut self) -> bool {
+        if self.phase != OutboundPhase::FinPending {
+            return false;
+        }
+        self.phase = OutboundPhase::FinQueued;
+        true
+    }
+
+    pub fn close(&mut self) {
+        self.phase = OutboundPhase::Closed;
     }
 }
 
@@ -354,11 +395,11 @@ impl StreamState {
         match self {
             Self::Initiator(state) => {
                 matches!(state.accept, InitiatorAccept::Open { .. })
-                    && state.request.closed
+                    && state.request.is_closed()
                     && state.response.closed
             }
             Self::Responder(state) => match &state.response {
-                ResponderResponse::Accepted { body } => state.request.closed && body.closed,
+                ResponderResponse::Accepted { body } => state.request.closed && body.is_closed(),
                 ResponderResponse::Rejecting => true,
                 ResponderResponse::Pending => false,
             },

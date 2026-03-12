@@ -1136,7 +1136,10 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
             last_activity: now,
         },
         control: StreamControl::default(),
-        request: OutboundState::new(Direction::Request),
+        request: OutboundState {
+            dir: Direction::Request,
+            phase: OutboundPhase::Ready,
+        },
         response: InboundState::new(),
         accept: InitiatorAccept::Opening(OpenWaiter {
             open_id: Some(OpenId(1)),

@@ -348,13 +348,7 @@ impl Engine {
                 pending: std::collections::VecDeque::from([StreamFrame::Open(frame)]),
                 ..Default::default()
             },
-            request: OutboundState {
-                dir: Direction::Request,
-                closed: false,
-                finished: request_prefix_fin,
-                pending_pull: false,
-                fin_queued: request_prefix_fin,
-            },
+            request: OutboundState::from_prefix(Direction::Request, request_prefix_fin),
             response: InboundState::new(),
             accept: InitiatorAccept::Opening(OpenWaiter {
                 open_id: Some(open_id),
@@ -392,13 +386,7 @@ impl Engine {
                 response_prefix,
             }));
         stream.response = ResponderResponse::Accepted {
-            body: OutboundState {
-                dir: Direction::Response,
-                closed: false,
-                finished: response_prefix_fin,
-                pending_pull: false,
-                fin_queued: response_prefix_fin,
-            },
+            body: OutboundState::from_prefix(Direction::Response, response_prefix_fin),
         };
         stream.meta.last_activity = now;
     }
@@ -428,10 +416,9 @@ impl Engine {
         let Some(outbound) = stream.outbound_mut(dir) else {
             return;
         };
-        if !outbound.pending_pull || outbound.finished {
+        if !outbound.take_pending_pull() {
             return;
         }
-        outbound.pending_pull = false;
         let chunk = BodyChunk { bytes, fin: false };
         stream
             .control_mut()
@@ -449,8 +436,7 @@ impl Engine {
         let Some(outbound) = stream.outbound_mut(dir) else {
             return;
         };
-        outbound.pending_pull = false;
-        outbound.finished = true;
+        outbound.finish();
     }
 
     fn handle_reset_outbound(
@@ -466,11 +452,10 @@ impl Engine {
         let Some(outbound) = stream.outbound_mut(dir) else {
             return;
         };
-        if outbound.closed {
+        if outbound.is_closed() {
             return;
         }
-        outbound.closed = true;
-        outbound.pending_pull = false;
+        outbound.close();
         stream.control_mut().queue_frame_front(reset_frame(
             stream_id,
             reset_target_for_dir(dir),
@@ -1029,7 +1014,7 @@ impl Engine {
                             dir: Direction::Response,
                             error: QlError::StreamRejected { code },
                         });
-                        stream.request.closed = true;
+                        stream.request.close();
                         stream.response.closed = true;
                         remove_after = true;
                     }
@@ -1157,7 +1142,7 @@ impl Engine {
                             });
                         }
                         if request_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
-                            stream.request.closed = true;
+                            stream.request.close();
                             emit(EngineOutput::OutboundClosed {
                                 stream_id,
                                 dir: Direction::Request,
@@ -1171,7 +1156,7 @@ impl Engine {
                     if let StreamState::Responder(stream) = stream {
                         if response_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
                             if let ResponderResponse::Accepted { body } = &mut stream.response {
-                                body.closed = true;
+                                body.close();
                                 emit(EngineOutput::OutboundClosed {
                                     stream_id,
                                     dir: Direction::Response,
@@ -1187,7 +1172,7 @@ impl Engine {
                     ..
                 }) => {
                     if let Some(outbound) = stream.outbound_mut(dir) {
-                        outbound.closed = true;
+                        outbound.close();
                         emit(EngineOutput::OutboundClosed { stream_id, dir });
                     }
                 }
@@ -1201,7 +1186,7 @@ impl Engine {
                         );
                         if affects_outbound {
                             if let Some(outbound) = stream.outbound_mut(outbound_dir) {
-                                outbound.closed = true;
+                                outbound.close();
                                 emit(EngineOutput::OutboundFailed {
                                     stream_id,
                                     dir: outbound_dir,
@@ -1309,16 +1294,14 @@ impl Engine {
             let Some(outbound) = outbound.as_deref_mut() else {
                 return;
             };
-            if outbound.can_request_data() {
-                outbound.pending_pull = true;
+            if outbound.request_data() {
                 emit(EngineOutput::NeedOutboundData {
                     stream_id,
                     dir: outbound.dir,
                 });
                 return;
             }
-            if outbound.needs_fin_frame() {
-                outbound.fin_queued = true;
+            if outbound.queue_fin() {
                 Self::enqueue_stream_frame(
                     config,
                     state,
@@ -1421,8 +1404,7 @@ impl Engine {
         ));
         for dir in [Direction::Request, Direction::Response] {
             if let Some(outbound) = stream.outbound_mut(dir) {
-                outbound.closed = true;
-                outbound.pending_pull = false;
+                outbound.close();
                 emit(EngineOutput::OutboundFailed {
                     stream_id,
                     dir,
@@ -1484,8 +1466,7 @@ impl Engine {
                 }
             }
             if let Some(outbound) = stream.outbound_mut(Direction::Request) {
-                outbound.closed = true;
-                outbound.pending_pull = false;
+                outbound.close();
                 emit(EngineOutput::OutboundFailed {
                     stream_id,
                     dir: Direction::Request,
@@ -1505,8 +1486,7 @@ impl Engine {
                 }
             }
             if let Some(outbound) = stream.outbound_mut(Direction::Response) {
-                outbound.closed = true;
-                outbound.pending_pull = false;
+                outbound.close();
                 emit(EngineOutput::OutboundFailed {
                     stream_id,
                     dir: Direction::Response,
