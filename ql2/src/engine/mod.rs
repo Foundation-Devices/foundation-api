@@ -22,7 +22,7 @@ pub use state::{
 
 use self::{replay_cache::ReplayKey, state::*, stream::*};
 use crate::{
-    platform::QlCrypto,
+    platform::{QlCrypto, QlIdentity},
     wire::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
@@ -75,17 +75,11 @@ impl Default for EngineConfig {
     }
 }
 
-impl EngineConfig {
-    pub(crate) fn normalized(self) -> Self {
-        self
-    }
-}
-
 impl Engine {
-    pub fn new(config: EngineConfig, local_xid: XID, peer: Option<Peer>) -> Self {
+    pub fn new(config: EngineConfig, identity: QlIdentity, peer: Option<Peer>) -> Self {
         Self {
-            config: config.normalized(),
-            local_xid,
+            config: config,
+            identity,
             state: EngineState::new(peer),
             streams: HashMap::new(),
         }
@@ -98,13 +92,11 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        debug_assert_eq!(self.local_xid, crypto.xid());
-
         match input {
             EngineInput::BindPeer(peer) => self.handle_bind_peer(peer, emit),
             EngineInput::Pair => self.handle_pair_local(now, crypto),
             EngineInput::Connect => self.handle_connect(now, crypto, emit),
-            EngineInput::Unpair => self.handle_unpair_local(now, crypto, emit),
+            EngineInput::Unpair => self.handle_unpair_local(now, emit),
             EngineInput::OpenStream {
                 open_id,
                 request_head,
@@ -217,9 +209,13 @@ impl Engine {
             return;
         };
         let meta = self.next_control_meta(self.config.packet_expiration);
-        let Ok(record) =
-            wire::pair::build_pair_request(crypto, peer.peer, &peer.encapsulation_key, meta)
-        else {
+        let Ok(record) = wire::pair::build_pair_request(
+            &self.identity,
+            crypto,
+            peer.peer,
+            &peer.encapsulation_key,
+            meta,
+        ) else {
             return;
         };
         let token = self.state.next_token();
@@ -244,8 +240,8 @@ impl Engine {
             }
             PeerSession::Disconnected => {
                 match handshake::build_hello(
+                    &self.identity,
                     crypto,
-                    crypto.xid(),
                     peer,
                     &peer_record.encapsulation_key,
                     meta,
@@ -271,7 +267,7 @@ impl Engine {
 
         let record = QlRecord {
             header: QlHeader {
-                sender: crypto.xid(),
+                sender: self.identity.xid,
                 recipient: peer,
             },
             payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
@@ -279,20 +275,15 @@ impl Engine {
         self.enqueue_handshake_message(token, deadline, wire::encode_record(&record));
     }
 
-    fn handle_unpair_local(
-        &mut self,
-        now: Instant,
-        crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
-    ) {
+    fn handle_unpair_local(&mut self, now: Instant, emit: &mut impl OutputFn) {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
         let meta = self.next_control_meta(self.config.packet_expiration);
         let record = unpair::build_unpair_record(
-            crypto,
+            &self.identity,
             QlHeader {
-                sender: crypto.xid(),
+                sender: self.identity.xid,
                 recipient: peer,
             },
             meta,
@@ -332,7 +323,7 @@ impl Engine {
             return;
         }
 
-        let stream_namespace = StreamNamespace::for_local(self.local_xid, entry.peer);
+        let stream_namespace = StreamNamespace::for_local(self.identity.xid, entry.peer);
         let stream_id = self.state.next_stream_id(stream_namespace);
         let open_timeout = config
             .open_timeout
@@ -527,7 +518,7 @@ impl Engine {
         let record = unsafe { record.unseal_unchecked() };
         let sender: XID = (&record.header.sender).into();
         let recipient: XID = (&record.header.recipient).into();
-        if recipient != crypto.xid() {
+        if recipient != self.identity.xid {
             return;
         }
         if !matches!(&record.payload, wire::ArchivedQlPayload::Pair(_)) {
@@ -573,10 +564,10 @@ impl Engine {
                 self.handle_hello(now, peer, hello, crypto, emit)
             }
             wire::handshake::ArchivedHandshakeRecord::HelloReply(reply) => {
-                self.handle_hello_reply(now, peer, reply, crypto, emit)
+                self.handle_hello_reply(now, peer, reply, emit)
             }
             wire::handshake::ArchivedHandshakeRecord::Confirm(confirm) => {
-                self.handle_confirm(now, peer, confirm, crypto, emit)
+                self.handle_confirm(now, peer, confirm, emit)
             }
         }
     }
@@ -589,7 +580,7 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let payload = match wire::pair::decrypt_pair_request(crypto, header, request) {
+        let payload = match wire::pair::decrypt_pair_request(&self.identity, header, request) {
             Ok(payload) => payload,
             Err(_) => return,
         };
@@ -717,7 +708,7 @@ impl Engine {
             let Some(peer_record) = self.state.peer.as_ref() else {
                 return;
             };
-            let local_namespace = StreamNamespace::for_local(self.local_xid, peer_record.peer);
+            let local_namespace = StreamNamespace::for_local(self.identity.xid, peer_record.peer);
             if !local_namespace.remote().matches(stream_id) {
                 return;
             }
@@ -1594,14 +1585,16 @@ impl Engine {
     ) {
         let action = match self.state.peer.as_ref() {
             Some(entry) => {
-                if handshake::verify_hello(peer, crypto.xid(), &entry.signing_key, hello).is_err() {
+                if handshake::verify_hello(peer, self.identity.xid, &entry.signing_key, hello)
+                    .is_err()
+                {
                     return;
                 }
                 match &entry.session {
                     PeerSession::Initiator {
                         hello: local_hello, ..
                     } => {
-                        if peer_hello_wins(local_hello, crypto.xid(), hello, peer) {
+                        if peer_hello_wins(local_hello, self.identity.xid, hello, peer) {
                             HelloAction::StartResponder
                         } else {
                             HelloAction::Ignore
@@ -1641,7 +1634,7 @@ impl Engine {
             HelloAction::ResendReply { reply, deadline } => {
                 let record = QlRecord {
                     header: QlHeader {
-                        sender: crypto.xid(),
+                        sender: self.identity.xid,
                         recipient: peer,
                     },
                     payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
@@ -1658,7 +1651,6 @@ impl Engine {
         now: Instant,
         peer: XID,
         reply: &wire::handshake::ArchivedHelloReply,
-        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
         let deadline = now + self.config.handshake_timeout;
@@ -1680,8 +1672,7 @@ impl Engine {
                 return;
             }
             handshake::build_confirm(
-                crypto,
-                crypto.xid(),
+                &self.identity,
                 peer,
                 &peer_record.signing_key,
                 hello,
@@ -1718,7 +1709,7 @@ impl Engine {
 
         let record = QlRecord {
             header: QlHeader {
-                sender: crypto.xid(),
+                sender: self.identity.xid,
                 recipient: peer,
             },
             payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
@@ -1731,7 +1722,6 @@ impl Engine {
         now: Instant,
         peer: XID,
         confirm: &wire::handshake::ArchivedConfirm,
-        crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
         let Some(peer_record) = self.state.peer.as_ref() else {
@@ -1749,7 +1739,7 @@ impl Engine {
 
         match handshake::finalize_confirm(
             peer,
-            crypto.xid(),
+            self.identity.xid,
             &peer_record.signing_key,
             hello,
             reply,
@@ -1793,9 +1783,9 @@ impl Engine {
                 return;
             };
             handshake::respond_hello(
+                &self.identity,
                 crypto,
                 peer,
-                crypto.xid(),
                 &peer_record.signing_key,
                 &peer_record.encapsulation_key,
                 hello,
@@ -1835,7 +1825,7 @@ impl Engine {
 
         let record = QlRecord {
             header: QlHeader {
-                sender: crypto.xid(),
+                sender: self.identity.xid,
                 recipient: peer,
             },
             payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
@@ -1859,7 +1849,7 @@ impl Engine {
             };
             heartbeat::encrypt_heartbeat(
                 QlHeader {
-                    sender: crypto.xid(),
+                    sender: self.identity.xid,
                     recipient: peer,
                 },
                 session_key,
@@ -2272,7 +2262,7 @@ impl Engine {
                     self.note_sent_stream_ack(body);
                     let record = encrypt_stream(
                         QlHeader {
-                            sender: crypto.xid(),
+                            sender: self.identity.xid,
                             recipient,
                         },
                         &session_key,

@@ -3,7 +3,7 @@ use rkyv::{Archive, Serialize};
 
 use super::UnpairRecord;
 use crate::{
-    platform::QlCrypto,
+    platform::QlIdentity,
     wire::{encode_value, ensure_not_expired, ControlMeta, QlHeader, QlPayload, QlRecord},
     QlError,
 };
@@ -15,13 +15,9 @@ struct UnpairProofData {
     meta: ControlMeta,
 }
 
-pub fn build_unpair_record(
-    platform: &impl QlCrypto,
-    header: QlHeader,
-    meta: ControlMeta,
-) -> QlRecord {
-    let signature = platform
-        .signing_private_key()
+pub fn build_unpair_record(identity: &QlIdentity, header: QlHeader, meta: ControlMeta) -> QlRecord {
+    let signature = identity
+        .signing_private_key
         .sign(unpair_proof_data(&header, &meta));
     QlRecord {
         header,

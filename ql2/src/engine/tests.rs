@@ -1,12 +1,10 @@
 use std::{cell::Cell, mem, time::Instant};
 
-use bc_components::{
-    MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SymmetricKey, MLDSA, MLKEM,
-};
+use bc_components::{SymmetricKey, MLDSA, MLKEM};
 
 use super::*;
 use crate::{
-    platform::QlCrypto,
+    platform::{QlCrypto, QlIdentity},
     wire::{
         self,
         stream::{
@@ -19,10 +17,7 @@ use crate::{
 };
 
 struct TestCrypto {
-    signing_private: MLDSAPrivateKey,
-    signing_public: MLDSAPublicKey,
-    encapsulation_private: MLKEMPrivateKey,
-    encapsulation_public: MLKEMPublicKey,
+    identity: QlIdentity,
     nonce_seed: u8,
     nonce_counter: Cell<u8>,
 }
@@ -32,41 +27,31 @@ impl TestCrypto {
         let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
         let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
         Self {
-            signing_private,
-            signing_public,
-            encapsulation_private,
-            encapsulation_public,
+            identity: QlIdentity::from_keys(
+                signing_private,
+                signing_public,
+                encapsulation_private,
+                encapsulation_public,
+            ),
             nonce_seed: seed,
             nonce_counter: Cell::new(0),
         }
     }
 
+    fn xid(&self) -> XID {
+        self.identity.xid
+    }
+
     fn peer(&self) -> Peer {
         Peer {
             peer: self.xid(),
-            signing_key: self.signing_public.clone(),
-            encapsulation_key: self.encapsulation_public.clone(),
+            signing_key: self.identity.signing_public_key.clone(),
+            encapsulation_key: self.identity.encapsulation_public_key.clone(),
         }
     }
 }
 
 impl QlCrypto for TestCrypto {
-    fn signing_private_key(&self) -> &MLDSAPrivateKey {
-        &self.signing_private
-    }
-
-    fn signing_public_key(&self) -> &MLDSAPublicKey {
-        &self.signing_public
-    }
-
-    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey {
-        &self.encapsulation_private
-    }
-
-    fn encapsulation_public_key(&self) -> &MLKEMPublicKey {
-        &self.encapsulation_public
-    }
-
     fn fill_random_bytes(&self, data: &mut [u8]) {
         let value = self.nonce_seed.wrapping_add(self.nonce_counter.get());
         self.nonce_counter
@@ -141,7 +126,7 @@ fn decode_stream_body(bytes: &[u8], session_key: &SymmetricKey) -> (QlHeader, St
 }
 
 fn connected_engine(local: &TestCrypto, peer: Peer, session_key: SymmetricKey) -> Engine {
-    let mut engine = Engine::new(EngineConfig::default(), local.xid(), Some(peer));
+    let mut engine = Engine::new(EngineConfig::default(), local.identity.clone(), Some(peer));
     engine.state.peer.as_mut().unwrap().session = PeerSession::Connected {
         session_key,
         keepalive: KeepAliveState::default(),
@@ -156,8 +141,8 @@ impl Harness {
         let peer_a = crypto_a.peer();
         let peer_b = crypto_b.peer();
         let session_key = SymmetricKey::from_data([7; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-        let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
-        let mut b = Engine::new(config, crypto_b.xid(), Some(peer_a));
+        let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
+        let mut b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
         a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
             session_key: session_key.clone(),
             keepalive: KeepAliveState::default(),
@@ -405,8 +390,8 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
     let peer_a = crypto_a.peer();
     let peer_b = crypto_b.peer();
     let session_key = SymmetricKey::from_data([9; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
-    let mut b = Engine::new(config, crypto_b.xid(), Some(peer_a));
+    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
+    let mut b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
     a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
         session_key: session_key.clone(),
         keepalive: KeepAliveState::default(),
@@ -514,8 +499,8 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
     let peer_a = crypto_a.peer();
     let peer_b = crypto_b.peer();
     let session_key = SymmetricKey::from_data([5; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
-    let mut _b = Engine::new(config, crypto_b.xid(), Some(peer_a));
+    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
+    let mut _b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
     a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
         session_key: session_key.clone(),
         keepalive: KeepAliveState::default(),
@@ -594,7 +579,7 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
     let crypto_b = TestCrypto::new(42);
     let peer_b = crypto_b.peer();
     let session_key = SymmetricKey::from_data([6; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
+    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
     a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
         session_key: session_key.clone(),
         keepalive: KeepAliveState::default(),
@@ -701,7 +686,7 @@ fn out_of_order_response_data_waits_for_accept() {
     let crypto_b = TestCrypto::new(52);
     let peer_b = crypto_b.peer();
     let session_key = SymmetricKey::from_data([4; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
+    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
     a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
         session_key: session_key.clone(),
         keepalive: KeepAliveState::default(),
@@ -852,7 +837,7 @@ fn half_window_progress_flushes_ack_before_timer() {
     let crypto_b = TestCrypto::new(62);
     let peer_b = crypto_b.peer();
     let session_key = SymmetricKey::from_data([8; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
+    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
     a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
         session_key: session_key.clone(),
         keepalive: KeepAliveState::default(),
@@ -1332,14 +1317,14 @@ fn replayed_unpair_is_ignored_after_rebind() {
     let crypto_b = TestCrypto::new(112);
     let peer_b = crypto_b.peer();
     let session_key = SymmetricKey::from_data([5; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b.clone()));
+    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b.clone()));
     a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
         session_key,
         keepalive: KeepAliveState::default(),
     };
     let now = Instant::now();
     let bytes = wire::encode_record(&wire::unpair::build_unpair_record(
-        &crypto_b,
+        &crypto_b.identity,
         QlHeader {
             sender: crypto_b.xid(),
             recipient: crypto_a.xid(),

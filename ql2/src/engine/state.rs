@@ -13,6 +13,7 @@ use super::{
     EngineConfig, StreamConfig,
 };
 use crate::{
+    platform::QlIdentity,
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
         stream::{BodyChunk, Direction, RejectCode, ResetCode, StreamBody},
@@ -350,7 +351,7 @@ pub enum HelloAction {
 
 pub struct Engine {
     pub config: EngineConfig,
-    pub local_xid: XID,
+    pub identity: QlIdentity,
     pub state: EngineState,
     pub streams: HashMap<StreamId, StreamState>,
 }

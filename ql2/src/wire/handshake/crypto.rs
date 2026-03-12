@@ -9,7 +9,7 @@ use super::{
     HelloReply,
 };
 use crate::{
-    platform::QlCrypto,
+    platform::{QlCrypto, QlIdentity},
     wire::{
         encode_value, ensure_not_expired, AsWireMlKemCiphertext, AsWireNonce, AsWireXid,
         ControlMeta,
@@ -68,17 +68,21 @@ pub struct ResponderSecrets {
 }
 
 pub fn build_hello(
-    platform: &impl QlCrypto,
-    sender: XID,
+    identity: &QlIdentity,
+    crypto: &impl QlCrypto,
     recipient: XID,
     recipient_encapsulation_key: &MLKEMPublicKey,
     meta: ControlMeta,
 ) -> Result<(Hello, SymmetricKey), QlError> {
-    let nonce = next_nonce(platform);
+    let nonce = next_nonce(crypto);
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
-    let signature = platform
-        .signing_private_key()
-        .sign(hello_proof_data(sender, recipient, &meta, &nonce, &kem_ct));
+    let signature = identity.signing_private_key.sign(hello_proof_data(
+        identity.xid,
+        recipient,
+        &meta,
+        &nonce,
+        &kem_ct,
+    ));
     Ok((
         Hello {
             meta,
@@ -106,27 +110,27 @@ pub fn verify_hello(
 }
 
 pub fn respond_hello(
-    platform: &impl QlCrypto,
+    identity: &QlIdentity,
+    crypto: &impl QlCrypto,
     initiator: XID,
-    responder: XID,
     initiator_signing_key: &MLDSAPublicKey,
     initiator_encapsulation_key: &MLKEMPublicKey,
     hello: &ArchivedHello,
     meta: ControlMeta,
 ) -> Result<(HelloReply, ResponderSecrets), QlError> {
-    verify_hello(initiator, responder, initiator_signing_key, hello)?;
+    verify_hello(initiator, identity.xid, initiator_signing_key, hello)?;
     let hello_meta: ControlMeta = (&hello.meta).into();
     let initiator_nonce: Nonce = (&hello.nonce).into();
     let initiator_kem_ct = MLKEMCiphertext::try_from(&hello.kem_ct)?;
-    let initiator_secret = platform
-        .encapsulation_private_key()
+    let initiator_secret = identity
+        .encapsulation_private_key
         .decapsulate_shared_secret(&initiator_kem_ct)
         .map_err(|_| QlError::InvalidPayload)?;
-    let nonce = next_nonce(platform);
+    let nonce = next_nonce(crypto);
     let (responder_secret, kem_ct) = initiator_encapsulation_key.encapsulate_new_shared_secret();
     let transcript = handshake_transcript(
         initiator,
-        responder,
+        identity.xid,
         &hello_meta,
         &initiator_nonce,
         &initiator_kem_ct,
@@ -134,7 +138,7 @@ pub fn respond_hello(
         &nonce,
         &kem_ct,
     );
-    let signature = platform.signing_private_key().sign(&transcript);
+    let signature = identity.signing_private_key.sign(&transcript);
     let reply = HelloReply {
         meta,
         nonce,
@@ -151,8 +155,7 @@ pub fn respond_hello(
 }
 
 pub fn build_confirm(
-    platform: &impl QlCrypto,
-    initiator: XID,
+    identity: &QlIdentity,
     responder: XID,
     responder_signing_key: &MLDSAPublicKey,
     hello: &Hello,
@@ -166,7 +169,7 @@ pub fn build_confirm(
     let reply_kem_ct = MLKEMCiphertext::try_from(&reply.kem_ct)?;
     let reply_signature = MLDSASignature::try_from(&reply.signature)?;
     let transcript = handshake_transcript(
-        initiator,
+        identity.xid,
         responder,
         &hello.meta,
         &hello.nonce,
@@ -176,12 +179,12 @@ pub fn build_confirm(
         &reply_kem_ct,
     );
     verify_signature(responder_signing_key, &reply_signature, &transcript)?;
-    let responder_secret = platform
-        .encapsulation_private_key()
+    let responder_secret = identity
+        .encapsulation_private_key
         .decapsulate_shared_secret(&reply_kem_ct)
         .map_err(|_| QlError::InvalidPayload)?;
-    let signature = platform
-        .signing_private_key()
+    let signature = identity
+        .signing_private_key
         .sign(confirm_proof_data(&meta, &transcript));
     let confirm = Confirm { meta, signature };
     let session_key = derive_session_key(initiator_secret, &responder_secret, &transcript);
