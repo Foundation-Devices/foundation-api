@@ -5,7 +5,15 @@ use bc_components::{
 };
 
 use super::*;
-use crate::{platform::QlCrypto, wire::stream::BodyChunk, Peer};
+use crate::{
+    platform::QlCrypto,
+    wire::{
+        self,
+        stream::{BodyChunk, StreamFrame, StreamFrameAccept, StreamMessage},
+        QlHeader,
+    },
+    Peer,
+};
 
 struct TestCrypto {
     signing_private: MLDSAPrivateKey,
@@ -477,4 +485,82 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
     )));
     assert_eq!(a.streams.len(), 2);
     assert_eq!(b.streams.len(), 2);
+}
+
+#[test]
+fn invalid_future_frame_does_not_ack_outstanding_open() {
+    let config = EngineConfig {
+        max_payload_bytes: 64,
+        ..Default::default()
+    };
+    let crypto_a = TestCrypto::new(31);
+    let crypto_b = TestCrypto::new(32);
+    let peer_a = crypto_a.peer();
+    let peer_b = crypto_b.peer();
+    let session_key = SymmetricKey::from_data([5; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
+    let mut _b = Engine::new(config, crypto_b.xid(), Some(peer_a));
+    a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
+        session_key: session_key.clone(),
+        keepalive: KeepAliveState::default(),
+    };
+
+    let now = Instant::now();
+    let outputs_open = run_engine(
+        &mut a,
+        now,
+        EngineInput::OpenStream {
+            open_id: OpenId(9),
+            request_head: b"open".to_vec(),
+            request_prefix: None,
+            config: StreamConfig::default(),
+        },
+        &crypto_a,
+    );
+    let stream_id = outputs_open
+        .iter()
+        .find_map(|output| match output {
+            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
+            _ => None,
+        })
+        .unwrap();
+
+    let record = wire::stream::encrypt_stream(
+        QlHeader {
+            sender: crypto_b.xid(),
+            recipient: crypto_a.xid(),
+        },
+        &session_key,
+        StreamMessage {
+            tx_seq: StreamSeq(2),
+            ack_seq: Some(StreamSeq(1)),
+            valid_until: wire::now_secs().saturating_add(60),
+            frame: StreamFrame::Accept(StreamFrameAccept {
+                stream_id,
+                response_head: Vec::new(),
+                response_prefix: None,
+            }),
+        },
+        [9; wire::encrypted_message::NONCE_SIZE],
+    );
+
+    let outputs_incoming = run_engine(
+        &mut a,
+        now,
+        EngineInput::Incoming(wire::encode_record(&record)),
+        &crypto_a,
+    );
+
+    assert!(!outputs_incoming
+        .iter()
+        .any(|output| matches!(output, EngineOutput::OpenAccepted { .. })));
+
+    let stream = a.streams.get(&stream_id).unwrap();
+    assert!(stream.control().awaiting.is_some());
+    match stream {
+        StreamState::Initiator(state) => {
+            assert!(matches!(state.accept, InitiatorAccept::Opening(_)));
+        }
+        StreamState::Responder(_) => panic!("expected initiator stream"),
+    }
 }

@@ -723,7 +723,7 @@ impl Engine {
     fn handle_stream(
         &mut self,
         now: Instant,
-        peer: XID,
+        _peer: XID,
         header: &QlHeader,
         encrypted: &mut ArchivedEncryptedMessage,
         emit: &mut impl OutputFn,
@@ -742,10 +742,6 @@ impl Engine {
         };
 
         let stream_id = message.frame.stream_id();
-        if let Some(ack_seq) = message.ack_seq {
-            self.process_stream_ack(stream_id, ack_seq, emit);
-        }
-
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             if !matches!(message.frame, StreamFrame::Open(_)) || message.tx_seq != StreamSeq(1) {
                 return;
@@ -780,9 +776,12 @@ impl Engine {
                     .control_mut()
                     .mark_ack(StreamSeq(expected.0.saturating_sub(1)));
             }
+            if let Some(ack_seq) = message.ack_seq {
+                self.process_stream_ack(stream_id, ack_seq, emit);
+            }
             return;
-        }
-        if message.tx_seq != expected {
+        } else if message.tx_seq != expected {
+            // can never happen with stop & wait windowing
             Self::queue_protocol_reset(stream, emit);
             *stream.last_activity_mut() = now;
             return;
@@ -791,6 +790,10 @@ impl Engine {
         stream.control_mut().next_rx_seq = StreamSeq(expected.0.wrapping_add(1));
         if !matches!(message.frame, StreamFrame::Ack(_)) {
             stream.control_mut().mark_ack(message.tx_seq);
+        }
+
+        if let Some(ack_seq) = message.ack_seq {
+            self.process_stream_ack(stream_id, ack_seq, emit);
         }
 
         self.record_activity(now);
