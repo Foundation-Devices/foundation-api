@@ -1,3 +1,10 @@
+//! quantum link protocol wire format
+//!
+//! naming conventions:
+//! - *Record - unencrypted messages
+//! - *Body - message content after decrypting
+//!
+
 use bc_components::XID;
 use rkyv::{
     api::{
