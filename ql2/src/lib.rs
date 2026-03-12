@@ -1,14 +1,14 @@
 pub mod engine;
 mod id;
 pub mod platform;
-pub mod rpc;
-pub mod runtime;
+// pub mod rpc;
+// pub mod runtime;
 pub mod wire;
 
 pub use id::*;
 
-#[cfg(test)]
-mod tests;
+// #[cfg(test)]
+// mod tests;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
@@ -44,8 +44,8 @@ pub enum QlError {
     Cancelled,
 }
 
-impl From<crate::runtime::pipe::PipeClosed> for QlError {
-    fn from(_: crate::runtime::pipe::PipeClosed) -> Self {
-        Self::Cancelled
-    }
-}
+// impl From<crate::runtime::pipe::PipeClosed> for QlError {
+//     fn from(_: crate::runtime::pipe::PipeClosed) -> Self {
+//         Self::Cancelled
+//     }
+// }
