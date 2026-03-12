@@ -360,7 +360,6 @@ impl Engine {
                 dir: Direction::Request,
                 sent_offset: request_prefix_end,
                 final_offset: request_prefix_fin.then_some(request_prefix_end),
-                data_enabled: true,
                 closed: false,
                 pending_pull: None,
             },
@@ -409,7 +408,6 @@ impl Engine {
                 dir: Direction::Response,
                 sent_offset: response_prefix_end,
                 final_offset: response_prefix_fin.then_some(response_prefix_end),
-                data_enabled: true,
                 closed: false,
                 pending_pull: None,
             },
@@ -1258,8 +1256,7 @@ impl Engine {
             }
             return None;
         }
-        if outbound.data_enabled
-            && !outbound.closed
+        if !outbound.closed
             && outbound.pending_pull.is_none()
             && outbound
                 .final_offset

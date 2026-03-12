@@ -31,26 +31,23 @@ pub struct OutboundState {
     pub dir: Direction,
     pub sent_offset: u64,
     pub final_offset: Option<u64>,
-    pub data_enabled: bool,
     pub closed: bool,
     pub pending_pull: Option<PendingPull>,
 }
 
 impl OutboundState {
-    pub fn new(dir: Direction, data_enabled: bool) -> Self {
+    pub fn new(dir: Direction) -> Self {
         Self {
             dir,
             sent_offset: 0,
             final_offset: None,
-            data_enabled,
             closed: false,
             pending_pull: None,
         }
     }
 
     pub fn can_request_data(&self) -> bool {
-        self.data_enabled
-            && !self.closed
+        !self.closed
             && self.pending_pull.is_none()
             && self
                 .final_offset
