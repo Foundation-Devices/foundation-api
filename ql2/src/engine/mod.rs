@@ -2,6 +2,9 @@ pub mod replay_cache;
 mod state;
 mod stream;
 
+#[cfg(test)]
+mod tests;
+
 use std::{
     cmp::Reverse,
     collections::HashMap,
@@ -106,12 +109,14 @@ impl Engine {
             EngineInput::OpenStream {
                 open_id,
                 request_head,
+                request_prefix,
                 config,
-            } => self.handle_open_stream(now, open_id, request_head, config, emit),
+            } => self.handle_open_stream(now, open_id, request_head, request_prefix, config, emit),
             EngineInput::AcceptStream {
                 stream_id,
                 response_head,
-            } => self.handle_accept_stream(now, stream_id, response_head),
+                response_prefix,
+            } => self.handle_accept_stream(now, stream_id, response_head, response_prefix),
             EngineInput::RejectStream { stream_id, code } => {
                 self.handle_reject_stream(now, stream_id, code)
             }
@@ -301,6 +306,7 @@ impl Engine {
         now: Instant,
         open_id: OpenId,
         request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
         config: StreamConfig,
         emit: &mut impl OutputFn,
     ) {
@@ -326,10 +332,16 @@ impl Engine {
             .open_timeout
             .unwrap_or(self.config.default_open_timeout);
         let token = self.state.next_token();
+        let request_prefix_for_frame = request_prefix.clone();
+        let request_prefix_end = request_prefix
+            .as_ref()
+            .map(|chunk| chunk.offset.saturating_add(chunk.bytes.len() as u64))
+            .unwrap_or(0);
+        let request_prefix_fin = request_prefix.as_ref().is_some_and(|chunk| chunk.fin);
         let frame = StreamFrameOpen {
             stream_id,
             request_head: request_head.clone(),
-            request_prefix: None,
+            request_prefix: request_prefix_for_frame,
         };
         let stream = StreamState::Initiator(InitiatorStream {
             meta: StreamMeta {
@@ -344,7 +356,14 @@ impl Engine {
                 },
                 ..Default::default()
             },
-            request: OutboundState::new(Direction::Request, true),
+            request: OutboundState {
+                dir: Direction::Request,
+                sent_offset: request_prefix_end,
+                final_offset: request_prefix_fin.then_some(request_prefix_end),
+                data_enabled: true,
+                closed: false,
+                pending_pull: None,
+            },
             response: InboundState::new(),
             accept: InitiatorAccept::Opening(OpenWaiter {
                 open_id: Some(open_id),
@@ -359,23 +378,41 @@ impl Engine {
         emit(EngineOutput::OpenStarted { open_id, stream_id });
     }
 
-    fn handle_accept_stream(&mut self, now: Instant, stream_id: StreamId, response_head: Vec<u8>) {
+    fn handle_accept_stream(
+        &mut self,
+        now: Instant,
+        stream_id: StreamId,
+        response_head: Vec<u8>,
+        response_prefix: Option<BodyChunk>,
+    ) {
         let Some(StreamState::Responder(stream)) = self.streams.get_mut(&stream_id) else {
             return;
         };
         let ResponderResponse::Pending = stream.response else {
             return;
         };
+        let response_prefix_end = response_prefix
+            .as_ref()
+            .map(|chunk| chunk.offset.saturating_add(chunk.bytes.len() as u64))
+            .unwrap_or(0);
+        let response_prefix_fin = response_prefix.as_ref().is_some_and(|chunk| chunk.fin);
         stream
             .control
             .pending
             .set_setup(StreamFrame::Accept(StreamFrameAccept {
                 stream_id,
                 response_head,
-                response_prefix: None,
+                response_prefix,
             }));
         stream.response = ResponderResponse::Accepted {
-            body: OutboundState::new(Direction::Response, true),
+            body: OutboundState {
+                dir: Direction::Response,
+                sent_offset: response_prefix_end,
+                final_offset: response_prefix_fin.then_some(response_prefix_end),
+                data_enabled: true,
+                closed: false,
+                pending_pull: None,
+            },
         };
         stream.meta.last_activity = now;
     }
@@ -713,8 +750,15 @@ impl Engine {
                 return;
             }
             self.record_activity(now);
+            self.record_stream_activity(stream_id, now);
             match message.frame {
-                StreamFrame::Open(frame) => self.handle_stream_open(now, frame, emit),
+                StreamFrame::Open(frame) => {
+                    self.handle_stream_open(now, frame, emit);
+                    if let Some(stream) = self.streams.get_mut(&stream_id) {
+                        stream.control_mut().next_rx_seq = StreamSeq(2);
+                        stream.control_mut().mark_ack(StreamSeq(1));
+                    }
+                }
                 _ => unreachable!(),
             }
             return;
@@ -770,6 +814,7 @@ impl Engine {
             return;
         }
 
+        let request_prefix_output = request_prefix.clone();
         let mut stream = StreamState::Responder(ResponderStream {
             meta: StreamMeta {
                 key: StreamKey { stream_id },
@@ -780,7 +825,7 @@ impl Engine {
             request: InboundState::new(),
             response: ResponderResponse::Pending,
         });
-        if let Some(chunk) = request_prefix {
+        if let Some(chunk) = request_prefix.as_ref() {
             let Some(inbound) = stream.inbound_mut(Direction::Request) else {
                 return;
             };
@@ -790,25 +835,15 @@ impl Engine {
                 return;
             }
             inbound.next_offset = end;
-            if !chunk.bytes.is_empty() {
-                emit(EngineOutput::InboundData {
-                    stream_id,
-                    dir: Direction::Request,
-                    bytes: chunk.bytes,
-                });
-            }
             if chunk.fin {
                 inbound.closed = true;
-                emit(EngineOutput::InboundFinished {
-                    stream_id,
-                    dir: Direction::Request,
-                });
             }
         }
         self.streams.insert(stream_id, stream);
         emit(EngineOutput::InboundStreamOpened {
             stream_id,
             request_head,
+            request_prefix: request_prefix_output,
         });
     }
 
@@ -824,7 +859,7 @@ impl Engine {
             response_prefix,
         } = frame;
         let mut protocol = false;
-        let mut inbound_chunk = None;
+        let mut response_prefix_output = None;
         {
             let Some(stream) = self.streams.get_mut(&stream_id) else {
                 return;
@@ -837,6 +872,7 @@ impl Engine {
                                 open_id,
                                 stream_id,
                                 response_head: response_head.clone(),
+                                response_prefix: response_prefix.clone(),
                             });
                         } else {
                             stream.response.closed = true;
@@ -847,7 +883,7 @@ impl Engine {
                         }
                         stream.accept = InitiatorAccept::Open { response_head };
                         stream.meta.last_activity = now;
-                        inbound_chunk = response_prefix;
+                        response_prefix_output = response_prefix.clone();
                     }
                     InitiatorAccept::WaitingAccept(waiter) => {
                         if let Some(open_id) = waiter.open_id.take() {
@@ -855,6 +891,7 @@ impl Engine {
                                 open_id,
                                 stream_id,
                                 response_head: response_head.clone(),
+                                response_prefix: response_prefix.clone(),
                             });
                         } else {
                             stream.response.closed = true;
@@ -865,7 +902,7 @@ impl Engine {
                         }
                         stream.accept = InitiatorAccept::Open { response_head };
                         stream.meta.last_activity = now;
-                        inbound_chunk = response_prefix;
+                        response_prefix_output = response_prefix.clone();
                     }
                     InitiatorAccept::Open {
                         response_head: stored,
@@ -884,7 +921,7 @@ impl Engine {
             return;
         }
 
-        if let Some(chunk) = inbound_chunk {
+        if let Some(chunk) = response_prefix_output.as_ref() {
             let Some(stream) = self.streams.get_mut(&stream_id) else {
                 return;
             };
@@ -898,19 +935,8 @@ impl Engine {
                 return;
             }
             inbound.next_offset = end;
-            if !chunk.bytes.is_empty() {
-                emit(EngineOutput::InboundData {
-                    stream_id,
-                    dir: Direction::Response,
-                    bytes: chunk.bytes,
-                });
-            }
             if chunk.fin && !inbound.closed {
                 inbound.closed = true;
-                emit(EngineOutput::InboundFinished {
-                    stream_id,
-                    dir: Direction::Response,
-                });
                 self.maybe_reap_stream(stream_id, emit);
             }
         }
@@ -1061,9 +1087,8 @@ impl Engine {
             return;
         };
 
-        let mut reap = false;
         match awaiting.frame {
-            StreamFrame::Open(_) => {
+            StreamFrame::Open(StreamFrameOpen { request_prefix, .. }) => {
                 if let StreamState::Initiator(stream) = stream {
                     if let InitiatorAccept::Opening(waiter) = &stream.accept {
                         stream.accept = InitiatorAccept::WaitingAccept(OpenWaiter {
@@ -1071,12 +1096,31 @@ impl Engine {
                             open_timeout_token: waiter.open_timeout_token,
                         });
                     }
+                    if request_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
+                        stream.request.closed = true;
+                        emit(EngineOutput::OutboundClosed {
+                            stream_id,
+                            dir: Direction::Request,
+                        });
+                    }
                 }
             }
-            StreamFrame::Accept(_) => {}
-            StreamFrame::Reject(_) => {
-                reap = true;
+            StreamFrame::Accept(StreamFrameAccept {
+                response_prefix, ..
+            }) => {
+                if let StreamState::Responder(stream) = stream {
+                    if response_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
+                        if let ResponderResponse::Accepted { body } = &mut stream.response {
+                            body.closed = true;
+                            emit(EngineOutput::OutboundClosed {
+                                stream_id,
+                                dir: Direction::Response,
+                            });
+                        }
+                    }
+                }
             }
+            StreamFrame::Reject(_) => {}
             StreamFrame::Data(StreamFrameData {
                 dir,
                 chunk: BodyChunk { fin: true, .. },
@@ -1114,9 +1158,7 @@ impl Engine {
             StreamFrame::Ack(_) => {}
         }
 
-        if reap {
-            self.maybe_reap_stream(stream_id, emit);
-        }
+        self.maybe_reap_stream(stream_id, emit);
     }
 
     fn drive_streams(&mut self, now: Instant, emit: &mut impl OutputFn) {

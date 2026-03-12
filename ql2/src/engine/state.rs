@@ -131,11 +131,13 @@ pub enum EngineInput {
     OpenStream {
         open_id: OpenId,
         request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
         config: StreamConfig,
     },
     AcceptStream {
         stream_id: StreamId,
         response_head: Vec<u8>,
+        response_prefix: Option<BodyChunk>,
     },
     RejectStream {
         stream_id: StreamId,
@@ -204,6 +206,7 @@ pub enum EngineOutput {
         open_id: OpenId,
         stream_id: StreamId,
         response_head: Vec<u8>,
+        response_prefix: Option<BodyChunk>,
     },
     OpenFailed {
         open_id: OpenId,
@@ -214,6 +217,7 @@ pub enum EngineOutput {
     InboundStreamOpened {
         stream_id: StreamId,
         request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
     },
     InboundData {
         stream_id: StreamId,
