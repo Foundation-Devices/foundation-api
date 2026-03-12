@@ -273,7 +273,6 @@ pub enum EngineOutput {
         stream_id: StreamId,
         dir: Direction,
         offset: u64,
-        max_len: usize,
     },
     OutboundClosed {
         stream_id: StreamId,

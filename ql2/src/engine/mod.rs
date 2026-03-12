@@ -60,7 +60,6 @@ pub struct EngineConfig {
     pub packet_expiration: Duration,
     pub stream_ack_timeout: Duration,
     pub stream_retry_limit: u8,
-    pub max_payload_bytes: usize,
     pub keep_alive: Option<KeepAliveConfig>,
 }
 
@@ -72,15 +71,13 @@ impl Default for EngineConfig {
             packet_expiration: Duration::from_secs(30),
             stream_ack_timeout: Duration::from_millis(150),
             stream_retry_limit: 5,
-            max_payload_bytes: 1024,
             keep_alive: None,
         }
     }
 }
 
 impl EngineConfig {
-    pub(crate) fn normalized(mut self) -> Self {
-        self.max_payload_bytes = self.max_payload_bytes.max(1);
+    pub(crate) fn normalized(self) -> Self {
         self
     }
 }
@@ -453,10 +450,6 @@ impl Engine {
             return;
         };
         if pull.offset != offset {
-            outbound.pending_pull = Some(pull);
-            return;
-        }
-        if bytes.len() > pull.max_len {
             outbound.pending_pull = Some(pull);
             return;
         }
@@ -1189,7 +1182,6 @@ impl Engine {
         match stream {
             StreamState::Initiator(stream) => {
                 let action = Self::plan_drive_outbound(
-                    config,
                     stream.meta.stream_id,
                     &mut stream.control,
                     Some(&mut stream.request),
@@ -1204,7 +1196,6 @@ impl Engine {
                 match &mut stream.response {
                     ResponderResponse::Accepted { body, .. } => {
                         let action = Self::plan_drive_outbound(
-                            config,
                             stream_id,
                             &mut stream.control,
                             Some(body),
@@ -1215,13 +1206,8 @@ impl Engine {
                         }
                     }
                     _ => {
-                        let action = Self::plan_drive_outbound(
-                            config,
-                            stream_id,
-                            &mut stream.control,
-                            None,
-                            emit,
-                        );
+                        let action =
+                            Self::plan_drive_outbound(stream_id, &mut stream.control, None, emit);
                         if let Some(frame) = action {
                             state.enqueue_stream_frame(config, &mut stream.control, frame, 0);
                         }
@@ -1232,7 +1218,6 @@ impl Engine {
     }
 
     fn plan_drive_outbound(
-        config: &EngineConfig,
         stream_id: StreamId,
         control: &mut StreamControl,
         outbound: Option<&mut OutboundState>,
@@ -1251,19 +1236,14 @@ impl Engine {
         }
         let outbound = outbound?;
         if outbound.can_request_data() {
-            let max_len = config.max_payload_bytes;
-            if max_len > 0 {
-                outbound.pending_pull = Some(PendingPull {
-                    offset: outbound.sent_offset,
-                    max_len,
-                });
-                emit(EngineOutput::NeedOutboundData {
-                    stream_id,
-                    dir: outbound.dir,
-                    offset: outbound.sent_offset,
-                    max_len,
-                });
-            }
+            outbound.pending_pull = Some(PendingPull {
+                offset: outbound.sent_offset,
+            });
+            emit(EngineOutput::NeedOutboundData {
+                stream_id,
+                dir: outbound.dir,
+                offset: outbound.sent_offset,
+            });
             return None;
         }
         if !outbound.closed

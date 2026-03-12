@@ -17,7 +17,6 @@ pub struct StreamMeta {
 #[derive(Debug)]
 pub struct PendingPull {
     pub offset: u64,
-    pub max_len: usize,
 }
 
 #[derive(Debug)]

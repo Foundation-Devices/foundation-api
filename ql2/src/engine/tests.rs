@@ -216,10 +216,7 @@ impl Harness {
 
 #[test]
 fn open_prefix_is_delivered_on_setup_output() {
-    let mut harness = Harness::new(EngineConfig {
-        max_payload_bytes: 64,
-        ..Default::default()
-    });
+    let mut harness = Harness::new(EngineConfig::default());
     let request_prefix = BodyChunk {
         offset: 0,
         bytes: b"req".to_vec(),
@@ -288,10 +285,7 @@ fn open_prefix_is_delivered_on_setup_output() {
 
 #[test]
 fn unary_exchange_uses_open_and_accept_prefixes() {
-    let mut harness = Harness::new(EngineConfig {
-        max_payload_bytes: 64,
-        ..Default::default()
-    });
+    let mut harness = Harness::new(EngineConfig::default());
     let request_prefix = BodyChunk {
         offset: 0,
         bytes: b"req".to_vec(),
@@ -377,10 +371,7 @@ fn unary_exchange_uses_open_and_accept_prefixes() {
 
 #[test]
 fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
-    let config = EngineConfig {
-        max_payload_bytes: 64,
-        ..Default::default()
-    };
+    let config = EngineConfig::default();
     let crypto_a = TestCrypto::new(11);
     let crypto_b = TestCrypto::new(22);
     let peer_a = crypto_a.peer();
@@ -489,10 +480,7 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
 
 #[test]
 fn invalid_future_frame_does_not_ack_outstanding_open() {
-    let config = EngineConfig {
-        max_payload_bytes: 64,
-        ..Default::default()
-    };
+    let config = EngineConfig::default();
     let crypto_a = TestCrypto::new(31);
     let crypto_b = TestCrypto::new(32);
     let peer_a = crypto_a.peer();
