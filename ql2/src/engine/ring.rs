@@ -192,9 +192,9 @@ impl<'a, const N: usize, T> Iterator for SeqRingDrain<'a, N, T> {
 mod tests {
     use super::*;
     use crate::{
-        StreamId,
         engine::stream::{BufferIncomingResult, InFlightFrame, StreamControl},
         wire::stream::{BodyChunk, Direction, StreamFrame, StreamFrameData, StreamFrameOpen},
+        StreamId,
     };
 
     fn data_frame(stream_id: StreamId, tx_seq: u32, byte: u8) -> (StreamSeq, StreamFrame) {
@@ -204,7 +204,6 @@ mod tests {
                 stream_id,
                 dir: Direction::Request,
                 chunk: BodyChunk {
-                    offset: (tx_seq - 1) as u64,
                     bytes: vec![byte],
                     fin: false,
                 },

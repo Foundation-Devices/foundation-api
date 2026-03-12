@@ -179,13 +179,11 @@ pub enum EngineInput {
     OutboundData {
         stream_id: StreamId,
         dir: Direction,
-        offset: u64,
         bytes: Vec<u8>,
     },
     OutboundFinished {
         stream_id: StreamId,
         dir: Direction,
-        final_offset: u64,
     },
 
     ResetOutbound {
@@ -269,7 +267,6 @@ pub enum EngineOutput {
     NeedOutboundData {
         stream_id: StreamId,
         dir: Direction,
-        offset: u64,
     },
     OutboundClosed {
         stream_id: StreamId,

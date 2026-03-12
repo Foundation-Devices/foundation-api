@@ -47,17 +47,11 @@ struct PendingAcceptDelivery {
     response_rx: async_channel::Receiver<InboundEvent>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PendingPull {
-    offset: u64,
-}
-
 enum OutboundIo {
     Open {
         dir: Direction,
         rx: async_channel::Receiver<Vec<u8>>,
-        pending_pull: Option<PendingPull>,
-        next_offset: u64,
+        pending_pull: bool,
         finish_queued: bool,
     },
     Closed,
@@ -68,15 +62,14 @@ impl OutboundIo {
         Self::Open {
             dir,
             rx,
-            pending_pull: None,
-            next_offset: 0,
+            pending_pull: false,
             finish_queued: false,
         }
     }
 
-    fn set_pending_pull(&mut self, offset: u64) {
+    fn set_pending_pull(&mut self) {
         if let Self::Open { pending_pull, .. } = self {
-            *pending_pull = Some(PendingPull { offset });
+            *pending_pull = true;
         }
     }
 
@@ -89,64 +82,48 @@ impl OutboundIo {
             dir,
             rx,
             pending_pull,
-            next_offset,
             finish_queued,
         } = self
         else {
             return;
         };
 
-        let Some(pull) = pending_pull.take() else {
+        if !*pending_pull {
             if rx.is_closed() && !*finish_queued {
                 *finish_queued = true;
-                pending.push_back(EngineInput::OutboundFinished {
-                    stream_id,
-                    dir: *dir,
-                    final_offset: *next_offset,
-                });
+                pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
             }
-            return;
-        };
-
-        if pull.offset != *next_offset {
-            *pending_pull = Some(pull);
             return;
         }
 
         match rx.try_recv() {
             Ok(bytes) => {
                 if bytes.is_empty() {
-                    *pending_pull = Some(pull);
                     return;
                 }
-                let offset = *next_offset;
-                *next_offset = next_offset.saturating_add(bytes.len() as u64);
+                *pending_pull = false;
                 pending.push_back(EngineInput::OutboundData {
                     stream_id,
                     dir: *dir,
-                    offset,
                     bytes,
                 });
+                if rx.is_closed() && rx.is_empty() && !*finish_queued {
+                    *finish_queued = true;
+                    pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
+                }
             }
             Err(async_channel::TryRecvError::Empty) => {
-                *pending_pull = Some(pull);
                 if rx.is_closed() && !*finish_queued {
+                    *pending_pull = false;
                     *finish_queued = true;
-                    pending.push_back(EngineInput::OutboundFinished {
-                        stream_id,
-                        dir: *dir,
-                        final_offset: *next_offset,
-                    });
+                    pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
                 }
             }
             Err(async_channel::TryRecvError::Closed) => {
+                *pending_pull = false;
                 if !*finish_queued {
                     *finish_queued = true;
-                    pending.push_back(EngineInput::OutboundFinished {
-                        stream_id,
-                        dir: *dir,
-                        final_offset: *next_offset,
-                    });
+                    pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
                 }
             }
         }
@@ -699,14 +676,10 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                 }
             }
-            EngineOutput::NeedOutboundData {
-                stream_id,
-                dir,
-                offset,
-            } => {
+            EngineOutput::NeedOutboundData { stream_id, dir } => {
                 if let Some(stream) = streams.get_mut(&stream_id) {
                     if let Some(outbound) = stream.outbound_mut(dir) {
-                        outbound.set_pending_pull(offset);
+                        outbound.set_pending_pull();
                     }
                 }
                 poll_stream(streams, pending_inputs, stream_id);

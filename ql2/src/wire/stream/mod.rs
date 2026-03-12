@@ -90,7 +90,6 @@ impl StreamFrame {
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct BodyChunk {
-    pub offset: u64,
     pub bytes: Vec<u8>,
     pub fin: bool,
 }
@@ -98,7 +97,6 @@ pub struct BodyChunk {
 impl From<&ArchivedBodyChunk> for BodyChunk {
     fn from(value: &ArchivedBodyChunk) -> Self {
         Self {
-            offset: value.offset.to_native(),
             bytes: value.bytes.as_slice().to_vec(),
             fin: value.fin,
         }

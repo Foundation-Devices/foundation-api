@@ -243,7 +243,6 @@ impl Harness {
 fn open_prefix_is_delivered_on_setup_output() {
     let mut harness = Harness::new(EngineConfig::default());
     let request_prefix = BodyChunk {
-        offset: 0,
         bytes: b"req".to_vec(),
         fin: true,
     };
@@ -315,12 +314,10 @@ fn open_prefix_is_delivered_on_setup_output() {
 fn unary_exchange_uses_open_and_accept_prefixes() {
     let mut harness = Harness::new(EngineConfig::default());
     let request_prefix = BodyChunk {
-        offset: 0,
         bytes: b"req".to_vec(),
         fin: true,
     };
     let response_prefix = BodyChunk {
-        offset: 0,
         bytes: b"resp".to_vec(),
         fin: true,
     };
@@ -614,7 +611,6 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
             stream_id,
             dir: Direction::Request,
             chunk: BodyChunk {
-                offset: 0,
                 bytes: b"hello".to_vec(),
                 fin: false,
             },
@@ -739,7 +735,6 @@ fn out_of_order_response_data_waits_for_accept() {
             stream_id,
             dir: Direction::Response,
             chunk: BodyChunk {
-                offset: 0,
                 bytes: b"resp".to_vec(),
                 fin: false,
             },
@@ -884,7 +879,6 @@ fn half_window_progress_flushes_ack_before_timer() {
                 stream_id,
                 dir: Direction::Request,
                 chunk: BodyChunk {
-                    offset: 0,
                     bytes: b"a".to_vec(),
                     fin: false,
                 },
@@ -898,7 +892,6 @@ fn half_window_progress_flushes_ack_before_timer() {
                 stream_id,
                 dir: Direction::Request,
                 chunk: BodyChunk {
-                    offset: 1,
                     bytes: b"b".to_vec(),
                     fin: false,
                 },
@@ -912,7 +905,6 @@ fn half_window_progress_flushes_ack_before_timer() {
                 stream_id,
                 dir: Direction::Request,
                 chunk: BodyChunk {
-                    offset: 2,
                     bytes: b"c".to_vec(),
                     fin: false,
                 },
@@ -993,7 +985,6 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
                 stream_id,
                 dir: Direction::Request,
                 chunk: BodyChunk {
-                    offset: 0,
                     bytes: b"a".to_vec(),
                     fin: false,
                 },
@@ -1007,7 +998,6 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
                 stream_id,
                 dir: Direction::Request,
                 chunk: BodyChunk {
-                    offset: 2,
                     bytes: b"c".to_vec(),
                     fin: false,
                 },
@@ -1021,7 +1011,6 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
                 stream_id,
                 dir: Direction::Request,
                 chunk: BodyChunk {
-                    offset: 3,
                     bytes: b"d".to_vec(),
                     fin: false,
                 },
@@ -1165,14 +1154,13 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
         }),
         attempt: 0,
     });
-    for (tx_seq, offset, byte) in [(2, 0, b'a'), (3, 1, b'b'), (4, 2, b'c'), (5, 3, b'd')] {
+    for (tx_seq, byte) in [(2, b'a'), (3, b'b'), (4, b'c'), (5, b'd')] {
         control.insert_in_flight(InFlightFrame {
             tx_seq: StreamSeq(tx_seq),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
                 dir: Direction::Request,
                 chunk: BodyChunk {
-                    offset,
                     bytes: vec![byte],
                     fin: false,
                 },

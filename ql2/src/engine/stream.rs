@@ -1,11 +1,11 @@
 use std::{collections::VecDeque, time::Instant};
 
-use super::{OpenId, Token, ring::SeqRing};
+use super::{ring::SeqRing, OpenId, Token};
 use crate::{
-    StreamId, StreamSeq,
     wire::stream::{
         Direction, ResetCode, ResetTarget, StreamAck, StreamBody, StreamFrame, StreamFrameReset,
     },
+    StreamId, StreamSeq,
 };
 
 pub const STREAM_WINDOW_CAPACITY: usize = 8;
@@ -19,17 +19,11 @@ pub struct StreamMeta {
 }
 
 #[derive(Debug)]
-pub struct PendingPull {
-    pub offset: u64,
-}
-
-#[derive(Debug)]
 pub struct OutboundState {
     pub dir: Direction,
-    pub sent_offset: u64,
-    pub final_offset: Option<u64>,
     pub closed: bool,
-    pub pending_pull: Option<PendingPull>,
+    pub finished: bool,
+    pub pending_pull: bool,
     pub fin_queued: bool,
 }
 
@@ -37,44 +31,30 @@ impl OutboundState {
     pub fn new(dir: Direction) -> Self {
         Self {
             dir,
-            sent_offset: 0,
-            final_offset: None,
             closed: false,
-            pending_pull: None,
+            finished: false,
+            pending_pull: false,
             fin_queued: false,
         }
     }
 
     pub fn can_request_data(&self) -> bool {
-        !self.closed
-            && self.pending_pull.is_none()
-            && self
-                .final_offset
-                .is_none_or(|final_offset| self.sent_offset < final_offset)
+        !self.closed && !self.finished && !self.pending_pull
     }
 
     pub fn needs_fin_frame(&self) -> bool {
-        !self.closed
-            && !self.fin_queued
-            && self.pending_pull.is_none()
-            && self
-                .final_offset
-                .is_some_and(|final_offset| final_offset == self.sent_offset)
+        !self.closed && self.finished && !self.fin_queued && !self.pending_pull
     }
 }
 
 #[derive(Debug)]
 pub struct InboundState {
-    pub next_offset: u64,
     pub closed: bool,
 }
 
 impl InboundState {
     pub fn new() -> Self {
-        Self {
-            next_offset: 0,
-            closed: false,
-        }
+        Self { closed: false }
     }
 }
 

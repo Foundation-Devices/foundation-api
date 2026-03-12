@@ -126,14 +126,11 @@ impl Engine {
             EngineInput::OutboundData {
                 stream_id,
                 dir,
-                offset,
                 bytes,
-            } => self.handle_outbound_data(stream_id, dir, offset, bytes),
-            EngineInput::OutboundFinished {
-                stream_id,
-                dir,
-                final_offset,
-            } => self.handle_outbound_finished(stream_id, dir, final_offset),
+            } => self.handle_outbound_data(stream_id, dir, bytes),
+            EngineInput::OutboundFinished { stream_id, dir } => {
+                self.handle_outbound_finished(stream_id, dir)
+            }
             EngineInput::ResetOutbound {
                 stream_id,
                 dir,
@@ -336,10 +333,6 @@ impl Engine {
             .open_timeout
             .unwrap_or(self.config.default_open_timeout);
         let token = self.state.next_token();
-        let request_prefix_end = request_prefix
-            .as_ref()
-            .map(|chunk| chunk.offset.saturating_add(chunk.bytes.len() as u64))
-            .unwrap_or(0);
         let request_prefix_fin = request_prefix.as_ref().is_some_and(|chunk| chunk.fin);
         let frame = StreamFrameOpen {
             stream_id,
@@ -357,10 +350,9 @@ impl Engine {
             },
             request: OutboundState {
                 dir: Direction::Request,
-                sent_offset: request_prefix_end,
-                final_offset: request_prefix_fin.then_some(request_prefix_end),
                 closed: false,
-                pending_pull: None,
+                finished: request_prefix_fin,
+                pending_pull: false,
                 fin_queued: request_prefix_fin,
             },
             response: InboundState::new(),
@@ -390,10 +382,6 @@ impl Engine {
         let ResponderResponse::Pending = stream.response else {
             return;
         };
-        let response_prefix_end = response_prefix
-            .as_ref()
-            .map(|chunk| chunk.offset.saturating_add(chunk.bytes.len() as u64))
-            .unwrap_or(0);
         let response_prefix_fin = response_prefix.as_ref().is_some_and(|chunk| chunk.fin);
         stream
             .control
@@ -406,10 +394,9 @@ impl Engine {
         stream.response = ResponderResponse::Accepted {
             body: OutboundState {
                 dir: Direction::Response,
-                sent_offset: response_prefix_end,
-                final_offset: response_prefix_fin.then_some(response_prefix_end),
                 closed: false,
-                pending_pull: None,
+                finished: response_prefix_fin,
+                pending_pull: false,
                 fin_queued: response_prefix_fin,
             },
         };
@@ -431,13 +418,7 @@ impl Engine {
         stream.meta.last_activity = now;
     }
 
-    fn handle_outbound_data(
-        &mut self,
-        stream_id: StreamId,
-        dir: Direction,
-        offset: u64,
-        bytes: Vec<u8>,
-    ) {
+    fn handle_outbound_data(&mut self, stream_id: StreamId, dir: Direction, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;
         }
@@ -447,25 +428,11 @@ impl Engine {
         let Some(outbound) = stream.outbound_mut(dir) else {
             return;
         };
-        let Some(pull) = outbound.pending_pull.take() else {
-            return;
-        };
-        if pull.offset != offset {
-            outbound.pending_pull = Some(pull);
+        if !outbound.pending_pull || outbound.finished {
             return;
         }
-        let end = offset.saturating_add(bytes.len() as u64);
-        let final_offset = outbound.final_offset;
-        if let Some(final_offset) = final_offset {
-            if end > final_offset {
-                outbound.pending_pull = Some(pull);
-                return;
-            }
-        }
-        outbound.sent_offset = outbound.sent_offset.max(end);
-        let fin = final_offset.is_some_and(|final_offset| final_offset == end);
-        outbound.fin_queued |= fin;
-        let chunk = BodyChunk { offset, fin, bytes };
+        outbound.pending_pull = false;
+        let chunk = BodyChunk { bytes, fin: false };
         stream
             .control_mut()
             .queue_frame_back(StreamFrame::Data(StreamFrameData {
@@ -475,18 +442,15 @@ impl Engine {
             }));
     }
 
-    fn handle_outbound_finished(&mut self, stream_id: StreamId, dir: Direction, final_offset: u64) {
+    fn handle_outbound_finished(&mut self, stream_id: StreamId, dir: Direction) {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
         let Some(outbound) = stream.outbound_mut(dir) else {
             return;
         };
-        if final_offset < outbound.sent_offset {
-            return;
-        }
-        outbound.pending_pull = None;
-        outbound.final_offset = Some(final_offset);
+        outbound.pending_pull = false;
+        outbound.finished = true;
     }
 
     fn handle_reset_outbound(
@@ -506,7 +470,7 @@ impl Engine {
             return;
         }
         outbound.closed = true;
-        outbound.pending_pull = None;
+        outbound.pending_pull = false;
         stream.control_mut().queue_frame_front(reset_frame(
             stream_id,
             reset_target_for_dir(dir),
@@ -931,12 +895,6 @@ impl Engine {
             let Some(inbound) = stream.inbound_mut(Direction::Request) else {
                 return;
             };
-            let end = chunk.offset.saturating_add(chunk.bytes.len() as u64);
-            if chunk.offset != 0 {
-                self.send_ephemeral_reset(stream_id, ResetTarget::Both, ResetCode::Protocol);
-                return;
-            }
-            inbound.next_offset = end;
             if chunk.fin {
                 inbound.closed = true;
             }
@@ -1033,12 +991,6 @@ impl Engine {
                 Self::queue_protocol_reset(stream, emit);
                 return;
             };
-            let end = chunk.offset.saturating_add(chunk.bytes.len() as u64);
-            if chunk.offset != inbound.next_offset {
-                Self::queue_protocol_reset(stream, emit);
-                return;
-            }
-            inbound.next_offset = end;
             if chunk.fin && !inbound.closed {
                 inbound.closed = true;
                 self.maybe_reap_stream(stream_id, emit);
@@ -1129,22 +1081,16 @@ impl Engine {
         if inbound.closed {
             Self::queue_protocol_reset(stream, emit);
         } else {
-            let end = chunk.offset.saturating_add(chunk.bytes.len() as u64);
-            if chunk.offset != inbound.next_offset {
-                Self::queue_protocol_reset(stream, emit);
-            } else {
-                inbound.next_offset = end;
-                if !chunk.bytes.is_empty() {
-                    emit(EngineOutput::InboundData {
-                        stream_id,
-                        dir,
-                        bytes: chunk.bytes,
-                    });
-                }
-                if chunk.fin && !inbound.closed {
-                    inbound.closed = true;
-                    emit(EngineOutput::InboundFinished { stream_id, dir });
-                }
+            if !chunk.bytes.is_empty() {
+                emit(EngineOutput::InboundData {
+                    stream_id,
+                    dir,
+                    bytes: chunk.bytes,
+                });
+            }
+            if chunk.fin && !inbound.closed {
+                inbound.closed = true;
+                emit(EngineOutput::InboundFinished { stream_id, dir });
             }
         }
         *stream.last_activity_mut() = now;
@@ -1364,13 +1310,10 @@ impl Engine {
                 return;
             };
             if outbound.can_request_data() {
-                outbound.pending_pull = Some(PendingPull {
-                    offset: outbound.sent_offset,
-                });
+                outbound.pending_pull = true;
                 emit(EngineOutput::NeedOutboundData {
                     stream_id,
                     dir: outbound.dir,
-                    offset: outbound.sent_offset,
                 });
                 return;
             }
@@ -1384,7 +1327,6 @@ impl Engine {
                         stream_id,
                         dir: outbound.dir,
                         chunk: BodyChunk {
-                            offset: outbound.sent_offset,
                             bytes: Vec::new(),
                             fin: true,
                         },
@@ -1480,7 +1422,7 @@ impl Engine {
         for dir in [Direction::Request, Direction::Response] {
             if let Some(outbound) = stream.outbound_mut(dir) {
                 outbound.closed = true;
-                outbound.pending_pull = None;
+                outbound.pending_pull = false;
                 emit(EngineOutput::OutboundFailed {
                     stream_id,
                     dir,
@@ -1543,7 +1485,7 @@ impl Engine {
             }
             if let Some(outbound) = stream.outbound_mut(Direction::Request) {
                 outbound.closed = true;
-                outbound.pending_pull = None;
+                outbound.pending_pull = false;
                 emit(EngineOutput::OutboundFailed {
                     stream_id,
                     dir: Direction::Request,
@@ -1564,7 +1506,7 @@ impl Engine {
             }
             if let Some(outbound) = stream.outbound_mut(Direction::Response) {
                 outbound.closed = true;
-                outbound.pending_pull = None;
+                outbound.pending_pull = false;
                 emit(EngineOutput::OutboundFailed {
                     stream_id,
                     dir: Direction::Response,
