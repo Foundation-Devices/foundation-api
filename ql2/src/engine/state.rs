@@ -10,10 +10,9 @@ use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 use super::{
     replay_cache::ReplayCache,
     stream::{AwaitingFrame, AwaitingPacket, QueuedWrite, StreamControl, StreamKey, StreamState},
-    EngineConfig,
+    EngineConfig, StreamConfig,
 };
 use crate::{
-    runtime::StreamConfig,
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
         stream::{Direction, RejectCode, ResetCode, StreamBody, StreamFrame, StreamFrameData},

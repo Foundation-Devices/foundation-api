@@ -23,7 +23,6 @@ use self::{
 };
 use crate::{
     platform::QlCrypto,
-    runtime::StreamConfig,
     wire::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
@@ -45,6 +44,11 @@ use crate::{
 pub struct KeepAliveConfig {
     pub interval: Duration,
     pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StreamConfig {
+    pub open_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy)]

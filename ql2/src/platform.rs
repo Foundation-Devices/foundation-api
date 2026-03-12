@@ -4,10 +4,7 @@ use bc_components::{
     MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SigningPublicKey, XID,
 };
 
-use crate::{
-    runtime::{HandlerEvent, PeerSession},
-    Peer, QlError,
-};
+use crate::{engine::PeerSession, runtime::HandlerEvent, Peer, QlError};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 

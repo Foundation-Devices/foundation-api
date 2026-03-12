@@ -3,21 +3,16 @@ pub use handle::{
     PendingStream, RuntimeHandle, StreamResponder,
 };
 
-pub use crate::engine::{EngineConfig, InitiatorStage, KeepAliveConfig, PeerSession, Token};
+pub use crate::engine::{
+    EngineConfig, InitiatorStage, KeepAliveConfig, PeerSession, StreamConfig, Token,
+};
 
 pub(crate) mod command;
 pub(crate) mod driver;
 pub mod handle;
 pub(crate) mod pipe;
 
-use std::time::Duration;
-
 use crate::{platform::QlPlatform, StreamId};
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct StreamConfig {
-    pub open_timeout: Option<Duration>,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
