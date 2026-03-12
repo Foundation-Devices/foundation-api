@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub const STREAM_WINDOW_SIZE: u32 = 8;
+pub const STREAM_ACK_EAGER_THRESHOLD: u32 = STREAM_WINDOW_SIZE / 2;
 
 #[derive(Debug)]
 pub struct StreamMeta {
@@ -118,6 +119,7 @@ pub struct StreamControl {
     pub ack_immediate: bool,
     pub ack_delay_token: Option<Token>,
     pub ack_outbound_token: Option<Token>,
+    pub last_sent_ack_base: StreamSeq,
 }
 
 impl Default for StreamControl {
@@ -132,6 +134,7 @@ impl Default for StreamControl {
             ack_immediate: false,
             ack_delay_token: None,
             ack_outbound_token: None,
+            last_sent_ack_base: StreamSeq(0),
         }
     }
 }
@@ -164,6 +167,25 @@ impl StreamControl {
         self.ack_dirty = false;
         self.ack_immediate = false;
         self.ack_delay_token = None;
+    }
+
+    pub fn maybe_force_ack_for_progress(&mut self) {
+        if !self.ack_dirty {
+            return;
+        }
+        let progressed = self
+            .committed_rx_seq
+            .0
+            .saturating_sub(self.last_sent_ack_base.0);
+        if progressed >= STREAM_ACK_EAGER_THRESHOLD {
+            self.ack_immediate = true;
+        }
+    }
+
+    pub fn note_ack_sent(&mut self, ack: StreamAck) {
+        if ack.base.0 > self.last_sent_ack_base.0 {
+            self.last_sent_ack_base = ack.base;
+        }
     }
 
     pub fn current_ack(&self) -> StreamAck {

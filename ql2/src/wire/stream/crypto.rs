@@ -2,12 +2,12 @@ use bc_components::SymmetricKey;
 
 use super::StreamBody;
 use crate::{
-    QlError,
     wire::{
-        QlHeader, QlPayload, QlRecord, access_value, deserialize_value, encode_value,
+        access_value, deserialize_value, encode_value,
         encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage, NONCE_SIZE},
-        ensure_not_expired,
+        ensure_not_expired, QlHeader, QlPayload, QlRecord,
     },
+    QlError,
 };
 
 pub fn encrypt_stream(

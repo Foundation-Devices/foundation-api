@@ -845,3 +845,121 @@ fn delayed_ack_only_does_not_consume_sequence_space() {
     assert!(stream.control().in_flight.is_empty());
     assert_eq!(stream.control().next_tx_seq, StreamSeq(1));
 }
+
+#[test]
+fn half_window_progress_flushes_ack_before_timer() {
+    let config = EngineConfig::default();
+    let crypto_a = TestCrypto::new(61);
+    let crypto_b = TestCrypto::new(62);
+    let peer_b = crypto_b.peer();
+    let session_key = SymmetricKey::from_data([8; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
+    a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
+        session_key: session_key.clone(),
+        keepalive: KeepAliveState::default(),
+    };
+
+    let now = Instant::now();
+    let stream_id = StreamId(StreamNamespace::for_local(crypto_b.xid(), crypto_a.xid()).bit() | 1);
+    let messages = [
+        StreamMessage {
+            tx_seq: StreamSeq(1),
+            ack: None,
+            valid_until: wire::now_secs().saturating_add(60),
+            frame: StreamFrame::Open(crate::wire::stream::StreamFrameOpen {
+                stream_id,
+                request_head: b"open".to_vec(),
+                request_prefix: None,
+            }),
+        },
+        StreamMessage {
+            tx_seq: StreamSeq(2),
+            ack: None,
+            valid_until: wire::now_secs().saturating_add(60),
+            frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
+                stream_id,
+                dir: Direction::Request,
+                chunk: BodyChunk {
+                    offset: 0,
+                    bytes: b"a".to_vec(),
+                    fin: false,
+                },
+            }),
+        },
+        StreamMessage {
+            tx_seq: StreamSeq(3),
+            ack: None,
+            valid_until: wire::now_secs().saturating_add(60),
+            frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
+                stream_id,
+                dir: Direction::Request,
+                chunk: BodyChunk {
+                    offset: 1,
+                    bytes: b"b".to_vec(),
+                    fin: false,
+                },
+            }),
+        },
+        StreamMessage {
+            tx_seq: StreamSeq(4),
+            ack: None,
+            valid_until: wire::now_secs().saturating_add(60),
+            frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
+                stream_id,
+                dir: Direction::Request,
+                chunk: BodyChunk {
+                    offset: 2,
+                    bytes: b"c".to_vec(),
+                    fin: false,
+                },
+            }),
+        },
+    ];
+
+    for message in messages.iter().take(3) {
+        let body = StreamBody::Message(message.clone());
+        let record = wire::stream::encrypt_stream(
+            QlHeader {
+                sender: crypto_b.xid(),
+                recipient: crypto_a.xid(),
+            },
+            &session_key,
+            &body,
+            [message.tx_seq.0 as u8; wire::encrypted_message::NONCE_SIZE],
+        );
+        let outputs = run_engine(
+            &mut a,
+            now,
+            EngineInput::Incoming(wire::encode_record(&record)),
+            &crypto_a,
+        );
+        assert!(
+            !outputs
+                .iter()
+                .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
+        );
+    }
+
+    let body = StreamBody::Message(messages[3].clone());
+    let record = wire::stream::encrypt_stream(
+        QlHeader {
+            sender: crypto_b.xid(),
+            recipient: crypto_a.xid(),
+        },
+        &session_key,
+        &body,
+        [4; wire::encrypted_message::NONCE_SIZE],
+    );
+    let outputs = run_engine(
+        &mut a,
+        now,
+        EngineInput::Incoming(wire::encode_record(&record)),
+        &crypto_a,
+    );
+
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
+    );
+}

@@ -823,11 +823,13 @@ impl Engine {
                 }
             }
         }
-
-        self.schedule_stream_ack(stream_id, now);
         self.record_activity(now);
         self.record_stream_activity(stream_id, now);
         self.drain_committed_stream_frames(now, stream_id, emit);
+        if let Some(stream) = self.streams.get_mut(&stream_id) {
+            stream.control_mut().maybe_force_ack_for_progress();
+        }
+        self.schedule_stream_ack(stream_id, now);
     }
 
     fn schedule_stream_ack(&mut self, stream_id: StreamId, now: Instant) {
@@ -1618,6 +1620,21 @@ impl Engine {
         }
     }
 
+    fn note_sent_stream_ack(&mut self, body: &StreamBody) {
+        let (stream_id, ack) = match body {
+            StreamBody::Ack(StreamAckBody { stream_id, ack, .. }) => (*stream_id, *ack),
+            StreamBody::Message(StreamMessage {
+                frame,
+                ack: Some(ack),
+                ..
+            }) => (frame.stream_id(), *ack),
+            StreamBody::Message(_) => return,
+        };
+        if let Some(stream) = self.streams.get_mut(&stream_id) {
+            stream.control_mut().note_ack_sent(ack);
+        }
+    }
+
     fn send_ephemeral_reset(&mut self, stream_id: StreamId, dir: ResetTarget, code: ResetCode) {
         let valid_until = wire::now_secs().saturating_add(self.config.packet_expiration.as_secs());
         self.enqueue_stream_body(
@@ -2293,7 +2310,13 @@ impl Engine {
             let bytes = match &message.payload {
                 QueuedPayload::PreEncoded(bytes) => bytes.clone(),
                 QueuedPayload::Stream { body } => {
-                    let Some(peer) = self.state.peer.as_ref() else {
+                    let Some((recipient, session_key)) =
+                        self.state.peer.as_ref().and_then(|peer| {
+                            peer.session
+                                .session_key()
+                                .map(|key| (peer.peer, key.clone()))
+                        })
+                    else {
                         match body {
                             StreamBody::Ack(_) => {
                                 self.clear_ack_outbound_token(message.token, false)
@@ -2308,27 +2331,13 @@ impl Engine {
                         }
                         continue;
                     };
-                    let Some(session_key) = peer.session.session_key() else {
-                        match body {
-                            StreamBody::Ack(_) => {
-                                self.clear_ack_outbound_token(message.token, false)
-                            }
-                            StreamBody::Message(stream_message) => {
-                                self.fail_stream_by_id(
-                                    stream_message.frame.stream_id(),
-                                    QlError::SendFailed,
-                                    emit,
-                                );
-                            }
-                        }
-                        continue;
-                    };
+                    self.note_sent_stream_ack(body);
                     let record = encrypt_stream(
                         QlHeader {
                             sender: crypto.xid(),
-                            recipient: peer.peer,
+                            recipient,
                         },
-                        session_key,
+                        &session_key,
                         body,
                         next_encrypted_message_nonce(crypto),
                     );
