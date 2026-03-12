@@ -89,6 +89,33 @@ struct Harness {
     outputs_b: Vec<EngineOutput>,
 }
 
+fn run_engine(
+    engine: &mut Engine,
+    now: Instant,
+    input: EngineInput,
+    crypto: &TestCrypto,
+) -> Vec<EngineOutput> {
+    let mut outputs = Vec::new();
+    engine.run_tick(now, input, crypto, &mut |output| outputs.push(output));
+    outputs
+}
+
+fn take_single_write(outputs: &[EngineOutput]) -> (Token, Option<TrackedWrite>, Vec<u8>) {
+    let writes: Vec<_> = outputs
+        .iter()
+        .filter_map(|output| match output {
+            EngineOutput::WriteMessage {
+                token,
+                tracked,
+                bytes,
+            } => Some((*token, *tracked, bytes.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes.len(), 1);
+    writes.into_iter().next().unwrap()
+}
+
 impl Harness {
     fn new(config: EngineConfig) -> Self {
         let crypto_a = TestCrypto::new(1);
@@ -96,8 +123,8 @@ impl Harness {
         let peer_a = crypto_a.peer();
         let peer_b = crypto_b.peer();
         let session_key = SymmetricKey::from_data([7; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-        let mut a = Engine::new(config, Some(peer_b));
-        let mut b = Engine::new(config, Some(peer_a));
+        let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
+        let mut b = Engine::new(config, crypto_b.xid(), Some(peer_a));
         a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
             session_key: session_key.clone(),
             keepalive: KeepAliveState::default(),
@@ -200,20 +227,31 @@ fn open_prefix_is_delivered_on_setup_output() {
 
     let outputs_a = harness.drain_a();
     let outputs_b = harness.drain_b();
+    let stream_id = outputs_a
+        .iter()
+        .find_map(|output| match output {
+            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
+            _ => None,
+        })
+        .unwrap();
 
     assert!(outputs_a.iter().any(|output| matches!(
         output,
         EngineOutput::OpenStarted {
             open_id: OpenId(1),
-            stream_id: StreamId(1),
-        }
+            stream_id: id,
+        } if *id == stream_id
     )));
+    assert!(
+        StreamNamespace::for_local(harness.crypto_a.xid(), harness.crypto_b.xid())
+            .matches(stream_id)
+    );
     assert!(outputs_a.iter().any(|output| matches!(
         output,
         EngineOutput::OutboundClosed {
-            stream_id: StreamId(1),
+            stream_id: id,
             dir: Direction::Request,
-        }
+        } if *id == stream_id
     )));
 
     let opened = outputs_b.iter().find_map(|output| match output {
@@ -227,7 +265,7 @@ fn open_prefix_is_delivered_on_setup_output() {
     assert_eq!(
         opened,
         Some((
-            StreamId(1),
+            stream_id,
             b"open-head".to_vec(),
             Some(request_prefix.clone()),
         ))
@@ -264,8 +302,15 @@ fn unary_exchange_uses_open_and_accept_prefixes() {
         config: StreamConfig::default(),
     });
 
-    let _outputs_a = harness.drain_a();
+    let outputs_a_open = harness.drain_a();
     let outputs_b = harness.drain_b();
+    let started_stream_id = outputs_a_open
+        .iter()
+        .find_map(|output| match output {
+            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
+            _ => None,
+        })
+        .unwrap();
     let stream_id = outputs_b
         .iter()
         .find_map(|output| match output {
@@ -273,6 +318,7 @@ fn unary_exchange_uses_open_and_accept_prefixes() {
             _ => None,
         })
         .unwrap();
+    assert_eq!(stream_id, started_stream_id);
 
     harness.send_b(EngineInput::AcceptStream {
         stream_id,
@@ -301,7 +347,7 @@ fn unary_exchange_uses_open_and_accept_prefixes() {
         accepted,
         Some((
             OpenId(7),
-            StreamId(1),
+            stream_id,
             b"response-head".to_vec(),
             Some(response_prefix.clone()),
         ))
@@ -315,8 +361,120 @@ fn unary_exchange_uses_open_and_accept_prefixes() {
     assert!(outputs_b.iter().any(|output| matches!(
         output,
         EngineOutput::OutboundClosed {
-            stream_id: StreamId(1),
+            stream_id: id,
             dir: Direction::Response,
-        }
+        } if *id == stream_id
     )));
+}
+
+#[test]
+fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
+    let config = EngineConfig {
+        max_payload_bytes: 64,
+        ..Default::default()
+    };
+    let crypto_a = TestCrypto::new(11);
+    let crypto_b = TestCrypto::new(22);
+    let peer_a = crypto_a.peer();
+    let peer_b = crypto_b.peer();
+    let session_key = SymmetricKey::from_data([9; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+    let mut a = Engine::new(config, crypto_a.xid(), Some(peer_b));
+    let mut b = Engine::new(config, crypto_b.xid(), Some(peer_a));
+    a.state.peer.as_mut().unwrap().session = PeerSession::Connected {
+        session_key: session_key.clone(),
+        keepalive: KeepAliveState::default(),
+    };
+    b.state.peer.as_mut().unwrap().session = PeerSession::Connected {
+        session_key,
+        keepalive: KeepAliveState::default(),
+    };
+    let now = Instant::now();
+
+    let outputs_a_open = run_engine(
+        &mut a,
+        now,
+        EngineInput::OpenStream {
+            open_id: OpenId(1),
+            request_head: b"a-open".to_vec(),
+            request_prefix: None,
+            config: StreamConfig::default(),
+        },
+        &crypto_a,
+    );
+    let outputs_b_open = run_engine(
+        &mut b,
+        now,
+        EngineInput::OpenStream {
+            open_id: OpenId(2),
+            request_head: b"b-open".to_vec(),
+            request_prefix: None,
+            config: StreamConfig::default(),
+        },
+        &crypto_b,
+    );
+
+    let stream_id_a = outputs_a_open
+        .iter()
+        .find_map(|output| match output {
+            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
+            _ => None,
+        })
+        .unwrap();
+    let stream_id_b = outputs_b_open
+        .iter()
+        .find_map(|output| match output {
+            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
+            _ => None,
+        })
+        .unwrap();
+
+    assert_ne!(stream_id_a, stream_id_b);
+    assert!(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()).matches(stream_id_a));
+    assert!(StreamNamespace::for_local(crypto_b.xid(), crypto_a.xid()).matches(stream_id_b));
+
+    let (token_a, tracked_a, bytes_a) = take_single_write(&outputs_a_open);
+    let (token_b, tracked_b, bytes_b) = take_single_write(&outputs_b_open);
+
+    let _ = run_engine(
+        &mut a,
+        now,
+        EngineInput::WriteCompleted {
+            token: token_a,
+            tracked: tracked_a,
+            result: Ok(()),
+        },
+        &crypto_a,
+    );
+    let _ = run_engine(
+        &mut b,
+        now,
+        EngineInput::WriteCompleted {
+            token: token_b,
+            tracked: tracked_b,
+            result: Ok(()),
+        },
+        &crypto_b,
+    );
+
+    let outputs_a_incoming = run_engine(&mut a, now, EngineInput::Incoming(bytes_b), &crypto_a);
+    let outputs_b_incoming = run_engine(&mut b, now, EngineInput::Incoming(bytes_a), &crypto_b);
+
+    assert!(outputs_a_incoming.iter().any(|output| matches!(
+        output,
+        EngineOutput::InboundStreamOpened {
+            stream_id,
+            request_head,
+            ..
+        } if *stream_id == stream_id_b && request_head == b"b-open"
+    )));
+    assert!(outputs_b_incoming.iter().any(|output| matches!(
+        output,
+        EngineOutput::InboundStreamOpened {
+            stream_id,
+            request_head,
+            ..
+        } if *stream_id == stream_id_a && request_head == b"a-open"
+    )));
+    assert_eq!(a.streams.len(), 2);
+    assert_eq!(b.streams.len(), 2);
 }

@@ -86,9 +86,10 @@ impl EngineConfig {
 }
 
 impl Engine {
-    pub fn new(config: EngineConfig, peer: Option<Peer>) -> Self {
+    pub fn new(config: EngineConfig, local_xid: XID, peer: Option<Peer>) -> Self {
         Self {
             config: config.normalized(),
+            local_xid,
             state: EngineState::new(peer),
             streams: HashMap::new(),
         }
@@ -101,6 +102,8 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
+        debug_assert_eq!(self.local_xid, crypto.xid());
+
         match input {
             EngineInput::BindPeer(peer) => self.handle_bind_peer(peer, emit),
             EngineInput::Pair => self.handle_pair_local(now, crypto),
@@ -327,7 +330,8 @@ impl Engine {
             return;
         }
 
-        let stream_id = self.state.next_stream_id();
+        let stream_namespace = StreamNamespace::for_local(self.local_xid, entry.peer);
+        let stream_id = self.state.next_stream_id(stream_namespace);
         let open_timeout = config
             .open_timeout
             .unwrap_or(self.config.default_open_timeout);
@@ -699,6 +703,7 @@ impl Engine {
             let PeerSession::Connected {
                 session_key,
                 keepalive,
+                ..
             } = &peer_record.session
             else {
                 return;
@@ -718,7 +723,7 @@ impl Engine {
     fn handle_stream(
         &mut self,
         now: Instant,
-        _peer: XID,
+        peer: XID,
         header: &QlHeader,
         encrypted: &mut ArchivedEncryptedMessage,
         emit: &mut impl OutputFn,
@@ -743,6 +748,14 @@ impl Engine {
 
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             if !matches!(message.frame, StreamFrame::Open(_)) || message.tx_seq != StreamSeq(1) {
+                return;
+            }
+            // if we have a disagreement over stream namespace, close stream
+            if self.state.peer.as_ref().is_some_and(|peer_record| {
+                let local_namespace = StreamNamespace::for_local(self.local_xid, peer_record.peer);
+                !local_namespace.remote().matches(stream_id)
+            }) {
+                self.send_ephemeral_reset(stream_id, ResetTarget::Both, ResetCode::Protocol);
                 return;
             }
             self.record_activity(now);

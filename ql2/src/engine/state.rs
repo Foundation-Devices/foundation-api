@@ -58,6 +58,41 @@ pub enum InitiatorStage {
     SendingConfirm,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamNamespace {
+    Low,
+    High,
+}
+
+impl StreamNamespace {
+    const BIT: u64 = 1 << 63;
+
+    pub fn bit(self) -> u64 {
+        match self {
+            Self::Low => 0,
+            Self::High => Self::BIT,
+        }
+    }
+
+    pub fn for_local(local: XID, peer: XID) -> Self {
+        match local.data().cmp(peer.data()) {
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => Self::Low,
+            std::cmp::Ordering::Greater => Self::High,
+        }
+    }
+
+    pub fn matches(self, stream_id: StreamId) -> bool {
+        (stream_id.0 & Self::BIT) == self.bit()
+    }
+
+    pub fn remote(self) -> Self {
+        match self {
+            Self::Low => Self::High,
+            Self::High => Self::Low,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum PeerSession {
     Disconnected,
@@ -314,6 +349,7 @@ pub enum HelloAction {
 
 pub struct Engine {
     pub config: EngineConfig,
+    pub local_xid: XID,
     pub state: EngineState,
     pub streams: HashMap<StreamId, StreamState>,
 }
@@ -361,10 +397,10 @@ impl EngineState {
         PacketId(id)
     }
 
-    pub fn next_stream_id(&self) -> StreamId {
-        let id = self.next_stream_id.get();
-        self.next_stream_id.set(id.wrapping_add(1));
-        StreamId(id)
+    pub fn next_stream_id(&self, namespace: StreamNamespace) -> StreamId {
+        let seq = self.next_stream_id.get();
+        self.next_stream_id.set(seq.wrapping_add(1));
+        StreamId((seq & !StreamNamespace::BIT) | namespace.bit())
     }
 
     pub fn enqueue_handshake_message(
