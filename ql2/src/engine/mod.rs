@@ -332,7 +332,6 @@ impl Engine {
             .open_timeout
             .unwrap_or(self.config.default_open_timeout);
         let token = self.state.next_token();
-        let request_prefix_for_frame = request_prefix.clone();
         let request_prefix_end = request_prefix
             .as_ref()
             .map(|chunk| chunk.offset.saturating_add(chunk.bytes.len() as u64))
@@ -340,8 +339,8 @@ impl Engine {
         let request_prefix_fin = request_prefix.as_ref().is_some_and(|chunk| chunk.fin);
         let frame = StreamFrameOpen {
             stream_id,
-            request_head: request_head.clone(),
-            request_prefix: request_prefix_for_frame,
+            request_head,
+            request_prefix,
         };
         let stream = StreamState::Initiator(InitiatorStream {
             meta: StreamMeta {
@@ -811,7 +810,6 @@ impl Engine {
             return;
         }
 
-        let request_prefix_output = request_prefix.clone();
         let mut stream = StreamState::Responder(ResponderStream {
             meta: StreamMeta {
                 stream_id,
@@ -839,7 +837,7 @@ impl Engine {
         emit(EngineOutput::InboundStreamOpened {
             stream_id,
             request_head,
-            request_prefix: request_prefix_output,
+            request_prefix,
         });
     }
 
