@@ -4,7 +4,7 @@ use bc_components::{
     MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SigningPublicKey, XID,
 };
 
-use crate::{engine::PeerSession, Peer, QlError};
+use crate::{engine::PeerSession, runtime::HandlerEvent, Peer, QlError};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -30,4 +30,5 @@ pub trait QlPlatform: QlCrypto {
     fn clear_peer(&self);
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession);
+    fn handle_inbound(&self, event: HandlerEvent);
 }

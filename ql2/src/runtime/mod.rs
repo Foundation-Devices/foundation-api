@@ -10,21 +10,18 @@ pub use crate::engine::{
 pub(crate) mod command;
 pub(crate) mod driver;
 pub mod handle;
-pub(crate) mod pipe;
 
 use crate::{platform::QlPlatform, StreamId};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
     pub engine: EngineConfig,
-    pub pipe_size_bytes: usize,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             engine: EngineConfig::default(),
-            pipe_size_bytes: 2048,
         }
     }
 }
@@ -32,7 +29,6 @@ impl Default for RuntimeConfig {
 impl RuntimeConfig {
     pub(crate) fn normalized(mut self) -> Self {
         self.engine = self.engine.normalized();
-        self.pipe_size_bytes = self.pipe_size_bytes.max(self.engine.max_payload_bytes);
         self
     }
 }
@@ -42,10 +38,17 @@ pub enum HandlerEvent {
     Stream(InboundStream),
 }
 
+#[derive(Debug)]
+pub(crate) enum InboundEvent {
+    Data(Vec<u8>),
+    Finished,
+    Failed(crate::QlError),
+}
+
 pub(crate) struct AcceptedStreamDelivery {
     pub stream_id: StreamId,
     pub response_head: Vec<u8>,
-    pub response: crate::runtime::pipe::PipeReader<crate::QlError>,
+    pub response: async_channel::Receiver<InboundEvent>,
     pub tx: async_channel::Sender<command::RuntimeCommand>,
 }
 
@@ -69,9 +72,6 @@ where
             rx,
             tx: tx.downgrade(),
         },
-        RuntimeHandle {
-            tx,
-            pipe_size_bytes: config.pipe_size_bytes,
-        },
+        RuntimeHandle { tx },
     )
 }

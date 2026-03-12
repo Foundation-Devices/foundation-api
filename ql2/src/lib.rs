@@ -2,7 +2,7 @@ pub mod engine;
 mod id;
 pub mod platform;
 // pub mod rpc;
-// pub mod runtime;
+pub mod runtime;
 pub mod wire;
 
 pub use id::*;
@@ -43,9 +43,3 @@ pub enum QlError {
     #[error("cancelled")]
     Cancelled,
 }
-
-// impl From<crate::runtime::pipe::PipeClosed> for QlError {
-//     fn from(_: crate::runtime::pipe::PipeClosed) -> Self {
-//         Self::Cancelled
-//     }
-// }
