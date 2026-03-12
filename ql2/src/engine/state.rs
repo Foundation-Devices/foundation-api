@@ -412,9 +412,6 @@ impl EngineState {
     ) {
         self.outbound.push_back(QueuedWrite {
             token,
-            stream_id: None,
-            tx_seq: None,
-            track_ack: false,
             payload: super::stream::QueuedPayload::PreEncoded(bytes),
         });
         self.timeouts.push(Reverse(TimeoutEntry {
@@ -430,8 +427,6 @@ impl EngineState {
     pub fn enqueue_stream_message(
         &mut self,
         config: &EngineConfig,
-        stream_id: Option<StreamId>,
-        tx_seq: Option<StreamSeq>,
         track_ack: bool,
         priority: bool,
         message: StreamMessage,
@@ -439,10 +434,7 @@ impl EngineState {
         let token = self.next_token();
         let message = QueuedWrite {
             token,
-            stream_id,
-            tx_seq,
-            track_ack,
-            payload: super::stream::QueuedPayload::StreamMessage(message),
+            payload: super::stream::QueuedPayload::Stream { track_ack, message },
         };
         if priority {
             self.outbound.push_front(message);
@@ -458,7 +450,6 @@ impl EngineState {
     pub fn enqueue_stream_frame(
         &mut self,
         config: &EngineConfig,
-        stream_id: StreamId,
         control: &mut StreamControl,
         frame: StreamFrame,
         attempt: u8,
@@ -477,8 +468,6 @@ impl EngineState {
             crate::wire::now_secs().saturating_add(config.packet_expiration.as_secs());
         self.enqueue_stream_message(
             config,
-            Some(stream_id),
-            Some(tx_seq),
             track_ack,
             false,
             StreamMessage {
@@ -515,8 +504,6 @@ impl EngineState {
             crate::wire::now_secs().saturating_add(config.packet_expiration.as_secs());
         self.enqueue_stream_message(
             config,
-            Some(stream_id),
-            Some(tx_seq),
             true,
             false,
             StreamMessage {

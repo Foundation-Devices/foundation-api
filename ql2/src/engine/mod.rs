@@ -1196,13 +1196,7 @@ impl Engine {
                     emit,
                 );
                 if let Some(frame) = action {
-                    state.enqueue_stream_frame(
-                        config,
-                        stream.meta.stream_id,
-                        &mut stream.control,
-                        frame,
-                        0,
-                    );
+                    state.enqueue_stream_frame(config, &mut stream.control, frame, 0);
                 }
             }
             StreamState::Responder(stream) => {
@@ -1217,13 +1211,7 @@ impl Engine {
                             emit,
                         );
                         if let Some(frame) = action {
-                            state.enqueue_stream_frame(
-                                config,
-                                stream_id,
-                                &mut stream.control,
-                                frame,
-                                0,
-                            );
+                            state.enqueue_stream_frame(config, &mut stream.control, frame, 0);
                         }
                     }
                     _ => {
@@ -1235,13 +1223,7 @@ impl Engine {
                             emit,
                         );
                         if let Some(frame) = action {
-                            state.enqueue_stream_frame(
-                                config,
-                                stream_id,
-                                &mut stream.control,
-                                frame,
-                                0,
-                            );
+                            state.enqueue_stream_frame(config, &mut stream.control, frame, 0);
                         }
                     }
                 }
@@ -1438,8 +1420,6 @@ impl Engine {
     fn send_ephemeral_reset(&mut self, stream_id: StreamId, dir: ResetTarget, code: ResetCode) {
         let valid_until = wire::now_secs().saturating_add(self.config.packet_expiration.as_secs());
         self.enqueue_stream_message(
-            None,
-            None,
             false,
             true,
             StreamMessage {
@@ -1460,22 +1440,9 @@ impl Engine {
             .enqueue_handshake_message(&self.config, token, deadline, bytes);
     }
 
-    fn enqueue_stream_message(
-        &mut self,
-        stream_id: Option<StreamId>,
-        tx_seq: Option<StreamSeq>,
-        track_ack: bool,
-        priority: bool,
-        message: StreamMessage,
-    ) {
-        self.state.enqueue_stream_message(
-            &self.config,
-            stream_id,
-            tx_seq,
-            track_ack,
-            priority,
-            message,
-        );
+    fn enqueue_stream_message(&mut self, track_ack: bool, priority: bool, message: StreamMessage) {
+        self.state
+            .enqueue_stream_message(&self.config, track_ack, priority, message);
     }
 
     fn handle_hello(
@@ -1782,7 +1749,12 @@ impl Engine {
 
     fn drop_outbound(&mut self, emit: &mut impl OutputFn) {
         while let Some(message) = self.state.outbound.pop_front() {
-            if let Some(stream_id) = message.stream_id {
+            if let QueuedPayload::Stream {
+                message: stream_message,
+                ..
+            } = message.payload
+            {
+                let stream_id = stream_message.frame.stream_id();
                 self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
             }
         }
@@ -1883,7 +1855,13 @@ impl Engine {
                     let mut timed_out_stream = None;
                     self.state.outbound.retain(|message| {
                         if message.token == token {
-                            timed_out_stream = message.stream_id;
+                            if let QueuedPayload::Stream {
+                                message: stream_message,
+                                ..
+                            } = &message.payload
+                            {
+                                timed_out_stream = Some(stream_message.frame.stream_id());
+                            }
                             false
                         } else {
                             true
@@ -1984,7 +1962,6 @@ impl Engine {
                         if let Some(stream) = streams.get_mut(&stream_id) {
                             state.enqueue_stream_frame(
                                 &self.config,
-                                stream.stream_id(),
                                 stream.control_mut(),
                                 frame,
                                 attempt.saturating_add(1),
@@ -2075,19 +2052,26 @@ impl Engine {
             return;
         }
         while let Some(message) = self.state.outbound.pop_front() {
-            let bytes = match message.payload {
-                QueuedPayload::PreEncoded(bytes) => bytes,
-                QueuedPayload::StreamMessage(stream_message) => {
+            let bytes = match &message.payload {
+                QueuedPayload::PreEncoded(bytes) => bytes.clone(),
+                QueuedPayload::Stream {
+                    message: stream_message,
+                    ..
+                } => {
                     let Some(peer) = self.state.peer.as_ref() else {
-                        if let Some(stream_id) = message.stream_id {
-                            self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
-                        }
+                        self.fail_stream_by_id(
+                            stream_message.frame.stream_id(),
+                            QlError::SendFailed,
+                            emit,
+                        );
                         continue;
                     };
                     let Some(session_key) = peer.session.session_key() else {
-                        if let Some(stream_id) = message.stream_id {
-                            self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
-                        }
+                        self.fail_stream_by_id(
+                            stream_message.frame.stream_id(),
+                            QlError::SendFailed,
+                            emit,
+                        );
                         continue;
                     };
                     let record = encrypt_stream(
@@ -2103,13 +2087,15 @@ impl Engine {
                 }
             };
 
-            let tracked = if message.track_ack {
-                message
-                    .stream_id
-                    .zip(message.tx_seq)
-                    .map(|(stream_id, tx_seq)| TrackedWrite { stream_id, tx_seq })
-            } else {
-                None
+            let tracked = match &message.payload {
+                QueuedPayload::Stream {
+                    track_ack: true,
+                    message: stream_message,
+                } => Some(TrackedWrite {
+                    stream_id: stream_message.frame.stream_id(),
+                    tx_seq: stream_message.tx_seq,
+                }),
+                _ => None,
             };
             self.state.write_in_flight = Some(message.token);
             emit(EngineOutput::WriteMessage {

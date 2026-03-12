@@ -525,22 +525,24 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
         })
         .unwrap();
 
+    let message = StreamMessage {
+        tx_seq: StreamSeq(2),
+        ack_seq: Some(StreamSeq(1)),
+        valid_until: wire::now_secs().saturating_add(60),
+        frame: StreamFrame::Accept(StreamFrameAccept {
+            stream_id,
+            response_head: Vec::new(),
+            response_prefix: None,
+        }),
+    };
+
     let record = wire::stream::encrypt_stream(
         QlHeader {
             sender: crypto_b.xid(),
             recipient: crypto_a.xid(),
         },
         &session_key,
-        StreamMessage {
-            tx_seq: StreamSeq(2),
-            ack_seq: Some(StreamSeq(1)),
-            valid_until: wire::now_secs().saturating_add(60),
-            frame: StreamFrame::Accept(StreamFrameAccept {
-                stream_id,
-                response_head: Vec::new(),
-                response_prefix: None,
-            }),
-        },
+        &message,
         [9; wire::encrypted_message::NONCE_SIZE],
     );
 

@@ -270,14 +270,16 @@ impl StreamControl {
 #[derive(Debug)]
 pub enum QueuedPayload {
     PreEncoded(Vec<u8>),
-    StreamMessage(StreamMessage),
+    Stream {
+        /// Whether the peer must acknowledge this write so the engine tracks
+        /// it for retransmit and stream-level delivery timeout handling.
+        track_ack: bool,
+        message: StreamMessage,
+    },
 }
 
 #[derive(Debug)]
 pub struct QueuedWrite {
     pub token: Token,
-    pub stream_id: Option<StreamId>,
-    pub tx_seq: Option<StreamSeq>,
-    pub track_ack: bool,
     pub payload: QueuedPayload,
 }

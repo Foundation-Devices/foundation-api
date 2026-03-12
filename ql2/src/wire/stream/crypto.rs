@@ -13,11 +13,11 @@ use crate::{
 pub fn encrypt_stream(
     header: QlHeader,
     session_key: &SymmetricKey,
-    message: StreamMessage,
+    message: &StreamMessage,
     nonce: [u8; NONCE_SIZE],
 ) -> QlRecord {
     let aad = header.aad();
-    let body_bytes = encode_value(&message);
+    let body_bytes = encode_value(message);
     let encrypted = EncryptedMessage::encrypt(session_key, body_bytes, &aad, nonce);
     QlRecord {
         header,
