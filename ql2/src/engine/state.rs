@@ -153,11 +153,6 @@ pub enum EngineInput {
         dir: Direction,
         final_offset: u64,
     },
-    InboundConsumed {
-        stream_id: StreamId,
-        dir: Direction,
-        amount: u64,
-    },
 
     ResetOutbound {
         stream_id: StreamId,
@@ -241,11 +236,6 @@ pub enum EngineOutput {
         offset: u64,
         max_len: usize,
     },
-    ReleaseOutboundThrough {
-        stream_id: StreamId,
-        dir: Direction,
-        recv_offset: u64,
-    },
     OutboundClosed {
         stream_id: StreamId,
         dir: Direction,
@@ -283,7 +273,7 @@ pub enum TimeoutKind {
         stream_id: StreamId,
         token: Token,
     },
-    StreamPacket {
+    StreamMessage {
         stream_id: StreamId,
         tx_seq: StreamSeq,
         attempt: u8,

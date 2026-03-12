@@ -55,10 +55,9 @@ pub struct EngineConfig {
     pub handshake_timeout: Duration,
     pub default_open_timeout: Duration,
     pub packet_expiration: Duration,
-    pub packet_ack_timeout: Duration,
+    pub stream_ack_timeout: Duration,
     pub stream_retry_limit: u8,
     pub max_payload_bytes: usize,
-    pub initial_credit: u64,
     pub keep_alive: Option<KeepAliveConfig>,
 }
 
@@ -68,10 +67,9 @@ impl Default for EngineConfig {
             handshake_timeout: Duration::from_secs(5),
             default_open_timeout: Duration::from_secs(5),
             packet_expiration: Duration::from_secs(30),
-            packet_ack_timeout: Duration::from_millis(150),
+            stream_ack_timeout: Duration::from_millis(150),
             stream_retry_limit: 5,
             max_payload_bytes: 1024,
-            initial_credit: 1024,
             keep_alive: None,
         }
     }
@@ -80,7 +78,6 @@ impl Default for EngineConfig {
 impl EngineConfig {
     pub(crate) fn normalized(mut self) -> Self {
         self.max_payload_bytes = self.max_payload_bytes.max(1);
-        self.initial_credit = self.initial_credit.max(self.max_payload_bytes as u64);
         self
     }
 }
@@ -129,11 +126,6 @@ impl Engine {
                 dir,
                 final_offset,
             } => self.handle_outbound_finished(stream_id, dir, final_offset),
-            EngineInput::InboundConsumed {
-                stream_id,
-                dir,
-                amount,
-            } => self.handle_inbound_consumed(now, stream_id, dir, amount),
             EngineInput::ResetOutbound {
                 stream_id,
                 dir,
@@ -460,19 +452,6 @@ impl Engine {
         }
         outbound.pending_pull = None;
         outbound.final_offset = Some(final_offset);
-    }
-
-    fn handle_inbound_consumed(
-        &mut self,
-        now: Instant,
-        stream_id: StreamId,
-        dir: Direction,
-        amount: u64,
-    ) {
-        let _ = (dir, amount);
-        if let Some(stream) = self.streams.get_mut(&stream_id) {
-            *stream.last_activity_mut() = now;
-        }
     }
 
     fn handle_reset_outbound(
@@ -1917,7 +1896,7 @@ impl Engine {
                         self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
                     }
                 }
-                TimeoutKind::StreamPacket {
+                TimeoutKind::StreamMessage {
                     stream_id,
                     tx_seq,
                     attempt,
@@ -2015,8 +1994,8 @@ impl Engine {
                 })
                 .unwrap_or(0);
             self.state.timeouts.push(Reverse(TimeoutEntry {
-                at: now + self.config.packet_ack_timeout,
-                kind: TimeoutKind::StreamPacket {
+                at: now + self.config.stream_ack_timeout,
+                kind: TimeoutKind::StreamMessage {
                     stream_id: tracked.stream_id,
                     tx_seq: tracked.tx_seq,
                     attempt,
