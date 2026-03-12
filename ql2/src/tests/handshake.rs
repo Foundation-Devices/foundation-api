@@ -5,7 +5,13 @@ use super::*;
 #[tokio::test(flavor = "current_thread")]
 async fn handshake_initiator_connects() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -32,7 +38,13 @@ async fn handshake_initiator_connects() {
 #[tokio::test(flavor = "current_thread")]
 async fn handshake_timeout_disconnects() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(60));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(60),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, _outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -55,7 +67,13 @@ async fn handshake_timeout_disconnects() {
 #[tokio::test(flavor = "current_thread")]
 async fn confirm_write_failure_disconnects_initiator() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new_with_failed_write(1, 2);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);

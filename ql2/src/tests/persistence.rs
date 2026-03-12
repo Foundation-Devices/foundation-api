@@ -5,7 +5,13 @@ use super::*;
 #[tokio::test(flavor = "current_thread")]
 async fn register_peer_persists_snapshot() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, _outbound_a, _status_a, persisted_a) = PersistPlatform::new(1, None);
         let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
         let peer_b = platform_b.xid();
@@ -40,7 +46,13 @@ async fn register_peer_persists_snapshot() {
 #[tokio::test(flavor = "current_thread")]
 async fn loaded_peers_can_connect_without_register() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_b = peer_identity(&platform_b);
 
@@ -96,8 +108,16 @@ async fn pairing_persists_snapshot() {
         .unwrap();
         let pairing_bytes = wire::encode_record(&pairing_message);
 
-        let (runtime_b, handle_b) =
-            new_runtime(platform_b, RuntimeConfig::new(Duration::from_millis(200)));
+        let (runtime_b, handle_b) = new_runtime(
+            platform_b,
+            RuntimeConfig {
+                engine: EngineConfig {
+                    handshake_timeout: Duration::from_millis(200),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
         handle_b.send_incoming(pairing_bytes);

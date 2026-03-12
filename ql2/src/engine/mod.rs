@@ -2,7 +2,12 @@ pub mod replay_cache;
 mod state;
 mod stream;
 
-use std::{cmp::Reverse, collections::HashMap, mem, time::Instant};
+use std::{
+    cmp::Reverse,
+    collections::HashMap,
+    mem,
+    time::{Duration, Instant},
+};
 
 use bc_components::{SigningPublicKey, XID};
 use rkyv::access_mut;
@@ -18,7 +23,7 @@ use self::{
 };
 use crate::{
     platform::QlCrypto,
-    runtime::{KeepAliveConfig, RuntimeConfig, StreamConfig},
+    runtime::StreamConfig,
     wire::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
@@ -36,10 +41,51 @@ use crate::{
     PacketId, Peer, QlError, StreamId,
 };
 
-impl Engine {
-    pub fn new(config: RuntimeConfig, peer: Option<Peer>) -> Self {
+#[derive(Debug, Clone, Copy)]
+pub struct KeepAliveConfig {
+    pub interval: Duration,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EngineConfig {
+    pub handshake_timeout: Duration,
+    pub default_open_timeout: Duration,
+    pub packet_expiration: Duration,
+    pub packet_ack_timeout: Duration,
+    pub stream_retry_limit: u8,
+    pub max_payload_bytes: usize,
+    pub initial_credit: u64,
+    pub keep_alive: Option<KeepAliveConfig>,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
         Self {
-            config,
+            handshake_timeout: Duration::from_secs(5),
+            default_open_timeout: Duration::from_secs(5),
+            packet_expiration: Duration::from_secs(30),
+            packet_ack_timeout: Duration::from_millis(150),
+            stream_retry_limit: 5,
+            max_payload_bytes: 1024,
+            initial_credit: 1024,
+            keep_alive: None,
+        }
+    }
+}
+
+impl EngineConfig {
+    pub(crate) fn normalized(mut self) -> Self {
+        self.max_payload_bytes = self.max_payload_bytes.max(1);
+        self.initial_credit = self.initial_credit.max(self.max_payload_bytes as u64);
+        self
+    }
+}
+
+impl Engine {
+    pub fn new(config: EngineConfig, peer: Option<Peer>) -> Self {
+        Self {
+            config: config.normalized(),
             state: EngineState::new(peer),
             streams: HashMap::new(),
         }
@@ -1112,7 +1158,7 @@ impl Engine {
     }
 
     fn drive_stream(
-        config: &RuntimeConfig,
+        config: &EngineConfig,
         state: &mut EngineState,
         _now: Instant,
         stream: &mut StreamState,
@@ -1165,7 +1211,7 @@ impl Engine {
     }
 
     fn plan_drive_outbound(
-        config: &RuntimeConfig,
+        config: &EngineConfig,
         key: StreamKey,
         control: &mut StreamControl,
         outbound: Option<&mut OutboundState>,

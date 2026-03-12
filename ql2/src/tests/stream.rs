@@ -11,11 +11,17 @@ use crate::{
 #[tokio::test(flavor = "current_thread")]
 async fn duplex_stream_round_trip() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300))
-            .with_packet_ack_timeout(Duration::from_millis(40))
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                packet_ack_timeout: Duration::from_millis(40),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -84,11 +90,17 @@ async fn duplex_stream_round_trip() {
 #[tokio::test(flavor = "current_thread")]
 async fn duplicate_open_is_idempotent() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -140,11 +152,17 @@ async fn duplicate_open_is_idempotent() {
 #[tokio::test(flavor = "current_thread")]
 async fn duplicate_accept_is_idempotent() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -198,11 +216,17 @@ async fn duplicate_accept_is_idempotent() {
 #[tokio::test(flavor = "current_thread")]
 async fn replayed_open_packet_is_ignored() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300))
-            .with_packet_ack_timeout(Duration::from_millis(40))
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                packet_ack_timeout: Duration::from_millis(40),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -253,11 +277,17 @@ async fn replayed_open_packet_is_ignored() {
 #[tokio::test(flavor = "current_thread")]
 async fn request_reset_can_keep_response_alive() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(40))
-            .with_max_payload_bytes(16)
-            .with_initial_credit(16);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(40),
+                max_payload_bytes: 16,
+                initial_credit: 16,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -320,8 +350,14 @@ async fn request_reset_can_keep_response_alive() {
 #[tokio::test(flavor = "current_thread")]
 async fn open_timeout_returns_error() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(120));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(120),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -360,8 +396,14 @@ async fn open_timeout_returns_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn reject_surfaces_stream_rejected() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -407,8 +449,14 @@ async fn reject_surfaces_stream_rejected() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_responder_rejects_unhandled() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -469,12 +517,18 @@ async fn dropping_responder_rejects_unhandled() {
 #[tokio::test(flavor = "current_thread")]
 async fn request_larger_than_ring_buffer_streams_with_backpressure() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_max_payload_bytes(4)
-            .with_pipe_size_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            pipe_size_bytes: 4,
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -544,12 +598,18 @@ async fn request_larger_than_ring_buffer_streams_with_backpressure() {
 #[tokio::test(flavor = "current_thread")]
 async fn response_larger_than_ring_buffer_streams_with_backpressure() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_max_payload_bytes(4)
-            .with_pipe_size_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            pipe_size_bytes: 4,
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -610,12 +670,18 @@ async fn response_larger_than_ring_buffer_streams_with_backpressure() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_pending_accept_cancels_response_side() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_max_payload_bytes(4)
-            .with_pipe_size_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            pipe_size_bytes: 4,
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -668,11 +734,17 @@ async fn dropping_pending_accept_cancels_response_side() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_request_writer_sends_cancel() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                packet_ack_timeout: Duration::from_millis(30),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -734,11 +806,17 @@ async fn dropping_request_writer_sends_cancel() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_response_writer_sends_cancel() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                packet_ack_timeout: Duration::from_millis(30),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -799,11 +877,17 @@ async fn dropping_response_writer_sends_cancel() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_request_reader_sends_cancel() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                packet_ack_timeout: Duration::from_millis(30),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -861,12 +945,18 @@ async fn dropping_request_reader_sends_cancel() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_response_reader_sends_cancel() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_max_payload_bytes(4)
-            .with_pipe_size_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                packet_ack_timeout: Duration::from_millis(30),
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            pipe_size_bytes: 4,
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -922,8 +1012,14 @@ async fn dropping_response_reader_sends_cancel() {
 #[tokio::test(flavor = "current_thread")]
 async fn empty_request_finishes_cleanly() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -978,8 +1074,14 @@ async fn empty_request_finishes_cleanly() {
 #[tokio::test(flavor = "current_thread")]
 async fn empty_response_finishes_cleanly() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -1034,13 +1136,19 @@ async fn empty_response_finishes_cleanly() {
 #[tokio::test(flavor = "current_thread")]
 async fn stream_survives_every_third_packet_drop() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(500))
-            .with_packet_ack_timeout(Duration::from_millis(20))
-            .with_stream_retry_limit(12)
-            .with_max_payload_bytes(4)
-            .with_pipe_size_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(500),
+                packet_ack_timeout: Duration::from_millis(20),
+                stream_retry_limit: 12,
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            pipe_size_bytes: 4,
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -1117,12 +1225,18 @@ async fn stream_survives_every_third_packet_drop() {
 #[tokio::test(flavor = "current_thread")]
 async fn response_data_before_accept_is_protocol_error() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_stream_retry_limit(8)
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                stream_retry_limit: 8,
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -1201,12 +1315,18 @@ async fn response_data_before_accept_is_protocol_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn data_offset_gap_is_protocol_error() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_stream_retry_limit(8)
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                stream_retry_limit: 8,
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -1287,12 +1407,18 @@ async fn data_offset_gap_is_protocol_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn data_beyond_credit_is_protocol_error() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_stream_retry_limit(8)
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                stream_retry_limit: 8,
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -1373,12 +1499,18 @@ async fn data_beyond_credit_is_protocol_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn credit_regression_is_protocol_error() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30))
-            .with_stream_retry_limit(8)
-            .with_max_payload_bytes(4)
-            .with_initial_credit(4);
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                stream_retry_limit: 8,
+                max_payload_bytes: 4,
+                initial_credit: 4,
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -1474,9 +1606,15 @@ async fn credit_regression_is_protocol_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn disconnect_during_active_stream_aborts_both_halves() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(400))
-            .with_packet_ack_timeout(Duration::from_millis(30));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(400),
+                packet_ack_timeout: Duration::from_millis(30),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);

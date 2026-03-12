@@ -10,9 +10,10 @@ use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 use super::{
     replay_cache::ReplayCache,
     stream::{AwaitingFrame, AwaitingPacket, QueuedWrite, StreamControl, StreamKey, StreamState},
+    EngineConfig,
 };
 use crate::{
-    runtime::{RuntimeConfig, StreamConfig},
+    runtime::StreamConfig,
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
         stream::{Direction, RejectCode, ResetCode, StreamBody, StreamFrame, StreamFrameData},
@@ -316,7 +317,7 @@ pub enum HelloAction {
 }
 
 pub struct Engine {
-    pub config: RuntimeConfig,
+    pub config: EngineConfig,
     pub state: EngineState,
     pub streams: HashMap<StreamId, StreamState>,
 }
@@ -372,7 +373,7 @@ impl EngineState {
 
     pub fn enqueue_handshake_message(
         &mut self,
-        _config: &RuntimeConfig,
+        _config: &EngineConfig,
         token: Token,
         deadline: Instant,
         bytes: Vec<u8>,
@@ -396,7 +397,7 @@ impl EngineState {
 
     pub fn enqueue_stream_body(
         &mut self,
-        config: &RuntimeConfig,
+        config: &EngineConfig,
         stream_id: Option<StreamId>,
         packet_id: Option<PacketId>,
         track_ack: bool,
@@ -424,7 +425,7 @@ impl EngineState {
 
     pub fn enqueue_control_frame(
         &mut self,
-        config: &RuntimeConfig,
+        config: &EngineConfig,
         key: StreamKey,
         control: &mut StreamControl,
         frame: StreamFrame,
@@ -455,7 +456,7 @@ impl EngineState {
 
     pub fn enqueue_data_frame(
         &mut self,
-        config: &RuntimeConfig,
+        config: &EngineConfig,
         key: StreamKey,
         control: &mut StreamControl,
         dir: Direction,

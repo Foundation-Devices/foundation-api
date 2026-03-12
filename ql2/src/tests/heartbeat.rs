@@ -5,7 +5,13 @@ use super::*;
 #[tokio::test(flavor = "current_thread")]
 async fn heartbeat_ignored_without_session() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, _status_a) = TestPlatform::new(1);
         let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
 
@@ -44,7 +50,13 @@ async fn heartbeat_ignored_without_session() {
 #[tokio::test(flavor = "current_thread")]
 async fn keepalive_disabled_no_heartbeat() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -79,8 +91,21 @@ async fn heartbeat_sent_after_idle() {
             interval: Duration::from_millis(30),
             timeout: Duration::from_millis(80),
         };
-        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
-        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let config_a = RuntimeConfig {
+            engine: EngineConfig {
+                keep_alive: Some(keep_alive),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config_b = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -117,8 +142,21 @@ async fn heartbeat_reply_when_connected() {
             interval: Duration::from_millis(30),
             timeout: Duration::from_millis(80),
         };
-        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
-        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let config_a = RuntimeConfig {
+            engine: EngineConfig {
+                keep_alive: Some(keep_alive),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config_b = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -160,8 +198,21 @@ async fn any_stream_clears_pending() {
             interval: Duration::from_millis(120),
             timeout: Duration::from_millis(40),
         };
-        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
-        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let config_a = RuntimeConfig {
+            engine: EngineConfig {
+                keep_alive: Some(keep_alive),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config_b = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a, inbound_a) = InboundPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -228,10 +279,22 @@ async fn heartbeat_timeout_disconnects_and_drops_outbound() {
             interval: Duration::from_millis(80),
             timeout: Duration::from_millis(60),
         };
-        let config_a = RuntimeConfig::new(Duration::from_millis(200))
-            .with_keep_alive(keep_alive)
-            .with_open_timeout(Duration::from_millis(300));
-        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let config_a = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                keep_alive: Some(keep_alive),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config_b = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(2);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(1);
         let peer_a = peer_identity(&platform_a);
@@ -287,8 +350,21 @@ async fn no_ping_pong() {
             interval: Duration::from_millis(200),
             timeout: Duration::from_millis(60),
         };
-        let config_a = RuntimeConfig::new(Duration::from_millis(200)).with_keep_alive(keep_alive);
-        let config_b = RuntimeConfig::new(Duration::from_millis(200));
+        let config_a = RuntimeConfig {
+            engine: EngineConfig {
+                keep_alive: Some(keep_alive),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config_b = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -330,7 +406,13 @@ async fn no_ping_pong() {
 #[tokio::test(flavor = "current_thread")]
 async fn invalid_heartbeat_ignored() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);

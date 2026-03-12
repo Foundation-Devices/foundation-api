@@ -5,7 +5,13 @@ use super::*;
 #[tokio::test(flavor = "current_thread")]
 async fn connected_unpair_removes_peer_on_both_sides() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -43,7 +49,13 @@ async fn connected_unpair_removes_peer_on_both_sides() {
 #[tokio::test(flavor = "current_thread")]
 async fn unpair_works_without_session() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -80,7 +92,13 @@ async fn unpair_works_without_session() {
 #[tokio::test(flavor = "current_thread")]
 async fn invalid_unpair_signature_is_ignored() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, _outbound_a, _status_a) = TestPlatform::new(1);
         let (platform_b, _outbound_b, status_b) = TestPlatform::new(2);
         let (fake_signer, _fake_outbound, _fake_status) = TestPlatform::new(3);

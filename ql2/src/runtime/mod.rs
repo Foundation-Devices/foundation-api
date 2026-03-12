@@ -3,7 +3,7 @@ pub use handle::{
     PendingStream, RuntimeHandle, StreamResponder,
 };
 
-pub use crate::engine::{InitiatorStage, PeerSession, Token};
+pub use crate::engine::{EngineConfig, InitiatorStage, KeepAliveConfig, PeerSession, Token};
 
 pub(crate) mod command;
 pub(crate) mod driver;
@@ -20,78 +20,24 @@ pub struct StreamConfig {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct KeepAliveConfig {
-    pub interval: Duration,
-    pub timeout: Duration,
+pub struct RuntimeConfig {
+    pub engine: EngineConfig,
+    pub pipe_size_bytes: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct RuntimeConfig {
-    pub handshake_timeout: Duration,
-    pub default_open_timeout: Duration,
-    pub packet_expiration: Duration,
-    pub packet_ack_timeout: Duration,
-    pub stream_retry_limit: u8,
-    pub max_payload_bytes: usize,
-    pub pipe_size_bytes: usize,
-    pub initial_credit: u64,
-    pub keep_alive: Option<KeepAliveConfig>,
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            engine: EngineConfig::default(),
+            pipe_size_bytes: 2048,
+        }
+    }
 }
 
 impl RuntimeConfig {
-    pub fn new(handshake_timeout: Duration) -> Self {
-        Self {
-            handshake_timeout,
-            default_open_timeout: Duration::from_secs(5),
-            packet_expiration: Duration::from_secs(30),
-            packet_ack_timeout: Duration::from_millis(150),
-            stream_retry_limit: 5,
-            max_payload_bytes: 1024,
-            pipe_size_bytes: 2048,
-            initial_credit: 1024,
-            keep_alive: None,
-        }
-    }
-
-    pub fn with_open_timeout(mut self, timeout: Duration) -> Self {
-        self.default_open_timeout = timeout;
-        self
-    }
-
-    pub fn with_packet_expiration(mut self, expiration: Duration) -> Self {
-        self.packet_expiration = expiration;
-        self
-    }
-
-    pub fn with_packet_ack_timeout(mut self, timeout: Duration) -> Self {
-        self.packet_ack_timeout = timeout;
-        self
-    }
-
-    pub fn with_stream_retry_limit(mut self, stream_retry_limit: u8) -> Self {
-        self.stream_retry_limit = stream_retry_limit;
-        self
-    }
-
-    pub fn with_max_payload_bytes(mut self, max_payload_bytes: usize) -> Self {
-        self.max_payload_bytes = max_payload_bytes.max(1);
-        self.initial_credit = self.initial_credit.max(self.max_payload_bytes as u64);
-        self.pipe_size_bytes = self.pipe_size_bytes.max(self.max_payload_bytes);
-        self
-    }
-
-    pub fn with_pipe_size_bytes(mut self, pipe_size_bytes: usize) -> Self {
-        self.pipe_size_bytes = pipe_size_bytes.max(self.max_payload_bytes);
-        self
-    }
-
-    pub fn with_initial_credit(mut self, initial_credit: u64) -> Self {
-        self.initial_credit = initial_credit.max(self.max_payload_bytes as u64);
-        self
-    }
-
-    pub fn with_keep_alive(mut self, config: KeepAliveConfig) -> Self {
-        self.keep_alive = Some(config);
+    pub(crate) fn normalized(mut self) -> Self {
+        self.engine = self.engine.normalized();
+        self.pipe_size_bytes = self.pipe_size_bytes.max(self.engine.max_payload_bytes);
         self
     }
 }
@@ -119,6 +65,7 @@ pub fn new_runtime<P>(platform: P, config: RuntimeConfig) -> (Runtime<P>, Runtim
 where
     P: QlPlatform,
 {
+    let config = config.normalized();
     let (tx, rx) = async_channel::unbounded();
     (
         Runtime {

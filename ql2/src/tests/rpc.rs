@@ -52,8 +52,14 @@ impl RequestResponse for AddOne {
 #[tokio::test(flavor = "current_thread")]
 async fn rpc_request_response_round_trip() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -122,8 +128,14 @@ async fn rpc_request_response_round_trip() {
 #[tokio::test(flavor = "current_thread")]
 async fn rpc_request_response_reject_propagates() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);
@@ -178,8 +190,14 @@ async fn rpc_request_response_reject_propagates() {
 #[tokio::test(flavor = "current_thread")]
 async fn rpc_request_response_content_length_mismatch_errors() {
     run_local_test(async {
-        let config = RuntimeConfig::new(Duration::from_millis(200))
-            .with_open_timeout(Duration::from_millis(300));
+        let config = RuntimeConfig {
+            engine: EngineConfig {
+                default_open_timeout: Duration::from_millis(300),
+                handshake_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = InboundPlatform::new(2);
         let peer_a = peer_identity(&platform_a);

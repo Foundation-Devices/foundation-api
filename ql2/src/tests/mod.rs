@@ -18,7 +18,8 @@ use tokio::task::LocalSet;
 use crate::{
     platform::{PlatformFuture, QlCrypto, QlPlatform},
     runtime::{
-        new_runtime, HandlerEvent, KeepAliveConfig, PeerSession, RuntimeConfig, RuntimeHandle,
+        new_runtime, EngineConfig, HandlerEvent, KeepAliveConfig, PeerSession, RuntimeConfig,
+        RuntimeHandle,
     },
     wire::{
         self, handshake::HandshakeRecord, heartbeat::HeartbeatBody, now_secs, pair,

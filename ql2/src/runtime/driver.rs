@@ -278,7 +278,7 @@ struct DriverState {
 }
 
 impl DriverState {
-    fn new(config: crate::runtime::RuntimeConfig, peer: Option<crate::Peer>) -> Self {
+    fn new(config: engine::EngineConfig, peer: Option<crate::Peer>) -> Self {
         let engine = Engine::new(config, peer);
         Self {
             engine,
@@ -418,7 +418,7 @@ impl DriverState {
 impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
         let runtime_tx = self.tx.upgrade().expect("runtime tx");
-        let mut state = DriverState::new(self.config, self.platform.load_peer().await);
+        let mut state = DriverState::new(self.config.engine, self.platform.load_peer().await);
         let mut in_flight: Option<InFlightWrite<'_>> = None;
 
         loop {
