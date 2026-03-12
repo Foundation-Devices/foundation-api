@@ -3,10 +3,9 @@ use std::time::Instant;
 use super::{OpenId, Token};
 use crate::{
     wire::stream::{
-        Direction, ResetCode, ResetTarget, StreamBody, StreamFrame, StreamFrameAccept,
-        StreamFrameCredit, StreamFrameOpen, StreamFrameReject, StreamFrameReset,
+        Direction, ResetCode, ResetTarget, StreamFrame, StreamFrameReset, StreamMessage,
     },
-    PacketId, StreamId,
+    StreamId, StreamSeq,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,9 +29,7 @@ pub struct PendingPull {
 #[derive(Debug)]
 pub struct OutboundState {
     pub dir: Direction,
-    pub remote_max_offset: u64,
     pub sent_offset: u64,
-    pub released_offset: u64,
     pub final_offset: Option<u64>,
     pub data_enabled: bool,
     pub closed: bool,
@@ -40,12 +37,10 @@ pub struct OutboundState {
 }
 
 impl OutboundState {
-    pub fn new(dir: Direction, remote_max_offset: u64, data_enabled: bool) -> Self {
+    pub fn new(dir: Direction, data_enabled: bool) -> Self {
         Self {
             dir,
-            remote_max_offset,
             sent_offset: 0,
-            released_offset: 0,
             final_offset: None,
             data_enabled,
             closed: false,
@@ -57,7 +52,6 @@ impl OutboundState {
         self.data_enabled
             && !self.closed
             && self.pending_pull.is_none()
-            && self.sent_offset < self.remote_max_offset
             && self
                 .final_offset
                 .is_none_or(|final_offset| self.sent_offset < final_offset)
@@ -67,15 +61,13 @@ impl OutboundState {
 #[derive(Debug)]
 pub struct InboundState {
     pub next_offset: u64,
-    pub max_offset: u64,
     pub closed: bool,
 }
 
 impl InboundState {
-    pub fn new(max_offset: u64) -> Self {
+    pub fn new() -> Self {
         Self {
             next_offset: 0,
-            max_offset,
             closed: false,
         }
     }
@@ -105,16 +97,9 @@ pub struct InitiatorStream {
 
 #[derive(Debug)]
 pub enum ResponderResponse {
-    Pending {
-        initial_credit: u64,
-    },
-    Accepted {
-        initial_credit: u64,
-        body: OutboundState,
-    },
-    Rejecting {
-        initial_credit: u64,
-    },
+    Pending,
+    Accepted { body: OutboundState },
+    Rejecting,
 }
 
 #[derive(Debug)]
@@ -164,7 +149,7 @@ impl StreamState {
         match self {
             Self::Initiator(state) if dir == Direction::Request => Some(&mut state.request),
             Self::Responder(state) if dir == Direction::Response => match &mut state.response {
-                ResponderResponse::Accepted { body, .. } => Some(body),
+                ResponderResponse::Accepted { body } => Some(body),
                 _ => None,
             },
             _ => None,
@@ -192,7 +177,10 @@ impl StreamState {
     }
 
     pub fn can_reap(&self) -> bool {
-        if self.control().awaiting.is_some() || !self.control().pending.is_empty() {
+        if self.control().awaiting.is_some()
+            || !self.control().pending.is_empty()
+            || self.control().pending_ack_seq.is_some()
+        {
             return false;
         }
         match self {
@@ -202,101 +190,103 @@ impl StreamState {
                     && state.response.closed
             }
             Self::Responder(state) => match &state.response {
-                ResponderResponse::Accepted { body, .. } => state.request.closed && body.closed,
-                ResponderResponse::Rejecting { .. } => true,
-                ResponderResponse::Pending { .. } => false,
+                ResponderResponse::Accepted { body } => state.request.closed && body.closed,
+                ResponderResponse::Rejecting => true,
+                ResponderResponse::Pending => false,
             },
         }
     }
 }
 
-#[derive(Debug)]
-pub struct AwaitingPacket {
-    pub packet_id: PacketId,
-    pub frame: AwaitingFrame,
-    pub attempt: u8,
-}
-
 #[derive(Debug, Clone)]
-pub enum AwaitingFrame {
-    Control(StreamFrame),
-    Data {
-        dir: Direction,
-        offset: u64,
-        len: usize,
-    },
-}
-
-#[derive(Debug)]
-pub enum SetupFrame {
-    Open(StreamFrameOpen),
-    Accept(StreamFrameAccept),
-    Reject(StreamFrameReject),
+pub struct AwaitingMessage {
+    pub tx_seq: StreamSeq,
+    pub frame: StreamFrame,
+    pub attempt: u8,
 }
 
 #[derive(Debug, Default)]
 pub struct PendingFrames {
-    pub setup: Option<SetupFrame>,
-    pub credit: Option<StreamFrameCredit>,
+    pub setup: Option<StreamFrame>,
     pub reset: Option<StreamFrameReset>,
 }
 
 impl PendingFrames {
     pub fn take_next_control(&mut self, stream_id: StreamId) -> Option<StreamFrame> {
-        if let Some(setup) = self.setup.take() {
-            return Some(match setup {
-                SetupFrame::Open(frame) => StreamFrame::Open(frame),
-                SetupFrame::Accept(frame) => StreamFrame::Accept(frame),
-                SetupFrame::Reject(frame) => StreamFrame::Reject(frame),
-            });
+        if let Some(frame) = self.setup.take() {
+            return Some(frame);
         }
         if let Some(reset) = self.reset.take() {
             return Some(StreamFrame::Reset(StreamFrameReset { stream_id, ..reset }));
         }
-        self.credit.take().map(StreamFrame::Credit)
+        None
     }
 
-    pub fn set_setup(&mut self, setup: SetupFrame) {
-        self.setup = Some(setup);
+    pub fn set_setup(&mut self, frame: StreamFrame) {
+        self.setup = Some(frame);
     }
 
-    pub fn set_credit(&mut self, frame: StreamFrameCredit) {
-        if self.reset.is_none() {
-            self.credit = Some(frame);
-        }
-    }
-
-    pub fn set_reset(&mut self, dir: ResetTarget, code: ResetCode) {
-        self.credit = None;
+    pub fn set_reset(&mut self, target: ResetTarget, code: ResetCode) {
         self.reset = Some(StreamFrameReset {
             stream_id: StreamId(0),
-            dir,
+            target,
             code,
         });
     }
 
     pub fn is_empty(&self) -> bool {
-        self.setup.is_none() && self.credit.is_none() && self.reset.is_none()
+        self.setup.is_none() && self.reset.is_none()
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StreamControl {
     pub pending: PendingFrames,
-    pub awaiting: Option<AwaitingPacket>,
+    pub awaiting: Option<AwaitingMessage>,
+    pub next_tx_seq: StreamSeq,
+    pub next_rx_seq: StreamSeq,
+    pub pending_ack_seq: Option<StreamSeq>,
+}
+
+impl Default for StreamControl {
+    fn default() -> Self {
+        Self {
+            pending: PendingFrames::default(),
+            awaiting: None,
+            next_tx_seq: StreamSeq(1),
+            next_rx_seq: StreamSeq(1),
+            pending_ack_seq: None,
+        }
+    }
+}
+
+impl StreamControl {
+    pub fn take_tx_seq(&mut self) -> StreamSeq {
+        let tx_seq = self.next_tx_seq;
+        self.next_tx_seq = StreamSeq(self.next_tx_seq.0.wrapping_add(1));
+        tx_seq
+    }
+
+    pub fn mark_ack(&mut self, ack_seq: StreamSeq) {
+        self.pending_ack_seq = Some(ack_seq);
+    }
+
+    pub fn take_ack_seq(&mut self) -> Option<StreamSeq> {
+        self.pending_ack_seq.take()
+    }
 }
 
 #[derive(Debug)]
 pub enum QueuedPayload {
     PreEncoded(Vec<u8>),
-    StreamBody(StreamBody),
+    StreamMessage(StreamMessage),
 }
 
 #[derive(Debug)]
 pub struct QueuedWrite {
     pub token: Token,
     pub stream_id: Option<StreamId>,
-    pub packet_id: Option<PacketId>,
+    pub tx_seq: Option<StreamSeq>,
     pub track_ack: bool,
     pub payload: QueuedPayload,
 }

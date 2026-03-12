@@ -1,29 +1,16 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::{PacketId, StreamId};
+use crate::{StreamId, StreamSeq};
 
 mod crypto;
 pub use crypto::*;
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct StreamBody {
-    pub packet_id: PacketId,
+pub struct StreamMessage {
+    pub tx_seq: StreamSeq,
+    pub ack_seq: Option<StreamSeq>,
     pub valid_until: u64,
-    pub packet_ack: Option<PacketAck>,
-    pub frame: Option<StreamFrame>,
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PacketAck {
-    pub packet_id: PacketId,
-}
-
-impl From<&ArchivedPacketAck> for PacketAck {
-    fn from(value: &ArchivedPacketAck) -> Self {
-        Self {
-            packet_id: (&value.packet_id).into(),
-        }
-    }
+    pub frame: StreamFrame,
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -32,9 +19,8 @@ pub enum StreamFrame {
     Accept(StreamFrameAccept),
     Reject(StreamFrameReject),
     Data(StreamFrameData),
-    Credit(StreamFrameCredit),
-    Finish(StreamFrameFinish),
     Reset(StreamFrameReset),
+    Ack(StreamFrameAck),
 }
 
 impl StreamFrame {
@@ -44,9 +30,25 @@ impl StreamFrame {
             | StreamFrame::Accept(StreamFrameAccept { stream_id, .. })
             | StreamFrame::Reject(StreamFrameReject { stream_id, .. })
             | StreamFrame::Data(StreamFrameData { stream_id, .. })
-            | StreamFrame::Credit(StreamFrameCredit { stream_id, .. })
-            | StreamFrame::Finish(StreamFrameFinish { stream_id, .. })
-            | StreamFrame::Reset(StreamFrameReset { stream_id, .. }) => *stream_id,
+            | StreamFrame::Reset(StreamFrameReset { stream_id, .. })
+            | StreamFrame::Ack(StreamFrameAck { stream_id }) => *stream_id,
+        }
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct BodyChunk {
+    pub offset: u64,
+    pub bytes: Vec<u8>,
+    pub fin: bool,
+}
+
+impl From<&ArchivedBodyChunk> for BodyChunk {
+    fn from(value: &ArchivedBodyChunk) -> Self {
+        Self {
+            offset: value.offset.to_native(),
+            bytes: value.bytes.as_slice().to_vec(),
+            fin: value.fin,
         }
     }
 }
@@ -55,7 +57,7 @@ impl StreamFrame {
 pub struct StreamFrameOpen {
     pub stream_id: StreamId,
     pub request_head: Vec<u8>,
-    pub response_max_offset: u64,
+    pub request_prefix: Option<BodyChunk>,
 }
 
 impl From<&ArchivedStreamFrameOpen> for StreamFrameOpen {
@@ -63,7 +65,7 @@ impl From<&ArchivedStreamFrameOpen> for StreamFrameOpen {
         Self {
             stream_id: (&value.stream_id).into(),
             request_head: value.request_head.as_slice().to_vec(),
-            response_max_offset: value.response_max_offset.to_native(),
+            request_prefix: value.request_prefix.as_ref().map(Into::into),
         }
     }
 }
@@ -72,7 +74,7 @@ impl From<&ArchivedStreamFrameOpen> for StreamFrameOpen {
 pub struct StreamFrameAccept {
     pub stream_id: StreamId,
     pub response_head: Vec<u8>,
-    pub request_max_offset: u64,
+    pub response_prefix: Option<BodyChunk>,
 }
 
 impl From<&ArchivedStreamFrameAccept> for StreamFrameAccept {
@@ -80,7 +82,7 @@ impl From<&ArchivedStreamFrameAccept> for StreamFrameAccept {
         Self {
             stream_id: (&value.stream_id).into(),
             response_head: value.response_head.as_slice().to_vec(),
-            request_max_offset: value.request_max_offset.to_native(),
+            response_prefix: value.response_prefix.as_ref().map(Into::into),
         }
     }
 }
@@ -100,31 +102,11 @@ impl From<&ArchivedStreamFrameReject> for StreamFrameReject {
     }
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamFrameCredit {
-    pub stream_id: StreamId,
-    pub dir: Direction,
-    pub recv_offset: u64,
-    pub max_offset: u64,
-}
-
-impl From<&ArchivedStreamFrameCredit> for StreamFrameCredit {
-    fn from(value: &ArchivedStreamFrameCredit) -> Self {
-        Self {
-            stream_id: (&value.stream_id).into(),
-            dir: (&value.dir).into(),
-            recv_offset: value.recv_offset.to_native(),
-            max_offset: value.max_offset.to_native(),
-        }
-    }
-}
-
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrameData {
     pub stream_id: StreamId,
     pub dir: Direction,
-    pub offset: u64,
-    pub bytes: Vec<u8>,
+    pub chunk: BodyChunk,
 }
 
 impl From<&ArchivedStreamFrameData> for StreamFrameData {
@@ -132,23 +114,7 @@ impl From<&ArchivedStreamFrameData> for StreamFrameData {
         Self {
             stream_id: (&value.stream_id).into(),
             dir: (&value.dir).into(),
-            offset: value.offset.to_native(),
-            bytes: value.bytes.as_slice().to_vec(),
-        }
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamFrameFinish {
-    pub stream_id: StreamId,
-    pub dir: Direction,
-}
-
-impl From<&ArchivedStreamFrameFinish> for StreamFrameFinish {
-    fn from(value: &ArchivedStreamFrameFinish) -> Self {
-        Self {
-            stream_id: (&value.stream_id).into(),
-            dir: (&value.dir).into(),
+            chunk: (&value.chunk).into(),
         }
     }
 }
@@ -156,7 +122,7 @@ impl From<&ArchivedStreamFrameFinish> for StreamFrameFinish {
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrameReset {
     pub stream_id: StreamId,
-    pub dir: ResetTarget,
+    pub target: ResetTarget,
     pub code: ResetCode,
 }
 
@@ -164,8 +130,21 @@ impl From<&ArchivedStreamFrameReset> for StreamFrameReset {
     fn from(value: &ArchivedStreamFrameReset) -> Self {
         Self {
             stream_id: (&value.stream_id).into(),
-            dir: (&value.dir).into(),
+            target: (&value.target).into(),
             code: (&value.code).into(),
+        }
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamFrameAck {
+    pub stream_id: StreamId,
+}
+
+impl From<&ArchivedStreamFrameAck> for StreamFrameAck {
+    fn from(value: &ArchivedStreamFrameAck) -> Self {
+        Self {
+            stream_id: (&value.stream_id).into(),
         }
     }
 }
