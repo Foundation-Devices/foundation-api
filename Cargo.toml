@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["api", "backup-shard", "btp", "quantum-link-macros"]
+members = ["api", "backup-shard", "btp", "ql", "quantum-link-macros"]
 
 [workspace.package]
 homepage = "https://github.com/Foundation-Devices/foundation-api"
@@ -24,6 +24,7 @@ backup-shard = { path = "backup-shard" }
 btp = { path = "btp" }
 foundation-api = { path = "api" }
 quantum-link-macros = { path = "quantum-link-macros" }
+ql-protocol = { path = "ql-protocol" }
 
 [patch.crates-io]
 pqcrypto-traits = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }

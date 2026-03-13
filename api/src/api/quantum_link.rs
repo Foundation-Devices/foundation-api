@@ -239,6 +239,8 @@ impl QuantumLinkIdentity {
 
 #[cfg(test)]
 mod tests {
+    use dcbor::CBOREncodable;
+
     use crate::{
         api::{
             message::{QuantumLinkMessage, PROTOCOL_VERSION},
@@ -247,6 +249,7 @@ mod tests {
         fx::ExchangeRate,
         message::EnvoyMessage,
         quantum_link::{ARIDCache, QlError, QuantumLinkIdentity},
+        status::Heartbeat,
     };
 
     #[test]
@@ -307,6 +310,53 @@ mod tests {
 
         // Assert that the original and decoded messages are the same
         assert_eq!(fx_rate.rate, fx_rate_decoded.rate);
+    }
+
+    #[test]
+    fn test_sealed_message_size() {
+        let envoy = QuantumLinkIdentity::generate();
+        let passport = QuantumLinkIdentity::generate();
+
+        let fx_rate = ExchangeRate {
+            currency_code: String::from("USD"),
+            rate: 0.85,
+            timestamp: 0,
+        };
+        let message = EnvoyMessage {
+            message: QuantumLinkMessage::ExchangeRate(fx_rate),
+            timestamp: 123456,
+        };
+
+        let envelope = QuantumLink::seal(
+            message,
+            (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
+            &passport.xid_document,
+        );
+        let bytes = envelope.to_cbor_data();
+
+        println!("sealed message size: {} bytes", bytes.len());
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn test_sealed_heartbeat_size() {
+        let envoy = QuantumLinkIdentity::generate();
+        let passport = QuantumLinkIdentity::generate();
+
+        let message = EnvoyMessage {
+            message: QuantumLinkMessage::Heartbeat(Heartbeat {}),
+            timestamp: 123456,
+        };
+
+        let envelope = QuantumLink::seal(
+            message,
+            (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
+            &passport.xid_document,
+        );
+        let bytes = envelope.to_cbor_data();
+
+        println!("sealed heartbeat size: {} bytes", bytes.len());
+        assert!(!bytes.is_empty());
     }
 
     #[test]
