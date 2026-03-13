@@ -120,6 +120,7 @@ pub struct InFlightFrame {
     pub tx_seq: StreamSeq,
     pub frame: StreamFrame,
     pub attempt: u8,
+    pub fast_retransmit_sent: bool,
 }
 
 #[derive(Debug)]
@@ -246,6 +247,33 @@ impl StreamControl {
 
     pub fn insert_in_flight(&mut self, frame: InFlightFrame) {
         let _ = self.in_flight.set(frame.tx_seq, frame);
+    }
+
+    pub fn fast_retransmit_candidate(
+        &self,
+        ack: StreamAck,
+        threshold: u8,
+    ) -> Option<(StreamSeq, StreamFrame, u8)> {
+        if threshold == 0 {
+            return None;
+        }
+
+        let frames: Vec<_> = self.in_flight.iter().collect();
+        for (index, (tx_seq, in_flight)) in frames.iter().enumerate() {
+            if Self::ack_covers(ack, *tx_seq) || in_flight.fast_retransmit_sent {
+                continue;
+            }
+
+            let later_acked = frames[index + 1..]
+                .iter()
+                .filter(|(later_seq, _)| Self::ack_covers(ack, *later_seq))
+                .count();
+            if later_acked >= threshold as usize {
+                return Some((*tx_seq, in_flight.frame.clone(), in_flight.attempt));
+            }
+        }
+
+        None
     }
 
     pub fn remove_in_flight(&mut self, tx_seq: StreamSeq) -> Option<InFlightFrame> {

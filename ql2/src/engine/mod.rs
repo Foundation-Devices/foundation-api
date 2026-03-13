@@ -57,6 +57,7 @@ pub struct EngineConfig {
     pub packet_expiration: Duration,
     pub stream_ack_delay: Duration,
     pub stream_ack_timeout: Duration,
+    pub stream_fast_retransmit_threshold: u8,
     pub stream_retry_limit: u8,
     pub keep_alive: Option<KeepAliveConfig>,
 }
@@ -69,6 +70,7 @@ impl Default for EngineConfig {
             packet_expiration: Duration::from_secs(30),
             stream_ack_delay: Duration::from_millis(5),
             stream_ack_timeout: Duration::from_millis(150),
+            stream_fast_retransmit_threshold: 2,
             stream_retry_limit: 5,
             keep_alive: None,
         }
@@ -1106,6 +1108,9 @@ impl Engine {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
+        let fast_retransmit = stream
+            .control()
+            .fast_retransmit_candidate(ack, self.config.stream_fast_retransmit_threshold);
         let acked: Vec<_> = stream
             .control()
             .in_flight
@@ -1196,6 +1201,21 @@ impl Engine {
                     }
                 }
                 StreamFrame::Data(_) => {}
+            }
+        }
+
+        if let Some((tx_seq, frame, attempt)) = fast_retransmit {
+            if let Some(stream) = self.streams.get_mut(&stream_id) {
+                Self::enqueue_stream_frame_with_seq(
+                    &self.config,
+                    &mut self.state,
+                    stream.control_mut(),
+                    tx_seq,
+                    frame,
+                    attempt.saturating_add(1),
+                    true,
+                    true,
+                );
             }
         }
 
@@ -1329,7 +1349,7 @@ impl Engine {
     ) {
         let tx_seq = control.take_tx_seq();
         Self::enqueue_stream_frame_with_seq(
-            config, state, control, tx_seq, frame, attempt, priority,
+            config, state, control, tx_seq, frame, attempt, priority, false,
         );
     }
 
@@ -1341,11 +1361,13 @@ impl Engine {
         frame: StreamFrame,
         attempt: u8,
         priority: bool,
+        fast_retransmit_sent: bool,
     ) {
         control.insert_in_flight(InFlightFrame {
             tx_seq,
             frame: frame.clone(),
             attempt,
+            fast_retransmit_sent,
         });
         let ack = control.ack_dirty.then(|| control.current_ack());
         if ack.is_some() {
@@ -2149,6 +2171,7 @@ impl Engine {
                                 frame,
                                 attempt.saturating_add(1),
                                 true,
+                                false,
                             );
                         }
                     }

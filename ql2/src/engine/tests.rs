@@ -125,13 +125,66 @@ fn decode_stream_body(bytes: &[u8], session_key: &SymmetricKey) -> (QlHeader, St
     (record.header, body)
 }
 
-fn connected_engine(local: &TestCrypto, peer: Peer, session_key: SymmetricKey) -> Engine {
-    let mut engine = Engine::new(EngineConfig::default(), local.identity.clone(), Some(peer));
+fn connected_engine_with_config(
+    config: EngineConfig,
+    local: &TestCrypto,
+    peer: Peer,
+    session_key: SymmetricKey,
+) -> Engine {
+    let mut engine = Engine::new(config, local.identity.clone(), Some(peer));
     engine.state.peer.as_mut().unwrap().session = PeerSession::Connected {
         session_key,
         keepalive: KeepAliveState::default(),
     };
     engine
+}
+
+fn connected_engine(local: &TestCrypto, peer: Peer, session_key: SymmetricKey) -> Engine {
+    connected_engine_with_config(EngineConfig::default(), local, peer, session_key)
+}
+
+fn insert_inflight_gap_stream(engine: &mut Engine, stream_id: StreamId, now: Instant) {
+    let mut stream = StreamState::Initiator(InitiatorStream {
+        meta: StreamMeta {
+            stream_id,
+            last_activity: now,
+        },
+        control: StreamControl::default(),
+        request: OutboundState::from_prefix(Direction::Request, false),
+        response: InboundState::new(),
+        accept: InitiatorAccept::Opening(OpenWaiter {
+            open_id: Some(OpenId(1)),
+            open_timeout_token: Token(999),
+        }),
+    });
+    let control = stream.control_mut();
+    control.next_tx_seq = StreamSeq(6);
+    control.insert_in_flight(InFlightFrame {
+        tx_seq: StreamSeq::START,
+        frame: StreamFrame::Open(StreamFrameOpen {
+            stream_id,
+            request_head: b"open".to_vec(),
+            request_prefix: None,
+        }),
+        attempt: 0,
+        fast_retransmit_sent: false,
+    });
+    for (tx_seq, byte) in [(2, b'a'), (3, b'b'), (4, b'c'), (5, b'd')] {
+        control.insert_in_flight(InFlightFrame {
+            tx_seq: StreamSeq(tx_seq),
+            frame: StreamFrame::Data(StreamFrameData {
+                stream_id,
+                dir: Direction::Request,
+                chunk: BodyChunk {
+                    bytes: vec![byte],
+                    fin: false,
+                },
+            }),
+            attempt: 0,
+            fast_retransmit_sent: false,
+        });
+    }
+    engine.streams.insert(stream_id, stream);
 }
 
 impl Harness {
@@ -1115,45 +1168,7 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
     let stream_id = a
         .state
         .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    let mut stream = StreamState::Initiator(InitiatorStream {
-        meta: StreamMeta {
-            stream_id,
-            last_activity: now,
-        },
-        control: StreamControl::default(),
-        request: OutboundState::from_prefix(Direction::Request, false),
-        response: InboundState::new(),
-        accept: InitiatorAccept::Opening(OpenWaiter {
-            open_id: Some(OpenId(1)),
-            open_timeout_token: Token(999),
-        }),
-    });
-    let control = stream.control_mut();
-    control.next_tx_seq = StreamSeq(6);
-    control.insert_in_flight(InFlightFrame {
-        tx_seq: StreamSeq(1),
-        frame: StreamFrame::Open(StreamFrameOpen {
-            stream_id,
-            request_head: b"open".to_vec(),
-            request_prefix: None,
-        }),
-        attempt: 0,
-    });
-    for (tx_seq, byte) in [(2, b'a'), (3, b'b'), (4, b'c'), (5, b'd')] {
-        control.insert_in_flight(InFlightFrame {
-            tx_seq: StreamSeq(tx_seq),
-            frame: StreamFrame::Data(StreamFrameData {
-                stream_id,
-                dir: Direction::Request,
-                chunk: BodyChunk {
-                    bytes: vec![byte],
-                    fin: false,
-                },
-            }),
-            attempt: 0,
-        });
-    }
-    a.streams.insert(stream_id, stream);
+    insert_inflight_gap_stream(&mut a, stream_id, now);
 
     let ack_record = wire::stream::encrypt_stream(
         QlHeader {
@@ -1191,6 +1206,141 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
         .collect();
     assert_eq!(remaining, vec![StreamSeq(3)]);
     assert_eq!(stream.control().next_tx_seq, StreamSeq(6));
+}
+
+#[test]
+fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
+    let crypto_a = TestCrypto::new(83);
+    let crypto_b = TestCrypto::new(84);
+    let session_key = SymmetricKey::from_data([9; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+    let peer_b = crypto_b.peer();
+    let mut config = EngineConfig::default();
+    config.stream_fast_retransmit_threshold = 2;
+    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
+
+    let now = Instant::now();
+    let stream_id = a
+        .state
+        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
+    insert_inflight_gap_stream(&mut a, stream_id, now);
+
+    let ack_record = wire::stream::encrypt_stream(
+        QlHeader {
+            sender: crypto_b.xid(),
+            recipient: crypto_a.xid(),
+        },
+        &session_key,
+        &StreamBody::Ack(StreamAckBody {
+            stream_id,
+            ack: StreamAck {
+                base: StreamSeq(2),
+                bitmap: 0b0000_0110,
+            },
+            valid_until: wire::now_secs().saturating_add(60),
+        }),
+        [10; wire::encrypted_message::NONCE_SIZE],
+    );
+
+    let outputs = run_engine(
+        &mut a,
+        now,
+        EngineInput::Incoming(wire::encode_record(&ack_record)),
+        &crypto_a,
+    );
+
+    let (_, tracked, bytes) = take_single_write(&outputs);
+    assert_eq!(
+        tracked,
+        Some(TrackedWrite {
+            stream_id,
+            tx_seq: StreamSeq(3)
+        })
+    );
+    let (_, body) = decode_stream_body(&bytes, &session_key);
+    assert!(matches!(
+        body,
+        StreamBody::Message(StreamMessage {
+            tx_seq: StreamSeq(3),
+            frame: StreamFrame::Data(StreamFrameData {
+                dir: Direction::Request,
+                ..
+            }),
+            ..
+        })
+    ));
+
+    let stream = a.streams.get(&stream_id).unwrap();
+    let remaining: Vec<_> = stream
+        .control()
+        .in_flight
+        .iter()
+        .map(|(seq, _)| seq)
+        .collect();
+    assert_eq!(remaining, vec![StreamSeq(3)]);
+    let frame = stream.control().in_flight.get(&StreamSeq(3)).unwrap();
+    assert_eq!(frame.attempt, 1);
+    assert!(frame.fast_retransmit_sent);
+}
+
+#[test]
+fn fast_retransmit_respects_configured_threshold() {
+    let crypto_a = TestCrypto::new(85);
+    let crypto_b = TestCrypto::new(86);
+    let session_key = SymmetricKey::from_data([10; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+    let peer_b = crypto_b.peer();
+    let mut config = EngineConfig::default();
+    config.stream_fast_retransmit_threshold = 3;
+    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
+
+    let now = Instant::now();
+    let stream_id = a
+        .state
+        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
+    insert_inflight_gap_stream(&mut a, stream_id, now);
+
+    let ack_record = wire::stream::encrypt_stream(
+        QlHeader {
+            sender: crypto_b.xid(),
+            recipient: crypto_a.xid(),
+        },
+        &session_key,
+        &StreamBody::Ack(StreamAckBody {
+            stream_id,
+            ack: StreamAck {
+                base: StreamSeq(2),
+                bitmap: 0b0000_0110,
+            },
+            valid_until: wire::now_secs().saturating_add(60),
+        }),
+        [11; wire::encrypted_message::NONCE_SIZE],
+    );
+
+    let outputs = run_engine(
+        &mut a,
+        now,
+        EngineInput::Incoming(wire::encode_record(&ack_record)),
+        &crypto_a,
+    );
+
+    assert!(!outputs.iter().any(|output| matches!(
+        output,
+        EngineOutput::WriteMessage {
+            tracked: Some(_),
+            ..
+        }
+    )));
+
+    let stream = a.streams.get(&stream_id).unwrap();
+    let remaining: Vec<_> = stream
+        .control()
+        .in_flight
+        .iter()
+        .map(|(seq, _)| seq)
+        .collect();
+    assert_eq!(remaining, vec![StreamSeq(3)]);
+    let frame = stream.control().in_flight.get(&StreamSeq(3)).unwrap();
+    assert_eq!(frame.attempt, 0);
+    assert!(!frame.fast_retransmit_sent);
 }
 
 #[test]
