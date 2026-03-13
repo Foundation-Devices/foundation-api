@@ -8,16 +8,15 @@ mod tests;
 
 use std::{
     cmp::Reverse,
-    collections::HashMap,
     mem,
     time::{Duration, Instant},
 };
 
-use bc_components::{SigningPublicKey, XID};
+use bc_components::{SigningPublicKey, SymmetricKey, XID};
 use rkyv::access_mut;
 pub use state::{
     Engine, EngineInput, EngineOutput, EngineState, InitiatorStage, KeepAliveState, OpenId,
-    OutputFn, PeerRecord, PeerSession, Token, TrackedWrite,
+    OutboundWrite, OutputFn, PeerRecord, PeerSession, Token, WriteId,
 };
 
 use self::{replay_cache::ReplayKey, state::*, stream::*};
@@ -83,7 +82,7 @@ impl Engine {
             config: config,
             identity,
             state: EngineState::new(peer),
-            streams: HashMap::new(),
+            streams: StreamStore::default(),
         }
     }
 
@@ -94,6 +93,7 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
+        self.state.now = now;
         match input {
             EngineInput::BindPeer(peer) => self.handle_bind_peer(peer, emit),
             EngineInput::Pair => self.handle_pair_local(now, crypto),
@@ -138,17 +138,74 @@ impl Engine {
                 self.handle_responder_dropped(now, stream_id)
             }
             EngineInput::Incoming(bytes) => self.handle_incoming(now, bytes, crypto, emit),
-            EngineInput::WriteCompleted {
-                token,
-                tracked,
-                result,
-            } => self.handle_write_done(now, token, tracked, result, emit),
             EngineInput::TimerExpired => self.handle_timeouts(now, crypto, emit),
         }
 
-        self.queue_ready_retransmits(now, emit);
+        self.handle_ready_retransmits(now, emit);
         self.drive_streams(now, emit);
-        self.maybe_start_next_write(crypto, emit);
+        emit(EngineOutput::SetTimer(self.next_deadline()));
+    }
+
+    pub fn take_next_write(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
+        self.take_next_control_write(crypto)
+            .or_else(|| self.take_next_stream_write(crypto))
+    }
+
+    pub fn complete_write(
+        &mut self,
+        write_id: WriteId,
+        result: Result<(), QlError>,
+        emit: &mut impl OutputFn,
+    ) {
+        let now = self.state.now;
+        let Some(active) = self.state.active_writes.remove(&write_id) else {
+            emit(EngineOutput::SetTimer(self.next_deadline()));
+            return;
+        };
+
+        if let OutboundWriteKind::StreamAck { .. } = active.kind {
+            if let Some(token) = active.token {
+                self.clear_ack_outbound_token(token, result.is_err());
+            }
+        }
+
+        if let Err(error) = result {
+            if let OutboundWriteKind::StreamFrame { stream_id, .. } = active.kind {
+                self.fail_stream_by_id(stream_id, error.clone(), emit);
+            }
+
+            if self.is_handshake_token(active.token) {
+                if let Some(entry) = self.state.peer.as_mut() {
+                    entry.session = PeerSession::Disconnected;
+                }
+                self.emit_peer_status(emit);
+                self.drop_outbound();
+                self.abort_streams(error, emit);
+            }
+
+            emit(EngineOutput::SetTimer(self.next_deadline()));
+            return;
+        }
+
+        if let Some(session_key) = self.connected_session_for_token(active.token) {
+            if let Some(entry) = self.state.peer.as_mut() {
+                entry.session = PeerSession::Connected {
+                    session_key,
+                    keepalive: KeepAliveState::default(),
+                };
+            }
+            self.emit_peer_status(emit);
+            self.record_activity(now);
+        }
+
+        if let OutboundWriteKind::StreamFrame { stream_id, tx_seq } = active.kind {
+            if let Some(stream) = self.streams.get_mut(&stream_id) {
+                stream
+                    .control_mut()
+                    .complete_write(tx_seq, now + self.config.stream_ack_timeout);
+            }
+        }
+
         emit(EngineOutput::SetTimer(self.next_deadline()));
     }
 
@@ -184,7 +241,10 @@ impl Engine {
                     .control()
                     .in_flight
                     .iter()
-                    .filter_map(|(_, in_flight)| in_flight.retry_at)
+                    .filter_map(|(_, in_flight)| match in_flight.write_state {
+                        InFlightWriteState::WaitingRetry { retry_at } => Some(retry_at),
+                        InFlightWriteState::Ready | InFlightWriteState::Issued => None,
+                    })
             })
             .min()
     }
@@ -209,13 +269,13 @@ impl Engine {
     }
 
     fn reset_runtime(&mut self, error: QlError, emit: &mut impl OutputFn) {
-        let streams = mem::take(&mut self.streams);
+        let streams = mem::take(&mut self.streams).into_inner();
         for (stream_id, stream) in streams {
             self.fail_stream(stream_id, stream, error.clone(), emit);
         }
-        self.state.outbound.clear();
+        self.state.control_outbound.clear();
+        self.state.active_writes.clear();
         self.state.timeouts.clear();
-        self.state.write_in_flight = None;
     }
 
     fn handle_bind_peer(&mut self, peer: Peer, emit: &mut impl OutputFn) {
@@ -1235,25 +1295,15 @@ impl Engine {
     }
 
     fn drive_streams(&mut self, now: Instant, emit: &mut impl OutputFn) {
-        let config = &self.config;
-        let state = &mut self.state;
         for stream in self.streams.values_mut() {
-            Self::drive_stream(config, state, now, stream, emit);
+            Self::drive_stream(now, stream, emit);
         }
     }
 
-    fn drive_stream(
-        config: &EngineConfig,
-        state: &mut EngineState,
-        _now: Instant,
-        stream: &mut StreamState,
-        emit: &mut impl OutputFn,
-    ) {
+    fn drive_stream(_now: Instant, stream: &mut StreamState, emit: &mut impl OutputFn) {
         match stream {
             StreamState::Initiator(stream) => {
                 Self::drive_stream_outbound(
-                    config,
-                    state,
                     stream.meta.stream_id,
                     &mut stream.control,
                     Some(&mut stream.request),
@@ -1265,8 +1315,6 @@ impl Engine {
                 match &mut stream.response {
                     ResponderResponse::Accepted { body, .. } => {
                         Self::drive_stream_outbound(
-                            config,
-                            state,
                             stream_id,
                             &mut stream.control,
                             Some(body),
@@ -1274,31 +1322,17 @@ impl Engine {
                         );
                     }
                     _ => {
-                        Self::drive_stream_outbound(
-                            config,
-                            state,
-                            stream_id,
-                            &mut stream.control,
-                            None,
-                            emit,
-                        );
+                        Self::drive_stream_outbound(stream_id, &mut stream.control, None, emit);
                     }
                 }
             }
-            StreamState::Provisional(stream) => Self::drive_stream_outbound(
-                config,
-                state,
-                stream.meta.stream_id,
-                &mut stream.control,
-                None,
-                emit,
-            ),
+            StreamState::Provisional(stream) => {
+                Self::drive_stream_outbound(stream.meta.stream_id, &mut stream.control, None, emit)
+            }
         }
     }
 
     fn drive_stream_outbound(
-        config: &EngineConfig,
-        state: &mut EngineState,
         stream_id: StreamId,
         control: &mut StreamControl,
         mut outbound: Option<&mut OutboundState>,
@@ -1307,13 +1341,9 @@ impl Engine {
         loop {
             if control.send_window_has_space() {
                 if let Some(frame) = control.pending.pop_front() {
-                    Self::enqueue_stream_frame(config, state, control, frame, 0, false);
+                    Self::enqueue_stream_frame(control, frame, 0);
                     continue;
                 }
-            }
-            if control.ack_dirty && control.ack_immediate && control.ack_outbound_token.is_none() {
-                Self::enqueue_stream_ack_body(config, state, control, stream_id, false);
-                continue;
             }
             if !control.send_window_has_space() {
                 return;
@@ -1331,8 +1361,6 @@ impl Engine {
             }
             if outbound.queue_fin() {
                 Self::enqueue_stream_frame(
-                    config,
-                    state,
                     control,
                     StreamFrame::Data(StreamFrameData {
                         stream_id,
@@ -1343,7 +1371,6 @@ impl Engine {
                         },
                     }),
                     0,
-                    false,
                 );
                 continue;
             }
@@ -1351,69 +1378,23 @@ impl Engine {
         }
     }
 
-    fn enqueue_stream_frame(
-        config: &EngineConfig,
-        state: &mut EngineState,
-        control: &mut StreamControl,
-        frame: StreamFrame,
-        attempt: u8,
-        priority: bool,
-    ) {
+    fn enqueue_stream_frame(control: &mut StreamControl, frame: StreamFrame, attempt: u8) {
         let tx_seq = control.take_tx_seq();
-        Self::enqueue_stream_frame_with_seq(
-            config, state, control, tx_seq, frame, attempt, priority,
-        );
+        Self::enqueue_stream_frame_with_seq(control, tx_seq, frame, attempt);
     }
 
     fn enqueue_stream_frame_with_seq(
-        config: &EngineConfig,
-        state: &mut EngineState,
         control: &mut StreamControl,
         tx_seq: StreamSeq,
         frame: StreamFrame,
         attempt: u8,
-        priority: bool,
     ) {
-        let stream_id = frame.stream_id();
         control.insert_in_flight(InFlightFrame {
             tx_seq,
             frame,
             attempt,
-            retry_at: None,
+            write_state: InFlightWriteState::Ready,
         });
-        state.enqueue_stream_frame(config, priority, stream_id, tx_seq);
-    }
-
-    fn enqueue_in_flight_stream_frame(
-        config: &EngineConfig,
-        state: &mut EngineState,
-        control: &mut StreamControl,
-        tx_seq: StreamSeq,
-        attempt: u8,
-        priority: bool,
-    ) {
-        let Some(in_flight) = control.in_flight.get_mut(&tx_seq) else {
-            return;
-        };
-        in_flight.attempt = attempt;
-        in_flight.retry_at = None;
-        let stream_id = in_flight.frame.stream_id();
-        state.enqueue_stream_frame(config, priority, stream_id, tx_seq);
-    }
-
-    fn enqueue_stream_ack_body(
-        config: &EngineConfig,
-        state: &mut EngineState,
-        control: &mut StreamControl,
-        stream_id: StreamId,
-        priority: bool,
-    ) {
-        if !control.ack_dirty {
-            return;
-        }
-        control.clear_ack_schedule();
-        let token = state.enqueue_stream_ack(config, priority, stream_id);
-        control.ack_outbound_token = Some(token);
     }
 
     fn queue_protocol_reset(stream: &mut StreamState, emit: &mut impl OutputFn) {
@@ -1548,44 +1529,23 @@ impl Engine {
         }
     }
 
-    fn queue_ready_retransmits(&mut self, now: Instant, emit: &mut impl OutputFn) {
-        let mut ready = Vec::new();
-        for (stream_id, stream) in &self.streams {
-            for (tx_seq, in_flight) in stream.control().in_flight.iter() {
-                if in_flight.retry_at.is_some_and(|retry_at| retry_at <= now) {
-                    ready.push((*stream_id, tx_seq, in_flight.attempt));
-                }
+    fn handle_ready_retransmits(&mut self, now: Instant, emit: &mut impl OutputFn) {
+        let mut timed_out = Vec::new();
+        for (stream_id, stream) in self.streams.iter() {
+            let exhausted = stream.control().in_flight.iter().any(|(_, in_flight)| {
+                matches!(
+                    in_flight.write_state,
+                    InFlightWriteState::WaitingRetry { retry_at }
+                        if retry_at <= now && in_flight.attempt >= self.config.stream_retry_limit
+                )
+            });
+            if exhausted {
+                timed_out.push(*stream_id);
             }
         }
 
-        for (stream_id, tx_seq, attempt) in ready {
-            let ready = self.streams.get(&stream_id).and_then(|stream| {
-                stream
-                    .control()
-                    .in_flight
-                    .get(&tx_seq)
-                    .and_then(|in_flight| {
-                        (in_flight.attempt == attempt
-                            && in_flight.retry_at.is_some_and(|retry_at| retry_at <= now))
-                        .then_some(())
-                    })
-            });
-            if ready.is_none() {
-                continue;
-            }
-
-            if attempt >= self.config.stream_retry_limit {
-                self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
-            } else if let Some(stream) = self.streams.get_mut(&stream_id) {
-                Self::enqueue_in_flight_stream_frame(
-                    &self.config,
-                    &mut self.state,
-                    stream.control_mut(),
-                    tx_seq,
-                    attempt.saturating_add(1),
-                    true,
-                );
-            }
+        for stream_id in timed_out {
+            self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
         }
     }
 
@@ -1598,6 +1558,261 @@ impl Engine {
                     control.note_ack(true);
                 }
                 break;
+            }
+        }
+    }
+
+    fn clear_active_writes_for_stream(&mut self, stream_id: StreamId) {
+        self.state
+            .active_writes
+            .retain(|_, active| match active.kind {
+                OutboundWriteKind::Control => true,
+                OutboundWriteKind::StreamAck {
+                    stream_id: active_stream_id,
+                }
+                | OutboundWriteKind::StreamReset {
+                    stream_id: active_stream_id,
+                } => active_stream_id != stream_id,
+                OutboundWriteKind::StreamFrame {
+                    stream_id: active_stream_id,
+                    ..
+                } => active_stream_id != stream_id,
+            });
+    }
+
+    fn is_handshake_token(&self, token: Option<Token>) -> bool {
+        let Some(token) = token else {
+            return false;
+        };
+        matches!(self.state.peer.as_ref().map(|entry| &entry.session),
+            Some(PeerSession::Initiator { handshake_token, .. }) if *handshake_token == token)
+            || matches!(self.state.peer.as_ref().map(|entry| &entry.session),
+                Some(PeerSession::Responder { handshake_token, .. }) if *handshake_token == token)
+    }
+
+    fn connected_session_for_token(&self, token: Option<Token>) -> Option<SymmetricKey> {
+        let token = token?;
+        self.state
+            .peer
+            .as_ref()
+            .and_then(|entry| match &entry.session {
+                PeerSession::Initiator {
+                    session_key,
+                    handshake_token,
+                    stage: InitiatorStage::SendingConfirm,
+                    ..
+                } if *handshake_token == token => Some(session_key.clone()),
+                _ => None,
+            })
+    }
+
+    fn stream_write_session(&self) -> Option<(XID, SymmetricKey)> {
+        self.state.peer.as_ref().and_then(|peer| {
+            peer.session
+                .session_key()
+                .map(|key| (peer.peer, key.clone()))
+        })
+    }
+
+    fn issue_write(
+        &mut self,
+        kind: OutboundWriteKind,
+        token: Option<Token>,
+        bytes: Vec<u8>,
+    ) -> OutboundWrite {
+        let id = self.state.next_write_id();
+        self.state
+            .active_writes
+            .insert(id, ActiveWrite { token, kind });
+        OutboundWrite { id, bytes }
+    }
+
+    fn take_next_control_write(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
+        while let Some(message) = self.state.control_outbound.pop_front() {
+            let bytes = match message.payload {
+                ControlWritePayload::Encoded(bytes) => bytes,
+                ControlWritePayload::StreamReset {
+                    stream_id,
+                    target,
+                    code,
+                } => {
+                    let Some((recipient, session_key)) = self.stream_write_session() else {
+                        continue;
+                    };
+                    let body = StreamBody::Message(StreamMessage {
+                        tx_seq: StreamSeq::START,
+                        ack: None,
+                        valid_until: wire::now_secs()
+                            .saturating_add(self.config.packet_expiration.as_secs()),
+                        frame: StreamFrame::Reset(StreamFrameReset {
+                            stream_id,
+                            target,
+                            code,
+                        }),
+                    });
+                    let record = encrypt_stream(
+                        QlHeader {
+                            sender: self.identity.xid,
+                            recipient,
+                        },
+                        &session_key,
+                        &body,
+                        encrypted_message_nonce(crypto),
+                    );
+                    wire::encode_record(&record)
+                }
+            };
+            return Some(self.issue_write(message.kind, Some(message.token), bytes));
+        }
+        None
+    }
+
+    fn take_next_stream_write(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
+        let (recipient, session_key) = self.stream_write_session()?;
+        let stream_ids: Vec<_> = self.streams.scan_from_cursor().collect();
+        for stream_id in stream_ids {
+            let write = self.take_next_write_for_stream(stream_id, recipient, &session_key, crypto);
+            if write.is_some() {
+                self.streams.advance_cursor_after(stream_id);
+                return write;
+            }
+        }
+        None
+    }
+
+    fn take_next_write_for_stream(
+        &mut self,
+        stream_id: StreamId,
+        recipient: XID,
+        session_key: &SymmetricKey,
+        crypto: &impl QlCrypto,
+    ) -> Option<OutboundWrite> {
+        #[derive(Clone, Copy)]
+        enum StreamWriteSelection {
+            Ack,
+            InitialFrame { tx_seq: StreamSeq },
+            RetryFrame { tx_seq: StreamSeq },
+        }
+
+        let now = self.state.now;
+        let selection = {
+            let stream = self.streams.get(&stream_id)?;
+            let is_provisional = matches!(stream, StreamState::Provisional(_));
+            let control = stream.control();
+            if !is_provisional {
+                if let Some(tx_seq) = control.in_flight.iter().find_map(|(tx_seq, in_flight)| {
+                    matches!(
+                        in_flight.write_state,
+                        InFlightWriteState::WaitingRetry { retry_at }
+                            if retry_at <= now && in_flight.attempt < self.config.stream_retry_limit
+                    )
+                    .then_some(tx_seq)
+                }) {
+                    Some(StreamWriteSelection::RetryFrame { tx_seq })
+                } else if let Some(tx_seq) =
+                    control.in_flight.iter().find_map(|(tx_seq, in_flight)| {
+                        matches!(in_flight.write_state, InFlightWriteState::Ready).then_some(tx_seq)
+                    })
+                {
+                    Some(StreamWriteSelection::InitialFrame { tx_seq })
+                } else if control.ack_dirty
+                    && control.ack_immediate
+                    && control.ack_outbound_token.is_none()
+                {
+                    Some(StreamWriteSelection::Ack)
+                } else {
+                    None
+                }
+            } else if control.ack_dirty
+                && control.ack_immediate
+                && control.ack_outbound_token.is_none()
+            {
+                Some(StreamWriteSelection::Ack)
+            } else {
+                None
+            }
+        }?;
+
+        match selection {
+            StreamWriteSelection::Ack => {
+                let token = self.state.next_token();
+                let ack = {
+                    let stream = self.streams.get_mut(&stream_id)?;
+                    let control = stream.control_mut();
+                    if !(control.ack_dirty
+                        && control.ack_immediate
+                        && control.ack_outbound_token.is_none())
+                    {
+                        return None;
+                    }
+                    let ack = control.current_ack();
+                    control.clear_ack_schedule();
+                    control.note_ack_sent(ack);
+                    control.ack_outbound_token = Some(token);
+                    ack
+                };
+
+                let body = StreamBody::Ack(StreamAckBody {
+                    stream_id,
+                    ack,
+                    valid_until: wire::now_secs()
+                        .saturating_add(self.config.packet_expiration.as_secs()),
+                });
+                let record = encrypt_stream(
+                    QlHeader {
+                        sender: self.identity.xid,
+                        recipient,
+                    },
+                    session_key,
+                    &body,
+                    encrypted_message_nonce(crypto),
+                );
+                Some(self.issue_write(
+                    OutboundWriteKind::StreamAck { stream_id },
+                    Some(token),
+                    wire::encode_record(&record),
+                ))
+            }
+            StreamWriteSelection::InitialFrame { tx_seq }
+            | StreamWriteSelection::RetryFrame { tx_seq } => {
+                let (ack, frame) = {
+                    let stream = self.streams.get_mut(&stream_id)?;
+                    match stream {
+                        StreamState::Initiator(state) => {
+                            let ack = state.control.take_piggyback_ack(!state.response.closed);
+                            let frame = state.control.mark_write_issued(tx_seq)?;
+                            (ack, frame)
+                        }
+                        StreamState::Responder(state) => {
+                            let ack = state.control.take_piggyback_ack(!state.request.closed);
+                            let frame = state.control.mark_write_issued(tx_seq)?;
+                            (ack, frame)
+                        }
+                        StreamState::Provisional(_) => return None,
+                    }
+                };
+
+                let body = StreamBody::Message(StreamMessage {
+                    tx_seq,
+                    ack,
+                    valid_until: wire::now_secs()
+                        .saturating_add(self.config.packet_expiration.as_secs()),
+                    frame,
+                });
+                let record = encrypt_stream(
+                    QlHeader {
+                        sender: self.identity.xid,
+                        recipient,
+                    },
+                    session_key,
+                    &body,
+                    encrypted_message_nonce(crypto),
+                );
+                Some(self.issue_write(
+                    OutboundWriteKind::StreamFrame { stream_id, tx_seq },
+                    None,
+                    wire::encode_record(&record),
+                ))
             }
         }
     }
@@ -1929,29 +2144,20 @@ impl Engine {
         }
     }
 
-    fn drop_outbound(&mut self, emit: &mut impl OutputFn) {
-        while let Some(message) = self.state.outbound.pop_front() {
-            match message.payload {
-                QueuedPayload::Control(_) => {}
-                QueuedPayload::StreamAck { .. } => {
-                    self.clear_ack_outbound_token(message.token, false);
-                }
-                QueuedPayload::StreamFrame { stream_id, .. } => {
-                    self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
-                }
-                QueuedPayload::StreamReset { .. } => {}
-            }
-        }
+    fn drop_outbound(&mut self) {
+        self.state.control_outbound.clear();
+        self.state.active_writes.clear();
     }
 
     fn abort_streams(&mut self, error: QlError, emit: &mut impl OutputFn) {
-        let streams = mem::take(&mut self.streams);
+        let streams = mem::take(&mut self.streams).into_inner();
         for (stream_id, stream) in streams {
             self.fail_stream(stream_id, stream, error.clone(), emit);
         }
     }
 
     fn fail_stream_by_id(&mut self, stream_id: StreamId, error: QlError, emit: &mut impl OutputFn) {
+        self.clear_active_writes_for_stream(stream_id);
         let Some(stream) = self.streams.remove(&stream_id) else {
             return;
         };
@@ -2013,7 +2219,7 @@ impl Engine {
         let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
-        self.drop_outbound(emit);
+        self.drop_outbound();
         self.abort_streams(QlError::SendFailed, emit);
         self.state.peer = None;
         emit(EngineOutput::PeerStatusChanged {
@@ -2036,28 +2242,9 @@ impl Engine {
             let entry = std::collections::binary_heap::PeekMut::pop(entry).0;
             match entry.kind {
                 TimeoutKind::Outbound { token } => {
-                    let mut timed_out_stream = None;
-                    let mut timed_out_ack = false;
-                    self.state.outbound.retain(|message| {
-                        if message.token == token {
-                            match &message.payload {
-                                QueuedPayload::Control(_) => {}
-                                QueuedPayload::StreamAck { .. } => timed_out_ack = true,
-                                QueuedPayload::StreamFrame { stream_id, .. } => {
-                                    timed_out_stream = Some(*stream_id)
-                                }
-                                QueuedPayload::StreamReset { .. } => {}
-                            }
-                            false
-                        } else {
-                            true
-                        }
-                    });
-                    if let Some(stream_id) = timed_out_stream {
-                        self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
-                    } else if timed_out_ack {
-                        self.clear_ack_outbound_token(token, true);
-                    }
+                    self.state
+                        .control_outbound
+                        .retain(|message| message.token != token);
                 }
                 TimeoutKind::Handshake { token } => {
                     let Some(entry) = self.state.peer.as_ref() else {
@@ -2073,7 +2260,7 @@ impl Engine {
                             entry.session = PeerSession::Disconnected;
                         }
                         self.emit_peer_status(emit);
-                        self.drop_outbound(emit);
+                        self.drop_outbound();
                         self.abort_streams(QlError::SendFailed, emit);
                     }
                 }
@@ -2115,7 +2302,7 @@ impl Engine {
                             entry.session = PeerSession::Disconnected;
                         }
                         self.emit_peer_status(emit);
-                        self.drop_outbound(emit);
+                        self.drop_outbound();
                         self.abort_streams(QlError::SendFailed, emit);
                     }
                 }
@@ -2159,215 +2346,6 @@ impl Engine {
                     }
                 }
             }
-        }
-    }
-
-    fn handle_write_done(
-        &mut self,
-        now: Instant,
-        token: Token,
-        tracked: Option<TrackedWrite>,
-        result: Result<(), QlError>,
-        emit: &mut impl OutputFn,
-    ) {
-        if self.state.write_in_flight == Some(token) {
-            self.state.write_in_flight = None;
-        }
-        self.clear_ack_outbound_token(token, result.is_err());
-        if let Err(error) = result {
-            if let Some(tracked) = tracked {
-                self.fail_stream_by_id(tracked.stream_id, error.clone(), emit);
-            }
-            let should_disconnect = matches!(self.state.peer.as_ref().map(|entry| &entry.session),
-                Some(PeerSession::Initiator { handshake_token, .. }) if *handshake_token == token)
-                || matches!(self.state.peer.as_ref().map(|entry| &entry.session),
-                Some(PeerSession::Responder { handshake_token, .. }) if *handshake_token == token);
-            if should_disconnect {
-                if let Some(entry) = self.state.peer.as_mut() {
-                    entry.session = PeerSession::Disconnected;
-                }
-                self.emit_peer_status(emit);
-                self.drop_outbound(emit);
-                self.abort_streams(error, emit);
-            }
-            return;
-        }
-
-        let connected = self
-            .state
-            .peer
-            .as_ref()
-            .and_then(|entry| match &entry.session {
-                PeerSession::Initiator {
-                    session_key,
-                    handshake_token,
-                    stage: InitiatorStage::SendingConfirm,
-                    ..
-                } if *handshake_token == token => Some(session_key.clone()),
-                _ => None,
-            });
-        if let Some(session_key) = connected {
-            if let Some(entry) = self.state.peer.as_mut() {
-                entry.session = PeerSession::Connected {
-                    session_key,
-                    keepalive: KeepAliveState::default(),
-                };
-            }
-            self.emit_peer_status(emit);
-            self.record_activity(now);
-        }
-
-        if let Some(tracked) = tracked {
-            if let Some(stream) = self.streams.get_mut(&tracked.stream_id) {
-                stream
-                    .control_mut()
-                    .set_retry_deadline(tracked.tx_seq, now + self.config.stream_ack_timeout);
-            }
-        }
-    }
-
-    fn maybe_start_next_write(&mut self, crypto: &impl QlCrypto, emit: &mut impl OutputFn) {
-        if self.state.write_in_flight.is_some() {
-            return;
-        }
-        while let Some(message) = self.state.outbound.pop_front() {
-            if let QueuedPayload::Control(bytes) = &message.payload {
-                self.state.write_in_flight = Some(message.token);
-                emit(EngineOutput::WriteMessage {
-                    token: message.token,
-                    tracked: None,
-                    bytes: bytes.clone(),
-                });
-                break;
-            }
-
-            let Some((recipient, session_key)) = self.state.peer.as_ref().and_then(|peer| {
-                peer.session
-                    .session_key()
-                    .map(|key| (peer.peer, key.clone()))
-            }) else {
-                match message.payload {
-                    QueuedPayload::Control(_) => unreachable!(),
-                    QueuedPayload::StreamAck { .. } => {
-                        self.clear_ack_outbound_token(message.token, false);
-                    }
-                    QueuedPayload::StreamFrame { stream_id, .. } => {
-                        self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
-                    }
-                    QueuedPayload::StreamReset { .. } => {}
-                }
-                continue;
-            };
-
-            let valid_until =
-                wire::now_secs().saturating_add(self.config.packet_expiration.as_secs());
-
-            let (bytes, tracked) = match message.payload {
-                QueuedPayload::Control(_) => unreachable!(),
-                QueuedPayload::StreamAck { stream_id } => {
-                    let Some(stream) = self.streams.get_mut(&stream_id) else {
-                        continue;
-                    };
-                    let control = stream.control_mut();
-                    if control.ack_outbound_token != Some(message.token) {
-                        continue;
-                    }
-
-                    let ack = control.current_ack();
-                    control.clear_ack_schedule();
-                    control.note_ack_sent(ack);
-
-                    let body = StreamBody::Ack(StreamAckBody {
-                        stream_id,
-                        ack,
-                        valid_until,
-                    });
-                    let record = encrypt_stream(
-                        QlHeader {
-                            sender: self.identity.xid,
-                            recipient,
-                        },
-                        &session_key,
-                        &body,
-                        encrypted_message_nonce(crypto),
-                    );
-                    (wire::encode_record(&record), None)
-                }
-                QueuedPayload::StreamReset {
-                    stream_id,
-                    target,
-                    code,
-                } => {
-                    let body = StreamBody::Message(StreamMessage {
-                        tx_seq: StreamSeq::START,
-                        ack: None,
-                        valid_until,
-                        frame: StreamFrame::Reset(StreamFrameReset {
-                            stream_id,
-                            target,
-                            code,
-                        }),
-                    });
-                    let record = encrypt_stream(
-                        QlHeader {
-                            sender: self.identity.xid,
-                            recipient,
-                        },
-                        &session_key,
-                        &body,
-                        encrypted_message_nonce(crypto),
-                    );
-                    (wire::encode_record(&record), None)
-                }
-                QueuedPayload::StreamFrame { stream_id, tx_seq } => {
-                    let Some(stream) = self.streams.get_mut(&stream_id) else {
-                        continue;
-                    };
-                    let (ack, frame) = match stream {
-                        StreamState::Initiator(state) => {
-                            let ack = state.control.take_piggyback_ack(!state.response.closed);
-                            let Some(in_flight) = state.control.in_flight.get(&tx_seq) else {
-                                continue;
-                            };
-                            (ack, in_flight.frame.clone())
-                        }
-                        StreamState::Responder(state) => {
-                            let ack = state.control.take_piggyback_ack(!state.request.closed);
-                            let Some(in_flight) = state.control.in_flight.get(&tx_seq) else {
-                                continue;
-                            };
-                            (ack, in_flight.frame.clone())
-                        }
-                        StreamState::Provisional(_) => continue,
-                    };
-                    let body = StreamBody::Message(StreamMessage {
-                        tx_seq,
-                        ack,
-                        valid_until,
-                        frame,
-                    });
-                    let record = encrypt_stream(
-                        QlHeader {
-                            sender: self.identity.xid,
-                            recipient,
-                        },
-                        &session_key,
-                        &body,
-                        encrypted_message_nonce(crypto),
-                    );
-                    (
-                        wire::encode_record(&record),
-                        Some(TrackedWrite { stream_id, tx_seq }),
-                    )
-                }
-            };
-            self.state.write_in_flight = Some(message.token);
-            emit(EngineOutput::WriteMessage {
-                token: message.token,
-                tracked,
-                bytes,
-            });
-            break;
         }
     }
 }

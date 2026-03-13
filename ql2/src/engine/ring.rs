@@ -189,7 +189,7 @@ impl<'a, const N: usize, T> Iterator for SeqRingDrain<'a, N, T> {
 mod tests {
     use super::*;
     use crate::{
-        engine::stream::{BufferIncomingResult, InFlightFrame, StreamControl},
+        engine::stream::{BufferIncomingResult, InFlightFrame, InFlightWriteState, StreamControl},
         wire::stream::{
             BodyChunk, Direction, StreamAck, StreamFrame, StreamFrameData, StreamFrameOpen,
         },
@@ -318,7 +318,7 @@ mod tests {
                     request_prefix: None,
                 }),
                 attempt: 0,
-                retry_at: None,
+                write_state: InFlightWriteState::Ready,
             };
             control.insert_in_flight(frame);
             control.next_tx_seq = StreamSeq(tx_seq + 1);

@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::Instant,
+};
 
 use super::{ring::SeqRing, OpenId, Token};
 use crate::{
@@ -113,12 +116,22 @@ pub enum InitiatorAccept {
     Open { response_head: Vec<u8> },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InFlightWriteState {
+    /// The frame has never been handed out to be written.
+    Ready,
+    /// The frame was handed out and is awaiting `complete_write`.
+    Issued,
+    /// The frame write completed and is waiting for retransmit eligibility.
+    WaitingRetry { retry_at: Instant },
+}
+
 #[derive(Debug)]
 pub struct InFlightFrame {
     pub tx_seq: StreamSeq,
     pub frame: StreamFrame,
     pub attempt: u8,
-    pub retry_at: Option<Instant>,
+    pub write_state: InFlightWriteState,
 }
 
 #[derive(Debug)]
@@ -287,14 +300,33 @@ impl StreamControl {
 
     pub fn schedule_fast_retransmit(&mut self, tx_seq: StreamSeq, now: Instant) {
         if let Some(in_flight) = self.in_flight.get_mut(&tx_seq) {
-            in_flight.retry_at = Some(now);
+            in_flight.write_state = InFlightWriteState::WaitingRetry { retry_at: now };
             self.fast_recovery = Some(tx_seq);
+        }
+    }
+
+    pub fn mark_write_issued(&mut self, tx_seq: StreamSeq) -> Option<StreamFrame> {
+        let in_flight = self.in_flight.get_mut(&tx_seq)?;
+        match in_flight.write_state {
+            InFlightWriteState::Issued => return None,
+            InFlightWriteState::WaitingRetry { .. } => {
+                in_flight.attempt = in_flight.attempt.saturating_add(1);
+            }
+            InFlightWriteState::Ready => {}
+        }
+        in_flight.write_state = InFlightWriteState::Issued;
+        Some(in_flight.frame.clone())
+    }
+
+    pub fn complete_write(&mut self, tx_seq: StreamSeq, retry_at: Instant) {
+        if let Some(in_flight) = self.in_flight.get_mut(&tx_seq) {
+            in_flight.write_state = InFlightWriteState::WaitingRetry { retry_at };
         }
     }
 
     pub fn set_retry_deadline(&mut self, tx_seq: StreamSeq, retry_at: Instant) {
         if let Some(in_flight) = self.in_flight.get_mut(&tx_seq) {
-            in_flight.retry_at = Some(retry_at);
+            in_flight.write_state = InFlightWriteState::WaitingRetry { retry_at };
         }
     }
 
@@ -477,27 +509,84 @@ impl StreamState {
     }
 }
 
-#[derive(Debug)]
-pub enum QueuedPayload {
-    Control(Vec<u8>),
-    StreamAck {
-        stream_id: StreamId,
-    },
-    StreamFrame {
-        stream_id: StreamId,
-        tx_seq: StreamSeq,
-    },
-    StreamReset {
-        stream_id: StreamId,
-        target: ResetTarget,
-        code: ResetCode,
-    },
+#[derive(Debug, Default)]
+pub struct StreamStore {
+    streams: HashMap<StreamId, StreamState>,
+    order: Vec<StreamId>,
+    cursor: usize,
 }
 
-#[derive(Debug)]
-pub struct QueuedWrite {
-    pub token: Token,
-    pub payload: QueuedPayload,
+impl StreamStore {
+    pub fn len(&self) -> usize {
+        self.streams.len()
+    }
+
+    pub fn contains_key(&self, stream_id: &StreamId) -> bool {
+        self.streams.contains_key(stream_id)
+    }
+
+    pub fn insert(&mut self, stream_id: StreamId, stream: StreamState) -> Option<StreamState> {
+        if !self.streams.contains_key(&stream_id) {
+            self.order.push(stream_id);
+        }
+        self.streams.insert(stream_id, stream)
+    }
+
+    pub fn get(&self, stream_id: &StreamId) -> Option<&StreamState> {
+        self.streams.get(stream_id)
+    }
+
+    pub fn get_mut(&mut self, stream_id: &StreamId) -> Option<&mut StreamState> {
+        self.streams.get_mut(stream_id)
+    }
+
+    pub fn remove(&mut self, stream_id: &StreamId) -> Option<StreamState> {
+        let removed = self.streams.remove(stream_id);
+        if removed.is_some() {
+            if let Some(index) = self.order.iter().position(|id| id == stream_id) {
+                self.order.remove(index);
+                if self.order.is_empty() {
+                    self.cursor = 0;
+                } else if index < self.cursor {
+                    self.cursor -= 1;
+                } else if self.cursor >= self.order.len() {
+                    self.cursor = 0;
+                }
+            }
+        }
+        removed
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &StreamState> {
+        self.streams.values()
+    }
+
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut StreamState> {
+        self.streams.values_mut()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&StreamId, &StreamState)> {
+        self.streams.iter()
+    }
+
+    pub fn into_inner(self) -> HashMap<StreamId, StreamState> {
+        self.streams
+    }
+
+    pub fn scan_from_cursor(&self) -> impl Iterator<Item = StreamId> + '_ {
+        let len = self.order.len();
+        (0..len).map(move |offset| self.order[(self.cursor + offset) % len])
+    }
+
+    pub fn advance_cursor_after(&mut self, stream_id: StreamId) {
+        if let Some(index) = self.order.iter().position(|id| *id == stream_id) {
+            self.cursor = if self.order.is_empty() {
+                0
+            } else {
+                (index + 1) % self.order.len()
+            };
+        }
+    }
 }
 
 pub fn reset_frame(stream_id: StreamId, target: ResetTarget, code: ResetCode) -> StreamFrame {
