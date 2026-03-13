@@ -1611,12 +1611,6 @@ impl Engine {
         }
     }
 
-    fn note_sent_stream_ack(&mut self, stream_id: StreamId, ack: StreamAck) {
-        if let Some(stream) = self.streams.get_mut(&stream_id) {
-            stream.control_mut().note_ack_sent(ack);
-        }
-    }
-
     fn send_ephemeral_reset(&mut self, stream_id: StreamId, dir: ResetTarget, code: ResetCode) {
         self.state
             .enqueue_stream_reset(&self.config, true, stream_id, dir, code);
@@ -1625,10 +1619,6 @@ impl Engine {
     fn enqueue_handshake_message(&mut self, token: Token, deadline: Instant, bytes: Vec<u8>) {
         self.state
             .enqueue_handshake_message(&self.config, token, deadline, bytes);
-    }
-
-    fn enqueue_control(&mut self, priority: bool, bytes: Vec<u8>) -> Token {
-        self.state.enqueue_control(&self.config, priority, bytes)
     }
 
     fn handle_hello(
@@ -1910,7 +1900,7 @@ impl Engine {
                 },
                 session_key,
                 HeartbeatBody { meta },
-                next_encrypted_message_nonce(crypto),
+                encrypted_message_nonce(crypto),
             )
         };
         self.enqueue_handshake_message(token, deadline, wire::encode_record(&message));
@@ -2250,35 +2240,54 @@ impl Engine {
             return;
         }
         while let Some(message) = self.state.outbound.pop_front() {
-            let connected_peer = || {
-                self.state.peer.as_ref().and_then(|peer| {
-                    peer.session
-                        .session_key()
-                        .map(|key| (peer.peer, key.clone()))
-                })
+            if let QueuedPayload::Control(bytes) = &message.payload {
+                self.state.write_in_flight = Some(message.token);
+                emit(EngineOutput::WriteMessage {
+                    token: message.token,
+                    tracked: None,
+                    bytes: bytes.clone(),
+                });
+                break;
+            }
+
+            let Some((recipient, session_key)) = self.state.peer.as_ref().and_then(|peer| {
+                peer.session
+                    .session_key()
+                    .map(|key| (peer.peer, key.clone()))
+            }) else {
+                match message.payload {
+                    QueuedPayload::Control(_) => unreachable!(),
+                    QueuedPayload::StreamAck { .. } => {
+                        self.clear_ack_outbound_token(message.token, false);
+                    }
+                    QueuedPayload::StreamFrame { stream_id, .. } => {
+                        self.fail_stream_by_id(stream_id, QlError::SendFailed, emit);
+                    }
+                    QueuedPayload::StreamReset { .. } => {}
+                }
+                continue;
             };
 
-            let (bytes, tracked) = match &message.payload {
-                QueuedPayload::Control(bytes) => (bytes.clone(), None),
+            let valid_until =
+                wire::now_secs().saturating_add(self.config.packet_expiration.as_secs());
+
+            let (bytes, tracked) = match message.payload {
+                QueuedPayload::Control(_) => unreachable!(),
                 QueuedPayload::StreamAck { stream_id } => {
-                    let Some((recipient, session_key)) = connected_peer() else {
-                        self.clear_ack_outbound_token(message.token, false);
-                        continue;
-                    };
-                    let Some(stream) = self.streams.get_mut(stream_id) else {
+                    let Some(stream) = self.streams.get_mut(&stream_id) else {
                         continue;
                     };
                     let control = stream.control_mut();
                     if control.ack_outbound_token != Some(message.token) {
                         continue;
                     }
+
                     let ack = control.current_ack();
                     control.clear_ack_schedule();
-                    let valid_until =
-                        wire::now_secs().saturating_add(self.config.packet_expiration.as_secs());
-                    self.note_sent_stream_ack(*stream_id, ack);
+                    control.note_ack_sent(ack);
+
                     let body = StreamBody::Ack(StreamAckBody {
-                        stream_id: *stream_id,
+                        stream_id,
                         ack,
                         valid_until,
                     });
@@ -2289,7 +2298,7 @@ impl Engine {
                         },
                         &session_key,
                         &body,
-                        next_encrypted_message_nonce(crypto),
+                        encrypted_message_nonce(crypto),
                     );
                     (wire::encode_record(&record), None)
                 }
@@ -2298,19 +2307,14 @@ impl Engine {
                     target,
                     code,
                 } => {
-                    let Some((recipient, session_key)) = connected_peer() else {
-                        continue;
-                    };
-                    let valid_until =
-                        wire::now_secs().saturating_add(self.config.packet_expiration.as_secs());
                     let body = StreamBody::Message(StreamMessage {
                         tx_seq: StreamSeq::START,
                         ack: None,
                         valid_until,
                         frame: StreamFrame::Reset(StreamFrameReset {
-                            stream_id: *stream_id,
-                            target: *target,
-                            code: *code,
+                            stream_id,
+                            target,
+                            code,
                         }),
                     });
                     let record = encrypt_stream(
@@ -2320,7 +2324,7 @@ impl Engine {
                         },
                         &session_key,
                         &body,
-                        next_encrypted_message_nonce(crypto),
+                        encrypted_message_nonce(crypto),
                     );
                     (wire::encode_record(&record), None)
                 }
@@ -2329,29 +2333,23 @@ impl Engine {
                     tx_seq,
                     piggyback_ack,
                 } => {
-                    let Some((recipient, session_key)) = connected_peer() else {
-                        self.fail_stream_by_id(*stream_id, QlError::SendFailed, emit);
-                        continue;
-                    };
-                    let Some(stream) = self.streams.get_mut(stream_id) else {
+                    let Some(stream) = self.streams.get_mut(&stream_id) else {
                         continue;
                     };
                     let control = stream.control_mut();
-                    let include_ack = *piggyback_ack || control.ack_dirty;
+                    let include_ack = piggyback_ack || control.ack_dirty;
                     let ack = include_ack.then(|| control.current_ack());
                     if include_ack {
                         control.clear_ack_schedule();
                     }
-                    let Some(in_flight) = control.in_flight.get(tx_seq) else {
+                    if let Some(ack) = ack {
+                        control.note_ack_sent(ack);
+                    }
+                    let Some(in_flight) = control.in_flight.get(&tx_seq) else {
                         continue;
                     };
-                    if let Some(ack) = ack {
-                        self.note_sent_stream_ack(*stream_id, ack);
-                    }
-                    let valid_until =
-                        wire::now_secs().saturating_add(self.config.packet_expiration.as_secs());
                     let body = StreamBody::Message(StreamMessage {
-                        tx_seq: *tx_seq,
+                        tx_seq,
                         ack,
                         valid_until,
                         frame: in_flight.frame.clone(),
@@ -2363,14 +2361,11 @@ impl Engine {
                         },
                         &session_key,
                         &body,
-                        next_encrypted_message_nonce(crypto),
+                        encrypted_message_nonce(crypto),
                     );
                     (
                         wire::encode_record(&record),
-                        Some(TrackedWrite {
-                            stream_id: *stream_id,
-                            tx_seq: *tx_seq,
-                        }),
+                        Some(TrackedWrite { stream_id, tx_seq }),
                     )
                 }
             };
@@ -2385,7 +2380,7 @@ impl Engine {
     }
 }
 
-fn next_encrypted_message_nonce(crypto: &impl QlCrypto) -> [u8; NONCE_SIZE] {
+fn encrypted_message_nonce(crypto: &impl QlCrypto) -> [u8; NONCE_SIZE] {
     let mut nonce = [0u8; NONCE_SIZE];
     crypto.fill_random_bytes(&mut nonce);
     nonce
