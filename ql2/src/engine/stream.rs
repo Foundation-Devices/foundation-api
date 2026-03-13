@@ -214,6 +214,17 @@ impl StreamControl {
         }
     }
 
+    pub fn take_piggyback_ack(&mut self, inbound_alive: bool) -> Option<StreamAck> {
+        let ack = self.current_ack();
+        let include_ack = inbound_alive && (ack.base != StreamSeq(0) || ack.bitmap != 0);
+        if !include_ack {
+            return None;
+        }
+        self.clear_ack_schedule();
+        self.note_ack_sent(ack);
+        Some(ack)
+    }
+
     pub fn current_ack(&self) -> StreamAck {
         StreamAck {
             base: self.committed_rx_seq(),
@@ -475,7 +486,6 @@ pub enum QueuedPayload {
     StreamFrame {
         stream_id: StreamId,
         tx_seq: StreamSeq,
-        piggyback_ack: bool,
     },
     StreamReset {
         stream_id: StreamId,

@@ -1376,17 +1376,13 @@ impl Engine {
         priority: bool,
     ) {
         let stream_id = frame.stream_id();
-        let piggyback_ack = control.ack_dirty;
-        if piggyback_ack {
-            control.clear_ack_schedule();
-        }
         control.insert_in_flight(InFlightFrame {
             tx_seq,
             frame,
             attempt,
             retry_at: None,
         });
-        state.enqueue_stream_frame(config, priority, stream_id, tx_seq, piggyback_ack);
+        state.enqueue_stream_frame(config, priority, stream_id, tx_seq);
     }
 
     fn enqueue_in_flight_stream_frame(
@@ -1397,17 +1393,13 @@ impl Engine {
         attempt: u8,
         priority: bool,
     ) {
-        let piggyback_ack = control.ack_dirty;
-        if piggyback_ack {
-            control.clear_ack_schedule();
-        }
         let Some(in_flight) = control.in_flight.get_mut(&tx_seq) else {
             return;
         };
         in_flight.attempt = attempt;
         in_flight.retry_at = None;
         let stream_id = in_flight.frame.stream_id();
-        state.enqueue_stream_frame(config, priority, stream_id, tx_seq, piggyback_ack);
+        state.enqueue_stream_frame(config, priority, stream_id, tx_seq);
     }
 
     fn enqueue_stream_ack_body(
@@ -2328,31 +2320,32 @@ impl Engine {
                     );
                     (wire::encode_record(&record), None)
                 }
-                QueuedPayload::StreamFrame {
-                    stream_id,
-                    tx_seq,
-                    piggyback_ack,
-                } => {
+                QueuedPayload::StreamFrame { stream_id, tx_seq } => {
                     let Some(stream) = self.streams.get_mut(&stream_id) else {
                         continue;
                     };
-                    let control = stream.control_mut();
-                    let include_ack = piggyback_ack || control.ack_dirty;
-                    let ack = include_ack.then(|| control.current_ack());
-                    if include_ack {
-                        control.clear_ack_schedule();
-                    }
-                    if let Some(ack) = ack {
-                        control.note_ack_sent(ack);
-                    }
-                    let Some(in_flight) = control.in_flight.get(&tx_seq) else {
-                        continue;
+                    let (ack, frame) = match stream {
+                        StreamState::Initiator(state) => {
+                            let ack = state.control.take_piggyback_ack(!state.response.closed);
+                            let Some(in_flight) = state.control.in_flight.get(&tx_seq) else {
+                                continue;
+                            };
+                            (ack, in_flight.frame.clone())
+                        }
+                        StreamState::Responder(state) => {
+                            let ack = state.control.take_piggyback_ack(!state.request.closed);
+                            let Some(in_flight) = state.control.in_flight.get(&tx_seq) else {
+                                continue;
+                            };
+                            (ack, in_flight.frame.clone())
+                        }
+                        StreamState::Provisional(_) => continue,
                     };
                     let body = StreamBody::Message(StreamMessage {
                         tx_seq,
                         ack,
                         valid_until,
-                        frame: in_flight.frame.clone(),
+                        frame,
                     });
                     let record = encrypt_stream(
                         QlHeader {

@@ -457,16 +457,11 @@ impl EngineState {
         priority: bool,
         stream_id: StreamId,
         tx_seq: StreamSeq,
-        piggyback_ack: bool,
     ) -> Token {
         let token = self.next_token();
         let message = QueuedWrite {
             token,
-            payload: super::stream::QueuedPayload::StreamFrame {
-                stream_id,
-                tx_seq,
-                piggyback_ack,
-            },
+            payload: super::stream::QueuedPayload::StreamFrame { stream_id, tx_seq },
         };
         if priority {
             self.outbound.push_front(message);
