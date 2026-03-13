@@ -3,9 +3,7 @@ use std::{collections::VecDeque, time::Instant};
 use super::{ring::SeqRing, OpenId, Token};
 use crate::{
     wire::{
-        stream::{
-            Direction, ResetCode, ResetTarget, StreamAck, StreamBody, StreamFrame, StreamFrameReset,
-        },
+        stream::{Direction, ResetCode, ResetTarget, StreamAck, StreamFrame, StreamFrameReset},
         StreamSeq,
     },
     StreamId,
@@ -470,8 +468,20 @@ impl StreamState {
 
 #[derive(Debug)]
 pub enum QueuedPayload {
-    PreEncoded(Vec<u8>),
-    Stream { body: StreamBody },
+    Control(Vec<u8>),
+    StreamAck {
+        stream_id: StreamId,
+    },
+    StreamFrame {
+        stream_id: StreamId,
+        tx_seq: StreamSeq,
+        piggyback_ack: bool,
+    },
+    StreamReset {
+        stream_id: StreamId,
+        target: ResetTarget,
+        code: ResetCode,
+    },
 }
 
 #[derive(Debug)]

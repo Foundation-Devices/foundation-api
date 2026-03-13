@@ -16,7 +16,7 @@ use crate::{
     platform::QlIdentity,
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
-        stream::{BodyChunk, Direction, RejectCode, ResetCode, StreamBody},
+        stream::{BodyChunk, Direction, RejectCode, ResetCode, ResetTarget},
         StreamSeq,
     },
     PacketId, Peer, QlError, StreamId,
@@ -393,7 +393,7 @@ impl EngineState {
     ) {
         self.outbound.push_back(QueuedWrite {
             token,
-            payload: super::stream::QueuedPayload::PreEncoded(bytes),
+            payload: super::stream::QueuedPayload::Control(bytes),
         });
         self.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
@@ -405,16 +405,97 @@ impl EngineState {
         }));
     }
 
-    pub fn enqueue_stream_body(
+    pub fn enqueue_control(
         &mut self,
         config: &EngineConfig,
         priority: bool,
-        body: StreamBody,
+        bytes: Vec<u8>,
     ) -> Token {
         let token = self.next_token();
         let message = QueuedWrite {
             token,
-            payload: super::stream::QueuedPayload::Stream { body },
+            payload: super::stream::QueuedPayload::Control(bytes),
+        };
+        if priority {
+            self.outbound.push_front(message);
+        } else {
+            self.outbound.push_back(message);
+        }
+        self.timeouts.push(Reverse(TimeoutEntry {
+            at: Instant::now() + config.packet_expiration,
+            kind: TimeoutKind::Outbound { token },
+        }));
+        token
+    }
+
+    pub fn enqueue_stream_ack(
+        &mut self,
+        config: &EngineConfig,
+        priority: bool,
+        stream_id: StreamId,
+    ) -> Token {
+        let token = self.next_token();
+        let message = QueuedWrite {
+            token,
+            payload: super::stream::QueuedPayload::StreamAck { stream_id },
+        };
+        if priority {
+            self.outbound.push_front(message);
+        } else {
+            self.outbound.push_back(message);
+        }
+        self.timeouts.push(Reverse(TimeoutEntry {
+            at: Instant::now() + config.packet_expiration,
+            kind: TimeoutKind::Outbound { token },
+        }));
+        token
+    }
+
+    pub fn enqueue_stream_frame(
+        &mut self,
+        config: &EngineConfig,
+        priority: bool,
+        stream_id: StreamId,
+        tx_seq: StreamSeq,
+        piggyback_ack: bool,
+    ) -> Token {
+        let token = self.next_token();
+        let message = QueuedWrite {
+            token,
+            payload: super::stream::QueuedPayload::StreamFrame {
+                stream_id,
+                tx_seq,
+                piggyback_ack,
+            },
+        };
+        if priority {
+            self.outbound.push_front(message);
+        } else {
+            self.outbound.push_back(message);
+        }
+        self.timeouts.push(Reverse(TimeoutEntry {
+            at: Instant::now() + config.packet_expiration,
+            kind: TimeoutKind::Outbound { token },
+        }));
+        token
+    }
+
+    pub fn enqueue_stream_reset(
+        &mut self,
+        config: &EngineConfig,
+        priority: bool,
+        stream_id: StreamId,
+        target: ResetTarget,
+        code: ResetCode,
+    ) -> Token {
+        let token = self.next_token();
+        let message = QueuedWrite {
+            token,
+            payload: super::stream::QueuedPayload::StreamReset {
+                stream_id,
+                target,
+                code,
+            },
         };
         if priority {
             self.outbound.push_front(message);
