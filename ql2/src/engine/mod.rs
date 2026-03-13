@@ -774,10 +774,8 @@ impl Engine {
             StreamBody::Ack(StreamAckBody { stream_id, ack, .. }) => {
                 self.process_stream_ack(now, stream_id, ack, emit);
                 self.record_activity(now);
-                if self.streams.contains_key(&stream_id) {
-                    self.record_stream_activity(stream_id, now);
-                    self.maybe_reap_stream(stream_id, emit);
-                }
+                self.record_stream_activity(stream_id, now);
+                self.maybe_reap_stream(stream_id, emit);
                 return;
             }
             StreamBody::Message(message) => message,
@@ -2157,7 +2155,6 @@ impl Engine {
     }
 
     fn fail_stream_by_id(&mut self, stream_id: StreamId, error: QlError, emit: &mut impl OutputFn) {
-        self.clear_active_writes_for_stream(stream_id);
         let Some(stream) = self.streams.remove(&stream_id) else {
             return;
         };
@@ -2171,6 +2168,7 @@ impl Engine {
         error: QlError,
         emit: &mut impl OutputFn,
     ) {
+        self.clear_active_writes_for_stream(stream_id);
         match stream {
             StreamState::Initiator(stream) => {
                 match stream.accept {
@@ -2317,14 +2315,9 @@ impl Engine {
                     }
                 }
                 TimeoutKind::StreamAckDelay { stream_id, token } => {
-                    let should_flush = self
-                        .streams
-                        .get(&stream_id)
-                        .and_then(|stream| stream.control().ack_delay_token)
-                        .is_some_and(|ack_token| ack_token == token);
-                    if should_flush {
-                        if let Some(stream) = self.streams.get_mut(&stream_id) {
-                            let control = stream.control_mut();
+                    if let Some(stream) = self.streams.get_mut(&stream_id) {
+                        let control = stream.control_mut();
+                        if control.ack_delay_token == Some(token) {
                             control.ack_delay_token = None;
                             control.ack_immediate = true;
                         }
