@@ -1128,111 +1128,110 @@ impl Engine {
         ack: StreamAck,
         emit: &mut impl OutputFn,
     ) {
-        let Some(stream) = self.streams.get_mut(&stream_id) else {
-            return;
-        };
-        stream.control_mut().clear_fast_recovery(ack.base);
-        let fast_retransmit = stream
-            .control()
-            .fast_retransmit_candidate(ack, self.config.stream_fast_retransmit_threshold);
-        let acked: Vec<_> = stream
-            .control()
-            .in_flight
-            .iter()
-            .map(|(tx_seq, _)| tx_seq)
-            .filter(|tx_seq| StreamControl::ack_covers(ack, *tx_seq))
-            .collect();
-        let mut acked_frames = Vec::with_capacity(acked.len());
-        for tx_seq in acked {
-            if let Some(in_flight) = stream.control_mut().remove_in_flight(tx_seq) {
-                acked_frames.push(in_flight.frame);
-            }
-        }
-        let _ = stream;
-
-        for frame in acked_frames {
+        let should_reap = {
             let Some(stream) = self.streams.get_mut(&stream_id) else {
                 return;
             };
-            match frame {
-                StreamFrame::Open(StreamFrameOpen { request_prefix, .. }) => {
-                    if let StreamState::Initiator(stream) = stream {
-                        if let InitiatorAccept::Opening(waiter) = &stream.accept {
-                            stream.accept = InitiatorAccept::WaitingAccept(OpenWaiter {
-                                open_id: waiter.open_id,
-                                open_timeout_token: waiter.open_timeout_token,
-                            });
-                        }
-                        if request_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
-                            stream.request.close();
-                            emit(EngineOutput::OutboundClosed {
-                                stream_id,
-                                dir: Direction::Request,
-                            });
-                        }
-                    }
-                }
-                StreamFrame::Accept(StreamFrameAccept {
-                    response_prefix, ..
-                }) => {
-                    if let StreamState::Responder(stream) = stream {
-                        if response_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
-                            if let ResponderResponse::Accepted { body } = &mut stream.response {
-                                body.close();
+            stream.control_mut().clear_fast_recovery(ack.base);
+            let fast_retransmit = stream
+                .control()
+                .fast_retransmit_candidate(ack, self.config.stream_fast_retransmit_threshold);
+
+            loop {
+                let acked_tx_seq = stream
+                    .control()
+                    .in_flight
+                    .iter()
+                    .map(|(tx_seq, _)| tx_seq)
+                    .find(|tx_seq| StreamControl::ack_covers(ack, *tx_seq));
+                let Some(tx_seq) = acked_tx_seq else {
+                    break;
+                };
+                let Some(in_flight) = stream.control_mut().remove_in_flight(tx_seq) else {
+                    continue;
+                };
+
+                match in_flight.frame {
+                    StreamFrame::Open(StreamFrameOpen { request_prefix, .. }) => {
+                        if let StreamState::Initiator(stream) = stream {
+                            if let InitiatorAccept::Opening(waiter) = &stream.accept {
+                                stream.accept = InitiatorAccept::WaitingAccept(OpenWaiter {
+                                    open_id: waiter.open_id,
+                                    open_timeout_token: waiter.open_timeout_token,
+                                });
+                            }
+                            if request_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
+                                stream.request.close();
                                 emit(EngineOutput::OutboundClosed {
                                     stream_id,
-                                    dir: Direction::Response,
+                                    dir: Direction::Request,
                                 });
                             }
                         }
                     }
-                }
-                StreamFrame::Reject(_) => {}
-                StreamFrame::Data(StreamFrameData {
-                    dir,
-                    chunk: BodyChunk { fin: true, .. },
-                    ..
-                }) => {
-                    if let Some(outbound) = stream.outbound_mut(dir) {
-                        outbound.close();
-                        emit(EngineOutput::OutboundClosed { stream_id, dir });
+                    StreamFrame::Accept(StreamFrameAccept {
+                        response_prefix, ..
+                    }) => {
+                        if let StreamState::Responder(stream) = stream {
+                            if response_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
+                                if let ResponderResponse::Accepted { body } = &mut stream.response {
+                                    body.close();
+                                    emit(EngineOutput::OutboundClosed {
+                                        stream_id,
+                                        dir: Direction::Response,
+                                    });
+                                }
+                            }
+                        }
                     }
-                }
-                StreamFrame::Reset(StreamFrameReset { target, code, .. }) => {
-                    for outbound_dir in [Direction::Request, Direction::Response] {
-                        let affects_outbound = matches!(
-                            (target, outbound_dir),
-                            (ResetTarget::Request, Direction::Request)
-                                | (ResetTarget::Response, Direction::Response)
-                                | (ResetTarget::Both, _)
-                        );
-                        if affects_outbound {
-                            if let Some(outbound) = stream.outbound_mut(outbound_dir) {
-                                outbound.close();
-                                emit(EngineOutput::OutboundFailed {
-                                    stream_id,
-                                    dir: outbound_dir,
-                                    error: QlError::StreamReset {
+                    StreamFrame::Reject(_) => {}
+                    StreamFrame::Data(StreamFrameData {
+                        dir,
+                        chunk: BodyChunk { fin: true, .. },
+                        ..
+                    }) => {
+                        if let Some(outbound) = stream.outbound_mut(dir) {
+                            outbound.close();
+                            emit(EngineOutput::OutboundClosed { stream_id, dir });
+                        }
+                    }
+                    StreamFrame::Reset(StreamFrameReset { target, code, .. }) => {
+                        for outbound_dir in [Direction::Request, Direction::Response] {
+                            let affects_outbound = matches!(
+                                (target, outbound_dir),
+                                (ResetTarget::Request, Direction::Request)
+                                    | (ResetTarget::Response, Direction::Response)
+                                    | (ResetTarget::Both, _)
+                            );
+                            if affects_outbound {
+                                if let Some(outbound) = stream.outbound_mut(outbound_dir) {
+                                    outbound.close();
+                                    emit(EngineOutput::OutboundFailed {
+                                        stream_id,
                                         dir: outbound_dir,
-                                        code,
-                                    },
-                                });
+                                        error: QlError::StreamReset {
+                                            dir: outbound_dir,
+                                            code,
+                                        },
+                                    });
+                                }
                             }
                         }
                     }
+                    StreamFrame::Data(_) => {}
                 }
-                StreamFrame::Data(_) => {}
             }
-        }
 
-        if let Some(tx_seq) = fast_retransmit {
-            if let Some(stream) = self.streams.get_mut(&stream_id) {
-                let control = stream.control_mut();
-                control.schedule_fast_retransmit(tx_seq, now);
+            if let Some(tx_seq) = fast_retransmit {
+                stream.control_mut().schedule_fast_retransmit(tx_seq, now);
             }
-        }
+            stream.can_reap()
+        };
 
-        self.maybe_reap_stream(stream_id, emit);
+        if should_reap {
+            self.streams.remove(&stream_id);
+            emit(EngineOutput::StreamReaped { stream_id });
+        }
     }
 
     fn drive_streams(&mut self, now: Instant, emit: &mut impl OutputFn) {
