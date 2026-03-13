@@ -1,14 +1,14 @@
 use std::{collections::VecDeque, time::Instant};
 
-use super::{OpenId, Token, ring::SeqRing};
+use super::{ring::SeqRing, OpenId, Token};
 use crate::{
-    StreamId,
     wire::{
-        StreamSeq,
         stream::{
             Direction, ResetCode, ResetTarget, StreamAck, StreamBody, StreamFrame, StreamFrameReset,
         },
+        StreamSeq,
     },
+    StreamId,
 };
 
 pub const STREAM_WINDOW_CAPACITY: usize = 8;
@@ -256,28 +256,24 @@ impl StreamControl {
             return None;
         }
 
-        let frames: Vec<_> = self.in_flight.iter().collect();
-        for (index, (tx_seq, _)) in frames.iter().enumerate() {
-            if Self::ack_covers(ack, *tx_seq) {
-                continue;
-            }
+        let hole = self
+            .in_flight
+            .iter()
+            .map(|(tx_seq, _)| tx_seq)
+            .find(|tx_seq| !Self::ack_covers(ack, *tx_seq))?;
 
-            if self.fast_recovery == Some(*tx_seq) {
-                return None;
-            }
-
-            let later_acked = frames[index + 1..]
-                .iter()
-                .filter(|(later_seq, _)| Self::ack_covers(ack, *later_seq))
-                .count();
-            if later_acked >= threshold as usize {
-                return Some(*tx_seq);
-            }
-
+        if self.fast_recovery == Some(hole) {
             return None;
         }
 
-        None
+        let later_acked = self
+            .in_flight
+            .iter()
+            .map(|(tx_seq, _)| tx_seq)
+            .filter(|tx_seq| tx_seq.serial_gt(hole) && Self::ack_covers(ack, *tx_seq))
+            .count();
+
+        (later_acked >= threshold as usize).then_some(hole)
     }
 
     pub fn schedule_fast_retransmit(&mut self, tx_seq: StreamSeq, now: Instant) {
