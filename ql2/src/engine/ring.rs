@@ -318,7 +318,7 @@ mod tests {
                     request_prefix: None,
                 }),
                 attempt: 0,
-                fast_retransmit_sent: false,
+                retry_at: None,
             };
             control.insert_in_flight(frame);
             control.next_tx_seq = StreamSeq(tx_seq + 1);

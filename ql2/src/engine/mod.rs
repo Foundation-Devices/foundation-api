@@ -146,9 +146,10 @@ impl Engine {
             EngineInput::TimerExpired => self.handle_timeouts(now, crypto, emit),
         }
 
+        self.queue_ready_retransmits(now, emit);
         self.drive_streams(now, emit);
         self.maybe_start_next_write(crypto, emit);
-        emit(EngineOutput::SetTimer(self.state.next_deadline()));
+        emit(EngineOutput::SetTimer(self.next_deadline()));
     }
 
     fn emit_peer_status(&self, emit: &mut impl OutputFn) {
@@ -165,6 +166,27 @@ impl Engine {
             packet_id: self.state.next_packet_id(),
             valid_until: wire::now_secs() + valid_for.as_secs(),
         }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        match (self.state.next_deadline(), self.stream_retry_deadline()) {
+            (Some(lhs), Some(rhs)) => Some(lhs.min(rhs)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        }
+    }
+
+    fn stream_retry_deadline(&self) -> Option<Instant> {
+        self.streams
+            .values()
+            .flat_map(|stream| {
+                stream
+                    .control()
+                    .in_flight
+                    .iter()
+                    .filter_map(|(_, in_flight)| in_flight.retry_at)
+            })
+            .min()
     }
 
     fn is_replayed_control(&mut self, peer: XID, meta: ControlMeta) -> bool {
@@ -690,7 +712,7 @@ impl Engine {
 
         let message = match body {
             StreamBody::Ack(StreamAckBody { stream_id, ack, .. }) => {
-                self.process_stream_ack(stream_id, ack, emit);
+                self.process_stream_ack(now, stream_id, ack, emit);
                 self.record_activity(now);
                 if self.streams.contains_key(&stream_id) {
                     self.record_stream_activity(stream_id, now);
@@ -703,7 +725,7 @@ impl Engine {
 
         let stream_id = message.frame.stream_id();
         if let Some(ack) = message.ack {
-            self.process_stream_ack(stream_id, ack, emit);
+            self.process_stream_ack(now, stream_id, ack, emit);
         }
 
         if !self.streams.contains_key(&stream_id) {
@@ -1101,6 +1123,7 @@ impl Engine {
 
     fn process_stream_ack(
         &mut self,
+        now: Instant,
         stream_id: StreamId,
         ack: StreamAck,
         emit: &mut impl OutputFn,
@@ -1108,6 +1131,7 @@ impl Engine {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
+        stream.control_mut().clear_fast_recovery(ack.base);
         let fast_retransmit = stream
             .control()
             .fast_retransmit_candidate(ack, self.config.stream_fast_retransmit_threshold);
@@ -1118,9 +1142,6 @@ impl Engine {
             .map(|(tx_seq, _)| tx_seq)
             .filter(|tx_seq| StreamControl::ack_covers(ack, *tx_seq))
             .collect();
-        if acked.is_empty() {
-            return;
-        }
         let mut acked_frames = Vec::with_capacity(acked.len());
         for tx_seq in acked {
             if let Some(in_flight) = stream.control_mut().remove_in_flight(tx_seq) {
@@ -1204,18 +1225,10 @@ impl Engine {
             }
         }
 
-        if let Some((tx_seq, frame, attempt)) = fast_retransmit {
+        if let Some(tx_seq) = fast_retransmit {
             if let Some(stream) = self.streams.get_mut(&stream_id) {
-                Self::enqueue_stream_frame_with_seq(
-                    &self.config,
-                    &mut self.state,
-                    stream.control_mut(),
-                    tx_seq,
-                    frame,
-                    attempt.saturating_add(1),
-                    true,
-                    true,
-                );
+                let control = stream.control_mut();
+                control.schedule_fast_retransmit(tx_seq, now);
             }
         }
 
@@ -1349,7 +1362,7 @@ impl Engine {
     ) {
         let tx_seq = control.take_tx_seq();
         Self::enqueue_stream_frame_with_seq(
-            config, state, control, tx_seq, frame, attempt, priority, false,
+            config, state, control, tx_seq, frame, attempt, priority,
         );
     }
 
@@ -1361,13 +1374,12 @@ impl Engine {
         frame: StreamFrame,
         attempt: u8,
         priority: bool,
-        fast_retransmit_sent: bool,
     ) {
         control.insert_in_flight(InFlightFrame {
             tx_seq,
             frame: frame.clone(),
             attempt,
-            fast_retransmit_sent,
+            retry_at: None,
         });
         let ack = control.ack_dirty.then(|| control.current_ack());
         if ack.is_some() {
@@ -1540,6 +1552,47 @@ impl Engine {
         {
             self.streams.remove(&stream_id);
             emit(EngineOutput::StreamReaped { stream_id });
+        }
+    }
+
+    fn queue_ready_retransmits(&mut self, now: Instant, emit: &mut impl OutputFn) {
+        let mut ready = Vec::new();
+        for (stream_id, stream) in &self.streams {
+            for (tx_seq, in_flight) in stream.control().in_flight.iter() {
+                if in_flight.retry_at.is_some_and(|retry_at| retry_at <= now) {
+                    ready.push((*stream_id, tx_seq, in_flight.attempt));
+                }
+            }
+        }
+
+        for (stream_id, tx_seq, attempt) in ready {
+            let Some(frame) = self.streams.get(&stream_id).and_then(|stream| {
+                stream
+                    .control()
+                    .in_flight
+                    .get(&tx_seq)
+                    .and_then(|in_flight| {
+                        (in_flight.attempt == attempt
+                            && in_flight.retry_at.is_some_and(|retry_at| retry_at <= now))
+                        .then_some(in_flight.frame.clone())
+                    })
+            }) else {
+                continue;
+            };
+
+            if attempt >= self.config.stream_retry_limit {
+                self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
+            } else if let Some(stream) = self.streams.get_mut(&stream_id) {
+                Self::enqueue_stream_frame_with_seq(
+                    &self.config,
+                    &mut self.state,
+                    stream.control_mut(),
+                    tx_seq,
+                    frame,
+                    attempt.saturating_add(1),
+                    true,
+                );
+            }
         }
     }
 
@@ -2142,40 +2195,6 @@ impl Engine {
                         );
                     }
                 }
-                TimeoutKind::StreamMessage {
-                    stream_id,
-                    tx_seq,
-                    attempt,
-                } => {
-                    let Some(frame) = self.streams.get(&stream_id).and_then(|stream| {
-                        stream
-                            .control()
-                            .in_flight
-                            .get(&tx_seq)
-                            .and_then(|in_flight| {
-                                (in_flight.attempt == attempt).then_some(in_flight.frame.clone())
-                            })
-                    }) else {
-                        continue;
-                    };
-
-                    if attempt >= self.config.stream_retry_limit {
-                        self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
-                    } else {
-                        if let Some(stream) = self.streams.get_mut(&stream_id) {
-                            Self::enqueue_stream_frame_with_seq(
-                                &self.config,
-                                &mut self.state,
-                                stream.control_mut(),
-                                tx_seq,
-                                frame,
-                                attempt.saturating_add(1),
-                                true,
-                                false,
-                            );
-                        }
-                    }
-                }
             }
         }
     }
@@ -2236,20 +2255,11 @@ impl Engine {
         }
 
         if let Some(tracked) = tracked {
-            let attempt = self
-                .streams
-                .get(&tracked.stream_id)
-                .and_then(|stream| stream.control().in_flight.get(&tracked.tx_seq))
-                .map(|in_flight| in_flight.attempt)
-                .unwrap_or(0);
-            self.state.timeouts.push(Reverse(TimeoutEntry {
-                at: now + self.config.stream_ack_timeout,
-                kind: TimeoutKind::StreamMessage {
-                    stream_id: tracked.stream_id,
-                    tx_seq: tracked.tx_seq,
-                    attempt,
-                },
-            }));
+            if let Some(stream) = self.streams.get_mut(&tracked.stream_id) {
+                stream
+                    .control_mut()
+                    .set_retry_deadline(tracked.tx_seq, now + self.config.stream_ack_timeout);
+            }
         }
     }
 

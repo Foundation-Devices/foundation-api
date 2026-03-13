@@ -291,35 +291,13 @@ impl<T> OutputFn for T where T: FnMut(EngineOutput) {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutKind {
-    Outbound {
-        token: Token,
-    },
-    Handshake {
-        token: Token,
-    },
-    KeepAliveSend {
-        token: Token,
-    },
-    KeepAliveTimeout {
-        token: Token,
-    },
-    StreamOpen {
-        stream_id: StreamId,
-        token: Token,
-    },
-    StreamMessage {
-        stream_id: StreamId,
-        tx_seq: StreamSeq,
-        attempt: u8,
-    },
-    StreamAckDelay {
-        stream_id: StreamId,
-        token: Token,
-    },
-    StreamProvisional {
-        stream_id: StreamId,
-        token: Token,
-    },
+    Outbound { token: Token },
+    Handshake { token: Token },
+    KeepAliveSend { token: Token },
+    KeepAliveTimeout { token: Token },
+    StreamOpen { stream_id: StreamId, token: Token },
+    StreamAckDelay { stream_id: StreamId, token: Token },
+    StreamProvisional { stream_id: StreamId, token: Token },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

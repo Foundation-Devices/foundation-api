@@ -1,14 +1,14 @@
 use std::{collections::VecDeque, time::Instant};
 
-use super::{ring::SeqRing, OpenId, Token};
+use super::{OpenId, Token, ring::SeqRing};
 use crate::{
+    StreamId,
     wire::{
+        StreamSeq,
         stream::{
             Direction, ResetCode, ResetTarget, StreamAck, StreamBody, StreamFrame, StreamFrameReset,
         },
-        StreamSeq,
     },
-    StreamId,
 };
 
 pub const STREAM_WINDOW_CAPACITY: usize = 8;
@@ -120,7 +120,7 @@ pub struct InFlightFrame {
     pub tx_seq: StreamSeq,
     pub frame: StreamFrame,
     pub attempt: u8,
-    pub fast_retransmit_sent: bool,
+    pub retry_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -142,6 +142,7 @@ pub struct StreamControl {
     pub ack_delay_token: Option<Token>,
     pub ack_outbound_token: Option<Token>,
     pub last_sent_ack_base: StreamSeq,
+    pub fast_recovery: Option<StreamSeq>,
 }
 
 impl Default for StreamControl {
@@ -156,6 +157,7 @@ impl Default for StreamControl {
             ack_delay_token: None,
             ack_outbound_token: None,
             last_sent_ack_base: StreamSeq(0),
+            fast_recovery: None,
         }
     }
 }
@@ -249,19 +251,19 @@ impl StreamControl {
         let _ = self.in_flight.set(frame.tx_seq, frame);
     }
 
-    pub fn fast_retransmit_candidate(
-        &self,
-        ack: StreamAck,
-        threshold: u8,
-    ) -> Option<(StreamSeq, StreamFrame, u8)> {
+    pub fn fast_retransmit_candidate(&self, ack: StreamAck, threshold: u8) -> Option<StreamSeq> {
         if threshold == 0 {
             return None;
         }
 
         let frames: Vec<_> = self.in_flight.iter().collect();
-        for (index, (tx_seq, in_flight)) in frames.iter().enumerate() {
-            if Self::ack_covers(ack, *tx_seq) || in_flight.fast_retransmit_sent {
+        for (index, (tx_seq, _)) in frames.iter().enumerate() {
+            if Self::ack_covers(ack, *tx_seq) {
                 continue;
+            }
+
+            if self.fast_recovery == Some(*tx_seq) {
+                return None;
             }
 
             let later_acked = frames[index + 1..]
@@ -269,16 +271,43 @@ impl StreamControl {
                 .filter(|(later_seq, _)| Self::ack_covers(ack, *later_seq))
                 .count();
             if later_acked >= threshold as usize {
-                return Some((*tx_seq, in_flight.frame.clone(), in_flight.attempt));
+                return Some(*tx_seq);
             }
+
+            return None;
         }
 
         None
     }
 
+    pub fn schedule_fast_retransmit(&mut self, tx_seq: StreamSeq, now: Instant) {
+        if let Some(in_flight) = self.in_flight.get_mut(&tx_seq) {
+            in_flight.retry_at = Some(now);
+            self.fast_recovery = Some(tx_seq);
+        }
+    }
+
+    pub fn set_retry_deadline(&mut self, tx_seq: StreamSeq, retry_at: Instant) {
+        if let Some(in_flight) = self.in_flight.get_mut(&tx_seq) {
+            in_flight.retry_at = Some(retry_at);
+        }
+    }
+
+    pub fn clear_fast_recovery(&mut self, ack_base: StreamSeq) {
+        let should_clear = self.fast_recovery.is_some_and(|tx_seq| {
+            tx_seq.serial_lte(ack_base) || !self.in_flight.contains_key(&tx_seq)
+        });
+        if should_clear {
+            self.fast_recovery = None;
+        }
+    }
+
     pub fn remove_in_flight(&mut self, tx_seq: StreamSeq) -> Option<InFlightFrame> {
         let removed = self.in_flight.remove(&tx_seq);
         self.in_flight.advance_empty_front_until(self.next_tx_seq);
+        if self.fast_recovery == Some(tx_seq) {
+            self.fast_recovery = None;
+        }
         removed
     }
 
@@ -288,6 +317,7 @@ impl StreamControl {
         self.recv_buffer
             .clear_with_base(self.committed_rx_seq().next());
         self.clear_ack_schedule();
+        self.fast_recovery = None;
     }
 
     pub fn ack_covers(ack: StreamAck, tx_seq: StreamSeq) -> bool {

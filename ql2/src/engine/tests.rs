@@ -1,19 +1,18 @@
 use std::{cell::Cell, mem, time::Instant};
 
-use bc_components::{SymmetricKey, MLDSA, MLKEM};
+use bc_components::{MLDSA, MLKEM, SymmetricKey};
 
 use super::*;
 use crate::{
+    PacketId, Peer,
     platform::{QlCrypto, QlIdentity},
     wire::{
-        self,
+        self, QlHeader, QlPayload,
         stream::{
             BodyChunk, StreamAck, StreamAckBody, StreamBody, StreamFrame, StreamFrameAccept,
             StreamFrameData, StreamFrameOpen, StreamMessage,
         },
-        QlHeader, QlPayload,
     },
-    PacketId, Peer,
 };
 
 struct TestCrypto {
@@ -167,7 +166,7 @@ fn insert_inflight_gap_stream(engine: &mut Engine, stream_id: StreamId, now: Ins
             request_prefix: None,
         }),
         attempt: 0,
-        fast_retransmit_sent: false,
+        retry_at: None,
     });
     for (tx_seq, byte) in [(2, b'a'), (3, b'b'), (4, b'c'), (5, b'd')] {
         control.insert_in_flight(InFlightFrame {
@@ -181,7 +180,7 @@ fn insert_inflight_gap_stream(engine: &mut Engine, stream_id: StreamId, now: Ins
                 },
             }),
             attempt: 0,
-            fast_retransmit_sent: false,
+            retry_at: None,
         });
     }
     engine.streams.insert(stream_id, stream);
@@ -340,12 +339,16 @@ fn open_prefix_is_delivered_on_setup_output() {
             Some(request_prefix.clone()),
         ))
     );
-    assert!(!outputs_b
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
-    assert!(!outputs_b
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundFinished { .. })));
+    assert!(
+        !outputs_b
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
+    assert!(
+        !outputs_b
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundFinished { .. }))
+    );
 }
 
 #[test]
@@ -420,12 +423,16 @@ fn unary_exchange_uses_open_and_accept_prefixes() {
             Some(response_prefix.clone()),
         ))
     );
-    assert!(!outputs_a
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
-    assert!(!outputs_a
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundFinished { .. })));
+    assert!(
+        !outputs_a
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
+    assert!(
+        !outputs_a
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundFinished { .. }))
+    );
     assert!(outputs_b.iter().any(|output| matches!(
         output,
         EngineOutput::OutboundClosed {
@@ -611,9 +618,11 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
         &crypto_a,
     );
 
-    assert!(!outputs_incoming
-        .iter()
-        .any(|output| matches!(output, EngineOutput::OpenAccepted { .. })));
+    assert!(
+        !outputs_incoming
+            .iter()
+            .any(|output| matches!(output, EngineOutput::OpenAccepted { .. }))
+    );
 
     let stream = a.streams.get(&stream_id).unwrap();
     assert!(stream.control().in_flight.contains_key(&StreamSeq::START));
@@ -672,15 +681,21 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
         &crypto_a,
     );
 
-    assert!(!outputs_data
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundStreamOpened { .. })));
-    assert!(!outputs_data
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
-    assert!(outputs_data
-        .iter()
-        .any(|output| matches!(output, EngineOutput::WriteMessage { .. })));
+    assert!(
+        !outputs_data
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundStreamOpened { .. }))
+    );
+    assert!(
+        !outputs_data
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
+    assert!(
+        outputs_data
+            .iter()
+            .any(|output| matches!(output, EngineOutput::WriteMessage { .. }))
+    );
     assert!(matches!(
         a.streams.get(&stream_id),
         Some(StreamState::Provisional(_))
@@ -795,12 +810,16 @@ fn out_of_order_response_data_waits_for_accept() {
         EngineInput::Incoming(wire::encode_record(&data_record)),
         &crypto_a,
     );
-    assert!(!outputs_data
-        .iter()
-        .any(|output| matches!(output, EngineOutput::OpenAccepted { .. })));
-    assert!(!outputs_data
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(
+        !outputs_data
+            .iter()
+            .any(|output| matches!(output, EngineOutput::OpenAccepted { .. }))
+    );
+    assert!(
+        !outputs_data
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
 
     let accept_message = StreamMessage {
         tx_seq: StreamSeq(1),
@@ -874,9 +893,11 @@ fn delayed_ack_only_does_not_consume_sequence_space() {
     harness.send_b(EngineInput::TimerExpired);
 
     let outputs_b = harness.drain_b();
-    assert!(outputs_b
-        .iter()
-        .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
+    assert!(
+        outputs_b
+            .iter()
+            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
+    );
 
     let stream = harness.b.streams.get(&stream_id).unwrap();
     assert!(stream.control().in_flight.is_empty());
@@ -967,9 +988,11 @@ fn half_window_progress_flushes_ack_before_timer() {
             EngineInput::Incoming(wire::encode_record(&record)),
             &crypto_a,
         );
-        assert!(!outputs
-            .iter()
-            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
+        assert!(
+            !outputs
+                .iter()
+                .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
+        );
     }
 
     let body = StreamBody::Message(messages[3].clone());
@@ -989,9 +1012,11 @@ fn half_window_progress_flushes_ack_before_timer() {
         &crypto_a,
     );
 
-    assert!(outputs
-        .iter()
-        .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
+    );
 }
 
 #[test]
@@ -1072,9 +1097,11 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             EngineInput::Incoming(wire::encode_record(&record)),
             &crypto_a,
         );
-        assert!(!outputs
-            .iter()
-            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
+        assert!(
+            !outputs
+                .iter()
+                .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
+        );
     }
 
     let record4 = wire::stream::encrypt_stream(
@@ -1106,9 +1133,11 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             ..
         }) if id == stream_id
     ));
-    assert!(!outputs4
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(
+        !outputs4
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
     // the engine only starts a new outbound write after the previous one reports
     // `WriteCompleted`. We need to retire the ACK-only write for seq 4 here so the
     // follow-up out-of-order receive for seq 5 can emit its own updated ACK body.
@@ -1151,9 +1180,11 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             ..
         }) if id == stream_id
     ));
-    assert!(!outputs5
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(
+        !outputs5
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
 }
 
 #[test]
@@ -1194,9 +1225,11 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
         &crypto_a,
     );
 
-    assert!(!outputs
-        .iter()
-        .any(|output| matches!(output, EngineOutput::OutboundFailed { .. })));
+    assert!(
+        !outputs
+            .iter()
+            .any(|output| matches!(output, EngineOutput::OutboundFailed { .. }))
+    );
     let stream = a.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
         .control()
@@ -1279,7 +1312,7 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
     assert_eq!(remaining, vec![StreamSeq(3)]);
     let frame = stream.control().in_flight.get(&StreamSeq(3)).unwrap();
     assert_eq!(frame.attempt, 1);
-    assert!(frame.fast_retransmit_sent);
+    assert!(frame.retry_at.is_none());
 }
 
 #[test]
@@ -1340,7 +1373,7 @@ fn fast_retransmit_respects_configured_threshold() {
     assert_eq!(remaining, vec![StreamSeq(3)]);
     let frame = stream.control().in_flight.get(&StreamSeq(3)).unwrap();
     assert_eq!(frame.attempt, 0);
-    assert!(!frame.fast_retransmit_sent);
+    assert!(frame.retry_at.is_none());
 }
 
 #[test]
@@ -1450,14 +1483,18 @@ fn replayed_heartbeat_is_ignored() {
     let bytes = wire::encode_record(&heartbeat);
 
     let first = run_engine(&mut a, now, EngineInput::Incoming(bytes.clone()), &crypto_a);
-    assert!(first
-        .iter()
-        .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
+    assert!(
+        first
+            .iter()
+            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
+    );
 
     let second = run_engine(&mut a, now, EngineInput::Incoming(bytes), &crypto_a);
-    assert!(!second
-        .iter()
-        .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. })));
+    assert!(
+        !second
+            .iter()
+            .any(|output| matches!(output, EngineOutput::WriteMessage { tracked: None, .. }))
+    );
 }
 
 #[test]
@@ -1486,9 +1523,11 @@ fn replayed_unpair_is_ignored_after_rebind() {
     ));
 
     let first = run_engine(&mut a, now, EngineInput::Incoming(bytes.clone()), &crypto_a);
-    assert!(first
-        .iter()
-        .any(|output| matches!(output, EngineOutput::ClearPeer)));
+    assert!(
+        first
+            .iter()
+            .any(|output| matches!(output, EngineOutput::ClearPeer))
+    );
     assert!(a.state.peer.is_none());
 
     let _ = run_engine(
@@ -1500,9 +1539,11 @@ fn replayed_unpair_is_ignored_after_rebind() {
     assert!(a.state.peer.is_some());
 
     let second = run_engine(&mut a, now, EngineInput::Incoming(bytes), &crypto_a);
-    assert!(!second
-        .iter()
-        .any(|output| matches!(output, EngineOutput::ClearPeer)));
+    assert!(
+        !second
+            .iter()
+            .any(|output| matches!(output, EngineOutput::ClearPeer))
+    );
     assert_eq!(
         a.state.peer.as_ref().map(|peer| peer.peer),
         Some(peer_b.peer)
