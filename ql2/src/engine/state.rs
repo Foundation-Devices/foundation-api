@@ -17,8 +17,9 @@ use crate::{
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
         stream::{BodyChunk, Direction, RejectCode, ResetCode, StreamBody},
+        StreamSeq,
     },
-    PacketId, Peer, QlError, StreamId, StreamSeq,
+    PacketId, Peer, QlError, StreamId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

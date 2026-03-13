@@ -563,7 +563,7 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
         .any(|output| matches!(output, EngineOutput::OpenAccepted { .. })));
 
     let stream = a.streams.get(&stream_id).unwrap();
-    assert!(stream.control().in_flight.contains_key(&StreamSeq(1)));
+    assert!(stream.control().in_flight.contains_key(&StreamSeq::START));
     match stream {
         StreamState::Initiator(state) => {
             assert!(matches!(state.accept, InitiatorAccept::Opening(_)));
@@ -827,7 +827,7 @@ fn delayed_ack_only_does_not_consume_sequence_space() {
 
     let stream = harness.b.streams.get(&stream_id).unwrap();
     assert!(stream.control().in_flight.is_empty());
-    assert_eq!(stream.control().next_tx_seq, StreamSeq(1));
+    assert_eq!(stream.control().next_tx_seq, StreamSeq::START);
 }
 
 #[test]
@@ -1239,7 +1239,7 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
 
     let stream = a.streams.get(&tracked.stream_id).unwrap();
     assert_eq!(stream.control().in_flight.len(), 1);
-    assert!(stream.control().in_flight.contains_key(&StreamSeq(1)));
+    assert!(stream.control().in_flight.contains_key(&StreamSeq::START));
     assert_eq!(stream.control().next_tx_seq, StreamSeq(2));
 
     let outputs_timeout = run_engine(
@@ -1262,13 +1262,13 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
 
     let stream = a.streams.get(&tracked.stream_id).unwrap();
     assert_eq!(stream.control().in_flight.len(), 1);
-    assert!(stream.control().in_flight.contains_key(&StreamSeq(1)));
+    assert!(stream.control().in_flight.contains_key(&StreamSeq::START));
     assert_eq!(stream.control().next_tx_seq, StreamSeq(2));
     assert_eq!(
         stream
             .control()
             .in_flight
-            .get(&StreamSeq(1))
+            .get(&StreamSeq::START)
             .unwrap()
             .attempt,
         1

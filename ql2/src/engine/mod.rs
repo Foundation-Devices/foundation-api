@@ -34,9 +34,9 @@ use crate::{
             StreamFrameData, StreamFrameOpen, StreamFrameReject, StreamFrameReset, StreamMessage,
         },
         unpair::{self},
-        ControlMeta, QlHeader, QlPayload, QlRecord,
+        ControlMeta, QlHeader, QlPayload, QlRecord, StreamSeq,
     },
-    Peer, QlError, StreamId, StreamSeq,
+    Peer, QlError, StreamId,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -1554,7 +1554,7 @@ impl Engine {
         self.enqueue_stream_body(
             true,
             StreamBody::Message(StreamMessage {
-                tx_seq: StreamSeq(1),
+                tx_seq: StreamSeq::START,
                 ack: None,
                 valid_until,
                 frame: StreamFrame::Reset(StreamFrameReset {

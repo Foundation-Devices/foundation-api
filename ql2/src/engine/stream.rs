@@ -2,10 +2,13 @@ use std::{collections::VecDeque, time::Instant};
 
 use super::{ring::SeqRing, OpenId, Token};
 use crate::{
-    wire::stream::{
-        Direction, ResetCode, ResetTarget, StreamAck, StreamBody, StreamFrame, StreamFrameReset,
+    wire::{
+        stream::{
+            Direction, ResetCode, ResetTarget, StreamAck, StreamBody, StreamFrame, StreamFrameReset,
+        },
+        StreamSeq,
     },
-    StreamId, StreamSeq,
+    StreamId,
 };
 
 pub const STREAM_WINDOW_CAPACITY: usize = 8;
@@ -144,9 +147,9 @@ impl Default for StreamControl {
     fn default() -> Self {
         Self {
             pending: VecDeque::new(),
-            in_flight: SeqRing::new(StreamSeq(1)),
-            next_tx_seq: StreamSeq(1),
-            recv_buffer: SeqRing::new(StreamSeq(1)),
+            in_flight: SeqRing::new(StreamSeq::START),
+            next_tx_seq: StreamSeq::START,
+            recv_buffer: SeqRing::new(StreamSeq::START),
             ack_dirty: false,
             ack_immediate: false,
             ack_delay_token: None,
@@ -159,7 +162,7 @@ impl Default for StreamControl {
 impl StreamControl {
     pub fn take_tx_seq(&mut self) -> StreamSeq {
         let tx_seq = self.next_tx_seq;
-        self.next_tx_seq = StreamSeq(self.next_tx_seq.0.wrapping_add(1));
+        self.next_tx_seq = self.next_tx_seq.next();
         tx_seq
     }
 
@@ -168,7 +171,7 @@ impl StreamControl {
     }
 
     pub fn committed_rx_seq(&self) -> StreamSeq {
-        StreamSeq(self.recv_buffer.base_seq().0.saturating_sub(1))
+        self.recv_buffer.base_seq().prev()
     }
 
     pub fn queue_frame_back(&mut self, frame: StreamFrame) {
@@ -194,17 +197,18 @@ impl StreamControl {
         if !self.ack_dirty {
             return;
         }
+        let committed = self.committed_rx_seq();
         let progressed = self
-            .committed_rx_seq()
-            .0
-            .saturating_sub(self.last_sent_ack_base.0);
+            .last_sent_ack_base
+            .forward_distance_to(committed)
+            .unwrap_or(0);
         if progressed >= STREAM_ACK_EAGER_THRESHOLD {
             self.ack_immediate = true;
         }
     }
 
     pub fn note_ack_sent(&mut self, ack: StreamAck) {
-        if ack.base.0 > self.last_sent_ack_base.0 {
+        if ack.base.serial_gt(self.last_sent_ack_base) {
             self.last_sent_ack_base = ack.base;
         }
     }
@@ -221,7 +225,7 @@ impl StreamControl {
         tx_seq: StreamSeq,
         frame: StreamFrame,
     ) -> BufferIncomingResult {
-        if tx_seq.0 < self.recv_buffer.base_seq().0 {
+        if tx_seq.serial_lt(self.recv_buffer.base_seq()) {
             return BufferIncomingResult::Duplicate;
         }
         if !self.recv_buffer.accepts_seq(tx_seq) {
@@ -254,15 +258,17 @@ impl StreamControl {
         self.pending.clear();
         self.in_flight.clear_with_base(self.next_tx_seq);
         self.recv_buffer
-            .clear_with_base(StreamSeq(self.committed_rx_seq().0.wrapping_add(1)));
+            .clear_with_base(self.committed_rx_seq().next());
         self.clear_ack_schedule();
     }
 
     pub fn ack_covers(ack: StreamAck, tx_seq: StreamSeq) -> bool {
-        if tx_seq.0 <= ack.base.0 {
+        if tx_seq.serial_lte(ack.base) {
             return true;
         }
-        let delta = tx_seq.0.saturating_sub(ack.base.0);
+        let Some(delta) = ack.base.forward_distance_to(tx_seq) else {
+            return false;
+        };
         if !(1..=STREAM_WINDOW_SIZE).contains(&delta) {
             return false;
         }

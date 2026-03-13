@@ -1,6 +1,6 @@
 use std::array;
 
-use crate::StreamSeq;
+use crate::wire::StreamSeq;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeqRingInsertError {
@@ -98,14 +98,14 @@ impl<const N: usize, T> SeqRing<N, T> {
         let seq = self.base_seq;
         self.len -= 1;
         self.head = self.next_index(self.head);
-        self.base_seq = StreamSeq(self.base_seq.0.wrapping_add(1));
+        self.base_seq = self.base_seq.next();
         Some((seq, value))
     }
 
     pub fn advance_empty_front_until(&mut self, limit_seq: StreamSeq) {
-        while self.base_seq.0 < limit_seq.0 && self.slots[self.head].is_none() {
+        while self.base_seq.serial_lt(limit_seq) && self.slots[self.head].is_none() {
             self.head = self.next_index(self.head);
-            self.base_seq = StreamSeq(self.base_seq.0.wrapping_add(1));
+            self.base_seq = self.base_seq.next();
         }
     }
 
@@ -138,10 +138,7 @@ impl<const N: usize, T> SeqRing<N, T> {
     }
 
     fn offset_for(&self, seq: StreamSeq) -> Option<usize> {
-        if seq.0 < self.base_seq.0 {
-            return None;
-        }
-        let offset = (seq.0 - self.base_seq.0) as usize;
+        let offset = self.base_seq.forward_distance_to(seq)? as usize;
         (offset < N).then_some(offset)
     }
 
@@ -168,7 +165,7 @@ impl<'a, const N: usize, T> Iterator for SeqRingIter<'a, N, T> {
             self.offset += 1;
             let index = self.ring.index_for_offset(offset);
             if let Some(value) = self.ring.slots[index].as_ref() {
-                let seq = StreamSeq(self.ring.base_seq.0.wrapping_add(offset as u32));
+                let seq = self.ring.base_seq.add(offset as u32);
                 return Some((seq, value));
             }
         }
@@ -193,7 +190,9 @@ mod tests {
     use super::*;
     use crate::{
         engine::stream::{BufferIncomingResult, InFlightFrame, StreamControl},
-        wire::stream::{BodyChunk, Direction, StreamFrame, StreamFrameData, StreamFrameOpen},
+        wire::stream::{
+            BodyChunk, Direction, StreamAck, StreamFrame, StreamFrameData, StreamFrameOpen,
+        },
         StreamId,
     };
 
@@ -330,5 +329,66 @@ mod tests {
         let _ = control.remove_in_flight(StreamSeq(1));
         assert!(control.send_window_has_space());
         assert_eq!(control.in_flight.base_seq(), StreamSeq(2));
+    }
+
+    #[test]
+    fn ack_coverage_handles_wraparound_bitmap() {
+        let ack = StreamAck {
+            base: StreamSeq(u32::MAX),
+            bitmap: 0b0000_0011,
+        };
+
+        assert!(StreamControl::ack_covers(ack, StreamSeq(u32::MAX - 1)));
+        assert!(StreamControl::ack_covers(ack, StreamSeq(u32::MAX)));
+        assert!(StreamControl::ack_covers(ack, StreamSeq(0)));
+        assert!(StreamControl::ack_covers(ack, StreamSeq(1)));
+        assert!(!StreamControl::ack_covers(ack, StreamSeq(2)));
+    }
+
+    #[test]
+    fn seq_ring_accepts_window_across_sequence_overflow() {
+        let mut ring = SeqRing::<4, u64>::new(StreamSeq(u32::MAX - 1));
+        ring.insert(StreamSeq(u32::MAX - 1), 1).unwrap();
+        ring.insert(StreamSeq(u32::MAX), 2).unwrap();
+        ring.insert(StreamSeq(0), 3).unwrap();
+
+        assert_eq!(ring.take_front(), Some((StreamSeq(u32::MAX - 1), 1)));
+        assert_eq!(ring.take_front(), Some((StreamSeq(u32::MAX), 2)));
+
+        ring.insert(StreamSeq(1), 4).unwrap();
+        ring.insert(StreamSeq(2), 5).unwrap();
+
+        let remaining: Vec<_> = ring.iter().map(|(seq, value)| (seq, *value)).collect();
+        assert_eq!(
+            remaining,
+            vec![(StreamSeq(0), 3), (StreamSeq(1), 4), (StreamSeq(2), 5)]
+        );
+    }
+
+    #[test]
+    fn seq_ring_selective_take_slides_across_sequence_overflow() {
+        let mut ring = SeqRing::<8, u64>::new(StreamSeq(u32::MAX - 1));
+        for (seq, value) in [
+            (StreamSeq(u32::MAX - 1), 1u64),
+            (StreamSeq(u32::MAX), 2u64),
+            (StreamSeq(0), 3u64),
+            (StreamSeq(1), 4u64),
+        ] {
+            ring.insert(seq, value).unwrap();
+        }
+
+        assert_eq!(ring.remove(&StreamSeq(u32::MAX)), Some(2));
+        assert_eq!(ring.remove(&StreamSeq(0)), Some(3));
+        ring.advance_empty_front_until(StreamSeq(2));
+        assert_eq!(ring.base_seq(), StreamSeq(u32::MAX - 1));
+
+        assert_eq!(ring.remove(&StreamSeq(u32::MAX - 1)), Some(1));
+        ring.advance_empty_front_until(StreamSeq(2));
+        assert_eq!(ring.base_seq(), StreamSeq(1));
+
+        assert_eq!(ring.remove(&StreamSeq(1)), Some(4));
+        ring.advance_empty_front_until(StreamSeq(2));
+        assert_eq!(ring.base_seq(), StreamSeq(2));
+        assert!(ring.is_empty());
     }
 }

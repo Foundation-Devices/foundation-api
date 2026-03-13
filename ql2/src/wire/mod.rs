@@ -20,8 +20,11 @@ pub mod encrypted_message;
 pub mod handshake;
 pub mod heartbeat;
 pub mod pair;
+pub mod seq;
 pub mod stream;
 pub mod unpair;
+
+pub use seq::StreamSeq;
 
 mod codec;
 

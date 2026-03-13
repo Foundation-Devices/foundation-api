@@ -43,17 +43,10 @@ macro_rules! define_id {
 }
 
 define_id!(PacketId, u32);
-define_id!(StreamSeq, u32);
 define_id!(StreamId, u64);
 
 impl From<&ArchivedPacketId> for PacketId {
     fn from(value: &ArchivedPacketId) -> Self {
-        Self(value.0.to_native())
-    }
-}
-
-impl From<&ArchivedStreamSeq> for StreamSeq {
-    fn from(value: &ArchivedStreamSeq) -> Self {
         Self(value.0.to_native())
     }
 }

@@ -1,6 +1,6 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::{StreamId, StreamSeq};
+use crate::{wire::StreamSeq, StreamId};
 
 mod crypto;
 pub use crypto::*;
