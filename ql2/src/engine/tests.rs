@@ -157,20 +157,22 @@ fn connected_engine(local: &TestCrypto, peer: Peer, session_key: SymmetricKey) -
 
 fn insert_inflight_gap_stream(engine: &mut Engine, stream_id: StreamId, now: Instant) {
     let retry_at = now + Duration::from_secs(60);
-    let mut stream = StreamState::Initiator(InitiatorStream {
+    let mut stream = StreamState {
         meta: StreamMeta {
             stream_id,
             last_activity: now,
         },
         control: StreamControl::default(),
-        request: OutboundState::from_prefix(Direction::Request, false),
-        response: InboundState::new(),
-        accept: InitiatorAccept::Opening(OpenWaiter {
-            open_id: Some(OpenId(1)),
-            open_timeout_token: Token(999),
+        role: StreamRole::Initiator(InitiatorStream {
+            request: OutboundState::from_prefix(Direction::Request, false),
+            response: InboundState::new(),
+            accept: InitiatorAccept::Opening(OpenWaiter {
+                open_id: Some(OpenId(1)),
+                open_timeout_token: Token(999),
+            }),
         }),
-    });
-    let control = stream.control_mut();
+    };
+    let control = &mut stream.control;
     control.next_tx_seq = StreamSeq(6);
     control.insert_in_flight(InFlightFrame {
         tx_seq: StreamSeq::START,
@@ -207,20 +209,22 @@ fn insert_inflight_stream_with_data(
     data_seqs: &[u32],
 ) {
     let retry_at = now + Duration::from_secs(60);
-    let mut stream = StreamState::Initiator(InitiatorStream {
+    let mut stream = StreamState {
         meta: StreamMeta {
             stream_id,
             last_activity: now,
         },
         control: StreamControl::default(),
-        request: OutboundState::from_prefix(Direction::Request, false),
-        response: InboundState::new(),
-        accept: InitiatorAccept::Opening(OpenWaiter {
-            open_id: Some(OpenId(1)),
-            open_timeout_token: Token(1001),
+        role: StreamRole::Initiator(InitiatorStream {
+            request: OutboundState::from_prefix(Direction::Request, false),
+            response: InboundState::new(),
+            accept: InitiatorAccept::Opening(OpenWaiter {
+                open_id: Some(OpenId(1)),
+                open_timeout_token: Token(1001),
+            }),
         }),
-    });
-    let control = stream.control_mut();
+    };
+    let control = &mut stream.control;
     control.next_tx_seq = StreamSeq(data_seqs.iter().copied().max().unwrap_or(1) + 1);
     control.insert_in_flight(InFlightFrame {
         tx_seq: StreamSeq::START,
@@ -256,20 +260,22 @@ fn insert_unwritten_inflight_stream_with_data(
     now: Instant,
     data_seqs: &[u32],
 ) {
-    let mut stream = StreamState::Initiator(InitiatorStream {
+    let mut stream = StreamState {
         meta: StreamMeta {
             stream_id,
             last_activity: now,
         },
         control: StreamControl::default(),
-        request: OutboundState::from_prefix(Direction::Request, false),
-        response: InboundState::new(),
-        accept: InitiatorAccept::Opening(OpenWaiter {
-            open_id: Some(OpenId(2)),
-            open_timeout_token: Token(1002),
+        role: StreamRole::Initiator(InitiatorStream {
+            request: OutboundState::from_prefix(Direction::Request, false),
+            response: InboundState::new(),
+            accept: InitiatorAccept::Opening(OpenWaiter {
+                open_id: Some(OpenId(2)),
+                open_timeout_token: Token(1002),
+            }),
         }),
-    });
-    let control = stream.control_mut();
+    };
+    let control = &mut stream.control;
     control.next_tx_seq = StreamSeq(data_seqs.iter().copied().max().unwrap_or(1) + 1);
     control.insert_in_flight(InFlightFrame {
         tx_seq: StreamSeq::START,
@@ -714,9 +720,9 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
         .any(|output| matches!(output, EngineOutput::OpenAccepted { .. })));
 
     let stream = a.streams.get(&stream_id).unwrap();
-    assert!(stream.control().in_flight.contains_key(&StreamSeq::START));
-    match stream {
-        StreamState::Initiator(state) => {
+    assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
+    match &stream.role {
+        StreamRole::Initiator(state) => {
             assert!(matches!(state.accept, InitiatorAccept::Opening(_)));
         }
         _ => panic!("expected initiator stream"),
@@ -777,10 +783,10 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
         .iter()
         .any(|output| matches!(output, EngineOutput::InboundData { .. })));
     assert!(a.take_next_write(&crypto_a).is_some());
-    assert!(matches!(
-        a.streams.get(&stream_id),
-        Some(StreamState::Provisional(_))
-    ));
+    assert!(a
+        .streams
+        .get(&stream_id)
+        .is_some_and(StreamState::is_provisional));
 
     let open_message = StreamMessage {
         tx_seq: StreamSeq(1),
@@ -972,8 +978,8 @@ fn delayed_ack_only_does_not_consume_sequence_space() {
     let _outputs_b = harness.drain_b();
 
     let stream = harness.b.streams.get(&stream_id).unwrap();
-    assert!(stream.control().in_flight.is_empty());
-    assert_eq!(stream.control().next_tx_seq, StreamSeq::START);
+    assert!(stream.control.in_flight.is_empty());
+    assert_eq!(stream.control.next_tx_seq, StreamSeq::START);
 }
 
 #[test]
@@ -1275,13 +1281,13 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
         .any(|output| matches!(output, EngineOutput::OutboundFailed { .. })));
     let stream = a.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
-        .control()
+        .control
         .in_flight
         .iter()
         .map(|(seq, _)| seq)
         .collect();
     assert_eq!(remaining, vec![StreamSeq(3)]);
-    assert_eq!(stream.control().next_tx_seq, StreamSeq(6));
+    assert_eq!(stream.control.next_tx_seq, StreamSeq(6));
 }
 
 #[test]
@@ -1340,13 +1346,13 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
 
     let stream = a.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
-        .control()
+        .control
         .in_flight
         .iter()
         .map(|(seq, _)| seq)
         .collect();
     assert_eq!(remaining, vec![StreamSeq(3)]);
-    let frame = stream.control().in_flight.get(&StreamSeq(3)).unwrap();
+    let frame = stream.control.in_flight.get(&StreamSeq(3)).unwrap();
     assert_eq!(frame.attempt, 1);
     assert!(matches!(frame.write_state, InFlightWriteState::Issued));
 }
@@ -1398,13 +1404,13 @@ fn fast_retransmit_respects_configured_threshold() {
 
     let stream = a.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
-        .control()
+        .control
         .in_flight
         .iter()
         .map(|(seq, _)| seq)
         .collect();
     assert_eq!(remaining, vec![StreamSeq(3)]);
-    let frame = stream.control().in_flight.get(&StreamSeq(3)).unwrap();
+    let frame = stream.control.in_flight.get(&StreamSeq(3)).unwrap();
     assert_eq!(frame.attempt, 0);
     assert!(matches!(
         frame.write_state,
@@ -1454,9 +1460,9 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
     let _outputs_written = complete_engine_write(&mut a, write.id, Ok(()));
 
     let stream = a.streams.get(&tracked_stream_id).unwrap();
-    assert_eq!(stream.control().in_flight.len(), 1);
-    assert!(stream.control().in_flight.contains_key(&StreamSeq::START));
-    assert_eq!(stream.control().next_tx_seq, StreamSeq(2));
+    assert_eq!(stream.control.in_flight.len(), 1);
+    assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
+    assert_eq!(stream.control.next_tx_seq, StreamSeq(2));
 
     let _outputs_timeout = run_engine(
         &mut a,
@@ -1476,12 +1482,12 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
     ));
 
     let stream = a.streams.get(&tracked_stream_id).unwrap();
-    assert_eq!(stream.control().in_flight.len(), 1);
-    assert!(stream.control().in_flight.contains_key(&StreamSeq::START));
-    assert_eq!(stream.control().next_tx_seq, StreamSeq(2));
+    assert_eq!(stream.control.in_flight.len(), 1);
+    assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
+    assert_eq!(stream.control.next_tx_seq, StreamSeq(2));
     assert_eq!(
         stream
-            .control()
+            .control
             .in_flight
             .get(&StreamSeq::START)
             .unwrap()
@@ -1525,7 +1531,7 @@ fn take_next_write_drains_multiple_stream_frames_before_completion() {
 
     let stream = a.streams.get(&stream_id).unwrap();
     assert!(stream
-        .control()
+        .control
         .in_flight
         .iter()
         .all(|(_, in_flight)| matches!(in_flight.write_state, InFlightWriteState::Issued)));
@@ -1702,8 +1708,8 @@ fn provisional_timeout_after_late_open_is_ignored() {
     );
 
     assert!(matches!(
-        a.streams.get(&stream_id),
-        Some(StreamState::Responder(_))
+        a.streams.get(&stream_id).map(|stream| &stream.role),
+        Some(StreamRole::Responder(_))
     ));
     if let Some(write) = a.take_next_write(&crypto_a) {
         let (_, body) = decode_stream_body(&write.bytes, &session_key);
@@ -1819,7 +1825,7 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
         }) if id == stream_id
     ));
     let stream = a.streams.get(&stream_id).unwrap();
-    assert_eq!(stream.control().next_tx_seq, StreamSeq(2));
+    assert_eq!(stream.control.next_tx_seq, StreamSeq(2));
 }
 
 #[test]
@@ -2091,7 +2097,7 @@ fn fast_retransmit_and_retry_deadline_same_tick_only_send_once() {
     a.streams
         .get_mut(&stream_id)
         .unwrap()
-        .control_mut()
+        .control
         .set_retry_deadline(StreamSeq(3), now);
 
     let ack_record = wire::stream::encrypt_stream(

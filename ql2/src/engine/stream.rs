@@ -358,8 +358,6 @@ impl StreamControl {
 
 #[derive(Debug)]
 pub struct InitiatorStream {
-    pub meta: StreamMeta,
-    pub control: StreamControl,
     pub request: OutboundState,
     pub response: InboundState,
     pub accept: InitiatorAccept,
@@ -374,63 +372,39 @@ pub enum ResponderResponse {
 
 #[derive(Debug)]
 pub struct ResponderStream {
-    pub meta: StreamMeta,
-    pub control: StreamControl,
     pub request: InboundState,
     pub response: ResponderResponse,
 }
 
 #[derive(Debug)]
 pub struct ProvisionalStream {
-    pub meta: StreamMeta,
-    pub control: StreamControl,
     pub timeout_token: Token,
 }
 
 #[derive(Debug)]
-pub enum StreamState {
+pub enum StreamRole {
     Initiator(InitiatorStream),
     Responder(ResponderStream),
     Provisional(ProvisionalStream),
 }
 
+#[derive(Debug)]
+pub struct StreamState {
+    pub meta: StreamMeta,
+    pub control: StreamControl,
+    pub role: StreamRole,
+}
+
 impl StreamState {
-    pub fn stream_id(&self) -> StreamId {
-        match self {
-            Self::Initiator(state) => state.meta.stream_id,
-            Self::Responder(state) => state.meta.stream_id,
-            Self::Provisional(state) => state.meta.stream_id,
-        }
-    }
-
-    pub fn last_activity_mut(&mut self) -> &mut Instant {
-        match self {
-            Self::Initiator(state) => &mut state.meta.last_activity,
-            Self::Responder(state) => &mut state.meta.last_activity,
-            Self::Provisional(state) => &mut state.meta.last_activity,
-        }
-    }
-
-    pub fn control(&self) -> &StreamControl {
-        match self {
-            Self::Initiator(state) => &state.control,
-            Self::Responder(state) => &state.control,
-            Self::Provisional(state) => &state.control,
-        }
-    }
-
-    pub fn control_mut(&mut self) -> &mut StreamControl {
-        match self {
-            Self::Initiator(state) => &mut state.control,
-            Self::Responder(state) => &mut state.control,
-            Self::Provisional(state) => &mut state.control,
-        }
+    pub fn parts_mut(&mut self) -> (&mut StreamMeta, &mut StreamControl, &mut StreamRole) {
+        (&mut self.meta, &mut self.control, &mut self.role)
     }
 
     pub fn outbound_mut(&mut self, dir: Direction) -> Option<&mut OutboundState> {
-        match self {
-            Self::Initiator(state) if dir == Direction::Request => Some(&mut state.request),
-            Self::Responder(state) if dir == Direction::Response => match &mut state.response {
+        match &mut self.role {
+            StreamRole::Initiator(state) if dir == Direction::Request => Some(&mut state.request),
+            StreamRole::Responder(state) if dir == Direction::Response => match &mut state.response
+            {
                 ResponderResponse::Accepted { body } => Some(body),
                 _ => None,
             },
@@ -439,16 +413,16 @@ impl StreamState {
     }
 
     pub fn inbound_mut(&mut self, dir: Direction) -> Option<&mut InboundState> {
-        match self {
-            Self::Initiator(state) if dir == Direction::Response => Some(&mut state.response),
-            Self::Responder(state) if dir == Direction::Request => Some(&mut state.request),
+        match &mut self.role {
+            StreamRole::Initiator(state) if dir == Direction::Response => Some(&mut state.response),
+            StreamRole::Responder(state) if dir == Direction::Request => Some(&mut state.request),
             _ => None,
         }
     }
 
     pub fn open_timeout_token(&self) -> Option<Token> {
-        match self {
-            Self::Initiator(state) => match &state.accept {
+        match &self.role {
+            StreamRole::Initiator(state) => match &state.accept {
                 InitiatorAccept::Opening(waiter) | InitiatorAccept::WaitingAccept(waiter) => {
                     Some(waiter.open_timeout_token)
                 }
@@ -459,37 +433,37 @@ impl StreamState {
     }
 
     pub fn provisional_timeout_token(&self) -> Option<Token> {
-        match self {
-            Self::Provisional(state) => Some(state.timeout_token),
+        match &self.role {
+            StreamRole::Provisional(state) => Some(state.timeout_token),
             _ => None,
         }
     }
 
     pub fn is_provisional(&self) -> bool {
-        matches!(self, Self::Provisional(_))
+        matches!(&self.role, StreamRole::Provisional(_))
     }
 
     pub fn can_reap(&self) -> bool {
-        if !self.control().pending.is_empty()
-            || !self.control().in_flight.is_empty()
-            || !self.control().recv_buffer.is_empty()
-            || self.control().ack_dirty
-            || self.control().ack_outbound_token.is_some()
+        if !self.control.pending.is_empty()
+            || !self.control.in_flight.is_empty()
+            || !self.control.recv_buffer.is_empty()
+            || self.control.ack_dirty
+            || self.control.ack_outbound_token.is_some()
         {
             return false;
         }
-        match self {
-            Self::Initiator(state) => {
+        match &self.role {
+            StreamRole::Initiator(state) => {
                 matches!(state.accept, InitiatorAccept::Open { .. })
                     && state.request.is_closed()
                     && state.response.closed
             }
-            Self::Responder(state) => match &state.response {
+            StreamRole::Responder(state) => match &state.response {
                 ResponderResponse::Accepted { body } => state.request.closed && body.is_closed(),
                 ResponderResponse::Rejecting => true,
                 ResponderResponse::Pending => false,
             },
-            Self::Provisional(_) => false,
+            StreamRole::Provisional(_) => false,
         }
     }
 }
