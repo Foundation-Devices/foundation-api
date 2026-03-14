@@ -7,15 +7,15 @@ use std::{
 
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
-use super::{replay_cache::ReplayCache, stream::StreamStore, EngineConfig, StreamConfig};
+use super::{replay_cache::ReplayCache, stream::StreamStore, EngineConfig};
 use crate::{
     platform::QlIdentity,
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
-        stream::{BodyChunk, Direction, RejectCode, ResetCode, ResetTarget},
+        stream::{ResetCode, ResetTarget},
         StreamSeq,
     },
-    PacketId, Peer, QlError, StreamId,
+    PacketId, Peer, StreamId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -190,126 +190,6 @@ impl PeerRecord {
     }
 }
 
-#[derive(Debug)]
-pub enum EngineInput {
-    BindPeer(Peer),
-    Pair,
-    Connect,
-    Unpair,
-
-    OpenStream {
-        open_id: OpenId,
-        request_head: Vec<u8>,
-        request_prefix: Option<BodyChunk>,
-        config: StreamConfig,
-    },
-    AcceptStream {
-        stream_id: StreamId,
-        response_head: Vec<u8>,
-        response_prefix: Option<BodyChunk>,
-    },
-    RejectStream {
-        stream_id: StreamId,
-        code: RejectCode,
-    },
-
-    OutboundData {
-        stream_id: StreamId,
-        dir: Direction,
-        bytes: Vec<u8>,
-    },
-    OutboundFinished {
-        stream_id: StreamId,
-        dir: Direction,
-    },
-
-    ResetOutbound {
-        stream_id: StreamId,
-        dir: Direction,
-        code: ResetCode,
-    },
-    ResetInbound {
-        stream_id: StreamId,
-        dir: Direction,
-        code: ResetCode,
-    },
-    PendingAcceptDropped {
-        stream_id: StreamId,
-    },
-    ResponderDropped {
-        stream_id: StreamId,
-    },
-
-    Incoming(Vec<u8>),
-    TimerExpired,
-}
-
-#[derive(Debug)]
-pub enum EngineOutput {
-    SetTimer(Option<Instant>),
-
-    PeerStatusChanged {
-        peer: XID,
-        session: PeerSession,
-    },
-    PersistPeer(Peer),
-    ClearPeer,
-
-    OpenStarted {
-        open_id: OpenId,
-        stream_id: StreamId,
-    },
-    OpenAccepted {
-        open_id: OpenId,
-        stream_id: StreamId,
-        response_head: Vec<u8>,
-        response_prefix: Option<BodyChunk>,
-    },
-    OpenFailed {
-        open_id: OpenId,
-        stream_id: StreamId,
-        error: QlError,
-    },
-
-    InboundStreamOpened {
-        stream_id: StreamId,
-        request_head: Vec<u8>,
-        request_prefix: Option<BodyChunk>,
-    },
-    InboundData {
-        stream_id: StreamId,
-        dir: Direction,
-        bytes: Vec<u8>,
-    },
-    InboundFinished {
-        stream_id: StreamId,
-        dir: Direction,
-    },
-    InboundFailed {
-        stream_id: StreamId,
-        dir: Direction,
-        error: QlError,
-    },
-
-    OutboundClosed {
-        stream_id: StreamId,
-        dir: Direction,
-    },
-    OutboundFailed {
-        stream_id: StreamId,
-        dir: Direction,
-        error: QlError,
-    },
-
-    StreamReaped {
-        stream_id: StreamId,
-    },
-}
-
-pub trait OutputFn: FnMut(EngineOutput) {}
-
-impl<T> OutputFn for T where T: FnMut(EngineOutput) {}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutKind {
     Outbound { token: Token },
@@ -334,16 +214,6 @@ impl PartialOrd for TimeoutEntry {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
-}
-
-#[derive(Debug)]
-pub enum HelloAction {
-    StartResponder,
-    ResendReply {
-        reply: HelloReply,
-        deadline: Instant,
-    },
-    Ignore,
 }
 
 pub struct Engine {
