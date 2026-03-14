@@ -2158,6 +2158,68 @@ fn replayed_heartbeat_is_ignored() {
 }
 
 #[test]
+fn keepalive_deadline_is_derived_from_peer_state() {
+    let mut config = EngineConfig::default();
+    config.keep_alive = Some(KeepAliveConfig {
+        interval: Duration::from_secs(5),
+        timeout: Duration::from_secs(7),
+    });
+
+    let crypto_a = TestCrypto::new(103);
+    let crypto_b = TestCrypto::new(104);
+    let peer_b = crypto_b.peer();
+    let session_key = SymmetricKey::from_data([6; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key);
+    let now = Instant::now();
+
+    a.record_activity(now);
+    assert!(a.state.timeouts.is_empty());
+    assert_eq!(a.keep_alive_deadline(), Some(now + Duration::from_secs(5)));
+
+    let outputs = run_engine(
+        &mut a,
+        now + Duration::from_secs(5),
+        EngineInput::TimerExpired,
+        &crypto_a,
+    );
+    assert!(matches!(
+        outputs.last(),
+        Some(EngineOutput::SetTimer(Some(deadline)))
+            if *deadline == now + Duration::from_secs(12)
+    ));
+
+    let write = take_single_write(&mut a, &crypto_a);
+    let record = wire::decode_record(&write.bytes).unwrap();
+    assert!(matches!(record.payload, QlPayload::Heartbeat(_)));
+
+    let PeerSession::Connected { keepalive, .. } = &a.peer.as_ref().unwrap().session else {
+        panic!("expected connected session");
+    };
+    assert!(keepalive.pending);
+    assert_eq!(keepalive.last_activity, Some(now + Duration::from_secs(5)));
+
+    let outputs = run_engine(
+        &mut a,
+        now + Duration::from_secs(12),
+        EngineInput::TimerExpired,
+        &crypto_a,
+    );
+    assert!(outputs.iter().any(|output| {
+        matches!(
+            output,
+            EngineOutput::PeerStatusChanged {
+                session: PeerSession::Disconnected,
+                ..
+            }
+        )
+    }));
+    assert!(matches!(
+        &a.peer.as_ref().unwrap().session,
+        PeerSession::Disconnected
+    ));
+}
+
+#[test]
 fn replayed_unpair_is_ignored_after_rebind() {
     let config = EngineConfig::default();
     let crypto_a = TestCrypto::new(111);
@@ -2200,8 +2262,5 @@ fn replayed_unpair_is_ignored_after_rebind() {
     assert!(!second
         .iter()
         .any(|output| matches!(output, EngineOutput::ClearPeer)));
-    assert_eq!(
-        a.peer.as_ref().map(|peer| peer.peer),
-        Some(peer_b.peer)
-    );
+    assert_eq!(a.peer.as_ref().map(|peer| peer.peer), Some(peer_b.peer));
 }

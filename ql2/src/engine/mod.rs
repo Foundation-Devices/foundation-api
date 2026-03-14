@@ -227,11 +227,14 @@ impl Engine {
     }
 
     fn next_deadline(&self) -> Option<Instant> {
-        match (self.state.next_deadline(), self.stream_retry_deadline()) {
-            (Some(lhs), Some(rhs)) => Some(lhs.min(rhs)),
-            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-            (None, None) => None,
-        }
+        [
+            self.state.next_deadline(),
+            self.stream_retry_deadline(),
+            self.keep_alive_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     fn stream_retry_deadline(&self) -> Option<Instant> {
@@ -248,6 +251,22 @@ impl Engine {
                     })
             })
             .min()
+    }
+
+    fn keep_alive_deadline(&self) -> Option<Instant> {
+        let config = self.keep_alive_config()?;
+        let entry = self.peer.as_ref()?;
+        let PeerSession::Connected { keepalive, .. } = &entry.session else {
+            return None;
+        };
+        let base = keepalive.last_activity?;
+        Some(
+            base + if keepalive.pending {
+                config.timeout
+            } else {
+                config.interval
+            },
+        )
     }
 
     fn is_replayed_control(&mut self, peer: XID, meta: ControlMeta) -> bool {
@@ -1594,17 +1613,15 @@ impl Engine {
 
     fn connected_session_for_token(&self, token: Option<Token>) -> Option<SymmetricKey> {
         let token = token?;
-        self.peer
-            .as_ref()
-            .and_then(|entry| match &entry.session {
-                PeerSession::Initiator {
-                    session_key,
-                    handshake_token,
-                    stage: InitiatorStage::SendingConfirm,
-                    ..
-                } if *handshake_token == token => Some(session_key.clone()),
-                _ => None,
-            })
+        self.peer.as_ref().and_then(|entry| match &entry.session {
+            PeerSession::Initiator {
+                session_key,
+                handshake_token,
+                stage: InitiatorStage::SendingConfirm,
+                ..
+            } if *handshake_token == token => Some(session_key.clone()),
+            _ => None,
+        })
     }
 
     fn stream_write_session(&self) -> Option<(XID, SymmetricKey)> {
@@ -2120,10 +2137,9 @@ impl Engine {
     }
 
     fn record_activity(&mut self, now: Instant) {
-        let Some(config) = self.keep_alive_config() else {
+        if self.keep_alive_config().is_none() {
             return;
-        };
-        let token = self.state.next_token();
+        }
         let Some(entry) = self.peer.as_mut() else {
             return;
         };
@@ -2132,14 +2148,6 @@ impl Engine {
         };
         keepalive.last_activity = Some(now);
         keepalive.pending = false;
-        keepalive.token = token;
-        // TODO: we should not be doing this. we only have one peer can fill up the timeout queue with a bunch of duplicate shit
-        // probably need a new field on peer directly, that we can query for their last activity.
-        // then we can calculate the pending timeout by looking at the field directly.
-        self.state.timeouts.push(Reverse(TimeoutEntry {
-            at: now + config.interval,
-            kind: TimeoutKind::KeepAliveSend { token },
-        }));
     }
 
     fn record_stream_activity(&mut self, stream_id: StreamId, now: Instant) {
@@ -2268,48 +2276,6 @@ impl Engine {
                         self.abort_streams(QlError::SendFailed, emit);
                     }
                 }
-                TimeoutKind::KeepAliveSend { token } => {
-                    let Some(config) = self.keep_alive_config() else {
-                        continue;
-                    };
-                    let should_send = {
-                        let Some(entry) = self.peer.as_ref() else {
-                            continue;
-                        };
-                        let PeerSession::Connected { keepalive, .. } = &entry.session else {
-                            continue;
-                        };
-                        keepalive.token == token && !keepalive.pending
-                    };
-                    if should_send {
-                        self.send_heartbeat_message(now, crypto);
-                    }
-                    if let Some(entry) = self.peer.as_mut() {
-                        if let PeerSession::Connected { keepalive, .. } = &mut entry.session {
-                            if keepalive.token == token {
-                                keepalive.pending = true;
-                            }
-                        }
-                    }
-                    self.state.timeouts.push(Reverse(TimeoutEntry {
-                        at: now + config.timeout,
-                        kind: TimeoutKind::KeepAliveTimeout { token },
-                    }));
-                }
-                TimeoutKind::KeepAliveTimeout { token } => {
-                    let Some(entry) = self.peer.as_ref() else {
-                        continue;
-                    };
-                    let should_disconnect = matches!(&entry.session, PeerSession::Connected { keepalive, .. } if keepalive.token == token && keepalive.pending);
-                    if should_disconnect {
-                        if let Some(entry) = self.peer.as_mut() {
-                            entry.session = PeerSession::Disconnected;
-                        }
-                        self.emit_peer_status(emit);
-                        self.drop_outbound();
-                        self.abort_streams(QlError::SendFailed, emit);
-                    }
-                }
                 TimeoutKind::StreamOpen { stream_id, token } => {
                     let should_fail = self
                         .streams
@@ -2344,6 +2310,38 @@ impl Engine {
                         );
                     }
                 }
+            }
+        }
+
+        let keepalive_due = self
+            .keep_alive_deadline()
+            .is_some_and(|deadline| deadline <= now);
+        if !keepalive_due {
+            return;
+        }
+
+        let Some(entry) = self.peer.as_ref() else {
+            return;
+        };
+        let PeerSession::Connected { keepalive, .. } = &entry.session else {
+            return;
+        };
+
+        if keepalive.pending {
+            if let Some(entry) = self.peer.as_mut() {
+                entry.session = PeerSession::Disconnected;
+            }
+            self.emit_peer_status(emit);
+            self.drop_outbound();
+            self.abort_streams(QlError::SendFailed, emit);
+            return;
+        }
+
+        self.send_heartbeat_message(now, crypto);
+        if let Some(entry) = self.peer.as_mut() {
+            if let PeerSession::Connected { keepalive, .. } = &mut entry.session {
+                keepalive.pending = true;
+                keepalive.last_activity = Some(now);
             }
         }
     }

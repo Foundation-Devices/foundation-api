@@ -73,7 +73,6 @@ pub struct ActiveWrite {
 
 #[derive(Debug, Clone)]
 pub struct KeepAliveState {
-    pub token: Token,
     pub pending: bool,
     pub last_activity: Option<Instant>,
 }
@@ -81,7 +80,6 @@ pub struct KeepAliveState {
 impl Default for KeepAliveState {
     fn default() -> Self {
         Self {
-            token: Token(0),
             pending: false,
             last_activity: None,
         }
@@ -316,8 +314,6 @@ impl<T> OutputFn for T where T: FnMut(EngineOutput) {}
 pub enum TimeoutKind {
     Outbound { token: Token },
     Handshake { token: Token },
-    KeepAliveSend { token: Token },
-    KeepAliveTimeout { token: Token },
     StreamOpen { stream_id: StreamId, token: Token },
     StreamAckDelay { stream_id: StreamId, token: Token },
     StreamProvisional { stream_id: StreamId, token: Token },
