@@ -10,6 +10,7 @@ use crate::PacketId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReplayKey {
+    /// unfortunately we need this in the key, to avoid replay attacks of pair/unpair.
     pub peer: XID,
     pub packet_id: PacketId,
 }
