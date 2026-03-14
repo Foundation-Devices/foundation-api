@@ -2158,6 +2158,49 @@ fn replayed_heartbeat_is_ignored() {
 }
 
 #[test]
+fn handshake_deadline_is_derived_from_peer_state() {
+    let mut config = EngineConfig::default();
+    config.handshake_timeout = Duration::from_secs(5);
+
+    let crypto_a = TestCrypto::new(103);
+    let crypto_b = TestCrypto::new(104);
+    let peer_b = crypto_b.peer();
+    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
+    let now = Instant::now();
+
+    let _outputs = run_engine(&mut a, now, EngineInput::Connect, &crypto_a);
+    assert_eq!(a.state.timeouts.len(), 1);
+    assert_eq!(a.handshake_deadline(), Some(now + Duration::from_secs(5)));
+
+    let write = take_single_write(&mut a, &crypto_a);
+    let _ = complete_engine_write(&mut a, write.id, Ok(()));
+    a.state.timeouts.clear();
+
+    assert_eq!(a.state.timeouts.len(), 0);
+    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
+
+    let outputs = run_engine(
+        &mut a,
+        now + Duration::from_secs(5),
+        EngineInput::TimerExpired,
+        &crypto_a,
+    );
+    assert!(outputs.iter().any(|output| {
+        matches!(
+            output,
+            EngineOutput::PeerStatusChanged {
+                session: PeerSession::Disconnected,
+                ..
+            }
+        )
+    }));
+    assert!(matches!(
+        &a.peer.as_ref().unwrap().session,
+        PeerSession::Disconnected
+    ));
+}
+
+#[test]
 fn keepalive_deadline_is_derived_from_peer_state() {
     let mut config = EngineConfig::default();
     config.keep_alive = Some(KeepAliveConfig {

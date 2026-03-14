@@ -313,7 +313,6 @@ impl<T> OutputFn for T where T: FnMut(EngineOutput) {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutKind {
     Outbound { token: Token },
-    Handshake { token: Token },
     StreamOpen { stream_id: StreamId, token: Token },
     StreamAckDelay { stream_id: StreamId, token: Token },
     StreamProvisional { stream_id: StreamId, token: Token },
@@ -423,10 +422,6 @@ impl EngineState {
             kind: OutboundWriteKind::Control,
             payload: ControlWritePayload::Encoded(bytes),
         });
-        self.timeouts.push(Reverse(TimeoutEntry {
-            at: deadline,
-            kind: TimeoutKind::Handshake { token },
-        }));
         self.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Outbound { token },

@@ -230,6 +230,7 @@ impl Engine {
         [
             self.state.next_deadline(),
             self.stream_retry_deadline(),
+            self.handshake_deadline(),
             self.keep_alive_deadline(),
         ]
         .into_iter()
@@ -267,6 +268,16 @@ impl Engine {
                 config.interval
             },
         )
+    }
+
+    fn handshake_deadline(&self) -> Option<Instant> {
+        let entry = self.peer.as_ref()?;
+        match &entry.session {
+            PeerSession::Initiator { deadline, .. } | PeerSession::Responder { deadline, .. } => {
+                Some(*deadline)
+            }
+            PeerSession::Disconnected | PeerSession::Connected { .. } => None,
+        }
     }
 
     fn is_replayed_control(&mut self, peer: XID, meta: ControlMeta) -> bool {
@@ -2258,24 +2269,6 @@ impl Engine {
                         .control_outbound
                         .retain(|message| message.token != token);
                 }
-                TimeoutKind::Handshake { token } => {
-                    let Some(entry) = self.peer.as_ref() else {
-                        continue;
-                    };
-                    let should_disconnect = matches!(
-                        &entry.session,
-                        PeerSession::Initiator { handshake_token, .. } | PeerSession::Responder { handshake_token, .. }
-                            if *handshake_token == token
-                    );
-                    if should_disconnect {
-                        if let Some(entry) = self.peer.as_mut() {
-                            entry.session = PeerSession::Disconnected;
-                        }
-                        self.emit_peer_status(emit);
-                        self.drop_outbound();
-                        self.abort_streams(QlError::SendFailed, emit);
-                    }
-                }
                 TimeoutKind::StreamOpen { stream_id, token } => {
                     let should_fail = self
                         .streams
@@ -2311,6 +2304,24 @@ impl Engine {
                     }
                 }
             }
+        }
+
+        let handshake_due = self
+            .handshake_deadline()
+            .is_some_and(|deadline| deadline <= now);
+        if handshake_due {
+            if let Some(entry) = self.peer.as_mut() {
+                if matches!(
+                    entry.session,
+                    PeerSession::Initiator { .. } | PeerSession::Responder { .. }
+                ) {
+                    entry.session = PeerSession::Disconnected;
+                }
+            }
+            self.emit_peer_status(emit);
+            self.drop_outbound();
+            self.abort_streams(QlError::SendFailed, emit);
+            return;
         }
 
         let keepalive_due = self
