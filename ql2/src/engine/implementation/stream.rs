@@ -410,8 +410,13 @@ pub fn process_stream_ack(
                 .control
                 .in_flight
                 .iter()
-                .map(|(tx_seq, _)| tx_seq)
-                .find(|tx_seq| StreamControl::ack_covers(ack, *tx_seq));
+                .find_map(|(tx_seq, in_flight)| match in_flight.write_state {
+                    // ignore acks for writes that have not been sent out yet
+                    InFlightWriteState::Ready => None,
+                    InFlightWriteState::Issued | InFlightWriteState::WaitingRetry { .. } => {
+                        StreamControl::ack_covers(ack, tx_seq).then_some(tx_seq)
+                    }
+                });
             let Some(tx_seq) = acked_tx_seq else {
                 break;
             };
