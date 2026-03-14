@@ -1,4 +1,14 @@
-use super::super::*;
+use std::cmp::Reverse;
+
+use super::*;
+use crate::{
+    engine::{
+        state::{StreamNamespace, TimeoutEntry},
+        stream::*,
+        EngineConfig, EngineState, OpenId, StreamConfig,
+    },
+    wire::stream::*,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamHandleResult {
@@ -211,9 +221,14 @@ pub fn handle_reset_inbound(
         return;
     }
     inbound.closed = true;
-    stream
-        .control
-        .queue_frame_front(reset_frame(stream_id, reset_target_for_dir(dir), code));
+    stream.control.queue_frame_front({
+        let target = reset_target_for_dir(dir);
+        StreamFrame::Reset(StreamFrameReset {
+            stream_id: stream_id,
+            target,
+            code: code,
+        })
+    });
     stream.meta.last_activity = now;
     drive_stream(stream);
 }

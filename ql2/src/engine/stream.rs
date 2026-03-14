@@ -547,6 +547,22 @@ impl StreamStore {
             };
         }
     }
+
+    pub fn stream_retry_deadline(&self) -> Option<Instant> {
+        self.streams
+            .values()
+            .flat_map(|stream| {
+                stream
+                    .control
+                    .in_flight
+                    .iter()
+                    .filter_map(|(_, in_flight)| match in_flight.write_state {
+                        InFlightWriteState::WaitingRetry { retry_at } => Some(retry_at),
+                        InFlightWriteState::Ready | InFlightWriteState::Issued => None,
+                    })
+            })
+            .min()
+    }
 }
 
 pub fn reset_frame(stream_id: StreamId, target: ResetTarget, code: ResetCode) -> StreamFrame {

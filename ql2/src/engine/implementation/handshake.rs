@@ -1,4 +1,9 @@
-use super::super::*;
+use super::*;
+use crate::{
+    engine::{EngineConfig, EngineState, KeepAliveState},
+    platform::QlIdentity,
+    wire::{handshake::HandshakeRecord, QlPayload, QlRecord},
+};
 
 #[derive(Debug)]
 enum HelloAction {
@@ -43,7 +48,7 @@ pub fn handle_hello(
 ) {
     let action = match engine.peer.as_ref() {
         Some(entry) => {
-            if handshake::verify_hello(peer, engine.identity.xid, &entry.signing_key, hello)
+            if wire::handshake::verify_hello(peer, engine.identity.xid, &entry.signing_key, hello)
                 .is_err()
             {
                 return;
@@ -154,7 +159,7 @@ pub fn handle_hello_reply(
         if *stage != InitiatorStage::WaitingHelloReply {
             return;
         }
-        handshake::build_confirm(
+        wire::handshake::build_confirm(
             &engine.identity,
             peer,
             &peer_record.signing_key,
@@ -223,7 +228,7 @@ pub fn handle_confirm(
         return;
     };
 
-    match handshake::finalize_confirm(
+    match wire::handshake::finalize_confirm(
         peer,
         engine.identity.xid,
         &peer_record.signing_key,
@@ -273,7 +278,7 @@ fn start_initiator_handshake(
     };
     let peer = peer_record.peer;
     let Ok((hello, session_key)) =
-        handshake::build_hello(identity, crypto, peer, &peer_record.encapsulation_key, meta)
+        wire::handshake::build_hello(identity, crypto, peer, &peer_record.encapsulation_key, meta)
     else {
         return false;
     };
@@ -313,7 +318,7 @@ fn start_responder_handshake(
         packet_id: state.next_packet_id(),
         valid_until: wire::now_secs() + config.handshake_timeout.as_secs(),
     };
-    let (reply, secrets) = match handshake::respond_hello(
+    let (reply, secrets) = match wire::handshake::respond_hello(
         identity,
         crypto,
         peer,

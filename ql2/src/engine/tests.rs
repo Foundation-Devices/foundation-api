@@ -4,19 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bc_components::{SymmetricKey, MLDSA, MLKEM};
+use bc_components::{SymmetricKey, MLDSA, MLKEM, XID};
 
-use super::*;
 use crate::{
+    engine::{state::StreamNamespace, stream::*, *},
     platform::{QlCrypto, QlIdentity},
-    wire::{
-        self,
-        stream::{
-            BodyChunk, StreamAck, StreamAckBody, StreamBody, StreamFrame, StreamFrameAccept,
-            StreamFrameData, StreamFrameOpen, StreamMessage,
-        },
-        QlHeader, QlPayload,
-    },
+    wire::{self, stream::*, QlHeader, QlPayload, QlRecord, StreamSeq},
     PacketId, Peer,
 };
 
@@ -135,6 +128,26 @@ fn decode_stream_body(bytes: &[u8], session_key: &SymmetricKey) -> (QlHeader, St
         .and_then(wire::deserialize_value)
         .unwrap();
     (record.header, body)
+}
+
+fn encrypt_heartbeat_record(
+    sender: XID,
+    recipient: XID,
+    session_key: &SymmetricKey,
+    packet_id: u32,
+    nonce: [u8; wire::encrypted_message::NONCE_SIZE],
+) -> QlRecord {
+    wire::heartbeat::encrypt_heartbeat(
+        QlHeader { sender, recipient },
+        session_key,
+        wire::heartbeat::HeartbeatBody {
+            meta: crate::wire::ControlMeta {
+                packet_id: PacketId(packet_id),
+                valid_until: wire::now_secs().saturating_add(60),
+            },
+        },
+        nonce,
+    )
 }
 
 fn connected_engine_with_config(
@@ -2174,16 +2187,35 @@ fn handshake_deadline_is_derived_from_peer_state() {
     let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
     let now = Instant::now();
 
-    let _outputs = run_engine(&mut a, now, EngineInput::Connect, &crypto_a);
-    assert_eq!(a.state.timeouts.len(), 1);
-    assert_eq!(a.handshake_deadline(), Some(now + Duration::from_secs(5)));
+    let outputs = run_engine(&mut a, now, EngineInput::Connect, &crypto_a);
+    assert!(outputs.iter().any(|output| {
+        matches!(output, EngineOutput::SetTimer(Some(deadline)) if *deadline == now + Duration::from_secs(5))
+    }));
 
     let write = take_single_write(&mut a, &crypto_a);
-    let _ = complete_engine_write(&mut a, write.id, Ok(()));
-    a.state.timeouts.clear();
+    let outputs = complete_engine_write(&mut a, write.id, Ok(()));
+    assert!(outputs.iter().any(|output| {
+        matches!(output, EngineOutput::SetTimer(Some(deadline)) if *deadline == now + Duration::from_secs(5))
+    }));
 
-    assert_eq!(a.state.timeouts.len(), 0);
-    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
+    let outputs = run_engine(
+        &mut a,
+        now + Duration::from_secs(4),
+        EngineInput::TimerExpired,
+        &crypto_a,
+    );
+    assert!(!outputs.iter().any(|output| {
+        matches!(
+            output,
+            EngineOutput::PeerStatusChanged {
+                session: PeerSession::Disconnected,
+                ..
+            }
+        )
+    }));
+    assert!(outputs.iter().any(|output| {
+        matches!(output, EngineOutput::SetTimer(Some(deadline)) if *deadline == now + Duration::from_secs(5))
+    }));
 
     let outputs = run_engine(
         &mut a,
@@ -2200,10 +2232,6 @@ fn handshake_deadline_is_derived_from_peer_state() {
             }
         )
     }));
-    assert!(matches!(
-        &a.peer.as_ref().unwrap().session,
-        PeerSession::Disconnected
-    ));
 }
 
 #[test]
@@ -2218,12 +2246,30 @@ fn keepalive_deadline_is_derived_from_peer_state() {
     let crypto_b = TestCrypto::new(104);
     let peer_b = crypto_b.peer();
     let session_key = SymmetricKey::from_data([6; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key);
+    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
     let now = Instant::now();
 
-    a.record_activity(now);
-    assert!(a.state.timeouts.is_empty());
-    assert_eq!(a.keep_alive_deadline(), Some(now + Duration::from_secs(5)));
+    let heartbeat = encrypt_heartbeat_record(
+        crypto_b.xid(),
+        crypto_a.xid(),
+        &session_key,
+        1,
+        [7; wire::encrypted_message::NONCE_SIZE],
+    );
+    let outputs = run_engine(
+        &mut a,
+        now,
+        EngineInput::Incoming(wire::encode_record(&heartbeat)),
+        &crypto_a,
+    );
+    assert!(outputs.iter().any(|output| {
+        matches!(output, EngineOutput::SetTimer(Some(deadline)) if *deadline == now + Duration::from_secs(5))
+    }));
+
+    let write = take_single_write(&mut a, &crypto_a);
+    let record = wire::decode_record(&write.bytes).unwrap();
+    assert!(matches!(record.payload, QlPayload::Heartbeat(_)));
+    let _ = complete_engine_write(&mut a, write.id, Ok(()));
 
     let outputs = run_engine(
         &mut a,
@@ -2240,12 +2286,7 @@ fn keepalive_deadline_is_derived_from_peer_state() {
     let write = take_single_write(&mut a, &crypto_a);
     let record = wire::decode_record(&write.bytes).unwrap();
     assert!(matches!(record.payload, QlPayload::Heartbeat(_)));
-
-    let PeerSession::Connected { keepalive, .. } = &a.peer.as_ref().unwrap().session else {
-        panic!("expected connected session");
-    };
-    assert!(keepalive.pending);
-    assert_eq!(keepalive.last_activity, Some(now + Duration::from_secs(5)));
+    let _ = complete_engine_write(&mut a, write.id, Ok(()));
 
     let outputs = run_engine(
         &mut a,
@@ -2262,10 +2303,6 @@ fn keepalive_deadline_is_derived_from_peer_state() {
             }
         )
     }));
-    assert!(matches!(
-        &a.peer.as_ref().unwrap().session,
-        PeerSession::Disconnected
-    ));
 }
 
 #[test]
