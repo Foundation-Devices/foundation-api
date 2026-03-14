@@ -99,9 +99,9 @@ pub enum StreamNamespace {
 }
 
 impl StreamNamespace {
-    const BIT: u64 = 1 << 63;
+    const BIT: u32 = 1 << 31;
 
-    pub fn bit(self) -> u64 {
+    pub fn bit(self) -> u32 {
         match self {
             Self::Low => 0,
             Self::High => Self::BIT,
@@ -230,7 +230,7 @@ pub struct EngineState {
     pub next_token: Cell<u64>,
     pub next_write_id: Cell<u64>,
     pub next_packet_id: Cell<u32>,
-    pub next_stream_id: Cell<u64>,
+    pub next_stream_id: Cell<u32>,
     pub control_outbound: VecDeque<ControlWrite>,
     pub active_writes: HashMap<WriteId, ActiveWrite>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,

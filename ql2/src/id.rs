@@ -43,7 +43,7 @@ macro_rules! define_id {
 }
 
 define_id!(PacketId, u32);
-define_id!(StreamId, u64);
+define_id!(StreamId, u32);
 
 impl From<&ArchivedPacketId> for PacketId {
     fn from(value: &ArchivedPacketId) -> Self {
