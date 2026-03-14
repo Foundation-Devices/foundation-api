@@ -1,4 +1,5 @@
 pub mod handshake;
+pub mod peer;
 pub mod stream;
 
 use std::time::{Duration, Instant};
@@ -37,10 +38,10 @@ impl Engine {
     ) {
         self.state.now = now;
         match input {
-            EngineInput::BindPeer(peer) => self.handle_bind_peer(peer, emit),
-            EngineInput::Pair => self.handle_pair_local(now, crypto),
+            EngineInput::BindPeer(peer) => peer::handle_bind_peer(self, peer, emit),
+            EngineInput::Pair => peer::handle_pair_local(self, now, crypto),
             EngineInput::Connect => handshake::handle_connect(self, now, crypto, emit),
-            EngineInput::Unpair => self.handle_unpair_local(now, emit),
+            EngineInput::Unpair => peer::handle_unpair_local(self, now, emit),
             EngineInput::OpenStream {
                 open_id,
                 request_head,
@@ -220,85 +221,6 @@ impl Engine {
             .check_and_store_valid_until(ReplayKey::new(peer, meta.packet_id), meta.valid_until)
     }
 
-    fn handle_bind_peer(&mut self, peer: Peer, emit: &mut impl OutputFn) {
-        if let Some(existing) = self.peer.as_ref() {
-            emit(EngineOutput::PeerStatusChanged {
-                peer: existing.peer,
-                session: PeerSession::Disconnected,
-            });
-        }
-        self.bind_peer_record(peer, emit);
-    }
-
-    fn bind_peer_record(&mut self, peer: Peer, emit: &mut impl OutputFn) {
-        self.reset_runtime(QlError::Cancelled, emit);
-        self.peer = Some(PeerRecord::new(
-            peer.peer,
-            peer.signing_key,
-            peer.encapsulation_key,
-        ));
-        self.emit_peer_status(emit);
-        if let Some(peer) = self.peer.as_ref() {
-            emit(EngineOutput::PersistPeer(peer.snapshot()));
-        }
-    }
-
-    fn reset_runtime(&mut self, error: QlError, emit: &mut impl OutputFn) {
-        let streams = std::mem::take(&mut self.streams).into_inner();
-        for (stream_id, stream) in streams {
-            self.fail_stream(stream_id, stream, error.clone(), emit);
-        }
-        self.state.control_outbound.clear();
-        self.state.active_writes.clear();
-        self.state.timeouts.clear();
-    }
-
-    pub fn handle_pair_local(&mut self, now: Instant, crypto: &impl QlCrypto) {
-        let Some(peer) = self.peer.as_ref() else {
-            return;
-        };
-        let meta = self.next_control_meta(self.config.packet_expiration);
-        let Ok(record) = wire::pair::build_pair_request(
-            &self.identity,
-            crypto,
-            peer.peer,
-            &peer.encapsulation_key,
-            meta,
-        ) else {
-            return;
-        };
-        let token = self.state.next_token();
-        self.state.enqueue_handshake_message(
-            &self.config,
-            token,
-            now + self.config.packet_expiration,
-            wire::encode_record(&record),
-        );
-    }
-
-    pub fn handle_unpair_local(&mut self, now: Instant, emit: &mut impl OutputFn) {
-        let Some(peer) = self.peer.as_ref().map(|peer| peer.peer) else {
-            return;
-        };
-        let meta = self.next_control_meta(self.config.packet_expiration);
-        let record = wire::unpair::build_unpair_record(
-            &self.identity,
-            QlHeader {
-                sender: self.identity.xid,
-                recipient: peer,
-            },
-            meta,
-        );
-        self.unpair_peer(emit);
-        let token = self.state.next_token();
-        self.state.enqueue_handshake_message(
-            &self.config,
-            token,
-            now + self.config.packet_expiration,
-            wire::encode_record(&record),
-        );
-    }
-
     // TODO: why do we pass 'now' if it's in state?
     fn handle_incoming(
         &mut self,
@@ -339,10 +261,10 @@ impl Engine {
                 self.handle_heartbeat(now, &header, encrypted, crypto, emit)
             }
             wire::ArchivedQlPayload::Pair(request) => {
-                self.handle_pairing(now, &header, request, crypto, emit)
+                peer::handle_pairing(self, now, &header, request, crypto, emit)
             }
             wire::ArchivedQlPayload::Unpair(unpair_record) => {
-                self.handle_unpair(sender, &header, unpair_record, emit)
+                peer::handle_unpair(self, sender, &header, unpair_record, emit)
             }
         }
     }
@@ -366,65 +288,6 @@ impl Engine {
                 handshake::handle_confirm(self, now, peer, confirm, emit)
             }
         }
-    }
-
-    fn handle_pairing(
-        &mut self,
-        now: Instant,
-        header: &QlHeader,
-        request: &mut wire::pair::ArchivedPairRequestRecord,
-        crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
-    ) {
-        let payload = match wire::pair::decrypt_pair_request(&self.identity, header, request) {
-            Ok(payload) => payload,
-            Err(_) => return,
-        };
-        let peer = XID::new(SigningPublicKey::MLDSA(payload.signing_pub_key.clone()));
-        if self.is_replayed_control(peer, payload.meta) {
-            return;
-        }
-        if let Some(existing) = self.peer.as_ref() {
-            if existing.peer != peer
-                || existing.signing_key != payload.signing_pub_key
-                || existing.encapsulation_key != payload.encapsulation_pub_key
-            {
-                return;
-            }
-        } else {
-            self.bind_peer_record(
-                Peer {
-                    peer,
-                    signing_key: payload.signing_pub_key,
-                    encapsulation_key: payload.encapsulation_pub_key,
-                },
-                emit,
-            );
-        }
-        handshake::handle_connect(self, now, crypto, emit);
-    }
-
-    fn handle_unpair(
-        &mut self,
-        peer: XID,
-        header: &QlHeader,
-        record: &wire::unpair::ArchivedUnpairRecord,
-        emit: &mut impl OutputFn,
-    ) {
-        {
-            let Some(peer_record) = self.peer.as_ref() else {
-                return;
-            };
-            if wire::unpair::verify_unpair_record(header, record, &peer_record.signing_key).is_err()
-            {
-                return;
-            }
-        }
-        let meta: ControlMeta = (&record.meta).into();
-        if self.is_replayed_control(peer, meta) {
-            return;
-        }
-        self.unpair_peer(emit);
     }
 
     fn handle_heartbeat(
@@ -721,20 +584,6 @@ impl Engine {
             StreamRole::Provisional(_) => {}
         }
         emit(EngineOutput::StreamReaped { stream_id });
-    }
-
-    fn unpair_peer(&mut self, emit: &mut impl OutputFn) {
-        let Some(peer) = self.peer.as_ref().map(|peer| peer.peer) else {
-            return;
-        };
-        self.drop_outbound();
-        self.abort_streams(QlError::SendFailed, emit);
-        self.peer = None;
-        emit(EngineOutput::PeerStatusChanged {
-            peer,
-            session: PeerSession::Disconnected,
-        });
-        emit(EngineOutput::ClearPeer);
     }
 
     pub fn handle_timeouts(
