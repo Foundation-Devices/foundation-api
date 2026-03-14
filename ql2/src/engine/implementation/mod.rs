@@ -93,7 +93,6 @@ impl Engine {
         }
 
         self.handle_ready_retransmits(now, emit);
-        emit(EngineOutput::SetTimer(self.next_deadline()));
     }
 
     pub fn take_next_write_inner(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
@@ -109,7 +108,6 @@ impl Engine {
     ) {
         let now = self.state.now;
         let Some(active) = self.state.active_writes.remove(&write_id) else {
-            emit(EngineOutput::SetTimer(self.next_deadline()));
             return;
         };
 
@@ -133,7 +131,6 @@ impl Engine {
                 self.abort_streams(error, emit);
             }
 
-            emit(EngineOutput::SetTimer(self.next_deadline()));
             return;
         }
 
@@ -155,11 +152,9 @@ impl Engine {
                     .complete_write(tx_seq, now + self.config.stream_ack_timeout);
             }
         }
-
-        emit(EngineOutput::SetTimer(self.next_deadline()));
     }
 
-    pub fn next_deadline(&self) -> Option<Instant> {
+    pub fn next_deadline_inner(&self) -> Option<Instant> {
         [
             self.state.next_deadline(),
             self.streams.stream_retry_deadline(),

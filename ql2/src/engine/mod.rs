@@ -115,8 +115,6 @@ pub enum EngineInput {
 
 #[derive(Debug)]
 pub enum EngineOutput {
-    SetTimer(Option<Instant>),
-
     PeerStatusChanged {
         peer: XID,
         session: PeerSession,
@@ -212,5 +210,9 @@ impl Engine {
         emit: &mut impl OutputFn,
     ) {
         self.complete_write_inner(write_id, result, emit);
+    }
+
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.next_deadline_inner()
     }
 }

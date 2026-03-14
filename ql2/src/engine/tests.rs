@@ -2187,16 +2187,12 @@ fn handshake_deadline_is_derived_from_peer_state() {
     let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
     let now = Instant::now();
 
-    let outputs = run_engine(&mut a, now, EngineInput::Connect, &crypto_a);
-    assert!(outputs.iter().any(|output| {
-        matches!(output, EngineOutput::SetTimer(Some(deadline)) if *deadline == now + Duration::from_secs(5))
-    }));
+    let _outputs = run_engine(&mut a, now, EngineInput::Connect, &crypto_a);
+    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
 
     let write = take_single_write(&mut a, &crypto_a);
-    let outputs = complete_engine_write(&mut a, write.id, Ok(()));
-    assert!(outputs.iter().any(|output| {
-        matches!(output, EngineOutput::SetTimer(Some(deadline)) if *deadline == now + Duration::from_secs(5))
-    }));
+    let _outputs = complete_engine_write(&mut a, write.id, Ok(()));
+    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
 
     let outputs = run_engine(
         &mut a,
@@ -2213,9 +2209,7 @@ fn handshake_deadline_is_derived_from_peer_state() {
             }
         )
     }));
-    assert!(outputs.iter().any(|output| {
-        matches!(output, EngineOutput::SetTimer(Some(deadline)) if *deadline == now + Duration::from_secs(5))
-    }));
+    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
 
     let outputs = run_engine(
         &mut a,
@@ -2262,9 +2256,8 @@ fn keepalive_deadline_is_derived_from_peer_state() {
         EngineInput::Incoming(wire::encode_record(&heartbeat)),
         &crypto_a,
     );
-    assert!(outputs.iter().any(|output| {
-        matches!(output, EngineOutput::SetTimer(Some(deadline)) if *deadline == now + Duration::from_secs(5))
-    }));
+    let _ = outputs;
+    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
 
     let write = take_single_write(&mut a, &crypto_a);
     let record = wire::decode_record(&write.bytes).unwrap();
@@ -2277,11 +2270,8 @@ fn keepalive_deadline_is_derived_from_peer_state() {
         EngineInput::TimerExpired,
         &crypto_a,
     );
-    assert!(matches!(
-        outputs.last(),
-        Some(EngineOutput::SetTimer(Some(deadline)))
-            if *deadline == now + Duration::from_secs(12)
-    ));
+    let _ = outputs;
+    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(12)));
 
     let write = take_single_write(&mut a, &crypto_a);
     let record = wire::decode_record(&write.bytes).unwrap();
