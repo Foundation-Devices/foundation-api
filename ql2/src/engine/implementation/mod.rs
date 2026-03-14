@@ -118,8 +118,16 @@ impl Engine {
         }
 
         if let Err(error) = result {
-            if let OutboundWriteKind::StreamFrame { stream_id, .. } = active.kind {
-                self.fail_stream_by_id(stream_id, error.clone(), emit);
+            // only fail the stream if this frame is still in flight
+            // ACKs and protocol reset can remove it before write completion arrives
+            if let OutboundWriteKind::StreamFrame { stream_id, tx_seq } = active.kind {
+                if self
+                    .streams
+                    .get(&stream_id)
+                    .is_some_and(|stream| stream.control.in_flight.contains_key(&tx_seq))
+                {
+                    self.fail_stream_by_id(stream_id, error.clone(), emit);
+                }
             }
 
             if self.is_handshake_token(active.token) {

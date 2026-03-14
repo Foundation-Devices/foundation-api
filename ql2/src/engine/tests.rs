@@ -936,6 +936,102 @@ fn ack_does_not_retire_ready_data() {
 }
 
 #[test]
+fn late_failed_write_after_protocol_reset_is_ignored() {
+    let config = EngineConfig::default();
+    let crypto_a = TestCrypto::new(37);
+    let crypto_b = TestCrypto::new(38);
+    let peer_a = crypto_a.peer();
+    let peer_b = crypto_b.peer();
+    let session_key = SymmetricKey::from_data([9; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
+    let mut _b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
+    a.peer.as_mut().unwrap().session = PeerSession::Connected {
+        session_key: session_key.clone(),
+        keepalive: KeepAliveState::default(),
+    };
+
+    let now = Instant::now();
+    let outputs_open = run_engine(
+        &mut a,
+        now,
+        EngineInput::OpenStream {
+            open_id: OpenId(13),
+            request_head: b"open".to_vec(),
+            request_prefix: None,
+            config: StreamConfig::default(),
+        },
+        &crypto_a,
+    );
+    let stream_id = outputs_open
+        .iter()
+        .find_map(|output| match output {
+            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
+            _ => None,
+        })
+        .unwrap();
+
+    let open_write = take_single_write(&mut a, &crypto_a);
+
+    let record = wire::stream::encrypt_stream(
+        QlHeader {
+            sender: crypto_b.xid(),
+            recipient: crypto_a.xid(),
+        },
+        &session_key,
+        &StreamBody::Message(StreamMessage {
+            tx_seq: StreamSeq::START,
+            ack: None,
+            valid_until: wire::now_secs().saturating_add(60),
+            frame: StreamFrame::Data(StreamFrameData {
+                stream_id,
+                dir: Direction::Response,
+                chunk: BodyChunk {
+                    bytes: b"bad".to_vec(),
+                    fin: false,
+                },
+            }),
+        }),
+        [12; wire::encrypted_message::NONCE_SIZE],
+    );
+
+    let outputs_reset = run_engine(
+        &mut a,
+        now,
+        EngineInput::Incoming(wire::encode_record(&record)),
+        &crypto_a,
+    );
+
+    assert!(outputs_reset.iter().any(|output| matches!(
+        output,
+        EngineOutput::OpenFailed {
+            open_id: OpenId(13),
+            stream_id: id,
+            error: QlError::StreamProtocol,
+        } if *id == stream_id
+    )));
+    assert!(outputs_reset.iter().any(|output| matches!(
+        output,
+        EngineOutput::OutboundFailed {
+            stream_id: id,
+            dir: Direction::Request,
+            error: QlError::StreamProtocol,
+        } if *id == stream_id
+    )));
+    assert!(outputs_reset.iter().any(|output| matches!(
+        output,
+        EngineOutput::InboundFailed {
+            stream_id: id,
+            dir: Direction::Response,
+            error: QlError::StreamProtocol,
+        } if *id == stream_id
+    )));
+
+    let outputs_late = complete_engine_write(&mut a, open_write.id, Err(QlError::SendFailed));
+    assert!(outputs_late.is_empty());
+    assert!(a.streams.contains_key(&stream_id));
+}
+
+#[test]
 fn out_of_order_remote_stream_buffers_until_open_arrives() {
     let config = EngineConfig::default();
     let crypto_a = TestCrypto::new(41);

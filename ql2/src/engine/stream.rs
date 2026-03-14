@@ -340,6 +340,7 @@ impl StreamControl {
         self.recv_buffer
             .clear_with_base(self.committed_rx_seq().next());
         self.clear_ack_schedule();
+        self.ack_outbound_token = None;
         self.fast_recovery = None;
     }
 
