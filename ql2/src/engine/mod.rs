@@ -341,7 +341,8 @@ impl Engine {
             return;
         };
         let token = self.state.next_token();
-        self.enqueue_handshake_message(
+        self.state.enqueue_handshake_message(
+            &self.config,
             token,
             now + self.config.packet_expiration,
             wire::encode_record(&record),
@@ -349,52 +350,21 @@ impl Engine {
     }
 
     fn handle_connect(&mut self, now: Instant, crypto: &impl QlCrypto, emit: &mut impl OutputFn) {
-        let Some(peer_record) = self.peer.as_ref() else {
+        let Some(_) = self.peer.as_ref() else {
             return;
         };
-        let peer = peer_record.peer;
-        let meta = self.next_control_meta(self.config.handshake_timeout);
-        let (hello, session_key) = match &peer_record.session {
-            PeerSession::Connected { .. }
-            | PeerSession::Initiator { .. }
-            | PeerSession::Responder { .. } => {
+        let started = {
+            let config = &self.config;
+            let identity = &self.identity;
+            let state = &mut self.state;
+            let Some(peer_record) = self.peer.as_mut() else {
                 return;
-            }
-            PeerSession::Disconnected => {
-                match handshake::build_hello(
-                    &self.identity,
-                    crypto,
-                    peer,
-                    &peer_record.encapsulation_key,
-                    meta,
-                ) {
-                    Ok(result) => result,
-                    Err(_) => return,
-                }
-            }
-        };
-
-        let deadline = now + self.config.handshake_timeout;
-        let token = self.state.next_token();
-        if let Some(entry) = self.peer.as_mut() {
-            entry.session = PeerSession::Initiator {
-                handshake_token: token,
-                hello: hello.clone(),
-                session_key,
-                deadline,
-                stage: InitiatorStage::WaitingHelloReply,
             };
-        }
-        self.emit_peer_status(emit);
-
-        let record = QlRecord {
-            header: QlHeader {
-                sender: self.identity.xid,
-                recipient: peer,
-            },
-            payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
+            Self::start_initiator_handshake(config, identity, state, peer_record, now, crypto)
         };
-        self.enqueue_handshake_message(token, deadline, wire::encode_record(&record));
+        if started {
+            self.emit_peer_status(emit);
+        }
     }
 
     fn handle_unpair_local(&mut self, now: Instant, emit: &mut impl OutputFn) {
@@ -412,7 +382,8 @@ impl Engine {
         );
         self.unpair_peer(emit);
         let token = self.state.next_token();
-        self.enqueue_handshake_message(
+        self.state.enqueue_handshake_message(
+            &self.config,
             token,
             now + self.config.packet_expiration,
             wire::encode_record(&record),
@@ -1825,11 +1796,6 @@ impl Engine {
             .enqueue_stream_reset(&self.config, true, stream_id, dir, code);
     }
 
-    fn enqueue_handshake_message(&mut self, token: Token, deadline: Instant, bytes: Vec<u8>) {
-        self.state
-            .enqueue_handshake_message(&self.config, token, deadline, bytes);
-    }
-
     fn handle_hello(
         &mut self,
         now: Instant,
@@ -1884,7 +1850,27 @@ impl Engine {
 
         match action {
             HelloAction::StartResponder => {
-                self.start_responder_handshake(now, peer, hello, crypto, emit)
+                let changed = {
+                    let config = &self.config;
+                    let identity = &self.identity;
+                    let state = &mut self.state;
+                    let Some(peer_record) = self.peer.as_mut() else {
+                        return;
+                    };
+                    Self::start_responder_handshake(
+                        config,
+                        identity,
+                        state,
+                        peer_record,
+                        now,
+                        peer,
+                        hello,
+                        crypto,
+                    )
+                };
+                if changed {
+                    self.emit_peer_status(emit);
+                }
             }
             HelloAction::ResendReply { reply, deadline } => {
                 let record = QlRecord {
@@ -1895,7 +1881,12 @@ impl Engine {
                     payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
                 };
                 let token = self.state.next_token();
-                self.enqueue_handshake_message(token, deadline, wire::encode_record(&record));
+                self.state.enqueue_handshake_message(
+                    &self.config,
+                    token,
+                    deadline,
+                    wire::encode_record(&record),
+                );
             }
             HelloAction::Ignore => {}
         }
@@ -1940,8 +1931,8 @@ impl Engine {
         let (hello, confirm, session_key) = match res {
             Ok(result) => result,
             Err(_) => {
-                if let Some(entry) = self.peer.as_mut() {
-                    entry.session = PeerSession::Disconnected;
+                if let Some(peer_record) = self.peer.as_mut() {
+                    peer_record.session = PeerSession::Disconnected;
                 }
                 self.emit_peer_status(emit);
                 return;
@@ -1951,16 +1942,19 @@ impl Engine {
         if self.is_replayed_control(peer, reply_meta) {
             return;
         }
-        let token = self.state.next_token();
-        if let Some(entry) = self.peer.as_mut() {
-            entry.session = PeerSession::Initiator {
-                handshake_token: token,
-                hello,
-                session_key,
-                deadline,
-                stage: InitiatorStage::SendingConfirm,
-            };
-        }
+        let config = &self.config;
+        let state = &mut self.state;
+        let token = state.next_token();
+        let Some(peer_record) = self.peer.as_mut() else {
+            return;
+        };
+        peer_record.session = PeerSession::Initiator {
+            handshake_token: token,
+            hello,
+            session_key,
+            deadline,
+            stage: InitiatorStage::SendingConfirm,
+        };
 
         let record = QlRecord {
             header: QlHeader {
@@ -1969,7 +1963,7 @@ impl Engine {
             },
             payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
         };
-        self.enqueue_handshake_message(token, deadline, wire::encode_record(&record));
+        state.enqueue_handshake_message(config, token, deadline, wire::encode_record(&record));
     }
 
     fn handle_confirm(
@@ -2006,8 +2000,8 @@ impl Engine {
                 if self.is_replayed_control(peer, meta) {
                     return;
                 }
-                if let Some(entry) = self.peer.as_mut() {
-                    entry.session = PeerSession::Connected {
+                if let Some(peer_record) = self.peer.as_mut() {
+                    peer_record.session = PeerSession::Connected {
                         session_key,
                         keepalive: KeepAliveState::default(),
                     };
@@ -2016,76 +2010,111 @@ impl Engine {
                 self.emit_peer_status(emit);
             }
             Err(_) => {
-                if let Some(entry) = self.peer.as_mut() {
-                    entry.session = PeerSession::Disconnected;
+                if let Some(peer_record) = self.peer.as_mut() {
+                    peer_record.session = PeerSession::Disconnected;
                 }
                 self.emit_peer_status(emit);
             }
         }
     }
 
+    fn start_initiator_handshake(
+        config: &EngineConfig,
+        identity: &QlIdentity,
+        state: &mut EngineState,
+        peer_record: &mut PeerRecord,
+        now: Instant,
+        crypto: &impl QlCrypto,
+    ) -> bool {
+        if !matches!(peer_record.session, PeerSession::Disconnected) {
+            return false;
+        }
+
+        let meta = ControlMeta {
+            packet_id: state.next_packet_id(),
+            valid_until: wire::now_secs() + config.handshake_timeout.as_secs(),
+        };
+        let peer = peer_record.peer;
+        let Ok((hello, session_key)) =
+            handshake::build_hello(identity, crypto, peer, &peer_record.encapsulation_key, meta)
+        else {
+            return false;
+        };
+
+        let deadline = now + config.handshake_timeout;
+        let token = state.next_token();
+        peer_record.session = PeerSession::Initiator {
+            handshake_token: token,
+            hello: hello.clone(),
+            session_key,
+            deadline,
+            stage: InitiatorStage::WaitingHelloReply,
+        };
+
+        let record = QlRecord {
+            header: QlHeader {
+                sender: identity.xid,
+                recipient: peer,
+            },
+            payload: QlPayload::Handshake(HandshakeRecord::Hello(hello)),
+        };
+        state.enqueue_handshake_message(config, token, deadline, wire::encode_record(&record));
+        true
+    }
+
     fn start_responder_handshake(
-        &mut self,
+        config: &EngineConfig,
+        identity: &QlIdentity,
+        state: &mut EngineState,
+        peer_record: &mut PeerRecord,
         now: Instant,
         peer: XID,
         hello: &wire::handshake::ArchivedHello,
         crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
-    ) {
-        let reply_meta = self.next_control_meta(self.config.handshake_timeout);
-        let res = {
-            let Some(peer_record) = self.peer.as_ref() else {
-                return;
-            };
-            handshake::respond_hello(
-                &self.identity,
-                crypto,
-                peer,
-                &peer_record.signing_key,
-                &peer_record.encapsulation_key,
-                hello,
-                reply_meta,
-            )
+    ) -> bool {
+        let reply_meta = ControlMeta {
+            packet_id: state.next_packet_id(),
+            valid_until: wire::now_secs() + config.handshake_timeout.as_secs(),
         };
-        let (reply, secrets) = match res {
+        let (reply, secrets) = match handshake::respond_hello(
+            identity,
+            crypto,
+            peer,
+            &peer_record.signing_key,
+            &peer_record.encapsulation_key,
+            hello,
+            reply_meta,
+        ) {
             Ok(result) => result,
             Err(_) => {
-                if let Some(entry) = self.peer.as_mut() {
-                    entry.session = PeerSession::Disconnected;
-                }
-                self.emit_peer_status(emit);
-                return;
+                peer_record.session = PeerSession::Disconnected;
+                return true;
             }
         };
         let Ok(hello) = wire::deserialize_value(hello) else {
-            if let Some(entry) = self.peer.as_mut() {
-                entry.session = PeerSession::Disconnected;
-            }
-            self.emit_peer_status(emit);
-            return;
+            peer_record.session = PeerSession::Disconnected;
+            return true;
         };
 
-        let deadline = now + self.config.handshake_timeout;
-        let token = self.state.next_token();
-        if let Some(entry) = self.peer.as_mut() {
-            entry.session = PeerSession::Responder {
-                handshake_token: token,
-                hello,
-                reply: reply.clone(),
-                secrets,
-                deadline,
-            };
-        }
-        self.emit_peer_status(emit);
+        let deadline = now + config.handshake_timeout;
+        let token = state.next_token();
+        peer_record.session = PeerSession::Responder {
+            handshake_token: token,
+            hello,
+            reply: reply.clone(),
+            secrets,
+            deadline,
+        };
 
         let record = QlRecord {
             header: QlHeader {
-                sender: self.identity.xid,
+                sender: identity.xid,
                 recipient: peer,
             },
             payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
         };
-        self.enqueue_handshake_message(token, deadline, wire::encode_record(&record));
+        state.enqueue_handshake_message(config, token, deadline, wire::encode_record(&record));
+        true
     }
 
     fn send_heartbeat_message(&mut self, now: Instant, crypto: &impl QlCrypto) {
@@ -2112,7 +2141,12 @@ impl Engine {
                 encrypted_message_nonce(crypto),
             )
         };
-        self.enqueue_handshake_message(token, deadline, wire::encode_record(&message));
+        self.state.enqueue_handshake_message(
+            &self.config,
+            token,
+            deadline,
+            wire::encode_record(&message),
+        );
     }
 
     fn keep_alive_config(&self) -> Option<KeepAliveConfig> {
