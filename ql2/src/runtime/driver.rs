@@ -51,7 +51,6 @@ enum OutboundIo {
     Open {
         dir: Direction,
         rx: async_channel::Receiver<Vec<u8>>,
-        pending_pull: bool,
         finish_queued: bool,
     },
     Closed,
@@ -62,14 +61,7 @@ impl OutboundIo {
         Self::Open {
             dir,
             rx,
-            pending_pull: false,
             finish_queued: false,
-        }
-    }
-
-    fn set_pending_pull(&mut self) {
-        if let Self::Open { pending_pull, .. } = self {
-            *pending_pull = true;
         }
     }
 
@@ -81,27 +73,17 @@ impl OutboundIo {
         let Self::Open {
             dir,
             rx,
-            pending_pull,
             finish_queued,
         } = self
         else {
             return;
         };
 
-        if !*pending_pull {
-            if rx.is_closed() && !*finish_queued {
-                *finish_queued = true;
-                pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
-            }
-            return;
-        }
-
         match rx.try_recv() {
             Ok(bytes) => {
                 if bytes.is_empty() {
                     return;
                 }
-                *pending_pull = false;
                 pending.push_back(EngineInput::OutboundData {
                     stream_id,
                     dir: *dir,
@@ -114,13 +96,11 @@ impl OutboundIo {
             }
             Err(async_channel::TryRecvError::Empty) => {
                 if rx.is_closed() && !*finish_queued {
-                    *pending_pull = false;
                     *finish_queued = true;
                     pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
                 }
             }
             Err(async_channel::TryRecvError::Closed) => {
-                *pending_pull = false;
                 if !*finish_queued {
                     *finish_queued = true;
                     pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
@@ -675,14 +655,6 @@ impl<P: QlPlatform> Runtime<P> {
                         inbound.fail(error);
                     }
                 }
-            }
-            EngineOutput::NeedOutboundData { stream_id, dir } => {
-                if let Some(stream) = streams.get_mut(&stream_id) {
-                    if let Some(outbound) = stream.outbound_mut(dir) {
-                        outbound.set_pending_pull();
-                    }
-                }
-                poll_stream(streams, pending_inputs, stream_id);
             }
             EngineOutput::OutboundClosed { stream_id, dir }
             | EngineOutput::OutboundFailed { stream_id, dir, .. } => {

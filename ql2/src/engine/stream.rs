@@ -25,7 +25,6 @@ pub struct StreamMeta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboundPhase {
     Ready,
-    PendingPull,
     FinPending,
     FinQueued,
     Closed,
@@ -53,27 +52,13 @@ impl OutboundState {
         self.phase == OutboundPhase::Closed
     }
 
-    pub fn request_data(&mut self) -> bool {
-        if self.phase != OutboundPhase::Ready {
-            return false;
-        }
-        self.phase = OutboundPhase::PendingPull;
-        true
-    }
-
-    pub fn take_pending_pull(&mut self) -> bool {
-        if self.phase != OutboundPhase::PendingPull {
-            return false;
-        }
-        self.phase = OutboundPhase::Ready;
-        true
+    pub fn can_queue_data(&self) -> bool {
+        self.phase == OutboundPhase::Ready
     }
 
     pub fn finish(&mut self) {
         self.phase = match self.phase {
-            OutboundPhase::Ready | OutboundPhase::PendingPull | OutboundPhase::FinPending => {
-                OutboundPhase::FinPending
-            }
+            OutboundPhase::Ready | OutboundPhase::FinPending => OutboundPhase::FinPending,
             OutboundPhase::FinQueued => OutboundPhase::FinQueued,
             OutboundPhase::Closed => OutboundPhase::Closed,
         };

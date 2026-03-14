@@ -293,10 +293,6 @@ pub enum EngineOutput {
         error: QlError,
     },
 
-    NeedOutboundData {
-        stream_id: StreamId,
-        dir: Direction,
-    },
     OutboundClosed {
         stream_id: StreamId,
         dir: Direction,

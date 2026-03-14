@@ -142,7 +142,6 @@ impl Engine {
         }
 
         self.handle_ready_retransmits(now, emit);
-        self.drive_streams(now, emit);
         emit(EngineOutput::SetTimer(self.next_deadline()));
     }
 
@@ -419,7 +418,7 @@ impl Engine {
             request_head,
             request_prefix,
         };
-        let stream = StreamState::Initiator(InitiatorStream {
+        let mut stream = StreamState::Initiator(InitiatorStream {
             meta: StreamMeta {
                 stream_id,
                 last_activity: now,
@@ -435,6 +434,7 @@ impl Engine {
                 open_timeout_token: token,
             }),
         });
+        Self::drive_stream(&mut stream);
         self.streams.insert(stream_id, stream);
         self.state.timeouts.push(Reverse(TimeoutEntry {
             at: now + open_timeout,
@@ -450,40 +450,52 @@ impl Engine {
         response_head: Vec<u8>,
         response_prefix: Option<BodyChunk>,
     ) {
-        let Some(StreamState::Responder(stream)) = self.streams.get_mut(&stream_id) else {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
-        let ResponderResponse::Pending = stream.response else {
-            return;
-        };
-        let response_prefix_fin = response_prefix.as_ref().is_some_and(|chunk| chunk.fin);
-        stream
-            .control
-            .pending
-            .push_back(StreamFrame::Accept(StreamFrameAccept {
-                stream_id,
-                response_head,
-                response_prefix,
-            }));
-        stream.response = ResponderResponse::Accepted {
-            body: OutboundState::from_prefix(Direction::Response, response_prefix_fin),
-        };
-        stream.meta.last_activity = now;
+        match stream {
+            StreamState::Responder(stream) => {
+                let ResponderResponse::Pending = stream.response else {
+                    return;
+                };
+                let response_prefix_fin = response_prefix.as_ref().is_some_and(|chunk| chunk.fin);
+                stream
+                    .control
+                    .pending
+                    .push_back(StreamFrame::Accept(StreamFrameAccept {
+                        stream_id,
+                        response_head,
+                        response_prefix,
+                    }));
+                stream.response = ResponderResponse::Accepted {
+                    body: OutboundState::from_prefix(Direction::Response, response_prefix_fin),
+                };
+                stream.meta.last_activity = now;
+            }
+            _ => return,
+        }
+        Self::drive_stream(stream);
     }
 
     fn handle_reject_stream(&mut self, now: Instant, stream_id: StreamId, code: RejectCode) {
-        let Some(StreamState::Responder(stream)) = self.streams.get_mut(&stream_id) else {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
-        let ResponderResponse::Pending = stream.response else {
-            return;
-        };
-        stream
-            .control
-            .pending
-            .push_back(StreamFrame::Reject(StreamFrameReject { stream_id, code }));
-        stream.response = ResponderResponse::Rejecting;
-        stream.meta.last_activity = now;
+        match stream {
+            StreamState::Responder(stream) => {
+                let ResponderResponse::Pending = stream.response else {
+                    return;
+                };
+                stream
+                    .control
+                    .pending
+                    .push_back(StreamFrame::Reject(StreamFrameReject { stream_id, code }));
+                stream.response = ResponderResponse::Rejecting;
+                stream.meta.last_activity = now;
+            }
+            _ => return,
+        }
+        Self::drive_stream(stream);
     }
 
     fn handle_outbound_data(&mut self, stream_id: StreamId, dir: Direction, bytes: Vec<u8>) {
@@ -496,7 +508,7 @@ impl Engine {
         let Some(outbound) = stream.outbound_mut(dir) else {
             return;
         };
-        if !outbound.take_pending_pull() {
+        if !outbound.can_queue_data() {
             return;
         }
         let chunk = BodyChunk { bytes, fin: false };
@@ -507,6 +519,7 @@ impl Engine {
                 dir,
                 chunk,
             }));
+        Self::drive_stream(stream);
     }
 
     fn handle_outbound_finished(&mut self, stream_id: StreamId, dir: Direction) {
@@ -517,6 +530,7 @@ impl Engine {
             return;
         };
         outbound.finish();
+        Self::drive_stream(stream);
     }
 
     fn handle_reset_outbound(
@@ -542,6 +556,7 @@ impl Engine {
             code,
         ));
         *stream.last_activity_mut() = now;
+        Self::drive_stream(stream);
     }
 
     fn handle_reset_inbound(
@@ -567,6 +582,7 @@ impl Engine {
             code,
         ));
         *stream.last_activity_mut() = now;
+        Self::drive_stream(stream);
     }
 
     fn handle_responder_dropped(&mut self, now: Instant, stream_id: StreamId) {
@@ -982,6 +998,7 @@ impl Engine {
             response_prefix,
         } = frame;
         let mut protocol = false;
+        let mut queued_reset = false;
         let mut response_prefix_output = None;
         {
             let Some(stream) = self.streams.get_mut(&stream_id) else {
@@ -1004,6 +1021,7 @@ impl Engine {
                                 ResetTarget::Response,
                                 ResetCode::Cancelled,
                             ));
+                            queued_reset = true;
                         }
                         stream.accept = InitiatorAccept::Open { response_head };
                         stream.meta.last_activity = now;
@@ -1024,6 +1042,7 @@ impl Engine {
                                 ResetTarget::Response,
                                 ResetCode::Cancelled,
                             ));
+                            queued_reset = true;
                         }
                         stream.accept = InitiatorAccept::Open { response_head };
                         stream.meta.last_activity = now;
@@ -1038,6 +1057,9 @@ impl Engine {
                     }
                 },
                 _ => protocol = true,
+            }
+            if queued_reset {
+                Self::drive_stream(stream);
             }
         }
 
@@ -1283,6 +1305,7 @@ impl Engine {
             if let Some(tx_seq) = fast_retransmit {
                 stream.control_mut().schedule_fast_retransmit(tx_seq, now);
             }
+            Self::drive_stream(stream);
             stream.can_reap()
         };
 
@@ -1292,40 +1315,28 @@ impl Engine {
         }
     }
 
-    fn drive_streams(&mut self, now: Instant, emit: &mut impl OutputFn) {
-        for stream in self.streams.values_mut() {
-            Self::drive_stream(now, stream, emit);
-        }
-    }
-
-    fn drive_stream(_now: Instant, stream: &mut StreamState, emit: &mut impl OutputFn) {
+    fn drive_stream(stream: &mut StreamState) {
         match stream {
             StreamState::Initiator(stream) => {
                 Self::drive_stream_outbound(
                     stream.meta.stream_id,
                     &mut stream.control,
                     Some(&mut stream.request),
-                    emit,
                 );
             }
             StreamState::Responder(stream) => {
                 let stream_id = stream.meta.stream_id;
                 match &mut stream.response {
                     ResponderResponse::Accepted { body, .. } => {
-                        Self::drive_stream_outbound(
-                            stream_id,
-                            &mut stream.control,
-                            Some(body),
-                            emit,
-                        );
+                        Self::drive_stream_outbound(stream_id, &mut stream.control, Some(body));
                     }
                     _ => {
-                        Self::drive_stream_outbound(stream_id, &mut stream.control, None, emit);
+                        Self::drive_stream_outbound(stream_id, &mut stream.control, None);
                     }
                 }
             }
             StreamState::Provisional(stream) => {
-                Self::drive_stream_outbound(stream.meta.stream_id, &mut stream.control, None, emit)
+                Self::drive_stream_outbound(stream.meta.stream_id, &mut stream.control, None)
             }
         }
     }
@@ -1334,7 +1345,6 @@ impl Engine {
         stream_id: StreamId,
         control: &mut StreamControl,
         mut outbound: Option<&mut OutboundState>,
-        emit: &mut impl OutputFn,
     ) {
         loop {
             if control.send_window_has_space() {
@@ -1350,13 +1360,6 @@ impl Engine {
             let Some(outbound) = outbound.as_deref_mut() else {
                 return;
             };
-            if outbound.request_data() {
-                emit(EngineOutput::NeedOutboundData {
-                    stream_id,
-                    dir: outbound.dir,
-                });
-                return;
-            }
             if outbound.queue_fin() {
                 Self::enqueue_stream_frame(
                     control,
@@ -1438,6 +1441,7 @@ impl Engine {
                 InitiatorAccept::Open { .. } => {}
             }
         }
+        Self::drive_stream(stream);
     }
 
     fn apply_remote_reset(
