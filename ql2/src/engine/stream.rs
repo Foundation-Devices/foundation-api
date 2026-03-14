@@ -127,6 +127,7 @@ pub enum BufferIncomingResult {
     OutOfWindow,
 }
 
+// TODO: does it really make sense to have terminal control frames (Reset, Reject) have sequence ids?
 #[derive(Debug)]
 pub struct StreamControl {
     pub pending: VecDeque<StreamFrame>,
