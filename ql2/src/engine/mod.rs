@@ -900,6 +900,7 @@ impl Engine {
         }));
     }
 
+    // drain the contiguous messages that we have pending
     fn drain_committed_stream_frames(
         &mut self,
         now: Instant,
@@ -932,9 +933,6 @@ impl Engine {
                 StreamFrame::Reject(frame) => self.handle_stream_reject_from_peer(frame, emit),
                 StreamFrame::Data(frame) => self.handle_stream_data(now, frame, emit),
                 StreamFrame::Reset(frame) => self.handle_stream_reset(now, frame, emit),
-            }
-            if !self.streams.contains_key(&stream_id) {
-                return;
             }
         }
         self.maybe_reap_stream(stream_id, emit);
@@ -2134,6 +2132,9 @@ impl Engine {
         keepalive.last_activity = Some(now);
         keepalive.pending = false;
         keepalive.token = token;
+        // TODO: we should not be doing this. we only have one peer can fill up the timeout queue with a bunch of duplicate shit
+        // probably need a new field on peer directly, that we can query for their last activity.
+        // then we can calculate the pending timeout by looking at the field directly.
         self.state.timeouts.push(Reverse(TimeoutEntry {
             at: now + config.interval,
             kind: TimeoutKind::KeepAliveSend { token },
