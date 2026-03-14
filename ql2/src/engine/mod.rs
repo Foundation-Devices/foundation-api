@@ -81,7 +81,9 @@ impl Engine {
         Self {
             config: config,
             identity,
-            state: EngineState::new(peer),
+            peer: peer
+                .map(|peer| PeerRecord::new(peer.peer, peer.signing_key, peer.encapsulation_key)),
+            state: EngineState::new(),
             streams: StreamStore::default(),
         }
     }
@@ -174,7 +176,7 @@ impl Engine {
             }
 
             if self.is_handshake_token(active.token) {
-                if let Some(entry) = self.state.peer.as_mut() {
+                if let Some(entry) = self.peer.as_mut() {
                     entry.session = PeerSession::Disconnected;
                 }
                 self.emit_peer_status(emit);
@@ -187,7 +189,7 @@ impl Engine {
         }
 
         if let Some(session_key) = self.connected_session_for_token(active.token) {
-            if let Some(entry) = self.state.peer.as_mut() {
+            if let Some(entry) = self.peer.as_mut() {
                 entry.session = PeerSession::Connected {
                     session_key,
                     keepalive: KeepAliveState::default(),
@@ -209,7 +211,7 @@ impl Engine {
     }
 
     fn emit_peer_status(&self, emit: &mut impl OutputFn) {
-        if let Some(peer) = self.state.peer.as_ref() {
+        if let Some(peer) = self.peer.as_ref() {
             emit(EngineOutput::PeerStatusChanged {
                 peer: peer.peer,
                 session: peer.session.clone(),
@@ -256,13 +258,13 @@ impl Engine {
 
     fn bind_peer_record(&mut self, peer: Peer, emit: &mut impl OutputFn) {
         self.reset_runtime(QlError::Cancelled, emit);
-        self.state.peer = Some(PeerRecord::new(
+        self.peer = Some(PeerRecord::new(
             peer.peer,
             peer.signing_key,
             peer.encapsulation_key,
         ));
         self.emit_peer_status(emit);
-        if let Some(peer) = self.state.peer.as_ref() {
+        if let Some(peer) = self.peer.as_ref() {
             emit(EngineOutput::PersistPeer(peer.snapshot()));
         }
     }
@@ -278,7 +280,7 @@ impl Engine {
     }
 
     fn handle_bind_peer(&mut self, peer: Peer, emit: &mut impl OutputFn) {
-        if let Some(existing) = self.state.peer.as_ref() {
+        if let Some(existing) = self.peer.as_ref() {
             emit(EngineOutput::PeerStatusChanged {
                 peer: existing.peer,
                 session: PeerSession::Disconnected,
@@ -288,7 +290,7 @@ impl Engine {
     }
 
     fn handle_pair_local(&mut self, now: Instant, crypto: &impl QlCrypto) {
-        let Some(peer) = self.state.peer.as_ref() else {
+        let Some(peer) = self.peer.as_ref() else {
             return;
         };
         let meta = self.next_control_meta(self.config.packet_expiration);
@@ -310,7 +312,7 @@ impl Engine {
     }
 
     fn handle_connect(&mut self, now: Instant, crypto: &impl QlCrypto, emit: &mut impl OutputFn) {
-        let Some(peer_record) = self.state.peer.as_ref() else {
+        let Some(peer_record) = self.peer.as_ref() else {
             return;
         };
         let peer = peer_record.peer;
@@ -337,7 +339,7 @@ impl Engine {
 
         let deadline = now + self.config.handshake_timeout;
         let token = self.state.next_token();
-        if let Some(entry) = self.state.peer.as_mut() {
+        if let Some(entry) = self.peer.as_mut() {
             entry.session = PeerSession::Initiator {
                 handshake_token: token,
                 hello: hello.clone(),
@@ -359,7 +361,7 @@ impl Engine {
     }
 
     fn handle_unpair_local(&mut self, now: Instant, emit: &mut impl OutputFn) {
-        let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
+        let Some(peer) = self.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
         let meta = self.next_control_meta(self.config.packet_expiration);
@@ -389,7 +391,7 @@ impl Engine {
         config: StreamConfig,
         emit: &mut impl OutputFn,
     ) {
-        let Some(entry) = self.state.peer.as_ref() else {
+        let Some(entry) = self.peer.as_ref() else {
             emit(EngineOutput::OpenFailed {
                 open_id,
                 stream_id: StreamId(0),
@@ -622,7 +624,7 @@ impl Engine {
             return;
         }
         if !matches!(&record.payload, wire::ArchivedQlPayload::Pair(_)) {
-            let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
+            let Some(peer) = self.peer.as_ref().map(|peer| peer.peer) else {
                 return;
             };
             if sender != peer {
@@ -688,7 +690,7 @@ impl Engine {
         if self.is_replayed_control(peer, payload.meta) {
             return;
         }
-        if let Some(existing) = self.state.peer.as_ref() {
+        if let Some(existing) = self.peer.as_ref() {
             if existing.peer != peer
                 || existing.signing_key != payload.signing_pub_key
                 || existing.encapsulation_key != payload.encapsulation_pub_key
@@ -716,7 +718,7 @@ impl Engine {
         emit: &mut impl OutputFn,
     ) {
         {
-            let Some(peer_record) = self.state.peer.as_ref() else {
+            let Some(peer_record) = self.peer.as_ref() else {
                 return;
             };
             if unpair::verify_unpair_record(header, record, &peer_record.signing_key).is_err() {
@@ -739,7 +741,7 @@ impl Engine {
         emit: &mut impl OutputFn,
     ) {
         let (body, should_reply) = {
-            let Some(peer_record) = self.state.peer.as_ref() else {
+            let Some(peer_record) = self.peer.as_ref() else {
                 return;
             };
             let PeerSession::Connected {
@@ -774,7 +776,7 @@ impl Engine {
         emit: &mut impl OutputFn,
     ) {
         let body = {
-            let Some(peer_record) = self.state.peer.as_ref() else {
+            let Some(peer_record) = self.peer.as_ref() else {
                 return;
             };
             let PeerSession::Connected { session_key, .. } = &peer_record.session else {
@@ -803,7 +805,7 @@ impl Engine {
         }
 
         if !self.streams.contains_key(&stream_id) {
-            let Some(peer_record) = self.state.peer.as_ref() else {
+            let Some(peer_record) = self.peer.as_ref() else {
                 return;
             };
             let local_namespace = StreamNamespace::for_local(self.identity.xid, peer_record.peer);
@@ -1584,16 +1586,15 @@ impl Engine {
         let Some(token) = token else {
             return false;
         };
-        matches!(self.state.peer.as_ref().map(|entry| &entry.session),
+        matches!(self.peer.as_ref().map(|entry| &entry.session),
             Some(PeerSession::Initiator { handshake_token, .. }) if *handshake_token == token)
-            || matches!(self.state.peer.as_ref().map(|entry| &entry.session),
+            || matches!(self.peer.as_ref().map(|entry| &entry.session),
                 Some(PeerSession::Responder { handshake_token, .. }) if *handshake_token == token)
     }
 
     fn connected_session_for_token(&self, token: Option<Token>) -> Option<SymmetricKey> {
         let token = token?;
-        self.state
-            .peer
+        self.peer
             .as_ref()
             .and_then(|entry| match &entry.session {
                 PeerSession::Initiator {
@@ -1607,7 +1608,7 @@ impl Engine {
     }
 
     fn stream_write_session(&self) -> Option<(XID, SymmetricKey)> {
-        self.state.peer.as_ref().and_then(|peer| {
+        self.peer.as_ref().and_then(|peer| {
             peer.session
                 .session_key()
                 .map(|key| (peer.peer, key.clone()))
@@ -1835,7 +1836,7 @@ impl Engine {
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
-        let action = match self.state.peer.as_ref() {
+        let action = match self.peer.as_ref() {
             Some(entry) => {
                 if handshake::verify_hello(peer, self.identity.xid, &entry.signing_key, hello)
                     .is_err()
@@ -1908,7 +1909,7 @@ impl Engine {
         let deadline = now + self.config.handshake_timeout;
         let confirm_meta = self.next_control_meta(self.config.handshake_timeout);
         let res = {
-            let Some(peer_record) = self.state.peer.as_ref() else {
+            let Some(peer_record) = self.peer.as_ref() else {
                 return;
             };
             let PeerSession::Initiator {
@@ -1937,7 +1938,7 @@ impl Engine {
         let (hello, confirm, session_key) = match res {
             Ok(result) => result,
             Err(_) => {
-                if let Some(entry) = self.state.peer.as_mut() {
+                if let Some(entry) = self.peer.as_mut() {
                     entry.session = PeerSession::Disconnected;
                 }
                 self.emit_peer_status(emit);
@@ -1949,7 +1950,7 @@ impl Engine {
             return;
         }
         let token = self.state.next_token();
-        if let Some(entry) = self.state.peer.as_mut() {
+        if let Some(entry) = self.peer.as_mut() {
             entry.session = PeerSession::Initiator {
                 handshake_token: token,
                 hello,
@@ -1976,7 +1977,7 @@ impl Engine {
         confirm: &wire::handshake::ArchivedConfirm,
         emit: &mut impl OutputFn,
     ) {
-        let Some(peer_record) = self.state.peer.as_ref() else {
+        let Some(peer_record) = self.peer.as_ref() else {
             return;
         };
         let PeerSession::Responder {
@@ -2003,7 +2004,7 @@ impl Engine {
                 if self.is_replayed_control(peer, meta) {
                     return;
                 }
-                if let Some(entry) = self.state.peer.as_mut() {
+                if let Some(entry) = self.peer.as_mut() {
                     entry.session = PeerSession::Connected {
                         session_key,
                         keepalive: KeepAliveState::default(),
@@ -2013,7 +2014,7 @@ impl Engine {
                 self.emit_peer_status(emit);
             }
             Err(_) => {
-                if let Some(entry) = self.state.peer.as_mut() {
+                if let Some(entry) = self.peer.as_mut() {
                     entry.session = PeerSession::Disconnected;
                 }
                 self.emit_peer_status(emit);
@@ -2031,7 +2032,7 @@ impl Engine {
     ) {
         let reply_meta = self.next_control_meta(self.config.handshake_timeout);
         let res = {
-            let Some(peer_record) = self.state.peer.as_ref() else {
+            let Some(peer_record) = self.peer.as_ref() else {
                 return;
             };
             handshake::respond_hello(
@@ -2047,7 +2048,7 @@ impl Engine {
         let (reply, secrets) = match res {
             Ok(result) => result,
             Err(_) => {
-                if let Some(entry) = self.state.peer.as_mut() {
+                if let Some(entry) = self.peer.as_mut() {
                     entry.session = PeerSession::Disconnected;
                 }
                 self.emit_peer_status(emit);
@@ -2055,7 +2056,7 @@ impl Engine {
             }
         };
         let Ok(hello) = wire::deserialize_value(hello) else {
-            if let Some(entry) = self.state.peer.as_mut() {
+            if let Some(entry) = self.peer.as_mut() {
                 entry.session = PeerSession::Disconnected;
             }
             self.emit_peer_status(emit);
@@ -2064,7 +2065,7 @@ impl Engine {
 
         let deadline = now + self.config.handshake_timeout;
         let token = self.state.next_token();
-        if let Some(entry) = self.state.peer.as_mut() {
+        if let Some(entry) = self.peer.as_mut() {
             entry.session = PeerSession::Responder {
                 handshake_token: token,
                 hello,
@@ -2086,14 +2087,14 @@ impl Engine {
     }
 
     fn send_heartbeat_message(&mut self, now: Instant, crypto: &impl QlCrypto) {
-        let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
+        let Some(peer) = self.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
         let meta = self.next_control_meta(self.config.packet_expiration);
         let token = self.state.next_token();
         let deadline = now + self.config.packet_expiration;
         let message = {
-            let Some(peer_record) = self.state.peer.as_ref() else {
+            let Some(peer_record) = self.peer.as_ref() else {
                 return;
             };
             let PeerSession::Connected { session_key, .. } = &peer_record.session else {
@@ -2123,7 +2124,7 @@ impl Engine {
             return;
         };
         let token = self.state.next_token();
-        let Some(entry) = self.state.peer.as_mut() else {
+        let Some(entry) = self.peer.as_mut() else {
             return;
         };
         let PeerSession::Connected { keepalive, .. } = &mut entry.session else {
@@ -2219,12 +2220,12 @@ impl Engine {
     }
 
     fn unpair_peer(&mut self, emit: &mut impl OutputFn) {
-        let Some(peer) = self.state.peer.as_ref().map(|peer| peer.peer) else {
+        let Some(peer) = self.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
         self.drop_outbound();
         self.abort_streams(QlError::SendFailed, emit);
-        self.state.peer = None;
+        self.peer = None;
         emit(EngineOutput::PeerStatusChanged {
             peer,
             session: PeerSession::Disconnected,
@@ -2250,7 +2251,7 @@ impl Engine {
                         .retain(|message| message.token != token);
                 }
                 TimeoutKind::Handshake { token } => {
-                    let Some(entry) = self.state.peer.as_ref() else {
+                    let Some(entry) = self.peer.as_ref() else {
                         continue;
                     };
                     let should_disconnect = matches!(
@@ -2259,7 +2260,7 @@ impl Engine {
                             if *handshake_token == token
                     );
                     if should_disconnect {
-                        if let Some(entry) = self.state.peer.as_mut() {
+                        if let Some(entry) = self.peer.as_mut() {
                             entry.session = PeerSession::Disconnected;
                         }
                         self.emit_peer_status(emit);
@@ -2272,7 +2273,7 @@ impl Engine {
                         continue;
                     };
                     let should_send = {
-                        let Some(entry) = self.state.peer.as_ref() else {
+                        let Some(entry) = self.peer.as_ref() else {
                             continue;
                         };
                         let PeerSession::Connected { keepalive, .. } = &entry.session else {
@@ -2283,7 +2284,7 @@ impl Engine {
                     if should_send {
                         self.send_heartbeat_message(now, crypto);
                     }
-                    if let Some(entry) = self.state.peer.as_mut() {
+                    if let Some(entry) = self.peer.as_mut() {
                         if let PeerSession::Connected { keepalive, .. } = &mut entry.session {
                             if keepalive.token == token {
                                 keepalive.pending = true;
@@ -2296,12 +2297,12 @@ impl Engine {
                     }));
                 }
                 TimeoutKind::KeepAliveTimeout { token } => {
-                    let Some(entry) = self.state.peer.as_ref() else {
+                    let Some(entry) = self.peer.as_ref() else {
                         continue;
                     };
                     let should_disconnect = matches!(&entry.session, PeerSession::Connected { keepalive, .. } if keepalive.token == token && keepalive.pending);
                     if should_disconnect {
-                        if let Some(entry) = self.state.peer.as_mut() {
+                        if let Some(entry) = self.peer.as_mut() {
                             entry.session = PeerSession::Disconnected;
                         }
                         self.emit_peer_status(emit);

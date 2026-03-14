@@ -354,12 +354,12 @@ pub enum HelloAction {
 pub struct Engine {
     pub config: EngineConfig,
     pub identity: QlIdentity,
+    pub peer: Option<PeerRecord>,
     pub state: EngineState,
     pub streams: StreamStore,
 }
 
 pub struct EngineState {
-    pub peer: Option<PeerRecord>,
     pub replay_cache: ReplayCache,
 
     pub next_token: Cell<u64>,
@@ -373,10 +373,8 @@ pub struct EngineState {
 }
 
 impl EngineState {
-    pub fn new(peer: Option<Peer>) -> Self {
+    pub fn new() -> Self {
         Self {
-            peer: peer
-                .map(|peer| PeerRecord::new(peer.peer, peer.signing_key, peer.encapsulation_key)),
             replay_cache: ReplayCache::new(),
             next_token: Cell::new(1),
             next_write_id: Cell::new(1),
