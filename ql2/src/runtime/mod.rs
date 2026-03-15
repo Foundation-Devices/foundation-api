@@ -10,6 +10,9 @@ pub(crate) mod driver;
 pub mod handle;
 pub mod platform;
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
     identity::QlIdentity,
     StreamId,

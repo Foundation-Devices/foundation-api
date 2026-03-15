@@ -6,9 +6,6 @@ pub mod wire;
 
 pub use wire::{PacketId, StreamId};
 
-// #[cfg(test)]
-// mod tests;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
     pub peer: bc_components::XID,
