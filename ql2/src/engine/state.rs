@@ -9,7 +9,7 @@ use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
 use super::{replay_cache::ReplayCache, stream::StreamStore, EngineConfig};
 use crate::{
-    platform::QlIdentity,
+    identity::QlIdentity,
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
         stream::{ResetCode, ResetTarget},

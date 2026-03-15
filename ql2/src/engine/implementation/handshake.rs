@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     engine::{EngineConfig, EngineState, KeepAliveState},
-    platform::QlIdentity,
+    identity::QlIdentity,
     wire::{handshake::HandshakeRecord, QlPayload, QlRecord},
 };
 

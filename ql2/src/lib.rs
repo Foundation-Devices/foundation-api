@@ -1,11 +1,10 @@
 pub mod engine;
-mod id;
-pub mod platform;
+pub mod identity;
 // pub mod rpc;
 pub mod runtime;
 pub mod wire;
 
-pub use id::*;
+pub use wire::{PacketId, StreamId};
 
 // #[cfg(test)]
 // mod tests;

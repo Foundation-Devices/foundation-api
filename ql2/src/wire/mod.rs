@@ -19,11 +19,13 @@ use rkyv::{
 pub mod encrypted_message;
 pub mod handshake;
 pub mod heartbeat;
+mod id;
 pub mod pair;
 pub mod seq;
 pub mod stream;
 pub mod unpair;
 
+pub use id::*;
 pub use seq::StreamSeq;
 
 mod codec;
@@ -34,7 +36,7 @@ use self::{
     encrypted_message::EncryptedMessage, handshake::HandshakeRecord, pair::PairRequestRecord,
     unpair::UnpairRecord,
 };
-use crate::{PacketId, QlError};
+use crate::QlError;
 
 pub(crate) type WireArchiveError = rkyv::rancor::Error;
 
@@ -155,6 +157,7 @@ fn ql_record_round_trip() {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::{engine::QlCrypto, identity::QlIdentity};
 
     struct SizeTestCrypto(std::sync::atomic::AtomicU8);
 
@@ -164,7 +167,7 @@ mod test {
         }
     }
 
-    impl crate::platform::QlCrypto for SizeTestCrypto {
+    impl QlCrypto for SizeTestCrypto {
         fn fill_random_bytes(&self, data: &mut [u8]) {
             let seed = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             for (index, byte) in data.iter_mut().enumerate() {
@@ -173,12 +176,12 @@ mod test {
         }
     }
 
-    fn size_test_identity() -> crate::platform::QlIdentity {
+    fn size_test_identity() -> QlIdentity {
         use bc_components::{MLDSA, MLKEM};
 
         let (signing_private_key, signing_public_key) = MLDSA::MLDSA44.keypair();
         let (encapsulation_private_key, encapsulation_public_key) = MLKEM::MLKEM512.keypair();
-        crate::platform::QlIdentity::from_keys(
+        QlIdentity::from_keys(
             signing_private_key,
             signing_public_key,
             encapsulation_private_key,

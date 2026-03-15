@@ -1,6 +1,5 @@
 use std::fmt;
 
-use dcbor::CBOR;
 use rkyv::{Archive, Deserialize, Serialize};
 
 macro_rules! define_id {
@@ -18,25 +17,12 @@ macro_rules! define_id {
             PartialOrd,
             Ord,
         )]
+        #[repr(transparent)]
         pub struct $name(pub $ty);
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{}", self.0)
-            }
-        }
-
-        impl From<$name> for CBOR {
-            fn from(value: $name) -> Self {
-                CBOR::from(value.0)
-            }
-        }
-
-        impl TryFrom<CBOR> for $name {
-            type Error = dcbor::Error;
-
-            fn try_from(value: CBOR) -> Result<Self, Self::Error> {
-                Ok(Self(<$ty>::try_from(value)?))
             }
         }
     };

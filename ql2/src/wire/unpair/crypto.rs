@@ -3,7 +3,7 @@ use rkyv::{Archive, Serialize};
 
 use super::UnpairRecord;
 use crate::{
-    platform::QlIdentity,
+    identity::QlIdentity,
     wire::{encode_value, ensure_not_expired, ControlMeta, QlHeader, QlPayload, QlRecord},
     QlError,
 };

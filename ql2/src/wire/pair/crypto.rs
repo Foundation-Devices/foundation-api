@@ -5,7 +5,8 @@ use rkyv::{Archive, Serialize};
 
 use super::{PairRequestBody, PairRequestRecord};
 use crate::{
-    platform::{QlCrypto, QlIdentity},
+    engine::QlCrypto,
+    identity::QlIdentity,
     wire::{
         access_value, deserialize_value, encode_value,
         encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage, NONCE_SIZE},

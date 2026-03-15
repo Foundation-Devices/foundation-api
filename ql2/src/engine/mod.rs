@@ -16,10 +16,14 @@ pub use state::{
 };
 
 use crate::{
-    platform::{QlCrypto, QlIdentity},
+    identity::QlIdentity,
     wire::stream::{BodyChunk, Direction, RejectCode, ResetCode},
     Peer, QlError, StreamId,
 };
+
+pub trait QlCrypto {
+    fn fill_random_bytes(&self, data: &mut [u8]);
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct KeepAliveConfig {

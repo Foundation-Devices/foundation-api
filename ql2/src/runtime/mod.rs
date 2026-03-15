@@ -8,11 +8,14 @@ pub use crate::engine::{EngineConfig, InitiatorStage, KeepAliveConfig, PeerSessi
 pub(crate) mod command;
 pub(crate) mod driver;
 pub mod handle;
+pub mod platform;
 
 use crate::{
-    platform::{QlIdentity, QlPlatform},
+    identity::QlIdentity,
     StreamId,
 };
+
+use self::platform::QlPlatform;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {

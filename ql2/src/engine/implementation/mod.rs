@@ -13,9 +13,8 @@ use crate::{
         state::{ActiveWrite, ControlWritePayload, OutboundWriteKind, TimeoutKind},
         stream::{InFlightWriteState, InitiatorAccept, ResponderResponse, StreamRole, StreamState},
         Engine, EngineInput, EngineOutput, InitiatorStage, KeepAliveConfig, KeepAliveState,
-        OutboundWrite, OutputFn, PeerRecord, PeerSession, Token, WriteId,
+        OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, Token, WriteId,
     },
-    platform::QlCrypto,
     wire::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},

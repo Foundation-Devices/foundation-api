@@ -9,7 +9,8 @@ use super::{
     HelloReply,
 };
 use crate::{
-    platform::{QlCrypto, QlIdentity},
+    engine::QlCrypto,
+    identity::QlIdentity,
     wire::{
         encode_value, ensure_not_expired, AsWireMlKemCiphertext, AsWireNonce, AsWireXid,
         ControlMeta,

@@ -8,7 +8,7 @@ use bc_components::{SymmetricKey, MLDSA, MLKEM, XID};
 
 use crate::{
     engine::{state::StreamNamespace, stream::*, *},
-    platform::{QlCrypto, QlIdentity},
+    identity::QlIdentity,
     wire::{self, stream::*, QlHeader, QlPayload, QlRecord, StreamSeq},
     PacketId, Peer,
 };

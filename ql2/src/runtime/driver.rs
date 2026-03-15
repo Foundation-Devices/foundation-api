@@ -9,7 +9,7 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     engine::{Engine, EngineInput, EngineOutput, OpenId, WriteId},
-    platform::{PlatformFuture, QlPlatform},
+    runtime::platform::{PlatformFuture, QlPlatform},
     runtime::{
         command::RuntimeCommand,
         handle::{InboundByteStream, InboundStream, StreamResponder},
