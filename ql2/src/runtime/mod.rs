@@ -1,34 +1,40 @@
 pub use handle::{
-    AcceptedStream, InboundByteStream, InboundStream, OutboundByteStream, PendingAccept,
-    PendingStream, RuntimeHandle, StreamResponder,
+    DuplexStream, InboundByteStream, InboundStream, OutboundByteStream, RuntimeHandle,
+    StreamResponder,
 };
 
-pub use crate::engine::{
-    EngineConfig, InitiatorStage, KeepAliveConfig, PeerSession, StreamConfig, Token,
-};
+pub use crate::engine::{EngineConfig, InitiatorStage, KeepAliveConfig, PeerSession, StreamConfig};
 
 pub(crate) mod command;
 pub(crate) mod driver;
 pub mod handle;
 
-use crate::{platform::QlPlatform, StreamId};
+use crate::{
+    platform::{QlIdentity, QlPlatform},
+    StreamId,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
     pub engine: EngineConfig,
+    pub stream_send_buffer_bytes: usize,
+    pub max_concurrent_message_writes: usize,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             engine: EngineConfig::default(),
+            stream_send_buffer_bytes: 64 * 1024,
+            max_concurrent_message_writes: 4,
         }
     }
 }
 
 impl RuntimeConfig {
     pub(crate) fn normalized(mut self) -> Self {
-        self.engine = self.engine.normalized();
+        self.stream_send_buffer_bytes = self.stream_send_buffer_bytes.max(1);
+        self.max_concurrent_message_writes = self.max_concurrent_message_writes.max(1);
         self
     }
 }
@@ -45,21 +51,25 @@ pub(crate) enum InboundEvent {
     Failed(crate::QlError),
 }
 
-pub(crate) struct AcceptedStreamDelivery {
+pub(crate) struct OpenedStreamDelivery {
     pub stream_id: StreamId,
-    pub response_head: Vec<u8>,
     pub response: async_channel::Receiver<InboundEvent>,
     pub tx: async_channel::Sender<command::RuntimeCommand>,
 }
 
 pub struct Runtime<P> {
+    identity: QlIdentity,
     platform: P,
     config: RuntimeConfig,
     rx: async_channel::Receiver<command::RuntimeCommand>,
     tx: async_channel::WeakSender<command::RuntimeCommand>,
 }
 
-pub fn new_runtime<P>(platform: P, config: RuntimeConfig) -> (Runtime<P>, RuntimeHandle)
+pub fn new_runtime<P>(
+    identity: QlIdentity,
+    platform: P,
+    config: RuntimeConfig,
+) -> (Runtime<P>, RuntimeHandle)
 where
     P: QlPlatform,
 {
@@ -67,11 +77,15 @@ where
     let (tx, rx) = async_channel::unbounded();
     (
         Runtime {
+            identity,
             platform,
             config,
             rx,
             tx: tx.downgrade(),
         },
-        RuntimeHandle { tx },
+        RuntimeHandle {
+            tx,
+            stream_send_buffer_bytes: config.stream_send_buffer_bytes,
+        },
     )
 }

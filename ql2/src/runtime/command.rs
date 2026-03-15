@@ -1,5 +1,5 @@
 use crate::{
-    runtime::{AcceptedStreamDelivery, StreamConfig},
+    runtime::{OpenedStreamDelivery, StreamConfig},
     wire::stream::{Direction, RejectCode, ResetCode},
     Peer, QlError, StreamId,
 };
@@ -13,15 +13,14 @@ pub(crate) enum RuntimeCommand {
     Unpair,
     OpenStream {
         request_head: Vec<u8>,
-        request_rx: async_channel::Receiver<Vec<u8>>,
-        accepted: oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>,
-        start: oneshot::Sender<Result<StreamId, QlError>>,
+        request_reader: piper::Reader,
+        start: oneshot::Sender<Result<OpenedStreamDelivery, QlError>>,
         config: StreamConfig,
     },
     AcceptStream {
         stream_id: StreamId,
         response_head: Vec<u8>,
-        response_rx: async_channel::Receiver<Vec<u8>>,
+        response_reader: piper::Reader,
     },
     RejectStream {
         stream_id: StreamId,
@@ -41,9 +40,6 @@ pub(crate) enum RuntimeCommand {
         code: ResetCode,
     },
     ResponderDropped {
-        stream_id: StreamId,
-    },
-    PendingAcceptDropped {
         stream_id: StreamId,
     },
     Incoming(Vec<u8>),

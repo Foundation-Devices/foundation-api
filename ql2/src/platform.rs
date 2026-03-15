@@ -47,5 +47,5 @@ pub trait QlPlatform: QlCrypto {
     fn clear_peer(&self);
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession);
-    // fn handle_inbound(&self, event: crate::runtime::HandlerEvent);
+    fn handle_inbound(&self, event: crate::runtime::HandlerEvent);
 }
