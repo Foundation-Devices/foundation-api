@@ -12,7 +12,7 @@ use crate::{
     identity::QlIdentity,
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
-        stream::{ResetCode, ResetTarget},
+        stream::{CloseCode, CloseTarget},
         StreamSeq,
     },
     PacketId, Peer, StreamId,
@@ -37,7 +37,7 @@ pub enum OutboundWriteKind {
         stream_id: StreamId,
         tx_seq: StreamSeq,
     },
-    StreamReset {
+    StreamClose {
         stream_id: StreamId,
     },
 }
@@ -58,10 +58,11 @@ pub struct ControlWrite {
 #[derive(Debug)]
 pub enum ControlWritePayload {
     Encoded(Vec<u8>),
-    StreamReset {
+    StreamClose {
         stream_id: StreamId,
-        target: ResetTarget,
-        code: ResetCode,
+        target: CloseTarget,
+        code: CloseCode,
+        payload: Vec<u8>,
     },
 }
 
@@ -322,22 +323,24 @@ impl EngineState {
         token
     }
 
-    pub fn enqueue_stream_reset(
+    pub fn enqueue_stream_close(
         &mut self,
         config: &EngineConfig,
         priority: bool,
         stream_id: StreamId,
-        target: ResetTarget,
-        code: ResetCode,
+        target: CloseTarget,
+        code: CloseCode,
+        payload: Vec<u8>,
     ) -> Token {
         let token = self.next_token();
         let message = ControlWrite {
             token,
-            kind: OutboundWriteKind::StreamReset { stream_id },
-            payload: ControlWritePayload::StreamReset {
+            kind: OutboundWriteKind::StreamClose { stream_id },
+            payload: ControlWritePayload::StreamClose {
                 stream_id,
                 target,
                 code,
+                payload,
             },
         };
         if priority {

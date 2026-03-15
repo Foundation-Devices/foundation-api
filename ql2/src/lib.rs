@@ -1,7 +1,7 @@
 pub mod engine;
 pub mod identity;
 // pub mod rpc;
-pub mod runtime;
+// pub mod runtime;
 pub mod wire;
 
 pub use wire::{PacketId, StreamId};
@@ -27,12 +27,11 @@ pub enum QlError {
     Timeout,
     #[error("send failed")]
     SendFailed,
-    #[error("stream rejected {code:?}")]
-    StreamRejected { code: wire::stream::RejectCode },
-    #[error("stream reset {code:?}")]
-    StreamReset {
-        dir: wire::stream::Direction,
-        code: wire::stream::ResetCode,
+    #[error("stream closed {code:?}")]
+    StreamClosed {
+        target: wire::stream::CloseTarget,
+        code: wire::stream::CloseCode,
+        payload: Vec<u8>,
     },
     #[error("stream protocol error")]
     StreamProtocol,

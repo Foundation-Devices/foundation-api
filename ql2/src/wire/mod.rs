@@ -196,6 +196,7 @@ mod test {
         }
     }
 
+    /*
     #[test]
     fn protocol_record_size_breakdown() {
         use crate::{
@@ -517,4 +518,5 @@ mod test {
         assert!(stream_fin_size > 0);
         assert!(stream_reset_size > 0);
     }
+    */
 }

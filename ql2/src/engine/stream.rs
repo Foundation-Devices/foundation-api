@@ -6,7 +6,7 @@ use std::{
 use super::{ring::SeqRing, OpenId, Token};
 use crate::{
     wire::{
-        stream::{Direction, ResetCode, ResetTarget, StreamAck, StreamFrame, StreamFrameReset},
+        stream::{CloseCode, CloseTarget, Direction, StreamAck, StreamFrame, StreamFrameClose},
         StreamSeq,
     },
     StreamId,
@@ -95,10 +95,10 @@ pub struct OpenWaiter {
 }
 
 #[derive(Debug)]
-pub enum InitiatorAccept {
+pub enum InitiatorOpen {
     Opening(OpenWaiter),
-    WaitingAccept(OpenWaiter),
-    Open { response_head: Vec<u8> },
+    WaitingResponse(OpenWaiter),
+    Open,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +127,7 @@ pub enum BufferIncomingResult {
     OutOfWindow,
 }
 
-// TODO: does it really make sense to have terminal control frames (Reset, Reject) have sequence ids?
+// TODO: does it really make sense to have terminal control frames have sequence ids?
 #[derive(Debug)]
 pub struct StreamControl {
     pub pending: VecDeque<StreamFrame>,
@@ -361,20 +361,14 @@ impl StreamControl {
 pub struct InitiatorStream {
     pub request: OutboundState,
     pub response: InboundState,
-    pub accept: InitiatorAccept,
-}
-
-#[derive(Debug)]
-pub enum ResponderResponse {
-    Pending,
-    Accepted { body: OutboundState },
-    Rejecting,
+    pub open: InitiatorOpen,
 }
 
 #[derive(Debug)]
 pub struct ResponderStream {
     pub request: InboundState,
-    pub response: ResponderResponse,
+    pub response: OutboundState,
+    pub response_started: bool,
 }
 
 #[derive(Debug)]
@@ -404,11 +398,7 @@ impl StreamState {
     pub fn outbound_mut(&mut self, dir: Direction) -> Option<&mut OutboundState> {
         match &mut self.role {
             StreamRole::Initiator(state) if dir == Direction::Request => Some(&mut state.request),
-            StreamRole::Responder(state) if dir == Direction::Response => match &mut state.response
-            {
-                ResponderResponse::Accepted { body } => Some(body),
-                _ => None,
-            },
+            StreamRole::Responder(state) if dir == Direction::Response => Some(&mut state.response),
             _ => None,
         }
     }
@@ -423,11 +413,11 @@ impl StreamState {
 
     pub fn open_timeout_token(&self) -> Option<Token> {
         match &self.role {
-            StreamRole::Initiator(state) => match &state.accept {
-                InitiatorAccept::Opening(waiter) | InitiatorAccept::WaitingAccept(waiter) => {
+            StreamRole::Initiator(state) => match &state.open {
+                InitiatorOpen::Opening(waiter) | InitiatorOpen::WaitingResponse(waiter) => {
                     Some(waiter.open_timeout_token)
                 }
-                InitiatorAccept::Open { .. } => None,
+                InitiatorOpen::Open => None,
             },
             _ => None,
         }
@@ -455,15 +445,11 @@ impl StreamState {
         }
         match &self.role {
             StreamRole::Initiator(state) => {
-                matches!(state.accept, InitiatorAccept::Open { .. })
+                matches!(state.open, InitiatorOpen::Open)
                     && state.request.is_closed()
                     && state.response.closed
             }
-            StreamRole::Responder(state) => match &state.response {
-                ResponderResponse::Accepted { body } => state.request.closed && body.is_closed(),
-                ResponderResponse::Rejecting => true,
-                ResponderResponse::Pending => false,
-            },
+            StreamRole::Responder(state) => state.request.closed && state.response.is_closed(),
             StreamRole::Provisional(_) => false,
         }
     }
@@ -565,10 +551,16 @@ impl StreamStore {
     }
 }
 
-pub fn reset_frame(stream_id: StreamId, target: ResetTarget, code: ResetCode) -> StreamFrame {
-    StreamFrame::Reset(StreamFrameReset {
+pub fn close_frame(
+    stream_id: StreamId,
+    target: CloseTarget,
+    code: CloseCode,
+    payload: Vec<u8>,
+) -> StreamFrame {
+    StreamFrame::Close(StreamFrameClose {
         stream_id,
         target,
         code,
+        payload,
     })
 }

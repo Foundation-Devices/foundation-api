@@ -77,20 +77,16 @@ impl StreamAck {
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum StreamFrame {
     Open(StreamFrameOpen),
-    Accept(StreamFrameAccept),
-    Reject(StreamFrameReject),
     Data(StreamFrameData),
-    Reset(StreamFrameReset),
+    Close(StreamFrameClose),
 }
 
 impl StreamFrame {
     pub fn stream_id(&self) -> StreamId {
         match self {
             StreamFrame::Open(StreamFrameOpen { stream_id, .. })
-            | StreamFrame::Accept(StreamFrameAccept { stream_id, .. })
-            | StreamFrame::Reject(StreamFrameReject { stream_id, .. })
             | StreamFrame::Data(StreamFrameData { stream_id, .. })
-            | StreamFrame::Reset(StreamFrameReset { stream_id, .. }) => *stream_id,
+            | StreamFrame::Close(StreamFrameClose { stream_id, .. }) => *stream_id,
         }
     }
 }
@@ -128,38 +124,6 @@ impl From<&ArchivedStreamFrameOpen> for StreamFrameOpen {
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct StreamFrameAccept {
-    pub stream_id: StreamId,
-    pub response_head: Vec<u8>,
-    pub response_prefix: Option<BodyChunk>,
-}
-
-impl From<&ArchivedStreamFrameAccept> for StreamFrameAccept {
-    fn from(value: &ArchivedStreamFrameAccept) -> Self {
-        Self {
-            stream_id: (&value.stream_id).into(),
-            response_head: value.response_head.as_slice().to_vec(),
-            response_prefix: value.response_prefix.as_ref().map(Into::into),
-        }
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamFrameReject {
-    pub stream_id: StreamId,
-    pub code: RejectCode,
-}
-
-impl From<&ArchivedStreamFrameReject> for StreamFrameReject {
-    fn from(value: &ArchivedStreamFrameReject) -> Self {
-        Self {
-            stream_id: (&value.stream_id).into(),
-            code: (&value.code).into(),
-        }
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrameData {
     pub stream_id: StreamId,
     pub dir: Direction,
@@ -176,19 +140,21 @@ impl From<&ArchivedStreamFrameData> for StreamFrameData {
     }
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamFrameReset {
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StreamFrameClose {
     pub stream_id: StreamId,
-    pub target: ResetTarget,
-    pub code: ResetCode,
+    pub target: CloseTarget,
+    pub code: CloseCode,
+    pub payload: Vec<u8>,
 }
 
-impl From<&ArchivedStreamFrameReset> for StreamFrameReset {
-    fn from(value: &ArchivedStreamFrameReset) -> Self {
+impl From<&ArchivedStreamFrameClose> for StreamFrameClose {
+    fn from(value: &ArchivedStreamFrameClose) -> Self {
         Self {
             stream_id: (&value.stream_id).into(),
             target: (&value.target).into(),
             code: (&value.code).into(),
+            payload: value.payload.as_slice().to_vec(),
         }
     }
 }
@@ -211,60 +177,41 @@ impl From<&ArchivedDirection> for Direction {
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum ResetTarget {
+pub enum CloseTarget {
     Request = 1,
     Response = 2,
     Both = 3,
 }
 
-impl From<&ArchivedResetTarget> for ResetTarget {
-    fn from(value: &ArchivedResetTarget) -> Self {
+impl From<&ArchivedCloseTarget> for CloseTarget {
+    fn from(value: &ArchivedCloseTarget) -> Self {
         match value {
-            ArchivedResetTarget::Request => Self::Request,
-            ArchivedResetTarget::Response => Self::Response,
-            ArchivedResetTarget::Both => Self::Both,
+            ArchivedCloseTarget::Request => Self::Request,
+            ArchivedCloseTarget::Response => Self::Response,
+            ArchivedCloseTarget::Both => Self::Both,
         }
     }
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum RejectCode {
-    Unknown = 0,
-    UnknownRoute = 1,
-    InvalidHead = 2,
-    Busy = 3,
-    Unhandled = 4,
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct CloseCode(pub u16);
+
+impl CloseCode {
+    pub const CANCELLED: Self = Self(0);
+    pub const PROTOCOL: Self = Self(1);
+    pub const INVALID_DATA: Self = Self(2);
+    pub const TIMEOUT: Self = Self(3);
+
+    pub const UNKNOWN: Self = Self(16);
+    pub const UNKNOWN_ROUTE: Self = Self(17);
+    pub const INVALID_HEAD: Self = Self(18);
+    pub const BUSY: Self = Self(19);
+    pub const UNHANDLED: Self = Self(20);
 }
 
-impl From<&ArchivedRejectCode> for RejectCode {
-    fn from(value: &ArchivedRejectCode) -> Self {
-        match value {
-            ArchivedRejectCode::Unknown => Self::Unknown,
-            ArchivedRejectCode::UnknownRoute => Self::UnknownRoute,
-            ArchivedRejectCode::InvalidHead => Self::InvalidHead,
-            ArchivedRejectCode::Busy => Self::Busy,
-            ArchivedRejectCode::Unhandled => Self::Unhandled,
-        }
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ResetCode {
-    Cancelled = 0,
-    InvalidData = 1,
-    Protocol = 2,
-    Timeout = 3,
-}
-
-impl From<&ArchivedResetCode> for ResetCode {
-    fn from(value: &ArchivedResetCode) -> Self {
-        match value {
-            ArchivedResetCode::Cancelled => Self::Cancelled,
-            ArchivedResetCode::InvalidData => Self::InvalidData,
-            ArchivedResetCode::Protocol => Self::Protocol,
-            ArchivedResetCode::Timeout => Self::Timeout,
-        }
+impl From<&ArchivedCloseCode> for CloseCode {
+    fn from(value: &ArchivedCloseCode) -> Self {
+        Self(value.0.to_native())
     }
 }

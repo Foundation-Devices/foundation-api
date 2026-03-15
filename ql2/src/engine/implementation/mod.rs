@@ -11,7 +11,7 @@ use crate::{
     engine::{
         replay_cache::ReplayKey,
         state::{ActiveWrite, ControlWritePayload, OutboundWriteKind, TimeoutKind},
-        stream::{InFlightWriteState, InitiatorAccept, ResponderResponse, StreamRole, StreamState},
+        stream::{InFlightWriteState, InitiatorOpen, StreamRole, StreamState},
         Engine, EngineInput, EngineOutput, InitiatorStage, KeepAliveConfig, KeepAliveState,
         OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, Token, WriteId,
     },
@@ -19,8 +19,8 @@ use crate::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
         stream::{
-            encrypt_stream, Direction, ResetCode, ResetTarget, StreamAck, StreamBody, StreamFrame,
-            StreamFrameReset, StreamMessage,
+            encrypt_stream, CloseCode, CloseTarget, Direction, StreamAck, StreamBody, StreamFrame,
+            StreamFrameClose, StreamMessage,
         },
         ControlMeta, QlHeader, StreamSeq,
     },
@@ -55,14 +55,12 @@ impl Engine {
                 config,
                 emit,
             ),
-            EngineInput::AcceptStream {
+            EngineInput::CloseStream {
                 stream_id,
-                response_head,
-                response_prefix,
-            } => stream::handle_accept_stream(self, now, stream_id, response_head, response_prefix),
-            EngineInput::RejectStream { stream_id, code } => {
-                stream::handle_reject_stream(self, now, stream_id, code)
-            }
+                target,
+                code,
+                payload,
+            } => stream::handle_close_stream(self, now, stream_id, target, code, payload),
             EngineInput::OutboundData {
                 stream_id,
                 dir,
@@ -71,19 +69,18 @@ impl Engine {
             EngineInput::OutboundFinished { stream_id, dir } => {
                 stream::handle_outbound_finished(self, stream_id, dir)
             }
-            EngineInput::ResetOutbound {
+            EngineInput::CloseOutbound {
                 stream_id,
                 dir,
                 code,
-            } => stream::handle_reset_outbound(self, now, stream_id, dir, code),
-            EngineInput::ResetInbound {
+                payload,
+            } => stream::handle_close_outbound(self, now, stream_id, dir, code, payload),
+            EngineInput::CloseInbound {
                 stream_id,
                 dir,
                 code,
-            } => stream::handle_reset_inbound(self, now, stream_id, dir, code),
-            EngineInput::PendingAcceptDropped { stream_id } => {
-                stream::handle_pending_accept_dropped(self, stream_id, emit)
-            }
+                payload,
+            } => stream::handle_close_inbound(self, now, stream_id, dir, code, payload),
             EngineInput::ResponderDropped { stream_id } => {
                 stream::handle_responder_dropped(self, now, stream_id)
             }
@@ -369,7 +366,7 @@ impl Engine {
                 OutboundWriteKind::StreamAck {
                     stream_id: active_stream_id,
                 }
-                | OutboundWriteKind::StreamReset {
+                | OutboundWriteKind::StreamClose {
                     stream_id: active_stream_id,
                 } => active_stream_id != stream_id,
                 OutboundWriteKind::StreamFrame {
@@ -427,10 +424,11 @@ impl Engine {
         while let Some(message) = self.state.control_outbound.pop_front() {
             let bytes = match message.payload {
                 ControlWritePayload::Encoded(bytes) => bytes,
-                ControlWritePayload::StreamReset {
+                ControlWritePayload::StreamClose {
                     stream_id,
                     target,
                     code,
+                    payload,
                 } => {
                     let Some((recipient, session_key)) = self.stream_write_session() else {
                         continue;
@@ -440,10 +438,11 @@ impl Engine {
                         ack: StreamAck::EMPTY,
                         valid_until: wire::now_secs()
                             .saturating_add(self.config.packet_expiration.as_secs()),
-                        frame: StreamFrame::Reset(StreamFrameReset {
+                        frame: StreamFrame::Close(StreamFrameClose {
                             stream_id,
                             target,
                             code,
+                            payload,
                         }),
                     });
                     let record = encrypt_stream(
@@ -463,9 +462,9 @@ impl Engine {
         None
     }
 
-    fn send_ephemeral_reset(&mut self, stream_id: StreamId, dir: ResetTarget, code: ResetCode) {
+    fn send_ephemeral_close(&mut self, stream_id: StreamId, target: CloseTarget, code: CloseCode) {
         self.state
-            .enqueue_stream_reset(&self.config, true, stream_id, dir, code);
+            .enqueue_stream_close(&self.config, true, stream_id, target, code, Vec::new());
     }
 
     fn send_heartbeat_message(&mut self, now: Instant, crypto: &impl QlCrypto) {
@@ -546,8 +545,8 @@ impl Engine {
         self.clear_active_writes_for_stream(stream_id);
         match stream.role {
             StreamRole::Initiator(stream) => {
-                match stream.accept {
-                    InitiatorAccept::Opening(waiter) | InitiatorAccept::WaitingAccept(waiter) => {
+                match stream.open {
+                    InitiatorOpen::Opening(waiter) | InitiatorOpen::WaitingResponse(waiter) => {
                         if let Some(open_id) = waiter.open_id {
                             emit(EngineOutput::OpenFailed {
                                 open_id,
@@ -556,7 +555,7 @@ impl Engine {
                             });
                         }
                     }
-                    InitiatorAccept::Open { .. } => {}
+                    InitiatorOpen::Open => {}
                 }
                 emit(EngineOutput::OutboundFailed {
                     stream_id,
@@ -575,7 +574,7 @@ impl Engine {
                     dir: Direction::Request,
                     error: error.clone(),
                 });
-                if matches!(stream.response, ResponderResponse::Accepted { .. }) {
+                if stream.response_started || stream.response.is_closed() {
                     emit(EngineOutput::OutboundFailed {
                         stream_id,
                         dir: Direction::Response,
@@ -637,10 +636,10 @@ impl Engine {
                         .is_some_and(|stream_token| stream_token == token);
                     if should_reset {
                         self.streams.remove(&stream_id);
-                        self.send_ephemeral_reset(
+                        self.send_ephemeral_close(
                             stream_id,
-                            ResetTarget::Both,
-                            ResetCode::Protocol,
+                            CloseTarget::Both,
+                            CloseCode::PROTOCOL,
                         );
                     }
                 }
