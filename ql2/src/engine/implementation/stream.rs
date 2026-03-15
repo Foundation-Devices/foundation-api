@@ -3,9 +3,9 @@ use std::cmp::Reverse;
 use super::*;
 use crate::{
     engine::{
+        EngineConfig, EngineState, StreamConfig,
         state::{StreamNamespace, TimeoutEntry},
         stream::*,
-        EngineConfig, EngineState, StreamConfig,
     },
     wire::stream::*,
 };
@@ -49,7 +49,7 @@ pub fn open_stream(
             ..Default::default()
         },
         role: StreamRole::Initiator(InitiatorStream {
-            request: OutboundState::from_prefix(request_prefix_fin),
+            request: OutboundPhase::from_prefix(request_prefix_fin),
             response: InboundState::new(),
         }),
     };
@@ -467,7 +467,7 @@ fn handle_stream_open(
     stream.meta.last_activity = now;
     stream.role = StreamRole::Responder(ResponderStream {
         request: InboundState::new(),
-        response: OutboundState::from_prefix(false),
+        response: OutboundPhase::from_prefix(false),
         response_started: false,
     });
     if let Some(chunk) = request_prefix.as_ref() {
@@ -546,7 +546,7 @@ fn drive_stream(stream: &mut StreamState) {
 fn drive_stream_outbound(
     stream_id: StreamId,
     control: &mut StreamControl,
-    mut outbound: Option<&mut OutboundState>,
+    mut outbound: Option<&mut OutboundPhase>,
 ) {
     loop {
         if control.send_window_has_space() {

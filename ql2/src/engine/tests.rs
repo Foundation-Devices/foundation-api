@@ -5,13 +5,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bc_components::{SymmetricKey, MLDSA, MLKEM, XID};
+use bc_components::{MLDSA, MLKEM, SymmetricKey, XID};
 
 use crate::{
+    PacketId, Peer,
     engine::{state::StreamNamespace, stream::*, *},
     identity::QlIdentity,
-    wire::{self, stream::*, QlHeader, QlPayload, QlRecord, StreamSeq},
-    PacketId, Peer,
+    wire::{self, QlHeader, QlPayload, QlRecord, StreamSeq, stream::*},
 };
 
 #[derive(Clone)]
@@ -275,7 +275,7 @@ fn insert_inflight_gap_stream(engine: &mut EngineWrapper, stream_id: StreamId, n
         },
         control: StreamControl::default(),
         role: StreamRole::Initiator(InitiatorStream {
-            request: OutboundState::from_prefix(false),
+            request: OutboundPhase::from_prefix(false),
             response: InboundState::new(),
         }),
     };
@@ -322,7 +322,7 @@ fn insert_inflight_stream_with_data(
         },
         control: StreamControl::default(),
         role: StreamRole::Initiator(InitiatorStream {
-            request: OutboundState::from_prefix(false),
+            request: OutboundPhase::from_prefix(false),
             response: InboundState::new(),
         }),
     };
@@ -368,7 +368,7 @@ fn insert_unwritten_inflight_stream_with_data(
         },
         control: StreamControl::default(),
         role: StreamRole::Initiator(InitiatorStream {
-            request: OutboundState::from_prefix(false),
+            request: OutboundPhase::from_prefix(false),
             response: InboundState::new(),
         }),
     };
@@ -417,16 +417,14 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
         .unwrap();
 
     assert_ne!(stream_id_a, stream_id_b);
-    assert!(StreamNamespace::for_local(
-        harness.a.engine.identity.xid,
-        harness.b.engine.identity.xid
-    )
-    .matches(stream_id_a));
-    assert!(StreamNamespace::for_local(
-        harness.b.engine.identity.xid,
-        harness.a.engine.identity.xid
-    )
-    .matches(stream_id_b));
+    assert!(
+        StreamNamespace::for_local(harness.a.engine.identity.xid, harness.b.engine.identity.xid)
+            .matches(stream_id_a)
+    );
+    assert!(
+        StreamNamespace::for_local(harness.b.engine.identity.xid, harness.a.engine.identity.xid)
+            .matches(stream_id_b)
+    );
 
     let write_a = harness.a.take_next_write().unwrap();
     let write_b = harness.b.take_next_write().unwrap();
@@ -504,9 +502,11 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
     let outputs_incoming =
         engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
 
-    assert!(!outputs_incoming
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(
+        !outputs_incoming
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
 
     let stream = engine.streams.get(&stream_id).unwrap();
     assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
@@ -831,17 +831,23 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
         EngineInput::Incoming(wire::encode_record(&data_record)),
     );
 
-    assert!(!outputs_data
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundStreamOpened { .. })));
-    assert!(!outputs_data
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(
+        !outputs_data
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundStreamOpened { .. }))
+    );
+    assert!(
+        !outputs_data
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
     assert!(engine.take_next_write().is_some());
-    assert!(engine
-        .streams
-        .get(&stream_id)
-        .is_some_and(StreamState::is_provisional));
+    assert!(
+        engine
+            .streams
+            .get(&stream_id)
+            .is_some_and(StreamState::is_provisional)
+    );
 
     let open_message = StreamMessage {
         tx_seq: StreamSeq(1),
@@ -1104,9 +1110,11 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             ..
         }) if id == stream_id
     ));
-    assert!(!outputs4
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(
+        !outputs4
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
     let _ = engine.complete_write_collect(ack_write4.id, Ok(()));
 
     let record5 = wire::stream::encrypt_stream(
@@ -1133,9 +1141,11 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             ..
         }) if id == stream_id
     ));
-    assert!(!outputs5
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(
+        !outputs5
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
 }
 
 #[test]
@@ -1172,9 +1182,11 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
     let outputs =
         engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&ack_record)));
 
-    assert!(!outputs
-        .iter()
-        .any(|output| matches!(output, EngineOutput::OutboundFailed { .. })));
+    assert!(
+        !outputs
+            .iter()
+            .any(|output| matches!(output, EngineOutput::OutboundFailed { .. }))
+    );
     let stream = engine.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
         .control
@@ -1400,11 +1412,13 @@ fn take_next_write_drains_multiple_stream_frames_before_completion() {
     assert!(engine.take_next_write().is_none());
 
     let stream = engine.streams.get(&stream_id).unwrap();
-    assert!(stream
-        .control
-        .in_flight
-        .iter()
-        .all(|(_, in_flight)| matches!(in_flight.write_state, InFlightWriteState::Issued)));
+    assert!(
+        stream
+            .control
+            .in_flight
+            .iter()
+            .all(|(_, in_flight)| matches!(in_flight.write_state, InFlightWriteState::Issued))
+    );
 }
 
 #[test]
@@ -1645,9 +1659,11 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
     ));
 
     let outputs_failed = engine.complete_write_collect(ack_write.id, Err(QlError::SendFailed));
-    assert!(!outputs_failed
-        .iter()
-        .any(|output| matches!(output, EngineOutput::StreamReaped { .. })));
+    assert!(
+        !outputs_failed
+            .iter()
+            .any(|output| matches!(output, EngineOutput::StreamReaped { .. }))
+    );
     let retry_write = engine.take_next_write().unwrap();
     let (_, retry_body) = decode_stream_body(&retry_write.bytes, &session_key);
     assert!(matches!(
@@ -1767,9 +1783,11 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
         EngineInput::Incoming(wire::encode_record(&duplicate_record)),
     );
 
-    assert!(!outputs_dup
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
+    assert!(
+        !outputs_dup
+            .iter()
+            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
+    );
     let ack_write = engine.take_next_write().unwrap();
     let (_, body) = decode_stream_body(&ack_write.bytes, &session_key);
     assert!(matches!(
@@ -2124,18 +2142,22 @@ fn replayed_unpair_is_ignored_after_rebind() {
     ));
 
     let first = engine.run_tick_collect(now, EngineInput::Incoming(bytes.clone()));
-    assert!(first
-        .iter()
-        .any(|output| matches!(output, EngineOutput::ClearPeer)));
+    assert!(
+        first
+            .iter()
+            .any(|output| matches!(output, EngineOutput::ClearPeer))
+    );
     assert!(engine.peer.is_none());
 
     let _ = engine.run_tick_collect(now, EngineInput::BindPeer(peer_b.clone()));
     assert!(engine.peer.is_some());
 
     let second = engine.run_tick_collect(now, EngineInput::Incoming(bytes));
-    assert!(!second
-        .iter()
-        .any(|output| matches!(output, EngineOutput::ClearPeer)));
+    assert!(
+        !second
+            .iter()
+            .any(|output| matches!(output, EngineOutput::ClearPeer))
+    );
     assert_eq!(
         engine.peer.as_ref().map(|peer| peer.peer),
         Some(peer_b.peer)

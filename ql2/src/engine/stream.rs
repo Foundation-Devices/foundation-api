@@ -3,13 +3,13 @@ use std::{
     time::Instant,
 };
 
-use super::{ring::SeqRing, Token};
+use super::{Token, ring::SeqRing};
 use crate::{
-    wire::{
-        stream::{CloseCode, CloseTarget, StreamAck, StreamFrame, StreamFrameClose},
-        StreamSeq,
-    },
     StreamId,
+    wire::{
+        StreamSeq,
+        stream::{CloseCode, CloseTarget, StreamAck, StreamFrame, StreamFrameClose},
+    },
 };
 
 // todo: need to figure out protocol behavior for: if the peer ACKs your Open and then stays silent forever, the stream will stay pending forever
@@ -38,51 +38,40 @@ pub enum OutboundPhase {
     Closed,
 }
 
-#[derive(Debug)]
-pub struct OutboundState {
-    pub phase: OutboundPhase,
-}
-
-impl OutboundState {
+impl OutboundPhase {
     pub fn from_prefix(fin: bool) -> Self {
-        Self {
-            phase: if fin {
-                OutboundPhase::FinQueued
-            } else {
-                OutboundPhase::Ready
-            },
-        }
+        if fin { Self::FinQueued } else { Self::Ready }
     }
 
     pub fn is_closed(&self) -> bool {
-        self.phase == OutboundPhase::Closed
+        *self == Self::Closed
     }
 
     pub fn can_queue_data(&self) -> bool {
-        self.phase == OutboundPhase::Ready
+        *self == Self::Ready
     }
 
     pub fn finish(&mut self) {
-        self.phase = match self.phase {
-            OutboundPhase::Ready | OutboundPhase::FinPending => OutboundPhase::FinPending,
-            OutboundPhase::FinQueued => OutboundPhase::FinQueued,
-            OutboundPhase::Closed => OutboundPhase::Closed,
+        *self = match *self {
+            Self::Ready | Self::FinPending => Self::FinPending,
+            Self::FinQueued => Self::FinQueued,
+            Self::Closed => Self::Closed,
         };
     }
 
     pub fn queue_fin(&mut self) -> bool {
-        if self.phase != OutboundPhase::FinPending {
+        if *self != Self::FinPending {
             return false;
         }
-        self.phase = OutboundPhase::FinQueued;
+        *self = Self::FinQueued;
         true
     }
 
     pub fn close(&mut self) -> bool {
-        if self.phase == OutboundPhase::Closed {
+        if *self == Self::Closed {
             return false;
         }
-        self.phase = OutboundPhase::Closed;
+        *self = Self::Closed;
         true
     }
 }
@@ -364,14 +353,14 @@ impl StreamControl {
 
 #[derive(Debug)]
 pub struct InitiatorStream {
-    pub request: OutboundState,
+    pub request: OutboundPhase,
     pub response: InboundState,
 }
 
 #[derive(Debug)]
 pub struct ResponderStream {
     pub request: InboundState,
-    pub response: OutboundState,
+    pub response: OutboundPhase,
     pub response_started: bool,
 }
 
@@ -399,7 +388,7 @@ impl StreamState {
         (&mut self.meta, &mut self.control, &mut self.role)
     }
 
-    pub fn outbound_mut(&mut self, side: StreamSide) -> Option<&mut OutboundState> {
+    pub fn outbound_mut(&mut self, side: StreamSide) -> Option<&mut OutboundPhase> {
         match &mut self.role {
             StreamRole::Initiator(state) if side == StreamSide::Request => Some(&mut state.request),
             StreamRole::Responder(state) if side == StreamSide::Response => {
