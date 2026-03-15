@@ -3,7 +3,7 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     runtime::{command::RuntimeCommand, InboundEvent, OpenedStreamDelivery, StreamConfig},
-    wire::stream::{CloseCode, Direction},
+    wire::stream::{CloseCode, CloseTarget},
     Peer, QlError, StreamId,
 };
 
@@ -29,7 +29,7 @@ pub struct InboundStream {
 
 pub struct InboundByteStream {
     stream_id: StreamId,
-    dir: Direction,
+    target: CloseTarget,
     rx: Receiver<InboundEvent>,
     tx: Sender<RuntimeCommand>,
     finished: bool,
@@ -39,7 +39,7 @@ impl std::fmt::Debug for InboundByteStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InboundByteStream")
             .field("stream_id", &self.stream_id)
-            .field("dir", &self.dir)
+            .field("target", &self.target)
             .field("finished", &self.finished)
             .finish_non_exhaustive()
     }
@@ -47,7 +47,7 @@ impl std::fmt::Debug for InboundByteStream {
 
 pub struct OutboundByteStream {
     stream_id: StreamId,
-    dir: Direction,
+    target: CloseTarget,
     writer: Option<piper::Writer>,
     tx: Sender<RuntimeCommand>,
 }
@@ -56,7 +56,7 @@ impl std::fmt::Debug for OutboundByteStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OutboundByteStream")
             .field("stream_id", &self.stream_id)
-            .field("dir", &self.dir)
+            .field("target", &self.target)
             .field("closed", &self.writer.is_none())
             .finish_non_exhaustive()
     }
@@ -65,13 +65,13 @@ impl std::fmt::Debug for OutboundByteStream {
 impl InboundByteStream {
     pub(crate) fn new(
         stream_id: StreamId,
-        dir: Direction,
+        target: CloseTarget,
         rx: Receiver<InboundEvent>,
         tx: Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             stream_id,
-            dir,
+            target,
             rx,
             tx,
             finished: false,
@@ -105,9 +105,9 @@ impl InboundByteStream {
         }
         self.finished = true;
         self.tx
-            .send(RuntimeCommand::CloseInbound {
+            .send(RuntimeCommand::CloseStream {
                 stream_id: self.stream_id,
-                dir: self.dir,
+                target: self.target,
                 code,
                 payload,
             })
@@ -121,9 +121,9 @@ impl Drop for InboundByteStream {
         if self.finished {
             return;
         }
-        let _ = self.tx.try_send(RuntimeCommand::CloseInbound {
+        let _ = self.tx.try_send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
-            dir: self.dir,
+            target: self.target,
             code: CloseCode::CANCELLED,
             payload: Vec::new(),
         });
@@ -133,13 +133,13 @@ impl Drop for InboundByteStream {
 impl OutboundByteStream {
     pub(crate) fn new(
         stream_id: StreamId,
-        dir: Direction,
+        target: CloseTarget,
         writer: piper::Writer,
         tx: Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             stream_id,
-            dir,
+            target,
             writer: Some(writer),
             tx,
         }
@@ -191,9 +191,9 @@ impl OutboundByteStream {
             return Ok(());
         }
         self.tx
-            .send(RuntimeCommand::CloseOutbound {
+            .send(RuntimeCommand::CloseStream {
                 stream_id: self.stream_id,
-                dir: self.dir,
+                target: self.target,
                 code,
                 payload,
             })
@@ -207,9 +207,9 @@ impl Drop for OutboundByteStream {
         if self.writer.take().is_none() {
             return;
         }
-        let _ = self.tx.try_send(RuntimeCommand::CloseOutbound {
+        let _ = self.tx.try_send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
-            dir: self.dir,
+            target: self.target,
             code: CloseCode::CANCELLED,
             payload: Vec::new(),
         });
@@ -270,13 +270,13 @@ impl RuntimeHandle {
             stream_id,
             request: OutboundByteStream::new(
                 stream_id,
-                Direction::Request,
+                CloseTarget::Request,
                 request_writer,
                 self.tx.clone(),
             ),
             response: InboundByteStream::new(
                 stream_id,
-                Direction::Response,
+                CloseTarget::Response,
                 response,
                 self.tx.clone(),
             ),

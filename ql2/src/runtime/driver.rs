@@ -9,13 +9,13 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     engine::{Engine, EngineInput, EngineOutput, WriteId},
-    runtime::platform::{PlatformFuture, QlPlatform},
     runtime::{
         command::RuntimeCommand,
         handle::{InboundByteStream, InboundStream, OutboundByteStream},
+        platform::{PlatformFuture, QlPlatform},
         HandlerEvent, InboundEvent, OpenedStreamDelivery, Runtime,
     },
-    wire::stream::{BodyChunk, CloseCode, Direction},
+    wire::stream::{BodyChunk, CloseCode, CloseTarget},
     QlError, StreamId,
 };
 
@@ -36,7 +36,6 @@ enum DriverEvent {
 
 enum OutboundIo {
     Open {
-        dir: Direction,
         reader: piper::Reader,
         finish_queued: bool,
     },
@@ -44,9 +43,8 @@ enum OutboundIo {
 }
 
 impl OutboundIo {
-    fn new(dir: Direction, reader: piper::Reader) -> Self {
+    fn new(reader: piper::Reader) -> Self {
         Self::Open {
-            dir,
             reader,
             finish_queued: false,
         }
@@ -58,7 +56,6 @@ impl OutboundIo {
 
     fn poll_pending(&mut self, stream_id: StreamId, pending_inputs: &mut VecDeque<EngineInput>) {
         let Self::Open {
-            dir,
             reader,
             finish_queued,
         } = self
@@ -72,20 +69,13 @@ impl OutboundIo {
             let read = reader.try_drain(&mut bytes);
             if read > 0 {
                 bytes.truncate(read);
-                pending_inputs.push_back(EngineInput::OutboundData {
-                    stream_id,
-                    dir: *dir,
-                    bytes,
-                });
+                pending_inputs.push_back(EngineInput::OutboundData { stream_id, bytes });
             }
         }
 
         if reader.is_closed() && !*finish_queued {
             *finish_queued = true;
-            pending_inputs.push_back(EngineInput::OutboundFinished {
-                stream_id,
-                dir: *dir,
-            });
+            pending_inputs.push_back(EngineInput::OutboundFinished { stream_id });
         }
     }
 }
@@ -103,13 +93,13 @@ impl InboundIo {
     fn write_or_close(
         &mut self,
         stream_id: StreamId,
-        dir: Direction,
+        target: CloseTarget,
         bytes: Vec<u8>,
     ) -> Option<EngineInput> {
         let Self::Open(tx) = self else {
-            return Some(EngineInput::CloseInbound {
+            return Some(EngineInput::CloseStream {
                 stream_id,
-                dir,
+                target,
                 code: CloseCode::CANCELLED,
                 payload: Vec::new(),
             });
@@ -117,9 +107,9 @@ impl InboundIo {
         if tx.try_send(InboundEvent::Data(bytes)).is_err() {
             tx.close();
             *self = Self::Closed;
-            return Some(EngineInput::CloseInbound {
+            return Some(EngineInput::CloseStream {
                 stream_id,
-                dir,
+                target,
                 code: CloseCode::CANCELLED,
                 payload: Vec::new(),
             });
@@ -154,12 +144,12 @@ impl InboundIo {
     fn apply_prefix(
         &mut self,
         stream_id: StreamId,
-        dir: Direction,
+        target: CloseTarget,
         prefix: &BodyChunk,
     ) -> Option<EngineInput> {
         let mut input = None;
         if !prefix.bytes.is_empty() {
-            input = self.write_or_close(stream_id, dir, prefix.bytes.clone());
+            input = self.write_or_close(stream_id, target, prefix.bytes.clone());
         }
         if prefix.fin {
             self.finish();
@@ -187,19 +177,24 @@ impl DriverStreamIo {
         }
     }
 
-    fn outbound_mut(&mut self, dir: Direction) -> Option<&mut OutboundIo> {
+    fn outbound_mut(&mut self) -> &mut OutboundIo {
         match self {
-            Self::Initiator { request, .. } if dir == Direction::Request => Some(request),
-            Self::Responder { response, .. } if dir == Direction::Response => Some(response),
-            _ => None,
+            Self::Initiator { request, .. } => request,
+            Self::Responder { response, .. } => response,
         }
     }
 
-    fn inbound_mut(&mut self, dir: Direction) -> Option<&mut InboundIo> {
+    fn inbound_mut(&mut self) -> &mut InboundIo {
         match self {
-            Self::Initiator { response, .. } if dir == Direction::Response => Some(response),
-            Self::Responder { request, .. } if dir == Direction::Request => Some(request),
-            _ => None,
+            Self::Initiator { response, .. } => response,
+            Self::Responder { request, .. } => request,
+        }
+    }
+
+    fn inbound_target(&self) -> CloseTarget {
+        match self {
+            Self::Initiator { .. } => CloseTarget::Response,
+            Self::Responder { .. } => CloseTarget::Request,
         }
     }
 
@@ -264,7 +259,7 @@ impl DriverState {
                         self.streams.insert(
                             stream_id,
                             DriverStreamIo::Initiator {
-                                request: OutboundIo::new(Direction::Request, request_reader),
+                                request: OutboundIo::new(request_reader),
                                 response: InboundIo::new(response_tx),
                             },
                         );
@@ -284,33 +279,16 @@ impl DriverState {
                 self.poll_stream(stream_id);
                 self.drive_pending(platform, in_flight);
             }
-            RuntimeCommand::CloseOutbound {
+            RuntimeCommand::CloseStream {
                 stream_id,
-                dir,
+                target,
                 code,
                 payload,
             } => {
                 self.drive_input(
-                    EngineInput::CloseOutbound {
+                    EngineInput::CloseStream {
                         stream_id,
-                        dir,
-                        code,
-                        payload,
-                    },
-                    platform,
-                    in_flight,
-                );
-            }
-            RuntimeCommand::CloseInbound {
-                stream_id,
-                dir,
-                code,
-                payload,
-            } => {
-                self.drive_input(
-                    EngineInput::CloseInbound {
-                        stream_id,
-                        dir,
+                        target,
                         code,
                         payload,
                     },
@@ -433,7 +411,7 @@ fn handle_output<P: QlPlatform>(
             let (request_tx, request_rx) = async_channel::unbounded();
             let mut request = InboundIo::new(request_tx);
             if let Some(prefix) = request_prefix.as_ref() {
-                if let Some(input) = request.apply_prefix(stream_id, Direction::Request, prefix) {
+                if let Some(input) = request.apply_prefix(stream_id, CloseTarget::Request, prefix) {
                     pending_inputs.push_back(input);
                 }
             }
@@ -443,7 +421,7 @@ fn handle_output<P: QlPlatform>(
                 stream_id,
                 DriverStreamIo::Responder {
                     request,
-                    response: OutboundIo::new(Direction::Response, response_reader),
+                    response: OutboundIo::new(response_reader),
                 },
             );
 
@@ -452,61 +430,46 @@ fn handle_output<P: QlPlatform>(
                 request_head,
                 request: InboundByteStream::new(
                     stream_id,
-                    Direction::Request,
+                    CloseTarget::Request,
                     request_rx,
                     runtime_tx.clone(),
                 ),
                 response: OutboundByteStream::new(
                     stream_id,
-                    Direction::Response,
+                    CloseTarget::Response,
                     response_writer,
                     runtime_tx.clone(),
                 ),
             }));
         }
-        EngineOutput::InboundData {
-            stream_id,
-            dir,
-            bytes,
-        } => {
+        EngineOutput::InboundData { stream_id, bytes } => {
             let Some(stream) = streams.get_mut(&stream_id) else {
                 return;
             };
-            let Some(inbound) = stream.inbound_mut(dir) else {
-                return;
-            };
-            if let Some(input) = inbound.write_or_close(stream_id, dir, bytes) {
+            let target = stream.inbound_target();
+            let inbound = stream.inbound_mut();
+            if let Some(input) = inbound.write_or_close(stream_id, target, bytes) {
                 pending_inputs.push_back(input);
             }
         }
-        EngineOutput::InboundFinished { stream_id, dir } => {
+        EngineOutput::InboundFinished { stream_id } => {
             let Some(stream) = streams.get_mut(&stream_id) else {
                 return;
             };
-            if let Some(inbound) = stream.inbound_mut(dir) {
-                inbound.finish();
-            }
+            stream.inbound_mut().finish();
         }
-        EngineOutput::InboundFailed {
-            stream_id,
-            dir,
-            error,
-        } => {
+        EngineOutput::InboundFailed { stream_id, error } => {
             let Some(stream) = streams.get_mut(&stream_id) else {
                 return;
             };
-            if let Some(inbound) = stream.inbound_mut(dir) {
-                inbound.fail(error);
-            }
+            stream.inbound_mut().fail(error);
         }
-        EngineOutput::OutboundClosed { stream_id, dir }
-        | EngineOutput::OutboundFailed { stream_id, dir, .. } => {
+        EngineOutput::OutboundClosed { stream_id }
+        | EngineOutput::OutboundFailed { stream_id, .. } => {
             let Some(stream) = streams.get_mut(&stream_id) else {
                 return;
             };
-            if let Some(outbound) = stream.outbound_mut(dir) {
-                outbound.close();
-            }
+            stream.outbound_mut().close();
         }
         EngineOutput::StreamReaped { stream_id } => {
             if let Some(mut stream) = streams.remove(&stream_id) {

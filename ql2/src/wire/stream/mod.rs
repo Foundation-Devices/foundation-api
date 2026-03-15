@@ -126,7 +126,6 @@ impl From<&ArchivedStreamFrameOpen> for StreamFrameOpen {
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrameData {
     pub stream_id: StreamId,
-    pub dir: Direction,
     pub chunk: BodyChunk,
 }
 
@@ -134,7 +133,6 @@ impl From<&ArchivedStreamFrameData> for StreamFrameData {
     fn from(value: &ArchivedStreamFrameData) -> Self {
         Self {
             stream_id: (&value.stream_id).into(),
-            dir: (&value.dir).into(),
             chunk: (&value.chunk).into(),
         }
     }
@@ -155,22 +153,6 @@ impl From<&ArchivedStreamFrameClose> for StreamFrameClose {
             target: (&value.target).into(),
             code: (&value.code).into(),
             payload: value.payload.as_slice().to_vec(),
-        }
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Direction {
-    Request = 1,
-    Response = 2,
-}
-
-impl From<&ArchivedDirection> for Direction {
-    fn from(value: &ArchivedDirection) -> Self {
-        match value {
-            ArchivedDirection::Request => Self::Request,
-            ArchivedDirection::Response => Self::Response,
         }
     }
 }

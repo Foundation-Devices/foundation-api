@@ -2,7 +2,7 @@ mod implementation;
 pub mod replay_cache;
 mod ring;
 mod state;
-mod stream;
+pub(crate) mod stream;
 
 #[cfg(test)]
 mod tests;
@@ -17,7 +17,7 @@ pub use state::{
 
 use crate::{
     identity::QlIdentity,
-    wire::stream::{BodyChunk, CloseCode, CloseTarget, Direction},
+    wire::stream::{BodyChunk, CloseCode, CloseTarget},
     Peer, QlError, StreamId,
 };
 
@@ -74,25 +74,10 @@ pub enum EngineInput {
 
     OutboundData {
         stream_id: StreamId,
-        dir: Direction,
         bytes: Vec<u8>,
     },
     OutboundFinished {
         stream_id: StreamId,
-        dir: Direction,
-    },
-
-    CloseOutbound {
-        stream_id: StreamId,
-        dir: Direction,
-        code: CloseCode,
-        payload: Vec<u8>,
-    },
-    CloseInbound {
-        stream_id: StreamId,
-        dir: Direction,
-        code: CloseCode,
-        payload: Vec<u8>,
     },
     Incoming(Vec<u8>),
     TimerExpired,
@@ -114,26 +99,21 @@ pub enum EngineOutput {
     },
     InboundData {
         stream_id: StreamId,
-        dir: Direction,
         bytes: Vec<u8>,
     },
     InboundFinished {
         stream_id: StreamId,
-        dir: Direction,
     },
     InboundFailed {
         stream_id: StreamId,
-        dir: Direction,
         error: QlError,
     },
 
     OutboundClosed {
         stream_id: StreamId,
-        dir: Direction,
     },
     OutboundFailed {
         stream_id: StreamId,
-        dir: Direction,
         error: QlError,
     },
 

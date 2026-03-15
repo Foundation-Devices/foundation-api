@@ -12,12 +12,8 @@ pub mod platform;
 // #[cfg(test)]
 // mod tests;
 
-use crate::{
-    identity::QlIdentity,
-    StreamId,
-};
-
 use self::platform::QlPlatform;
+use crate::{identity::QlIdentity, StreamId};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {

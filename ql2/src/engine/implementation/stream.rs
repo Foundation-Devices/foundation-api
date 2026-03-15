@@ -49,7 +49,7 @@ pub fn open_stream(
             ..Default::default()
         },
         role: StreamRole::Initiator(InitiatorStream {
-            request: OutboundState::from_prefix(Direction::Request, request_prefix_fin),
+            request: OutboundState::from_prefix(request_prefix_fin),
             response: InboundState::new(),
         }),
     };
@@ -69,32 +69,51 @@ pub fn handle_close_stream(
     let Some(stream) = engine.streams.get_mut(&stream_id) else {
         return;
     };
-    apply_local_close(stream, target);
-    stream
-        .control
-        .queue_frame_front(close_frame(stream_id, target, code, payload));
-    stream.meta.last_activity = now;
-    drive_stream(stream);
+
+    let mut dirty = false;
+
+    if matches!(target, CloseTarget::Request | CloseTarget::Both) {
+        if let Some(inbound) = stream.inbound_mut(StreamSide::Request) {
+            dirty |= inbound.close();
+        }
+        if let Some(outbound) = stream.outbound_mut(StreamSide::Request) {
+            dirty |= outbound.close();
+        }
+    }
+    if matches!(target, CloseTarget::Response | CloseTarget::Both) {
+        if let Some(inbound) = stream.inbound_mut(StreamSide::Response) {
+            dirty |= inbound.close();
+        }
+        if let Some(outbound) = stream.outbound_mut(StreamSide::Response) {
+            dirty |= outbound.close();
+        }
+    }
+
+    if dirty {
+        stream
+            .control
+            .queue_frame_front(close_frame(stream_id, target, code, payload));
+        stream.meta.last_activity = now;
+        drive_stream(stream);
+    }
 }
 
-pub fn handle_outbound_data(
-    engine: &mut Engine,
-    stream_id: StreamId,
-    dir: Direction,
-    bytes: Vec<u8>,
-) {
+pub fn handle_outbound_data(engine: &mut Engine, stream_id: StreamId, bytes: Vec<u8>) {
     if bytes.is_empty() {
         return;
     }
     let Some(stream) = engine.streams.get_mut(&stream_id) else {
         return;
     };
+    let Some(side) = stream.outbound_side() else {
+        return;
+    };
     if let StreamRole::Responder(state) = &mut stream.role {
-        if dir == Direction::Response {
+        if side == StreamSide::Response {
             state.response_started = true;
         }
     }
-    let Some(outbound) = stream.outbound_mut(dir) else {
+    let Some(outbound) = stream.outbound_mut(side) else {
         return;
     };
     if !outbound.can_queue_data() {
@@ -103,81 +122,26 @@ pub fn handle_outbound_data(
     let chunk = BodyChunk { bytes, fin: false };
     stream
         .control
-        .queue_frame_back(StreamFrame::Data(StreamFrameData {
-            stream_id,
-            dir,
-            chunk,
-        }));
+        .queue_frame_back(StreamFrame::Data(StreamFrameData { stream_id, chunk }));
     drive_stream(stream);
 }
 
-pub fn handle_outbound_finished(engine: &mut Engine, stream_id: StreamId, dir: Direction) {
+pub fn handle_outbound_finished(engine: &mut Engine, stream_id: StreamId) {
     let Some(stream) = engine.streams.get_mut(&stream_id) else {
+        return;
+    };
+    let Some(side) = stream.outbound_side() else {
         return;
     };
     if let StreamRole::Responder(state) = &mut stream.role {
-        if dir == Direction::Response {
+        if side == StreamSide::Response {
             state.response_started = true;
         }
     }
-    let Some(outbound) = stream.outbound_mut(dir) else {
+    let Some(outbound) = stream.outbound_mut(side) else {
         return;
     };
     outbound.finish();
-    drive_stream(stream);
-}
-
-pub fn handle_close_outbound(
-    engine: &mut Engine,
-    now: Instant,
-    stream_id: StreamId,
-    dir: Direction,
-    code: CloseCode,
-    payload: Vec<u8>,
-) {
-    let Some(stream) = engine.streams.get_mut(&stream_id) else {
-        return;
-    };
-    let Some(outbound) = stream.outbound_mut(dir) else {
-        return;
-    };
-    if outbound.is_closed() {
-        return;
-    }
-    outbound.close();
-    stream.control.queue_frame_front(close_frame(
-        stream_id,
-        close_target_for_dir(dir),
-        code,
-        payload,
-    ));
-    stream.meta.last_activity = now;
-    drive_stream(stream);
-}
-
-pub fn handle_close_inbound(
-    engine: &mut Engine,
-    now: Instant,
-    stream_id: StreamId,
-    dir: Direction,
-    code: CloseCode,
-    payload: Vec<u8>,
-) {
-    let Some(stream) = engine.streams.get_mut(&stream_id) else {
-        return;
-    };
-    let Some(inbound) = stream.inbound_mut(dir) else {
-        return;
-    };
-    if inbound.closed {
-        return;
-    }
-    inbound.closed = true;
-    let target = close_target_for_dir(dir);
-    stream
-        .control
-        .queue_frame_front(close_frame(stream_id, target, code, payload));
-    stream.meta.last_activity = now;
     drive_stream(stream);
 }
 
@@ -355,23 +319,23 @@ pub fn process_stream_ack(
             match in_flight.frame {
                 StreamFrame::Open(StreamFrameOpen { request_prefix, .. }) => {
                     if let StreamRole::Initiator(stream) = &mut stream.role {
-                        if request_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
-                            stream.request.close();
-                            emit(EngineOutput::OutboundClosed {
-                                stream_id,
-                                dir: Direction::Request,
-                            });
+                        if request_prefix.as_ref().is_some_and(|chunk| chunk.fin)
+                            && stream.request.close()
+                        {
+                            emit(EngineOutput::OutboundClosed { stream_id });
                         }
                     }
                 }
                 StreamFrame::Data(StreamFrameData {
-                    dir,
                     chunk: BodyChunk { fin: true, .. },
                     ..
                 }) => {
-                    if let Some(outbound) = stream.outbound_mut(dir) {
-                        outbound.close();
-                        emit(EngineOutput::OutboundClosed { stream_id, dir });
+                    if let Some(side) = stream.outbound_side() {
+                        if let Some(outbound) = stream.outbound_mut(side) {
+                            if outbound.close() {
+                                emit(EngineOutput::OutboundClosed { stream_id });
+                            }
+                        }
                     }
                 }
                 StreamFrame::Close(StreamFrameClose {
@@ -380,25 +344,25 @@ pub fn process_stream_ack(
                     payload,
                     ..
                 }) => {
-                    for outbound_dir in [Direction::Request, Direction::Response] {
+                    for side in [StreamSide::Request, StreamSide::Response] {
                         let affects_outbound = matches!(
-                            (target, outbound_dir),
-                            (CloseTarget::Request, Direction::Request)
-                                | (CloseTarget::Response, Direction::Response)
+                            (target, side),
+                            (CloseTarget::Request, StreamSide::Request)
+                                | (CloseTarget::Response, StreamSide::Response)
                                 | (CloseTarget::Both, _)
                         );
                         if affects_outbound {
-                            if let Some(outbound) = stream.outbound_mut(outbound_dir) {
-                                outbound.close();
-                                emit(EngineOutput::OutboundFailed {
-                                    stream_id,
-                                    dir: outbound_dir,
-                                    error: QlError::StreamClosed {
-                                        target,
-                                        code,
-                                        payload: payload.clone(),
-                                    },
-                                });
+                            if let Some(outbound) = stream.outbound_mut(side) {
+                                if outbound.close() {
+                                    emit(EngineOutput::OutboundFailed {
+                                        stream_id,
+                                        error: QlError::StreamClosed {
+                                            target,
+                                            code,
+                                            payload: payload.clone(),
+                                        },
+                                    });
+                                }
                             }
                         }
                     }
@@ -503,15 +467,15 @@ fn handle_stream_open(
     stream.meta.last_activity = now;
     stream.role = StreamRole::Responder(ResponderStream {
         request: InboundState::new(),
-        response: OutboundState::from_prefix(Direction::Response, false),
+        response: OutboundState::from_prefix(false),
         response_started: false,
     });
     if let Some(chunk) = request_prefix.as_ref() {
-        let Some(inbound) = stream.inbound_mut(Direction::Request) else {
+        let Some(inbound) = stream.inbound_mut(StreamSide::Request) else {
             return;
         };
         if chunk.fin {
-            inbound.closed = true;
+            inbound.close();
         }
     }
     emit(EngineOutput::InboundStreamOpened {
@@ -541,12 +505,12 @@ fn handle_stream_data(
     frame: StreamFrameData,
     emit: &mut impl OutputFn,
 ) {
-    let StreamFrameData {
-        stream_id,
-        dir,
-        chunk,
-    } = frame;
-    let Some(inbound) = stream.inbound_mut(dir) else {
+    let StreamFrameData { stream_id, chunk } = frame;
+    let Some(side) = stream.inbound_side() else {
+        queue_protocol_close(stream, emit);
+        return;
+    };
+    let Some(inbound) = stream.inbound_mut(side) else {
         queue_protocol_close(stream, emit);
         return;
     };
@@ -556,13 +520,11 @@ fn handle_stream_data(
         if !chunk.bytes.is_empty() {
             emit(EngineOutput::InboundData {
                 stream_id,
-                dir,
                 bytes: chunk.bytes,
             });
         }
-        if chunk.fin && !inbound.closed {
-            inbound.closed = true;
-            emit(EngineOutput::InboundFinished { stream_id, dir });
+        if chunk.fin && inbound.close() {
+            emit(EngineOutput::InboundFinished { stream_id });
         }
     }
     stream.meta.last_activity = now;
@@ -605,7 +567,6 @@ fn drive_stream_outbound(
                 control,
                 StreamFrame::Data(StreamFrameData {
                     stream_id,
-                    dir: outbound.dir,
                     chunk: BodyChunk {
                         bytes: Vec::new(),
                         fin: true,
@@ -648,21 +609,19 @@ fn queue_protocol_close(stream: &mut StreamState, emit: &mut impl OutputFn) {
         CloseCode::PROTOCOL,
         Vec::new(),
     ));
-    for dir in [Direction::Request, Direction::Response] {
-        if let Some(outbound) = stream.outbound_mut(dir) {
-            outbound.close();
-            emit(EngineOutput::OutboundFailed {
-                stream_id,
-                dir,
-                error: QlError::StreamProtocol,
-            });
+    for side in [StreamSide::Request, StreamSide::Response] {
+        if let Some(outbound) = stream.outbound_mut(side) {
+            if outbound.close() {
+                emit(EngineOutput::OutboundFailed {
+                    stream_id,
+                    error: QlError::StreamProtocol,
+                });
+            }
         }
-        if let Some(inbound) = stream.inbound_mut(dir) {
-            if !inbound.closed {
-                inbound.closed = true;
+        if let Some(inbound) = stream.inbound_mut(side) {
+            if inbound.close() {
                 emit(EngineOutput::InboundFailed {
                     stream_id,
-                    dir,
                     error: QlError::StreamProtocol,
                 });
             }
@@ -685,62 +644,39 @@ fn apply_remote_close(
         payload: payload.clone(),
     };
     if matches!(target, CloseTarget::Request | CloseTarget::Both) {
-        if let Some(inbound) = stream.inbound_mut(Direction::Request) {
-            if !inbound.closed {
-                inbound.closed = true;
+        if let Some(inbound) = stream.inbound_mut(StreamSide::Request) {
+            if inbound.close() {
                 emit(EngineOutput::InboundFailed {
                     stream_id,
-                    dir: Direction::Request,
                     error: error.clone(),
                 });
             }
         }
-        if let Some(outbound) = stream.outbound_mut(Direction::Request) {
-            outbound.close();
-            emit(EngineOutput::OutboundFailed {
-                stream_id,
-                dir: Direction::Request,
-                error: error.clone(),
-            });
-        }
-    }
-    if matches!(target, CloseTarget::Response | CloseTarget::Both) {
-        if let Some(inbound) = stream.inbound_mut(Direction::Response) {
-            if !inbound.closed {
-                inbound.closed = true;
-                emit(EngineOutput::InboundFailed {
+        if let Some(outbound) = stream.outbound_mut(StreamSide::Request) {
+            if outbound.close() {
+                emit(EngineOutput::OutboundFailed {
                     stream_id,
-                    dir: Direction::Response,
                     error: error.clone(),
                 });
             }
         }
-        if let Some(outbound) = stream.outbound_mut(Direction::Response) {
-            outbound.close();
-            emit(EngineOutput::OutboundFailed {
-                stream_id,
-                dir: Direction::Response,
-                error: error.clone(),
-            });
-        }
-    }
-}
-
-fn apply_local_close(stream: &mut StreamState, target: CloseTarget) {
-    if matches!(target, CloseTarget::Request | CloseTarget::Both) {
-        if let Some(inbound) = stream.inbound_mut(Direction::Request) {
-            inbound.closed = true;
-        }
-        if let Some(outbound) = stream.outbound_mut(Direction::Request) {
-            outbound.close();
-        }
     }
     if matches!(target, CloseTarget::Response | CloseTarget::Both) {
-        if let Some(inbound) = stream.inbound_mut(Direction::Response) {
-            inbound.closed = true;
+        if let Some(inbound) = stream.inbound_mut(StreamSide::Response) {
+            if inbound.close() {
+                emit(EngineOutput::InboundFailed {
+                    stream_id,
+                    error: error.clone(),
+                });
+            }
         }
-        if let Some(outbound) = stream.outbound_mut(Direction::Response) {
-            outbound.close();
+        if let Some(outbound) = stream.outbound_mut(StreamSide::Response) {
+            if outbound.close() {
+                emit(EngineOutput::OutboundFailed {
+                    stream_id,
+                    error: error.clone(),
+                });
+            }
         }
     }
 }
@@ -882,12 +818,5 @@ fn take_next_write_for_stream(
                 wire::encode_record(&record),
             ))
         }
-    }
-}
-
-fn close_target_for_dir(dir: Direction) -> CloseTarget {
-    match dir {
-        Direction::Request => CloseTarget::Request,
-        Direction::Response => CloseTarget::Response,
     }
 }

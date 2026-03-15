@@ -275,7 +275,7 @@ fn insert_inflight_gap_stream(engine: &mut EngineWrapper, stream_id: StreamId, n
         },
         control: StreamControl::default(),
         role: StreamRole::Initiator(InitiatorStream {
-            request: OutboundState::from_prefix(Direction::Request, false),
+            request: OutboundState::from_prefix(false),
             response: InboundState::new(),
         }),
     };
@@ -296,7 +296,6 @@ fn insert_inflight_gap_stream(engine: &mut EngineWrapper, stream_id: StreamId, n
             tx_seq: StreamSeq(tx_seq),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: vec![byte],
                     fin: false,
@@ -323,7 +322,7 @@ fn insert_inflight_stream_with_data(
         },
         control: StreamControl::default(),
         role: StreamRole::Initiator(InitiatorStream {
-            request: OutboundState::from_prefix(Direction::Request, false),
+            request: OutboundState::from_prefix(false),
             response: InboundState::new(),
         }),
     };
@@ -344,7 +343,6 @@ fn insert_inflight_stream_with_data(
             tx_seq: StreamSeq(tx_seq),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: vec![b'a' + (tx_seq as u8)],
                     fin: false,
@@ -370,7 +368,7 @@ fn insert_unwritten_inflight_stream_with_data(
         },
         control: StreamControl::default(),
         role: StreamRole::Initiator(InitiatorStream {
-            request: OutboundState::from_prefix(Direction::Request, false),
+            request: OutboundState::from_prefix(false),
             response: InboundState::new(),
         }),
     };
@@ -391,7 +389,6 @@ fn insert_unwritten_inflight_stream_with_data(
             tx_seq: StreamSeq(tx_seq),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: vec![b'a' + (tx_seq as u8)],
                     fin: false,
@@ -486,7 +483,6 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Data(StreamFrameData {
             stream_id,
-            dir: Direction::Response,
             chunk: BodyChunk {
                 bytes: b"resp".to_vec(),
                 fin: false,
@@ -540,7 +536,6 @@ fn ack_for_issued_open_is_applied_before_write_completion() {
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Data(StreamFrameData {
             stream_id,
-            dir: Direction::Response,
             chunk: BodyChunk {
                 bytes: b"resp".to_vec(),
                 fin: false,
@@ -564,7 +559,6 @@ fn ack_for_issued_open_is_applied_before_write_completion() {
         output,
         EngineOutput::InboundData {
             stream_id: id,
-            dir: Direction::Response,
             bytes,
         } if *id == stream_id && bytes == b"resp"
     )));
@@ -590,7 +584,6 @@ fn ack_does_not_retire_ready_data() {
         now,
         EngineInput::OutboundData {
             stream_id,
-            dir: Direction::Request,
             bytes: b"body".to_vec(),
         },
     );
@@ -604,7 +597,6 @@ fn ack_does_not_retire_ready_data() {
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Data(StreamFrameData {
             stream_id,
-            dir: Direction::Response,
             chunk: BodyChunk {
                 bytes: b"resp".to_vec(),
                 fin: false,
@@ -628,7 +620,6 @@ fn ack_does_not_retire_ready_data() {
         output,
         EngineOutput::InboundData {
             stream_id: id,
-            dir: Direction::Response,
             bytes,
         } if *id == stream_id && bytes == b"resp"
     )));
@@ -645,7 +636,6 @@ fn ack_does_not_retire_ready_data() {
             tx_seq: StreamSeq(2),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id: id,
-                dir: Direction::Request,
                 chunk: BodyChunk { bytes, fin: false },
             }),
             ..
@@ -698,7 +688,6 @@ fn late_failed_write_after_remote_close_ack_is_ignored() {
         output,
         EngineOutput::OutboundFailed {
             stream_id: id,
-            dir: Direction::Request,
             error: QlError::StreamClosed {
                 target: CloseTarget::Both,
                 code: CloseCode::PROTOCOL,
@@ -711,7 +700,6 @@ fn late_failed_write_after_remote_close_ack_is_ignored() {
         output,
         EngineOutput::InboundFailed {
             stream_id: id,
-            dir: Direction::Response,
             error: QlError::StreamClosed {
                 target: CloseTarget::Both,
                 code: CloseCode::PROTOCOL,
@@ -726,6 +714,81 @@ fn late_failed_write_after_remote_close_ack_is_ignored() {
     let outputs_late = engine.complete_write_collect(open_write.id, Err(QlError::SendFailed));
     assert!(outputs_late.is_empty());
     assert!(engine.streams.contains_key(&stream_id));
+}
+
+#[test]
+fn local_close_both_is_idempotent() {
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        session_key,
+        ..
+    } = SingleEngineHarness::connected(EngineConfig::default(), 39, 10);
+    let stream_id = engine
+        .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
+        .unwrap();
+
+    let open_write = engine.take_next_write().unwrap();
+    let _ = engine.complete_write_collect(open_write.id, Ok(()));
+
+    let _ = engine.run_tick_collect(
+        now,
+        EngineInput::CloseStream {
+            stream_id,
+            target: CloseTarget::Request,
+            code: CloseCode::CANCELLED,
+            payload: Vec::new(),
+        },
+    );
+    let request_close = engine.take_next_write().unwrap();
+    let (_, request_close_body) = decode_stream_body(&request_close.bytes, &session_key);
+    assert!(matches!(
+        request_close_body,
+        StreamBody::Message(StreamMessage {
+            frame: StreamFrame::Close(StreamFrameClose {
+                stream_id: id,
+                target: CloseTarget::Request,
+                ..
+            }),
+            ..
+        }) if id == stream_id
+    ));
+    let _ = engine.complete_write_collect(request_close.id, Ok(()));
+
+    let _ = engine.run_tick_collect(
+        now,
+        EngineInput::CloseStream {
+            stream_id,
+            target: CloseTarget::Both,
+            code: CloseCode::CANCELLED,
+            payload: Vec::new(),
+        },
+    );
+    let both_close = engine.take_next_write().unwrap();
+    let (_, both_close_body) = decode_stream_body(&both_close.bytes, &session_key);
+    assert!(matches!(
+        both_close_body,
+        StreamBody::Message(StreamMessage {
+            frame: StreamFrame::Close(StreamFrameClose {
+                stream_id: id,
+                target: CloseTarget::Both,
+                ..
+            }),
+            ..
+        }) if id == stream_id
+    ));
+    let _ = engine.complete_write_collect(both_close.id, Ok(()));
+
+    let _ = engine.run_tick_collect(
+        now,
+        EngineInput::CloseStream {
+            stream_id,
+            target: CloseTarget::Both,
+            code: CloseCode::CANCELLED,
+            payload: Vec::new(),
+        },
+    );
+    assert!(engine.take_next_write().is_none());
 }
 
 #[test]
@@ -746,7 +809,6 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
             stream_id,
-            dir: Direction::Request,
             chunk: BodyChunk {
                 bytes: b"hello".to_vec(),
                 fin: false,
@@ -819,7 +881,6 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
         output,
         EngineOutput::InboundData {
             stream_id: id,
-            dir: Direction::Request,
             bytes,
         } if *id == stream_id && bytes == b"hello"
     )));
@@ -879,7 +940,6 @@ fn half_window_progress_flushes_ack_before_timer() {
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: b"a".to_vec(),
                     fin: false,
@@ -892,7 +952,6 @@ fn half_window_progress_flushes_ack_before_timer() {
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: b"b".to_vec(),
                     fin: false,
@@ -905,7 +964,6 @@ fn half_window_progress_flushes_ack_before_timer() {
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: b"c".to_vec(),
                     fin: false,
@@ -975,7 +1033,6 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: b"a".to_vec(),
                     fin: false,
@@ -988,7 +1045,6 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: b"c".to_vec(),
                     fin: false,
@@ -1001,7 +1057,6 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: b"d".to_vec(),
                     fin: false,
@@ -1173,10 +1228,7 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
         body,
         StreamBody::Message(StreamMessage {
             tx_seq: StreamSeq(3),
-            frame: StreamFrame::Data(StreamFrameData {
-                dir: Direction::Request,
-                ..
-            }),
+            frame: StreamFrame::Data(StreamFrameData { .. }),
             ..
         })
     ));
@@ -1442,7 +1494,6 @@ fn stale_ack_delay_timer_after_piggyback_does_not_emit_extra_ack_only() {
         Side::B,
         EngineInput::OutboundData {
             stream_id,
-            dir: Direction::Response,
             bytes: b"resp".to_vec(),
         },
     );
@@ -1480,7 +1531,6 @@ fn provisional_timeout_after_late_open_is_ignored() {
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: b"hello".to_vec(),
                     fin: false,
@@ -1618,7 +1668,6 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
         now + config.stream_ack_delay,
         EngineInput::OutboundData {
             stream_id,
-            dir: Direction::Response,
             bytes: b"resp".to_vec(),
         },
     );
@@ -1630,7 +1679,6 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
             tx_seq: StreamSeq::START,
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id: id,
-                dir: Direction::Response,
                 chunk: BodyChunk { bytes, fin: false },
             }),
             ..
@@ -1674,7 +1722,6 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
                 valid_until: wire::now_secs().saturating_add(60),
                 frame: StreamFrame::Data(StreamFrameData {
                     stream_id,
-                    dir: Direction::Request,
                     chunk: BodyChunk {
                         bytes: b"hello".to_vec(),
                         fin: false,
@@ -1707,7 +1754,6 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: b"hello".to_vec(),
                     fin: false,

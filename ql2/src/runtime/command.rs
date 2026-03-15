@@ -1,6 +1,6 @@
 use crate::{
     runtime::{OpenedStreamDelivery, StreamConfig},
-    wire::stream::{CloseCode, Direction},
+    wire::stream::{CloseCode, CloseTarget},
     Peer, QlError, StreamId,
 };
 
@@ -20,15 +20,9 @@ pub(crate) enum RuntimeCommand {
     PollStream {
         stream_id: StreamId,
     },
-    CloseOutbound {
+    CloseStream {
         stream_id: StreamId,
-        dir: Direction,
-        code: CloseCode,
-        payload: Vec<u8>,
-    },
-    CloseInbound {
-        stream_id: StreamId,
-        dir: Direction,
+        target: CloseTarget,
         code: CloseCode,
         payload: Vec<u8>,
     },

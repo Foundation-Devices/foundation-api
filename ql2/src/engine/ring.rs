@@ -190,9 +190,7 @@ mod tests {
     use super::*;
     use crate::{
         engine::stream::{BufferIncomingResult, InFlightFrame, InFlightWriteState, StreamControl},
-        wire::stream::{
-            BodyChunk, Direction, StreamAck, StreamFrame, StreamFrameData, StreamFrameOpen,
-        },
+        wire::stream::{BodyChunk, StreamAck, StreamFrame, StreamFrameData, StreamFrameOpen},
         StreamId,
     };
 
@@ -201,7 +199,6 @@ mod tests {
             StreamSeq(tx_seq),
             StreamFrame::Data(StreamFrameData {
                 stream_id,
-                dir: Direction::Request,
                 chunk: BodyChunk {
                     bytes: vec![byte],
                     fin: false,

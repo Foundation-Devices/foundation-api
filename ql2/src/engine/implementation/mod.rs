@@ -19,8 +19,8 @@ use crate::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
         stream::{
-            encrypt_stream, BodyChunk, CloseCode, CloseTarget, Direction, StreamAck, StreamBody,
-            StreamFrame, StreamFrameClose, StreamMessage,
+            encrypt_stream, BodyChunk, CloseCode, CloseTarget, StreamAck, StreamBody, StreamFrame,
+            StreamFrameClose, StreamMessage,
         },
         ControlMeta, QlHeader, StreamSeq,
     },
@@ -58,26 +58,12 @@ impl Engine {
                 code,
                 payload,
             } => stream::handle_close_stream(self, now, stream_id, target, code, payload),
-            EngineInput::OutboundData {
-                stream_id,
-                dir,
-                bytes,
-            } => stream::handle_outbound_data(self, stream_id, dir, bytes),
-            EngineInput::OutboundFinished { stream_id, dir } => {
-                stream::handle_outbound_finished(self, stream_id, dir)
+            EngineInput::OutboundData { stream_id, bytes } => {
+                stream::handle_outbound_data(self, stream_id, bytes)
             }
-            EngineInput::CloseOutbound {
-                stream_id,
-                dir,
-                code,
-                payload,
-            } => stream::handle_close_outbound(self, now, stream_id, dir, code, payload),
-            EngineInput::CloseInbound {
-                stream_id,
-                dir,
-                code,
-                payload,
-            } => stream::handle_close_inbound(self, now, stream_id, dir, code, payload),
+            EngineInput::OutboundFinished { stream_id } => {
+                stream::handle_outbound_finished(self, stream_id)
+            }
             EngineInput::Incoming(bytes) => self.handle_incoming(now, bytes, crypto, emit),
             EngineInput::TimerExpired => self.handle_timeouts(now, crypto, emit),
         }
@@ -541,27 +527,17 @@ impl Engine {
             StreamRole::Initiator(_) => {
                 emit(EngineOutput::OutboundFailed {
                     stream_id,
-                    dir: Direction::Request,
                     error: error.clone(),
                 });
-                emit(EngineOutput::InboundFailed {
-                    stream_id,
-                    dir: Direction::Response,
-                    error,
-                });
+                emit(EngineOutput::InboundFailed { stream_id, error });
             }
             StreamRole::Responder(stream) => {
                 emit(EngineOutput::InboundFailed {
                     stream_id,
-                    dir: Direction::Request,
                     error: error.clone(),
                 });
                 if stream.response_started || stream.response.is_closed() {
-                    emit(EngineOutput::OutboundFailed {
-                        stream_id,
-                        dir: Direction::Response,
-                        error,
-                    });
+                    emit(EngineOutput::OutboundFailed { stream_id, error });
                 }
             }
             StreamRole::Provisional(_) => {}

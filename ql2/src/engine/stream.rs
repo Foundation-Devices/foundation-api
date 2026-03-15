@@ -6,7 +6,7 @@ use std::{
 use super::{ring::SeqRing, Token};
 use crate::{
     wire::{
-        stream::{CloseCode, CloseTarget, Direction, StreamAck, StreamFrame, StreamFrameClose},
+        stream::{CloseCode, CloseTarget, StreamAck, StreamFrame, StreamFrameClose},
         StreamSeq,
     },
     StreamId,
@@ -17,6 +17,12 @@ use crate::{
 pub const STREAM_WINDOW_CAPACITY: usize = 8;
 pub const STREAM_WINDOW_SIZE: u32 = STREAM_WINDOW_CAPACITY as u32;
 pub const STREAM_ACK_EAGER_THRESHOLD: u32 = STREAM_WINDOW_SIZE / 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamSide {
+    Request,
+    Response,
+}
 
 #[derive(Debug)]
 pub struct StreamMeta {
@@ -34,14 +40,12 @@ pub enum OutboundPhase {
 
 #[derive(Debug)]
 pub struct OutboundState {
-    pub dir: Direction,
     pub phase: OutboundPhase,
 }
 
 impl OutboundState {
-    pub fn from_prefix(dir: Direction, fin: bool) -> Self {
+    pub fn from_prefix(fin: bool) -> Self {
         Self {
-            dir,
             phase: if fin {
                 OutboundPhase::FinQueued
             } else {
@@ -74,8 +78,12 @@ impl OutboundState {
         true
     }
 
-    pub fn close(&mut self) {
+    pub fn close(&mut self) -> bool {
+        if self.phase == OutboundPhase::Closed {
+            return false;
+        }
         self.phase = OutboundPhase::Closed;
+        true
     }
 }
 
@@ -87,6 +95,14 @@ pub struct InboundState {
 impl InboundState {
     pub fn new() -> Self {
         Self { closed: false }
+    }
+
+    pub fn close(&mut self) -> bool {
+        if self.closed {
+            return false;
+        }
+        self.closed = true;
+        true
     }
 }
 
@@ -383,18 +399,22 @@ impl StreamState {
         (&mut self.meta, &mut self.control, &mut self.role)
     }
 
-    pub fn outbound_mut(&mut self, dir: Direction) -> Option<&mut OutboundState> {
+    pub fn outbound_mut(&mut self, side: StreamSide) -> Option<&mut OutboundState> {
         match &mut self.role {
-            StreamRole::Initiator(state) if dir == Direction::Request => Some(&mut state.request),
-            StreamRole::Responder(state) if dir == Direction::Response => Some(&mut state.response),
+            StreamRole::Initiator(state) if side == StreamSide::Request => Some(&mut state.request),
+            StreamRole::Responder(state) if side == StreamSide::Response => {
+                Some(&mut state.response)
+            }
             _ => None,
         }
     }
 
-    pub fn inbound_mut(&mut self, dir: Direction) -> Option<&mut InboundState> {
+    pub fn inbound_mut(&mut self, side: StreamSide) -> Option<&mut InboundState> {
         match &mut self.role {
-            StreamRole::Initiator(state) if dir == Direction::Response => Some(&mut state.response),
-            StreamRole::Responder(state) if dir == Direction::Request => Some(&mut state.request),
+            StreamRole::Initiator(state) if side == StreamSide::Response => {
+                Some(&mut state.response)
+            }
+            StreamRole::Responder(state) if side == StreamSide::Request => Some(&mut state.request),
             _ => None,
         }
     }
@@ -403,6 +423,22 @@ impl StreamState {
         match &self.role {
             StreamRole::Provisional(state) => Some(state.timeout_token),
             _ => None,
+        }
+    }
+
+    pub fn outbound_side(&self) -> Option<StreamSide> {
+        match &self.role {
+            StreamRole::Initiator(_) => Some(StreamSide::Request),
+            StreamRole::Responder(_) => Some(StreamSide::Response),
+            StreamRole::Provisional(_) => None,
+        }
+    }
+
+    pub fn inbound_side(&self) -> Option<StreamSide> {
+        match &self.role {
+            StreamRole::Initiator(_) => Some(StreamSide::Response),
+            StreamRole::Responder(_) => Some(StreamSide::Request),
+            StreamRole::Provisional(_) => None,
         }
     }
 
