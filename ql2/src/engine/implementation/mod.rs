@@ -13,14 +13,14 @@ use crate::{
         state::{ActiveWrite, ControlWritePayload, OutboundWriteKind, TimeoutKind},
         stream::{InFlightWriteState, StreamRole, StreamState},
         Engine, EngineInput, EngineOutput, InitiatorStage, KeepAliveConfig, KeepAliveState,
-        OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, Token, WriteId,
+        OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, StreamConfig, Token, WriteId,
     },
     wire::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
         stream::{
-            encrypt_stream, CloseCode, CloseTarget, Direction, StreamAck, StreamBody, StreamFrame,
-            StreamFrameClose, StreamMessage,
+            encrypt_stream, BodyChunk, CloseCode, CloseTarget, Direction, StreamAck, StreamBody,
+            StreamFrame, StreamFrameClose, StreamMessage,
         },
         ControlMeta, QlHeader, StreamSeq,
     },
@@ -28,6 +28,17 @@ use crate::{
 };
 
 impl Engine {
+    pub fn open_stream(
+        &mut self,
+        now: Instant,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+        config: StreamConfig,
+    ) -> Result<StreamId, QlError> {
+        self.state.now = now;
+        stream::open_stream(self, now, request_head, request_prefix, config)
+    }
+
     pub fn run_tick_inner(
         &mut self,
         now: Instant,
@@ -41,20 +52,6 @@ impl Engine {
             EngineInput::Pair => peer::handle_pair_local(self, now, crypto),
             EngineInput::Connect => handshake::handle_connect(self, now, crypto, emit),
             EngineInput::Unpair => peer::handle_unpair_local(self, now, emit),
-            EngineInput::OpenStream {
-                open_id,
-                request_head,
-                request_prefix,
-                config,
-            } => stream::handle_open_stream(
-                self,
-                now,
-                open_id,
-                request_head,
-                request_prefix,
-                config,
-                emit,
-            ),
             EngineInput::CloseStream {
                 stream_id,
                 target,

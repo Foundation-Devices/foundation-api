@@ -179,10 +179,6 @@ fn insert_inflight_gap_stream(engine: &mut Engine, stream_id: StreamId, now: Ins
         role: StreamRole::Initiator(InitiatorStream {
             request: OutboundState::from_prefix(Direction::Request, false),
             response: InboundState::new(),
-            accept: InitiatorAccept::Opening(OpenWaiter {
-                open_id: Some(OpenId(1)),
-                open_timeout_token: Token(999),
-            }),
         }),
     };
     let control = &mut stream.control;
@@ -231,10 +227,6 @@ fn insert_inflight_stream_with_data(
         role: StreamRole::Initiator(InitiatorStream {
             request: OutboundState::from_prefix(Direction::Request, false),
             response: InboundState::new(),
-            accept: InitiatorAccept::Opening(OpenWaiter {
-                open_id: Some(OpenId(1)),
-                open_timeout_token: Token(1001),
-            }),
         }),
     };
     let control = &mut stream.control;
@@ -282,10 +274,6 @@ fn insert_unwritten_inflight_stream_with_data(
         role: StreamRole::Initiator(InitiatorStream {
             request: OutboundState::from_prefix(Direction::Request, false),
             response: InboundState::new(),
-            accept: InitiatorAccept::Opening(OpenWaiter {
-                open_id: Some(OpenId(2)),
-                open_timeout_token: Token(1002),
-            }),
         }),
     };
     let control = &mut stream.control;
@@ -411,164 +399,6 @@ impl Harness {
 }
 
 #[test]
-fn open_prefix_is_delivered_on_setup_output() {
-    let mut harness = Harness::new(EngineConfig::default());
-    let request_prefix = BodyChunk {
-        bytes: b"req".to_vec(),
-        fin: true,
-    };
-
-    harness.send_a(EngineInput::OpenStream {
-        open_id: OpenId(1),
-        request_head: b"open-head".to_vec(),
-        request_prefix: Some(request_prefix.clone()),
-        config: StreamConfig::default(),
-    });
-
-    harness.now += EngineConfig::default().stream_ack_delay;
-    harness.send_b(EngineInput::TimerExpired);
-
-    let outputs_a = harness.drain_a();
-    let outputs_b = harness.drain_b();
-    let stream_id = outputs_a
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
-        .unwrap();
-
-    assert!(outputs_a.iter().any(|output| matches!(
-        output,
-        EngineOutput::OpenStarted {
-            open_id: OpenId(1),
-            stream_id: id,
-        } if *id == stream_id
-    )));
-    assert!(
-        StreamNamespace::for_local(harness.crypto_a.xid(), harness.crypto_b.xid())
-            .matches(stream_id)
-    );
-    assert!(outputs_a.iter().any(|output| matches!(
-        output,
-        EngineOutput::OutboundClosed {
-            stream_id: id,
-            dir: Direction::Request,
-        } if *id == stream_id
-    )));
-
-    let opened = outputs_b.iter().find_map(|output| match output {
-        EngineOutput::InboundStreamOpened {
-            stream_id,
-            request_head,
-            request_prefix,
-        } => Some((*stream_id, request_head.clone(), request_prefix.clone())),
-        _ => None,
-    });
-    assert_eq!(
-        opened,
-        Some((
-            stream_id,
-            b"open-head".to_vec(),
-            Some(request_prefix.clone()),
-        ))
-    );
-    assert!(!outputs_b
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
-    assert!(!outputs_b
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundFinished { .. })));
-}
-
-#[test]
-fn unary_exchange_uses_open_and_accept_prefixes() {
-    let mut harness = Harness::new(EngineConfig::default());
-    let request_prefix = BodyChunk {
-        bytes: b"req".to_vec(),
-        fin: true,
-    };
-    let response_prefix = BodyChunk {
-        bytes: b"resp".to_vec(),
-        fin: true,
-    };
-
-    harness.send_a(EngineInput::OpenStream {
-        open_id: OpenId(7),
-        request_head: b"request-head".to_vec(),
-        request_prefix: Some(request_prefix.clone()),
-        config: StreamConfig::default(),
-    });
-
-    let outputs_a_open = harness.drain_a();
-    let outputs_b = harness.drain_b();
-    let started_stream_id = outputs_a_open
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
-        .unwrap();
-    let stream_id = outputs_b
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::InboundStreamOpened { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(stream_id, started_stream_id);
-
-    harness.send_b(EngineInput::AcceptStream {
-        stream_id,
-        response_head: b"response-head".to_vec(),
-        response_prefix: Some(response_prefix.clone()),
-    });
-
-    harness.now += EngineConfig::default().stream_ack_delay;
-    harness.send_a(EngineInput::TimerExpired);
-
-    let outputs_a = harness.drain_a();
-    let outputs_b = harness.drain_b();
-
-    let accepted = outputs_a.iter().find_map(|output| match output {
-        EngineOutput::OpenAccepted {
-            open_id,
-            stream_id,
-            response_head,
-            response_prefix,
-        } => Some((
-            *open_id,
-            *stream_id,
-            response_head.clone(),
-            response_prefix.clone(),
-        )),
-        _ => None,
-    });
-    assert_eq!(
-        accepted,
-        Some((
-            OpenId(7),
-            stream_id,
-            b"response-head".to_vec(),
-            Some(response_prefix.clone()),
-        ))
-    );
-    assert!(!outputs_a
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
-    assert!(!outputs_a
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundFinished { .. })));
-    assert!(outputs_b.iter().any(|output| matches!(
-        output,
-        EngineOutput::OutboundClosed {
-            stream_id: id,
-            dir: Direction::Response,
-        } if *id == stream_id
-    )));
-}
-
-#[test]
 fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
     let config = EngineConfig::default();
     let crypto_a = TestCrypto::new(11);
@@ -588,42 +418,21 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
     };
     let now = Instant::now();
 
-    let outputs_a_open = run_engine(
-        &mut a,
-        now,
-        EngineInput::OpenStream {
-            open_id: OpenId(1),
-            request_head: b"a-open".to_vec(),
-            request_prefix: None,
-            config: StreamConfig::default(),
-        },
-        &crypto_a,
-    );
-    let outputs_b_open = run_engine(
-        &mut b,
-        now,
-        EngineInput::OpenStream {
-            open_id: OpenId(2),
-            request_head: b"b-open".to_vec(),
-            request_prefix: None,
-            config: StreamConfig::default(),
-        },
-        &crypto_b,
-    );
-
-    let stream_id_a = outputs_a_open
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
+    let stream_id_a = a
+        .open_stream(
+            now,
+            b"a-open".to_vec(),
+            None,
+            StreamConfig::default(),
+        )
         .unwrap();
-    let stream_id_b = outputs_b_open
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
+    let stream_id_b = b
+        .open_stream(
+            now,
+            b"b-open".to_vec(),
+            None,
+            StreamConfig::default(),
+        )
         .unwrap();
 
     assert_ne!(stream_id_a, stream_id_b);
@@ -677,23 +486,8 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
     };
 
     let now = Instant::now();
-    let outputs_open = run_engine(
-        &mut a,
-        now,
-        EngineInput::OpenStream {
-            open_id: OpenId(9),
-            request_head: b"open".to_vec(),
-            request_prefix: None,
-            config: StreamConfig::default(),
-        },
-        &crypto_a,
-    );
-    let stream_id = outputs_open
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
+    let stream_id = a
+        .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
         .unwrap();
 
     let message = StreamMessage {
@@ -703,10 +497,13 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
             bitmap: 0,
         },
         valid_until: wire::now_secs().saturating_add(60),
-        frame: StreamFrame::Accept(StreamFrameAccept {
+        frame: StreamFrame::Data(StreamFrameData {
             stream_id,
-            response_head: Vec::new(),
-            response_prefix: None,
+            dir: Direction::Response,
+            chunk: BodyChunk {
+                bytes: b"resp".to_vec(),
+                fin: false,
+            },
         }),
     };
 
@@ -730,20 +527,14 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
 
     assert!(!outputs_incoming
         .iter()
-        .any(|output| matches!(output, EngineOutput::OpenAccepted { .. })));
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
 
     let stream = a.streams.get(&stream_id).unwrap();
     assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
-    match &stream.role {
-        StreamRole::Initiator(state) => {
-            assert!(matches!(state.accept, InitiatorAccept::Opening(_)));
-        }
-        _ => panic!("expected initiator stream"),
-    }
 }
 
 #[test]
-fn ack_for_issued_open_is_accepted_before_write_completion() {
+fn ack_for_issued_open_is_applied_before_write_completion() {
     let config = EngineConfig::default();
     let crypto_a = TestCrypto::new(33);
     let crypto_b = TestCrypto::new(34);
@@ -758,23 +549,8 @@ fn ack_for_issued_open_is_accepted_before_write_completion() {
     };
 
     let now = Instant::now();
-    let outputs_open = run_engine(
-        &mut a,
-        now,
-        EngineInput::OpenStream {
-            open_id: OpenId(10),
-            request_head: b"open".to_vec(),
-            request_prefix: None,
-            config: StreamConfig::default(),
-        },
-        &crypto_a,
-    );
-    let stream_id = outputs_open
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
+    let stream_id = a
+        .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
         .unwrap();
 
     let _open_write = take_single_write(&mut a, &crypto_a);
@@ -786,10 +562,13 @@ fn ack_for_issued_open_is_accepted_before_write_completion() {
             bitmap: 0,
         },
         valid_until: wire::now_secs().saturating_add(60),
-        frame: StreamFrame::Accept(StreamFrameAccept {
+        frame: StreamFrame::Data(StreamFrameData {
             stream_id,
-            response_head: b"resp".to_vec(),
-            response_prefix: None,
+            dir: Direction::Response,
+            chunk: BodyChunk {
+                bytes: b"resp".to_vec(),
+                fin: false,
+            },
         }),
     };
     let record = wire::stream::encrypt_stream(
@@ -811,21 +590,14 @@ fn ack_for_issued_open_is_accepted_before_write_completion() {
 
     assert!(outputs_incoming.iter().any(|output| matches!(
         output,
-        EngineOutput::OpenAccepted {
-            open_id: OpenId(10),
+        EngineOutput::InboundData {
             stream_id: id,
-            response_head,
-            response_prefix: None,
-        } if *id == stream_id && response_head == b"resp"
+            dir: Direction::Response,
+            bytes,
+        } if *id == stream_id && bytes == b"resp"
     )));
     let stream = a.streams.get(&stream_id).unwrap();
     assert!(!stream.control.in_flight.contains_key(&StreamSeq::START));
-    match &stream.role {
-        StreamRole::Initiator(state) => {
-            assert!(matches!(state.accept, InitiatorAccept::Open { .. }));
-        }
-        _ => panic!("expected initiator stream"),
-    }
 }
 
 #[test]
@@ -844,23 +616,8 @@ fn ack_does_not_retire_ready_data() {
     };
 
     let now = Instant::now();
-    let outputs_open = run_engine(
-        &mut a,
-        now,
-        EngineInput::OpenStream {
-            open_id: OpenId(11),
-            request_head: b"open".to_vec(),
-            request_prefix: None,
-            config: StreamConfig::default(),
-        },
-        &crypto_a,
-    );
-    let stream_id = outputs_open
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
+    let stream_id = a
+        .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
         .unwrap();
 
     let _open_write = take_single_write(&mut a, &crypto_a);
@@ -882,10 +639,13 @@ fn ack_does_not_retire_ready_data() {
             bitmap: 0,
         },
         valid_until: wire::now_secs().saturating_add(60),
-        frame: StreamFrame::Accept(StreamFrameAccept {
+        frame: StreamFrame::Data(StreamFrameData {
             stream_id,
-            response_head: b"resp".to_vec(),
-            response_prefix: None,
+            dir: Direction::Response,
+            chunk: BodyChunk {
+                bytes: b"resp".to_vec(),
+                fin: false,
+            },
         }),
     };
     let record = wire::stream::encrypt_stream(
@@ -907,12 +667,11 @@ fn ack_does_not_retire_ready_data() {
 
     assert!(outputs_incoming.iter().any(|output| matches!(
         output,
-        EngineOutput::OpenAccepted {
-            open_id: OpenId(11),
+        EngineOutput::InboundData {
             stream_id: id,
-            response_head,
-            response_prefix: None,
-        } if *id == stream_id && response_head == b"resp"
+            dir: Direction::Response,
+            bytes,
+        } if *id == stream_id && bytes == b"resp"
     )));
 
     let stream = a.streams.get(&stream_id).unwrap();
@@ -936,7 +695,7 @@ fn ack_does_not_retire_ready_data() {
 }
 
 #[test]
-fn late_failed_write_after_protocol_reset_is_ignored() {
+fn late_failed_write_after_remote_close_ack_is_ignored() {
     let config = EngineConfig::default();
     let crypto_a = TestCrypto::new(37);
     let crypto_b = TestCrypto::new(38);
@@ -951,23 +710,8 @@ fn late_failed_write_after_protocol_reset_is_ignored() {
     };
 
     let now = Instant::now();
-    let outputs_open = run_engine(
-        &mut a,
-        now,
-        EngineInput::OpenStream {
-            open_id: OpenId(13),
-            request_head: b"open".to_vec(),
-            request_prefix: None,
-            config: StreamConfig::default(),
-        },
-        &crypto_a,
-    );
-    let stream_id = outputs_open
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
+    let stream_id = a
+        .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
         .unwrap();
 
     let open_write = take_single_write(&mut a, &crypto_a);
@@ -980,51 +724,56 @@ fn late_failed_write_after_protocol_reset_is_ignored() {
         &session_key,
         &StreamBody::Message(StreamMessage {
             tx_seq: StreamSeq::START,
-            ack: StreamAck::EMPTY,
+            ack: StreamAck {
+                base: StreamSeq::START,
+                bitmap: 0,
+            },
             valid_until: wire::now_secs().saturating_add(60),
-            frame: StreamFrame::Data(StreamFrameData {
+            frame: StreamFrame::Close(StreamFrameClose {
                 stream_id,
-                dir: Direction::Response,
-                chunk: BodyChunk {
-                    bytes: b"bad".to_vec(),
-                    fin: false,
-                },
+                target: CloseTarget::Both,
+                code: CloseCode::PROTOCOL,
+                payload: Vec::new(),
             }),
         }),
         [12; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let outputs_reset = run_engine(
+    let outputs_close = run_engine(
         &mut a,
         now,
         EngineInput::Incoming(wire::encode_record(&record)),
         &crypto_a,
     );
 
-    assert!(outputs_reset.iter().any(|output| matches!(
-        output,
-        EngineOutput::OpenFailed {
-            open_id: OpenId(13),
-            stream_id: id,
-            error: QlError::StreamProtocol,
-        } if *id == stream_id
-    )));
-    assert!(outputs_reset.iter().any(|output| matches!(
+    assert!(outputs_close.iter().any(|output| matches!(
         output,
         EngineOutput::OutboundFailed {
             stream_id: id,
             dir: Direction::Request,
-            error: QlError::StreamProtocol,
+            error: QlError::StreamClosed {
+                target: CloseTarget::Both,
+                code: CloseCode::PROTOCOL,
+                payload,
+            },
         } if *id == stream_id
+            && payload.is_empty()
     )));
-    assert!(outputs_reset.iter().any(|output| matches!(
+    assert!(outputs_close.iter().any(|output| matches!(
         output,
         EngineOutput::InboundFailed {
             stream_id: id,
             dir: Direction::Response,
-            error: QlError::StreamProtocol,
+            error: QlError::StreamClosed {
+                target: CloseTarget::Both,
+                code: CloseCode::PROTOCOL,
+                payload,
+            },
         } if *id == stream_id
+            && payload.is_empty()
     )));
+    let stream = a.streams.get(&stream_id).unwrap();
+    assert!(!stream.control.in_flight.contains_key(&StreamSeq::START));
 
     let outputs_late = complete_engine_write(&mut a, open_write.id, Err(QlError::SendFailed));
     assert!(outputs_late.is_empty());
@@ -1137,142 +886,20 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
 }
 
 #[test]
-fn out_of_order_response_data_waits_for_accept() {
-    let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(51);
-    let crypto_b = TestCrypto::new(52);
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([4; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
-    a.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key: session_key.clone(),
-        keepalive: KeepAliveState::default(),
-    };
-
-    let now = Instant::now();
-    let outputs_open = run_engine(
-        &mut a,
-        now,
-        EngineInput::OpenStream {
-            open_id: OpenId(12),
-            request_head: b"req".to_vec(),
-            request_prefix: None,
-            config: StreamConfig::default(),
-        },
-        &crypto_a,
-    );
-    let stream_id = outputs_open
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
-        .unwrap();
-
-    let data_message = StreamMessage {
-        tx_seq: StreamSeq(2),
-        ack: StreamAck::EMPTY,
-        valid_until: wire::now_secs().saturating_add(60),
-        frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
-            stream_id,
-            dir: Direction::Response,
-            chunk: BodyChunk {
-                bytes: b"resp".to_vec(),
-                fin: false,
-            },
-        }),
-    };
-    let data_body = StreamBody::Message(data_message);
-    let data_record = wire::stream::encrypt_stream(
-        QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
-        },
-        &session_key,
-        &data_body,
-        [21; wire::encrypted_message::NONCE_SIZE],
-    );
-
-    let outputs_data = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&data_record)),
-        &crypto_a,
-    );
-    assert!(!outputs_data
-        .iter()
-        .any(|output| matches!(output, EngineOutput::OpenAccepted { .. })));
-    assert!(!outputs_data
-        .iter()
-        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
-
-    let accept_message = StreamMessage {
-        tx_seq: StreamSeq(1),
-        ack: StreamAck::EMPTY,
-        valid_until: wire::now_secs().saturating_add(60),
-        frame: StreamFrame::Accept(StreamFrameAccept {
-            stream_id,
-            response_head: b"resp-head".to_vec(),
-            response_prefix: None,
-        }),
-    };
-    let accept_body = StreamBody::Message(accept_message);
-    let accept_record = wire::stream::encrypt_stream(
-        QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
-        },
-        &session_key,
-        &accept_body,
-        [22; wire::encrypted_message::NONCE_SIZE],
-    );
-
-    let outputs_accept = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&accept_record)),
-        &crypto_a,
-    );
-
-    assert!(outputs_accept.iter().any(|output| matches!(
-        output,
-        EngineOutput::OpenAccepted {
-            open_id: OpenId(12),
-            stream_id: id,
-            response_head,
-            response_prefix: None,
-        } if *id == stream_id && response_head == b"resp-head"
-    )));
-    assert!(outputs_accept.iter().any(|output| matches!(
-        output,
-        EngineOutput::InboundData {
-            stream_id: id,
-            dir: Direction::Response,
-            bytes,
-        } if *id == stream_id && bytes == b"resp"
-    )));
-}
-
-#[test]
 fn delayed_ack_only_does_not_consume_sequence_space() {
     let mut harness = Harness::new(EngineConfig::default());
-
-    harness.send_a(EngineInput::OpenStream {
-        open_id: OpenId(21),
-        request_head: b"open-head".to_vec(),
-        request_prefix: None,
-        config: StreamConfig::default(),
-    });
-
-    let outputs_a = harness.drain_a();
-    let _outputs_b = harness.drain_b();
-    let stream_id = outputs_a
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::OpenStarted { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
+    let stream_id = harness
+        .a
+        .open_stream(
+            harness.now,
+            b"open-head".to_vec(),
+            None,
+            StreamConfig::default(),
+        )
         .unwrap();
+    let open_write = take_single_write(&mut harness.a, &harness.crypto_a);
+    harness.complete_side_write(Side::A, open_write.id, Ok(()));
+    harness.run_side(Side::B, EngineInput::Incoming(open_write.bytes));
 
     harness.now += EngineConfig::default().stream_ack_delay;
     harness.send_b(EngineInput::TimerExpired);
@@ -1730,17 +1357,9 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
     let mut a = connected_engine(&crypto_a, peer_b, session_key.clone());
 
     let now = Instant::now();
-    let _outputs_open = run_engine(
-        &mut a,
-        now,
-        EngineInput::OpenStream {
-            open_id: OpenId(44),
-            request_head: b"open".to_vec(),
-            request_prefix: None,
-            config: StreamConfig::default(),
-        },
-        &crypto_a,
-    );
+    let tracked_stream_id = a
+        .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
+        .unwrap();
     let write = take_single_write(&mut a, &crypto_a);
     let (_, initial_body) = decode_stream_body(&write.bytes, &session_key);
     assert!(matches!(
@@ -1751,14 +1370,6 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
             ..
         })
     ));
-    let tracked_stream_id = match &initial_body {
-        StreamBody::Message(StreamMessage {
-            frame: StreamFrame::Open(StreamFrameOpen { stream_id, .. }),
-            ..
-        }) => *stream_id,
-        _ => unreachable!(),
-    };
-
     let _outputs_written = complete_engine_write(&mut a, write.id, Ok(()));
 
     let stream = a.streams.get(&tracked_stream_id).unwrap();
@@ -1900,28 +1511,25 @@ fn take_next_write_round_robins_across_ready_streams() {
 #[test]
 fn stale_ack_delay_timer_after_piggyback_does_not_emit_extra_ack_only() {
     let mut harness = Harness::new(EngineConfig::default());
-
-    harness.send_a(EngineInput::OpenStream {
-        open_id: OpenId(30),
-        request_head: b"open-head".to_vec(),
-        request_prefix: None,
-        config: StreamConfig::default(),
-    });
-
-    let _ = harness.drain_a();
-    let outputs_b = harness.drain_b();
-    let stream_id = outputs_b
-        .iter()
-        .find_map(|output| match output {
-            EngineOutput::InboundStreamOpened { stream_id, .. } => Some(*stream_id),
-            _ => None,
-        })
+    let stream_id = harness
+        .a
+        .open_stream(
+            harness.now,
+            b"open-head".to_vec(),
+            None,
+            StreamConfig::default(),
+        )
         .unwrap();
+    let open_write = take_single_write(&mut harness.a, &harness.crypto_a);
+    harness.complete_side_write(Side::A, open_write.id, Ok(()));
+    harness.run_side(Side::B, EngineInput::Incoming(open_write.bytes));
+    let _ = harness.drain_a();
+    let _ = harness.drain_b();
 
-    harness.send_b(EngineInput::AcceptStream {
+    harness.send_b(EngineInput::OutboundData {
         stream_id,
-        response_head: b"resp".to_vec(),
-        response_prefix: None,
+        dir: Direction::Response,
+        bytes: b"resp".to_vec(),
     });
     let _ = harness.drain_a();
     let _ = harness.drain_b();
@@ -2004,7 +1612,7 @@ fn provisional_timeout_after_late_open_is_ignored() {
 
     let _outputs_timeout = run_engine(
         &mut a,
-        now + config.default_open_timeout,
+        now + config.packet_expiration,
         EngineInput::TimerExpired,
         &crypto_a,
     );
@@ -2018,7 +1626,7 @@ fn provisional_timeout_after_late_open_is_ignored() {
         assert!(!matches!(
             body,
             StreamBody::Message(StreamMessage {
-                frame: StreamFrame::Reset(_),
+                frame: StreamFrame::Close(_),
                 ..
             })
         ));
@@ -2088,7 +1696,7 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
     let outputs_failed = complete_engine_write(&mut a, ack_write.id, Err(QlError::SendFailed));
     assert!(!outputs_failed.iter().any(|output| matches!(
         output,
-        EngineOutput::StreamReaped { .. } | EngineOutput::OpenFailed { .. }
+        EngineOutput::StreamReaped { .. }
     )));
     let retry_write = take_single_write(&mut a, &crypto_a);
     let (_, retry_body) = decode_stream_body(&retry_write.bytes, &session_key);
@@ -2106,25 +1714,29 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
 
     let _ = complete_engine_write(&mut a, retry_write.id, Ok(()));
 
-    let _outputs_accept = run_engine(
+    let _outputs_data = run_engine(
         &mut a,
         now + config.stream_ack_delay,
-        EngineInput::AcceptStream {
+        EngineInput::OutboundData {
             stream_id,
-            response_head: b"resp".to_vec(),
-            response_prefix: None,
+            dir: Direction::Response,
+            bytes: b"resp".to_vec(),
         },
         &crypto_a,
     );
-    let accept_write = take_single_write(&mut a, &crypto_a);
-    let (_, body) = decode_stream_body(&accept_write.bytes, &session_key);
+    let response_write = take_single_write(&mut a, &crypto_a);
+    let (_, body) = decode_stream_body(&response_write.bytes, &session_key);
     assert!(matches!(
         body,
         StreamBody::Message(StreamMessage {
             tx_seq: StreamSeq::START,
-            frame: StreamFrame::Accept(StreamFrameAccept { stream_id: id, .. }),
+            frame: StreamFrame::Data(StreamFrameData {
+                stream_id: id,
+                dir: Direction::Response,
+                chunk: BodyChunk { bytes, fin: false },
+            }),
             ..
-        }) if id == stream_id
+        }) if id == stream_id && bytes == b"resp"
     ));
     let stream = a.streams.get(&stream_id).unwrap();
     assert_eq!(stream.control.next_tx_seq, StreamSeq(2));

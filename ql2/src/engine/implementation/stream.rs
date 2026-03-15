@@ -5,7 +5,7 @@ use crate::{
     engine::{
         state::{StreamNamespace, TimeoutEntry},
         stream::*,
-        EngineConfig, EngineState, OpenId, StreamConfig,
+        EngineConfig, EngineState, StreamConfig,
     },
     wire::stream::*,
 };
@@ -17,30 +17,18 @@ enum StreamHandleResult {
     Reap,
 }
 
-pub fn handle_open_stream(
+pub fn open_stream(
     engine: &mut Engine,
     now: Instant,
-    open_id: OpenId,
     request_head: Vec<u8>,
     request_prefix: Option<BodyChunk>,
     _config: StreamConfig,
-    emit: &mut impl OutputFn,
-) {
+) -> Result<StreamId, QlError> {
     let Some(entry) = engine.peer.as_ref() else {
-        emit(EngineOutput::OpenFailed {
-            open_id,
-            stream_id: StreamId(0),
-            error: QlError::NoPeerBound,
-        });
-        return;
+        return Err(QlError::NoPeerBound);
     };
     if !entry.session.is_connected() {
-        emit(EngineOutput::OpenFailed {
-            open_id,
-            stream_id: StreamId(0),
-            error: QlError::MissingSession,
-        });
-        return;
+        return Err(QlError::MissingSession);
     }
 
     let stream_namespace = StreamNamespace::for_local(engine.identity.xid, entry.peer);
@@ -67,7 +55,7 @@ pub fn handle_open_stream(
     };
     drive_stream(&mut stream);
     engine.streams.insert(stream_id, stream);
-    emit(EngineOutput::OpenStarted { open_id, stream_id });
+    Ok(stream_id)
 }
 
 pub fn handle_close_stream(

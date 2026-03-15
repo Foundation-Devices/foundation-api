@@ -4,17 +4,15 @@ mod ring;
 mod state;
 mod stream;
 
-// Temporarily disabled while the stream engine test suite is ported from the
-// old Accept/Reject/Reset protocol to Open/Data/Close.
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod tests;
 
 use std::time::{Duration, Instant};
 
 use bc_components::XID;
 pub use state::{
-    Engine, EngineState, InitiatorStage, KeepAliveState, OpenId, OutboundWrite, PeerRecord,
-    PeerSession, Token, WriteId,
+    Engine, EngineState, InitiatorStage, KeepAliveState, OutboundWrite, PeerRecord, PeerSession,
+    Token, WriteId,
 };
 
 use crate::{
@@ -67,13 +65,6 @@ pub enum EngineInput {
     Pair,
     Connect,
     Unpair,
-
-    OpenStream {
-        open_id: OpenId,
-        request_head: Vec<u8>,
-        request_prefix: Option<BodyChunk>,
-        config: StreamConfig,
-    },
     CloseStream {
         stream_id: StreamId,
         target: CloseTarget,
@@ -119,16 +110,6 @@ pub enum EngineOutput {
     },
     PersistPeer(Peer),
     ClearPeer,
-
-    OpenStarted {
-        open_id: OpenId,
-        stream_id: StreamId,
-    },
-    OpenFailed {
-        open_id: OpenId,
-        stream_id: StreamId,
-        error: QlError,
-    },
 
     InboundStreamOpened {
         stream_id: StreamId,

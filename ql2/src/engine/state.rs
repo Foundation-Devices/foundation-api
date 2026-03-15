@@ -22,9 +22,6 @@ use crate::{
 pub struct Token(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct OpenId(pub u64);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WriteId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
