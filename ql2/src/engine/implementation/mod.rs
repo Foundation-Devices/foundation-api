@@ -11,7 +11,7 @@ use crate::{
     engine::{
         replay_cache::ReplayKey,
         state::{ActiveWrite, ControlWritePayload, OutboundWriteKind, TimeoutKind},
-        stream::{InFlightWriteState, InitiatorOpen, StreamRole, StreamState},
+        stream::{InFlightWriteState, StreamRole, StreamState},
         Engine, EngineInput, EngineOutput, InitiatorStage, KeepAliveConfig, KeepAliveState,
         OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, Token, WriteId,
     },
@@ -544,19 +544,7 @@ impl Engine {
     ) {
         self.clear_active_writes_for_stream(stream_id);
         match stream.role {
-            StreamRole::Initiator(stream) => {
-                match stream.open {
-                    InitiatorOpen::Pending(waiter) => {
-                        if let Some(open_id) = waiter.open_id {
-                            emit(EngineOutput::OpenFailed {
-                                open_id,
-                                stream_id,
-                                error: error.clone(),
-                            });
-                        }
-                    }
-                    InitiatorOpen::Open => {}
-                }
+            StreamRole::Initiator(_) => {
                 emit(EngineOutput::OutboundFailed {
                     stream_id,
                     dir: Direction::Request,

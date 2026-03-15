@@ -63,9 +63,6 @@ pub fn handle_open_stream(
         role: StreamRole::Initiator(InitiatorStream {
             request: OutboundState::from_prefix(Direction::Request, request_prefix_fin),
             response: InboundState::new(),
-            open: InitiatorOpen::Pending(OpenWaiter {
-                open_id: Some(open_id),
-            }),
         }),
     };
     drive_stream(&mut stream);
@@ -572,13 +569,6 @@ fn handle_stream_data(
         dir,
         chunk,
     } = frame;
-    if dir == Direction::Response {
-        if let StreamRole::Initiator(state) = &mut stream.role {
-            if matches!(state.open, InitiatorOpen::Pending(_)) {
-                state.open = InitiatorOpen::Open;
-            }
-        }
-    }
     let Some(inbound) = stream.inbound_mut(dir) else {
         queue_protocol_close(stream, emit);
         return;
@@ -701,21 +691,6 @@ fn queue_protocol_close(stream: &mut StreamState, emit: &mut impl OutputFn) {
             }
         }
     }
-    if let StreamRole::Initiator(stream) = &mut stream.role {
-        match &mut stream.open {
-            InitiatorOpen::Pending(waiter) => {
-                if let Some(open_id) = waiter.open_id.take() {
-                    emit(EngineOutput::OpenFailed {
-                        open_id,
-                        stream_id,
-                        error: QlError::StreamProtocol,
-                    });
-                }
-                stream.open = InitiatorOpen::Open;
-            }
-            InitiatorOpen::Open => {}
-        }
-    }
     drive_stream(stream);
 }
 
@@ -732,18 +707,7 @@ fn apply_remote_close(
         code,
         payload: payload.clone(),
     };
-    let fatal_pending_open = matches!(
-        (&stream.role, target),
-        (
-            StreamRole::Initiator(InitiatorStream {
-                open: InitiatorOpen::Pending(_),
-                ..
-            }),
-            CloseTarget::Response | CloseTarget::Both,
-        )
-    );
-
-    if matches!(target, CloseTarget::Request | CloseTarget::Both) || fatal_pending_open {
+    if matches!(target, CloseTarget::Request | CloseTarget::Both) {
         if let Some(inbound) = stream.inbound_mut(Direction::Request) {
             if !inbound.closed {
                 inbound.closed = true;
@@ -783,29 +747,9 @@ fn apply_remote_close(
             });
         }
     }
-
-    if let StreamRole::Initiator(stream) = &mut stream.role {
-        match &mut stream.open {
-            InitiatorOpen::Pending(waiter) => {
-                if fatal_pending_open {
-                    if let Some(open_id) = waiter.open_id.take() {
-                        emit(EngineOutput::OpenFailed {
-                            open_id,
-                            stream_id,
-                            error: error.clone(),
-                        });
-                    }
-                    stream.open = InitiatorOpen::Open;
-                }
-            }
-            InitiatorOpen::Open => {}
-        }
-    }
 }
 
 fn apply_local_close(stream: &mut StreamState, target: CloseTarget) {
-    let clear_open_wait = matches!(target, CloseTarget::Response | CloseTarget::Both);
-
     if matches!(target, CloseTarget::Request | CloseTarget::Both) {
         if let Some(inbound) = stream.inbound_mut(Direction::Request) {
             inbound.closed = true;
@@ -820,18 +764,6 @@ fn apply_local_close(stream: &mut StreamState, target: CloseTarget) {
         }
         if let Some(outbound) = stream.outbound_mut(Direction::Response) {
             outbound.close();
-        }
-    }
-
-    if clear_open_wait {
-        if let StreamRole::Initiator(stream) = &mut stream.role {
-            match &mut stream.open {
-                InitiatorOpen::Pending(waiter) => {
-                    let _ = waiter.open_id.take();
-                    stream.open = InitiatorOpen::Open;
-                }
-                InitiatorOpen::Open => {}
-            }
         }
     }
 }

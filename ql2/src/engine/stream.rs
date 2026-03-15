@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use super::{ring::SeqRing, OpenId, Token};
+use super::{ring::SeqRing, Token};
 use crate::{
     wire::{
         stream::{CloseCode, CloseTarget, Direction, StreamAck, StreamFrame, StreamFrameClose},
@@ -88,17 +88,6 @@ impl InboundState {
     pub fn new() -> Self {
         Self { closed: false }
     }
-}
-
-#[derive(Debug)]
-pub struct OpenWaiter {
-    pub open_id: Option<OpenId>,
-}
-
-#[derive(Debug)]
-pub enum InitiatorOpen {
-    Pending(OpenWaiter),
-    Open,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -361,7 +350,6 @@ impl StreamControl {
 pub struct InitiatorStream {
     pub request: OutboundState,
     pub response: InboundState,
-    pub open: InitiatorOpen,
 }
 
 #[derive(Debug)]
@@ -432,11 +420,7 @@ impl StreamState {
             return false;
         }
         match &self.role {
-            StreamRole::Initiator(state) => {
-                matches!(state.open, InitiatorOpen::Open)
-                    && state.request.is_closed()
-                    && state.response.closed
-            }
+            StreamRole::Initiator(state) => state.request.is_closed() && state.response.closed,
             StreamRole::Responder(state) => state.request.closed && state.response.is_closed(),
             StreamRole::Provisional(_) => false,
         }
