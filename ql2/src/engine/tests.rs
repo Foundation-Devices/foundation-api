@@ -1,6 +1,7 @@
 use std::{
     cell::Cell,
     mem,
+    ops::{Deref, DerefMut},
     time::{Duration, Instant},
 };
 
@@ -13,37 +14,17 @@ use crate::{
     PacketId, Peer,
 };
 
+#[derive(Clone)]
 struct TestCrypto {
-    identity: QlIdentity,
     nonce_seed: u8,
     nonce_counter: Cell<u8>,
 }
 
 impl TestCrypto {
     fn new(seed: u8) -> Self {
-        let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
-        let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
         Self {
-            identity: QlIdentity::from_keys(
-                signing_private,
-                signing_public,
-                encapsulation_private,
-                encapsulation_public,
-            ),
             nonce_seed: seed,
             nonce_counter: Cell::new(0),
-        }
-    }
-
-    fn xid(&self) -> XID {
-        self.identity.xid
-    }
-
-    fn peer(&self) -> Peer {
-        Peer {
-            peer: self.xid(),
-            signing_key: self.identity.signing_public_key.clone(),
-            encapsulation_key: self.identity.encapsulation_public_key.clone(),
         }
     }
 }
@@ -74,47 +55,182 @@ impl Side {
 
 struct Harness {
     now: Instant,
-    a: Engine,
-    b: Engine,
-    crypto_a: TestCrypto,
-    crypto_b: TestCrypto,
-    outputs_a: Vec<EngineOutput>,
-    outputs_b: Vec<EngineOutput>,
+    a: EngineWrapper,
+    b: EngineWrapper,
 }
 
-fn run_engine(
-    engine: &mut Engine,
+struct SingleEngineHarness {
     now: Instant,
-    input: EngineInput,
-    crypto: &TestCrypto,
-) -> Vec<EngineOutput> {
-    let mut outputs = Vec::new();
-    engine.run_tick(now, input, crypto, &mut |output| outputs.push(output));
-    outputs
+    engine: EngineWrapper,
+    peer: QlIdentity,
+    session_key: SymmetricKey,
 }
 
-fn complete_engine_write(
-    engine: &mut Engine,
-    write_id: WriteId,
-    result: Result<(), QlError>,
-) -> Vec<EngineOutput> {
-    let mut outputs = Vec::new();
-    engine.complete_write(write_id, result, &mut |output| outputs.push(output));
-    outputs
-}
-
-fn take_single_write(engine: &mut Engine, crypto: &TestCrypto) -> OutboundWrite {
-    engine
-        .take_next_write(crypto)
-        .expect("expected single write")
-}
-
-fn take_all_writes(engine: &mut Engine, crypto: &TestCrypto) -> Vec<OutboundWrite> {
-    let mut writes = Vec::new();
-    while let Some(write) = engine.take_next_write(crypto) {
-        writes.push(write);
+impl SingleEngineHarness {
+    fn connected(config: EngineConfig, nonce_seed: u8, session_fill: u8) -> Self {
+        let local_identity = test_identity();
+        let peer = test_identity();
+        let session_key = SymmetricKey::from_data([session_fill; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+        let mut engine = Engine::new(
+            config,
+            local_identity.clone(),
+            Some(peer_from_identity(&peer)),
+        );
+        engine.peer.as_mut().unwrap().session = PeerSession::Connected {
+            session_key: session_key.clone(),
+            keepalive: KeepAliveState::default(),
+        };
+        Self {
+            now: Instant::now(),
+            engine: EngineWrapper::new(engine, TestCrypto::new(nonce_seed)),
+            peer,
+            session_key,
+        }
     }
-    writes
+}
+
+impl Harness {
+    fn connected(config: EngineConfig) -> Self {
+        let identity_a = test_identity();
+        let identity_b = test_identity();
+        let peer_a = peer_from_identity(&identity_a);
+        let peer_b = peer_from_identity(&identity_b);
+        let crypto_a = TestCrypto::new(1);
+        let crypto_b = TestCrypto::new(2);
+        let session_key = SymmetricKey::from_data([7; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+        let mut a = Engine::new(config, identity_a.clone(), Some(peer_b));
+        let mut b = Engine::new(config, identity_b.clone(), Some(peer_a));
+        a.peer.as_mut().unwrap().session = PeerSession::Connected {
+            session_key: session_key.clone(),
+            keepalive: KeepAliveState::default(),
+        };
+        b.peer.as_mut().unwrap().session = PeerSession::Connected {
+            session_key,
+            keepalive: KeepAliveState::default(),
+        };
+        Self {
+            now: Instant::now(),
+            a: EngineWrapper::new(a, crypto_a),
+            b: EngineWrapper::new(b, crypto_b),
+        }
+    }
+
+    fn run_side(&mut self, side: Side, input: EngineInput) {
+        match side {
+            Side::A => self.a.run_tick(self.now, input),
+            Side::B => self.b.run_tick(self.now, input),
+        }
+
+        while let Some(write) = match side {
+            Side::A => self.a.take_next_write(),
+            Side::B => self.b.take_next_write(),
+        } {
+            let bytes = write.bytes.clone();
+            self.complete_side_write(side, write.id, Ok(()));
+            self.run_side(side.other(), EngineInput::Incoming(bytes));
+        }
+    }
+
+    fn complete_side_write(&mut self, side: Side, write_id: WriteId, result: Result<(), QlError>) {
+        match side {
+            Side::A => self.a.complete_write(write_id, result),
+            Side::B => self.b.complete_write(write_id, result),
+        }
+    }
+}
+
+struct EngineWrapper {
+    engine: Engine,
+    crypto: TestCrypto,
+    outputs: Vec<EngineOutput>,
+}
+
+impl Deref for EngineWrapper {
+    type Target = Engine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
+}
+
+impl DerefMut for EngineWrapper {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.engine
+    }
+}
+
+impl EngineWrapper {
+    fn new(engine: Engine, crypto: TestCrypto) -> Self {
+        Self {
+            engine,
+            crypto,
+            outputs: Vec::new(),
+        }
+    }
+
+    fn run_tick(&mut self, now: Instant, input: EngineInput) {
+        self.engine
+            .run_tick(now, input, &self.crypto, &mut |output| {
+                self.outputs.push(output)
+            });
+    }
+
+    fn run_tick_collect(&mut self, now: Instant, input: EngineInput) -> Vec<EngineOutput> {
+        self.run_tick(now, input);
+        self.drain_outputs()
+    }
+
+    fn complete_write(&mut self, write_id: WriteId, result: Result<(), QlError>) {
+        self.engine
+            .complete_write(write_id, result, &mut |output| self.outputs.push(output));
+    }
+
+    fn take_next_write(&mut self) -> Option<OutboundWrite> {
+        self.engine.take_next_write(&self.crypto)
+    }
+
+    fn complete_write_collect(
+        &mut self,
+        write_id: WriteId,
+        result: Result<(), QlError>,
+    ) -> Vec<EngineOutput> {
+        self.complete_write(write_id, result);
+        self.drain_outputs()
+    }
+
+    fn open_stream(
+        &mut self,
+        now: Instant,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+        config: StreamConfig,
+    ) -> Result<StreamId, QlError> {
+        self.engine
+            .open_stream(now, request_head, request_prefix, config)
+    }
+
+    fn drain_outputs(&mut self) -> Vec<EngineOutput> {
+        mem::take(&mut self.outputs)
+    }
+}
+
+fn test_identity() -> QlIdentity {
+    let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
+    let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
+    QlIdentity::from_keys(
+        signing_private,
+        signing_public,
+        encapsulation_private,
+        encapsulation_public,
+    )
+}
+
+fn peer_from_identity(identity: &QlIdentity) -> Peer {
+    Peer {
+        peer: identity.xid,
+        signing_key: identity.signing_public_key.clone(),
+        encapsulation_key: identity.encapsulation_public_key.clone(),
+    }
 }
 
 fn decode_stream_body(bytes: &[u8], session_key: &SymmetricKey) -> (QlHeader, StreamBody) {
@@ -150,25 +266,7 @@ fn encrypt_heartbeat_record(
     )
 }
 
-fn connected_engine_with_config(
-    config: EngineConfig,
-    local: &TestCrypto,
-    peer: Peer,
-    session_key: SymmetricKey,
-) -> Engine {
-    let mut engine = Engine::new(config, local.identity.clone(), Some(peer));
-    engine.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key,
-        keepalive: KeepAliveState::default(),
-    };
-    engine
-}
-
-fn connected_engine(local: &TestCrypto, peer: Peer, session_key: SymmetricKey) -> Engine {
-    connected_engine_with_config(EngineConfig::default(), local, peer, session_key)
-}
-
-fn insert_inflight_gap_stream(engine: &mut Engine, stream_id: StreamId, now: Instant) {
+fn insert_inflight_gap_stream(engine: &mut EngineWrapper, stream_id: StreamId, now: Instant) {
     let retry_at = now + Duration::from_secs(60);
     let mut stream = StreamState {
         meta: StreamMeta {
@@ -212,7 +310,7 @@ fn insert_inflight_gap_stream(engine: &mut Engine, stream_id: StreamId, now: Ins
 }
 
 fn insert_inflight_stream_with_data(
-    engine: &mut Engine,
+    engine: &mut EngineWrapper,
     stream_id: StreamId,
     now: Instant,
     data_seqs: &[u32],
@@ -260,7 +358,7 @@ fn insert_inflight_stream_with_data(
 }
 
 fn insert_unwritten_inflight_stream_with_data(
-    engine: &mut Engine,
+    engine: &mut EngineWrapper,
     stream_id: StreamId,
     now: Instant,
     data_seqs: &[u32],
@@ -306,149 +404,45 @@ fn insert_unwritten_inflight_stream_with_data(
     engine.streams.insert(stream_id, stream);
 }
 
-impl Harness {
-    fn new(config: EngineConfig) -> Self {
-        let crypto_a = TestCrypto::new(1);
-        let crypto_b = TestCrypto::new(2);
-        let peer_a = crypto_a.peer();
-        let peer_b = crypto_b.peer();
-        let session_key = SymmetricKey::from_data([7; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-        let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
-        let mut b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
-        a.peer.as_mut().unwrap().session = PeerSession::Connected {
-            session_key: session_key.clone(),
-            keepalive: KeepAliveState::default(),
-        };
-        b.peer.as_mut().unwrap().session = PeerSession::Connected {
-            session_key,
-            keepalive: KeepAliveState::default(),
-        };
-        Self {
-            now: Instant::now(),
-            a,
-            b,
-            crypto_a,
-            crypto_b,
-            outputs_a: Vec::new(),
-            outputs_b: Vec::new(),
-        }
-    }
-
-    fn send_a(&mut self, input: EngineInput) {
-        self.run_side(Side::A, input);
-    }
-
-    fn send_b(&mut self, input: EngineInput) {
-        self.run_side(Side::B, input);
-    }
-
-    fn drain_a(&mut self) -> Vec<EngineOutput> {
-        mem::take(&mut self.outputs_a)
-    }
-
-    fn drain_b(&mut self) -> Vec<EngineOutput> {
-        mem::take(&mut self.outputs_b)
-    }
-
-    fn run_side(&mut self, side: Side, input: EngineInput) {
-        let mut outputs = Vec::new();
-        match side {
-            Side::A => self
-                .a
-                .run_tick(self.now, input, &self.crypto_a, &mut |output| {
-                    outputs.push(output)
-                }),
-            Side::B => self
-                .b
-                .run_tick(self.now, input, &self.crypto_b, &mut |output| {
-                    outputs.push(output)
-                }),
-        }
-
-        match side {
-            Side::A => self.outputs_a.extend(outputs),
-            Side::B => self.outputs_b.extend(outputs),
-        }
-
-        while let Some(write) = match side {
-            Side::A => self.a.take_next_write(&self.crypto_a),
-            Side::B => self.b.take_next_write(&self.crypto_b),
-        } {
-            let bytes = write.bytes.clone();
-            self.complete_side_write(side, write.id, Ok(()));
-            self.run_side(side.other(), EngineInput::Incoming(bytes));
-        }
-    }
-
-    fn complete_side_write(&mut self, side: Side, write_id: WriteId, result: Result<(), QlError>) {
-        let mut outputs = Vec::new();
-        match side {
-            Side::A => self
-                .a
-                .complete_write(write_id, result, &mut |output| outputs.push(output)),
-            Side::B => self
-                .b
-                .complete_write(write_id, result, &mut |output| outputs.push(output)),
-        }
-
-        match side {
-            Side::A => self.outputs_a.extend(outputs),
-            Side::B => self.outputs_b.extend(outputs),
-        }
-    }
-}
-
 #[test]
 fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(11);
-    let crypto_b = TestCrypto::new(22);
-    let peer_a = crypto_a.peer();
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([9; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
-    let mut b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
-    a.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key: session_key.clone(),
-        keepalive: KeepAliveState::default(),
-    };
-    b.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key,
-        keepalive: KeepAliveState::default(),
-    };
-    let now = Instant::now();
+    let mut harness = Harness::connected(config);
+    let now = harness.now;
 
-    let stream_id_a = a
-        .open_stream(
-            now,
-            b"a-open".to_vec(),
-            None,
-            StreamConfig::default(),
-        )
+    let stream_id_a = harness
+        .a
+        .open_stream(now, b"a-open".to_vec(), None, StreamConfig::default())
         .unwrap();
-    let stream_id_b = b
-        .open_stream(
-            now,
-            b"b-open".to_vec(),
-            None,
-            StreamConfig::default(),
-        )
+    let stream_id_b = harness
+        .b
+        .open_stream(now, b"b-open".to_vec(), None, StreamConfig::default())
         .unwrap();
 
     assert_ne!(stream_id_a, stream_id_b);
-    assert!(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()).matches(stream_id_a));
-    assert!(StreamNamespace::for_local(crypto_b.xid(), crypto_a.xid()).matches(stream_id_b));
+    assert!(StreamNamespace::for_local(
+        harness.a.engine.identity.xid,
+        harness.b.engine.identity.xid
+    )
+    .matches(stream_id_a));
+    assert!(StreamNamespace::for_local(
+        harness.b.engine.identity.xid,
+        harness.a.engine.identity.xid
+    )
+    .matches(stream_id_b));
 
-    let write_a = take_single_write(&mut a, &crypto_a);
-    let write_b = take_single_write(&mut b, &crypto_b);
+    let write_a = harness.a.take_next_write().unwrap();
+    let write_b = harness.b.take_next_write().unwrap();
 
-    let _ = complete_engine_write(&mut a, write_a.id, Ok(()));
-    let _ = complete_engine_write(&mut b, write_b.id, Ok(()));
+    let _ = harness.a.complete_write_collect(write_a.id, Ok(()));
+    let _ = harness.b.complete_write_collect(write_b.id, Ok(()));
 
-    let outputs_a_incoming =
-        run_engine(&mut a, now, EngineInput::Incoming(write_b.bytes), &crypto_a);
-    let outputs_b_incoming =
-        run_engine(&mut b, now, EngineInput::Incoming(write_a.bytes), &crypto_b);
+    let outputs_a_incoming = harness
+        .a
+        .run_tick_collect(now, EngineInput::Incoming(write_b.bytes));
+    let outputs_b_incoming = harness
+        .b
+        .run_tick_collect(now, EngineInput::Incoming(write_a.bytes));
 
     assert!(outputs_a_incoming.iter().any(|output| matches!(
         output,
@@ -466,27 +460,20 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
             ..
         } if *stream_id == stream_id_a && request_head == b"a-open"
     )));
-    assert_eq!(a.streams.len(), 2);
-    assert_eq!(b.streams.len(), 2);
+    assert_eq!(harness.a.streams.len(), 2);
+    assert_eq!(harness.b.streams.len(), 2);
 }
 
 #[test]
 fn invalid_future_frame_does_not_ack_outstanding_open() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(31);
-    let crypto_b = TestCrypto::new(32);
-    let peer_a = crypto_a.peer();
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([5; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
-    let mut _b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
-    a.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key: session_key.clone(),
-        keepalive: KeepAliveState::default(),
-    };
-
-    let now = Instant::now();
-    let stream_id = a
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 31, 5);
+    let stream_id = engine
         .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
         .unwrap();
 
@@ -510,50 +497,39 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
     let body = StreamBody::Message(message);
     let record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &body,
         [9; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let outputs_incoming = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&record)),
-        &crypto_a,
-    );
+    let outputs_incoming =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
 
     assert!(!outputs_incoming
         .iter()
         .any(|output| matches!(output, EngineOutput::InboundData { .. })));
 
-    let stream = a.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.get(&stream_id).unwrap();
     assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
 }
 
 #[test]
 fn ack_for_issued_open_is_applied_before_write_completion() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(33);
-    let crypto_b = TestCrypto::new(34);
-    let peer_a = crypto_a.peer();
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([7; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
-    let mut _b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
-    a.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key: session_key.clone(),
-        keepalive: KeepAliveState::default(),
-    };
-
-    let now = Instant::now();
-    let stream_id = a
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 33, 7);
+    let stream_id = engine
         .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
         .unwrap();
 
-    let _open_write = take_single_write(&mut a, &crypto_a);
+    let _open_write = engine.take_next_write().unwrap();
 
     let message = StreamMessage {
         tx_seq: StreamSeq::START,
@@ -573,20 +549,16 @@ fn ack_for_issued_open_is_applied_before_write_completion() {
     };
     let record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Message(message),
         [10; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let outputs_incoming = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&record)),
-        &crypto_a,
-    );
+    let outputs_incoming =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
 
     assert!(outputs_incoming.iter().any(|output| matches!(
         output,
@@ -596,40 +568,31 @@ fn ack_for_issued_open_is_applied_before_write_completion() {
             bytes,
         } if *id == stream_id && bytes == b"resp"
     )));
-    let stream = a.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.get(&stream_id).unwrap();
     assert!(!stream.control.in_flight.contains_key(&StreamSeq::START));
 }
 
 #[test]
 fn ack_does_not_retire_ready_data() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(35);
-    let crypto_b = TestCrypto::new(36);
-    let peer_a = crypto_a.peer();
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([8; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
-    let mut _b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
-    a.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key: session_key.clone(),
-        keepalive: KeepAliveState::default(),
-    };
-
-    let now = Instant::now();
-    let stream_id = a
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 35, 8);
+    let stream_id = engine
         .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
         .unwrap();
 
-    let _open_write = take_single_write(&mut a, &crypto_a);
-    let _ = run_engine(
-        &mut a,
+    let _open_write = engine.take_next_write().unwrap();
+    let _ = engine.run_tick_collect(
         now,
         EngineInput::OutboundData {
             stream_id,
             dir: Direction::Request,
             bytes: b"body".to_vec(),
         },
-        &crypto_a,
     );
 
     let message = StreamMessage {
@@ -650,20 +613,16 @@ fn ack_does_not_retire_ready_data() {
     };
     let record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Message(message),
         [11; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let outputs_incoming = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&record)),
-        &crypto_a,
-    );
+    let outputs_incoming =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
 
     assert!(outputs_incoming.iter().any(|output| matches!(
         output,
@@ -674,11 +633,11 @@ fn ack_does_not_retire_ready_data() {
         } if *id == stream_id && bytes == b"resp"
     )));
 
-    let stream = a.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.get(&stream_id).unwrap();
     assert!(!stream.control.in_flight.contains_key(&StreamSeq::START));
     assert!(stream.control.in_flight.contains_key(&StreamSeq(2)));
 
-    let write = take_single_write(&mut a, &crypto_a);
+    let write = engine.take_next_write().unwrap();
     let (_, body) = decode_stream_body(&write.bytes, &session_key);
     assert!(matches!(
         body,
@@ -697,29 +656,22 @@ fn ack_does_not_retire_ready_data() {
 #[test]
 fn late_failed_write_after_remote_close_ack_is_ignored() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(37);
-    let crypto_b = TestCrypto::new(38);
-    let peer_a = crypto_a.peer();
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([9; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
-    let mut _b = Engine::new(config, crypto_b.identity.clone(), Some(peer_a));
-    a.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key: session_key.clone(),
-        keepalive: KeepAliveState::default(),
-    };
-
-    let now = Instant::now();
-    let stream_id = a
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 37, 9);
+    let stream_id = engine
         .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
         .unwrap();
 
-    let open_write = take_single_write(&mut a, &crypto_a);
+    let open_write = engine.take_next_write().unwrap();
 
     let record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Message(StreamMessage {
@@ -739,12 +691,8 @@ fn late_failed_write_after_remote_close_ack_is_ignored() {
         [12; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let outputs_close = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&record)),
-        &crypto_a,
-    );
+    let outputs_close =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
 
     assert!(outputs_close.iter().any(|output| matches!(
         output,
@@ -772,29 +720,25 @@ fn late_failed_write_after_remote_close_ack_is_ignored() {
         } if *id == stream_id
             && payload.is_empty()
     )));
-    let stream = a.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.get(&stream_id).unwrap();
     assert!(!stream.control.in_flight.contains_key(&StreamSeq::START));
 
-    let outputs_late = complete_engine_write(&mut a, open_write.id, Err(QlError::SendFailed));
+    let outputs_late = engine.complete_write_collect(open_write.id, Err(QlError::SendFailed));
     assert!(outputs_late.is_empty());
-    assert!(a.streams.contains_key(&stream_id));
+    assert!(engine.streams.contains_key(&stream_id));
 }
 
 #[test]
 fn out_of_order_remote_stream_buffers_until_open_arrives() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(41);
-    let crypto_b = TestCrypto::new(42);
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([6; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
-    a.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key: session_key.clone(),
-        keepalive: KeepAliveState::default(),
-    };
-
-    let now = Instant::now();
-    let stream_id = StreamId(StreamNamespace::for_local(crypto_b.xid(), crypto_a.xid()).bit() | 1);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 41, 6);
+    let stream_id =
+        StreamId(StreamNamespace::for_local(peer.xid, engine.engine.identity.xid).bit() | 1);
 
     let data_message = StreamMessage {
         tx_seq: StreamSeq(2),
@@ -812,19 +756,17 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
     let data_body = StreamBody::Message(data_message);
     let data_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &data_body,
         [11; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let outputs_data = run_engine(
-        &mut a,
+    let outputs_data = engine.run_tick_collect(
         now,
         EngineInput::Incoming(wire::encode_record(&data_record)),
-        &crypto_a,
     );
 
     assert!(!outputs_data
@@ -833,8 +775,8 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
     assert!(!outputs_data
         .iter()
         .any(|output| matches!(output, EngineOutput::InboundData { .. })));
-    assert!(a.take_next_write(&crypto_a).is_some());
-    assert!(a
+    assert!(engine.take_next_write().is_some());
+    assert!(engine
         .streams
         .get(&stream_id)
         .is_some_and(StreamState::is_provisional));
@@ -852,19 +794,17 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
     let open_body = StreamBody::Message(open_message);
     let open_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &open_body,
         [12; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let outputs_open = run_engine(
-        &mut a,
+    let outputs_open = engine.run_tick_collect(
         now,
         EngineInput::Incoming(wire::encode_record(&open_record)),
-        &crypto_a,
     );
 
     assert!(outputs_open.iter().any(|output| matches!(
@@ -887,7 +827,7 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
 
 #[test]
 fn delayed_ack_only_does_not_consume_sequence_space() {
-    let mut harness = Harness::new(EngineConfig::default());
+    let mut harness = Harness::connected(EngineConfig::default());
     let stream_id = harness
         .a
         .open_stream(
@@ -897,14 +837,14 @@ fn delayed_ack_only_does_not_consume_sequence_space() {
             StreamConfig::default(),
         )
         .unwrap();
-    let open_write = take_single_write(&mut harness.a, &harness.crypto_a);
+    let open_write = harness.a.take_next_write().unwrap();
     harness.complete_side_write(Side::A, open_write.id, Ok(()));
     harness.run_side(Side::B, EngineInput::Incoming(open_write.bytes));
 
     harness.now += EngineConfig::default().stream_ack_delay;
-    harness.send_b(EngineInput::TimerExpired);
+    harness.run_side(Side::B, EngineInput::TimerExpired);
 
-    let _outputs_b = harness.drain_b();
+    let _outputs_b = harness.b.drain_outputs();
 
     let stream = harness.b.streams.get(&stream_id).unwrap();
     assert!(stream.control.in_flight.is_empty());
@@ -914,18 +854,14 @@ fn delayed_ack_only_does_not_consume_sequence_space() {
 #[test]
 fn half_window_progress_flushes_ack_before_timer() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(61);
-    let crypto_b = TestCrypto::new(62);
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([8; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
-    a.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key: session_key.clone(),
-        keepalive: KeepAliveState::default(),
-    };
-
-    let now = Instant::now();
-    let stream_id = StreamId(StreamNamespace::for_local(crypto_b.xid(), crypto_a.xid()).bit() | 1);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 61, 8);
+    let stream_id =
+        StreamId(StreamNamespace::for_local(peer.xid, engine.engine.identity.xid).bit() | 1);
     let messages = [
         StreamMessage {
             tx_seq: StreamSeq(1),
@@ -982,54 +918,46 @@ fn half_window_progress_flushes_ack_before_timer() {
         let body = StreamBody::Message(message.clone());
         let record = wire::stream::encrypt_stream(
             QlHeader {
-                sender: crypto_b.xid(),
-                recipient: crypto_a.xid(),
+                sender: peer.xid,
+                recipient: engine.engine.identity.xid,
             },
             &session_key,
             &body,
             [message.tx_seq.0 as u8; wire::encrypted_message::NONCE_SIZE],
         );
-        let _outputs = run_engine(
-            &mut a,
-            now,
-            EngineInput::Incoming(wire::encode_record(&record)),
-            &crypto_a,
-        );
-        assert!(a.take_next_write(&crypto_a).is_none());
+        let _outputs =
+            engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
+        assert!(engine.take_next_write().is_none());
     }
 
     let body = StreamBody::Message(messages[3].clone());
     let record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &body,
         [4; wire::encrypted_message::NONCE_SIZE],
     );
-    let _outputs = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&record)),
-        &crypto_a,
-    );
+    let _outputs =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
 
-    let ack_write = take_single_write(&mut a, &crypto_a);
+    let ack_write = engine.take_next_write().unwrap();
     let (_, ack_body) = decode_stream_body(&ack_write.bytes, &session_key);
     assert!(matches!(ack_body, StreamBody::Ack(_)));
 }
 
 #[test]
 fn out_of_order_loss_reports_selective_ack_bitmap() {
-    let crypto_a = TestCrypto::new(71);
-    let crypto_b = TestCrypto::new(72);
-    let session_key = SymmetricKey::from_data([3; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
-    let mut a = connected_engine(&crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let stream_id = StreamId(StreamNamespace::for_local(crypto_b.xid(), crypto_a.xid()).bit() | 1);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(EngineConfig::default(), 71, 3);
+    let stream_id =
+        StreamId(StreamNamespace::for_local(peer.xid, engine.engine.identity.xid).bit() | 1);
     let messages = [
         StreamMessage {
             tx_seq: StreamSeq(1),
@@ -1085,38 +1013,30 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
     for message in &messages[..2] {
         let record = wire::stream::encrypt_stream(
             QlHeader {
-                sender: crypto_b.xid(),
-                recipient: crypto_a.xid(),
+                sender: peer.xid,
+                recipient: engine.engine.identity.xid,
             },
             &session_key,
             &StreamBody::Message(message.clone()),
             [message.tx_seq.0 as u8; wire::encrypted_message::NONCE_SIZE],
         );
-        let _outputs = run_engine(
-            &mut a,
-            now,
-            EngineInput::Incoming(wire::encode_record(&record)),
-            &crypto_a,
-        );
-        assert!(a.take_next_write(&crypto_a).is_none());
+        let _outputs =
+            engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
+        assert!(engine.take_next_write().is_none());
     }
 
     let record4 = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Message(messages[2].clone()),
         [4; wire::encrypted_message::NONCE_SIZE],
     );
-    let outputs4 = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&record4)),
-        &crypto_a,
-    );
-    let ack_write4 = take_single_write(&mut a, &crypto_a);
+    let outputs4 =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record4)));
+    let ack_write4 = engine.take_next_write().unwrap();
     let (_, ack_body4) = decode_stream_body(&ack_write4.bytes, &session_key);
     assert!(matches!(
         ack_body4,
@@ -1132,24 +1052,20 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
     assert!(!outputs4
         .iter()
         .any(|output| matches!(output, EngineOutput::InboundData { .. })));
-    let _ = complete_engine_write(&mut a, ack_write4.id, Ok(()));
+    let _ = engine.complete_write_collect(ack_write4.id, Ok(()));
 
     let record5 = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Message(messages[3].clone()),
         [5; wire::encrypted_message::NONCE_SIZE],
     );
-    let outputs5 = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&record5)),
-        &crypto_a,
-    );
-    let ack_write5 = take_single_write(&mut a, &crypto_a);
+    let outputs5 =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record5)));
+    let ack_write5 = engine.take_next_write().unwrap();
     let (_, ack_body5) = decode_stream_body(&ack_write5.bytes, &session_key);
     assert!(matches!(
         ack_body5,
@@ -1169,22 +1085,22 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
 
 #[test]
 fn selective_ack_only_body_retires_acked_gap_tail() {
-    let crypto_a = TestCrypto::new(81);
-    let crypto_b = TestCrypto::new(82);
-    let session_key = SymmetricKey::from_data([2; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
-    let mut a = connected_engine(&crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let stream_id = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    insert_inflight_gap_stream(&mut a, stream_id, now);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(EngineConfig::default(), 81, 2);
+    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    insert_inflight_gap_stream(&mut engine, stream_id, now);
 
     let ack_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Ack(StreamAckBody {
@@ -1198,17 +1114,13 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
         [9; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let outputs = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&ack_record)),
-        &crypto_a,
-    );
+    let outputs =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&ack_record)));
 
     assert!(!outputs
         .iter()
         .any(|output| matches!(output, EngineOutput::OutboundFailed { .. })));
-    let stream = a.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
         .control
         .in_flight
@@ -1221,24 +1133,24 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
 
 #[test]
 fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
-    let crypto_a = TestCrypto::new(83);
-    let crypto_b = TestCrypto::new(84);
-    let session_key = SymmetricKey::from_data([9; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
     let mut config = EngineConfig::default();
     config.stream_fast_retransmit_threshold = 2;
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let stream_id = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    insert_inflight_gap_stream(&mut a, stream_id, now);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 83, 9);
+    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    insert_inflight_gap_stream(&mut engine, stream_id, now);
 
     let ack_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Ack(StreamAckBody {
@@ -1252,14 +1164,10 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
         [10; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let _outputs = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&ack_record)),
-        &crypto_a,
-    );
+    let _outputs =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&ack_record)));
 
-    let write = take_single_write(&mut a, &crypto_a);
+    let write = engine.take_next_write().unwrap();
     let (_, body) = decode_stream_body(&write.bytes, &session_key);
     assert!(matches!(
         body,
@@ -1273,7 +1181,7 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
         })
     ));
 
-    let stream = a.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
         .control
         .in_flight
@@ -1288,24 +1196,24 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
 
 #[test]
 fn fast_retransmit_respects_configured_threshold() {
-    let crypto_a = TestCrypto::new(85);
-    let crypto_b = TestCrypto::new(86);
-    let session_key = SymmetricKey::from_data([10; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
     let mut config = EngineConfig::default();
     config.stream_fast_retransmit_threshold = 3;
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let stream_id = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    insert_inflight_gap_stream(&mut a, stream_id, now);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 85, 10);
+    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    insert_inflight_gap_stream(&mut engine, stream_id, now);
 
     let ack_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Ack(StreamAckBody {
@@ -1319,19 +1227,15 @@ fn fast_retransmit_respects_configured_threshold() {
         [11; wire::encrypted_message::NONCE_SIZE],
     );
 
-    let _outputs = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&ack_record)),
-        &crypto_a,
-    );
+    let _outputs =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&ack_record)));
 
-    if let Some(write) = a.take_next_write(&crypto_a) {
+    if let Some(write) = engine.take_next_write() {
         let (_, body) = decode_stream_body(&write.bytes, &session_key);
         assert!(matches!(body, StreamBody::Ack(_)));
     }
 
-    let stream = a.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
         .control
         .in_flight
@@ -1350,17 +1254,16 @@ fn fast_retransmit_respects_configured_threshold() {
 #[test]
 fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(91);
-    let crypto_b = TestCrypto::new(92);
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([1; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = connected_engine(&crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let tracked_stream_id = a
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer: _,
+        session_key,
+    } = SingleEngineHarness::connected(config, 91, 1);
+    let tracked_stream_id = engine
         .open_stream(now, b"open".to_vec(), None, StreamConfig::default())
         .unwrap();
-    let write = take_single_write(&mut a, &crypto_a);
+    let write = engine.take_next_write().unwrap();
     let (_, initial_body) = decode_stream_body(&write.bytes, &session_key);
     assert!(matches!(
         &initial_body,
@@ -1370,20 +1273,16 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
             ..
         })
     ));
-    let _outputs_written = complete_engine_write(&mut a, write.id, Ok(()));
+    let _outputs_written = engine.complete_write_collect(write.id, Ok(()));
 
-    let stream = a.streams.get(&tracked_stream_id).unwrap();
+    let stream = engine.streams.get(&tracked_stream_id).unwrap();
     assert_eq!(stream.control.in_flight.len(), 1);
     assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
     assert_eq!(stream.control.next_tx_seq, StreamSeq(2));
 
-    let _outputs_timeout = run_engine(
-        &mut a,
-        now + config.stream_ack_timeout,
-        EngineInput::TimerExpired,
-        &crypto_a,
-    );
-    let retransmit_write = take_single_write(&mut a, &crypto_a);
+    let _outputs_timeout =
+        engine.run_tick_collect(now + config.stream_ack_timeout, EngineInput::TimerExpired);
+    let retransmit_write = engine.take_next_write().unwrap();
     let (_, retransmit_body) = decode_stream_body(&retransmit_write.bytes, &session_key);
     assert!(matches!(
         retransmit_body,
@@ -1394,7 +1293,7 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
         }) if stream_id == tracked_stream_id
     ));
 
-    let stream = a.streams.get(&tracked_stream_id).unwrap();
+    let stream = engine.streams.get(&tracked_stream_id).unwrap();
     assert_eq!(stream.control.in_flight.len(), 1);
     assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
     assert_eq!(stream.control.next_tx_seq, StreamSeq(2));
@@ -1411,19 +1310,25 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
 
 #[test]
 fn take_next_write_drains_multiple_stream_frames_before_completion() {
-    let crypto_a = TestCrypto::new(93);
-    let crypto_b = TestCrypto::new(94);
-    let session_key = SymmetricKey::from_data([12; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
-    let mut a = connected_engine(&crypto_a, peer_b, session_key.clone());
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(EngineConfig::default(), 93, 12);
+    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    insert_unwritten_inflight_stream_with_data(&mut engine, stream_id, now, &[2, 3]);
 
-    let now = Instant::now();
-    let stream_id = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    insert_unwritten_inflight_stream_with_data(&mut a, stream_id, now, &[2, 3]);
-
-    let writes = take_all_writes(&mut a, &crypto_a);
+    let writes = {
+        let mut writes = Vec::new();
+        while let Some(write) = engine.take_next_write() {
+            writes.push(write);
+        }
+        writes
+    };
     assert_eq!(writes.len(), 3);
 
     let tx_seqs: Vec<_> = writes
@@ -1439,10 +1344,10 @@ fn take_next_write_drains_multiple_stream_frames_before_completion() {
 
     let unique_ids: std::collections::HashSet<_> = writes.iter().map(|write| write.id).collect();
     assert_eq!(unique_ids.len(), writes.len());
-    assert_eq!(a.state.active_writes.len(), writes.len());
-    assert!(a.take_next_write(&crypto_a).is_none());
+    assert_eq!(engine.state.active_writes.len(), writes.len());
+    assert!(engine.take_next_write().is_none());
 
-    let stream = a.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.get(&stream_id).unwrap();
     assert!(stream
         .control
         .in_flight
@@ -1452,50 +1357,57 @@ fn take_next_write_drains_multiple_stream_frames_before_completion() {
 
 #[test]
 fn take_next_write_does_not_reissue_outstanding_frame() {
-    let crypto_a = TestCrypto::new(95);
-    let crypto_b = TestCrypto::new(96);
-    let session_key = SymmetricKey::from_data([13; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
-    let mut a = connected_engine(&crypto_a, peer_b, session_key);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key: _session_key,
+    } = SingleEngineHarness::connected(EngineConfig::default(), 95, 13);
+    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    insert_unwritten_inflight_stream_with_data(&mut engine, stream_id, now, &[]);
 
-    let now = Instant::now();
-    let stream_id = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    insert_unwritten_inflight_stream_with_data(&mut a, stream_id, now, &[]);
-
-    let write = take_single_write(&mut a, &crypto_a);
-    assert!(a.take_next_write(&crypto_a).is_none());
-    assert!(a.state.active_writes.contains_key(&write.id));
+    let write = engine.take_next_write().unwrap();
+    assert!(engine.take_next_write().is_none());
+    assert!(engine.state.active_writes.contains_key(&write.id));
 }
 
 #[test]
 fn take_next_write_round_robins_across_ready_streams() {
-    let crypto_a = TestCrypto::new(97);
-    let crypto_b = TestCrypto::new(98);
-    let session_key = SymmetricKey::from_data([14; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
-    let mut a = connected_engine(&crypto_a, peer_b, session_key.clone());
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(EngineConfig::default(), 97, 14);
+    let stream_id1 = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    let stream_id2 = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    insert_unwritten_inflight_stream_with_data(&mut engine, stream_id1, now, &[2]);
+    insert_unwritten_inflight_stream_with_data(&mut engine, stream_id2, now, &[2]);
 
-    let now = Instant::now();
-    let stream_id1 = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    let stream_id2 = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    insert_unwritten_inflight_stream_with_data(&mut a, stream_id1, now, &[2]);
-    insert_unwritten_inflight_stream_with_data(&mut a, stream_id2, now, &[2]);
-
-    let scheduled: Vec<_> = take_all_writes(&mut a, &crypto_a)
-        .into_iter()
-        .map(
-            |write| match decode_stream_body(&write.bytes, &session_key).1 {
-                StreamBody::Message(message) => (message.frame.stream_id(), message.tx_seq),
-                other => panic!("expected stream message, got {other:?}"),
-            },
-        )
-        .collect();
+    let scheduled: Vec<_> = {
+        let mut writes = Vec::new();
+        while let Some(write) = engine.take_next_write() {
+            writes.push(write);
+        }
+        writes
+    }
+    .into_iter()
+    .map(
+        |write| match decode_stream_body(&write.bytes, &session_key).1 {
+            StreamBody::Message(message) => (message.frame.stream_id(), message.tx_seq),
+            other => panic!("expected stream message, got {other:?}"),
+        },
+    )
+    .collect();
 
     assert_eq!(
         scheduled,
@@ -1510,7 +1422,7 @@ fn take_next_write_round_robins_across_ready_streams() {
 
 #[test]
 fn stale_ack_delay_timer_after_piggyback_does_not_emit_extra_ack_only() {
-    let mut harness = Harness::new(EngineConfig::default());
+    let mut harness = Harness::connected(EngineConfig::default());
     let stream_id = harness
         .a
         .open_stream(
@@ -1520,43 +1432,46 @@ fn stale_ack_delay_timer_after_piggyback_does_not_emit_extra_ack_only() {
             StreamConfig::default(),
         )
         .unwrap();
-    let open_write = take_single_write(&mut harness.a, &harness.crypto_a);
+    let open_write = harness.a.take_next_write().unwrap();
     harness.complete_side_write(Side::A, open_write.id, Ok(()));
     harness.run_side(Side::B, EngineInput::Incoming(open_write.bytes));
-    let _ = harness.drain_a();
-    let _ = harness.drain_b();
+    let _ = harness.a.drain_outputs();
+    let _ = harness.b.drain_outputs();
 
-    harness.send_b(EngineInput::OutboundData {
-        stream_id,
-        dir: Direction::Response,
-        bytes: b"resp".to_vec(),
-    });
-    let _ = harness.drain_a();
-    let _ = harness.drain_b();
+    harness.run_side(
+        Side::B,
+        EngineInput::OutboundData {
+            stream_id,
+            dir: Direction::Response,
+            bytes: b"resp".to_vec(),
+        },
+    );
+    let _ = harness.a.drain_outputs();
+    let _ = harness.b.drain_outputs();
 
     harness.now += EngineConfig::default().stream_ack_delay;
-    harness.send_b(EngineInput::TimerExpired);
-    let _outputs_b_timer = harness.drain_b();
+    harness.run_side(Side::B, EngineInput::TimerExpired);
+    let _outputs_b_timer = harness.b.drain_outputs();
 
-    assert!(harness.b.take_next_write(&harness.crypto_b).is_none());
+    assert!(harness.b.take_next_write().is_none());
 }
 
 #[test]
 fn provisional_timeout_after_late_open_is_ignored() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(63);
-    let crypto_b = TestCrypto::new(64);
-    let session_key = SymmetricKey::from_data([11; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let stream_id = StreamId(StreamNamespace::for_local(crypto_b.xid(), crypto_a.xid()).bit() | 1);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 63, 11);
+    let stream_id =
+        StreamId(StreamNamespace::for_local(peer.xid, engine.engine.identity.xid).bit() | 1);
 
     let early_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Message(StreamMessage {
@@ -1574,17 +1489,15 @@ fn provisional_timeout_after_late_open_is_ignored() {
         }),
         [31; wire::encrypted_message::NONCE_SIZE],
     );
-    let _ = run_engine(
-        &mut a,
+    let _ = engine.run_tick_collect(
         now,
         EngineInput::Incoming(wire::encode_record(&early_record)),
-        &crypto_a,
     );
 
     let open_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Message(StreamMessage {
@@ -1599,29 +1512,23 @@ fn provisional_timeout_after_late_open_is_ignored() {
         }),
         [32; wire::encrypted_message::NONCE_SIZE],
     );
-    let outputs_open = run_engine(
-        &mut a,
+    let outputs_open = engine.run_tick_collect(
         now,
         EngineInput::Incoming(wire::encode_record(&open_record)),
-        &crypto_a,
     );
     assert!(outputs_open.iter().any(|output| matches!(
         output,
         EngineOutput::InboundStreamOpened { stream_id: id, .. } if *id == stream_id
     )));
 
-    let _outputs_timeout = run_engine(
-        &mut a,
-        now + config.packet_expiration,
-        EngineInput::TimerExpired,
-        &crypto_a,
-    );
+    let _outputs_timeout =
+        engine.run_tick_collect(now + config.packet_expiration, EngineInput::TimerExpired);
 
     assert!(matches!(
-        a.streams.get(&stream_id).map(|stream| &stream.role),
+        engine.streams.get(&stream_id).map(|stream| &stream.role),
         Some(StreamRole::Responder(_))
     ));
-    if let Some(write) = a.take_next_write(&crypto_a) {
+    if let Some(write) = engine.take_next_write() {
         let (_, body) = decode_stream_body(&write.bytes, &session_key);
         assert!(!matches!(
             body,
@@ -1636,18 +1543,18 @@ fn provisional_timeout_after_late_open_is_ignored() {
 #[test]
 fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(65);
-    let crypto_b = TestCrypto::new(66);
-    let session_key = SymmetricKey::from_data([12; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let stream_id = StreamId(StreamNamespace::for_local(crypto_b.xid(), crypto_a.xid()).bit() | 1);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 65, 12);
+    let stream_id =
+        StreamId(StreamNamespace::for_local(peer.xid, engine.engine.identity.xid).bit() | 1);
     let open_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Message(StreamMessage {
@@ -1662,24 +1569,18 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
         }),
         [33; wire::encrypted_message::NONCE_SIZE],
     );
-    let outputs_open = run_engine(
-        &mut a,
+    let outputs_open = engine.run_tick_collect(
         now,
         EngineInput::Incoming(wire::encode_record(&open_record)),
-        &crypto_a,
     );
     assert!(outputs_open.iter().any(|output| matches!(
         output,
         EngineOutput::InboundStreamOpened { stream_id: id, .. } if *id == stream_id
     )));
 
-    let _outputs_ack = run_engine(
-        &mut a,
-        now + config.stream_ack_delay,
-        EngineInput::TimerExpired,
-        &crypto_a,
-    );
-    let ack_write = take_single_write(&mut a, &crypto_a);
+    let _outputs_ack =
+        engine.run_tick_collect(now + config.stream_ack_delay, EngineInput::TimerExpired);
+    let ack_write = engine.take_next_write().unwrap();
     let (_, ack_body) = decode_stream_body(&ack_write.bytes, &session_key);
     assert!(matches!(
         ack_body,
@@ -1693,12 +1594,11 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
         }) if id == stream_id
     ));
 
-    let outputs_failed = complete_engine_write(&mut a, ack_write.id, Err(QlError::SendFailed));
-    assert!(!outputs_failed.iter().any(|output| matches!(
-        output,
-        EngineOutput::StreamReaped { .. }
-    )));
-    let retry_write = take_single_write(&mut a, &crypto_a);
+    let outputs_failed = engine.complete_write_collect(ack_write.id, Err(QlError::SendFailed));
+    assert!(!outputs_failed
+        .iter()
+        .any(|output| matches!(output, EngineOutput::StreamReaped { .. })));
+    let retry_write = engine.take_next_write().unwrap();
     let (_, retry_body) = decode_stream_body(&retry_write.bytes, &session_key);
     assert!(matches!(
         retry_body,
@@ -1712,19 +1612,17 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
         }) if id == stream_id
     ));
 
-    let _ = complete_engine_write(&mut a, retry_write.id, Ok(()));
+    let _ = engine.complete_write_collect(retry_write.id, Ok(()));
 
-    let _outputs_data = run_engine(
-        &mut a,
+    let _outputs_data = engine.run_tick_collect(
         now + config.stream_ack_delay,
         EngineInput::OutboundData {
             stream_id,
             dir: Direction::Response,
             bytes: b"resp".to_vec(),
         },
-        &crypto_a,
     );
-    let response_write = take_single_write(&mut a, &crypto_a);
+    let response_write = engine.take_next_write().unwrap();
     let (_, body) = decode_stream_body(&response_write.bytes, &session_key);
     assert!(matches!(
         body,
@@ -1738,21 +1636,21 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
             ..
         }) if id == stream_id && bytes == b"resp"
     ));
-    let stream = a.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.get(&stream_id).unwrap();
     assert_eq!(stream.control.next_tx_seq, StreamSeq(2));
 }
 
 #[test]
 fn duplicate_committed_data_is_acked_without_redelivery() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(67);
-    let crypto_b = TestCrypto::new(68);
-    let session_key = SymmetricKey::from_data([13; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let stream_id = StreamId(StreamNamespace::for_local(crypto_b.xid(), crypto_a.xid()).bit() | 1);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 67, 13);
+    let stream_id =
+        StreamId(StreamNamespace::for_local(peer.xid, engine.engine.identity.xid).bit() | 1);
 
     for (nonce, body) in [
         (
@@ -1787,25 +1685,20 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
     ] {
         let record = wire::stream::encrypt_stream(
             QlHeader {
-                sender: crypto_b.xid(),
-                recipient: crypto_a.xid(),
+                sender: peer.xid,
+                recipient: engine.engine.identity.xid,
             },
             &session_key,
             &body,
             [nonce; wire::encrypted_message::NONCE_SIZE],
         );
-        let _ = run_engine(
-            &mut a,
-            now,
-            EngineInput::Incoming(wire::encode_record(&record)),
-            &crypto_a,
-        );
+        let _ = engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
     }
 
     let duplicate_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Message(StreamMessage {
@@ -1823,17 +1716,15 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
         }),
         [36; wire::encrypted_message::NONCE_SIZE],
     );
-    let outputs_dup = run_engine(
-        &mut a,
+    let outputs_dup = engine.run_tick_collect(
         now,
         EngineInput::Incoming(wire::encode_record(&duplicate_record)),
-        &crypto_a,
     );
 
     assert!(!outputs_dup
         .iter()
         .any(|output| matches!(output, EngineOutput::InboundData { .. })));
-    let ack_write = take_single_write(&mut a, &crypto_a);
+    let ack_write = engine.take_next_write().unwrap();
     let (_, body) = decode_stream_body(&ack_write.bytes, &session_key);
     assert!(matches!(
         body,
@@ -1850,25 +1741,27 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
 
 #[test]
 fn repeated_identical_gap_ack_only_fast_retransmits_once() {
-    let crypto_a = TestCrypto::new(69);
-    let crypto_b = TestCrypto::new(70);
-    let session_key = SymmetricKey::from_data([14; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
     let mut config = EngineConfig::default();
     config.stream_fast_retransmit_threshold = 2;
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 69, 14);
+    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    insert_inflight_gap_stream(&mut engine, stream_id, now);
 
-    let now = Instant::now();
-    let stream_id = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    insert_inflight_gap_stream(&mut a, stream_id, now);
-
+    let local_xid = engine.engine.identity.xid;
+    let remote_xid = peer.xid;
     let ack_record = |nonce: u8| {
         wire::stream::encrypt_stream(
             QlHeader {
-                sender: crypto_b.xid(),
-                recipient: crypto_a.xid(),
+                sender: remote_xid,
+                recipient: local_xid,
             },
             &session_key,
             &StreamBody::Ack(StreamAckBody {
@@ -1883,13 +1776,11 @@ fn repeated_identical_gap_ack_only_fast_retransmits_once() {
         )
     };
 
-    let _outputs_first = run_engine(
-        &mut a,
+    let _outputs_first = engine.run_tick_collect(
         now,
         EngineInput::Incoming(wire::encode_record(&ack_record(37))),
-        &crypto_a,
     );
-    let write = take_single_write(&mut a, &crypto_a);
+    let write = engine.take_next_write().unwrap();
     let (_, body) = decode_stream_body(&write.bytes, &session_key);
     assert!(matches!(
         body,
@@ -1899,37 +1790,35 @@ fn repeated_identical_gap_ack_only_fast_retransmits_once() {
         })
     ));
 
-    let _ = complete_engine_write(&mut a, write.id, Ok(()));
+    let _ = engine.complete_write_collect(write.id, Ok(()));
 
-    let _outputs_second = run_engine(
-        &mut a,
+    let _outputs_second = engine.run_tick_collect(
         now,
         EngineInput::Incoming(wire::encode_record(&ack_record(38))),
-        &crypto_a,
     );
-    assert!(a.take_next_write(&crypto_a).is_none());
+    assert!(engine.take_next_write().is_none());
 }
 
 #[test]
 fn fast_recovery_clears_after_gap_is_acked_and_allows_next_gap() {
-    let crypto_a = TestCrypto::new(73);
-    let crypto_b = TestCrypto::new(74);
-    let session_key = SymmetricKey::from_data([15; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
     let mut config = EngineConfig::default();
     config.stream_fast_retransmit_threshold = 1;
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let stream_id = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    insert_inflight_stream_with_data(&mut a, stream_id, now, &[2, 3, 4, 5, 6]);
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 73, 15);
+    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    insert_inflight_stream_with_data(&mut engine, stream_id, now, &[2, 3, 4, 5, 6]);
 
     let first_ack = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Ack(StreamAckBody {
@@ -1942,13 +1831,9 @@ fn fast_recovery_clears_after_gap_is_acked_and_allows_next_gap() {
         }),
         [39; wire::encrypted_message::NONCE_SIZE],
     );
-    let _outputs_first = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&first_ack)),
-        &crypto_a,
-    );
-    let write_first = take_single_write(&mut a, &crypto_a);
+    let _outputs_first =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&first_ack)));
+    let write_first = engine.take_next_write().unwrap();
     let (_, first_body) = decode_stream_body(&write_first.bytes, &session_key);
     assert!(matches!(
         first_body,
@@ -1958,12 +1843,12 @@ fn fast_recovery_clears_after_gap_is_acked_and_allows_next_gap() {
         })
     ));
 
-    let _ = complete_engine_write(&mut a, write_first.id, Ok(()));
+    let _ = engine.complete_write_collect(write_first.id, Ok(()));
 
     let second_ack = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Ack(StreamAckBody {
@@ -1976,13 +1861,9 @@ fn fast_recovery_clears_after_gap_is_acked_and_allows_next_gap() {
         }),
         [40; wire::encrypted_message::NONCE_SIZE],
     );
-    let _outputs_second = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&second_ack)),
-        &crypto_a,
-    );
-    let write_second = take_single_write(&mut a, &crypto_a);
+    let _outputs_second =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&second_ack)));
+    let write_second = engine.take_next_write().unwrap();
     let (_, second_body) = decode_stream_body(&write_second.bytes, &session_key);
     assert!(matches!(
         second_body,
@@ -1995,20 +1876,21 @@ fn fast_recovery_clears_after_gap_is_acked_and_allows_next_gap() {
 
 #[test]
 fn fast_retransmit_and_retry_deadline_same_tick_only_send_once() {
-    let crypto_a = TestCrypto::new(75);
-    let crypto_b = TestCrypto::new(76);
-    let session_key = SymmetricKey::from_data([16; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
     let mut config = EngineConfig::default();
     config.stream_fast_retransmit_threshold = 2;
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
-
-    let now = Instant::now();
-    let stream_id = a
-        .state
-        .next_stream_id(StreamNamespace::for_local(crypto_a.xid(), crypto_b.xid()));
-    insert_inflight_gap_stream(&mut a, stream_id, now);
-    a.streams
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 75, 16);
+    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
+        engine.engine.identity.xid,
+        peer.xid,
+    ));
+    insert_inflight_gap_stream(&mut engine, stream_id, now);
+    engine
+        .streams
         .get_mut(&stream_id)
         .unwrap()
         .control
@@ -2016,8 +1898,8 @@ fn fast_retransmit_and_retry_deadline_same_tick_only_send_once() {
 
     let ack_record = wire::stream::encrypt_stream(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         &StreamBody::Ack(StreamAckBody {
@@ -2030,31 +1912,27 @@ fn fast_retransmit_and_retry_deadline_same_tick_only_send_once() {
         }),
         [41; wire::encrypted_message::NONCE_SIZE],
     );
-    let _outputs_ack = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&ack_record)),
-        &crypto_a,
-    );
-    let _write = take_single_write(&mut a, &crypto_a);
-    assert!(a.take_next_write(&crypto_a).is_none());
+    let _outputs_ack =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&ack_record)));
+    let _write = engine.take_next_write().unwrap();
+    assert!(engine.take_next_write().is_none());
 
-    let _outputs_timeout = run_engine(&mut a, now, EngineInput::TimerExpired, &crypto_a);
-    assert!(a.take_next_write(&crypto_a).is_none());
+    let _outputs_timeout = engine.run_tick_collect(now, EngineInput::TimerExpired);
+    assert!(engine.take_next_write().is_none());
 }
 
 #[test]
 fn replayed_heartbeat_is_ignored() {
-    let crypto_a = TestCrypto::new(101);
-    let crypto_b = TestCrypto::new(102);
-    let session_key = SymmetricKey::from_data([4; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let peer_b = crypto_b.peer();
-    let mut a = connected_engine(&crypto_a, peer_b, session_key.clone());
-    let now = Instant::now();
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(EngineConfig::default(), 101, 4);
     let heartbeat = wire::heartbeat::encrypt_heartbeat(
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         &session_key,
         wire::heartbeat::HeartbeatBody {
@@ -2067,14 +1945,14 @@ fn replayed_heartbeat_is_ignored() {
     );
     let bytes = wire::encode_record(&heartbeat);
 
-    let _first = run_engine(&mut a, now, EngineInput::Incoming(bytes.clone()), &crypto_a);
-    let first_write = take_single_write(&mut a, &crypto_a);
+    let _first = engine.run_tick_collect(now, EngineInput::Incoming(bytes.clone()));
+    let first_write = engine.take_next_write().unwrap();
     let first_record = wire::decode_record(&first_write.bytes).unwrap();
     assert!(matches!(first_record.payload, QlPayload::Heartbeat(_)));
-    let _ = complete_engine_write(&mut a, first_write.id, Ok(()));
+    let _ = engine.complete_write_collect(first_write.id, Ok(()));
 
-    let _second = run_engine(&mut a, now, EngineInput::Incoming(bytes), &crypto_a);
-    assert!(a.take_next_write(&crypto_a).is_none());
+    let _second = engine.run_tick_collect(now, EngineInput::Incoming(bytes));
+    assert!(engine.take_next_write().is_none());
 }
 
 #[test]
@@ -2082,25 +1960,26 @@ fn handshake_deadline_is_derived_from_peer_state() {
     let mut config = EngineConfig::default();
     config.handshake_timeout = Duration::from_secs(5);
 
-    let crypto_a = TestCrypto::new(103);
-    let crypto_b = TestCrypto::new(104);
-    let peer_b = crypto_b.peer();
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b));
+    let identity = test_identity();
+    let peer_identity = test_identity();
+    let mut engine = EngineWrapper::new(
+        Engine::new(
+            config,
+            identity.clone(),
+            Some(peer_from_identity(&peer_identity)),
+        ),
+        TestCrypto::new(103),
+    );
     let now = Instant::now();
 
-    let _outputs = run_engine(&mut a, now, EngineInput::Connect, &crypto_a);
-    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
+    let _outputs = engine.run_tick_collect(now, EngineInput::Connect);
+    assert_eq!(engine.next_deadline(), Some(now + Duration::from_secs(5)));
 
-    let write = take_single_write(&mut a, &crypto_a);
-    let _outputs = complete_engine_write(&mut a, write.id, Ok(()));
-    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
+    let write = engine.take_next_write().unwrap();
+    let _outputs = engine.complete_write_collect(write.id, Ok(()));
+    assert_eq!(engine.next_deadline(), Some(now + Duration::from_secs(5)));
 
-    let outputs = run_engine(
-        &mut a,
-        now + Duration::from_secs(4),
-        EngineInput::TimerExpired,
-        &crypto_a,
-    );
+    let outputs = engine.run_tick_collect(now + Duration::from_secs(4), EngineInput::TimerExpired);
     assert!(!outputs.iter().any(|output| {
         matches!(
             output,
@@ -2110,14 +1989,9 @@ fn handshake_deadline_is_derived_from_peer_state() {
             }
         )
     }));
-    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
+    assert_eq!(engine.next_deadline(), Some(now + Duration::from_secs(5)));
 
-    let outputs = run_engine(
-        &mut a,
-        now + Duration::from_secs(5),
-        EngineInput::TimerExpired,
-        &crypto_a,
-    );
+    let outputs = engine.run_tick_collect(now + Duration::from_secs(5), EngineInput::TimerExpired);
     assert!(outputs.iter().any(|output| {
         matches!(
             output,
@@ -2136,55 +2010,40 @@ fn keepalive_deadline_is_derived_from_peer_state() {
         interval: Duration::from_secs(5),
         timeout: Duration::from_secs(7),
     });
-
-    let crypto_a = TestCrypto::new(103);
-    let crypto_b = TestCrypto::new(104);
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([6; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = connected_engine_with_config(config, &crypto_a, peer_b, session_key.clone());
-    let now = Instant::now();
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key,
+    } = SingleEngineHarness::connected(config, 103, 6);
 
     let heartbeat = encrypt_heartbeat_record(
-        crypto_b.xid(),
-        crypto_a.xid(),
+        peer.xid,
+        engine.engine.identity.xid,
         &session_key,
         1,
         [7; wire::encrypted_message::NONCE_SIZE],
     );
-    let outputs = run_engine(
-        &mut a,
-        now,
-        EngineInput::Incoming(wire::encode_record(&heartbeat)),
-        &crypto_a,
-    );
+    let outputs =
+        engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&heartbeat)));
     let _ = outputs;
-    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(5)));
+    assert_eq!(engine.next_deadline(), Some(now + Duration::from_secs(5)));
 
-    let write = take_single_write(&mut a, &crypto_a);
+    let write = engine.take_next_write().unwrap();
     let record = wire::decode_record(&write.bytes).unwrap();
     assert!(matches!(record.payload, QlPayload::Heartbeat(_)));
-    let _ = complete_engine_write(&mut a, write.id, Ok(()));
+    let _ = engine.complete_write_collect(write.id, Ok(()));
 
-    let outputs = run_engine(
-        &mut a,
-        now + Duration::from_secs(5),
-        EngineInput::TimerExpired,
-        &crypto_a,
-    );
+    let outputs = engine.run_tick_collect(now + Duration::from_secs(5), EngineInput::TimerExpired);
     let _ = outputs;
-    assert_eq!(a.next_deadline(), Some(now + Duration::from_secs(12)));
+    assert_eq!(engine.next_deadline(), Some(now + Duration::from_secs(12)));
 
-    let write = take_single_write(&mut a, &crypto_a);
+    let write = engine.take_next_write().unwrap();
     let record = wire::decode_record(&write.bytes).unwrap();
     assert!(matches!(record.payload, QlPayload::Heartbeat(_)));
-    let _ = complete_engine_write(&mut a, write.id, Ok(()));
+    let _ = engine.complete_write_collect(write.id, Ok(()));
 
-    let outputs = run_engine(
-        &mut a,
-        now + Duration::from_secs(12),
-        EngineInput::TimerExpired,
-        &crypto_a,
-    );
+    let outputs = engine.run_tick_collect(now + Duration::from_secs(12), EngineInput::TimerExpired);
     assert!(outputs.iter().any(|output| {
         matches!(
             output,
@@ -2199,21 +2058,18 @@ fn keepalive_deadline_is_derived_from_peer_state() {
 #[test]
 fn replayed_unpair_is_ignored_after_rebind() {
     let config = EngineConfig::default();
-    let crypto_a = TestCrypto::new(111);
-    let crypto_b = TestCrypto::new(112);
-    let peer_b = crypto_b.peer();
-    let session_key = SymmetricKey::from_data([5; SymmetricKey::SYMMETRIC_KEY_SIZE]);
-    let mut a = Engine::new(config, crypto_a.identity.clone(), Some(peer_b.clone()));
-    a.peer.as_mut().unwrap().session = PeerSession::Connected {
-        session_key,
-        keepalive: KeepAliveState::default(),
-    };
-    let now = Instant::now();
+    let SingleEngineHarness {
+        now,
+        mut engine,
+        peer,
+        session_key: _session_key,
+    } = SingleEngineHarness::connected(config, 111, 5);
+    let peer_b = peer_from_identity(&peer);
     let bytes = wire::encode_record(&wire::unpair::build_unpair_record(
-        &crypto_b.identity,
+        &peer,
         QlHeader {
-            sender: crypto_b.xid(),
-            recipient: crypto_a.xid(),
+            sender: peer.xid,
+            recipient: engine.engine.identity.xid,
         },
         wire::ControlMeta {
             packet_id: PacketId(9),
@@ -2221,23 +2077,21 @@ fn replayed_unpair_is_ignored_after_rebind() {
         },
     ));
 
-    let first = run_engine(&mut a, now, EngineInput::Incoming(bytes.clone()), &crypto_a);
+    let first = engine.run_tick_collect(now, EngineInput::Incoming(bytes.clone()));
     assert!(first
         .iter()
         .any(|output| matches!(output, EngineOutput::ClearPeer)));
-    assert!(a.peer.is_none());
+    assert!(engine.peer.is_none());
 
-    let _ = run_engine(
-        &mut a,
-        now,
-        EngineInput::BindPeer(peer_b.clone()),
-        &crypto_a,
-    );
-    assert!(a.peer.is_some());
+    let _ = engine.run_tick_collect(now, EngineInput::BindPeer(peer_b.clone()));
+    assert!(engine.peer.is_some());
 
-    let second = run_engine(&mut a, now, EngineInput::Incoming(bytes), &crypto_a);
+    let second = engine.run_tick_collect(now, EngineInput::Incoming(bytes));
     assert!(!second
         .iter()
         .any(|output| matches!(output, EngineOutput::ClearPeer)));
-    assert_eq!(a.peer.as_ref().map(|peer| peer.peer), Some(peer_b.peer));
+    assert_eq!(
+        engine.peer.as_ref().map(|peer| peer.peer),
+        Some(peer_b.peer)
+    );
 }
