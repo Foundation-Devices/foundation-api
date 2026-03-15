@@ -47,7 +47,7 @@ impl From<&ArchivedStreamAckBody> for StreamAckBody {
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StreamMessage {
     pub tx_seq: StreamSeq,
-    pub ack: Option<StreamAck>,
+    pub ack: StreamAck,
     pub valid_until: u64,
     pub frame: StreamFrame,
 }
@@ -65,6 +65,13 @@ impl From<&ArchivedStreamAck> for StreamAck {
             bitmap: value.bitmap,
         }
     }
+}
+
+impl StreamAck {
+    pub const EMPTY: Self = Self {
+        base: StreamSeq(0),
+        bitmap: 0,
+    };
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

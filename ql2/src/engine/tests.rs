@@ -698,10 +698,10 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
 
     let message = StreamMessage {
         tx_seq: StreamSeq(2),
-        ack: Some(crate::wire::stream::StreamAck {
+        ack: crate::wire::stream::StreamAck {
             base: StreamSeq(0),
             bitmap: 0,
-        }),
+        },
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Accept(StreamFrameAccept {
             stream_id,
@@ -781,10 +781,10 @@ fn ack_for_issued_open_is_accepted_before_write_completion() {
 
     let message = StreamMessage {
         tx_seq: StreamSeq::START,
-        ack: Some(StreamAck {
+        ack: StreamAck {
             base: StreamSeq::START,
             bitmap: 0,
-        }),
+        },
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Accept(StreamFrameAccept {
             stream_id,
@@ -877,10 +877,10 @@ fn ack_does_not_retire_ready_data() {
 
     let message = StreamMessage {
         tx_seq: StreamSeq::START,
-        ack: Some(StreamAck {
+        ack: StreamAck {
             base: StreamSeq(2),
             bitmap: 0,
-        }),
+        },
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Accept(StreamFrameAccept {
             stream_id,
@@ -980,7 +980,7 @@ fn late_failed_write_after_protocol_reset_is_ignored() {
         &session_key,
         &StreamBody::Message(StreamMessage {
             tx_seq: StreamSeq::START,
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
@@ -1049,7 +1049,7 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
 
     let data_message = StreamMessage {
         tx_seq: StreamSeq(2),
-        ack: None,
+        ack: StreamAck::EMPTY,
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
             stream_id,
@@ -1092,7 +1092,7 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
 
     let open_message = StreamMessage {
         tx_seq: StreamSeq(1),
-        ack: None,
+        ack: StreamAck::EMPTY,
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Open(crate::wire::stream::StreamFrameOpen {
             stream_id,
@@ -1171,7 +1171,7 @@ fn out_of_order_response_data_waits_for_accept() {
 
     let data_message = StreamMessage {
         tx_seq: StreamSeq(2),
-        ack: None,
+        ack: StreamAck::EMPTY,
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
             stream_id,
@@ -1208,7 +1208,7 @@ fn out_of_order_response_data_waits_for_accept() {
 
     let accept_message = StreamMessage {
         tx_seq: StreamSeq(1),
-        ack: None,
+        ack: StreamAck::EMPTY,
         valid_until: wire::now_secs().saturating_add(60),
         frame: StreamFrame::Accept(StreamFrameAccept {
             stream_id,
@@ -1302,7 +1302,7 @@ fn half_window_progress_flushes_ack_before_timer() {
     let messages = [
         StreamMessage {
             tx_seq: StreamSeq(1),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Open(crate::wire::stream::StreamFrameOpen {
                 stream_id,
@@ -1312,7 +1312,7 @@ fn half_window_progress_flushes_ack_before_timer() {
         },
         StreamMessage {
             tx_seq: StreamSeq(2),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
                 stream_id,
@@ -1325,7 +1325,7 @@ fn half_window_progress_flushes_ack_before_timer() {
         },
         StreamMessage {
             tx_seq: StreamSeq(3),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
                 stream_id,
@@ -1338,7 +1338,7 @@ fn half_window_progress_flushes_ack_before_timer() {
         },
         StreamMessage {
             tx_seq: StreamSeq(4),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(crate::wire::stream::StreamFrameData {
                 stream_id,
@@ -1406,7 +1406,7 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
     let messages = [
         StreamMessage {
             tx_seq: StreamSeq(1),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Open(StreamFrameOpen {
                 stream_id,
@@ -1416,7 +1416,7 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
         },
         StreamMessage {
             tx_seq: StreamSeq(2),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
@@ -1429,7 +1429,7 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
         },
         StreamMessage {
             tx_seq: StreamSeq(4),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
@@ -1442,7 +1442,7 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
         },
         StreamMessage {
             tx_seq: StreamSeq(5),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
@@ -1953,7 +1953,7 @@ fn provisional_timeout_after_late_open_is_ignored() {
         &session_key,
         &StreamBody::Message(StreamMessage {
             tx_seq: StreamSeq(2),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
@@ -1981,7 +1981,7 @@ fn provisional_timeout_after_late_open_is_ignored() {
         &session_key,
         &StreamBody::Message(StreamMessage {
             tx_seq: StreamSeq::START,
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Open(StreamFrameOpen {
                 stream_id,
@@ -2044,7 +2044,7 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
         &session_key,
         &StreamBody::Message(StreamMessage {
             tx_seq: StreamSeq::START,
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Open(StreamFrameOpen {
                 stream_id,
@@ -2147,7 +2147,7 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
             34u8,
             StreamBody::Message(StreamMessage {
                 tx_seq: StreamSeq::START,
-                ack: None,
+                ack: StreamAck::EMPTY,
                 valid_until: wire::now_secs().saturating_add(60),
                 frame: StreamFrame::Open(StreamFrameOpen {
                     stream_id,
@@ -2160,7 +2160,7 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
             35u8,
             StreamBody::Message(StreamMessage {
                 tx_seq: StreamSeq(2),
-                ack: None,
+                ack: StreamAck::EMPTY,
                 valid_until: wire::now_secs().saturating_add(60),
                 frame: StreamFrame::Data(StreamFrameData {
                     stream_id,
@@ -2198,7 +2198,7 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
         &session_key,
         &StreamBody::Message(StreamMessage {
             tx_seq: StreamSeq(2),
-            ack: None,
+            ack: StreamAck::EMPTY,
             valid_until: wire::now_secs().saturating_add(60),
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,

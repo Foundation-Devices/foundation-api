@@ -213,15 +213,14 @@ impl StreamControl {
         }
     }
 
-    pub fn take_piggyback_ack(&mut self, inbound_alive: bool) -> Option<StreamAck> {
-        let ack = self.current_ack();
-        let include_ack = inbound_alive && (ack.base != StreamSeq(0) || ack.bitmap != 0);
-        if !include_ack {
-            return None;
+    pub fn take_piggyback_ack(&mut self, inbound_alive: bool) -> StreamAck {
+        if !inbound_alive || !self.ack_dirty {
+            return StreamAck::EMPTY;
         }
+        let ack = self.current_ack();
         self.clear_ack_schedule();
         self.note_ack_sent(ack);
-        Some(ack)
+        ack
     }
 
     pub fn current_ack(&self) -> StreamAck {

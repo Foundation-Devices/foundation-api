@@ -20,7 +20,7 @@ use crate::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
         stream::{
-            encrypt_stream, Direction, ResetCode, ResetTarget, StreamBody, StreamFrame,
+            encrypt_stream, Direction, ResetCode, ResetTarget, StreamAck, StreamBody, StreamFrame,
             StreamFrameReset, StreamMessage,
         },
         ControlMeta, QlHeader, StreamSeq,
@@ -438,7 +438,7 @@ impl Engine {
                     };
                     let body = StreamBody::Message(StreamMessage {
                         tx_seq: StreamSeq::START,
-                        ack: None,
+                        ack: StreamAck::EMPTY,
                         valid_until: wire::now_secs()
                             .saturating_add(self.config.packet_expiration.as_secs()),
                         frame: StreamFrame::Reset(StreamFrameReset {

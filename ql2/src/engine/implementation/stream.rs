@@ -291,9 +291,7 @@ pub fn handle_stream(
     };
 
     let stream_id = message.frame.stream_id();
-    if let Some(ack) = message.ack {
-        process_stream_ack(engine, now, stream_id, ack, emit);
-    }
+    process_stream_ack(engine, now, stream_id, message.ack, emit);
 
     if !engine.streams.contains_key(&stream_id) {
         let Some(peer_record) = engine.peer.as_ref() else {
@@ -396,6 +394,10 @@ pub fn process_stream_ack(
     ack: StreamAck,
     emit: &mut impl OutputFn,
 ) {
+    if ack == StreamAck::EMPTY {
+        return;
+    }
+
     let should_reap = {
         let Some(stream) = engine.streams.get_mut(&stream_id) else {
             return;

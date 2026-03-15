@@ -354,7 +354,7 @@ mod test {
 
         let stream_open_body = stream::StreamBody::Message(stream::StreamMessage {
             tx_seq: StreamSeq(21),
-            ack: None,
+            ack: stream::StreamAck::EMPTY,
             valid_until: now_secs().saturating_add(60),
             frame: stream::StreamFrame::Open(stream::StreamFrameOpen {
                 stream_id: StreamId(2),
@@ -369,7 +369,7 @@ mod test {
 
         let stream_message_no_ack = stream::StreamBody::Message(stream::StreamMessage {
             tx_seq: StreamSeq(20),
-            ack: None,
+            ack: stream::StreamAck::EMPTY,
             valid_until: now_secs().saturating_add(60),
             frame: stream::StreamFrame::Data(stream::StreamFrameData {
                 stream_id: StreamId(2),
@@ -382,10 +382,10 @@ mod test {
         });
         let stream_message_with_ack = stream::StreamBody::Message(stream::StreamMessage {
             tx_seq: StreamSeq(20),
-            ack: Some(stream::StreamAck {
+            ack: stream::StreamAck {
                 base: StreamSeq(19),
                 bitmap: 0b0000_0110,
-            }),
+            },
             valid_until: now_secs().saturating_add(60),
             frame: stream::StreamFrame::Data(stream::StreamFrameData {
                 stream_id: StreamId(2),
@@ -402,7 +402,7 @@ mod test {
         let stream_accept_size = stream_record_size(
             &stream::StreamBody::Message(stream::StreamMessage {
                 tx_seq: StreamSeq(22),
-                ack: None,
+                ack: stream::StreamAck::EMPTY,
                 valid_until: now_secs().saturating_add(60),
                 frame: stream::StreamFrame::Accept(stream::StreamFrameAccept {
                     stream_id: StreamId(2),
@@ -418,7 +418,7 @@ mod test {
         let stream_reject_size = stream_record_size(
             &stream::StreamBody::Message(stream::StreamMessage {
                 tx_seq: StreamSeq(23),
-                ack: None,
+                ack: stream::StreamAck::EMPTY,
                 valid_until: now_secs().saturating_add(60),
                 frame: stream::StreamFrame::Reject(stream::StreamFrameReject {
                     stream_id: StreamId(2),
@@ -432,7 +432,7 @@ mod test {
         let stream_fin_size = stream_record_size(
             &stream::StreamBody::Message(stream::StreamMessage {
                 tx_seq: StreamSeq(26),
-                ack: None,
+                ack: stream::StreamAck::EMPTY,
                 valid_until: now_secs().saturating_add(60),
                 frame: stream::StreamFrame::Data(stream::StreamFrameData {
                     stream_id: StreamId(2),
@@ -448,7 +448,7 @@ mod test {
         let stream_reset_size = stream_record_size(
             &stream::StreamBody::Message(stream::StreamMessage {
                 tx_seq: StreamSeq(27),
-                ack: None,
+                ack: stream::StreamAck::EMPTY,
                 valid_until: now_secs().saturating_add(60),
                 frame: stream::StreamFrame::Reset(stream::StreamFrameReset {
                     stream_id: StreamId(2),
