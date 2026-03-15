@@ -181,17 +181,6 @@ pub fn handle_close_inbound(
     drive_stream(stream);
 }
 
-pub fn handle_responder_dropped(engine: &mut Engine, now: Instant, stream_id: StreamId) {
-    handle_close_stream(
-        engine,
-        now,
-        stream_id,
-        CloseTarget::Both,
-        CloseCode::UNHANDLED,
-        Vec::new(),
-    );
-}
-
 pub fn handle_stream(
     engine: &mut Engine,
     now: Instant,

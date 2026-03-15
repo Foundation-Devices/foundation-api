@@ -94,10 +94,6 @@ pub enum EngineInput {
         code: CloseCode,
         payload: Vec<u8>,
     },
-    ResponderDropped {
-        stream_id: StreamId,
-    },
-
     Incoming(Vec<u8>),
     TimerExpired,
 }

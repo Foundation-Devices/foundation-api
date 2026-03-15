@@ -3,7 +3,7 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     runtime::{command::RuntimeCommand, InboundEvent, OpenedStreamDelivery, StreamConfig},
-    wire::stream::{Direction, RejectCode, ResetCode},
+    wire::stream::{CloseCode, Direction},
     Peer, QlError, StreamId,
 };
 
@@ -15,8 +15,8 @@ pub struct RuntimeHandle {
 
 pub struct DuplexStream {
     pub stream_id: StreamId,
-    pub inbound: OutboundByteStream,
-    pub outbound: InboundByteStream,
+    pub request: OutboundByteStream,
+    pub response: InboundByteStream,
 }
 
 #[derive(Debug)]
@@ -24,15 +24,7 @@ pub struct InboundStream {
     pub stream_id: StreamId,
     pub request_head: Vec<u8>,
     pub request: InboundByteStream,
-    pub respond_to: StreamResponder,
-}
-
-#[derive(Debug)]
-pub struct StreamResponder {
-    stream_id: StreamId,
-    tx: Sender<RuntimeCommand>,
-    stream_send_buffer_bytes: usize,
-    armed: bool,
+    pub response: OutboundByteStream,
 }
 
 pub struct InboundByteStream {
@@ -58,6 +50,16 @@ pub struct OutboundByteStream {
     dir: Direction,
     writer: Option<piper::Writer>,
     tx: Sender<RuntimeCommand>,
+}
+
+impl std::fmt::Debug for OutboundByteStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutboundByteStream")
+            .field("stream_id", &self.stream_id)
+            .field("dir", &self.dir)
+            .field("closed", &self.writer.is_none())
+            .finish_non_exhaustive()
+    }
 }
 
 impl InboundByteStream {
@@ -97,13 +99,17 @@ impl InboundByteStream {
         }
     }
 
-    pub async fn reset(mut self, code: ResetCode) -> Result<(), QlError> {
+    pub async fn close(mut self, code: CloseCode, payload: Vec<u8>) -> Result<(), QlError> {
+        if self.finished {
+            return Ok(());
+        }
         self.finished = true;
         self.tx
-            .send(RuntimeCommand::ResetInbound {
+            .send(RuntimeCommand::CloseInbound {
                 stream_id: self.stream_id,
                 dir: self.dir,
                 code,
+                payload,
             })
             .await
             .map_err(|_| QlError::Cancelled)
@@ -115,10 +121,11 @@ impl Drop for InboundByteStream {
         if self.finished {
             return;
         }
-        let _ = self.tx.try_send(RuntimeCommand::ResetInbound {
+        let _ = self.tx.try_send(RuntimeCommand::CloseInbound {
             stream_id: self.stream_id,
             dir: self.dir,
-            code: ResetCode::Cancelled,
+            code: CloseCode::CANCELLED,
+            payload: Vec::new(),
         });
     }
 }
@@ -151,7 +158,7 @@ impl OutboundByteStream {
             return Ok(0);
         }
         self.poll_runtime()?;
-        let writer = self.writer.as_mut().expect("stream not finished or reset");
+        let writer = self.writer.as_mut().expect("stream not finished or closed");
         let written = poll_fn(|cx| writer.poll_fill_bytes(cx, bytes)).await;
         if written == 0 {
             self.writer.take();
@@ -179,13 +186,16 @@ impl OutboundByteStream {
         self.poll_runtime()
     }
 
-    pub async fn reset(mut self, code: ResetCode) -> Result<(), QlError> {
-        self.writer.take();
+    pub async fn close(mut self, code: CloseCode, payload: Vec<u8>) -> Result<(), QlError> {
+        if self.writer.take().is_none() {
+            return Ok(());
+        }
         self.tx
-            .send(RuntimeCommand::ResetOutbound {
+            .send(RuntimeCommand::CloseOutbound {
                 stream_id: self.stream_id,
                 dir: self.dir,
                 code,
+                payload,
             })
             .await
             .map_err(|_| QlError::Cancelled)
@@ -197,64 +207,11 @@ impl Drop for OutboundByteStream {
         if self.writer.take().is_none() {
             return;
         }
-        let _ = self.tx.try_send(RuntimeCommand::ResetOutbound {
+        let _ = self.tx.try_send(RuntimeCommand::CloseOutbound {
             stream_id: self.stream_id,
             dir: self.dir,
-            code: ResetCode::Cancelled,
-        });
-    }
-}
-
-impl StreamResponder {
-    pub(crate) fn new(
-        stream_id: StreamId,
-        tx: Sender<RuntimeCommand>,
-        stream_send_buffer_bytes: usize,
-    ) -> Self {
-        Self {
-            stream_id,
-            tx,
-            stream_send_buffer_bytes,
-            armed: true,
-        }
-    }
-
-    pub fn accept(mut self, response_head: Vec<u8>) -> Result<OutboundByteStream, QlError> {
-        self.armed = false;
-        let (response_reader, response_writer) = piper::pipe(self.stream_send_buffer_bytes);
-        self.tx
-            .send_blocking(RuntimeCommand::AcceptStream {
-                stream_id: self.stream_id,
-                response_head,
-                response_reader,
-            })
-            .map_err(|_| QlError::Cancelled)?;
-        Ok(OutboundByteStream::new(
-            self.stream_id,
-            Direction::Response,
-            response_writer,
-            self.tx.clone(),
-        ))
-    }
-
-    pub fn reject(mut self, code: RejectCode) -> Result<(), QlError> {
-        self.armed = false;
-        self.tx
-            .try_send(RuntimeCommand::RejectStream {
-                stream_id: self.stream_id,
-                code,
-            })
-            .map_err(|_| QlError::Cancelled)
-    }
-}
-
-impl Drop for StreamResponder {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let _ = self.tx.try_send(RuntimeCommand::ResponderDropped {
-            stream_id: self.stream_id,
+            code: CloseCode::CANCELLED,
+            payload: Vec::new(),
         });
     }
 }
@@ -307,18 +264,22 @@ impl RuntimeHandle {
         let OpenedStreamDelivery {
             stream_id,
             response,
-            tx,
         } = start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
 
         Ok(DuplexStream {
             stream_id,
-            inbound: OutboundByteStream::new(
+            request: OutboundByteStream::new(
                 stream_id,
                 Direction::Request,
                 request_writer,
                 self.tx.clone(),
             ),
-            outbound: InboundByteStream::new(stream_id, Direction::Response, response, tx),
+            response: InboundByteStream::new(
+                stream_id,
+                Direction::Response,
+                response,
+                self.tx.clone(),
+            ),
         })
     }
 }

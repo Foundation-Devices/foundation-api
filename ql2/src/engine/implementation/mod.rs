@@ -78,9 +78,6 @@ impl Engine {
                 code,
                 payload,
             } => stream::handle_close_inbound(self, now, stream_id, dir, code, payload),
-            EngineInput::ResponderDropped { stream_id } => {
-                stream::handle_responder_dropped(self, now, stream_id)
-            }
             EngineInput::Incoming(bytes) => self.handle_incoming(now, bytes, crypto, emit),
             EngineInput::TimerExpired => self.handle_timeouts(now, crypto, emit),
         }
