@@ -546,7 +546,7 @@ impl Engine {
         match stream.role {
             StreamRole::Initiator(stream) => {
                 match stream.open {
-                    InitiatorOpen::Opening(waiter) | InitiatorOpen::WaitingResponse(waiter) => {
+                    InitiatorOpen::Pending(waiter) => {
                         if let Some(open_id) = waiter.open_id {
                             emit(EngineOutput::OpenFailed {
                                 open_id,
@@ -608,16 +608,6 @@ impl Engine {
                     self.state
                         .control_outbound
                         .retain(|message| message.token != token);
-                }
-                TimeoutKind::StreamOpen { stream_id, token } => {
-                    let should_fail = self
-                        .streams
-                        .get(&stream_id)
-                        .and_then(StreamState::open_timeout_token)
-                        .is_some_and(|stream_token| stream_token == token);
-                    if should_fail {
-                        self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
-                    }
                 }
                 TimeoutKind::StreamAckDelay { stream_id, token } => {
                     if let Some(stream) = self.streams.get_mut(&stream_id) {

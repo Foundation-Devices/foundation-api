@@ -12,6 +12,8 @@ use crate::{
     StreamId,
 };
 
+// todo: need to figure out protocol behavior for: if the peer ACKs your Open and then stays silent forever, the stream will stay pending forever
+
 pub const STREAM_WINDOW_CAPACITY: usize = 8;
 pub const STREAM_WINDOW_SIZE: u32 = STREAM_WINDOW_CAPACITY as u32;
 pub const STREAM_ACK_EAGER_THRESHOLD: u32 = STREAM_WINDOW_SIZE / 2;
@@ -91,13 +93,11 @@ impl InboundState {
 #[derive(Debug)]
 pub struct OpenWaiter {
     pub open_id: Option<OpenId>,
-    pub open_timeout_token: Token,
 }
 
 #[derive(Debug)]
 pub enum InitiatorOpen {
-    Opening(OpenWaiter),
-    WaitingResponse(OpenWaiter),
+    Pending(OpenWaiter),
     Open,
 }
 
@@ -407,18 +407,6 @@ impl StreamState {
         match &mut self.role {
             StreamRole::Initiator(state) if dir == Direction::Response => Some(&mut state.response),
             StreamRole::Responder(state) if dir == Direction::Request => Some(&mut state.request),
-            _ => None,
-        }
-    }
-
-    pub fn open_timeout_token(&self) -> Option<Token> {
-        match &self.role {
-            StreamRole::Initiator(state) => match &state.open {
-                InitiatorOpen::Opening(waiter) | InitiatorOpen::WaitingResponse(waiter) => {
-                    Some(waiter.open_timeout_token)
-                }
-                InitiatorOpen::Open => None,
-            },
             _ => None,
         }
     }

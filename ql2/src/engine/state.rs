@@ -194,7 +194,6 @@ impl PeerRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutKind {
     Outbound { token: Token },
-    StreamOpen { stream_id: StreamId, token: Token },
     StreamAckDelay { stream_id: StreamId, token: Token },
     StreamProvisional { stream_id: StreamId, token: Token },
 }

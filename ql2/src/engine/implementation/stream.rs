@@ -23,7 +23,7 @@ pub fn handle_open_stream(
     open_id: OpenId,
     request_head: Vec<u8>,
     request_prefix: Option<BodyChunk>,
-    config: StreamConfig,
+    _config: StreamConfig,
     emit: &mut impl OutputFn,
 ) {
     let Some(entry) = engine.peer.as_ref() else {
@@ -45,10 +45,6 @@ pub fn handle_open_stream(
 
     let stream_namespace = StreamNamespace::for_local(engine.identity.xid, entry.peer);
     let stream_id = engine.state.next_stream_id(stream_namespace);
-    let open_timeout = config
-        .open_timeout
-        .unwrap_or(engine.config.default_open_timeout);
-    let token = engine.state.next_token();
     let request_prefix_fin = request_prefix.as_ref().is_some_and(|chunk| chunk.fin);
     let frame = StreamFrameOpen {
         stream_id,
@@ -67,18 +63,13 @@ pub fn handle_open_stream(
         role: StreamRole::Initiator(InitiatorStream {
             request: OutboundState::from_prefix(Direction::Request, request_prefix_fin),
             response: InboundState::new(),
-            open: InitiatorOpen::Opening(OpenWaiter {
+            open: InitiatorOpen::Pending(OpenWaiter {
                 open_id: Some(open_id),
-                open_timeout_token: token,
             }),
         }),
     };
     drive_stream(&mut stream);
     engine.streams.insert(stream_id, stream);
-    engine.state.timeouts.push(Reverse(TimeoutEntry {
-        at: now + open_timeout,
-        kind: TimeoutKind::StreamOpen { stream_id, token },
-    }));
     emit(EngineOutput::OpenStarted { open_id, stream_id });
 }
 
@@ -276,7 +267,7 @@ pub fn handle_stream(
             },
         );
         engine.state.timeouts.push(Reverse(TimeoutEntry {
-            at: now + engine.config.default_open_timeout,
+            at: now + engine.config.packet_expiration,
             kind: TimeoutKind::StreamProvisional { stream_id, token },
         }));
     }
@@ -390,12 +381,6 @@ pub fn process_stream_ack(
             match in_flight.frame {
                 StreamFrame::Open(StreamFrameOpen { request_prefix, .. }) => {
                     if let StreamRole::Initiator(stream) = &mut stream.role {
-                        if let InitiatorOpen::Opening(waiter) = &stream.open {
-                            stream.open = InitiatorOpen::WaitingResponse(OpenWaiter {
-                                open_id: waiter.open_id,
-                                open_timeout_token: waiter.open_timeout_token,
-                            });
-                        }
                         if request_prefix.as_ref().is_some_and(|chunk| chunk.fin) {
                             stream.request.close();
                             emit(EngineOutput::OutboundClosed {
@@ -589,10 +574,7 @@ fn handle_stream_data(
     } = frame;
     if dir == Direction::Response {
         if let StreamRole::Initiator(state) = &mut stream.role {
-            if matches!(
-                state.open,
-                InitiatorOpen::Opening(_) | InitiatorOpen::WaitingResponse(_)
-            ) {
+            if matches!(state.open, InitiatorOpen::Pending(_)) {
                 state.open = InitiatorOpen::Open;
             }
         }
@@ -721,7 +703,7 @@ fn queue_protocol_close(stream: &mut StreamState, emit: &mut impl OutputFn) {
     }
     if let StreamRole::Initiator(stream) = &mut stream.role {
         match &mut stream.open {
-            InitiatorOpen::Opening(waiter) | InitiatorOpen::WaitingResponse(waiter) => {
+            InitiatorOpen::Pending(waiter) => {
                 if let Some(open_id) = waiter.open_id.take() {
                     emit(EngineOutput::OpenFailed {
                         open_id,
@@ -754,7 +736,7 @@ fn apply_remote_close(
         (&stream.role, target),
         (
             StreamRole::Initiator(InitiatorStream {
-                open: InitiatorOpen::Opening(_) | InitiatorOpen::WaitingResponse(_),
+                open: InitiatorOpen::Pending(_),
                 ..
             }),
             CloseTarget::Response | CloseTarget::Both,
@@ -804,7 +786,7 @@ fn apply_remote_close(
 
     if let StreamRole::Initiator(stream) = &mut stream.role {
         match &mut stream.open {
-            InitiatorOpen::Opening(waiter) | InitiatorOpen::WaitingResponse(waiter) => {
+            InitiatorOpen::Pending(waiter) => {
                 if fatal_pending_open {
                     if let Some(open_id) = waiter.open_id.take() {
                         emit(EngineOutput::OpenFailed {
@@ -844,7 +826,7 @@ fn apply_local_close(stream: &mut StreamState, target: CloseTarget) {
     if clear_open_wait {
         if let StreamRole::Initiator(stream) = &mut stream.role {
             match &mut stream.open {
-                InitiatorOpen::Opening(waiter) | InitiatorOpen::WaitingResponse(waiter) => {
+                InitiatorOpen::Pending(waiter) => {
                     let _ = waiter.open_id.take();
                     stream.open = InitiatorOpen::Open;
                 }

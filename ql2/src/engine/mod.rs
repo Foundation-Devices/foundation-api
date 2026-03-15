@@ -34,14 +34,11 @@ pub struct KeepAliveConfig {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct StreamConfig {
-    pub open_timeout: Option<Duration>,
-}
+pub struct StreamConfig {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {
     pub handshake_timeout: Duration,
-    pub default_open_timeout: Duration,
     pub packet_expiration: Duration,
     pub stream_ack_delay: Duration,
     pub stream_ack_timeout: Duration,
@@ -54,7 +51,6 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             handshake_timeout: Duration::from_secs(5),
-            default_open_timeout: Duration::from_secs(5),
             packet_expiration: Duration::from_secs(30),
             stream_ack_delay: Duration::from_millis(5),
             stream_ack_timeout: Duration::from_millis(150),
