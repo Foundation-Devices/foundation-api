@@ -12,10 +12,7 @@ use crate::{
     arena::{ArenaKey, GenerationalArena},
     identity::QlIdentity,
     stream::{self, StreamFsm},
-    wire::{
-        handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
-        stream::{CloseCode, CloseTarget},
-    },
+    wire::handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
     PacketId, Peer, StreamId,
 };
 
@@ -40,19 +37,7 @@ pub struct OutboundWrite {
 #[derive(Debug)]
 pub struct ControlWrite {
     pub token: Token,
-    pub kind: OutboundWriteKind,
-    pub payload: ControlWritePayload,
-}
-
-#[derive(Debug)]
-pub enum ControlWritePayload {
-    Encoded(Vec<u8>),
-    StreamClose {
-        stream_id: StreamId,
-        target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
-    },
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -136,13 +121,6 @@ impl StreamNamespace {
 
     pub fn matches(self, stream_id: StreamId) -> bool {
         (stream_id.0 & Self::BIT) == self.bit()
-    }
-
-    pub fn remote(self) -> Self {
-        match self {
-            Self::Low => Self::High,
-            Self::High => Self::Low,
-        }
     }
 }
 
@@ -291,8 +269,7 @@ impl EngineState {
     ) {
         self.control_outbound.push_back(ControlWrite {
             token,
-            kind: OutboundWriteKind::Control,
-            payload: ControlWritePayload::Encoded(bytes),
+            bytes,
         });
         self.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
@@ -316,40 +293,7 @@ impl EngineState {
         let token = self.next_token();
         let message = ControlWrite {
             token,
-            kind: OutboundWriteKind::Control,
-            payload: ControlWritePayload::Encoded(bytes),
-        };
-        if priority {
-            self.control_outbound.push_front(message);
-        } else {
-            self.control_outbound.push_back(message);
-        }
-        self.timeouts.push(Reverse(TimeoutEntry {
-            at: self.now + config.packet_expiration,
-            kind: TimeoutKind::Outbound { token },
-        }));
-        token
-    }
-
-    pub fn enqueue_stream_close(
-        &mut self,
-        config: &EngineConfig,
-        priority: bool,
-        stream_id: StreamId,
-        target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
-    ) -> Token {
-        let token = self.next_token();
-        let message = ControlWrite {
-            token,
-            kind: OutboundWriteKind::Control,
-            payload: ControlWritePayload::StreamClose {
-                stream_id,
-                target,
-                code,
-                payload,
-            },
+            bytes,
         };
         if priority {
             self.control_outbound.push_front(message);

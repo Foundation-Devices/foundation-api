@@ -1,12 +1,11 @@
 use super::*;
 use crate::{
-    engine::{state::OutboundWriteKind, Engine, EngineConfig, EngineOutput, EngineState, QlCrypto},
+    engine::{state::OutboundWriteKind, Engine, EngineOutput, EngineState, QlCrypto},
     stream::{StreamCloseEvent, StreamCloseKind, StreamError, StreamEventSink, WriteError},
     wire::stream::*,
 };
 
 struct EngineStreamSink<'a, O> {
-    config: &'a EngineConfig,
     state: &'a mut EngineState,
     emit: &'a mut O,
 }
@@ -124,16 +123,6 @@ impl<O: OutputFn> StreamEventSink for EngineStreamSink<'_, O> {
 
     fn close(&mut self, event: StreamCloseEvent) {
         match event.kind {
-            StreamCloseKind::Detached => {
-                self.state.enqueue_stream_close(
-                    self.config,
-                    true,
-                    event.frame.stream_id,
-                    event.frame.target,
-                    event.frame.code,
-                    event.frame.payload,
-                );
-            }
             StreamCloseKind::Acked => self.emit_acked_close(event),
             StreamCloseKind::Remote => self.emit_remote_close(event),
         }
@@ -220,7 +209,6 @@ pub fn handle_stream(
     engine.sync_stream_namespace();
 
     let mut sink = EngineStreamSink {
-        config: &engine.config,
         state: &mut engine.state,
         emit,
     };
@@ -263,7 +251,6 @@ pub fn complete_stream_write(
     emit: &mut impl OutputFn,
 ) {
     let mut sink = EngineStreamSink {
-        config: &engine.config,
         state: &mut engine.state,
         emit,
     };
@@ -285,7 +272,6 @@ pub fn handle_stream_timeouts(engine: &mut Engine, now: Instant, emit: &mut impl
     }
 
     let mut sink = EngineStreamSink {
-        config: &engine.config,
         state: &mut engine.state,
         emit,
     };
@@ -294,7 +280,6 @@ pub fn handle_stream_timeouts(engine: &mut Engine, now: Instant, emit: &mut impl
 
 pub fn abort_streams(engine: &mut Engine, error: QlError, emit: &mut impl OutputFn) {
     let mut sink = EngineStreamSink {
-        config: &engine.config,
         state: &mut engine.state,
         emit,
     };

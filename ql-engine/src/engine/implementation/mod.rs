@@ -10,7 +10,7 @@ use rkyv::access_mut;
 use crate::{
     engine::{
         replay_cache::ReplayKey,
-        state::{ActiveWrite, ControlWritePayload, OutboundWriteKind, TimeoutKind},
+        state::{ActiveWrite, OutboundWriteKind, TimeoutKind},
         Engine, EngineInput, EngineOutput, HandshakeInitiator, HandshakeResponder, KeepAliveConfig,
         KeepAliveState, OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, RecentReady,
         StreamConfig, Token, WriteId,
@@ -18,11 +18,8 @@ use crate::{
     wire::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
-        stream::{
-            encrypt_stream, BodyChunk, StreamAck, StreamBody, StreamFrame, StreamFrameClose,
-            StreamMessage,
-        },
-        ControlMeta, QlHeader, StreamSeq,
+        stream::BodyChunk,
+        ControlMeta, QlHeader,
     },
     Peer, QlError, StreamId,
 };
@@ -72,7 +69,7 @@ impl Engine {
     }
 
     pub fn take_next_write_inner(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
-        self.take_next_control_write(crypto)
+        self.take_next_control_write()
             .or_else(|| stream::take_next_stream_write(self, crypto))
     }
 
@@ -457,44 +454,13 @@ impl Engine {
         OutboundWrite { id, bytes }
     }
 
-    fn take_next_control_write(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
-        let Some((recipient, session_key)) = self.peer_session() else {
-            return None;
-        };
+    fn take_next_control_write(&mut self) -> Option<OutboundWrite> {
         while let Some(message) = self.state.control_outbound.pop_front() {
-            let bytes = match message.payload {
-                ControlWritePayload::Encoded(bytes) => bytes,
-                ControlWritePayload::StreamClose {
-                    stream_id,
-                    target,
-                    code,
-                    payload,
-                } => {
-                    let body = StreamBody::Message(StreamMessage {
-                        tx_seq: StreamSeq::START,
-                        ack: StreamAck::EMPTY,
-                        valid_until: wire::now_secs()
-                            .saturating_add(self.config.packet_expiration.as_secs()),
-                        frame: StreamFrame::Close(StreamFrameClose {
-                            stream_id,
-                            target,
-                            code,
-                            payload,
-                        }),
-                    });
-                    let record = encrypt_stream(
-                        QlHeader {
-                            sender: self.identity.xid,
-                            recipient,
-                        },
-                        &session_key,
-                        &body,
-                        encrypted_message_nonce(crypto),
-                    );
-                    wire::encode_record(&record)
-                }
-            };
-            return Some(self.issue_write(message.kind, Some(message.token), bytes));
+            return Some(self.issue_write(
+                OutboundWriteKind::Control,
+                Some(message.token),
+                message.bytes,
+            ));
         }
         None
     }

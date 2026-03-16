@@ -97,7 +97,6 @@ pub struct Outbound {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamCloseKind {
-    Detached,
     Acked,
     Remote,
 }

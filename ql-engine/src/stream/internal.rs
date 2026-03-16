@@ -545,7 +545,6 @@ enum OutboundSelection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamDisposition {
     Keep,
-    Remove,
     Reap,
 }
 
@@ -734,22 +733,8 @@ pub fn receive(
 
                 match stream.control.buffer_incoming(tx_seq, frame) {
                     BufferIncomingResult::OutOfWindow => {
-                        if stream.awaiting_open() {
-                            events.close(StreamCloseEvent {
-                                kind: StreamCloseKind::Detached,
-                                role: StreamLocalRole::Responder,
-                                frame: StreamFrameClose {
-                                    stream_id,
-                                    target: CloseTarget::Both,
-                                    code: CloseCode::PROTOCOL,
-                                    payload: Vec::new(),
-                                },
-                            });
-                            StreamDisposition::Remove
-                        } else {
-                            StreamFsm::queue_protocol_close(stream_id, stream, events);
-                            StreamDisposition::Keep
-                        }
+                        StreamFsm::queue_protocol_close(stream_id, stream, events);
+                        StreamDisposition::Keep
                     }
                     BufferIncomingResult::Duplicate | BufferIncomingResult::AlreadyBuffered => {
                         stream
@@ -768,9 +753,6 @@ pub fn receive(
 
             match disposition {
                 StreamDisposition::Keep => {}
-                StreamDisposition::Remove => {
-                    stream_fsm.streams.remove(&stream_id);
-                }
                 StreamDisposition::Reap => {
                     stream_fsm.streams.remove(&stream_id);
                     events.reaped(stream_id);
@@ -1113,7 +1095,8 @@ impl StreamFsm {
             if stream.awaiting_open()
                 && (tx_seq != StreamSeq::START || !matches!(frame, StreamFrame::Open(_)))
             {
-                return StreamDisposition::Remove;
+                Self::queue_protocol_close(stream_id, stream, events);
+                return StreamDisposition::Keep;
             }
 
             match frame {
@@ -1276,6 +1259,7 @@ impl StreamFsm {
         stream: &mut StreamState,
         events: &mut impl StreamEventSink,
     ) {
+        let opened = !stream.awaiting_open();
         stream.control.clear_transient_buffers();
         stream.control.pending.push_front(close_frame(
             stream_id,
@@ -1286,12 +1270,16 @@ impl StreamFsm {
         for side in [StreamSide::Request, StreamSide::Response] {
             if let Some(outbound) = stream.outbound_mut(side) {
                 if outbound.close() {
-                    events.outbound_failed(stream_id, StreamError::StreamProtocol);
+                    if opened {
+                        events.outbound_failed(stream_id, StreamError::StreamProtocol);
+                    }
                 }
             }
             if let Some(inbound) = stream.inbound_mut(side) {
                 if inbound.close() {
-                    events.inbound_failed(stream_id, StreamError::StreamProtocol);
+                    if opened {
+                        events.inbound_failed(stream_id, StreamError::StreamProtocol);
+                    }
                 }
             }
         }
