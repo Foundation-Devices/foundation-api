@@ -128,14 +128,14 @@ async fn stream_activity_prevents_keepalive_timeout() {
             let stream = match inbound_a.recv().await.unwrap() {
                 HandlerEvent::Stream(stream) => stream,
             };
-            let response = stream.respond_to.accept(Vec::new()).unwrap();
+            let response = stream.response;
             response.finish().await.unwrap();
         });
 
         let stream = handle_b.open_stream(Vec::new(), crate::runtime::StreamConfig::default()).await;
         let mut stream = stream.unwrap();
-        stream.inbound.finish().await.unwrap();
-        assert_eq!(stream.outbound.next_chunk().await.unwrap(), None);
+        stream.request.finish().await.unwrap();
+        assert_eq!(stream.response.next_chunk().await.unwrap(), None);
 
         let disconnect = tokio::time::timeout(keep_alive.timeout + Duration::from_millis(20), async {
             loop {
@@ -194,7 +194,7 @@ async fn heartbeat_timeout_disconnects_and_fails_pending_open() {
             let stream = match inbound_b.recv().await.unwrap() {
                 HandlerEvent::Stream(stream) => stream,
             };
-            let response = stream.respond_to.accept(Vec::new()).unwrap();
+            let response = stream.response;
             response.finish().await.unwrap();
         });
 
@@ -207,7 +207,7 @@ async fn heartbeat_timeout_disconnects_and_fails_pending_open() {
 
         await_status(&status_a, identity_b.xid, PeerStage::Disconnected).await;
 
-        let result = tokio::time::timeout(Duration::from_millis(300), pending.outbound.next_chunk())
+        let result = tokio::time::timeout(Duration::from_millis(300), pending.response.next_chunk())
             .await;
         assert!(result.is_ok(), "pending stream never resolved after disconnect");
 

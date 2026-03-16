@@ -382,7 +382,6 @@ fn default_runtime_config() -> RuntimeConfig {
     RuntimeConfig {
         engine: crate::engine::EngineConfig {
             handshake_timeout: Duration::from_millis(300),
-            default_open_timeout: Duration::from_millis(300),
             stream_ack_timeout: Duration::from_millis(30),
             stream_retry_limit: 8,
             ..Default::default()

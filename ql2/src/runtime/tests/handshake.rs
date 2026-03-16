@@ -87,7 +87,7 @@ async fn confirm_write_failure_disconnects_initiator() {
                 HandlerEvent::Stream(stream) => stream,
             };
             let mut second_request = second.request;
-            let mut second_response = second.respond_to.accept(Vec::new()).unwrap();
+            let mut second_response = second.response;
             assert_eq!(second_request.next_chunk().await.unwrap(), None);
             second_response.write_all(b"ok").await.unwrap();
             second_response.finish().await.unwrap();
@@ -97,8 +97,8 @@ async fn confirm_write_failure_disconnects_initiator() {
             .open_stream(Vec::new(), crate::runtime::StreamConfig::default())
             .await
             .unwrap();
-        let _ = first.inbound.finish().await;
-        let _ = first.outbound.next_chunk().await;
+        let _ = first.request.finish().await;
+        let _ = first.response.next_chunk().await;
 
         assert_no_status_for(
             &status_a,
@@ -112,9 +112,9 @@ async fn confirm_write_failure_disconnects_initiator() {
             .open_stream(Vec::new(), crate::runtime::StreamConfig::default())
             .await
             .unwrap();
-        second.inbound.finish().await.unwrap();
-        assert_eq!(second.outbound.next_chunk().await.unwrap(), Some(b"ok".to_vec()));
-        assert_eq!(second.outbound.next_chunk().await.unwrap(), None);
+        second.request.finish().await.unwrap();
+        assert_eq!(second.response.next_chunk().await.unwrap(), Some(b"ok".to_vec()));
+        assert_eq!(second.response.next_chunk().await.unwrap(), None);
 
         tokio::time::timeout(Duration::from_secs(2), responder_task)
             .await

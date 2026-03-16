@@ -29,7 +29,7 @@ async fn unpair_aborts_active_stream_and_clears_peer() {
                 HandlerEvent::Stream(stream) => stream,
             };
             let mut request = stream.request;
-            let _response = stream.respond_to.accept(Vec::new()).unwrap();
+            let _response = stream.response;
             let first = request.next_chunk().await;
             assert!(matches!(first, Ok(Some(_)) | Ok(None) | Err(_)));
             let second = request.next_chunk().await;
@@ -38,7 +38,7 @@ async fn unpair_aborts_active_stream_and_clears_peer() {
                 Ok(None)
                     | Err(QlError::Cancelled)
                     | Err(QlError::SendFailed)
-                    | Err(QlError::StreamReset { .. })
+                    | Err(QlError::StreamClosed { .. })
                     | Err(QlError::StreamProtocol)
             ));
         });
@@ -47,14 +47,14 @@ async fn unpair_aborts_active_stream_and_clears_peer() {
             .open_stream(Vec::new(), crate::runtime::StreamConfig::default())
             .await
             .unwrap();
-        stream.inbound.write_all(&[1, 2, 3, 4]).await.unwrap();
+        stream.request.write_all(&[1, 2, 3, 4]).await.unwrap();
 
         handle_a.unpair().unwrap();
 
         await_status(&status_a, identity_b.xid, PeerStage::Disconnected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Disconnected).await;
 
-        let write_err = stream.inbound.write_all(&[5, 6, 7, 8]).await.unwrap_err();
+        let write_err = stream.request.write_all(&[5, 6, 7, 8]).await.unwrap_err();
         assert!(matches!(write_err, QlError::Cancelled));
 
         let open_err_a = handle_a

@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use super::*;
-use crate::{runtime::StreamConfig, wire::stream::RejectCode};
+use crate::{
+    runtime::StreamConfig,
+    wire::stream::{CloseCode, CloseTarget},
+};
 
 #[tokio::test(flavor = "current_thread")]
 async fn open_stream_duplex_happy_path() {
@@ -34,7 +37,7 @@ async fn open_stream_duplex_happy_path() {
             assert_eq!(inbound.request_head, b"req-head".to_vec());
 
             let mut request = inbound.request;
-            let mut response = inbound.respond_to.accept(b"resp-head".to_vec()).unwrap();
+            let mut response = inbound.response;
 
             assert_eq!(request.next_chunk().await.unwrap(), Some(vec![1, 2]));
             response.write_all(&[9]).await.unwrap();
@@ -48,12 +51,12 @@ async fn open_stream_duplex_happy_path() {
             .open_stream(b"req-head".to_vec(), StreamConfig::default())
             .await
             .unwrap();
-        stream.inbound.write_all(&[1, 2]).await.unwrap();
-        assert_eq!(stream.outbound.next_chunk().await.unwrap(), Some(vec![9]));
-        stream.inbound.write_all(&[3, 4]).await.unwrap();
-        stream.inbound.finish().await.unwrap();
-        assert_eq!(stream.outbound.next_chunk().await.unwrap(), Some(vec![8, 7]));
-        assert_eq!(stream.outbound.next_chunk().await.unwrap(), None);
+        stream.request.write_all(&[1, 2]).await.unwrap();
+        assert_eq!(stream.response.next_chunk().await.unwrap(), Some(vec![9]));
+        stream.request.write_all(&[3, 4]).await.unwrap();
+        stream.request.finish().await.unwrap();
+        assert_eq!(stream.response.next_chunk().await.unwrap(), Some(vec![8, 7]));
+        assert_eq!(stream.response.next_chunk().await.unwrap(), None);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
             .await
@@ -98,7 +101,7 @@ async fn stream_backpressure_with_small_runtime_buffer() {
                 HandlerEvent::Stream(stream) => stream,
             };
             let request_data = read_all(stream.request).await.unwrap();
-            stream.respond_to.accept(Vec::new()).unwrap().finish().await.unwrap();
+            stream.response.finish().await.unwrap();
             done_tx.send(request_data).await.unwrap();
         });
 
@@ -106,9 +109,9 @@ async fn stream_backpressure_with_small_runtime_buffer() {
             .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
-        stream.inbound.write_all(&payload).await.unwrap();
-        stream.inbound.finish().await.unwrap();
-        assert_eq!(stream.outbound.next_chunk().await.unwrap(), None);
+        stream.request.write_all(&payload).await.unwrap();
+        stream.request.finish().await.unwrap();
+        assert_eq!(stream.response.next_chunk().await.unwrap(), None);
 
         let received = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
             .await
@@ -152,21 +155,23 @@ async fn dropping_responder_rejects_as_unhandled() {
             let stream = match inbound_b.recv().await.unwrap() {
                 HandlerEvent::Stream(stream) => stream,
             };
-            drop(stream.respond_to);
+            drop(stream.response);
         });
 
         let mut stream = handle_a
             .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
-        stream.inbound.finish().await.unwrap();
+        stream.request.finish().await.unwrap();
 
-        let err = stream.outbound.next_chunk().await.unwrap_err();
+        let err = stream.response.next_chunk().await.unwrap_err();
         assert!(matches!(
             err,
-            QlError::StreamRejected {
-                code: RejectCode::Unhandled
-            }
+            QlError::StreamClosed {
+                target: CloseTarget::Response,
+                code: CloseCode::CANCELLED,
+                payload,
+            } if payload.is_empty()
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -210,7 +215,7 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
                 HandlerEvent::Stream(stream) => stream,
             };
             let mut request = stream.request;
-            let mut response = stream.respond_to.accept(Vec::new()).unwrap();
+            let mut response = stream.response;
             assert_eq!(request.next_chunk().await.unwrap(), None);
             response.write_all(&[1, 2, 3, 4]).await.unwrap();
             go_rx.recv().await.unwrap();
@@ -222,9 +227,9 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
-        stream.inbound.finish().await.unwrap();
-        assert_eq!(stream.outbound.next_chunk().await.unwrap(), Some(vec![1, 2, 3, 4]));
-        drop(stream.outbound);
+        stream.request.finish().await.unwrap();
+        assert_eq!(stream.response.next_chunk().await.unwrap(), Some(vec![1, 2, 3, 4]));
+        drop(stream.response);
         go_tx.send(()).await.unwrap();
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -270,7 +275,7 @@ async fn max_concurrent_message_writes_is_respected() {
                     HandlerEvent::Stream(stream) => stream,
                 };
                 let request = stream.request;
-                let response = stream.respond_to.accept(Vec::new()).unwrap();
+                let response = stream.response;
                 let _ = read_all(request).await;
                 let _ = response.finish().await;
             }
@@ -284,9 +289,9 @@ async fn max_concurrent_message_writes_is_respected() {
                     .open_stream(vec![i], StreamConfig::default())
                     .await
                     .unwrap();
-                stream.inbound.write_all(&[i; 8]).await.unwrap();
-                stream.inbound.finish().await.unwrap();
-                assert_eq!(stream.outbound.next_chunk().await.unwrap(), None);
+                stream.request.write_all(&[i; 8]).await.unwrap();
+                stream.request.finish().await.unwrap();
+                assert_eq!(stream.response.next_chunk().await.unwrap(), None);
             }));
         }
 
@@ -352,7 +357,7 @@ async fn stream_round_trip_survives_packet_drops() {
                 HandlerEvent::Stream(stream) => stream,
             };
             let received_request = read_all(stream.request).await.unwrap();
-            let mut response = stream.respond_to.accept(Vec::new()).unwrap();
+            let mut response = stream.response;
             response.write_all(&response_payload).await.unwrap();
             response.finish().await.unwrap();
             received_request
@@ -362,11 +367,11 @@ async fn stream_round_trip_survives_packet_drops() {
             .open_stream(Vec::new(), StreamConfig::default())
             .await
             .unwrap();
-        stream.inbound.write_all(&request_payload).await.unwrap();
-        stream.inbound.finish().await.unwrap();
+        stream.request.write_all(&request_payload).await.unwrap();
+        stream.request.finish().await.unwrap();
 
         let mut received_response = Vec::new();
-        while let Some(chunk) = stream.outbound.next_chunk().await.unwrap() {
+        while let Some(chunk) = stream.response.next_chunk().await.unwrap() {
             received_response.extend_from_slice(&chunk);
         }
         assert_eq!(received_response, expected_response);

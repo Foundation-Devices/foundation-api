@@ -9,8 +9,8 @@ pub(crate) mod driver;
 pub mod handle;
 pub mod platform;
 
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod tests;
 
 use self::platform::QlPlatform;
 use crate::{identity::QlIdentity, StreamId};
