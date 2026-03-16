@@ -57,7 +57,6 @@ pub struct StreamConfig {
     pub ack_timeout: Duration,
     pub fast_retransmit_threshold: u8,
     pub retry_limit: u8,
-    pub provisional_timeout: Duration,
 }
 
 impl Default for StreamConfig {
@@ -68,7 +67,6 @@ impl Default for StreamConfig {
             ack_timeout: Duration::from_millis(150),
             fast_retransmit_threshold: 2,
             retry_limit: 5,
-            provisional_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -108,7 +106,7 @@ pub enum StreamLocalRole {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamCloseEvent {
     pub kind: StreamCloseKind,
-    pub role: Option<StreamLocalRole>,
+    pub role: StreamLocalRole,
     pub frame: StreamFrameClose,
 }
 

@@ -366,21 +366,16 @@ pub struct InitiatorStream {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResponderStream {
+    pub opened: bool,
     pub request: InboundState,
     pub response: OutboundPhase,
     pub response_started: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProvisionalStream {
-    pub expires_at: Instant,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamRole {
     Initiator(InitiatorStream),
     Responder(ResponderStream),
-    Provisional(ProvisionalStream),
 }
 
 #[derive(Debug)]
@@ -396,7 +391,7 @@ impl StreamState {
             StreamRole::Responder(state) if side == StreamSide::Response => {
                 Some(&mut state.response)
             }
-            _ => None,
+            StreamRole::Initiator(_) | StreamRole::Responder(_) => None,
         }
     }
 
@@ -406,7 +401,7 @@ impl StreamState {
                 Some(&mut state.response)
             }
             StreamRole::Responder(state) if side == StreamSide::Request => Some(&mut state.request),
-            _ => None,
+            StreamRole::Initiator(_) | StreamRole::Responder(_) => None,
         }
     }
 
@@ -414,7 +409,6 @@ impl StreamState {
         match self.role {
             StreamRole::Initiator(_) => Some(StreamSide::Request),
             StreamRole::Responder(_) => Some(StreamSide::Response),
-            StreamRole::Provisional(_) => None,
         }
     }
 
@@ -422,19 +416,14 @@ impl StreamState {
         match self.role {
             StreamRole::Initiator(_) => Some(StreamSide::Response),
             StreamRole::Responder(_) => Some(StreamSide::Request),
-            StreamRole::Provisional(_) => None,
         }
     }
 
-    pub fn is_provisional(&self) -> bool {
-        matches!(self.role, StreamRole::Provisional(_))
-    }
-
-    pub fn provisional_deadline(&self) -> Option<Instant> {
-        match self.role {
-            StreamRole::Provisional(state) => Some(state.expires_at),
-            _ => None,
-        }
+    pub fn awaiting_open(&self) -> bool {
+        matches!(
+            self.role,
+            StreamRole::Responder(ResponderStream { opened: false, .. })
+        )
     }
 
     pub fn can_reap(&self) -> bool {
@@ -450,15 +439,13 @@ impl StreamState {
         match self.role {
             StreamRole::Initiator(state) => state.request.is_closed() && state.response.closed,
             StreamRole::Responder(state) => state.request.closed && state.response.is_closed(),
-            StreamRole::Provisional(_) => false,
         }
     }
 
-    pub fn local_role(&self) -> Option<StreamLocalRole> {
+    pub fn local_role(&self) -> StreamLocalRole {
         match self.role {
-            StreamRole::Initiator(_) => Some(StreamLocalRole::Initiator),
-            StreamRole::Responder(_) => Some(StreamLocalRole::Responder),
-            StreamRole::Provisional(_) => None,
+            StreamRole::Initiator(_) => StreamLocalRole::Initiator,
+            StreamRole::Responder(_) => StreamLocalRole::Responder,
         }
     }
 }
@@ -560,7 +547,6 @@ enum StreamDisposition {
 enum TimerAction {
     None,
     Fail,
-    ExpireProvisional,
 }
 
 pub fn new(config: StreamConfig) -> StreamFsm {
@@ -725,8 +711,11 @@ pub fn receive(
                     stream_id,
                     StreamState {
                         control: StreamControl::default(),
-                        role: StreamRole::Provisional(ProvisionalStream {
-                            expires_at: now + stream_fsm.config.provisional_timeout,
+                        role: StreamRole::Responder(ResponderStream {
+                            opened: false,
+                            request: InboundState::new(),
+                            response: OutboundPhase::Ready,
+                            response_started: false,
                         }),
                     },
                 );
@@ -739,10 +728,10 @@ pub fn receive(
 
                 match stream.control.buffer_incoming(tx_seq, frame) {
                     BufferIncomingResult::OutOfWindow => {
-                        if stream.is_provisional() {
+                        if stream.awaiting_open() {
                             events.close(StreamCloseEvent {
                                 kind: StreamCloseKind::Detached,
-                                role: None,
+                                role: StreamLocalRole::Responder,
                                 frame: StreamFrameClose {
                                     stream_id,
                                     target: CloseTarget::Both,
@@ -833,7 +822,6 @@ pub fn next_outbound(
                 let inbound_alive = match stream.role {
                     StreamRole::Initiator(state) => !state.response.closed,
                     StreamRole::Responder(state) => !state.request.closed,
-                    StreamRole::Provisional(_) => continue,
                 };
                 let ack = stream.control.take_piggyback_ack(inbound_alive);
                 let frame = stream.control.mark_write_issued(tx_seq, issue_id)?;
@@ -928,11 +916,6 @@ pub fn on_timer(stream_fsm: &mut StreamFsm, now: Instant, events: &mut impl Stre
                 )
             }) {
                 TimerAction::Fail
-            } else if stream
-                .provisional_deadline()
-                .is_some_and(|deadline| deadline <= now)
-            {
-                TimerAction::ExpireProvisional
             } else {
                 TimerAction::None
             }
@@ -941,25 +924,6 @@ pub fn on_timer(stream_fsm: &mut StreamFsm, now: Instant, events: &mut impl Stre
         match action {
             TimerAction::Fail => {
                 stream_fsm.fail_stream_by_id(stream_id, StreamError::Timeout, events);
-            }
-            TimerAction::ExpireProvisional => {
-                let still_provisional = stream_fsm
-                    .streams
-                    .get(&stream_id)
-                    .is_some_and(StreamState::is_provisional);
-                if still_provisional {
-                    stream_fsm.streams.remove(&stream_id);
-                    events.close(StreamCloseEvent {
-                        kind: StreamCloseKind::Detached,
-                        role: None,
-                        frame: StreamFrameClose {
-                            stream_id,
-                            target: CloseTarget::Both,
-                            code: CloseCode::PROTOCOL,
-                            payload: Vec::new(),
-                        },
-                    });
-                }
             }
             TimerAction::None => {
                 if let Some(stream) = stream_fsm.streams.get_mut(&stream_id) {
@@ -982,9 +946,6 @@ pub fn next_deadline(stream_fsm: &StreamFsm) -> Option<Instant> {
     let mut next = None;
     for stream in stream_fsm.streams.values() {
         if let Some(deadline) = stream.control.ack_delay_deadline {
-            next = min_deadline(next, deadline);
-        }
-        if let Some(deadline) = stream.provisional_deadline() {
             next = min_deadline(next, deadline);
         }
         for (_, in_flight) in stream.control.in_flight.iter() {
@@ -1016,32 +977,30 @@ impl StreamFsm {
     }
 
     fn select_outbound(&self, stream: &StreamState, now: Instant) -> Option<OutboundSelection> {
-        if !stream.is_provisional() {
-            if let Some(tx_seq) = stream
-                .control
-                .in_flight
-                .iter()
-                .find_map(|(tx_seq, in_flight)| {
-                    matches!(
-                        in_flight.write_state,
-                        InFlightWriteState::WaitingRetry { retry_at }
-                            if retry_at <= now && in_flight.attempt < self.config.retry_limit
-                    )
-                    .then_some(tx_seq)
-                })
-            {
-                return Some(OutboundSelection::RetryFrame { tx_seq });
-            }
-            if let Some(tx_seq) = stream
-                .control
-                .in_flight
-                .iter()
-                .find_map(|(tx_seq, in_flight)| {
-                    matches!(in_flight.write_state, InFlightWriteState::Ready).then_some(tx_seq)
-                })
-            {
-                return Some(OutboundSelection::InitialFrame { tx_seq });
-            }
+        if let Some(tx_seq) = stream
+            .control
+            .in_flight
+            .iter()
+            .find_map(|(tx_seq, in_flight)| {
+                matches!(
+                    in_flight.write_state,
+                    InFlightWriteState::WaitingRetry { retry_at }
+                        if retry_at <= now && in_flight.attempt < self.config.retry_limit
+                )
+                .then_some(tx_seq)
+            })
+        {
+            return Some(OutboundSelection::RetryFrame { tx_seq });
+        }
+        if let Some(tx_seq) = stream
+            .control
+            .in_flight
+            .iter()
+            .find_map(|(tx_seq, in_flight)| {
+                matches!(in_flight.write_state, InFlightWriteState::Ready).then_some(tx_seq)
+            })
+        {
+            return Some(OutboundSelection::InitialFrame { tx_seq });
         }
 
         (stream.control.ack_dirty
@@ -1175,11 +1134,13 @@ impl StreamFsm {
         events: &mut impl StreamEventSink,
     ) -> StreamDisposition {
         loop {
-            let Some((_tx_seq, frame)) = stream.control.pop_next_committable() else {
+            let Some((tx_seq, frame)) = stream.control.pop_next_committable() else {
                 break;
             };
 
-            if stream.is_provisional() && !matches!(frame, StreamFrame::Open(_)) {
+            if stream.awaiting_open()
+                && (tx_seq != StreamSeq::START || !matches!(frame, StreamFrame::Open(_)))
+            {
                 return StreamDisposition::Remove;
             }
 
@@ -1217,17 +1178,17 @@ impl StreamFsm {
             ..
         } = frame;
 
-        if !stream.is_provisional() {
+        let StreamRole::Responder(state) = &mut stream.role else {
+            Self::queue_protocol_close(stream_id, stream, events);
+            return;
+        };
+        if state.opened {
             Self::queue_protocol_close(stream_id, stream, events);
             return;
         }
 
         let request_fin = request_prefix.as_ref().is_some_and(|chunk| chunk.fin);
-        stream.role = StreamRole::Responder(ResponderStream {
-            request: InboundState::new(),
-            response: OutboundPhase::from_prefix(false),
-            response_started: false,
-        });
+        state.opened = true;
         if request_fin {
             let _ = stream
                 .inbound_mut(StreamSide::Request)
@@ -1292,9 +1253,6 @@ impl StreamFsm {
                 &mut stream.control,
                 Some(&mut state.response),
             ),
-            StreamRole::Provisional(_) => {
-                Self::drive_stream_outbound(stream_id, &mut stream.control, None)
-            }
         }
     }
 
@@ -1433,12 +1391,15 @@ impl StreamFsm {
                 events.inbound_failed(stream_id, error);
             }
             StreamRole::Responder(stream) => {
+                if !stream.opened {
+                    events.reaped(stream_id);
+                    return;
+                }
                 events.inbound_failed(stream_id, error.clone());
                 if stream.response_started || stream.response.is_closed() {
                     events.outbound_failed(stream_id, error);
                 }
             }
-            StreamRole::Provisional(_) => {}
         }
         events.reaped(stream_id);
     }

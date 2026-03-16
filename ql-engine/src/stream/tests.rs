@@ -299,7 +299,7 @@ fn late_failed_write_after_remote_close_ack_is_ignored() {
         events.closes,
         vec![StreamCloseEvent {
             kind: StreamCloseKind::Remote,
-            role: Some(StreamLocalRole::Initiator),
+            role: StreamLocalRole::Initiator,
             frame: StreamFrameClose {
                 stream_id,
                 target: CloseTarget::Both,

@@ -442,7 +442,7 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
     assert!(engine
         .streams
         .get(&stream_id)
-        .is_some_and(StreamState::is_provisional));
+        .is_some_and(StreamState::awaiting_open));
 
     let open_message = StreamMessage {
         tx_seq: StreamSeq(1),
@@ -1112,7 +1112,7 @@ fn stale_ack_delay_timer_after_piggyback_does_not_emit_extra_ack_only() {
 }
 
 #[test]
-fn provisional_timeout_after_late_open_is_ignored() {
+fn late_opened_stream_ignores_unrelated_timer_tick() {
     let config = EngineConfig::default();
     let SingleEngineHarness {
         now,

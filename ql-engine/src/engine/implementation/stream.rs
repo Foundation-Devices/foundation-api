@@ -25,16 +25,13 @@ impl<O: OutputFn> EngineStreamSink<'_, O> {
     }
 
     fn emit_remote_close(&mut self, event: StreamCloseEvent) {
-        let Some(role) = event.role else {
-            return;
-        };
         let error = QlError::StreamClosed {
             target: event.frame.target,
             code: event.frame.code,
             payload: event.frame.payload,
         };
 
-        match role {
+        match event.role {
             crate::stream::StreamLocalRole::Initiator => {
                 if matches!(event.frame.target, CloseTarget::Request | CloseTarget::Both) {
                     (self.emit)(EngineOutput::OutboundFailed {
@@ -73,10 +70,7 @@ impl<O: OutputFn> EngineStreamSink<'_, O> {
     }
 
     fn emit_acked_close(&mut self, event: StreamCloseEvent) {
-        let Some(role) = event.role else {
-            return;
-        };
-        let affects_outbound = match role {
+        let affects_outbound = match event.role {
             crate::stream::StreamLocalRole::Initiator => {
                 matches!(event.frame.target, CloseTarget::Request | CloseTarget::Both)
             }

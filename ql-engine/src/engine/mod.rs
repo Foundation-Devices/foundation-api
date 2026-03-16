@@ -151,7 +151,6 @@ impl Engine {
                 ack_timeout: config.stream_ack_timeout,
                 fast_retransmit_threshold: config.stream_fast_retransmit_threshold,
                 retry_limit: config.stream_retry_limit,
-                provisional_timeout: config.packet_expiration,
             }),
         }
     }
