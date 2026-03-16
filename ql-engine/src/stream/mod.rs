@@ -16,8 +16,6 @@ pub(crate) mod ring;
 #[cfg(test)]
 mod tests;
 
-use internal::StreamStore;
-
 pub const STREAM_WINDOW_CAPACITY: usize = 8;
 pub const STREAM_WINDOW_SIZE: u32 = STREAM_WINDOW_CAPACITY as u32;
 pub const STREAM_ACK_EAGER_THRESHOLD: u32 = STREAM_WINDOW_SIZE / 2;
@@ -181,7 +179,7 @@ pub enum WriteError {
 
 pub struct StreamFsm {
     config: StreamFsmConfig,
-    streams: StreamStore,
+    pub(crate) streams: internal::StreamStore,
     next_stream_id: u32,
     next_issue_id: u64,
 }
@@ -249,25 +247,5 @@ impl StreamFsm {
 
     pub fn set_local_namespace(&mut self, local_namespace: StreamNamespace) {
         self.config.local_namespace = local_namespace;
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.streams.len()
-    }
-
-    pub(crate) fn contains_key(&self, stream_id: &StreamId) -> bool {
-        self.streams.contains_key(stream_id)
-    }
-
-    pub(crate) fn get(&self, stream_id: &StreamId) -> Option<&internal::StreamState> {
-        self.streams.get(stream_id)
-    }
-
-    pub(crate) fn get_mut(&mut self, stream_id: &StreamId) -> Option<&mut internal::StreamState> {
-        self.streams.get_mut(stream_id)
-    }
-
-    pub(crate) fn insert(&mut self, stream_id: StreamId, stream: internal::StreamState) {
-        let _ = self.streams.insert(stream_id, stream);
     }
 }

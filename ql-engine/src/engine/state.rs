@@ -250,7 +250,6 @@ pub struct EngineState {
     pub next_token: Cell<u64>,
     pub next_write_id: Cell<u64>,
     pub next_packet_id: Cell<u32>,
-    pub next_stream_id: Cell<u32>,
     pub control_outbound: VecDeque<ControlWrite>,
     pub active_writes: HashMap<WriteId, ActiveWrite>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
@@ -264,7 +263,6 @@ impl EngineState {
             next_token: Cell::new(1),
             next_write_id: Cell::new(1),
             next_packet_id: Cell::new(1),
-            next_stream_id: Cell::new(1),
             control_outbound: VecDeque::new(),
             active_writes: HashMap::new(),
             timeouts: BinaryHeap::new(),
@@ -292,12 +290,6 @@ impl EngineState {
         let id = self.next_packet_id.get();
         self.next_packet_id.set(id.wrapping_add(1));
         PacketId(id)
-    }
-
-    pub fn next_stream_id(&self, namespace: StreamNamespace) -> StreamId {
-        let seq = self.next_stream_id.get();
-        self.next_stream_id.set(seq.wrapping_add(1));
-        StreamId((seq & !StreamNamespace::BIT) | namespace.bit())
     }
 
     pub fn enqueue_handshake_message(

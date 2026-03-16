@@ -58,8 +58,8 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
             ..
         } if *stream_id == stream_id_a && request_head == b"a-open"
     )));
-    assert_eq!(harness.a.streams.len(), 2);
-    assert_eq!(harness.b.streams.len(), 2);
+    assert_eq!(harness.a.streams.streams.len(), 2);
+    assert_eq!(harness.b.streams.streams.len(), 2);
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
         .iter()
         .any(|output| matches!(output, EngineOutput::InboundData { .. })));
 
-    let stream = engine.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.streams.get(&stream_id).unwrap();
     assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
 }
 
@@ -163,7 +163,7 @@ fn ack_for_issued_open_is_applied_before_write_completion() {
             bytes,
         } if *id == stream_id && bytes == b"resp"
     )));
-    let stream = engine.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.streams.get(&stream_id).unwrap();
     assert!(!stream.control.in_flight.contains_key(&StreamSeq::START));
 }
 
@@ -225,7 +225,7 @@ fn ack_does_not_retire_ready_data() {
         } if *id == stream_id && bytes == b"resp"
     )));
 
-    let stream = engine.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.streams.get(&stream_id).unwrap();
     assert!(!stream.control.in_flight.contains_key(&StreamSeq::START));
     assert!(stream.control.in_flight.contains_key(&StreamSeq(2)));
 
@@ -309,12 +309,12 @@ fn late_failed_write_after_remote_close_ack_is_ignored() {
         } if *id == stream_id
             && payload.is_empty()
     )));
-    let stream = engine.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.streams.get(&stream_id).unwrap();
     assert!(!stream.control.in_flight.contains_key(&StreamSeq::START));
 
     let outputs_late = engine.complete_write_collect(open_write.id, Err(QlError::SendFailed));
     assert!(outputs_late.is_empty());
-    assert!(engine.streams.contains_key(&stream_id));
+    assert!(engine.streams.streams.contains_key(&stream_id));
 }
 
 #[test]
@@ -441,6 +441,7 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
     assert!(engine.take_next_write().is_some());
     assert!(engine
         .streams
+        .streams
         .get(&stream_id)
         .is_some_and(StreamState::awaiting_open));
 
@@ -508,7 +509,7 @@ fn delayed_ack_only_does_not_consume_sequence_space() {
 
     let _outputs_b = harness.b.drain_outputs();
 
-    let stream = harness.b.streams.get(&stream_id).unwrap();
+    let stream = harness.b.streams.streams.get(&stream_id).unwrap();
     assert!(stream.control.in_flight.is_empty());
     assert_eq!(stream.control.next_tx_seq, StreamSeq::START);
 }
@@ -747,10 +748,7 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
         peer,
         session_key,
     } = SingleEngineHarness::connected(EngineConfig::default(), 81, 2);
-    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
+    let stream_id = engine.streams.next_stream_id();
     insert_inflight_gap_stream(&mut engine, stream_id, now);
 
     let ack_record = wire::stream::encrypt_stream(
@@ -776,7 +774,7 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
     assert!(!outputs
         .iter()
         .any(|output| matches!(output, EngineOutput::OutboundFailed { .. })));
-    let stream = engine.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
         .control
         .in_flight
@@ -797,10 +795,7 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
         peer,
         session_key,
     } = SingleEngineHarness::connected(config, 83, 9);
-    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
+    let stream_id = engine.streams.next_stream_id();
     insert_inflight_gap_stream(&mut engine, stream_id, now);
 
     let ack_record = wire::stream::encrypt_stream(
@@ -834,7 +829,7 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
         })
     ));
 
-    let stream = engine.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
         .control
         .in_flight
@@ -860,10 +855,7 @@ fn fast_retransmit_respects_configured_threshold() {
         peer,
         session_key,
     } = SingleEngineHarness::connected(config, 85, 10);
-    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
+    let stream_id = engine.streams.next_stream_id();
     insert_inflight_gap_stream(&mut engine, stream_id, now);
 
     let ack_record = wire::stream::encrypt_stream(
@@ -891,7 +883,7 @@ fn fast_retransmit_respects_configured_threshold() {
         assert!(matches!(body, StreamBody::Ack(_)));
     }
 
-    let stream = engine.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
         .control
         .in_flight
@@ -931,7 +923,7 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
     ));
     let _outputs_written = engine.complete_write_collect(write.id, Ok(()));
 
-    let stream = engine.streams.get(&tracked_stream_id).unwrap();
+    let stream = engine.streams.streams.get(&tracked_stream_id).unwrap();
     assert_eq!(stream.control.in_flight.len(), 1);
     assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
     assert_eq!(stream.control.next_tx_seq, StreamSeq(2));
@@ -949,7 +941,7 @@ fn timeout_retransmit_reuses_original_tx_seq_and_slot() {
         }) if stream_id == tracked_stream_id
     ));
 
-    let stream = engine.streams.get(&tracked_stream_id).unwrap();
+    let stream = engine.streams.streams.get(&tracked_stream_id).unwrap();
     assert_eq!(stream.control.in_flight.len(), 1);
     assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
     assert_eq!(stream.control.next_tx_seq, StreamSeq(2));
@@ -972,10 +964,7 @@ fn take_next_write_drains_multiple_stream_frames_before_completion() {
         peer,
         session_key,
     } = SingleEngineHarness::connected(EngineConfig::default(), 93, 12);
-    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
+    let stream_id = engine.streams.next_stream_id();
     insert_unwritten_inflight_stream_with_data(&mut engine, stream_id, now, &[2, 3]);
 
     let writes = {
@@ -1003,7 +992,7 @@ fn take_next_write_drains_multiple_stream_frames_before_completion() {
     assert_eq!(engine.state.active_writes.len(), writes.len());
     assert!(engine.take_next_write().is_none());
 
-    let stream = engine.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.streams.get(&stream_id).unwrap();
     assert!(stream
         .control
         .in_flight
@@ -1019,10 +1008,7 @@ fn take_next_write_does_not_reissue_outstanding_frame() {
         peer,
         session_key: _session_key,
     } = SingleEngineHarness::connected(EngineConfig::default(), 95, 13);
-    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
+    let stream_id = engine.streams.next_stream_id();
     insert_unwritten_inflight_stream_with_data(&mut engine, stream_id, now, &[]);
 
     let write = engine.take_next_write().unwrap();
@@ -1038,14 +1024,8 @@ fn take_next_write_round_robins_across_ready_streams() {
         peer,
         session_key,
     } = SingleEngineHarness::connected(EngineConfig::default(), 97, 14);
-    let stream_id1 = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
-    let stream_id2 = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
+    let stream_id1 = engine.streams.next_stream_id();
+    let stream_id2 = engine.streams.next_stream_id();
     insert_unwritten_inflight_stream_with_data(&mut engine, stream_id1, now, &[2]);
     insert_unwritten_inflight_stream_with_data(&mut engine, stream_id2, now, &[2]);
 
@@ -1179,7 +1159,11 @@ fn late_opened_stream_ignores_unrelated_timer_tick() {
         engine.run_tick_collect(now + config.packet_expiration, EngineInput::TimerExpired);
 
     assert!(matches!(
-        engine.streams.get(&stream_id).map(|stream| &stream.role),
+        engine
+            .streams
+            .streams
+            .get(&stream_id)
+            .map(|stream| &stream.role),
         Some(StreamRole::Responder(_))
     ));
     if let Some(write) = engine.take_next_write() {
@@ -1288,7 +1272,7 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
             ..
         }) if id == stream_id && bytes == b"resp"
     ));
-    let stream = engine.streams.get(&stream_id).unwrap();
+    let stream = engine.streams.streams.get(&stream_id).unwrap();
     assert_eq!(stream.control.next_tx_seq, StreamSeq(2));
 }
 
@@ -1399,10 +1383,7 @@ fn repeated_identical_gap_ack_only_fast_retransmits_once() {
         peer,
         session_key,
     } = SingleEngineHarness::connected(config, 69, 14);
-    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
+    let stream_id = engine.streams.next_stream_id();
     insert_inflight_gap_stream(&mut engine, stream_id, now);
 
     let local_xid = engine.engine.identity.xid;
@@ -1459,10 +1440,7 @@ fn fast_recovery_clears_after_gap_is_acked_and_allows_next_gap() {
         peer,
         session_key,
     } = SingleEngineHarness::connected(config, 73, 15);
-    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
+    let stream_id = engine.streams.next_stream_id();
     insert_inflight_stream_with_data(&mut engine, stream_id, now, &[2, 3, 4, 5, 6]);
 
     let first_ack = wire::stream::encrypt_stream(
@@ -1534,17 +1512,21 @@ fn fast_retransmit_and_retry_deadline_same_tick_only_send_once() {
         peer,
         session_key,
     } = SingleEngineHarness::connected(config, 75, 16);
-    let stream_id = engine.state.next_stream_id(StreamNamespace::for_local(
-        engine.engine.identity.xid,
-        peer.xid,
-    ));
+    let stream_id = engine.streams.next_stream_id();
     insert_inflight_gap_stream(&mut engine, stream_id, now);
-    engine
-        .streams
-        .get_mut(&stream_id)
-        .unwrap()
-        .control
-        .set_retry_deadline(StreamSeq(3), now);
+
+    {
+        let in_flight = engine
+            .streams
+            .streams
+            .get_mut(&stream_id)
+            .unwrap()
+            .control
+            .in_flight
+            .get_mut(&StreamSeq(3))
+            .unwrap();
+        in_flight.write_state = InFlightWriteState::WaitingRetry { retry_at: now };
+    }
 
     let ack_record = wire::stream::encrypt_stream(
         QlHeader {

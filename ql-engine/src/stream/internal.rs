@@ -310,12 +310,6 @@ impl StreamControl {
         }
     }
 
-    pub fn set_retry_deadline(&mut self, tx_seq: StreamSeq, retry_at: Instant) {
-        if let Some(in_flight) = self.in_flight.get_mut(&tx_seq) {
-            in_flight.write_state = InFlightWriteState::WaitingRetry { retry_at };
-        }
-    }
-
     pub fn clear_fast_recovery(&mut self, ack_base: StreamSeq) {
         let should_clear = self.fast_recovery.is_some_and(|tx_seq| {
             tx_seq.serial_lte(ack_base) || !self.in_flight.contains_key(&tx_seq)
@@ -964,7 +958,7 @@ pub fn abort(stream_fsm: &mut StreamFsm, error: StreamError, events: &mut impl S
 }
 
 impl StreamFsm {
-    fn next_stream_id(&mut self) -> StreamId {
+    pub(crate) fn next_stream_id(&mut self) -> StreamId {
         let seq = self.next_stream_id;
         self.next_stream_id = seq.wrapping_add(1);
         StreamId((seq & !StreamNamespace::BIT) | self.config.local_namespace.bit())

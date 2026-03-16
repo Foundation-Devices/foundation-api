@@ -310,7 +310,7 @@ fn insert_inflight_gap_stream(engine: &mut EngineWrapper, stream_id: StreamId, n
             write_state: InFlightWriteState::WaitingRetry { retry_at },
         });
     }
-    engine.streams.insert(stream_id, stream);
+    engine.streams.streams.insert(stream_id, stream);
 }
 
 fn insert_inflight_stream_with_data(
@@ -353,7 +353,7 @@ fn insert_inflight_stream_with_data(
             write_state: InFlightWriteState::WaitingRetry { retry_at },
         });
     }
-    engine.streams.insert(stream_id, stream);
+    engine.streams.streams.insert(stream_id, stream);
 }
 
 fn insert_unwritten_inflight_stream_with_data(
@@ -395,5 +395,5 @@ fn insert_unwritten_inflight_stream_with_data(
             write_state: InFlightWriteState::Ready,
         });
     }
-    engine.streams.insert(stream_id, stream);
+    engine.streams.streams.insert(stream_id, stream);
 }
