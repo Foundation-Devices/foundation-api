@@ -11,14 +11,14 @@ use crate::{
     engine::{
         replay_cache::ReplayKey,
         state::{ActiveWrite, OutboundWriteKind, TimeoutKind},
-        Engine, EngineInput, EngineOutput, HandshakeInitiator, HandshakeResponder, KeepAliveConfig,
-        KeepAliveState, OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, RecentReady,
+        Engine, EngineEventSink, HandshakeInitiator, HandshakeResponder, KeepAliveConfig,
+        KeepAliveState, OutboundWrite, PeerRecord, PeerSession, QlCrypto, RecentReady,
         StreamConfig, Token, WriteId,
     },
     wire::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
-        stream::BodyChunk,
+        stream::{BodyChunk, CloseCode, CloseTarget},
         ControlMeta, QlHeader,
     },
     Peer, QlError, StreamId,
@@ -36,36 +36,61 @@ impl Engine {
         stream::open_stream(self, now, request_head, request_prefix, config)
     }
 
-    pub fn run_tick_inner(
+    pub fn bind_peer_inner(&mut self, peer: Peer, events: &mut impl EngineEventSink) {
+        peer::handle_bind_peer(self, peer, events);
+    }
+
+    pub fn pair_inner(&mut self, now: Instant, crypto: &impl QlCrypto) {
+        self.state.now = now;
+        peer::handle_pair_local(self, now, crypto);
+    }
+
+    pub fn connect_inner(
         &mut self,
         now: Instant,
-        input: EngineInput,
         crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
+        events: &mut impl EngineEventSink,
     ) {
         self.state.now = now;
-        match input {
-            EngineInput::BindPeer(peer) => peer::handle_bind_peer(self, peer, emit),
-            EngineInput::Pair => peer::handle_pair_local(self, now, crypto),
-            EngineInput::Connect => handshake::handle_connect(self, now, crypto, emit),
-            EngineInput::Unpair => peer::handle_unpair_local(self, now, emit),
-            EngineInput::CloseStream {
-                stream_id,
-                target,
-                code,
-                payload,
-            } => stream::handle_close_stream(self, now, stream_id, target, code, payload),
-            EngineInput::OutboundData { stream_id, bytes } => {
-                stream::handle_outbound_data(self, stream_id, bytes)
-            }
-            EngineInput::OutboundFinished { stream_id } => {
-                stream::handle_outbound_finished(self, stream_id)
-            }
-            EngineInput::Incoming(bytes) => self.handle_incoming(now, bytes, crypto, emit),
-            EngineInput::TimerExpired => self.handle_timeouts(now, crypto, emit),
-        }
+        handshake::handle_connect(self, now, crypto, events);
+    }
 
-        stream::handle_stream_timeouts(self, now, emit);
+    pub fn unpair_inner(&mut self, now: Instant, events: &mut impl EngineEventSink) {
+        self.state.now = now;
+        peer::handle_unpair_local(self, now, events);
+    }
+
+    pub fn write_stream_inner(
+        &mut self,
+        stream_id: StreamId,
+        bytes: Vec<u8>,
+    ) -> Result<(), QlError> {
+        stream::handle_outbound_data(self, stream_id, bytes)
+    }
+
+    pub fn finish_stream_inner(&mut self, stream_id: StreamId) -> Result<(), QlError> {
+        stream::handle_outbound_finished(self, stream_id)
+    }
+
+    pub fn close_stream_inner(
+        &mut self,
+        stream_id: StreamId,
+        target: CloseTarget,
+        code: CloseCode,
+        payload: Vec<u8>,
+    ) -> Result<(), QlError> {
+        stream::handle_close_stream(self, stream_id, target, code, payload)
+    }
+
+    pub fn receive_inner(
+        &mut self,
+        now: Instant,
+        bytes: Vec<u8>,
+        crypto: &impl QlCrypto,
+        events: &mut impl EngineEventSink,
+    ) {
+        self.state.now = now;
+        self.handle_incoming(now, bytes, crypto, events);
     }
 
     pub fn take_next_write_inner(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
@@ -77,7 +102,7 @@ impl Engine {
         &mut self,
         write_id: WriteId,
         result: Result<(), QlError>,
-        emit: &mut impl OutputFn,
+        events: &mut impl EngineEventSink,
     ) {
         let now = self.state.now;
         let Some(active) = self.state.active_writes.remove(write_id.0) else {
@@ -86,16 +111,16 @@ impl Engine {
 
         if let Err(error) = result {
             if let OutboundWriteKind::Stream(completion) = active.kind {
-                stream::complete_stream_write(self, now, completion, Err(error.clone()), emit);
+                stream::complete_stream_write(self, now, completion, Err(error.clone()), events);
             }
 
             if self.is_handshake_token(active.token) {
                 if let Some(entry) = self.peer.as_mut() {
                     entry.session = PeerSession::Disconnected;
                 }
-                self.emit_peer_status(emit);
+                self.emit_peer_status(events);
                 self.drop_outbound();
-                self.abort_streams(error, emit);
+                self.abort_streams(error, events);
             }
 
             return;
@@ -109,7 +134,7 @@ impl Engine {
                     recent_ready,
                 };
             }
-            self.emit_peer_status(emit);
+            self.emit_peer_status(events);
             self.record_activity(now);
         }
 
@@ -118,8 +143,18 @@ impl Engine {
         }
 
         if let OutboundWriteKind::Stream(completion) = active.kind {
-            stream::complete_stream_write(self, now, completion, Ok(()), emit);
+            stream::complete_stream_write(self, now, completion, Ok(()), events);
         }
+    }
+
+    pub fn on_timer_inner(
+        &mut self,
+        now: Instant,
+        crypto: &impl QlCrypto,
+        events: &mut impl EngineEventSink,
+    ) {
+        self.state.now = now;
+        self.handle_timeouts(now, crypto, events);
     }
 
     pub fn next_deadline_inner(&self) -> Option<Instant> {
@@ -133,15 +168,16 @@ impl Engine {
         .flatten()
         .min()
     }
+
+    pub fn abort_inner(&mut self, error: QlError, events: &mut impl EngineEventSink) {
+        self.abort_streams(error, events);
+    }
 }
 
 impl Engine {
-    fn emit_peer_status(&self, emit: &mut impl OutputFn) {
+    fn emit_peer_status(&self, events: &mut impl EngineEventSink) {
         if let Some(peer) = self.peer.as_ref() {
-            emit(EngineOutput::PeerStatusChanged {
-                peer: peer.peer,
-                session: peer.session.clone(),
-            });
+            events.peer_status_changed(peer.peer, peer.session.clone());
         }
     }
 
@@ -190,7 +226,7 @@ impl Engine {
         now: Instant,
         mut bytes: Vec<u8>,
         crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
+        events: &mut impl EngineEventSink,
     ) {
         let Ok(record) = access_mut::<wire::ArchivedQlRecord, rkyv::rancor::Error>(&mut bytes)
         else {
@@ -215,19 +251,19 @@ impl Engine {
         };
         match &mut record.payload {
             wire::ArchivedQlPayload::Handshake(message) => {
-                self.handle_handshake(now, sender, &header, message, crypto, emit)
+                self.handle_handshake(now, sender, &header, message, crypto, events)
             }
             wire::ArchivedQlPayload::Stream(encrypted) => {
-                stream::handle_stream(self, now, sender, &header, encrypted, emit)
+                stream::handle_stream(self, now, sender, &header, encrypted, events)
             }
             wire::ArchivedQlPayload::Heartbeat(encrypted) => {
-                self.handle_heartbeat(now, &header, encrypted, crypto, emit)
+                self.handle_heartbeat(now, &header, encrypted, crypto, events)
             }
             wire::ArchivedQlPayload::Pair(request) => {
-                peer::handle_pairing(self, now, &header, request, crypto, emit)
+                peer::handle_pairing(self, now, &header, request, crypto, events)
             }
             wire::ArchivedQlPayload::Unpair(unpair_record) => {
-                peer::handle_unpair(self, sender, &header, unpair_record, emit)
+                peer::handle_unpair(self, sender, &header, unpair_record, events)
             }
         }
     }
@@ -239,20 +275,20 @@ impl Engine {
         header: &QlHeader,
         message: &mut wire::handshake::ArchivedHandshakeRecord,
         crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
+        events: &mut impl EngineEventSink,
     ) {
         match message {
             wire::handshake::ArchivedHandshakeRecord::Hello(hello) => {
-                handshake::handle_hello(self, now, peer, hello, crypto, emit)
+                handshake::handle_hello(self, now, peer, hello, crypto, events)
             }
             wire::handshake::ArchivedHandshakeRecord::HelloReply(reply) => {
-                handshake::handle_hello_reply(self, now, peer, reply, emit)
+                handshake::handle_hello_reply(self, now, peer, reply)
             }
             wire::handshake::ArchivedHandshakeRecord::Confirm(confirm) => {
-                handshake::handle_confirm(self, now, peer, confirm, crypto, emit)
+                handshake::handle_confirm(self, now, peer, confirm, crypto)
             }
             wire::handshake::ArchivedHandshakeRecord::Ready(ready) => {
-                handshake::handle_ready(self, now, peer, header, ready, emit)
+                handshake::handle_ready(self, now, peer, header, ready, events)
             }
         }
     }
@@ -263,7 +299,7 @@ impl Engine {
         header: &QlHeader,
         encrypted: &mut ArchivedEncryptedMessage,
         crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
+        events: &mut impl EngineEventSink,
     ) {
         let (body, should_reply) = {
             let Some(peer_record) = self.peer.as_ref() else {
@@ -290,7 +326,7 @@ impl Engine {
         if should_reply {
             self.send_heartbeat_message(now, crypto);
         }
-        self.emit_peer_status(emit);
+        self.emit_peer_status(events);
     }
 
     fn is_handshake_token(&self, token: Option<Token>) -> bool {
@@ -511,7 +547,7 @@ impl Engine {
         self.state.active_writes.clear();
     }
 
-    fn fail_handshake(&mut self, error: QlError, emit: &mut impl OutputFn) {
+    fn fail_handshake(&mut self, error: QlError, events: &mut impl EngineEventSink) {
         if let Some(entry) = self.peer.as_mut() {
             if matches!(
                 entry.session,
@@ -520,12 +556,12 @@ impl Engine {
                 entry.session = PeerSession::Disconnected;
             }
         }
-        self.emit_peer_status(emit);
+        self.emit_peer_status(events);
         self.drop_outbound();
-        self.abort_streams(error, emit);
+        self.abort_streams(error, events);
     }
 
-    fn handle_handshake_retry_timeout(&mut self, token: Token, emit: &mut impl OutputFn) {
+    fn handle_handshake_retry_timeout(&mut self, token: Token, events: &mut impl EngineEventSink) {
         enum RetryAction {
             Resend {
                 peer: XID,
@@ -629,20 +665,20 @@ impl Engine {
                 }
                 handshake::enqueue_handshake_record(self, token, deadline, peer, record);
             }
-            RetryAction::Fail => self.fail_handshake(QlError::Timeout, emit),
+            RetryAction::Fail => self.fail_handshake(QlError::Timeout, events),
             RetryAction::Ignore => {}
         }
     }
 
-    fn abort_streams(&mut self, error: QlError, emit: &mut impl OutputFn) {
-        stream::abort_streams(self, error, emit);
+    fn abort_streams(&mut self, error: QlError, events: &mut impl EngineEventSink) {
+        stream::abort_streams(self, error, events);
     }
 
     pub fn handle_timeouts(
         &mut self,
         now: Instant,
         crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
+        events: &mut impl EngineEventSink,
     ) {
         loop {
             let Some(entry) = self
@@ -661,12 +697,12 @@ impl Engine {
                         .retain(|message| message.token != token);
                 }
                 TimeoutKind::HandshakeRetry { token } => {
-                    self.handle_handshake_retry_timeout(token, emit);
+                    self.handle_handshake_retry_timeout(token, events);
                 }
             }
         }
 
-        stream::handle_stream_timeouts(self, now, emit);
+        stream::handle_stream_timeouts(self, now, events);
 
         if let Some(PeerRecord {
             session: PeerSession::Connected { recent_ready, .. },
@@ -685,7 +721,7 @@ impl Engine {
             .handshake_deadline()
             .is_some_and(|deadline| deadline <= now);
         if handshake_due {
-            self.fail_handshake(QlError::Timeout, emit);
+            self.fail_handshake(QlError::Timeout, events);
             return;
         }
 
@@ -707,9 +743,9 @@ impl Engine {
             if let Some(entry) = self.peer.as_mut() {
                 entry.session = PeerSession::Disconnected;
             }
-            self.emit_peer_status(emit);
+            self.emit_peer_status(events);
             self.drop_outbound();
-            self.abort_streams(QlError::SendFailed, emit);
+            self.abort_streams(QlError::SendFailed, events);
             return;
         }
 

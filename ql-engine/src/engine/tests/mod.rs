@@ -59,6 +59,29 @@ impl Side {
     }
 }
 
+#[allow(dead_code)]
+enum EngineInput {
+    BindPeer(Peer),
+    Pair,
+    Connect,
+    Unpair,
+    CloseStream {
+        stream_id: StreamId,
+        target: CloseTarget,
+        code: CloseCode,
+        payload: Vec<u8>,
+    },
+    OutboundData {
+        stream_id: StreamId,
+        bytes: Vec<u8>,
+    },
+    OutboundFinished {
+        stream_id: StreamId,
+    },
+    Incoming(Vec<u8>),
+    TimerExpired,
+}
+
 struct Harness {
     now: Instant,
     a: EngineWrapper,
@@ -178,10 +201,33 @@ impl EngineWrapper {
     }
 
     fn run_tick(&mut self, now: Instant, input: EngineInput) {
-        self.engine
-            .run_tick(now, input, &self.crypto, &mut |output| {
-                self.outputs.push(output)
-            });
+        match input {
+            EngineInput::BindPeer(peer) => self.engine.bind_peer(peer, &mut self.outputs),
+            EngineInput::Pair => self.engine.pair(now, &self.crypto),
+            EngineInput::Connect => self.engine.connect(now, &self.crypto, &mut self.outputs),
+            EngineInput::Unpair => self.engine.unpair(now, &mut self.outputs),
+            EngineInput::CloseStream {
+                stream_id,
+                target,
+                code,
+                payload,
+            } => {
+                let _ = self.engine.close_stream(stream_id, target, code, payload);
+            }
+            EngineInput::OutboundData { stream_id, bytes } => {
+                let _ = self.engine.write_stream(stream_id, bytes);
+            }
+            EngineInput::OutboundFinished { stream_id } => {
+                let _ = self.engine.finish_stream(stream_id);
+            }
+            EngineInput::Incoming(bytes) => {
+                self.engine
+                    .receive(now, bytes, &self.crypto, &mut self.outputs);
+            }
+            EngineInput::TimerExpired => {
+                self.engine.on_timer(now, &self.crypto, &mut self.outputs);
+            }
+        }
     }
 
     fn run_tick_collect(&mut self, now: Instant, input: EngineInput) -> Vec<EngineOutput> {
@@ -191,7 +237,7 @@ impl EngineWrapper {
 
     fn complete_write(&mut self, write_id: WriteId, result: Result<(), QlError>) {
         self.engine
-            .complete_write(write_id, result, &mut |output| self.outputs.push(output));
+            .complete_write(write_id, result, &mut self.outputs);
     }
 
     fn take_next_write(&mut self) -> Option<OutboundWrite> {

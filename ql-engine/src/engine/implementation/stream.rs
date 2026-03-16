@@ -1,16 +1,16 @@
 use super::*;
 use crate::{
-    engine::{state::OutboundWriteKind, Engine, EngineOutput, EngineState, QlCrypto},
+    engine::{state::OutboundWriteKind, Engine, EngineEventSink, EngineState, QlCrypto},
     stream::{StreamCloseEvent, StreamCloseKind, StreamError, StreamEventSink, WriteError},
     wire::stream::*,
 };
 
 struct EngineStreamSink<'a, O> {
     state: &'a mut EngineState,
-    emit: &'a mut O,
+    events: &'a mut O,
 }
 
-impl<O: OutputFn> EngineStreamSink<'_, O> {
+impl<O: EngineEventSink> EngineStreamSink<'_, O> {
     fn clear_active_writes_for_stream(&mut self, stream_id: StreamId) {
         self.state
             .active_writes
@@ -30,36 +30,26 @@ impl<O: OutputFn> EngineStreamSink<'_, O> {
         match event.role {
             crate::stream::StreamLocalRole::Initiator => {
                 if matches!(event.frame.target, CloseTarget::Request | CloseTarget::Both) {
-                    (self.emit)(EngineOutput::OutboundFailed {
-                        stream_id: event.frame.stream_id,
-                        error: error.clone(),
-                    });
+                    self.events
+                        .outbound_failed(event.frame.stream_id, error.clone());
                 }
                 if matches!(
                     event.frame.target,
                     CloseTarget::Response | CloseTarget::Both
                 ) {
-                    (self.emit)(EngineOutput::InboundFailed {
-                        stream_id: event.frame.stream_id,
-                        error,
-                    });
+                    self.events.inbound_failed(event.frame.stream_id, error);
                 }
             }
             crate::stream::StreamLocalRole::Responder => {
                 if matches!(event.frame.target, CloseTarget::Request | CloseTarget::Both) {
-                    (self.emit)(EngineOutput::InboundFailed {
-                        stream_id: event.frame.stream_id,
-                        error: error.clone(),
-                    });
+                    self.events
+                        .inbound_failed(event.frame.stream_id, error.clone());
                 }
                 if matches!(
                     event.frame.target,
                     CloseTarget::Response | CloseTarget::Both
                 ) {
-                    (self.emit)(EngineOutput::OutboundFailed {
-                        stream_id: event.frame.stream_id,
-                        error,
-                    });
+                    self.events.outbound_failed(event.frame.stream_id, error);
                 }
             }
         }
@@ -81,44 +71,38 @@ impl<O: OutputFn> EngineStreamSink<'_, O> {
             return;
         }
 
-        (self.emit)(EngineOutput::OutboundFailed {
-            stream_id: event.frame.stream_id,
-            error: QlError::StreamClosed {
+        self.events.outbound_failed(
+            event.frame.stream_id,
+            QlError::StreamClosed {
                 target: event.frame.target,
                 code: event.frame.code,
                 payload: event.frame.payload,
             },
-        });
+        );
     }
 }
 
-impl<O: OutputFn> StreamEventSink for EngineStreamSink<'_, O> {
+impl<O: EngineEventSink> StreamEventSink for EngineStreamSink<'_, O> {
     fn opened(
         &mut self,
         stream_id: StreamId,
         request_head: Vec<u8>,
         request_prefix: Option<BodyChunk>,
     ) {
-        (self.emit)(EngineOutput::InboundStreamOpened {
-            stream_id,
-            request_head,
-            request_prefix,
-        });
+        self.events
+            .inbound_stream_opened(stream_id, request_head, request_prefix);
     }
 
     fn inbound_data(&mut self, stream_id: StreamId, bytes: Vec<u8>) {
-        (self.emit)(EngineOutput::InboundData { stream_id, bytes });
+        self.events.inbound_data(stream_id, bytes);
     }
 
     fn inbound_finished(&mut self, stream_id: StreamId) {
-        (self.emit)(EngineOutput::InboundFinished { stream_id });
+        self.events.inbound_finished(stream_id);
     }
 
     fn inbound_failed(&mut self, stream_id: StreamId, error: StreamError) {
-        (self.emit)(EngineOutput::InboundFailed {
-            stream_id,
-            error: stream_error(error),
-        });
+        self.events.inbound_failed(stream_id, stream_error(error));
     }
 
     fn close(&mut self, event: StreamCloseEvent) {
@@ -129,19 +113,16 @@ impl<O: OutputFn> StreamEventSink for EngineStreamSink<'_, O> {
     }
 
     fn outbound_closed(&mut self, stream_id: StreamId) {
-        (self.emit)(EngineOutput::OutboundClosed { stream_id });
+        self.events.outbound_closed(stream_id);
     }
 
     fn outbound_failed(&mut self, stream_id: StreamId, error: StreamError) {
-        (self.emit)(EngineOutput::OutboundFailed {
-            stream_id,
-            error: stream_error(error),
-        });
+        self.events.outbound_failed(stream_id, stream_error(error));
     }
 
     fn reaped(&mut self, stream_id: StreamId) {
         self.clear_active_writes_for_stream(stream_id);
-        (self.emit)(EngineOutput::StreamReaped { stream_id });
+        self.events.stream_reaped(stream_id);
     }
 }
 
@@ -165,23 +146,33 @@ pub fn open_stream(
 
 pub fn handle_close_stream(
     engine: &mut Engine,
-    _now: Instant,
     stream_id: StreamId,
     target: CloseTarget,
     code: CloseCode,
     payload: Vec<u8>,
-) {
-    let _ = engine
+) -> Result<(), QlError> {
+    engine
         .streams
-        .close_stream(stream_id, target, code, payload);
+        .close_stream(stream_id, target, code, payload)
+        .map_err(stream_error)
 }
 
-pub fn handle_outbound_data(engine: &mut Engine, stream_id: StreamId, bytes: Vec<u8>) {
-    let _ = engine.streams.write_stream(stream_id, bytes);
+pub fn handle_outbound_data(
+    engine: &mut Engine,
+    stream_id: StreamId,
+    bytes: Vec<u8>,
+) -> Result<(), QlError> {
+    engine
+        .streams
+        .write_stream(stream_id, bytes)
+        .map_err(stream_error)
 }
 
-pub fn handle_outbound_finished(engine: &mut Engine, stream_id: StreamId) {
-    let _ = engine.streams.finish_stream(stream_id);
+pub fn handle_outbound_finished(engine: &mut Engine, stream_id: StreamId) -> Result<(), QlError> {
+    engine
+        .streams
+        .finish_stream(stream_id)
+        .map_err(stream_error)
 }
 
 pub fn handle_stream(
@@ -190,7 +181,7 @@ pub fn handle_stream(
     _peer: XID,
     header: &QlHeader,
     encrypted: &mut ArchivedEncryptedMessage,
-    emit: &mut impl OutputFn,
+    events: &mut impl EngineEventSink,
 ) {
     let body = {
         let Some(peer_record) = engine.peer.as_ref() else {
@@ -210,7 +201,7 @@ pub fn handle_stream(
 
     let mut sink = EngineStreamSink {
         state: &mut engine.state,
-        emit,
+        events,
     };
     engine.streams.receive(now, body, &mut sink);
 }
@@ -248,11 +239,11 @@ pub fn complete_stream_write(
     now: Instant,
     completion: crate::stream::OutboundCompletion,
     result: Result<(), QlError>,
-    emit: &mut impl OutputFn,
+    events: &mut impl EngineEventSink,
 ) {
     let mut sink = EngineStreamSink {
         state: &mut engine.state,
-        emit,
+        events,
     };
     engine.streams.complete_outbound(
         now,
@@ -262,7 +253,11 @@ pub fn complete_stream_write(
     );
 }
 
-pub fn handle_stream_timeouts(engine: &mut Engine, now: Instant, emit: &mut impl OutputFn) {
+pub fn handle_stream_timeouts(
+    engine: &mut Engine,
+    now: Instant,
+    events: &mut impl EngineEventSink,
+) {
     if !engine
         .streams
         .next_deadline()
@@ -273,15 +268,15 @@ pub fn handle_stream_timeouts(engine: &mut Engine, now: Instant, emit: &mut impl
 
     let mut sink = EngineStreamSink {
         state: &mut engine.state,
-        emit,
+        events,
     };
     engine.streams.on_timer(now, &mut sink);
 }
 
-pub fn abort_streams(engine: &mut Engine, error: QlError, emit: &mut impl OutputFn) {
+pub fn abort_streams(engine: &mut Engine, error: QlError, events: &mut impl EngineEventSink) {
     let mut sink = EngineStreamSink {
         state: &mut engine.state,
-        emit,
+        events,
     };
     engine.streams.abort(stream_error_inverse(error), &mut sink);
 }

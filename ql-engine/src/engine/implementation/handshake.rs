@@ -33,7 +33,7 @@ pub fn handle_connect(
     engine: &mut Engine,
     now: Instant,
     crypto: &impl QlCrypto,
-    emit: &mut impl OutputFn,
+    events: &mut impl EngineEventSink,
 ) {
     let Some(_) = engine.peer.as_ref() else {
         return;
@@ -48,7 +48,7 @@ pub fn handle_connect(
         start_initiator_handshake(config, identity, state, peer_record, now, crypto)
     };
     if started {
-        engine.emit_peer_status(emit);
+        engine.emit_peer_status(events);
     }
 }
 
@@ -58,7 +58,7 @@ pub fn handle_hello(
     peer: XID,
     hello: &wire::handshake::ArchivedHello,
     crypto: &impl QlCrypto,
-    emit: &mut impl OutputFn,
+    events: &mut impl EngineEventSink,
 ) {
     let action = match engine.peer.as_ref() {
         Some(entry) => {
@@ -127,7 +127,7 @@ pub fn handle_hello(
                 )
             };
             if changed {
-                engine.emit_peer_status(emit);
+                engine.emit_peer_status(events);
             }
         }
         HelloAction::ResendReply {
@@ -156,7 +156,6 @@ pub fn handle_hello_reply(
     now: Instant,
     peer: XID,
     reply: &wire::handshake::ArchivedHelloReply,
-    _emit: &mut impl OutputFn,
 ) {
     let action = {
         let Some(peer_record) = engine.peer.as_ref() else {
@@ -268,7 +267,6 @@ pub fn handle_confirm(
     peer: XID,
     confirm: &wire::handshake::ArchivedConfirm,
     crypto: &impl QlCrypto,
-    _emit: &mut impl OutputFn,
 ) {
     if let Some((ready, deadline, token)) = current_ready_resend(engine, now, peer, confirm) {
         if engine.handshake_write_pending(token) {
@@ -362,7 +360,7 @@ pub fn handle_ready(
     peer: XID,
     header: &QlHeader,
     ready: &mut wire::handshake::ArchivedReady,
-    emit: &mut impl OutputFn,
+    events: &mut impl EngineEventSink,
 ) {
     let session_key = {
         let Some(peer_record) = engine.peer.as_ref() else {
@@ -395,7 +393,7 @@ pub fn handle_ready(
         };
     }
     engine.record_activity(now);
-    engine.emit_peer_status(emit);
+    engine.emit_peer_status(events);
 }
 
 fn start_initiator_handshake(

@@ -62,30 +62,6 @@ impl Default for EngineConfig {
 }
 
 #[derive(Debug)]
-pub enum EngineInput {
-    BindPeer(Peer),
-    Pair,
-    Connect,
-    Unpair,
-    CloseStream {
-        stream_id: StreamId,
-        target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
-    },
-
-    OutboundData {
-        stream_id: StreamId,
-        bytes: Vec<u8>,
-    },
-    OutboundFinished {
-        stream_id: StreamId,
-    },
-    Incoming(Vec<u8>),
-    TimerExpired,
-}
-
-#[derive(Debug)]
 pub enum EngineOutput {
     PeerStatusChanged {
         peer: XID,
@@ -124,9 +100,111 @@ pub enum EngineOutput {
     },
 }
 
-pub trait OutputFn: FnMut(EngineOutput) {}
+pub trait EngineEventSink {
+    fn peer_status_changed(&mut self, peer: XID, session: PeerSession);
 
-impl<T> OutputFn for T where T: FnMut(EngineOutput) {}
+    fn persist_peer(&mut self, peer: Peer);
+
+    fn clear_peer(&mut self);
+
+    fn inbound_stream_opened(
+        &mut self,
+        stream_id: StreamId,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+    );
+
+    fn inbound_data(&mut self, stream_id: StreamId, bytes: Vec<u8>);
+
+    fn inbound_finished(&mut self, stream_id: StreamId);
+
+    fn inbound_failed(&mut self, stream_id: StreamId, error: QlError);
+
+    fn outbound_closed(&mut self, stream_id: StreamId);
+
+    fn outbound_failed(&mut self, stream_id: StreamId, error: QlError);
+
+    fn stream_reaped(&mut self, stream_id: StreamId);
+}
+
+impl EngineEventSink for () {
+    fn peer_status_changed(&mut self, _peer: XID, _session: PeerSession) {}
+
+    fn persist_peer(&mut self, _peer: Peer) {}
+
+    fn clear_peer(&mut self) {}
+
+    fn inbound_stream_opened(
+        &mut self,
+        _stream_id: StreamId,
+        _request_head: Vec<u8>,
+        _request_prefix: Option<BodyChunk>,
+    ) {
+    }
+
+    fn inbound_data(&mut self, _stream_id: StreamId, _bytes: Vec<u8>) {}
+
+    fn inbound_finished(&mut self, _stream_id: StreamId) {}
+
+    fn inbound_failed(&mut self, _stream_id: StreamId, _error: QlError) {}
+
+    fn outbound_closed(&mut self, _stream_id: StreamId) {}
+
+    fn outbound_failed(&mut self, _stream_id: StreamId, _error: QlError) {}
+
+    fn stream_reaped(&mut self, _stream_id: StreamId) {}
+}
+
+impl EngineEventSink for Vec<EngineOutput> {
+    fn peer_status_changed(&mut self, peer: XID, session: PeerSession) {
+        self.push(EngineOutput::PeerStatusChanged { peer, session });
+    }
+
+    fn persist_peer(&mut self, peer: Peer) {
+        self.push(EngineOutput::PersistPeer(peer));
+    }
+
+    fn clear_peer(&mut self) {
+        self.push(EngineOutput::ClearPeer);
+    }
+
+    fn inbound_stream_opened(
+        &mut self,
+        stream_id: StreamId,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+    ) {
+        self.push(EngineOutput::InboundStreamOpened {
+            stream_id,
+            request_head,
+            request_prefix,
+        });
+    }
+
+    fn inbound_data(&mut self, stream_id: StreamId, bytes: Vec<u8>) {
+        self.push(EngineOutput::InboundData { stream_id, bytes });
+    }
+
+    fn inbound_finished(&mut self, stream_id: StreamId) {
+        self.push(EngineOutput::InboundFinished { stream_id });
+    }
+
+    fn inbound_failed(&mut self, stream_id: StreamId, error: QlError) {
+        self.push(EngineOutput::InboundFailed { stream_id, error });
+    }
+
+    fn outbound_closed(&mut self, stream_id: StreamId) {
+        self.push(EngineOutput::OutboundClosed { stream_id });
+    }
+
+    fn outbound_failed(&mut self, stream_id: StreamId, error: QlError) {
+        self.push(EngineOutput::OutboundFailed { stream_id, error });
+    }
+
+    fn stream_reaped(&mut self, stream_id: StreamId) {
+        self.push(EngineOutput::StreamReaped { stream_id });
+    }
+}
 
 impl Engine {
     pub fn new(config: EngineConfig, identity: QlIdentity, peer: Option<Peer>) -> Self {
@@ -154,14 +232,25 @@ impl Engine {
         }
     }
 
-    pub fn run_tick(
+    pub fn bind_peer(&mut self, peer: Peer, events: &mut impl EngineEventSink) {
+        self.bind_peer_inner(peer, events);
+    }
+
+    pub fn pair(&mut self, now: Instant, crypto: &impl QlCrypto) {
+        self.pair_inner(now, crypto);
+    }
+
+    pub fn connect(
         &mut self,
         now: Instant,
-        input: EngineInput,
         crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
+        events: &mut impl EngineEventSink,
     ) {
-        self.run_tick_inner(now, input, crypto, emit);
+        self.connect_inner(now, crypto, events);
+    }
+
+    pub fn unpair(&mut self, now: Instant, events: &mut impl EngineEventSink) {
+        self.unpair_inner(now, events);
     }
 
     pub fn take_next_write(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
@@ -172,12 +261,53 @@ impl Engine {
         &mut self,
         write_id: WriteId,
         result: Result<(), QlError>,
-        emit: &mut impl OutputFn,
+        events: &mut impl EngineEventSink,
     ) {
-        self.complete_write_inner(write_id, result, emit);
+        self.complete_write_inner(write_id, result, events);
+    }
+
+    pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), QlError> {
+        self.write_stream_inner(stream_id, bytes)
+    }
+
+    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), QlError> {
+        self.finish_stream_inner(stream_id)
+    }
+
+    pub fn close_stream(
+        &mut self,
+        stream_id: StreamId,
+        target: CloseTarget,
+        code: CloseCode,
+        payload: Vec<u8>,
+    ) -> Result<(), QlError> {
+        self.close_stream_inner(stream_id, target, code, payload)
+    }
+
+    pub fn receive(
+        &mut self,
+        now: Instant,
+        bytes: Vec<u8>,
+        crypto: &impl QlCrypto,
+        events: &mut impl EngineEventSink,
+    ) {
+        self.receive_inner(now, bytes, crypto, events);
+    }
+
+    pub fn on_timer(
+        &mut self,
+        now: Instant,
+        crypto: &impl QlCrypto,
+        events: &mut impl EngineEventSink,
+    ) {
+        self.on_timer_inner(now, crypto, events);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
         self.next_deadline_inner()
+    }
+
+    pub fn abort(&mut self, error: QlError, events: &mut impl EngineEventSink) {
+        self.abort_inner(error, events);
     }
 }
