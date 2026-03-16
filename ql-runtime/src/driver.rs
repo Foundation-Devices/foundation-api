@@ -8,17 +8,33 @@ use std::{
 use futures_lite::future::poll_fn;
 
 use crate::{
-    engine::{Engine, EngineInput, EngineOutput, WriteId},
     command::RuntimeCommand,
+    engine::{Engine, EngineEventSink, WriteId},
     handle::{InboundByteStream, InboundStream, OutboundByteStream},
     platform::{PlatformFuture, QlPlatform},
     wire::stream::{BodyChunk, CloseCode, CloseTarget},
-    HandlerEvent, InboundEvent, OpenedStreamDelivery, QlError, Runtime, StreamId,
+    HandlerEvent, InboundEvent, OpenedStreamDelivery, Peer, QlError, Runtime, StreamId,
 };
 
 struct InFlightWrite<'a> {
     id: WriteId,
     future: PlatformFuture<'a, Result<(), QlError>>,
+}
+
+enum PendingAction {
+    CloseStream {
+        stream_id: StreamId,
+        target: CloseTarget,
+        code: CloseCode,
+        payload: Vec<u8>,
+    },
+    OutboundData {
+        stream_id: StreamId,
+        bytes: Vec<u8>,
+    },
+    OutboundFinished {
+        stream_id: StreamId,
+    },
 }
 
 enum DriverEvent {
@@ -51,7 +67,7 @@ impl OutboundIo {
         *self = Self::Closed;
     }
 
-    fn poll_pending(&mut self, stream_id: StreamId, pending_inputs: &mut VecDeque<EngineInput>) {
+    fn poll_pending(&mut self, stream_id: StreamId, pending_inputs: &mut VecDeque<PendingAction>) {
         let Self::Open {
             reader,
             finish_queued,
@@ -66,13 +82,13 @@ impl OutboundIo {
             let read = reader.try_drain(&mut bytes);
             if read > 0 {
                 bytes.truncate(read);
-                pending_inputs.push_back(EngineInput::OutboundData { stream_id, bytes });
+                pending_inputs.push_back(PendingAction::OutboundData { stream_id, bytes });
             }
         }
 
         if reader.is_closed() && !*finish_queued {
             *finish_queued = true;
-            pending_inputs.push_back(EngineInput::OutboundFinished { stream_id });
+            pending_inputs.push_back(PendingAction::OutboundFinished { stream_id });
         }
     }
 }
@@ -92,9 +108,9 @@ impl InboundIo {
         stream_id: StreamId,
         target: CloseTarget,
         bytes: Vec<u8>,
-    ) -> Option<EngineInput> {
+    ) -> Option<PendingAction> {
         let Self::Open(tx) = self else {
-            return Some(EngineInput::CloseStream {
+            return Some(PendingAction::CloseStream {
                 stream_id,
                 target,
                 code: CloseCode::CANCELLED,
@@ -104,7 +120,7 @@ impl InboundIo {
         if tx.try_send(InboundEvent::Data(bytes)).is_err() {
             tx.close();
             *self = Self::Closed;
-            return Some(EngineInput::CloseStream {
+            return Some(PendingAction::CloseStream {
                 stream_id,
                 target,
                 code: CloseCode::CANCELLED,
@@ -137,22 +153,6 @@ impl InboundIo {
         }
         *self = Self::Closed;
     }
-
-    fn apply_prefix(
-        &mut self,
-        stream_id: StreamId,
-        target: CloseTarget,
-        prefix: &BodyChunk,
-    ) -> Option<EngineInput> {
-        let mut input = None;
-        if !prefix.bytes.is_empty() {
-            input = self.write_or_close(stream_id, target, prefix.bytes.clone());
-        }
-        if prefix.fin {
-            self.finish();
-        }
-        input
-    }
 }
 
 enum DriverStreamIo {
@@ -167,7 +167,7 @@ enum DriverStreamIo {
 }
 
 impl DriverStreamIo {
-    fn poll_pending(&mut self, stream_id: StreamId, pending_inputs: &mut VecDeque<EngineInput>) {
+    fn poll_pending(&mut self, stream_id: StreamId, pending_inputs: &mut VecDeque<PendingAction>) {
         match self {
             Self::Initiator { request, .. } => request.poll_pending(stream_id, pending_inputs),
             Self::Responder { response, .. } => response.poll_pending(stream_id, pending_inputs),
@@ -209,9 +209,147 @@ impl DriverStreamIo {
     }
 }
 
+struct DriverEventSink<'a, P> {
+    platform: &'a P,
+    runtime_tx: &'a async_channel::Sender<RuntimeCommand>,
+    stream_send_buffer_bytes: usize,
+    pending_inputs: &'a mut VecDeque<PendingAction>,
+    streams: &'a mut HashMap<StreamId, DriverStreamIo>,
+}
+
+impl<'a, P> DriverEventSink<'a, P> {
+    fn new(
+        platform: &'a P,
+        runtime_tx: &'a async_channel::Sender<RuntimeCommand>,
+        stream_send_buffer_bytes: usize,
+        pending_inputs: &'a mut VecDeque<PendingAction>,
+        streams: &'a mut HashMap<StreamId, DriverStreamIo>,
+    ) -> Self {
+        Self {
+            platform,
+            runtime_tx,
+            stream_send_buffer_bytes,
+            pending_inputs,
+            streams,
+        }
+    }
+}
+
+impl<P: QlPlatform> EngineEventSink for DriverEventSink<'_, P> {
+    fn peer_status_changed(
+        &mut self,
+        peer: bc_components::XID,
+        session: crate::engine::PeerSession,
+    ) {
+        self.platform.handle_peer_status(peer, &session);
+    }
+
+    fn persist_peer(&mut self, peer: Peer) {
+        self.platform.persist_peer(peer);
+    }
+
+    fn clear_peer(&mut self) {
+        self.platform.clear_peer();
+    }
+
+    fn inbound_stream_opened(
+        &mut self,
+        stream_id: StreamId,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+    ) {
+        let (request_tx, request_rx) = async_channel::unbounded();
+        let mut request = InboundIo::new(request_tx);
+        if let Some(prefix) = request_prefix.as_ref() {
+            if !prefix.bytes.is_empty() {
+                let InboundIo::Open(tx) = &request else {
+                    unreachable!("fresh inbound stream must be open");
+                };
+                tx.try_send(InboundEvent::Data(prefix.bytes.clone()))
+                    .expect("new inbound stream prefix send should succeed");
+            }
+            if prefix.fin {
+                request.finish();
+            }
+        }
+
+        let (response_reader, response_writer) = piper::pipe(self.stream_send_buffer_bytes);
+        self.streams.insert(
+            stream_id,
+            DriverStreamIo::Responder {
+                request,
+                response: OutboundIo::new(response_reader),
+            },
+        );
+
+        self.platform
+            .handle_inbound(HandlerEvent::Stream(InboundStream {
+                stream_id,
+                request_head,
+                request: InboundByteStream::new(
+                    stream_id,
+                    CloseTarget::Request,
+                    request_rx,
+                    self.runtime_tx.clone(),
+                ),
+                response: OutboundByteStream::new(
+                    stream_id,
+                    CloseTarget::Response,
+                    response_writer,
+                    self.runtime_tx.clone(),
+                ),
+            }));
+    }
+
+    fn inbound_data(&mut self, stream_id: StreamId, bytes: Vec<u8>) {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
+            return;
+        };
+        let target = stream.inbound_target();
+        let inbound = stream.inbound_mut();
+        if let Some(input) = inbound.write_or_close(stream_id, target, bytes) {
+            self.pending_inputs.push_back(input);
+        }
+    }
+
+    fn inbound_finished(&mut self, stream_id: StreamId) {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
+            return;
+        };
+        stream.inbound_mut().finish();
+    }
+
+    fn inbound_failed(&mut self, stream_id: StreamId, error: QlError) {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
+            return;
+        };
+        stream.inbound_mut().fail(error);
+    }
+
+    fn outbound_closed(&mut self, stream_id: StreamId) {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
+            return;
+        };
+        stream.outbound_mut().close();
+    }
+
+    fn outbound_failed(&mut self, stream_id: StreamId, _error: QlError) {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
+            return;
+        };
+        stream.outbound_mut().close();
+    }
+
+    fn stream_reaped(&mut self, stream_id: StreamId) {
+        if let Some(mut stream) = self.streams.remove(&stream_id) {
+            stream.close_all();
+        }
+    }
+}
+
 struct DriverState {
     engine: Engine,
-    pending_inputs: VecDeque<EngineInput>,
+    pending_inputs: VecDeque<PendingAction>,
     streams: HashMap<StreamId, DriverStreamIo>,
     runtime_tx: async_channel::Sender<RuntimeCommand>,
     stream_send_buffer_bytes: usize,
@@ -227,19 +365,56 @@ impl DriverState {
     ) {
         match command {
             RuntimeCommand::BindPeer { peer } => {
-                self.drive_input(EngineInput::BindPeer(peer), platform, in_flight);
+                let now = Instant::now();
+                let mut events = DriverEventSink::new(
+                    platform,
+                    &self.runtime_tx,
+                    self.stream_send_buffer_bytes,
+                    &mut self.pending_inputs,
+                    &mut self.streams,
+                );
+                self.engine.bind_peer(now, peer, &mut events);
+                self.finish_step(platform, in_flight);
             }
             RuntimeCommand::Pair => {
-                self.drive_input(EngineInput::Pair, platform, in_flight);
+                self.engine.pair(Instant::now(), platform);
+                self.finish_step(platform, in_flight);
             }
             RuntimeCommand::Connect => {
-                self.drive_input(EngineInput::Connect, platform, in_flight);
+                let now = Instant::now();
+                let mut events = DriverEventSink::new(
+                    platform,
+                    &self.runtime_tx,
+                    self.stream_send_buffer_bytes,
+                    &mut self.pending_inputs,
+                    &mut self.streams,
+                );
+                self.engine.connect(now, platform, &mut events);
+                self.finish_step(platform, in_flight);
             }
             RuntimeCommand::Unpair => {
-                self.drive_input(EngineInput::Unpair, platform, in_flight);
+                let now = Instant::now();
+                let mut events = DriverEventSink::new(
+                    platform,
+                    &self.runtime_tx,
+                    self.stream_send_buffer_bytes,
+                    &mut self.pending_inputs,
+                    &mut self.streams,
+                );
+                self.engine.unpair(now, &mut events);
+                self.finish_step(platform, in_flight);
             }
             RuntimeCommand::Incoming(bytes) => {
-                self.drive_input(EngineInput::Incoming(bytes), platform, in_flight);
+                let now = Instant::now();
+                let mut events = DriverEventSink::new(
+                    platform,
+                    &self.runtime_tx,
+                    self.stream_send_buffer_bytes,
+                    &mut self.pending_inputs,
+                    &mut self.streams,
+                );
+                self.engine.receive(now, bytes, platform, &mut events);
+                self.finish_step(platform, in_flight);
             }
             RuntimeCommand::OpenStream {
                 request_head,
@@ -282,28 +457,12 @@ impl DriverState {
                 code,
                 payload,
             } => {
-                self.drive_input(
-                    EngineInput::CloseStream {
-                        stream_id,
-                        target,
-                        code,
-                        payload,
-                    },
-                    platform,
-                    in_flight,
-                );
+                let _ = self
+                    .engine
+                    .close_stream(Instant::now(), stream_id, target, code, payload);
+                self.finish_step(platform, in_flight);
             }
         }
-    }
-
-    fn drive_input<'a, P: QlPlatform>(
-        &mut self,
-        input: EngineInput,
-        platform: &'a P,
-        in_flight: &mut Vec<InFlightWrite<'a>>,
-    ) {
-        self.pending_inputs.push_back(input);
-        self.drive_pending(platform, in_flight);
     }
 
     fn drive_write_completed<'a, P: QlPlatform>(
@@ -314,23 +473,18 @@ impl DriverState {
         in_flight: &mut Vec<InFlightWrite<'a>>,
     ) {
         {
-            let runtime_tx = self.runtime_tx.clone();
-            let stream_send_buffer_bytes = self.stream_send_buffer_bytes;
-            let pending_inputs = &mut self.pending_inputs;
-            let streams = &mut self.streams;
-            self.engine.complete_write(write_id, result, &mut |output| {
-                handle_output(
-                    output,
-                    platform,
-                    &runtime_tx,
-                    stream_send_buffer_bytes,
-                    pending_inputs,
-                    streams,
-                )
-            });
+            let now = self.engine.state.now;
+            let mut events = DriverEventSink::new(
+                platform,
+                &self.runtime_tx,
+                self.stream_send_buffer_bytes,
+                &mut self.pending_inputs,
+                &mut self.streams,
+            );
+            self.engine
+                .complete_write(now, write_id, result, &mut events);
         }
-        self.fill_write_slots(platform, in_flight);
-        self.drive_pending(platform, in_flight);
+        self.finish_step(platform, in_flight);
     }
 
     fn drive_pending<'a, P: QlPlatform>(
@@ -339,27 +493,55 @@ impl DriverState {
         in_flight: &mut Vec<InFlightWrite<'a>>,
     ) {
         while let Some(input) = self.pending_inputs.pop_front() {
-            {
-                let runtime_tx = &self.runtime_tx;
-                let stream_send_buffer_bytes = self.stream_send_buffer_bytes;
-                let pending_inputs = &mut self.pending_inputs;
-                let streams = &mut self.streams;
-                self.engine
-                    .run_tick(Instant::now(), input, platform, &mut |output| {
-                        handle_output(
-                            output,
-                            platform,
-                            runtime_tx,
-                            stream_send_buffer_bytes,
-                            pending_inputs,
-                            streams,
-                        )
-                    });
+            let now = Instant::now();
+            match input {
+                PendingAction::CloseStream {
+                    stream_id,
+                    target,
+                    code,
+                    payload,
+                } => {
+                    let _ = self
+                        .engine
+                        .close_stream(now, stream_id, target, code, payload);
+                }
+                PendingAction::OutboundData { stream_id, bytes } => {
+                    let _ = self.engine.write_stream(now, stream_id, bytes);
+                }
+                PendingAction::OutboundFinished { stream_id } => {
+                    let _ = self.engine.finish_stream(now, stream_id);
+                }
             }
             self.fill_write_slots(platform, in_flight);
         }
 
         self.fill_write_slots(platform, in_flight);
+    }
+
+    fn drive_timer<'a, P: QlPlatform>(
+        &mut self,
+        platform: &'a P,
+        in_flight: &mut Vec<InFlightWrite<'a>>,
+    ) {
+        let now = Instant::now();
+        let mut events = DriverEventSink::new(
+            platform,
+            &self.runtime_tx,
+            self.stream_send_buffer_bytes,
+            &mut self.pending_inputs,
+            &mut self.streams,
+        );
+        self.engine.on_timer(now, platform, &mut events);
+        self.finish_step(platform, in_flight);
+    }
+
+    fn finish_step<'a, P: QlPlatform>(
+        &mut self,
+        platform: &'a P,
+        in_flight: &mut Vec<InFlightWrite<'a>>,
+    ) {
+        self.fill_write_slots(platform, in_flight);
+        self.drive_pending(platform, in_flight);
     }
 
     fn fill_write_slots<'a, P: QlPlatform>(
@@ -368,7 +550,7 @@ impl DriverState {
         in_flight: &mut Vec<InFlightWrite<'a>>,
     ) {
         while in_flight.len() < self.max_concurrent_message_writes {
-            let Some(write) = self.engine.take_next_write(platform) else {
+            let Some(write) = self.engine.take_next_write(self.engine.state.now, platform) else {
                 break;
             };
             in_flight.push(InFlightWrite {
@@ -383,96 +565,6 @@ impl DriverState {
             return;
         };
         stream.poll_pending(stream_id, &mut self.pending_inputs);
-    }
-}
-
-fn handle_output<P: QlPlatform>(
-    output: EngineOutput,
-    platform: &P,
-    runtime_tx: &async_channel::Sender<RuntimeCommand>,
-    stream_send_buffer_bytes: usize,
-    pending_inputs: &mut VecDeque<EngineInput>,
-    streams: &mut HashMap<StreamId, DriverStreamIo>,
-) {
-    match output {
-        EngineOutput::PeerStatusChanged { peer, session } => {
-            platform.handle_peer_status(peer, &session);
-        }
-        EngineOutput::PersistPeer(peer) => platform.persist_peer(peer),
-        EngineOutput::ClearPeer => platform.clear_peer(),
-        EngineOutput::InboundStreamOpened {
-            stream_id,
-            request_head,
-            request_prefix,
-        } => {
-            let (request_tx, request_rx) = async_channel::unbounded();
-            let mut request = InboundIo::new(request_tx);
-            if let Some(prefix) = request_prefix.as_ref() {
-                if let Some(input) = request.apply_prefix(stream_id, CloseTarget::Request, prefix) {
-                    pending_inputs.push_back(input);
-                }
-            }
-
-            let (response_reader, response_writer) = piper::pipe(stream_send_buffer_bytes);
-            streams.insert(
-                stream_id,
-                DriverStreamIo::Responder {
-                    request,
-                    response: OutboundIo::new(response_reader),
-                },
-            );
-
-            platform.handle_inbound(HandlerEvent::Stream(InboundStream {
-                stream_id,
-                request_head,
-                request: InboundByteStream::new(
-                    stream_id,
-                    CloseTarget::Request,
-                    request_rx,
-                    runtime_tx.clone(),
-                ),
-                response: OutboundByteStream::new(
-                    stream_id,
-                    CloseTarget::Response,
-                    response_writer,
-                    runtime_tx.clone(),
-                ),
-            }));
-        }
-        EngineOutput::InboundData { stream_id, bytes } => {
-            let Some(stream) = streams.get_mut(&stream_id) else {
-                return;
-            };
-            let target = stream.inbound_target();
-            let inbound = stream.inbound_mut();
-            if let Some(input) = inbound.write_or_close(stream_id, target, bytes) {
-                pending_inputs.push_back(input);
-            }
-        }
-        EngineOutput::InboundFinished { stream_id } => {
-            let Some(stream) = streams.get_mut(&stream_id) else {
-                return;
-            };
-            stream.inbound_mut().finish();
-        }
-        EngineOutput::InboundFailed { stream_id, error } => {
-            let Some(stream) = streams.get_mut(&stream_id) else {
-                return;
-            };
-            stream.inbound_mut().fail(error);
-        }
-        EngineOutput::OutboundClosed { stream_id }
-        | EngineOutput::OutboundFailed { stream_id, .. } => {
-            let Some(stream) = streams.get_mut(&stream_id) else {
-                return;
-            };
-            stream.outbound_mut().close();
-        }
-        EngineOutput::StreamReaped { stream_id } => {
-            if let Some(mut stream) = streams.remove(&stream_id) {
-                stream.close_all();
-            }
-        }
     }
 }
 
@@ -555,7 +647,7 @@ impl<P: QlPlatform> Runtime<P> {
                     state.drive_write_completed(write_id, result, &platform, &mut in_flight);
                 }
                 DriverEvent::TimerExpired => {
-                    state.drive_input(EngineInput::TimerExpired, &platform, &mut in_flight);
+                    state.drive_timer(&platform, &mut in_flight);
                 }
                 DriverEvent::Closed => break,
             }
