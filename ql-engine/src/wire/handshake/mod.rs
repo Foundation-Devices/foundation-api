@@ -2,8 +2,8 @@ use bc_components::{MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, Nonce};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use super::{
-    encrypted_message::EncryptedMessage, AsWireMlDsaSignature, AsWireMlKemCiphertext,
-    AsWireNonce, ControlMeta,
+    encrypted_message::EncryptedMessage, AsWireMlDsaSignature, AsWireMlKemCiphertext, AsWireNonce,
+    ControlMeta,
 };
 use crate::QlError;
 

@@ -131,13 +131,28 @@ impl<T> OutputFn for T where T: FnMut(EngineOutput) {}
 
 impl Engine {
     pub fn new(config: EngineConfig, identity: QlIdentity, peer: Option<Peer>) -> Self {
+        let local_namespace = peer
+            .as_ref()
+            .map(|peer| state::StreamNamespace::for_local(identity.xid, peer.peer))
+            .map(|namespace| match namespace {
+                state::StreamNamespace::Low => crate::stream::StreamNamespace::Low,
+                state::StreamNamespace::High => crate::stream::StreamNamespace::High,
+            })
+            .unwrap_or(crate::stream::StreamNamespace::Low);
         Self {
             config: config,
             identity,
             peer: peer
                 .map(|peer| PeerRecord::new(peer.peer, peer.signing_key, peer.encapsulation_key)),
             state: EngineState::new(),
-            streams: stream::StreamStore::default(),
+            streams: stream::StreamStore::new(crate::stream::StreamConfig {
+                local_namespace,
+                ack_delay: config.stream_ack_delay,
+                ack_timeout: config.stream_ack_timeout,
+                fast_retransmit_threshold: config.stream_fast_retransmit_threshold,
+                retry_limit: config.stream_retry_limit,
+                provisional_timeout: config.packet_expiration,
+            }),
         }
     }
 

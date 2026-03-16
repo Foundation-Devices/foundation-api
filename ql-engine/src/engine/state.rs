@@ -10,10 +10,10 @@ use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 use super::{replay_cache::ReplayCache, stream::StreamStore, EngineConfig};
 use crate::{
     identity::QlIdentity,
+    stream::OutboundCompletion,
     wire::{
         handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
         stream::{CloseCode, CloseTarget},
-        StreamSeq,
     },
     PacketId, Peer, StreamId,
 };
@@ -27,15 +27,9 @@ pub struct WriteId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboundWriteKind {
     Control,
-    StreamAck {
+    Stream {
         stream_id: StreamId,
-    },
-    StreamFrame {
-        stream_id: StreamId,
-        tx_seq: StreamSeq,
-    },
-    StreamClose {
-        stream_id: StreamId,
+        completion: OutboundCompletion,
     },
 }
 
@@ -222,8 +216,6 @@ impl PeerRecord {
 pub enum TimeoutKind {
     Outbound { token: Token },
     HandshakeRetry { token: Token },
-    StreamAckDelay { stream_id: StreamId, token: Token },
-    StreamProvisional { stream_id: StreamId, token: Token },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,7 +361,7 @@ impl EngineState {
         let token = self.next_token();
         let message = ControlWrite {
             token,
-            kind: OutboundWriteKind::StreamClose { stream_id },
+            kind: OutboundWriteKind::Control,
             payload: ControlWritePayload::StreamClose {
                 stream_id,
                 target,

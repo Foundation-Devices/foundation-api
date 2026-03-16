@@ -11,7 +11,6 @@ use crate::{
     engine::{
         replay_cache::ReplayKey,
         state::{ActiveWrite, ControlWritePayload, OutboundWriteKind, TimeoutKind},
-        stream::{InFlightWriteState, StreamRole, StreamState},
         Engine, EngineInput, EngineOutput, HandshakeInitiator, HandshakeResponder, KeepAliveConfig,
         KeepAliveState, OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, RecentReady,
         StreamConfig, Token, WriteId,
@@ -20,8 +19,8 @@ use crate::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
         stream::{
-            encrypt_stream, BodyChunk, CloseCode, CloseTarget, StreamAck, StreamBody, StreamFrame,
-            StreamFrameClose, StreamMessage,
+            encrypt_stream, BodyChunk, StreamAck, StreamBody, StreamFrame, StreamFrameClose,
+            StreamMessage,
         },
         ControlMeta, QlHeader, StreamSeq,
     },
@@ -69,7 +68,7 @@ impl Engine {
             EngineInput::TimerExpired => self.handle_timeouts(now, crypto, emit),
         }
 
-        self.handle_ready_retransmits(now, emit);
+        stream::handle_stream_timeouts(self, now, emit);
     }
 
     pub fn take_next_write_inner(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
@@ -88,23 +87,9 @@ impl Engine {
             return;
         };
 
-        if let OutboundWriteKind::StreamAck { .. } = active.kind {
-            if let Some(token) = active.token {
-                self.clear_ack_outbound_token(token, result.is_err());
-            }
-        }
-
         if let Err(error) = result {
-            // only fail the stream if this frame is still in flight
-            // ACKs and protocol reset can remove it before write completion arrives
-            if let OutboundWriteKind::StreamFrame { stream_id, tx_seq } = active.kind {
-                if self
-                    .streams
-                    .get(&stream_id)
-                    .is_some_and(|stream| stream.control.in_flight.contains_key(&tx_seq))
-                {
-                    self.fail_stream_by_id(stream_id, error.clone(), emit);
-                }
+            if let OutboundWriteKind::Stream { completion, .. } = active.kind {
+                stream::complete_stream_write(self, now, completion, Err(error.clone()), emit);
             }
 
             if self.is_handshake_token(active.token) {
@@ -135,19 +120,15 @@ impl Engine {
             self.schedule_handshake_retry_after_write(token, now);
         }
 
-        if let OutboundWriteKind::StreamFrame { stream_id, tx_seq } = active.kind {
-            if let Some(stream) = self.streams.get_mut(&stream_id) {
-                stream
-                    .control
-                    .complete_write(tx_seq, now + self.config.stream_ack_timeout);
-            }
+        if let OutboundWriteKind::Stream { completion, .. } = active.kind {
+            stream::complete_stream_write(self, now, completion, Ok(()), emit);
         }
     }
 
     pub fn next_deadline_inner(&self) -> Option<Instant> {
         [
             self.state.next_deadline(),
-            self.streams.stream_retry_deadline(),
+            self.streams.next_deadline(),
             self.handshake_deadline(),
             self.keep_alive_deadline(),
         ]
@@ -315,57 +296,6 @@ impl Engine {
         self.emit_peer_status(emit);
     }
 
-    fn handle_ready_retransmits(&mut self, now: Instant, emit: &mut impl OutputFn) {
-        let mut timed_out = Vec::new();
-        for (stream_id, stream) in self.streams.iter() {
-            let exhausted = stream.control.in_flight.iter().any(|(_, in_flight)| {
-                matches!(
-                    in_flight.write_state,
-                    InFlightWriteState::WaitingRetry { retry_at }
-                        if retry_at <= now && in_flight.attempt >= self.config.stream_retry_limit
-                )
-            });
-            if exhausted {
-                timed_out.push(*stream_id);
-            }
-        }
-
-        for stream_id in timed_out {
-            self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
-        }
-    }
-
-    fn clear_ack_outbound_token(&mut self, token: Token, retry: bool) {
-        for stream in self.streams.values_mut() {
-            let control = &mut stream.control;
-            if control.ack_outbound_token == Some(token) {
-                control.ack_outbound_token = None;
-                if retry {
-                    control.note_ack(true);
-                }
-                break;
-            }
-        }
-    }
-
-    fn clear_active_writes_for_stream(&mut self, stream_id: StreamId) {
-        self.state
-            .active_writes
-            .retain(|_, active| match active.kind {
-                OutboundWriteKind::Control => true,
-                OutboundWriteKind::StreamAck {
-                    stream_id: active_stream_id,
-                }
-                | OutboundWriteKind::StreamClose {
-                    stream_id: active_stream_id,
-                } => active_stream_id != stream_id,
-                OutboundWriteKind::StreamFrame {
-                    stream_id: active_stream_id,
-                    ..
-                } => active_stream_id != stream_id,
-            });
-    }
-
     fn is_handshake_token(&self, token: Option<Token>) -> bool {
         let Some(token) = token else {
             return false;
@@ -498,6 +428,25 @@ impl Engine {
         })
     }
 
+    fn sync_stream_namespace(&mut self) {
+        let namespace = self
+            .peer
+            .as_ref()
+            .map(|peer| {
+                match crate::engine::state::StreamNamespace::for_local(self.identity.xid, peer.peer)
+                {
+                    crate::engine::state::StreamNamespace::Low => {
+                        crate::stream::StreamNamespace::Low
+                    }
+                    crate::engine::state::StreamNamespace::High => {
+                        crate::stream::StreamNamespace::High
+                    }
+                }
+            })
+            .unwrap_or(crate::stream::StreamNamespace::Low);
+        self.streams.set_local_namespace(namespace);
+    }
+
     fn issue_write(
         &mut self,
         kind: OutboundWriteKind,
@@ -551,11 +500,6 @@ impl Engine {
             return Some(self.issue_write(message.kind, Some(message.token), bytes));
         }
         None
-    }
-
-    fn send_ephemeral_close(&mut self, stream_id: StreamId, target: CloseTarget, code: CloseCode) {
-        self.state
-            .enqueue_stream_close(&self.config, true, stream_id, target, code, Vec::new());
     }
 
     fn send_heartbeat_message(&mut self, now: Instant, crypto: &impl QlCrypto) {
@@ -736,47 +680,7 @@ impl Engine {
     }
 
     fn abort_streams(&mut self, error: QlError, emit: &mut impl OutputFn) {
-        let streams = std::mem::take(&mut self.streams).into_inner();
-        for (stream_id, stream) in streams {
-            self.fail_stream(stream_id, stream, error.clone(), emit);
-        }
-    }
-
-    fn fail_stream_by_id(&mut self, stream_id: StreamId, error: QlError, emit: &mut impl OutputFn) {
-        let Some(stream) = self.streams.remove(&stream_id) else {
-            return;
-        };
-        self.fail_stream(stream_id, stream, error, emit);
-    }
-
-    pub fn fail_stream(
-        &mut self,
-        stream_id: StreamId,
-        stream: StreamState,
-        error: QlError,
-        emit: &mut impl OutputFn,
-    ) {
-        self.clear_active_writes_for_stream(stream_id);
-        match stream.role {
-            StreamRole::Initiator(_) => {
-                emit(EngineOutput::OutboundFailed {
-                    stream_id,
-                    error: error.clone(),
-                });
-                emit(EngineOutput::InboundFailed { stream_id, error });
-            }
-            StreamRole::Responder(stream) => {
-                emit(EngineOutput::InboundFailed {
-                    stream_id,
-                    error: error.clone(),
-                });
-                if stream.response_started || stream.response.is_closed() {
-                    emit(EngineOutput::OutboundFailed { stream_id, error });
-                }
-            }
-            StreamRole::Provisional(_) => {}
-        }
-        emit(EngineOutput::StreamReaped { stream_id });
+        stream::abort_streams(self, error, emit);
     }
 
     pub fn handle_timeouts(
@@ -804,32 +708,10 @@ impl Engine {
                 TimeoutKind::HandshakeRetry { token } => {
                     self.handle_handshake_retry_timeout(token, emit);
                 }
-                TimeoutKind::StreamAckDelay { stream_id, token } => {
-                    if let Some(stream) = self.streams.get_mut(&stream_id) {
-                        let control = &mut stream.control;
-                        if control.ack_delay_token == Some(token) {
-                            control.ack_delay_token = None;
-                            control.ack_immediate = true;
-                        }
-                    }
-                }
-                TimeoutKind::StreamProvisional { stream_id, token } => {
-                    let should_reset = self
-                        .streams
-                        .get(&stream_id)
-                        .and_then(StreamState::provisional_timeout_token)
-                        .is_some_and(|stream_token| stream_token == token);
-                    if should_reset {
-                        self.streams.remove(&stream_id);
-                        self.send_ephemeral_close(
-                            stream_id,
-                            CloseTarget::Both,
-                            CloseCode::PROTOCOL,
-                        );
-                    }
-                }
             }
         }
+
+        stream::handle_stream_timeouts(self, now, emit);
 
         if let Some(PeerRecord {
             session: PeerSession::Connected { recent_ready, .. },

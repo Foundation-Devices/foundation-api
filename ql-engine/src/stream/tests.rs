@@ -1,7 +1,8 @@
 use std::time::Instant;
 
 use super::{
-    Outbound, StreamConfig, StreamError, StreamEventSink, StreamFsm, StreamNamespace, WriteError,
+    Outbound, StreamCloseEvent, StreamCloseKind, StreamConfig, StreamError, StreamEventSink,
+    StreamFsm, StreamLocalRole, StreamNamespace, WriteError,
 };
 use crate::{
     wire::stream::{
@@ -33,7 +34,7 @@ struct StreamFailure {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Recorder {
     opened: Vec<OpenedStream>,
-    closes: Vec<StreamFrameClose>,
+    closes: Vec<StreamCloseEvent>,
     inbound_data: Vec<InboundChunk>,
     inbound_finished: Vec<StreamId>,
     inbound_failed: Vec<StreamFailure>,
@@ -68,8 +69,8 @@ impl StreamEventSink for Recorder {
         self.inbound_failed.push(StreamFailure { stream_id, error });
     }
 
-    fn close(&mut self, frame: StreamFrameClose) {
-        self.closes.push(frame);
+    fn close(&mut self, event: StreamCloseEvent) {
+        self.closes.push(event);
     }
 
     fn outbound_closed(&mut self, stream_id: StreamId) {
@@ -296,11 +297,15 @@ fn late_failed_write_after_remote_close_ack_is_ignored() {
     );
     assert_eq!(
         events.closes,
-        vec![StreamFrameClose {
-            stream_id,
-            target: CloseTarget::Both,
-            code: CloseCode::PROTOCOL,
-            payload: Vec::new(),
+        vec![StreamCloseEvent {
+            kind: StreamCloseKind::Remote,
+            role: Some(StreamLocalRole::Initiator),
+            frame: StreamFrameClose {
+                stream_id,
+                target: CloseTarget::Both,
+                code: CloseCode::PROTOCOL,
+                payload: Vec::new(),
+            },
         }]
     );
     assert!(events.outbound_failed.is_empty());

@@ -4,9 +4,9 @@ use std::{
 };
 
 use super::{
-    ring::SeqRing, Outbound, OutboundCompletion, StreamConfig, StreamError, StreamEventSink,
-    StreamFsm, StreamNamespace, WriteError, STREAM_ACK_EAGER_THRESHOLD, STREAM_WINDOW_CAPACITY,
-    STREAM_WINDOW_SIZE,
+    ring::SeqRing, Outbound, OutboundCompletion, StreamCloseEvent, StreamCloseKind, StreamConfig,
+    StreamError, StreamEventSink, StreamFsm, StreamLocalRole, StreamNamespace, WriteError,
+    STREAM_ACK_EAGER_THRESHOLD, STREAM_WINDOW_CAPACITY, STREAM_WINDOW_SIZE,
 };
 use crate::{
     wire::{
@@ -20,13 +20,13 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamSide {
+pub enum StreamSide {
     Request,
     Response,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutboundPhase {
+pub enum OutboundPhase {
     Ready,
     FinPending,
     FinQueued,
@@ -34,7 +34,7 @@ enum OutboundPhase {
 }
 
 impl OutboundPhase {
-    fn from_prefix(fin: bool) -> Self {
+    pub fn from_prefix(fin: bool) -> Self {
         if fin {
             Self::FinQueued
         } else {
@@ -42,15 +42,15 @@ impl OutboundPhase {
         }
     }
 
-    fn is_closed(self) -> bool {
+    pub fn is_closed(self) -> bool {
         self == Self::Closed
     }
 
-    fn can_queue_data(self) -> bool {
+    pub fn can_queue_data(self) -> bool {
         self == Self::Ready
     }
 
-    fn finish(&mut self) {
+    pub fn finish(&mut self) {
         *self = match *self {
             Self::Ready | Self::FinPending => Self::FinPending,
             Self::FinQueued => Self::FinQueued,
@@ -58,7 +58,7 @@ impl OutboundPhase {
         };
     }
 
-    fn queue_fin(&mut self) -> bool {
+    pub fn queue_fin(&mut self) -> bool {
         if *self != Self::FinPending {
             return false;
         }
@@ -66,7 +66,7 @@ impl OutboundPhase {
         true
     }
 
-    fn close(&mut self) -> bool {
+    pub fn close(&mut self) -> bool {
         if *self == Self::Closed {
             return false;
         }
@@ -76,16 +76,16 @@ impl OutboundPhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InboundState {
-    closed: bool,
+pub struct InboundState {
+    pub closed: bool,
 }
 
 impl InboundState {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self { closed: false }
     }
 
-    fn close(&mut self) -> bool {
+    pub fn close(&mut self) -> bool {
         if self.closed {
             return false;
         }
@@ -95,18 +95,18 @@ impl InboundState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InFlightWriteState {
+pub enum InFlightWriteState {
     Ready,
     Issued { issue_id: u64 },
     WaitingRetry { retry_at: Instant },
 }
 
 #[derive(Debug)]
-struct InFlightFrame {
-    tx_seq: StreamSeq,
-    frame: StreamFrame,
-    attempt: u8,
-    write_state: InFlightWriteState,
+pub struct InFlightFrame {
+    pub tx_seq: StreamSeq,
+    pub frame: StreamFrame,
+    pub attempt: u8,
+    pub write_state: InFlightWriteState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,17 +118,17 @@ pub enum BufferIncomingResult {
 }
 
 #[derive(Debug)]
-struct StreamControl {
-    pending: VecDeque<StreamFrame>,
-    in_flight: SeqRing<STREAM_WINDOW_CAPACITY, InFlightFrame>,
-    next_tx_seq: StreamSeq,
-    recv_buffer: SeqRing<STREAM_WINDOW_CAPACITY, StreamFrame>,
-    ack_dirty: bool,
-    ack_immediate: bool,
-    ack_delay_deadline: Option<Instant>,
-    ack_issue_id: Option<u64>,
-    last_sent_ack_base: StreamSeq,
-    fast_recovery: Option<StreamSeq>,
+pub struct StreamControl {
+    pub pending: VecDeque<StreamFrame>,
+    pub in_flight: SeqRing<STREAM_WINDOW_CAPACITY, InFlightFrame>,
+    pub next_tx_seq: StreamSeq,
+    pub recv_buffer: SeqRing<STREAM_WINDOW_CAPACITY, StreamFrame>,
+    pub ack_dirty: bool,
+    pub ack_immediate: bool,
+    pub ack_delay_deadline: Option<Instant>,
+    pub ack_issue_id: Option<u64>,
+    pub last_sent_ack_base: StreamSeq,
+    pub fast_recovery: Option<StreamSeq>,
 }
 
 impl Default for StreamControl {
@@ -149,32 +149,32 @@ impl Default for StreamControl {
 }
 
 impl StreamControl {
-    fn take_tx_seq(&mut self) -> StreamSeq {
+    pub fn take_tx_seq(&mut self) -> StreamSeq {
         let tx_seq = self.next_tx_seq;
         self.next_tx_seq = self.next_tx_seq.next();
         tx_seq
     }
 
-    fn send_window_has_space(&self) -> bool {
+    pub fn send_window_has_space(&self) -> bool {
         self.in_flight.accepts_seq(self.next_tx_seq)
     }
 
-    fn committed_rx_seq(&self) -> StreamSeq {
+    pub fn committed_rx_seq(&self) -> StreamSeq {
         self.recv_buffer.base_seq().prev()
     }
 
-    fn note_ack(&mut self, immediate: bool) {
+    pub fn note_ack(&mut self, immediate: bool) {
         self.ack_dirty = true;
         self.ack_immediate |= immediate;
     }
 
-    fn clear_ack_schedule(&mut self) {
+    pub fn clear_ack_schedule(&mut self) {
         self.ack_dirty = false;
         self.ack_immediate = false;
         self.ack_delay_deadline = None;
     }
 
-    fn maybe_force_ack_for_progress(&mut self) {
+    pub fn maybe_force_ack_for_progress(&mut self) {
         if !self.ack_dirty {
             return;
         }
@@ -188,20 +188,20 @@ impl StreamControl {
         }
     }
 
-    fn note_ack_sent(&mut self, ack: StreamAck) {
+    pub fn note_ack_sent(&mut self, ack: StreamAck) {
         if ack.base.serial_gt(self.last_sent_ack_base) {
             self.last_sent_ack_base = ack.base;
         }
     }
 
-    fn current_ack(&self) -> StreamAck {
+    pub fn current_ack(&self) -> StreamAck {
         StreamAck {
             base: self.committed_rx_seq(),
             bitmap: self.recv_buffer.bitmap(),
         }
     }
 
-    fn take_piggyback_ack(&mut self, inbound_alive: bool) -> StreamAck {
+    pub fn take_piggyback_ack(&mut self, inbound_alive: bool) -> StreamAck {
         if !inbound_alive || !self.ack_dirty {
             return StreamAck::EMPTY;
         }
@@ -211,7 +211,11 @@ impl StreamControl {
         ack
     }
 
-    fn buffer_incoming(&mut self, tx_seq: StreamSeq, frame: StreamFrame) -> BufferIncomingResult {
+    pub fn buffer_incoming(
+        &mut self,
+        tx_seq: StreamSeq,
+        frame: StreamFrame,
+    ) -> BufferIncomingResult {
         if tx_seq.serial_lt(self.recv_buffer.base_seq()) {
             return BufferIncomingResult::Duplicate;
         }
@@ -227,15 +231,15 @@ impl StreamControl {
         BufferIncomingResult::Buffered { out_of_order }
     }
 
-    fn pop_next_committable(&mut self) -> Option<(StreamSeq, StreamFrame)> {
+    pub fn pop_next_committable(&mut self) -> Option<(StreamSeq, StreamFrame)> {
         self.recv_buffer.take_front()
     }
 
-    fn insert_in_flight(&mut self, frame: InFlightFrame) {
+    pub fn insert_in_flight(&mut self, frame: InFlightFrame) {
         let _ = self.in_flight.set(frame.tx_seq, frame);
     }
 
-    fn fast_retransmit_candidate(&self, ack: StreamAck, threshold: u8) -> Option<StreamSeq> {
+    pub fn fast_retransmit_candidate(&self, ack: StreamAck, threshold: u8) -> Option<StreamSeq> {
         if threshold == 0 {
             return None;
         }
@@ -260,14 +264,14 @@ impl StreamControl {
         (later_acked >= threshold as usize).then_some(hole)
     }
 
-    fn schedule_fast_retransmit(&mut self, tx_seq: StreamSeq, now: Instant) {
+    pub fn schedule_fast_retransmit(&mut self, tx_seq: StreamSeq, now: Instant) {
         if let Some(in_flight) = self.in_flight.get_mut(&tx_seq) {
             in_flight.write_state = InFlightWriteState::WaitingRetry { retry_at: now };
             self.fast_recovery = Some(tx_seq);
         }
     }
 
-    fn mark_write_issued(&mut self, tx_seq: StreamSeq, issue_id: u64) -> Option<StreamFrame> {
+    pub fn mark_write_issued(&mut self, tx_seq: StreamSeq, issue_id: u64) -> Option<StreamFrame> {
         let in_flight = self.in_flight.get_mut(&tx_seq)?;
         match in_flight.write_state {
             InFlightWriteState::Issued { .. } => return None,
@@ -280,7 +284,7 @@ impl StreamControl {
         Some(in_flight.frame.clone())
     }
 
-    fn frame_write_is_issued(&self, tx_seq: StreamSeq, issue_id: u64) -> bool {
+    pub fn frame_write_is_issued(&self, tx_seq: StreamSeq, issue_id: u64) -> bool {
         matches!(
             self.in_flight.get(&tx_seq).map(|in_flight| in_flight.write_state),
             Some(InFlightWriteState::Issued {
@@ -289,7 +293,7 @@ impl StreamControl {
         )
     }
 
-    fn complete_write(&mut self, tx_seq: StreamSeq, issue_id: u64, retry_at: Instant) -> bool {
+    pub fn complete_write(&mut self, tx_seq: StreamSeq, issue_id: u64, retry_at: Instant) -> bool {
         let Some(in_flight) = self.in_flight.get_mut(&tx_seq) else {
             return false;
         };
@@ -306,7 +310,13 @@ impl StreamControl {
         }
     }
 
-    fn clear_fast_recovery(&mut self, ack_base: StreamSeq) {
+    pub fn set_retry_deadline(&mut self, tx_seq: StreamSeq, retry_at: Instant) {
+        if let Some(in_flight) = self.in_flight.get_mut(&tx_seq) {
+            in_flight.write_state = InFlightWriteState::WaitingRetry { retry_at };
+        }
+    }
+
+    pub fn clear_fast_recovery(&mut self, ack_base: StreamSeq) {
         let should_clear = self.fast_recovery.is_some_and(|tx_seq| {
             tx_seq.serial_lte(ack_base) || !self.in_flight.contains_key(&tx_seq)
         });
@@ -315,7 +325,7 @@ impl StreamControl {
         }
     }
 
-    fn remove_in_flight(&mut self, tx_seq: StreamSeq) -> Option<InFlightFrame> {
+    pub fn remove_in_flight(&mut self, tx_seq: StreamSeq) -> Option<InFlightFrame> {
         let removed = self.in_flight.remove(&tx_seq);
         self.in_flight.advance_empty_front_until(self.next_tx_seq);
         if self.fast_recovery == Some(tx_seq) {
@@ -324,7 +334,7 @@ impl StreamControl {
         removed
     }
 
-    fn clear_transient_buffers(&mut self) {
+    pub fn clear_transient_buffers(&mut self) {
         self.pending.clear();
         self.in_flight.clear_with_base(self.next_tx_seq);
         self.recv_buffer
@@ -334,7 +344,7 @@ impl StreamControl {
         self.fast_recovery = None;
     }
 
-    fn ack_covers(ack: StreamAck, tx_seq: StreamSeq) -> bool {
+    pub fn ack_covers(ack: StreamAck, tx_seq: StreamSeq) -> bool {
         if tx_seq.serial_lte(ack.base) {
             return true;
         }
@@ -349,38 +359,38 @@ impl StreamControl {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InitiatorStream {
-    request: OutboundPhase,
-    response: InboundState,
+pub struct InitiatorStream {
+    pub request: OutboundPhase,
+    pub response: InboundState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ResponderStream {
-    request: InboundState,
-    response: OutboundPhase,
-    response_started: bool,
+pub struct ResponderStream {
+    pub request: InboundState,
+    pub response: OutboundPhase,
+    pub response_started: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProvisionalStream {
-    expires_at: Instant,
+pub struct ProvisionalStream {
+    pub expires_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamRole {
+pub enum StreamRole {
     Initiator(InitiatorStream),
     Responder(ResponderStream),
     Provisional(ProvisionalStream),
 }
 
 #[derive(Debug)]
-struct StreamState {
-    control: StreamControl,
-    role: StreamRole,
+pub struct StreamState {
+    pub control: StreamControl,
+    pub role: StreamRole,
 }
 
 impl StreamState {
-    fn outbound_mut(&mut self, side: StreamSide) -> Option<&mut OutboundPhase> {
+    pub fn outbound_mut(&mut self, side: StreamSide) -> Option<&mut OutboundPhase> {
         match &mut self.role {
             StreamRole::Initiator(state) if side == StreamSide::Request => Some(&mut state.request),
             StreamRole::Responder(state) if side == StreamSide::Response => {
@@ -390,7 +400,7 @@ impl StreamState {
         }
     }
 
-    fn inbound_mut(&mut self, side: StreamSide) -> Option<&mut InboundState> {
+    pub fn inbound_mut(&mut self, side: StreamSide) -> Option<&mut InboundState> {
         match &mut self.role {
             StreamRole::Initiator(state) if side == StreamSide::Response => {
                 Some(&mut state.response)
@@ -400,7 +410,7 @@ impl StreamState {
         }
     }
 
-    fn outbound_side(&self) -> Option<StreamSide> {
+    pub fn outbound_side(&self) -> Option<StreamSide> {
         match self.role {
             StreamRole::Initiator(_) => Some(StreamSide::Request),
             StreamRole::Responder(_) => Some(StreamSide::Response),
@@ -408,7 +418,7 @@ impl StreamState {
         }
     }
 
-    fn inbound_side(&self) -> Option<StreamSide> {
+    pub fn inbound_side(&self) -> Option<StreamSide> {
         match self.role {
             StreamRole::Initiator(_) => Some(StreamSide::Response),
             StreamRole::Responder(_) => Some(StreamSide::Request),
@@ -416,18 +426,18 @@ impl StreamState {
         }
     }
 
-    fn is_provisional(&self) -> bool {
+    pub fn is_provisional(&self) -> bool {
         matches!(self.role, StreamRole::Provisional(_))
     }
 
-    fn provisional_deadline(&self) -> Option<Instant> {
+    pub fn provisional_deadline(&self) -> Option<Instant> {
         match self.role {
             StreamRole::Provisional(state) => Some(state.expires_at),
             _ => None,
         }
     }
 
-    fn can_reap(&self) -> bool {
+    pub fn can_reap(&self) -> bool {
         if !self.control.pending.is_empty()
             || !self.control.in_flight.is_empty()
             || !self.control.recv_buffer.is_empty()
@@ -441,6 +451,14 @@ impl StreamState {
             StreamRole::Initiator(state) => state.request.is_closed() && state.response.closed,
             StreamRole::Responder(state) => state.request.closed && state.response.is_closed(),
             StreamRole::Provisional(_) => false,
+        }
+    }
+
+    pub fn local_role(&self) -> Option<StreamLocalRole> {
+        match self.role {
+            StreamRole::Initiator(_) => Some(StreamLocalRole::Initiator),
+            StreamRole::Responder(_) => Some(StreamLocalRole::Responder),
+            StreamRole::Provisional(_) => None,
         }
     }
 }
@@ -457,22 +475,22 @@ impl StreamStore {
         self.streams.contains_key(stream_id)
     }
 
-    fn insert(&mut self, stream_id: StreamId, stream: StreamState) -> Option<StreamState> {
+    pub fn insert(&mut self, stream_id: StreamId, stream: StreamState) -> Option<StreamState> {
         if !self.streams.contains_key(&stream_id) {
             self.order.push(stream_id);
         }
         self.streams.insert(stream_id, stream)
     }
 
-    fn get(&self, stream_id: &StreamId) -> Option<&StreamState> {
+    pub fn get(&self, stream_id: &StreamId) -> Option<&StreamState> {
         self.streams.get(stream_id)
     }
 
-    fn get_mut(&mut self, stream_id: &StreamId) -> Option<&mut StreamState> {
+    pub fn get_mut(&mut self, stream_id: &StreamId) -> Option<&mut StreamState> {
         self.streams.get_mut(stream_id)
     }
 
-    fn remove(&mut self, stream_id: &StreamId) -> Option<StreamState> {
+    pub fn remove(&mut self, stream_id: &StreamId) -> Option<StreamState> {
         let removed = self.streams.remove(stream_id);
         if removed.is_some() {
             if let Some(index) = self.order.iter().position(|id| id == stream_id) {
@@ -489,15 +507,15 @@ impl StreamStore {
         removed
     }
 
-    fn values(&self) -> impl Iterator<Item = &StreamState> {
+    pub fn values(&self) -> impl Iterator<Item = &StreamState> {
         self.streams.values()
     }
 
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.order.len()
     }
 
-    fn id_at_offset(&self, offset: usize) -> Option<StreamId> {
+    pub fn id_at_offset(&self, offset: usize) -> Option<StreamId> {
         let len = self.order.len();
         if len == 0 || offset >= len {
             return None;
@@ -505,15 +523,15 @@ impl StreamStore {
         Some(self.order[(self.cursor + offset) % len])
     }
 
-    fn ordered_id(&self, index: usize) -> Option<StreamId> {
+    pub fn ordered_id(&self, index: usize) -> Option<StreamId> {
         self.order.get(index).copied()
     }
 
-    fn first_id(&self) -> Option<StreamId> {
+    pub fn first_id(&self) -> Option<StreamId> {
         self.order.first().copied()
     }
 
-    fn advance_cursor_after(&mut self, stream_id: StreamId) {
+    pub fn advance_cursor_after(&mut self, stream_id: StreamId) {
         if let Some(index) = self.order.iter().position(|id| *id == stream_id) {
             self.cursor = if self.order.is_empty() {
                 0
@@ -722,11 +740,15 @@ pub fn receive(
                 match stream.control.buffer_incoming(tx_seq, frame) {
                     BufferIncomingResult::OutOfWindow => {
                         if stream.is_provisional() {
-                            events.close(StreamFrameClose {
-                                stream_id,
-                                target: CloseTarget::Both,
-                                code: CloseCode::PROTOCOL,
-                                payload: Vec::new(),
+                            events.close(StreamCloseEvent {
+                                kind: StreamCloseKind::Detached,
+                                role: None,
+                                frame: StreamFrameClose {
+                                    stream_id,
+                                    target: CloseTarget::Both,
+                                    code: CloseCode::PROTOCOL,
+                                    payload: Vec::new(),
+                                },
                             });
                             StreamDisposition::Remove
                         } else {
@@ -927,11 +949,15 @@ pub fn on_timer(stream_fsm: &mut StreamFsm, now: Instant, events: &mut impl Stre
                     .is_some_and(StreamState::is_provisional);
                 if still_provisional {
                     stream_fsm.streams.remove(&stream_id);
-                    events.close(StreamFrameClose {
-                        stream_id,
-                        target: CloseTarget::Both,
-                        code: CloseCode::PROTOCOL,
-                        payload: Vec::new(),
+                    events.close(StreamCloseEvent {
+                        kind: StreamCloseKind::Detached,
+                        role: None,
+                        frame: StreamFrameClose {
+                            stream_id,
+                            target: CloseTarget::Both,
+                            code: CloseCode::PROTOCOL,
+                            payload: Vec::new(),
+                        },
                     });
                 }
             }
@@ -1104,7 +1130,11 @@ impl StreamFsm {
                             }
                         }
                         if changed {
-                            events.close(frame);
+                            events.close(StreamCloseEvent {
+                                kind: StreamCloseKind::Acked,
+                                role: stream.local_role(),
+                                frame,
+                            });
                         }
                     }
                     StreamFrame::Data(_) => {}
@@ -1379,7 +1409,11 @@ impl StreamFsm {
             }
         }
         if changed {
-            events.close(frame);
+            events.close(StreamCloseEvent {
+                kind: StreamCloseKind::Remote,
+                role: stream.local_role(),
+                frame,
+            });
         }
     }
 

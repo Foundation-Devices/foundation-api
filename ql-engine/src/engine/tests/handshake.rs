@@ -747,11 +747,7 @@ fn handshake_retry_limit_disconnects_initiator() {
     let identity = test_identity();
     let peer_identity = test_identity();
     let mut engine = EngineWrapper::new(
-        Engine::new(
-            config,
-            identity,
-            Some(peer_from_identity(&peer_identity)),
-        ),
+        Engine::new(config, identity, Some(peer_from_identity(&peer_identity))),
         TestCrypto::new(131),
     );
     let now = Instant::now();
@@ -766,7 +762,8 @@ fn handshake_retry_limit_disconnects_initiator() {
     assert_eq!(retry_write.bytes, hello_bytes);
     let _ = engine.complete_write_collect(retry_write.id, Ok(()));
 
-    let outputs = engine.run_tick_collect(now + Duration::from_millis(500), EngineInput::TimerExpired);
+    let outputs =
+        engine.run_tick_collect(now + Duration::from_millis(500), EngineInput::TimerExpired);
     assert!(outputs.iter().any(|output| matches!(
         output,
         EngineOutput::PeerStatusChanged {
@@ -819,6 +816,12 @@ fn simultaneous_connect_converges_to_connected_peers() {
 
     pump_between(&mut a, &mut b, now);
 
-    assert!(matches!(a.peer.as_ref().map(|peer| &peer.session), Some(PeerSession::Connected { .. })));
-    assert!(matches!(b.peer.as_ref().map(|peer| &peer.session), Some(PeerSession::Connected { .. })));
+    assert!(matches!(
+        a.peer.as_ref().map(|peer| &peer.session),
+        Some(PeerSession::Connected { .. })
+    ));
+    assert!(matches!(
+        b.peer.as_ref().map(|peer| &peer.session),
+        Some(PeerSession::Connected { .. })
+    ));
 }

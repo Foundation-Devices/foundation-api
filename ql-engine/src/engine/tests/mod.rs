@@ -277,10 +277,6 @@ fn encrypt_heartbeat_record(
 fn insert_inflight_gap_stream(engine: &mut EngineWrapper, stream_id: StreamId, now: Instant) {
     let retry_at = now + Duration::from_secs(60);
     let mut stream = StreamState {
-        meta: StreamMeta {
-            stream_id,
-            last_activity: now,
-        },
         control: StreamControl::default(),
         role: StreamRole::Initiator(InitiatorStream {
             request: OutboundPhase::from_prefix(false),
@@ -324,10 +320,6 @@ fn insert_inflight_stream_with_data(
 ) {
     let retry_at = now + Duration::from_secs(60);
     let mut stream = StreamState {
-        meta: StreamMeta {
-            stream_id,
-            last_activity: now,
-        },
         control: StreamControl::default(),
         role: StreamRole::Initiator(InitiatorStream {
             request: OutboundPhase::from_prefix(false),
@@ -366,14 +358,10 @@ fn insert_inflight_stream_with_data(
 fn insert_unwritten_inflight_stream_with_data(
     engine: &mut EngineWrapper,
     stream_id: StreamId,
-    now: Instant,
+    _now: Instant,
     data_seqs: &[u32],
 ) {
     let mut stream = StreamState {
-        meta: StreamMeta {
-            stream_id,
-            last_activity: now,
-        },
         control: StreamControl::default(),
         role: StreamRole::Initiator(InitiatorStream {
             request: OutboundPhase::from_prefix(false),

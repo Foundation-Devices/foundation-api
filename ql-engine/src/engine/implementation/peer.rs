@@ -129,10 +129,7 @@ fn bind_peer_record(engine: &mut Engine, peer: Peer, emit: &mut impl OutputFn) {
 }
 
 fn reset_runtime(engine: &mut Engine, error: QlError, emit: &mut impl OutputFn) {
-    let streams = std::mem::take(&mut engine.streams).into_inner();
-    for (stream_id, stream) in streams {
-        engine.fail_stream(stream_id, stream, error.clone(), emit);
-    }
+    engine.abort_streams(error, emit);
     engine.state.control_outbound.clear();
     engine.state.active_writes.clear();
     engine.state.timeouts.clear();

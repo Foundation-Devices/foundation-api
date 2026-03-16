@@ -92,6 +92,26 @@ pub struct Outbound {
     pub completion: OutboundCompletion,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamCloseKind {
+    Detached,
+    Acked,
+    Remote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamLocalRole {
+    Initiator,
+    Responder,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamCloseEvent {
+    pub kind: StreamCloseKind,
+    pub role: Option<StreamLocalRole>,
+    pub frame: StreamFrameClose,
+}
+
 pub trait StreamEventSink {
     fn opened(
         &mut self,
@@ -106,7 +126,7 @@ pub trait StreamEventSink {
 
     fn inbound_failed(&mut self, stream_id: StreamId, error: StreamError);
 
-    fn close(&mut self, frame: StreamFrameClose);
+    fn close(&mut self, event: StreamCloseEvent);
 
     fn outbound_closed(&mut self, stream_id: StreamId);
 
@@ -130,7 +150,7 @@ impl StreamEventSink for () {
 
     fn inbound_failed(&mut self, _stream_id: StreamId, _error: StreamError) {}
 
-    fn close(&mut self, _frame: StreamFrameClose) {}
+    fn close(&mut self, _event: StreamCloseEvent) {}
 
     fn outbound_closed(&mut self, _stream_id: StreamId) {}
 
@@ -227,5 +247,29 @@ impl StreamFsm {
 
     pub fn abort(&mut self, error: StreamError, events: &mut impl StreamEventSink) {
         internal::abort(self, error, events);
+    }
+
+    pub fn set_local_namespace(&mut self, local_namespace: StreamNamespace) {
+        self.config.local_namespace = local_namespace;
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.streams.len()
+    }
+
+    pub(crate) fn contains_key(&self, stream_id: &StreamId) -> bool {
+        self.streams.contains_key(stream_id)
+    }
+
+    pub(crate) fn get(&self, stream_id: &StreamId) -> Option<&internal::StreamState> {
+        self.streams.get(stream_id)
+    }
+
+    pub(crate) fn get_mut(&mut self, stream_id: &StreamId) -> Option<&mut internal::StreamState> {
+        self.streams.get_mut(stream_id)
+    }
+
+    pub(crate) fn insert(&mut self, stream_id: StreamId, stream: internal::StreamState) {
+        let _ = self.streams.insert(stream_id, stream);
     }
 }

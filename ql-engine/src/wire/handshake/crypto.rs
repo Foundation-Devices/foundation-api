@@ -14,8 +14,7 @@ use crate::{
     wire::{
         access_value, deserialize_value, encode_value,
         encrypted_message::{EncryptedMessage, NONCE_SIZE},
-        ensure_not_expired, AsWireMlKemCiphertext, AsWireNonce, AsWireXid, ControlMeta,
-        QlHeader,
+        ensure_not_expired, AsWireMlKemCiphertext, AsWireNonce, AsWireXid, ControlMeta, QlHeader,
     },
     QlError,
 };

@@ -34,6 +34,10 @@ impl<const N: usize, T> SeqRing<N, T> {
         self.len == 0
     }
 
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
     pub fn clear_with_base(&mut self, base_seq: StreamSeq) {
         for slot in &mut self.slots {
             let _ = slot.take();

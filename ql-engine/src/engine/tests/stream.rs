@@ -844,7 +844,10 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
     assert_eq!(remaining, vec![StreamSeq(3)]);
     let frame = stream.control.in_flight.get(&StreamSeq(3)).unwrap();
     assert_eq!(frame.attempt, 1);
-    assert!(matches!(frame.write_state, InFlightWriteState::Issued));
+    assert!(matches!(
+        frame.write_state,
+        InFlightWriteState::Issued { .. }
+    ));
 }
 
 #[test]
@@ -1005,7 +1008,7 @@ fn take_next_write_drains_multiple_stream_frames_before_completion() {
         .control
         .in_flight
         .iter()
-        .all(|(_, in_flight)| matches!(in_flight.write_state, InFlightWriteState::Issued)));
+        .all(|(_, in_flight)| matches!(in_flight.write_state, InFlightWriteState::Issued { .. })));
 }
 
 #[test]
