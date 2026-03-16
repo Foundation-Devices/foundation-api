@@ -11,7 +11,7 @@ use super::{replay_cache::ReplayCache, stream::StreamStore, EngineConfig};
 use crate::{
     identity::QlIdentity,
     wire::{
-        handshake::{Hello, HelloReply, Ready, ResponderSecrets},
+        handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
         stream::{CloseCode, CloseTarget},
         StreamSeq,
     },
@@ -84,21 +84,39 @@ impl Default for KeepAliveState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InitiatorStage {
-    WaitingHelloReply,
-    WaitingReady,
+#[derive(Debug, Clone, PartialEq)]
+pub enum HandshakeInitiator {
+    WaitingHelloReply {
+        retry_count: u8,
+        retry_at: Option<Instant>,
+    },
+    WaitingReady {
+        reply: HelloReply,
+        confirm: Confirm,
+        retry_count: u8,
+        retry_at: Option<Instant>,
+    },
 }
 
 #[derive(Debug, Clone)]
-pub enum ResponderStage {
+pub enum HandshakeResponder {
     WaitingConfirm {
         secrets: ResponderSecrets,
+        retry_count: u8,
+        retry_at: Option<Instant>,
     },
     SendingReady {
         session_key: SymmetricKey,
         ready: Ready,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentReady {
+    pub hello: Hello,
+    pub reply: HelloReply,
+    pub ready: Ready,
+    pub expires_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,18 +162,19 @@ pub enum PeerSession {
         hello: Hello,
         session_key: SymmetricKey,
         deadline: Instant,
-        stage: InitiatorStage,
+        stage: HandshakeInitiator,
     },
     Responder {
         handshake_token: Token,
         hello: Hello,
         reply: HelloReply,
         deadline: Instant,
-        stage: ResponderStage,
+        stage: HandshakeResponder,
     },
     Connected {
         session_key: SymmetricKey,
         keepalive: KeepAliveState,
+        recent_ready: Option<RecentReady>,
     },
 }
 
@@ -202,6 +221,7 @@ impl PeerRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutKind {
     Outbound { token: Token },
+    HandshakeRetry { token: Token },
     StreamAckDelay { stream_id: StreamId, token: Token },
     StreamProvisional { stream_id: StreamId, token: Token },
 }
@@ -303,6 +323,13 @@ impl EngineState {
         self.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Outbound { token },
+        }));
+    }
+
+    pub fn schedule_handshake_retry(&mut self, token: Token, at: Instant) {
+        self.timeouts.push(Reverse(TimeoutEntry {
+            at,
+            kind: TimeoutKind::HandshakeRetry { token },
         }));
     }
 

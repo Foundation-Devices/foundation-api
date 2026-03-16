@@ -2,7 +2,9 @@ pub use handle::{
     DuplexStream, InboundByteStream, InboundStream, OutboundByteStream, RuntimeHandle,
 };
 
-pub use crate::engine::{EngineConfig, InitiatorStage, KeepAliveConfig, PeerSession, StreamConfig};
+pub use crate::engine::{
+    EngineConfig, HandshakeInitiator, KeepAliveConfig, PeerSession, StreamConfig,
+};
 
 pub(crate) mod command;
 pub(crate) mod driver;

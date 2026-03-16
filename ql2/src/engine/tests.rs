@@ -5,13 +5,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bc_components::{MLDSA, MLKEM, SymmetricKey, XID};
+use bc_components::{SymmetricKey, MLDSA, MLKEM, XID};
 
 use crate::{
-    PacketId, Peer,
     engine::{state::StreamNamespace, stream::*, *},
     identity::QlIdentity,
-    wire::{self, QlHeader, QlPayload, QlRecord, StreamSeq, stream::*},
+    wire::{self, stream::*, QlHeader, QlPayload, QlRecord, StreamSeq},
+    PacketId, Peer,
 };
 
 #[derive(Clone)]
@@ -79,6 +79,7 @@ impl SingleEngineHarness {
         engine.peer.as_mut().unwrap().session = PeerSession::Connected {
             session_key: session_key.clone(),
             keepalive: KeepAliveState::default(),
+            recent_ready: None,
         };
         Self {
             now: Instant::now(),
@@ -103,10 +104,12 @@ impl Harness {
         a.peer.as_mut().unwrap().session = PeerSession::Connected {
             session_key: session_key.clone(),
             keepalive: KeepAliveState::default(),
+            recent_ready: None,
         };
         b.peer.as_mut().unwrap().session = PeerSession::Connected {
             session_key,
             keepalive: KeepAliveState::default(),
+            recent_ready: None,
         };
         Self {
             now: Instant::now(),
@@ -417,14 +420,16 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
         .unwrap();
 
     assert_ne!(stream_id_a, stream_id_b);
-    assert!(
-        StreamNamespace::for_local(harness.a.engine.identity.xid, harness.b.engine.identity.xid)
-            .matches(stream_id_a)
-    );
-    assert!(
-        StreamNamespace::for_local(harness.b.engine.identity.xid, harness.a.engine.identity.xid)
-            .matches(stream_id_b)
-    );
+    assert!(StreamNamespace::for_local(
+        harness.a.engine.identity.xid,
+        harness.b.engine.identity.xid
+    )
+    .matches(stream_id_a));
+    assert!(StreamNamespace::for_local(
+        harness.b.engine.identity.xid,
+        harness.a.engine.identity.xid
+    )
+    .matches(stream_id_b));
 
     let write_a = harness.a.take_next_write().unwrap();
     let write_b = harness.b.take_next_write().unwrap();
@@ -502,11 +507,9 @@ fn invalid_future_frame_does_not_ack_outstanding_open() {
     let outputs_incoming =
         engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&record)));
 
-    assert!(
-        !outputs_incoming
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
-    );
+    assert!(!outputs_incoming
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
 
     let stream = engine.streams.get(&stream_id).unwrap();
     assert!(stream.control.in_flight.contains_key(&StreamSeq::START));
@@ -831,23 +834,17 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
         EngineInput::Incoming(wire::encode_record(&data_record)),
     );
 
-    assert!(
-        !outputs_data
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundStreamOpened { .. }))
-    );
-    assert!(
-        !outputs_data
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
-    );
+    assert!(!outputs_data
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundStreamOpened { .. })));
+    assert!(!outputs_data
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
     assert!(engine.take_next_write().is_some());
-    assert!(
-        engine
-            .streams
-            .get(&stream_id)
-            .is_some_and(StreamState::is_provisional)
-    );
+    assert!(engine
+        .streams
+        .get(&stream_id)
+        .is_some_and(StreamState::is_provisional));
 
     let open_message = StreamMessage {
         tx_seq: StreamSeq(1),
@@ -1110,11 +1107,9 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             ..
         }) if id == stream_id
     ));
-    assert!(
-        !outputs4
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
-    );
+    assert!(!outputs4
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
     let _ = engine.complete_write_collect(ack_write4.id, Ok(()));
 
     let record5 = wire::stream::encrypt_stream(
@@ -1141,11 +1136,9 @@ fn out_of_order_loss_reports_selective_ack_bitmap() {
             ..
         }) if id == stream_id
     ));
-    assert!(
-        !outputs5
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
-    );
+    assert!(!outputs5
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
 }
 
 #[test]
@@ -1182,11 +1175,9 @@ fn selective_ack_only_body_retires_acked_gap_tail() {
     let outputs =
         engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&ack_record)));
 
-    assert!(
-        !outputs
-            .iter()
-            .any(|output| matches!(output, EngineOutput::OutboundFailed { .. }))
-    );
+    assert!(!outputs
+        .iter()
+        .any(|output| matches!(output, EngineOutput::OutboundFailed { .. })));
     let stream = engine.streams.get(&stream_id).unwrap();
     let remaining: Vec<_> = stream
         .control
@@ -1412,13 +1403,11 @@ fn take_next_write_drains_multiple_stream_frames_before_completion() {
     assert!(engine.take_next_write().is_none());
 
     let stream = engine.streams.get(&stream_id).unwrap();
-    assert!(
-        stream
-            .control
-            .in_flight
-            .iter()
-            .all(|(_, in_flight)| matches!(in_flight.write_state, InFlightWriteState::Issued))
-    );
+    assert!(stream
+        .control
+        .in_flight
+        .iter()
+        .all(|(_, in_flight)| matches!(in_flight.write_state, InFlightWriteState::Issued)));
 }
 
 #[test]
@@ -1659,11 +1648,9 @@ fn ack_only_write_failure_immediately_requeues_ack_without_spending_extra_seq() 
     ));
 
     let outputs_failed = engine.complete_write_collect(ack_write.id, Err(QlError::SendFailed));
-    assert!(
-        !outputs_failed
-            .iter()
-            .any(|output| matches!(output, EngineOutput::StreamReaped { .. }))
-    );
+    assert!(!outputs_failed
+        .iter()
+        .any(|output| matches!(output, EngineOutput::StreamReaped { .. })));
     let retry_write = engine.take_next_write().unwrap();
     let (_, retry_body) = decode_stream_body(&retry_write.bytes, &session_key);
     assert!(matches!(
@@ -1783,11 +1770,9 @@ fn duplicate_committed_data_is_acked_without_redelivery() {
         EngineInput::Incoming(wire::encode_record(&duplicate_record)),
     );
 
-    assert!(
-        !outputs_dup
-            .iter()
-            .any(|output| matches!(output, EngineOutput::InboundData { .. }))
-    );
+    assert!(!outputs_dup
+        .iter()
+        .any(|output| matches!(output, EngineOutput::InboundData { .. })));
     let ack_write = engine.take_next_write().unwrap();
     let (_, body) = decode_stream_body(&ack_write.bytes, &session_key);
     assert!(matches!(
@@ -2023,6 +2008,8 @@ fn replayed_heartbeat_is_ignored() {
 fn handshake_deadline_is_derived_from_peer_state() {
     let mut config = EngineConfig::default();
     config.handshake_timeout = Duration::from_secs(5);
+    config.handshake_retry_interval = Duration::ZERO;
+    config.max_handshake_retries = 0;
 
     let identity = test_identity();
     let peer_identity = test_identity();
@@ -2065,6 +2052,264 @@ fn handshake_deadline_is_derived_from_peer_state() {
             }
         )
     }));
+}
+
+#[test]
+fn initiator_retries_hello_after_retry_interval() {
+    let mut config = EngineConfig::default();
+    config.handshake_timeout = Duration::from_secs(5);
+    config.handshake_retry_interval = Duration::from_millis(250);
+    config.max_handshake_retries = 2;
+
+    let identity = test_identity();
+    let peer_identity = test_identity();
+    let mut engine = EngineWrapper::new(
+        Engine::new(config, identity, Some(peer_from_identity(&peer_identity))),
+        TestCrypto::new(111),
+    );
+    let now = Instant::now();
+
+    let _ = engine.run_tick_collect(now, EngineInput::Connect);
+    let hello_write = engine.take_next_write().unwrap();
+    let hello_bytes = hello_write.bytes.clone();
+    let _ = engine.complete_write_collect(hello_write.id, Ok(()));
+
+    let _ = engine.run_tick_collect(now + Duration::from_millis(250), EngineInput::TimerExpired);
+    let retry_write = engine.take_next_write().unwrap();
+    assert_eq!(retry_write.bytes, hello_bytes);
+    assert!(matches!(
+        engine.peer.as_ref().map(|peer| &peer.session),
+        Some(PeerSession::Initiator {
+            stage: HandshakeInitiator::WaitingHelloReply { retry_count: 1, .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn responder_retries_hello_reply_after_retry_interval() {
+    let mut config = EngineConfig::default();
+    config.handshake_timeout = Duration::from_secs(5);
+    config.handshake_retry_interval = Duration::from_millis(250);
+    config.max_handshake_retries = 2;
+
+    let responder_identity = test_identity();
+    let initiator_identity = test_identity();
+    let initiator_crypto = TestCrypto::new(112);
+    let mut engine = EngineWrapper::new(
+        Engine::new(
+            config,
+            responder_identity.clone(),
+            Some(peer_from_identity(&initiator_identity)),
+        ),
+        TestCrypto::new(113),
+    );
+    let now = Instant::now();
+
+    let (hello, _secret) = wire::handshake::build_hello(
+        &initiator_identity,
+        &initiator_crypto,
+        responder_identity.xid,
+        &responder_identity.encapsulation_public_key,
+        wire::ControlMeta {
+            packet_id: PacketId(81),
+            valid_until: wire::now_secs().saturating_add(60),
+        },
+    )
+    .unwrap();
+    let hello_record = QlRecord {
+        header: QlHeader {
+            sender: initiator_identity.xid,
+            recipient: responder_identity.xid,
+        },
+        payload: QlPayload::Handshake(wire::handshake::HandshakeRecord::Hello(hello)),
+    };
+
+    let _ = engine.run_tick_collect(
+        now,
+        EngineInput::Incoming(wire::encode_record(&hello_record)),
+    );
+    let reply_write = engine.take_next_write().unwrap();
+    let reply_bytes = reply_write.bytes.clone();
+    let _ = engine.complete_write_collect(reply_write.id, Ok(()));
+
+    let _ = engine.run_tick_collect(now + Duration::from_millis(250), EngineInput::TimerExpired);
+    let retry_write = engine.take_next_write().unwrap();
+    assert_eq!(retry_write.bytes, reply_bytes);
+    assert!(matches!(
+        engine.peer.as_ref().map(|peer| &peer.session),
+        Some(PeerSession::Responder {
+            stage: HandshakeResponder::WaitingConfirm { retry_count: 1, .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn initiator_retries_confirm_after_retry_interval() {
+    let mut config = EngineConfig::default();
+    config.handshake_timeout = Duration::from_secs(5);
+    config.handshake_retry_interval = Duration::from_millis(250);
+    config.max_handshake_retries = 2;
+
+    let identity = test_identity();
+    let peer_identity = test_identity();
+    let responder_crypto = TestCrypto::new(114);
+    let mut engine = EngineWrapper::new(
+        Engine::new(
+            config,
+            identity.clone(),
+            Some(peer_from_identity(&peer_identity)),
+        ),
+        TestCrypto::new(115),
+    );
+    let now = Instant::now();
+
+    let _ = engine.run_tick_collect(now, EngineInput::Connect);
+    let hello_write = engine.take_next_write().unwrap();
+    let hello_record = wire::decode_record(&hello_write.bytes).unwrap();
+    let QlPayload::Handshake(wire::handshake::HandshakeRecord::Hello(hello)) = hello_record.payload
+    else {
+        panic!("expected hello record");
+    };
+    let _ = engine.complete_write_collect(hello_write.id, Ok(()));
+
+    let hello_bytes = wire::encode_value(&hello);
+    let hello_view = wire::access_value::<wire::handshake::ArchivedHello>(&hello_bytes).unwrap();
+    let (reply, _secrets) = wire::handshake::respond_hello(
+        &peer_identity,
+        &responder_crypto,
+        identity.xid,
+        &identity.signing_public_key,
+        &identity.encapsulation_public_key,
+        hello_view,
+        wire::ControlMeta {
+            packet_id: PacketId(82),
+            valid_until: wire::now_secs().saturating_add(60),
+        },
+    )
+    .unwrap();
+    let reply_record = QlRecord {
+        header: QlHeader {
+            sender: peer_identity.xid,
+            recipient: identity.xid,
+        },
+        payload: QlPayload::Handshake(wire::handshake::HandshakeRecord::HelloReply(reply)),
+    };
+
+    let _ = engine.run_tick_collect(
+        now,
+        EngineInput::Incoming(wire::encode_record(&reply_record)),
+    );
+    let confirm_write = engine.take_next_write().unwrap();
+    let confirm_bytes = confirm_write.bytes.clone();
+    let _ = engine.complete_write_collect(confirm_write.id, Ok(()));
+
+    let _ = engine.run_tick_collect(now + Duration::from_millis(250), EngineInput::TimerExpired);
+    let retry_write = engine.take_next_write().unwrap();
+    assert_eq!(retry_write.bytes, confirm_bytes);
+    assert!(matches!(
+        engine.peer.as_ref().map(|peer| &peer.session),
+        Some(PeerSession::Initiator {
+            stage: HandshakeInitiator::WaitingReady { retry_count: 1, .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn responder_resends_ready_for_duplicate_confirm_after_connecting() {
+    let responder_identity = test_identity();
+    let initiator_identity = test_identity();
+    let initiator_crypto = TestCrypto::new(116);
+    let mut engine = EngineWrapper::new(
+        Engine::new(
+            EngineConfig::default(),
+            responder_identity.clone(),
+            Some(peer_from_identity(&initiator_identity)),
+        ),
+        TestCrypto::new(117),
+    );
+    let now = Instant::now();
+
+    let (hello, initiator_secret) = wire::handshake::build_hello(
+        &initiator_identity,
+        &initiator_crypto,
+        responder_identity.xid,
+        &responder_identity.encapsulation_public_key,
+        wire::ControlMeta {
+            packet_id: PacketId(83),
+            valid_until: wire::now_secs().saturating_add(60),
+        },
+    )
+    .unwrap();
+    let hello_record = QlRecord {
+        header: QlHeader {
+            sender: initiator_identity.xid,
+            recipient: responder_identity.xid,
+        },
+        payload: QlPayload::Handshake(wire::handshake::HandshakeRecord::Hello(hello.clone())),
+    };
+    let _ = engine.run_tick_collect(
+        now,
+        EngineInput::Incoming(wire::encode_record(&hello_record)),
+    );
+
+    let reply_write = engine.take_next_write().unwrap();
+    let reply_record = wire::decode_record(&reply_write.bytes).unwrap();
+    let QlPayload::Handshake(wire::handshake::HandshakeRecord::HelloReply(reply)) =
+        reply_record.payload
+    else {
+        panic!("expected hello reply");
+    };
+    let _ = engine.complete_write_collect(reply_write.id, Ok(()));
+
+    let reply_bytes = wire::encode_value(&reply);
+    let reply_view =
+        wire::access_value::<wire::handshake::ArchivedHelloReply>(&reply_bytes).unwrap();
+    let (confirm, _session_key) = wire::handshake::build_confirm(
+        &initiator_identity,
+        responder_identity.xid,
+        &responder_identity.signing_public_key,
+        &hello,
+        reply_view,
+        &initiator_secret,
+        wire::ControlMeta {
+            packet_id: PacketId(84),
+            valid_until: wire::now_secs().saturating_add(60),
+        },
+    )
+    .unwrap();
+    let confirm_record = QlRecord {
+        header: QlHeader {
+            sender: initiator_identity.xid,
+            recipient: responder_identity.xid,
+        },
+        payload: QlPayload::Handshake(wire::handshake::HandshakeRecord::Confirm(confirm.clone())),
+    };
+
+    let _ = engine.run_tick_collect(
+        now,
+        EngineInput::Incoming(wire::encode_record(&confirm_record)),
+    );
+    let ready_write = engine.take_next_write().unwrap();
+    let ready_bytes = ready_write.bytes.clone();
+    let _ = engine.complete_write_collect(ready_write.id, Ok(()));
+
+    assert!(matches!(
+        engine.peer.as_ref().map(|peer| &peer.session),
+        Some(PeerSession::Connected {
+            recent_ready: Some(_),
+            ..
+        })
+    ));
+
+    let _ = engine.run_tick_collect(
+        now,
+        EngineInput::Incoming(wire::encode_record(&confirm_record)),
+    );
+    let resent_ready = engine.take_next_write().unwrap();
+    assert_eq!(resent_ready.bytes, ready_bytes);
 }
 
 #[test]
@@ -2115,7 +2360,10 @@ fn initiator_waits_for_ready_before_connecting() {
         },
         payload: QlPayload::Handshake(wire::handshake::HandshakeRecord::HelloReply(reply)),
     };
-    let _outputs = engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&reply_record)));
+    let _outputs = engine.run_tick_collect(
+        now,
+        EngineInput::Incoming(wire::encode_record(&reply_record)),
+    );
 
     let confirm_write = engine.take_next_write().unwrap();
     let _outputs = engine.complete_write_collect(confirm_write.id, Ok(()));
@@ -2123,7 +2371,7 @@ fn initiator_waits_for_ready_before_connecting() {
     assert!(matches!(
         engine.peer.as_ref().map(|peer| &peer.session),
         Some(PeerSession::Initiator {
-            stage: InitiatorStage::WaitingReady,
+            stage: HandshakeInitiator::WaitingReady { .. },
             ..
         })
     ));
@@ -2156,7 +2404,10 @@ fn initiator_waits_for_ready_before_connecting() {
             ),
         )),
     };
-    let outputs = engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&ready_record)));
+    let outputs = engine.run_tick_collect(
+        now,
+        EngineInput::Incoming(wire::encode_record(&ready_record)),
+    );
 
     assert!(matches!(
         engine.peer.as_ref().map(|peer| &peer.session),
@@ -2246,22 +2497,18 @@ fn replayed_unpair_is_ignored_after_rebind() {
     ));
 
     let first = engine.run_tick_collect(now, EngineInput::Incoming(bytes.clone()));
-    assert!(
-        first
-            .iter()
-            .any(|output| matches!(output, EngineOutput::ClearPeer))
-    );
+    assert!(first
+        .iter()
+        .any(|output| matches!(output, EngineOutput::ClearPeer)));
     assert!(engine.peer.is_none());
 
     let _ = engine.run_tick_collect(now, EngineInput::BindPeer(peer_b.clone()));
     assert!(engine.peer.is_some());
 
     let second = engine.run_tick_collect(now, EngineInput::Incoming(bytes));
-    assert!(
-        !second
-            .iter()
-            .any(|output| matches!(output, EngineOutput::ClearPeer))
-    );
+    assert!(!second
+        .iter()
+        .any(|output| matches!(output, EngineOutput::ClearPeer)));
     assert_eq!(
         engine.peer.as_ref().map(|peer| peer.peer),
         Some(peer_b.peer)

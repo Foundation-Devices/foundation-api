@@ -12,8 +12,8 @@ use crate::{
         replay_cache::ReplayKey,
         state::{ActiveWrite, ControlWritePayload, OutboundWriteKind, TimeoutKind},
         stream::{InFlightWriteState, StreamRole, StreamState},
-        Engine, EngineInput, EngineOutput, InitiatorStage, KeepAliveConfig, KeepAliveState,
-        OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, ResponderStage,
+        Engine, EngineInput, EngineOutput, HandshakeInitiator, HandshakeResponder, KeepAliveConfig,
+        KeepAliveState, OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, RecentReady,
         StreamConfig, Token, WriteId,
     },
     wire::{
@@ -119,15 +119,20 @@ impl Engine {
             return;
         }
 
-        if let Some(session_key) = self.connected_session_for_token(active.token) {
+        if let Some((session_key, recent_ready)) = self.connected_session_for_token(active.token) {
             if let Some(entry) = self.peer.as_mut() {
                 entry.session = PeerSession::Connected {
                     session_key,
                     keepalive: KeepAliveState::default(),
+                    recent_ready,
                 };
             }
             self.emit_peer_status(emit);
             self.record_activity(now);
+        }
+
+        if let Some(token) = active.token {
+            self.schedule_handshake_retry_after_write(token, now);
         }
 
         if let OutboundWriteKind::StreamFrame { stream_id, tx_seq } = active.kind {
@@ -371,16 +376,118 @@ impl Engine {
                 Some(PeerSession::Responder { handshake_token, .. }) if *handshake_token == token)
     }
 
-    fn connected_session_for_token(&self, token: Option<Token>) -> Option<SymmetricKey> {
+    fn connected_session_for_token(
+        &self,
+        token: Option<Token>,
+    ) -> Option<(SymmetricKey, Option<RecentReady>)> {
         let token = token?;
         self.peer.as_ref().and_then(|entry| match &entry.session {
             PeerSession::Responder {
+                hello,
+                reply,
+                deadline,
                 handshake_token,
-                stage: ResponderStage::SendingReady { session_key, .. },
-                ..
-            } if *handshake_token == token => Some(session_key.clone()),
+                stage: HandshakeResponder::SendingReady { session_key, ready },
+            } if *handshake_token == token => Some((
+                session_key.clone(),
+                Some(RecentReady {
+                    hello: hello.clone(),
+                    reply: reply.clone(),
+                    ready: ready.clone(),
+                    expires_at: *deadline,
+                }),
+            )),
             _ => None,
         })
+    }
+
+    fn handshake_write_pending(&self, token: Token) -> bool {
+        self.state
+            .active_writes
+            .values()
+            .any(|active| active.token == Some(token))
+            || self
+                .state
+                .control_outbound
+                .iter()
+                .any(|message| message.token == token)
+    }
+
+    fn clear_handshake_retry_at(&mut self, token: Token) {
+        let Some(entry) = self.peer.as_mut() else {
+            return;
+        };
+        match &mut entry.session {
+            PeerSession::Initiator {
+                handshake_token,
+                stage: HandshakeInitiator::WaitingHelloReply { retry_at, .. },
+                ..
+            } if *handshake_token == token => *retry_at = None,
+            PeerSession::Initiator {
+                handshake_token,
+                stage: HandshakeInitiator::WaitingReady { retry_at, .. },
+                ..
+            } if *handshake_token == token => *retry_at = None,
+            PeerSession::Responder {
+                handshake_token,
+                stage: HandshakeResponder::WaitingConfirm { retry_at, .. },
+                ..
+            } if *handshake_token == token => *retry_at = None,
+            _ => {}
+        }
+    }
+
+    fn schedule_handshake_retry_after_write(&mut self, token: Token, now: Instant) {
+        if self.config.handshake_retry_interval.is_zero() || self.config.max_handshake_retries == 0
+        {
+            return;
+        }
+        let retry_at = now + self.config.handshake_retry_interval;
+        let Some(entry) = self.peer.as_mut() else {
+            return;
+        };
+        let scheduled = match &mut entry.session {
+            PeerSession::Initiator {
+                handshake_token,
+                stage:
+                    HandshakeInitiator::WaitingHelloReply {
+                        retry_at: stage_retry_at,
+                        ..
+                    },
+                ..
+            } if *handshake_token == token => {
+                *stage_retry_at = Some(retry_at);
+                true
+            }
+            PeerSession::Initiator {
+                handshake_token,
+                stage:
+                    HandshakeInitiator::WaitingReady {
+                        retry_at: stage_retry_at,
+                        ..
+                    },
+                ..
+            } if *handshake_token == token => {
+                *stage_retry_at = Some(retry_at);
+                true
+            }
+            PeerSession::Responder {
+                handshake_token,
+                stage:
+                    HandshakeResponder::WaitingConfirm {
+                        retry_at: stage_retry_at,
+                        ..
+                    },
+                ..
+            } if *handshake_token == token => {
+                *stage_retry_at = Some(retry_at);
+                true
+            }
+            _ => false,
+        };
+        if scheduled {
+            self.state.schedule_handshake_retry(token, retry_at);
+        }
     }
 
     fn stream_write_session(&self) -> Option<(XID, SymmetricKey)> {
@@ -505,6 +612,129 @@ impl Engine {
         self.state.active_writes.clear();
     }
 
+    fn fail_handshake(&mut self, error: QlError, emit: &mut impl OutputFn) {
+        if let Some(entry) = self.peer.as_mut() {
+            if matches!(
+                entry.session,
+                PeerSession::Initiator { .. } | PeerSession::Responder { .. }
+            ) {
+                entry.session = PeerSession::Disconnected;
+            }
+        }
+        self.emit_peer_status(emit);
+        self.drop_outbound();
+        self.abort_streams(error, emit);
+    }
+
+    fn handle_handshake_retry_timeout(&mut self, token: Token, emit: &mut impl OutputFn) {
+        enum RetryAction {
+            Resend {
+                peer: XID,
+                deadline: Instant,
+                record: wire::handshake::HandshakeRecord,
+            },
+            Fail,
+            Ignore,
+        }
+
+        let now = self.state.now;
+        let action = {
+            let Some(entry) = self.peer.as_mut() else {
+                return;
+            };
+            let peer = entry.peer;
+            match &mut entry.session {
+                PeerSession::Initiator {
+                    handshake_token,
+                    hello,
+                    deadline,
+                    stage:
+                        HandshakeInitiator::WaitingHelloReply {
+                            retry_count,
+                            retry_at,
+                        },
+                    ..
+                } if *handshake_token == token && retry_at.is_some_and(|at| at <= now) => {
+                    *retry_at = None;
+                    if *retry_count >= self.config.max_handshake_retries {
+                        RetryAction::Fail
+                    } else {
+                        *retry_count = retry_count.saturating_add(1);
+                        RetryAction::Resend {
+                            peer,
+                            deadline: *deadline,
+                            record: wire::handshake::HandshakeRecord::Hello(hello.clone()),
+                        }
+                    }
+                }
+                PeerSession::Initiator {
+                    handshake_token,
+                    deadline,
+                    stage:
+                        HandshakeInitiator::WaitingReady {
+                            confirm,
+                            retry_count,
+                            retry_at,
+                            ..
+                        },
+                    ..
+                } if *handshake_token == token && retry_at.is_some_and(|at| at <= now) => {
+                    *retry_at = None;
+                    if *retry_count >= self.config.max_handshake_retries {
+                        RetryAction::Fail
+                    } else {
+                        *retry_count = retry_count.saturating_add(1);
+                        RetryAction::Resend {
+                            peer,
+                            deadline: *deadline,
+                            record: wire::handshake::HandshakeRecord::Confirm(confirm.clone()),
+                        }
+                    }
+                }
+                PeerSession::Responder {
+                    handshake_token,
+                    reply,
+                    deadline,
+                    stage:
+                        HandshakeResponder::WaitingConfirm {
+                            retry_count,
+                            retry_at,
+                            ..
+                        },
+                    ..
+                } if *handshake_token == token && retry_at.is_some_and(|at| at <= now) => {
+                    *retry_at = None;
+                    if *retry_count >= self.config.max_handshake_retries {
+                        RetryAction::Fail
+                    } else {
+                        *retry_count = retry_count.saturating_add(1);
+                        RetryAction::Resend {
+                            peer,
+                            deadline: *deadline,
+                            record: wire::handshake::HandshakeRecord::HelloReply(reply.clone()),
+                        }
+                    }
+                }
+                _ => RetryAction::Ignore,
+            }
+        };
+
+        match action {
+            RetryAction::Resend {
+                peer,
+                deadline,
+                record,
+            } => {
+                if self.handshake_write_pending(token) {
+                    return;
+                }
+                handshake::enqueue_handshake_record(self, token, deadline, peer, record);
+            }
+            RetryAction::Fail => self.fail_handshake(QlError::Timeout, emit),
+            RetryAction::Ignore => {}
+        }
+    }
+
     fn abort_streams(&mut self, error: QlError, emit: &mut impl OutputFn) {
         let streams = std::mem::take(&mut self.streams).into_inner();
         for (stream_id, stream) in streams {
@@ -571,6 +801,9 @@ impl Engine {
                         .control_outbound
                         .retain(|message| message.token != token);
                 }
+                TimeoutKind::HandshakeRetry { token } => {
+                    self.handle_handshake_retry_timeout(token, emit);
+                }
                 TimeoutKind::StreamAckDelay { stream_id, token } => {
                     if let Some(stream) = self.streams.get_mut(&stream_id) {
                         let control = &mut stream.control;
@@ -598,21 +831,24 @@ impl Engine {
             }
         }
 
+        if let Some(PeerRecord {
+            session: PeerSession::Connected { recent_ready, .. },
+            ..
+        }) = self.peer.as_mut()
+        {
+            if recent_ready
+                .as_ref()
+                .is_some_and(|ready| ready.expires_at <= now)
+            {
+                *recent_ready = None;
+            }
+        }
+
         let handshake_due = self
             .handshake_deadline()
             .is_some_and(|deadline| deadline <= now);
         if handshake_due {
-            if let Some(entry) = self.peer.as_mut() {
-                if matches!(
-                    entry.session,
-                    PeerSession::Initiator { .. } | PeerSession::Responder { .. }
-                ) {
-                    entry.session = PeerSession::Disconnected;
-                }
-            }
-            self.emit_peer_status(emit);
-            self.drop_outbound();
-            self.abort_streams(QlError::SendFailed, emit);
+            self.fail_handshake(QlError::Timeout, emit);
             return;
         }
 

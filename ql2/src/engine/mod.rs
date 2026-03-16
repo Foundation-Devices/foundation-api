@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use bc_components::XID;
 pub use state::{
-    Engine, EngineState, InitiatorStage, KeepAliveState, OutboundWrite, PeerRecord, PeerSession,
-    ResponderStage, Token, WriteId,
+    Engine, EngineState, HandshakeInitiator, HandshakeResponder, KeepAliveState, OutboundWrite,
+    PeerRecord, PeerSession, RecentReady, Token, WriteId,
 };
 
 use crate::{
@@ -37,6 +37,8 @@ pub struct StreamConfig {}
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {
     pub handshake_timeout: Duration,
+    pub handshake_retry_interval: Duration,
+    pub max_handshake_retries: u8,
     pub packet_expiration: Duration,
     pub stream_ack_delay: Duration,
     pub stream_ack_timeout: Duration,
@@ -49,6 +51,8 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             handshake_timeout: Duration::from_secs(5),
+            handshake_retry_interval: Duration::from_millis(750),
+            max_handshake_retries: 3,
             packet_expiration: Duration::from_secs(30),
             stream_ack_delay: Duration::from_millis(5),
             stream_ack_timeout: Duration::from_millis(150),

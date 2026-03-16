@@ -203,6 +203,38 @@ pub fn finalize_confirm(
     confirm: &ArchivedConfirm,
     secrets: &ResponderSecrets,
 ) -> Result<SymmetricKey, QlError> {
+    verify_confirm(
+        initiator,
+        responder,
+        initiator_signing_key,
+        hello,
+        reply,
+        confirm,
+    )?;
+    Ok(derive_session_key(
+        &secrets.initiator_secret,
+        &secrets.responder_secret,
+        &handshake_transcript(
+            initiator,
+            responder,
+            &hello.meta,
+            &hello.nonce,
+            &hello.kem_ct,
+            &reply.meta,
+            &reply.nonce,
+            &reply.kem_ct,
+        ),
+    ))
+}
+
+pub fn verify_confirm(
+    initiator: XID,
+    responder: XID,
+    initiator_signing_key: &MLDSAPublicKey,
+    hello: &Hello,
+    reply: &HelloReply,
+    confirm: &ArchivedConfirm,
+) -> Result<(), QlError> {
     let confirm_meta: ControlMeta = (&confirm.meta).into();
     ensure_not_expired(confirm_meta.valid_until)?;
     let confirm_signature = MLDSASignature::try_from(&confirm.signature)?;
@@ -218,11 +250,7 @@ pub fn finalize_confirm(
     );
     let proof_data = confirm_proof_data(&confirm_meta, &transcript);
     verify_signature(initiator_signing_key, &confirm_signature, &proof_data)?;
-    Ok(derive_session_key(
-        &secrets.initiator_secret,
-        &secrets.responder_secret,
-        &transcript,
-    ))
+    Ok(())
 }
 
 pub fn build_ready(

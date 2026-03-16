@@ -9,10 +9,24 @@ use crate::{
 enum HelloAction {
     StartResponder,
     ResendReply {
+        token: Token,
         reply: wire::handshake::HelloReply,
         deadline: Instant,
     },
     Ignore,
+}
+
+enum HelloReplyAction {
+    Advance {
+        hello: wire::handshake::Hello,
+        responder_signing_key: bc_components::MLDSAPublicKey,
+        initiator_secret: SymmetricKey,
+    },
+    ResendConfirm {
+        token: Token,
+        confirm: wire::handshake::Confirm,
+        deadline: Instant,
+    },
 }
 
 pub fn handle_connect(
@@ -64,13 +78,15 @@ pub fn handle_hello(
                     }
                 }
                 PeerSession::Responder {
+                    handshake_token,
                     hello: stored,
                     reply,
                     deadline,
-                    ..
+                    stage: HandshakeResponder::WaitingConfirm { .. },
                 } => {
-                    if stored.nonce == (&hello.nonce).into() {
+                    if same_hello(stored, hello) {
                         HelloAction::ResendReply {
+                            token: *handshake_token,
                             reply: reply.clone(),
                             deadline: *deadline,
                         }
@@ -78,20 +94,20 @@ pub fn handle_hello(
                         HelloAction::StartResponder
                     }
                 }
-                PeerSession::Disconnected | PeerSession::Connected { .. } => {
-                    HelloAction::StartResponder
-                }
+                PeerSession::Responder { .. }
+                | PeerSession::Disconnected
+                | PeerSession::Connected { .. } => HelloAction::StartResponder,
             }
         }
         None => return,
     };
-    let meta: ControlMeta = (&hello.meta).into();
-    if engine.is_replayed_control(peer, meta) {
-        return;
-    }
 
     match action {
         HelloAction::StartResponder => {
+            let meta: ControlMeta = (&hello.meta).into();
+            if engine.is_replayed_control(peer, meta) {
+                return;
+            }
             let changed = {
                 let config = &engine.config;
                 let identity = &engine.identity;
@@ -114,20 +130,21 @@ pub fn handle_hello(
                 engine.emit_peer_status(emit);
             }
         }
-        HelloAction::ResendReply { reply, deadline } => {
-            let record = QlRecord {
-                header: QlHeader {
-                    sender: engine.identity.xid,
-                    recipient: peer,
-                },
-                payload: QlPayload::Handshake(HandshakeRecord::HelloReply(reply)),
-            };
-            let token = engine.state.next_token();
-            engine.state.enqueue_handshake_message(
-                &engine.config,
+        HelloAction::ResendReply {
+            token,
+            reply,
+            deadline,
+        } => {
+            if engine.handshake_write_pending(token) {
+                return;
+            }
+            engine.clear_handshake_retry_at(token);
+            enqueue_handshake_record(
+                engine,
                 token,
                 deadline,
-                wire::encode_record(&record),
+                peer,
+                HandshakeRecord::HelloReply(reply),
             );
         }
         HelloAction::Ignore => {}
@@ -141,71 +158,119 @@ pub fn handle_hello_reply(
     reply: &wire::handshake::ArchivedHelloReply,
     emit: &mut impl OutputFn,
 ) {
-    let deadline = now + engine.config.handshake_timeout;
-    let confirm_meta = engine.next_control_meta(engine.config.handshake_timeout);
-    let res = {
+    let action = {
         let Some(peer_record) = engine.peer.as_ref() else {
             return;
         };
         let PeerSession::Initiator {
+            handshake_token,
             hello,
             session_key,
             stage,
+            deadline,
             ..
         } = &peer_record.session
         else {
             return;
         };
-        if *stage != InitiatorStage::WaitingHelloReply {
-            return;
+        match stage {
+            HandshakeInitiator::WaitingHelloReply { .. } => HelloReplyAction::Advance {
+                hello: hello.clone(),
+                responder_signing_key: peer_record.signing_key.clone(),
+                initiator_secret: session_key.clone(),
+            },
+            HandshakeInitiator::WaitingReady {
+                reply: stored_reply,
+                confirm,
+                ..
+            } if same_reply(stored_reply, reply) => HelloReplyAction::ResendConfirm {
+                token: *handshake_token,
+                confirm: confirm.clone(),
+                deadline: *deadline,
+            },
+            HandshakeInitiator::WaitingReady { .. } => return,
         }
-        wire::handshake::build_confirm(
-            &engine.identity,
-            peer,
-            &peer_record.signing_key,
+    };
+    match action {
+        HelloReplyAction::Advance {
             hello,
-            reply,
-            session_key,
-            confirm_meta,
-        )
-        .map(|(confirm, session_key)| (hello.clone(), confirm, session_key))
-    };
-    let (hello, confirm, session_key) = match res {
-        Ok(result) => result,
-        Err(_) => {
-            if let Some(peer_record) = engine.peer.as_mut() {
-                peer_record.session = PeerSession::Disconnected;
+            responder_signing_key,
+            initiator_secret,
+        } => {
+            let confirm_meta = engine.next_control_meta(engine.config.handshake_timeout);
+            let (confirm, session_key) = match wire::handshake::build_confirm(
+                &engine.identity,
+                peer,
+                &responder_signing_key,
+                &hello,
+                reply,
+                &initiator_secret,
+                confirm_meta,
+            ) {
+                Ok(result) => result,
+                Err(_) => {
+                    disconnect_handshake(engine, emit);
+                    return;
+                }
+            };
+            let reply_meta: ControlMeta = (&reply.meta).into();
+            if engine.is_replayed_control(peer, reply_meta) {
+                return;
             }
-            engine.emit_peer_status(emit);
-            return;
+            let Ok(reply) = wire::deserialize_value(reply) else {
+                disconnect_handshake(engine, emit);
+                return;
+            };
+            let deadline = now + engine.config.handshake_timeout;
+            let token = engine.state.next_token();
+            let Some(peer_record) = engine.peer.as_mut() else {
+                return;
+            };
+            peer_record.session = PeerSession::Initiator {
+                handshake_token: token,
+                hello,
+                session_key,
+                deadline,
+                stage: HandshakeInitiator::WaitingReady {
+                    reply,
+                    confirm: confirm.clone(),
+                    retry_count: 0,
+                    retry_at: None,
+                },
+            };
+            enqueue_handshake_record(
+                engine,
+                token,
+                deadline,
+                peer,
+                HandshakeRecord::Confirm(confirm),
+            );
         }
-    };
-    let reply_meta: ControlMeta = (&reply.meta).into();
-    if engine.is_replayed_control(peer, reply_meta) {
-        return;
+        HelloReplyAction::ResendConfirm {
+            token,
+            confirm,
+            deadline,
+        } => {
+            if engine.handshake_write_pending(token) {
+                return;
+            }
+            engine.clear_handshake_retry_at(token);
+            enqueue_handshake_record(
+                engine,
+                token,
+                deadline,
+                peer,
+                HandshakeRecord::Confirm(confirm),
+            );
+        }
     }
-    let config = &engine.config;
-    let state = &mut engine.state;
-    let token = state.next_token();
-    let Some(peer_record) = engine.peer.as_mut() else {
-        return;
-    };
-    peer_record.session = PeerSession::Initiator {
-        handshake_token: token,
-        hello,
-        session_key,
-        deadline,
-        stage: InitiatorStage::WaitingReady,
-    };
+}
 
-    let record = QlRecord {
-        header: QlHeader {
-            sender: engine.identity.xid,
-            recipient: peer,
-        },
-        payload: QlPayload::Handshake(HandshakeRecord::Confirm(confirm)),
-    };
-    state.enqueue_handshake_message(config, token, deadline, wire::encode_record(&record));
+fn disconnect_handshake(engine: &mut Engine, emit: &mut impl OutputFn) {
+    if let Some(peer_record) = engine.peer.as_mut() {
+        peer_record.session = PeerSession::Disconnected;
+    }
+    engine.emit_peer_status(emit);
 }
 
 pub fn handle_confirm(
@@ -216,6 +281,27 @@ pub fn handle_confirm(
     crypto: &impl QlCrypto,
     emit: &mut impl OutputFn,
 ) {
+    if let Some((ready, deadline, token)) = current_ready_resend(engine, now, peer, confirm) {
+        if engine.handshake_write_pending(token) {
+            return;
+        }
+        enqueue_handshake_record(engine, token, deadline, peer, HandshakeRecord::Ready(ready));
+        return;
+    }
+    if let Some(ready) = recent_ready_resend(engine, now, peer, confirm) {
+        let record = QlRecord {
+            header: QlHeader {
+                sender: engine.identity.xid,
+                recipient: peer,
+            },
+            payload: QlPayload::Handshake(HandshakeRecord::Ready(ready)),
+        };
+        engine
+            .state
+            .enqueue_control(&engine.config, true, wire::encode_record(&record));
+        return;
+    }
+
     let res = {
         let Some(peer_record) = engine.peer.as_ref() else {
             return;
@@ -229,7 +315,7 @@ pub fn handle_confirm(
         else {
             return;
         };
-        let ResponderStage::WaitingConfirm { secrets } = stage else {
+        let HandshakeResponder::WaitingConfirm { secrets, .. } = stage else {
             return;
         };
 
@@ -269,25 +355,13 @@ pub fn handle_confirm(
                     hello,
                     reply,
                     deadline,
-                    stage: ResponderStage::SendingReady {
+                    stage: HandshakeResponder::SendingReady {
                         session_key,
                         ready: ready.clone(),
                     },
                 };
             }
-            let record = QlRecord {
-                header: QlHeader {
-                    sender: engine.identity.xid,
-                    recipient: peer,
-                },
-                payload: QlPayload::Handshake(HandshakeRecord::Ready(ready)),
-            };
-            engine.state.enqueue_handshake_message(
-                &engine.config,
-                token,
-                deadline,
-                wire::encode_record(&record),
-            );
+            enqueue_handshake_record(engine, token, deadline, peer, HandshakeRecord::Ready(ready));
         }
         Err(_) => {
             if let Some(peer_record) = engine.peer.as_mut() {
@@ -311,16 +385,14 @@ pub fn handle_ready(
             return;
         };
         let PeerSession::Initiator {
-            session_key,
-            stage,
-            ..
+            session_key, stage, ..
         } = &peer_record.session
         else {
             return;
         };
-        if *stage != InitiatorStage::WaitingReady {
+        let HandshakeInitiator::WaitingReady { .. } = stage else {
             return;
-        }
+        };
         session_key.clone()
     };
 
@@ -335,6 +407,7 @@ pub fn handle_ready(
         peer_record.session = PeerSession::Connected {
             session_key,
             keepalive: KeepAliveState::default(),
+            recent_ready: None,
         };
     }
     engine.record_activity(now);
@@ -371,9 +444,11 @@ fn start_initiator_handshake(
         hello: hello.clone(),
         session_key,
         deadline,
-        stage: InitiatorStage::WaitingHelloReply,
+        stage: HandshakeInitiator::WaitingHelloReply {
+            retry_count: 0,
+            retry_at: None,
+        },
     };
-
     let record = QlRecord {
         header: QlHeader {
             sender: identity.xid,
@@ -426,7 +501,11 @@ fn start_responder_handshake(
         hello,
         reply: reply.clone(),
         deadline,
-        stage: ResponderStage::WaitingConfirm { secrets },
+        stage: HandshakeResponder::WaitingConfirm {
+            secrets,
+            retry_count: 0,
+            retry_at: None,
+        },
     };
 
     let record = QlRecord {
@@ -438,6 +517,102 @@ fn start_responder_handshake(
     };
     state.enqueue_handshake_message(config, token, deadline, wire::encode_record(&record));
     true
+}
+
+pub(super) fn enqueue_handshake_record(
+    engine: &mut Engine,
+    token: Token,
+    deadline: Instant,
+    peer: XID,
+    record: HandshakeRecord,
+) {
+    let record = QlRecord {
+        header: QlHeader {
+            sender: engine.identity.xid,
+            recipient: peer,
+        },
+        payload: QlPayload::Handshake(record),
+    };
+    engine.state.enqueue_handshake_message(
+        &engine.config,
+        token,
+        deadline,
+        wire::encode_record(&record),
+    );
+}
+
+fn same_hello(stored: &wire::handshake::Hello, incoming: &wire::handshake::ArchivedHello) -> bool {
+    let meta: ControlMeta = (&incoming.meta).into();
+    stored.meta.packet_id == meta.packet_id && stored.nonce == (&incoming.nonce).into()
+}
+
+fn same_reply(
+    stored: &wire::handshake::HelloReply,
+    incoming: &wire::handshake::ArchivedHelloReply,
+) -> bool {
+    let meta: ControlMeta = (&incoming.meta).into();
+    stored.meta.packet_id == meta.packet_id && stored.nonce == (&incoming.nonce).into()
+}
+
+fn current_ready_resend(
+    engine: &Engine,
+    now: Instant,
+    peer: XID,
+    confirm: &wire::handshake::ArchivedConfirm,
+) -> Option<(wire::handshake::Ready, Instant, Token)> {
+    let peer_record = engine.peer.as_ref()?;
+    let PeerSession::Responder {
+        handshake_token,
+        hello,
+        reply,
+        deadline,
+        stage: HandshakeResponder::SendingReady { ready, .. },
+    } = &peer_record.session
+    else {
+        return None;
+    };
+    if *deadline <= now {
+        return None;
+    }
+    wire::handshake::verify_confirm(
+        peer,
+        engine.identity.xid,
+        &peer_record.signing_key,
+        hello,
+        reply,
+        confirm,
+    )
+    .ok()?;
+    Some((ready.clone(), *deadline, *handshake_token))
+}
+
+fn recent_ready_resend(
+    engine: &Engine,
+    now: Instant,
+    peer: XID,
+    confirm: &wire::handshake::ArchivedConfirm,
+) -> Option<wire::handshake::Ready> {
+    let peer_record = engine.peer.as_ref()?;
+    let PeerSession::Connected {
+        recent_ready: Some(recent_ready),
+        ..
+    } = &peer_record.session
+    else {
+        return None;
+    };
+    if recent_ready.expires_at <= now {
+        return None;
+    }
+    wire::handshake::verify_confirm(
+        peer,
+        engine.identity.xid,
+        &peer_record.signing_key,
+        &recent_ready.hello,
+        &recent_ready.reply,
+        confirm,
+    )
+    .ok()?;
+    Some(recent_ready.ready.clone())
 }
 
 fn peer_hello_wins(
