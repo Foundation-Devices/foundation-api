@@ -7,10 +7,10 @@ use std::{
 
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
-use super::{replay_cache::ReplayCache, stream::StreamStore, EngineConfig};
+use super::{replay_cache::ReplayCache, EngineConfig};
 use crate::{
     identity::QlIdentity,
-    stream::OutboundCompletion,
+    stream::{OutboundCompletion, StreamFsm},
     wire::{
         handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
         stream::{CloseCode, CloseTarget},
@@ -241,7 +241,7 @@ pub struct Engine {
     pub identity: QlIdentity,
     pub peer: Option<PeerRecord>,
     pub state: EngineState,
-    pub streams: StreamStore,
+    pub streams: StreamFsm,
 }
 
 pub struct EngineState {

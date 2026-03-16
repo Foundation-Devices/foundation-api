@@ -1,7 +1,6 @@
 mod implementation;
 pub mod replay_cache;
 mod state;
-pub(crate) mod stream;
 
 #[cfg(test)]
 mod tests;
@@ -16,6 +15,7 @@ pub use state::{
 
 use crate::{
     identity::QlIdentity,
+    stream,
     wire::stream::{BodyChunk, CloseCode, CloseTarget},
     Peer, QlError, StreamId,
 };
@@ -145,7 +145,7 @@ impl Engine {
             peer: peer
                 .map(|peer| PeerRecord::new(peer.peer, peer.signing_key, peer.encapsulation_key)),
             state: EngineState::new(),
-            streams: stream::StreamStore::new(crate::stream::StreamConfig {
+            streams: stream::StreamFsm::new(stream::StreamFsmConfig {
                 local_namespace,
                 ack_delay: config.stream_ack_delay,
                 ack_timeout: config.stream_ack_timeout,

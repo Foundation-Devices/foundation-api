@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use super::{
-    Outbound, StreamCloseEvent, StreamCloseKind, StreamConfig, StreamError, StreamEventSink,
-    StreamFsm, StreamLocalRole, StreamNamespace, WriteError,
+    Outbound, StreamCloseEvent, StreamCloseKind, StreamError, StreamEventSink, StreamFsm,
+    StreamFsmConfig, StreamLocalRole, StreamNamespace, WriteError,
 };
 use crate::{
     wire::stream::{
@@ -105,7 +105,7 @@ fn data_packet(stream_id: StreamId, tx_seq: u32, byte: u8) -> StreamBody {
 #[test]
 fn open_stream_enqueues_open_packet() {
     let now = Instant::now();
-    let mut stream = StreamFsm::new(StreamConfig::default());
+    let mut stream = StreamFsm::new(StreamFsmConfig::default());
     let stream_id = stream.open_stream(b"open".to_vec(), None);
 
     let outbound = stream.next_outbound(now, 7).unwrap();
@@ -115,7 +115,7 @@ fn open_stream_enqueues_open_packet() {
 #[test]
 fn out_of_order_remote_stream_buffers_until_open_arrives() {
     let now = Instant::now();
-    let mut stream = StreamFsm::new(StreamConfig {
+    let mut stream = StreamFsm::new(StreamFsmConfig {
         local_namespace: StreamNamespace::Low,
         ..Default::default()
     });
@@ -161,7 +161,7 @@ fn out_of_order_remote_stream_buffers_until_open_arrives() {
 #[test]
 fn ack_only_write_failure_requeues_without_spending_sequence_space() {
     let now = Instant::now();
-    let config = StreamConfig::default();
+    let config = StreamFsmConfig::default();
     let mut stream = StreamFsm::new(config);
     let stream_id = StreamId(StreamNamespace::High.bit() | 1);
 
@@ -225,7 +225,7 @@ fn ack_only_write_failure_requeues_without_spending_sequence_space() {
 #[test]
 fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
     let now = Instant::now();
-    let mut stream = StreamFsm::new(StreamConfig {
+    let mut stream = StreamFsm::new(StreamFsmConfig {
         fast_retransmit_threshold: 2,
         ..Default::default()
     });
@@ -272,7 +272,7 @@ fn fast_retransmit_resends_oldest_gap_when_threshold_met() {
 #[test]
 fn late_failed_write_after_remote_close_ack_is_ignored() {
     let now = Instant::now();
-    let mut stream = StreamFsm::new(StreamConfig::default());
+    let mut stream = StreamFsm::new(StreamFsmConfig::default());
     let stream_id = stream.open_stream(b"open".to_vec(), None);
     let open = stream.next_outbound(now, 1).unwrap();
 

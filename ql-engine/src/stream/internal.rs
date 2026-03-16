@@ -4,8 +4,8 @@ use std::{
 };
 
 use super::{
-    ring::SeqRing, Outbound, OutboundCompletion, StreamCloseEvent, StreamCloseKind, StreamConfig,
-    StreamError, StreamEventSink, StreamFsm, StreamLocalRole, StreamNamespace, WriteError,
+    ring::SeqRing, Outbound, OutboundCompletion, StreamCloseEvent, StreamCloseKind, StreamError,
+    StreamEventSink, StreamFsm, StreamFsmConfig, StreamLocalRole, StreamNamespace, WriteError,
     STREAM_ACK_EAGER_THRESHOLD, STREAM_WINDOW_CAPACITY, STREAM_WINDOW_SIZE,
 };
 use crate::{
@@ -549,7 +549,7 @@ enum TimerAction {
     Fail,
 }
 
-pub fn new(config: StreamConfig) -> StreamFsm {
+pub fn new(config: StreamFsmConfig) -> StreamFsm {
     StreamFsm {
         config,
         streams: StreamStore::default(),

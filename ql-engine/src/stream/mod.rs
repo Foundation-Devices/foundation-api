@@ -51,7 +51,7 @@ impl StreamNamespace {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct StreamConfig {
+pub struct StreamFsmConfig {
     pub local_namespace: StreamNamespace,
     pub ack_delay: Duration,
     pub ack_timeout: Duration,
@@ -59,7 +59,7 @@ pub struct StreamConfig {
     pub retry_limit: u8,
 }
 
-impl Default for StreamConfig {
+impl Default for StreamFsmConfig {
     fn default() -> Self {
         Self {
             local_namespace: StreamNamespace::Low,
@@ -180,14 +180,14 @@ pub enum WriteError {
 }
 
 pub struct StreamFsm {
-    config: StreamConfig,
+    config: StreamFsmConfig,
     streams: StreamStore,
     next_stream_id: u32,
     next_issue_id: u64,
 }
 
 impl StreamFsm {
-    pub fn new(config: StreamConfig) -> Self {
+    pub fn new(config: StreamFsmConfig) -> Self {
         internal::new(config)
     }
 
