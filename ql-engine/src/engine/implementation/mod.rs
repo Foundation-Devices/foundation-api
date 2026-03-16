@@ -83,7 +83,7 @@ impl Engine {
         emit: &mut impl OutputFn,
     ) {
         let now = self.state.now;
-        let Some(active) = self.state.active_writes.remove(&write_id) else {
+        let Some(active) = self.state.active_writes.remove(write_id.0) else {
             return;
         };
 
@@ -453,10 +453,7 @@ impl Engine {
         token: Option<Token>,
         bytes: Vec<u8>,
     ) -> OutboundWrite {
-        let id = self.state.next_write_id();
-        self.state
-            .active_writes
-            .insert(id, ActiveWrite { token, kind });
+        let id = WriteId(self.state.active_writes.insert(ActiveWrite { token, kind }));
         OutboundWrite { id, bytes }
     }
 

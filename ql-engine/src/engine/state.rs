@@ -1,7 +1,7 @@
 use std::{
     cell::Cell,
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap, VecDeque},
+    collections::{BinaryHeap, VecDeque},
     time::Instant,
 };
 
@@ -9,6 +9,7 @@ use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
 use super::{replay_cache::ReplayCache, EngineConfig};
 use crate::{
+    arena::{ArenaKey, GenerationalArena},
     identity::QlIdentity,
     stream::{OutboundCompletion, StreamFsm},
     wire::{
@@ -21,8 +22,8 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Token(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WriteId(pub u64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WriteId(pub(crate) ArenaKey);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboundWriteKind {
@@ -248,10 +249,9 @@ pub struct EngineState {
     pub replay_cache: ReplayCache,
 
     pub next_token: Cell<u64>,
-    pub next_write_id: Cell<u64>,
     pub next_packet_id: Cell<u32>,
     pub control_outbound: VecDeque<ControlWrite>,
-    pub active_writes: HashMap<WriteId, ActiveWrite>,
+    pub active_writes: GenerationalArena<ActiveWrite>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     pub now: Instant,
 }
@@ -261,10 +261,9 @@ impl EngineState {
         Self {
             replay_cache: ReplayCache::new(),
             next_token: Cell::new(1),
-            next_write_id: Cell::new(1),
             next_packet_id: Cell::new(1),
             control_outbound: VecDeque::new(),
-            active_writes: HashMap::new(),
+            active_writes: GenerationalArena::new(),
             timeouts: BinaryHeap::new(),
             now: Instant::now(),
         }
@@ -278,12 +277,6 @@ impl EngineState {
         let token = self.next_token.get();
         self.next_token.set(token.wrapping_add(1));
         Token(token)
-    }
-
-    pub fn next_write_id(&self) -> WriteId {
-        let id = self.next_write_id.get();
-        self.next_write_id.set(id.wrapping_add(1));
-        WriteId(id)
     }
 
     pub fn next_packet_id(&self) -> PacketId {

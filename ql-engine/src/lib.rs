@@ -1,3 +1,4 @@
+pub(crate) mod arena;
 pub mod engine;
 pub mod identity;
 pub mod stream;

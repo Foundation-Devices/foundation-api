@@ -1013,7 +1013,7 @@ fn take_next_write_does_not_reissue_outstanding_frame() {
 
     let write = engine.take_next_write().unwrap();
     assert!(engine.take_next_write().is_none());
-    assert!(engine.state.active_writes.contains_key(&write.id));
+    assert!(engine.state.active_writes.contains(write.id.0));
 }
 
 #[test]
