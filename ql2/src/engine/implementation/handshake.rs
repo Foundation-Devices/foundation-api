@@ -156,7 +156,7 @@ pub fn handle_hello_reply(
     now: Instant,
     peer: XID,
     reply: &wire::handshake::ArchivedHelloReply,
-    emit: &mut impl OutputFn,
+    _emit: &mut impl OutputFn,
 ) {
     let action = {
         let Some(peer_record) = engine.peer.as_ref() else {
@@ -208,17 +208,13 @@ pub fn handle_hello_reply(
                 confirm_meta,
             ) {
                 Ok(result) => result,
-                Err(_) => {
-                    disconnect_handshake(engine, emit);
-                    return;
-                }
+                Err(_) => return,
             };
             let reply_meta: ControlMeta = (&reply.meta).into();
             if engine.is_replayed_control(peer, reply_meta) {
                 return;
             }
             let Ok(reply) = wire::deserialize_value(reply) else {
-                disconnect_handshake(engine, emit);
                 return;
             };
             let deadline = now + engine.config.handshake_timeout;
@@ -266,20 +262,13 @@ pub fn handle_hello_reply(
     }
 }
 
-fn disconnect_handshake(engine: &mut Engine, emit: &mut impl OutputFn) {
-    if let Some(peer_record) = engine.peer.as_mut() {
-        peer_record.session = PeerSession::Disconnected;
-    }
-    engine.emit_peer_status(emit);
-}
-
 pub fn handle_confirm(
     engine: &mut Engine,
     now: Instant,
     peer: XID,
     confirm: &wire::handshake::ArchivedConfirm,
     crypto: &impl QlCrypto,
-    emit: &mut impl OutputFn,
+    _emit: &mut impl OutputFn,
 ) {
     if let Some((ready, deadline, token)) = current_ready_resend(engine, now, peer, confirm) {
         if engine.handshake_write_pending(token) {
@@ -363,12 +352,7 @@ pub fn handle_confirm(
             }
             enqueue_handshake_record(engine, token, deadline, peer, HandshakeRecord::Ready(ready));
         }
-        Err(_) => {
-            if let Some(peer_record) = engine.peer.as_mut() {
-                peer_record.session = PeerSession::Disconnected;
-            }
-            engine.emit_peer_status(emit);
-        }
+        Err(_) => {}
     }
 }
 
