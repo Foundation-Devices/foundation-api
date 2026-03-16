@@ -7,7 +7,8 @@ pub fn handle_bind_peer(engine: &mut Engine, peer: Peer, events: &mut impl Engin
     bind_peer_record(engine, peer, events);
 }
 
-pub fn handle_pair_local(engine: &mut Engine, now: Instant, crypto: &impl QlCrypto) {
+pub fn handle_pair_local(engine: &mut Engine, crypto: &impl QlCrypto) {
+    let now = engine.state.now;
     let Some(peer) = engine.peer.as_ref() else {
         return;
     };
@@ -30,7 +31,8 @@ pub fn handle_pair_local(engine: &mut Engine, now: Instant, crypto: &impl QlCryp
     );
 }
 
-pub fn handle_unpair_local(engine: &mut Engine, now: Instant, events: &mut impl EngineEventSink) {
+pub fn handle_unpair_local(engine: &mut Engine, events: &mut impl EngineEventSink) {
+    let now = engine.state.now;
     let Some(peer) = engine.peer.as_ref().map(|peer| peer.peer) else {
         return;
     };
@@ -55,7 +57,6 @@ pub fn handle_unpair_local(engine: &mut Engine, now: Instant, events: &mut impl 
 
 pub fn handle_pairing(
     engine: &mut Engine,
-    now: Instant,
     header: &QlHeader,
     request: &mut wire::pair::ArchivedPairRequestRecord,
     crypto: &impl QlCrypto,
@@ -87,7 +88,7 @@ pub fn handle_pairing(
             events,
         );
     }
-    handshake::handle_connect(engine, now, crypto, events);
+    handshake::handle_connect(engine, crypto, events);
 }
 
 pub fn handle_unpair(

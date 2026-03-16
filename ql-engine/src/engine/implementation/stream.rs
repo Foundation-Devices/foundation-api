@@ -128,7 +128,6 @@ impl<O: EngineEventSink> StreamEventSink for EngineStreamSink<'_, O> {
 
 pub fn open_stream(
     engine: &mut Engine,
-    _now: Instant,
     request_head: Vec<u8>,
     request_prefix: Option<BodyChunk>,
     _config: StreamConfig,
@@ -177,12 +176,12 @@ pub fn handle_outbound_finished(engine: &mut Engine, stream_id: StreamId) -> Res
 
 pub fn handle_stream(
     engine: &mut Engine,
-    now: Instant,
     _peer: XID,
     header: &QlHeader,
     encrypted: &mut ArchivedEncryptedMessage,
     events: &mut impl EngineEventSink,
 ) {
+    let now = engine.state.now;
     let body = {
         let Some(peer_record) = engine.peer.as_ref() else {
             return;
@@ -196,7 +195,7 @@ pub fn handle_stream(
         }
     };
 
-    engine.record_activity(now);
+    engine.record_activity();
     engine.sync_stream_namespace();
 
     let mut sink = EngineStreamSink {
@@ -236,11 +235,11 @@ pub fn take_next_stream_write(
 
 pub fn complete_stream_write(
     engine: &mut Engine,
-    now: Instant,
     completion: crate::stream::OutboundCompletion,
     result: Result<(), QlError>,
     events: &mut impl EngineEventSink,
 ) {
+    let now = engine.state.now;
     let mut sink = EngineStreamSink {
         state: &mut engine.state,
         events,
@@ -253,11 +252,8 @@ pub fn complete_stream_write(
     );
 }
 
-pub fn handle_stream_timeouts(
-    engine: &mut Engine,
-    now: Instant,
-    events: &mut impl EngineEventSink,
-) {
+pub fn handle_stream_timeouts(engine: &mut Engine, events: &mut impl EngineEventSink) {
+    let now = engine.state.now;
     if !engine
         .streams
         .next_deadline()

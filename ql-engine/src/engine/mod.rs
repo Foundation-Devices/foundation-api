@@ -1,12 +1,13 @@
 mod implementation;
 pub mod replay_cache;
+mod sink;
 mod state;
 #[cfg(test)]
 mod tests;
 
 use std::time::{Duration, Instant};
 
-use bc_components::XID;
+pub use sink::EngineEventSink;
 pub use state::{
     Engine, EngineState, HandshakeInitiator, HandshakeResponder, KeepAliveState, OutboundWrite,
     PeerRecord, PeerSession, RecentReady, Token, WriteId,
@@ -61,151 +62,6 @@ impl Default for EngineConfig {
     }
 }
 
-#[derive(Debug)]
-pub enum EngineOutput {
-    PeerStatusChanged {
-        peer: XID,
-        session: PeerSession,
-    },
-    PersistPeer(Peer),
-    ClearPeer,
-
-    InboundStreamOpened {
-        stream_id: StreamId,
-        request_head: Vec<u8>,
-        request_prefix: Option<BodyChunk>,
-    },
-    InboundData {
-        stream_id: StreamId,
-        bytes: Vec<u8>,
-    },
-    InboundFinished {
-        stream_id: StreamId,
-    },
-    InboundFailed {
-        stream_id: StreamId,
-        error: QlError,
-    },
-
-    OutboundClosed {
-        stream_id: StreamId,
-    },
-    OutboundFailed {
-        stream_id: StreamId,
-        error: QlError,
-    },
-
-    StreamReaped {
-        stream_id: StreamId,
-    },
-}
-
-pub trait EngineEventSink {
-    fn peer_status_changed(&mut self, peer: XID, session: PeerSession);
-
-    fn persist_peer(&mut self, peer: Peer);
-
-    fn clear_peer(&mut self);
-
-    fn inbound_stream_opened(
-        &mut self,
-        stream_id: StreamId,
-        request_head: Vec<u8>,
-        request_prefix: Option<BodyChunk>,
-    );
-
-    fn inbound_data(&mut self, stream_id: StreamId, bytes: Vec<u8>);
-
-    fn inbound_finished(&mut self, stream_id: StreamId);
-
-    fn inbound_failed(&mut self, stream_id: StreamId, error: QlError);
-
-    fn outbound_closed(&mut self, stream_id: StreamId);
-
-    fn outbound_failed(&mut self, stream_id: StreamId, error: QlError);
-
-    fn stream_reaped(&mut self, stream_id: StreamId);
-}
-
-impl EngineEventSink for () {
-    fn peer_status_changed(&mut self, _peer: XID, _session: PeerSession) {}
-
-    fn persist_peer(&mut self, _peer: Peer) {}
-
-    fn clear_peer(&mut self) {}
-
-    fn inbound_stream_opened(
-        &mut self,
-        _stream_id: StreamId,
-        _request_head: Vec<u8>,
-        _request_prefix: Option<BodyChunk>,
-    ) {
-    }
-
-    fn inbound_data(&mut self, _stream_id: StreamId, _bytes: Vec<u8>) {}
-
-    fn inbound_finished(&mut self, _stream_id: StreamId) {}
-
-    fn inbound_failed(&mut self, _stream_id: StreamId, _error: QlError) {}
-
-    fn outbound_closed(&mut self, _stream_id: StreamId) {}
-
-    fn outbound_failed(&mut self, _stream_id: StreamId, _error: QlError) {}
-
-    fn stream_reaped(&mut self, _stream_id: StreamId) {}
-}
-
-impl EngineEventSink for Vec<EngineOutput> {
-    fn peer_status_changed(&mut self, peer: XID, session: PeerSession) {
-        self.push(EngineOutput::PeerStatusChanged { peer, session });
-    }
-
-    fn persist_peer(&mut self, peer: Peer) {
-        self.push(EngineOutput::PersistPeer(peer));
-    }
-
-    fn clear_peer(&mut self) {
-        self.push(EngineOutput::ClearPeer);
-    }
-
-    fn inbound_stream_opened(
-        &mut self,
-        stream_id: StreamId,
-        request_head: Vec<u8>,
-        request_prefix: Option<BodyChunk>,
-    ) {
-        self.push(EngineOutput::InboundStreamOpened {
-            stream_id,
-            request_head,
-            request_prefix,
-        });
-    }
-
-    fn inbound_data(&mut self, stream_id: StreamId, bytes: Vec<u8>) {
-        self.push(EngineOutput::InboundData { stream_id, bytes });
-    }
-
-    fn inbound_finished(&mut self, stream_id: StreamId) {
-        self.push(EngineOutput::InboundFinished { stream_id });
-    }
-
-    fn inbound_failed(&mut self, stream_id: StreamId, error: QlError) {
-        self.push(EngineOutput::InboundFailed { stream_id, error });
-    }
-
-    fn outbound_closed(&mut self, stream_id: StreamId) {
-        self.push(EngineOutput::OutboundClosed { stream_id });
-    }
-
-    fn outbound_failed(&mut self, stream_id: StreamId, error: QlError) {
-        self.push(EngineOutput::OutboundFailed { stream_id, error });
-    }
-
-    fn stream_reaped(&mut self, stream_id: StreamId) {
-        self.push(EngineOutput::StreamReaped { stream_id });
-    }
-}
-
 impl Engine {
     pub fn new(config: EngineConfig, identity: QlIdentity, peer: Option<Peer>) -> Self {
         let local_namespace = peer
@@ -232,12 +88,25 @@ impl Engine {
         }
     }
 
-    pub fn bind_peer(&mut self, peer: Peer, events: &mut impl EngineEventSink) {
+    pub fn open_stream(
+        &mut self,
+        now: Instant,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+        config: StreamConfig,
+    ) -> Result<StreamId, QlError> {
+        self.state.now = now;
+        self.open_stream_inner(request_head, request_prefix, config)
+    }
+
+    pub fn bind_peer(&mut self, now: Instant, peer: Peer, events: &mut impl EngineEventSink) {
+        self.state.now = now;
         self.bind_peer_inner(peer, events);
     }
 
     pub fn pair(&mut self, now: Instant, crypto: &impl QlCrypto) {
-        self.pair_inner(now, crypto);
+        self.state.now = now;
+        self.pair_inner(crypto);
     }
 
     pub fn connect(
@@ -246,41 +115,59 @@ impl Engine {
         crypto: &impl QlCrypto,
         events: &mut impl EngineEventSink,
     ) {
-        self.connect_inner(now, crypto, events);
+        self.state.now = now;
+        self.connect_inner(crypto, events);
     }
 
     pub fn unpair(&mut self, now: Instant, events: &mut impl EngineEventSink) {
-        self.unpair_inner(now, events);
+        self.state.now = now;
+        self.unpair_inner(events);
     }
 
-    pub fn take_next_write(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
+    pub fn take_next_write(
+        &mut self,
+        now: Instant,
+        crypto: &impl QlCrypto,
+    ) -> Option<OutboundWrite> {
+        self.state.now = now;
         self.take_next_write_inner(crypto)
     }
 
     pub fn complete_write(
         &mut self,
+        now: Instant,
         write_id: WriteId,
         result: Result<(), QlError>,
         events: &mut impl EngineEventSink,
     ) {
+        self.state.now = now;
         self.complete_write_inner(write_id, result, events);
     }
 
-    pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), QlError> {
+    pub fn write_stream(
+        &mut self,
+        now: Instant,
+        stream_id: StreamId,
+        bytes: Vec<u8>,
+    ) -> Result<(), QlError> {
+        self.state.now = now;
         self.write_stream_inner(stream_id, bytes)
     }
 
-    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), QlError> {
+    pub fn finish_stream(&mut self, now: Instant, stream_id: StreamId) -> Result<(), QlError> {
+        self.state.now = now;
         self.finish_stream_inner(stream_id)
     }
 
     pub fn close_stream(
         &mut self,
+        now: Instant,
         stream_id: StreamId,
         target: CloseTarget,
         code: CloseCode,
         payload: Vec<u8>,
     ) -> Result<(), QlError> {
+        self.state.now = now;
         self.close_stream_inner(stream_id, target, code, payload)
     }
 
@@ -291,7 +178,8 @@ impl Engine {
         crypto: &impl QlCrypto,
         events: &mut impl EngineEventSink,
     ) {
-        self.receive_inner(now, bytes, crypto, events);
+        self.state.now = now;
+        self.receive_inner(bytes, crypto, events);
     }
 
     pub fn on_timer(
@@ -300,14 +188,16 @@ impl Engine {
         crypto: &impl QlCrypto,
         events: &mut impl EngineEventSink,
     ) {
-        self.on_timer_inner(now, crypto, events);
+        self.state.now = now;
+        self.on_timer_inner(crypto, events);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
         self.next_deadline_inner()
     }
 
-    pub fn abort(&mut self, error: QlError, events: &mut impl EngineEventSink) {
+    pub fn abort(&mut self, now: Instant, error: QlError, events: &mut impl EngineEventSink) {
+        self.state.now = now;
         self.abort_inner(error, events);
     }
 }

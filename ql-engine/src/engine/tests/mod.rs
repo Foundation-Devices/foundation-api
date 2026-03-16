@@ -20,6 +20,96 @@ use crate::{
     PacketId, Peer,
 };
 
+#[derive(Debug)]
+pub enum EngineOutput {
+    PeerStatusChanged {
+        peer: XID,
+        session: PeerSession,
+    },
+    PersistPeer(Peer),
+    ClearPeer,
+
+    InboundStreamOpened {
+        stream_id: StreamId,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+    },
+    InboundData {
+        stream_id: StreamId,
+        bytes: Vec<u8>,
+    },
+    InboundFinished {
+        stream_id: StreamId,
+    },
+    InboundFailed {
+        stream_id: StreamId,
+        error: QlError,
+    },
+
+    OutboundClosed {
+        stream_id: StreamId,
+    },
+    OutboundFailed {
+        stream_id: StreamId,
+        error: QlError,
+    },
+
+    StreamReaped {
+        stream_id: StreamId,
+    },
+}
+
+impl EngineEventSink for Vec<EngineOutput> {
+    fn peer_status_changed(&mut self, peer: XID, session: PeerSession) {
+        self.push(EngineOutput::PeerStatusChanged { peer, session });
+    }
+
+    fn persist_peer(&mut self, peer: Peer) {
+        self.push(EngineOutput::PersistPeer(peer));
+    }
+
+    fn clear_peer(&mut self) {
+        self.push(EngineOutput::ClearPeer);
+    }
+
+    fn inbound_stream_opened(
+        &mut self,
+        stream_id: StreamId,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+    ) {
+        self.push(EngineOutput::InboundStreamOpened {
+            stream_id,
+            request_head,
+            request_prefix,
+        });
+    }
+
+    fn inbound_data(&mut self, stream_id: StreamId, bytes: Vec<u8>) {
+        self.push(EngineOutput::InboundData { stream_id, bytes });
+    }
+
+    fn inbound_finished(&mut self, stream_id: StreamId) {
+        self.push(EngineOutput::InboundFinished { stream_id });
+    }
+
+    fn inbound_failed(&mut self, stream_id: StreamId, error: QlError) {
+        self.push(EngineOutput::InboundFailed { stream_id, error });
+    }
+
+    fn outbound_closed(&mut self, stream_id: StreamId) {
+        self.push(EngineOutput::OutboundClosed { stream_id });
+    }
+
+    fn outbound_failed(&mut self, stream_id: StreamId, error: QlError) {
+        self.push(EngineOutput::OutboundFailed { stream_id, error });
+    }
+
+    fn stream_reaped(&mut self, stream_id: StreamId) {
+        self.push(EngineOutput::StreamReaped { stream_id });
+    }
+}
+
 #[derive(Clone)]
 struct TestCrypto {
     nonce_seed: u8,
@@ -202,7 +292,7 @@ impl EngineWrapper {
 
     fn run_tick(&mut self, now: Instant, input: EngineInput) {
         match input {
-            EngineInput::BindPeer(peer) => self.engine.bind_peer(peer, &mut self.outputs),
+            EngineInput::BindPeer(peer) => self.engine.bind_peer(now, peer, &mut self.outputs),
             EngineInput::Pair => self.engine.pair(now, &self.crypto),
             EngineInput::Connect => self.engine.connect(now, &self.crypto, &mut self.outputs),
             EngineInput::Unpair => self.engine.unpair(now, &mut self.outputs),
@@ -212,13 +302,15 @@ impl EngineWrapper {
                 code,
                 payload,
             } => {
-                let _ = self.engine.close_stream(stream_id, target, code, payload);
+                let _ = self
+                    .engine
+                    .close_stream(now, stream_id, target, code, payload);
             }
             EngineInput::OutboundData { stream_id, bytes } => {
-                let _ = self.engine.write_stream(stream_id, bytes);
+                let _ = self.engine.write_stream(now, stream_id, bytes);
             }
             EngineInput::OutboundFinished { stream_id } => {
-                let _ = self.engine.finish_stream(stream_id);
+                let _ = self.engine.finish_stream(now, stream_id);
             }
             EngineInput::Incoming(bytes) => {
                 self.engine
@@ -237,11 +329,12 @@ impl EngineWrapper {
 
     fn complete_write(&mut self, write_id: WriteId, result: Result<(), QlError>) {
         self.engine
-            .complete_write(write_id, result, &mut self.outputs);
+            .complete_write(self.engine.state.now, write_id, result, &mut self.outputs);
     }
 
     fn take_next_write(&mut self) -> Option<OutboundWrite> {
-        self.engine.take_next_write(&self.crypto)
+        self.engine
+            .take_next_write(self.engine.state.now, &self.crypto)
     }
 
     fn complete_write_collect(
