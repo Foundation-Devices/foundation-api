@@ -72,75 +72,49 @@ impl Default for MuxConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AckPacket {
-    pub stream_id: StreamId,
-    pub ack: StreamAck,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessagePacket {
-    pub tx_seq: StreamSeq,
-    pub ack: StreamAck,
-    pub frame: StreamFrame,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MuxPacket {
-    Ack(AckPacket),
-    Message(MessagePacket),
-}
-
-impl MuxPacket {
-    pub fn stream_id(&self) -> StreamId {
-        match self {
-            Self::Ack(AckPacket { stream_id, .. }) => *stream_id,
-            Self::Message(MessagePacket { frame, .. }) => frame.stream_id(),
-        }
-    }
-
-    pub fn into_body(self, valid_until: u64) -> StreamBody {
-        match self {
-            Self::Ack(AckPacket { stream_id, ack }) => StreamBody::Ack(StreamAckBody {
-                stream_id,
-                ack,
-                valid_until,
-            }),
-            Self::Message(MessagePacket { tx_seq, ack, frame }) => {
-                StreamBody::Message(StreamMessage {
-                    tx_seq,
-                    ack,
-                    valid_until,
-                    frame,
-                })
-            }
-        }
-    }
-}
-
-impl From<StreamBody> for MuxPacket {
-    fn from(value: StreamBody) -> Self {
-        match value {
-            StreamBody::Ack(StreamAckBody { stream_id, ack, .. }) => {
-                Self::Ack(AckPacket { stream_id, ack })
-            }
-            StreamBody::Message(StreamMessage {
-                tx_seq, ack, frame, ..
-            }) => Self::Message(MessagePacket { tx_seq, ack, frame }),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct OutboundId(pub u64);
+pub enum OutboundCompletion {
+    Ack {
+        stream_id: StreamId,
+        issue_id: u64,
+    },
+    Frame {
+        stream_id: StreamId,
+        tx_seq: StreamSeq,
+        issue_id: u64,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outbound {
-    pub id: OutboundId,
-    pub packet: MuxPacket,
+    pub body: StreamBody,
+    pub completion: OutboundCompletion,
 }
 
 pub trait MuxEventSink {
+    fn opened(
+        &mut self,
+        stream_id: StreamId,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+    );
+
+    fn inbound_data(&mut self, stream_id: StreamId, bytes: Vec<u8>);
+
+    fn inbound_finished(&mut self, stream_id: StreamId);
+
+    fn inbound_failed(&mut self, stream_id: StreamId, error: MuxError);
+
+    fn close(&mut self, frame: StreamFrameClose);
+
+    fn outbound_closed(&mut self, stream_id: StreamId);
+
+    fn outbound_failed(&mut self, stream_id: StreamId, error: MuxError);
+
+    fn reaped(&mut self, stream_id: StreamId);
+}
+
+impl MuxEventSink for () {
     fn opened(
         &mut self,
         _stream_id: StreamId,
@@ -155,14 +129,14 @@ pub trait MuxEventSink {
 
     fn inbound_failed(&mut self, _stream_id: StreamId, _error: MuxError) {}
 
+    fn close(&mut self, _frame: StreamFrameClose) {}
+
     fn outbound_closed(&mut self, _stream_id: StreamId) {}
 
     fn outbound_failed(&mut self, _stream_id: StreamId, _error: MuxError) {}
 
     fn reaped(&mut self, _stream_id: StreamId) {}
 }
-
-impl MuxEventSink for () {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum MuxError {
@@ -178,12 +152,6 @@ pub enum MuxError {
     Cancelled,
     #[error("stream protocol error")]
     StreamProtocol,
-    #[error("stream closed {code:?}")]
-    StreamClosed {
-        target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -270,7 +238,7 @@ impl InboundState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InFlightWriteState {
     Ready,
-    Issued,
+    Issued { issue_id: u64 },
     WaitingRetry { retry_at: Instant },
 }
 
@@ -299,7 +267,7 @@ struct StreamControl {
     ack_dirty: bool,
     ack_immediate: bool,
     ack_delay_deadline: Option<Instant>,
-    ack_outbound_id: Option<OutboundId>,
+    ack_issue_id: Option<u64>,
     last_sent_ack_base: StreamSeq,
     fast_recovery: Option<StreamSeq>,
 }
@@ -314,7 +282,7 @@ impl Default for StreamControl {
             ack_dirty: false,
             ack_immediate: false,
             ack_delay_deadline: None,
-            ack_outbound_id: None,
+            ack_issue_id: None,
             last_sent_ack_base: StreamSeq(0),
             fast_recovery: None,
         }
@@ -440,22 +408,42 @@ impl StreamControl {
         }
     }
 
-    fn mark_write_issued(&mut self, tx_seq: StreamSeq) -> Option<StreamFrame> {
+    fn mark_write_issued(&mut self, tx_seq: StreamSeq, issue_id: u64) -> Option<StreamFrame> {
         let in_flight = self.in_flight.get_mut(&tx_seq)?;
         match in_flight.write_state {
-            InFlightWriteState::Issued => return None,
+            InFlightWriteState::Issued { .. } => return None,
             InFlightWriteState::WaitingRetry { .. } => {
                 in_flight.attempt = in_flight.attempt.saturating_add(1);
             }
             InFlightWriteState::Ready => {}
         }
-        in_flight.write_state = InFlightWriteState::Issued;
+        in_flight.write_state = InFlightWriteState::Issued { issue_id };
         Some(in_flight.frame.clone())
     }
 
-    fn complete_write(&mut self, tx_seq: StreamSeq, retry_at: Instant) {
-        if let Some(in_flight) = self.in_flight.get_mut(&tx_seq) {
-            in_flight.write_state = InFlightWriteState::WaitingRetry { retry_at };
+    fn frame_write_is_issued(&self, tx_seq: StreamSeq, issue_id: u64) -> bool {
+        matches!(
+            self.in_flight.get(&tx_seq).map(|in_flight| in_flight.write_state),
+            Some(InFlightWriteState::Issued {
+                issue_id: current_issue_id,
+            }) if current_issue_id == issue_id
+        )
+    }
+
+    fn complete_write(&mut self, tx_seq: StreamSeq, issue_id: u64, retry_at: Instant) -> bool {
+        let Some(in_flight) = self.in_flight.get_mut(&tx_seq) else {
+            return false;
+        };
+        match in_flight.write_state {
+            InFlightWriteState::Issued {
+                issue_id: current_issue_id,
+            } if current_issue_id == issue_id => {
+                in_flight.write_state = InFlightWriteState::WaitingRetry { retry_at };
+                true
+            }
+            InFlightWriteState::Ready
+            | InFlightWriteState::WaitingRetry { .. }
+            | InFlightWriteState::Issued { .. } => false,
         }
     }
 
@@ -483,7 +471,7 @@ impl StreamControl {
         self.recv_buffer
             .clear_with_base(self.committed_rx_seq().next());
         self.clear_ack_schedule();
-        self.ack_outbound_id = None;
+        self.ack_issue_id = None;
         self.fast_recovery = None;
     }
 
@@ -585,7 +573,7 @@ impl StreamState {
             || !self.control.in_flight.is_empty()
             || !self.control.recv_buffer.is_empty()
             || self.control.ack_dirty
-            || self.control.ack_outbound_id.is_some()
+            || self.control.ack_issue_id.is_some()
         {
             return false;
         }
@@ -678,17 +666,6 @@ impl StreamStore {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActiveOutbound {
-    Ack {
-        stream_id: StreamId,
-    },
-    Frame {
-        stream_id: StreamId,
-        tx_seq: StreamSeq,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutboundSelection {
     Ack,
     InitialFrame { tx_seq: StreamSeq },
@@ -705,10 +682,8 @@ enum StreamDisposition {
 pub struct Mux {
     config: MuxConfig,
     streams: StreamStore,
-    detached_outbound: VecDeque<MuxPacket>,
-    active_outbound: HashMap<OutboundId, ActiveOutbound>,
     next_stream_id: u32,
-    next_outbound_id: u64,
+    next_issue_id: u64,
 }
 
 impl Mux {
@@ -716,10 +691,8 @@ impl Mux {
         Self {
             config,
             streams: StreamStore::default(),
-            detached_outbound: VecDeque::new(),
-            active_outbound: HashMap::new(),
             next_stream_id: 1,
-            next_outbound_id: 1,
+            next_issue_id: 1,
         }
     }
 
@@ -843,12 +816,14 @@ impl Mux {
         Ok(())
     }
 
-    pub fn receive(&mut self, now: Instant, packet: MuxPacket, events: &mut impl MuxEventSink) {
-        match packet {
-            MuxPacket::Ack(AckPacket { stream_id, ack }) => {
+    pub fn receive(&mut self, now: Instant, body: StreamBody, events: &mut impl MuxEventSink) {
+        match body {
+            StreamBody::Ack(StreamAckBody { stream_id, ack, .. }) => {
                 self.process_ack(now, stream_id, ack, events)
             }
-            MuxPacket::Message(MessagePacket { tx_seq, ack, frame }) => {
+            StreamBody::Message(StreamMessage {
+                tx_seq, ack, frame, ..
+            }) => {
                 let stream_id = frame.stream_id();
                 self.process_ack(now, stream_id, ack, events);
 
@@ -875,12 +850,12 @@ impl Mux {
                     match stream.control.buffer_incoming(tx_seq, frame) {
                         BufferIncomingResult::OutOfWindow => {
                             if stream.is_provisional() {
-                                self.enqueue_detached_close(
+                                events.close(StreamFrameClose {
                                     stream_id,
-                                    CloseTarget::Both,
-                                    CloseCode::PROTOCOL,
-                                    Vec::new(),
-                                );
+                                    target: CloseTarget::Both,
+                                    code: CloseCode::PROTOCOL,
+                                    payload: Vec::new(),
+                                });
                                 StreamDisposition::Remove
                             } else {
                                 Self::queue_protocol_close(stream_id, stream, events);
@@ -923,14 +898,7 @@ impl Mux {
         }
     }
 
-    pub fn next_outbound(&mut self, now: Instant) -> Option<Outbound> {
-        if let Some(packet) = self.detached_outbound.pop_front() {
-            return Some(Outbound {
-                id: self.next_outbound_id(),
-                packet,
-            });
-        }
-
+    pub fn next_outbound(&mut self, now: Instant, valid_until: u64) -> Option<Outbound> {
         for offset in 0..self.streams.len() {
             let stream_id = self.streams.id_at_offset(offset)?;
             let selection = {
@@ -941,17 +909,25 @@ impl Mux {
                 continue;
             };
 
-            let id = self.next_outbound_id();
-            let packet = match selection {
+            let issue_id = self.next_issue_id();
+            let outbound = match selection {
                 OutboundSelection::Ack => {
                     let stream = self.streams.get_mut(&stream_id)?;
                     let ack = stream.control.current_ack();
                     stream.control.clear_ack_schedule();
                     stream.control.note_ack_sent(ack);
-                    stream.control.ack_outbound_id = Some(id);
-                    self.active_outbound
-                        .insert(id, ActiveOutbound::Ack { stream_id });
-                    MuxPacket::Ack(AckPacket { stream_id, ack })
+                    stream.control.ack_issue_id = Some(issue_id);
+                    Outbound {
+                        body: StreamBody::Ack(StreamAckBody {
+                            stream_id,
+                            ack,
+                            valid_until,
+                        }),
+                        completion: OutboundCompletion::Ack {
+                            stream_id,
+                            issue_id,
+                        },
+                    }
                 }
                 OutboundSelection::InitialFrame { tx_seq }
                 | OutboundSelection::RetryFrame { tx_seq } => {
@@ -962,15 +938,25 @@ impl Mux {
                         StreamRole::Provisional(_) => continue,
                     };
                     let ack = stream.control.take_piggyback_ack(inbound_alive);
-                    let frame = stream.control.mark_write_issued(tx_seq)?;
-                    self.active_outbound
-                        .insert(id, ActiveOutbound::Frame { stream_id, tx_seq });
-                    MuxPacket::Message(MessagePacket { tx_seq, ack, frame })
+                    let frame = stream.control.mark_write_issued(tx_seq, issue_id)?;
+                    Outbound {
+                        body: StreamBody::Message(StreamMessage {
+                            tx_seq,
+                            ack,
+                            valid_until,
+                            frame,
+                        }),
+                        completion: OutboundCompletion::Frame {
+                            stream_id,
+                            tx_seq,
+                            issue_id,
+                        },
+                    }
                 }
             };
 
             self.streams.advance_cursor_after(stream_id);
-            return Some(Outbound { id, packet });
+            return Some(outbound);
         }
 
         None
@@ -979,42 +965,46 @@ impl Mux {
     pub fn complete_outbound(
         &mut self,
         now: Instant,
-        id: OutboundId,
+        completion: OutboundCompletion,
         result: Result<(), WriteError>,
         events: &mut impl MuxEventSink,
     ) {
-        let Some(active) = self.active_outbound.remove(&id) else {
-            return;
-        };
-
-        match active {
-            ActiveOutbound::Ack { stream_id } => {
+        match completion {
+            OutboundCompletion::Ack {
+                stream_id,
+                issue_id,
+            } => {
                 if let Some(stream) = self.streams.get_mut(&stream_id) {
-                    if stream.control.ack_outbound_id == Some(id) {
-                        stream.control.ack_outbound_id = None;
+                    if stream.control.ack_issue_id == Some(issue_id) {
+                        stream.control.ack_issue_id = None;
                         if result.is_err() {
                             stream.control.note_ack(true);
                         }
-                    }
-                    if stream.can_reap() {
-                        self.streams.remove(&stream_id);
-                        events.reaped(stream_id);
+                        if stream.can_reap() {
+                            self.streams.remove(&stream_id);
+                            events.reaped(stream_id);
+                        }
                     }
                 }
             }
-            ActiveOutbound::Frame { stream_id, tx_seq } => match result {
+            OutboundCompletion::Frame {
+                stream_id,
+                tx_seq,
+                issue_id,
+            } => match result {
                 Ok(()) => {
                     if let Some(stream) = self.streams.get_mut(&stream_id) {
-                        stream
-                            .control
-                            .complete_write(tx_seq, now + self.config.ack_timeout);
+                        let _ = stream.control.complete_write(
+                            tx_seq,
+                            issue_id,
+                            now + self.config.ack_timeout,
+                        );
                     }
                 }
                 Err(WriteError::SendFailed) => {
-                    let should_fail = self
-                        .streams
-                        .get(&stream_id)
-                        .is_some_and(|stream| stream.control.in_flight.contains_key(&tx_seq));
+                    let should_fail = self.streams.get(&stream_id).is_some_and(|stream| {
+                        stream.control.frame_write_is_issued(tx_seq, issue_id)
+                    });
                     if should_fail {
                         self.fail_stream_by_id(stream_id, MuxError::SendFailed, events);
                     }
@@ -1060,12 +1050,12 @@ impl Mux {
                         .is_some_and(StreamState::is_provisional);
                     if still_provisional {
                         self.streams.remove(&stream_id);
-                        self.enqueue_detached_close(
+                        events.close(StreamFrameClose {
                             stream_id,
-                            CloseTarget::Both,
-                            CloseCode::PROTOCOL,
-                            Vec::new(),
-                        );
+                            target: CloseTarget::Both,
+                            code: CloseCode::PROTOCOL,
+                            payload: Vec::new(),
+                        });
                     }
                 }
                 TimerAction::None => {
@@ -1104,7 +1094,6 @@ impl Mux {
     }
 
     pub fn abort(&mut self, error: MuxError, events: &mut impl MuxEventSink) {
-        self.detached_outbound.clear();
         while let Some(stream_id) = self.streams.first_id() {
             self.fail_stream_by_id(stream_id, error.clone(), events);
         }
@@ -1116,10 +1105,10 @@ impl Mux {
         StreamId((seq & !StreamNamespace::BIT) | self.config.local_namespace.bit())
     }
 
-    fn next_outbound_id(&mut self) -> OutboundId {
-        let id = self.next_outbound_id;
-        self.next_outbound_id = id.wrapping_add(1);
-        OutboundId(id)
+    fn next_issue_id(&mut self) -> u64 {
+        let id = self.next_issue_id;
+        self.next_issue_id = id.wrapping_add(1);
+        id
     }
 
     fn select_outbound(&self, stream: &StreamState, now: Instant) -> Option<OutboundSelection> {
@@ -1153,7 +1142,7 @@ impl Mux {
 
         (stream.control.ack_dirty
             && stream.control.ack_immediate
-            && stream.control.ack_outbound_id.is_none())
+            && stream.control.ack_issue_id.is_none())
         .then_some(OutboundSelection::Ack)
     }
 
@@ -1185,7 +1174,7 @@ impl Mux {
                         .iter()
                         .find_map(|(tx_seq, in_flight)| match in_flight.write_state {
                             InFlightWriteState::Ready => None,
-                            InFlightWriteState::Issued
+                            InFlightWriteState::Issued { .. }
                             | InFlightWriteState::WaitingRetry { .. } => {
                                 StreamControl::ack_covers(ack, tx_seq).then_some(tx_seq)
                             }
@@ -1219,15 +1208,11 @@ impl Mux {
                             }
                         }
                     }
-                    StreamFrame::Close(StreamFrameClose {
-                        target,
-                        code,
-                        payload,
-                        ..
-                    }) => {
+                    StreamFrame::Close(frame) => {
+                        let mut changed = false;
                         for side in [StreamSide::Request, StreamSide::Response] {
                             let affects_outbound = matches!(
-                                (target, side),
+                                (frame.target, side),
                                 (CloseTarget::Request, StreamSide::Request)
                                     | (CloseTarget::Response, StreamSide::Response)
                                     | (CloseTarget::Both, _)
@@ -1235,17 +1220,13 @@ impl Mux {
                             if affects_outbound {
                                 if let Some(outbound) = stream.outbound_mut(side) {
                                     if outbound.close() {
-                                        events.outbound_failed(
-                                            stream_id,
-                                            MuxError::StreamClosed {
-                                                target,
-                                                code,
-                                                payload: payload.clone(),
-                                            },
-                                        );
+                                        changed = true;
                                     }
                                 }
                             }
+                        }
+                        if changed {
+                            events.close(frame);
                         }
                     }
                     StreamFrame::Data(_) => {}
@@ -1488,34 +1469,39 @@ impl Mux {
         payload: Vec<u8>,
         events: &mut impl MuxEventSink,
     ) {
-        let error = MuxError::StreamClosed {
+        let frame = StreamFrameClose {
+            stream_id,
             target,
             code,
-            payload: payload.clone(),
+            payload,
         };
+        let mut changed = false;
         if matches!(target, CloseTarget::Request | CloseTarget::Both) {
             if let Some(inbound) = stream.inbound_mut(StreamSide::Request) {
                 if inbound.close() {
-                    events.inbound_failed(stream_id, error.clone());
+                    changed = true;
                 }
             }
             if let Some(outbound) = stream.outbound_mut(StreamSide::Request) {
                 if outbound.close() {
-                    events.outbound_failed(stream_id, error.clone());
+                    changed = true;
                 }
             }
         }
         if matches!(target, CloseTarget::Response | CloseTarget::Both) {
             if let Some(inbound) = stream.inbound_mut(StreamSide::Response) {
                 if inbound.close() {
-                    events.inbound_failed(stream_id, error.clone());
+                    changed = true;
                 }
             }
             if let Some(outbound) = stream.outbound_mut(StreamSide::Response) {
                 if outbound.close() {
-                    events.outbound_failed(stream_id, error.clone());
+                    changed = true;
                 }
             }
+        }
+        if changed {
+            events.close(frame);
         }
     }
 
@@ -1528,7 +1514,6 @@ impl Mux {
         let Some(stream) = self.streams.remove(&stream_id) else {
             return;
         };
-        self.clear_active_outbound_for_stream(stream_id);
 
         match stream.role {
             StreamRole::Initiator(_) => {
@@ -1544,38 +1529,6 @@ impl Mux {
             StreamRole::Provisional(_) => {}
         }
         events.reaped(stream_id);
-    }
-
-    fn clear_active_outbound_for_stream(&mut self, stream_id: StreamId) {
-        self.active_outbound.retain(|_, active| match active {
-            ActiveOutbound::Ack {
-                stream_id: active_stream_id,
-            }
-            | ActiveOutbound::Frame {
-                stream_id: active_stream_id,
-                ..
-            } => *active_stream_id != stream_id,
-        });
-    }
-
-    fn enqueue_detached_close(
-        &mut self,
-        stream_id: StreamId,
-        target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
-    ) {
-        self.detached_outbound
-            .push_back(MuxPacket::Message(MessagePacket {
-                tx_seq: StreamSeq::START,
-                ack: StreamAck::EMPTY,
-                frame: StreamFrame::Close(StreamFrameClose {
-                    stream_id,
-                    target,
-                    code,
-                    payload,
-                }),
-            }));
     }
 }
 
@@ -1795,6 +1748,7 @@ mod tests {
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct Recorder {
         opened: Vec<OpenedStream>,
+        closes: Vec<StreamFrameClose>,
         inbound_data: Vec<InboundChunk>,
         inbound_finished: Vec<StreamId>,
         inbound_failed: Vec<StreamFailure>,
@@ -1829,6 +1783,10 @@ mod tests {
             self.inbound_failed.push(StreamFailure { stream_id, error });
         }
 
+        fn close(&mut self, frame: StreamFrameClose) {
+            self.closes.push(frame);
+        }
+
         fn outbound_closed(&mut self, stream_id: StreamId) {
             self.outbound_closed.push(stream_id);
         }
@@ -1843,10 +1801,11 @@ mod tests {
         }
     }
 
-    fn data_packet(stream_id: StreamId, tx_seq: u32, byte: u8) -> MuxPacket {
-        MuxPacket::Message(MessagePacket {
+    fn data_packet(stream_id: StreamId, tx_seq: u32, byte: u8) -> StreamBody {
+        StreamBody::Message(StreamMessage {
             tx_seq: StreamSeq(tx_seq),
             ack: StreamAck::EMPTY,
+            valid_until: 0,
             frame: StreamFrame::Data(StreamFrameData {
                 stream_id,
                 chunk: BodyChunk {
@@ -1883,12 +1842,13 @@ mod tests {
         let mut mux = Mux::new(MuxConfig::default());
         let stream_id = mux.open_stream(b"open".to_vec(), None);
 
-        let outbound = mux.next_outbound(now).unwrap();
+        let outbound = mux.next_outbound(now, 7).unwrap();
         assert!(matches!(
-            outbound.packet,
-            MuxPacket::Message(MessagePacket {
+            outbound.body,
+            StreamBody::Message(StreamMessage {
                 tx_seq: StreamSeq::START,
                 ack: StreamAck::EMPTY,
+                valid_until: 7,
                 frame: StreamFrame::Open(StreamFrameOpen {
                     stream_id: id,
                     request_head,
@@ -1914,9 +1874,10 @@ mod tests {
 
         mux.receive(
             now,
-            MuxPacket::Message(MessagePacket {
+            StreamBody::Message(StreamMessage {
                 tx_seq: StreamSeq::START,
                 ack: StreamAck::EMPTY,
+                valid_until: 0,
                 frame: StreamFrame::Open(StreamFrameOpen {
                     stream_id,
                     request_head: b"late-open".to_vec(),
@@ -1953,9 +1914,10 @@ mod tests {
         let mut events = Recorder::default();
         mux.receive(
             now,
-            MuxPacket::Message(MessagePacket {
+            StreamBody::Message(StreamMessage {
                 tx_seq: StreamSeq::START,
                 ack: StreamAck::EMPTY,
+                valid_until: 0,
                 frame: StreamFrame::Open(StreamFrameOpen {
                     stream_id,
                     request_head: b"open".to_vec(),
@@ -1967,34 +1929,36 @@ mod tests {
         assert_eq!(events.opened.len(), 1);
 
         mux.on_timer(now + config.ack_delay, &mut ());
-        let ack_write = mux.next_outbound(now + config.ack_delay).unwrap();
+        let ack_write = mux.next_outbound(now + config.ack_delay, 11).unwrap();
         assert!(matches!(
-            ack_write.packet,
-            MuxPacket::Ack(AckPacket {
+            ack_write.body,
+            StreamBody::Ack(StreamAckBody {
                 stream_id: id,
                 ack: StreamAck {
                     base: StreamSeq::START,
                     bitmap: 0,
                 },
+                valid_until: 11,
             }) if id == stream_id
         ));
 
         mux.complete_outbound(
             now + config.ack_delay,
-            ack_write.id,
+            ack_write.completion,
             Err(WriteError::SendFailed),
             &mut (),
         );
-        let retry = mux.next_outbound(now + config.ack_delay).unwrap();
-        assert!(matches!(retry.packet, MuxPacket::Ack(_)));
+        let retry = mux.next_outbound(now + config.ack_delay, 12).unwrap();
+        assert!(matches!(retry.body, StreamBody::Ack(_)));
 
-        mux.complete_outbound(now + config.ack_delay, retry.id, Ok(()), &mut ());
+        mux.complete_outbound(now + config.ack_delay, retry.completion, Ok(()), &mut ());
         mux.write_stream(stream_id, b"resp".to_vec()).unwrap();
-        let response = mux.next_outbound(now).unwrap();
+        let response = mux.next_outbound(now, 13).unwrap();
         assert!(matches!(
-            response.packet,
-            MuxPacket::Message(MessagePacket {
+            response.body,
+            StreamBody::Message(StreamMessage {
                 tx_seq: StreamSeq::START,
+                valid_until: 13,
                 frame: StreamFrame::Data(StreamFrameData {
                     stream_id: id,
                     chunk: BodyChunk { bytes, fin: false },
@@ -2012,37 +1976,38 @@ mod tests {
             ..Default::default()
         });
         let stream_id = mux.open_stream(b"open".to_vec(), None);
-        let open = mux.next_outbound(now).unwrap();
-        mux.complete_outbound(now, open.id, Ok(()), &mut ());
+        let open = mux.next_outbound(now, 1).unwrap();
+        mux.complete_outbound(now, open.completion, Ok(()), &mut ());
         mux.write_stream(stream_id, b"a".to_vec()).unwrap();
         mux.write_stream(stream_id, b"b".to_vec()).unwrap();
         mux.write_stream(stream_id, b"c".to_vec()).unwrap();
         mux.write_stream(stream_id, b"d".to_vec()).unwrap();
-        let first = mux.next_outbound(now).unwrap();
-        let second = mux.next_outbound(now).unwrap();
-        let third = mux.next_outbound(now).unwrap();
-        let fourth = mux.next_outbound(now).unwrap();
-        mux.complete_outbound(now, first.id, Ok(()), &mut ());
-        mux.complete_outbound(now, second.id, Ok(()), &mut ());
-        mux.complete_outbound(now, third.id, Ok(()), &mut ());
-        mux.complete_outbound(now, fourth.id, Ok(()), &mut ());
+        let first = mux.next_outbound(now, 2).unwrap();
+        let second = mux.next_outbound(now, 3).unwrap();
+        let third = mux.next_outbound(now, 4).unwrap();
+        let fourth = mux.next_outbound(now, 5).unwrap();
+        mux.complete_outbound(now, first.completion, Ok(()), &mut ());
+        mux.complete_outbound(now, second.completion, Ok(()), &mut ());
+        mux.complete_outbound(now, third.completion, Ok(()), &mut ());
+        mux.complete_outbound(now, fourth.completion, Ok(()), &mut ());
 
         mux.receive(
             now,
-            MuxPacket::Ack(AckPacket {
+            StreamBody::Ack(StreamAckBody {
                 stream_id,
                 ack: StreamAck {
                     base: StreamSeq(2),
                     bitmap: 0b0000_0110,
                 },
+                valid_until: 0,
             }),
             &mut (),
         );
 
-        let retransmit = mux.next_outbound(now).unwrap();
+        let retransmit = mux.next_outbound(now, 6).unwrap();
         assert!(matches!(
-            retransmit.packet,
-            MuxPacket::Message(MessagePacket {
+            retransmit.body,
+            StreamBody::Message(StreamMessage {
                 tx_seq: StreamSeq(3),
                 frame: StreamFrame::Data(_),
                 ..
@@ -2055,17 +2020,18 @@ mod tests {
         let now = Instant::now();
         let mut mux = Mux::new(MuxConfig::default());
         let stream_id = mux.open_stream(b"open".to_vec(), None);
-        let open = mux.next_outbound(now).unwrap();
+        let open = mux.next_outbound(now, 1).unwrap();
 
         let mut events = Recorder::default();
         mux.receive(
             now,
-            MuxPacket::Message(MessagePacket {
+            StreamBody::Message(StreamMessage {
                 tx_seq: StreamSeq::START,
                 ack: StreamAck {
                     base: StreamSeq::START,
                     bitmap: 0,
                 },
+                valid_until: 0,
                 frame: StreamFrame::Close(StreamFrameClose {
                     stream_id,
                     target: CloseTarget::Both,
@@ -2075,11 +2041,20 @@ mod tests {
             }),
             &mut events,
         );
-        assert_eq!(events.outbound_failed.len(), 1);
-        assert_eq!(events.inbound_failed.len(), 1);
+        assert_eq!(
+            events.closes,
+            vec![StreamFrameClose {
+                stream_id,
+                target: CloseTarget::Both,
+                code: CloseCode::PROTOCOL,
+                payload: Vec::new(),
+            }]
+        );
+        assert!(events.outbound_failed.is_empty());
+        assert!(events.inbound_failed.is_empty());
 
         let mut late = Recorder::default();
-        mux.complete_outbound(now, open.id, Err(WriteError::SendFailed), &mut late);
+        mux.complete_outbound(now, open.completion, Err(WriteError::SendFailed), &mut late);
         assert!(late.outbound_failed.is_empty());
         assert!(late.inbound_failed.is_empty());
     }
