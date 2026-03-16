@@ -11,7 +11,7 @@ use super::{replay_cache::ReplayCache, stream::StreamStore, EngineConfig};
 use crate::{
     identity::QlIdentity,
     wire::{
-        handshake::{Hello, HelloReply, ResponderSecrets},
+        handshake::{Hello, HelloReply, Ready, ResponderSecrets},
         stream::{CloseCode, CloseTarget},
         StreamSeq,
     },
@@ -87,7 +87,18 @@ impl Default for KeepAliveState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitiatorStage {
     WaitingHelloReply,
-    SendingConfirm,
+    WaitingReady,
+}
+
+#[derive(Debug, Clone)]
+pub enum ResponderStage {
+    WaitingConfirm {
+        secrets: ResponderSecrets,
+    },
+    SendingReady {
+        session_key: SymmetricKey,
+        ready: Ready,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,8 +150,8 @@ pub enum PeerSession {
         handshake_token: Token,
         hello: Hello,
         reply: HelloReply,
-        secrets: ResponderSecrets,
         deadline: Instant,
+        stage: ResponderStage,
     },
     Connected {
         session_key: SymmetricKey,

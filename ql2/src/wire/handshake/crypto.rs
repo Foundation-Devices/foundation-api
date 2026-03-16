@@ -5,15 +5,17 @@ use bc_components::{
 use rkyv::{Archive, Serialize};
 
 use super::{
-    verify_signature, ArchivedConfirm, ArchivedHello, ArchivedHelloReply, Confirm, Hello,
-    HelloReply,
+    verify_signature, ArchivedConfirm, ArchivedHello, ArchivedHelloReply, ArchivedReady, Confirm,
+    Hello, HelloReply, Ready, ReadyBody,
 };
 use crate::{
     engine::QlCrypto,
     identity::QlIdentity,
     wire::{
-        encode_value, ensure_not_expired, AsWireMlKemCiphertext, AsWireNonce, AsWireXid,
-        ControlMeta,
+        access_value, deserialize_value, encode_value,
+        encrypted_message::{EncryptedMessage, NONCE_SIZE},
+        ensure_not_expired, AsWireMlKemCiphertext, AsWireNonce, AsWireXid, ControlMeta,
+        QlHeader,
     },
     QlError,
 };
@@ -221,6 +223,32 @@ pub fn finalize_confirm(
         &secrets.responder_secret,
         &transcript,
     ))
+}
+
+pub fn build_ready(
+    header: QlHeader,
+    session_key: &SymmetricKey,
+    meta: ControlMeta,
+    nonce: [u8; NONCE_SIZE],
+) -> Ready {
+    let aad = header.aad();
+    let body_bytes = encode_value(&ReadyBody { meta });
+    Ready {
+        encrypted: EncryptedMessage::encrypt(session_key, body_bytes, &aad, nonce),
+    }
+}
+
+pub fn decrypt_ready(
+    header: &QlHeader,
+    ready: &mut ArchivedReady,
+    session_key: &SymmetricKey,
+) -> Result<ReadyBody, QlError> {
+    let aad = header.aad();
+    let plaintext = ready.encrypted.decrypt(session_key, &aad)?;
+    let body = access_value::<super::ArchivedReadyBody>(plaintext)?;
+    let body = deserialize_value(body)?;
+    ensure_not_expired(body.meta.valid_until)?;
+    Ok(body)
 }
 
 fn handshake_transcript(

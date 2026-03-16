@@ -2068,6 +2068,110 @@ fn handshake_deadline_is_derived_from_peer_state() {
 }
 
 #[test]
+fn initiator_waits_for_ready_before_connecting() {
+    let config = EngineConfig::default();
+    let identity = test_identity();
+    let peer_identity = test_identity();
+    let responder_crypto = TestCrypto::new(104);
+    let mut engine = EngineWrapper::new(
+        Engine::new(
+            config,
+            identity.clone(),
+            Some(peer_from_identity(&peer_identity)),
+        ),
+        TestCrypto::new(103),
+    );
+    let now = Instant::now();
+
+    let _outputs = engine.run_tick_collect(now, EngineInput::Connect);
+
+    let hello_write = engine.take_next_write().unwrap();
+    let hello_record = wire::decode_record(&hello_write.bytes).unwrap();
+    let QlPayload::Handshake(wire::handshake::HandshakeRecord::Hello(hello)) = hello_record.payload
+    else {
+        panic!("expected hello record");
+    };
+    let _outputs = engine.complete_write_collect(hello_write.id, Ok(()));
+
+    let hello_bytes = wire::encode_value(&hello);
+    let hello_view = wire::access_value::<wire::handshake::ArchivedHello>(&hello_bytes).unwrap();
+    let (reply, _secrets) = wire::handshake::respond_hello(
+        &peer_identity,
+        &responder_crypto,
+        identity.xid,
+        &identity.signing_public_key,
+        &identity.encapsulation_public_key,
+        hello_view,
+        wire::ControlMeta {
+            packet_id: PacketId(77),
+            valid_until: wire::now_secs().saturating_add(60),
+        },
+    )
+    .unwrap();
+    let reply_record = QlRecord {
+        header: QlHeader {
+            sender: peer_identity.xid,
+            recipient: identity.xid,
+        },
+        payload: QlPayload::Handshake(wire::handshake::HandshakeRecord::HelloReply(reply)),
+    };
+    let _outputs = engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&reply_record)));
+
+    let confirm_write = engine.take_next_write().unwrap();
+    let _outputs = engine.complete_write_collect(confirm_write.id, Ok(()));
+
+    assert!(matches!(
+        engine.peer.as_ref().map(|peer| &peer.session),
+        Some(PeerSession::Initiator {
+            stage: InitiatorStage::WaitingReady,
+            ..
+        })
+    ));
+    assert!(matches!(
+        engine.open_stream(now, Vec::new(), None, StreamConfig::default()),
+        Err(QlError::MissingSession)
+    ));
+
+    let pending_session_key = match engine.peer.as_ref().map(|peer| &peer.session) {
+        Some(PeerSession::Initiator { session_key, .. }) => session_key.clone(),
+        other => panic!("expected pending initiator session, got {other:?}"),
+    };
+    let ready_record = QlRecord {
+        header: QlHeader {
+            sender: peer_identity.xid,
+            recipient: identity.xid,
+        },
+        payload: QlPayload::Handshake(wire::handshake::HandshakeRecord::Ready(
+            wire::handshake::build_ready(
+                QlHeader {
+                    sender: peer_identity.xid,
+                    recipient: identity.xid,
+                },
+                &pending_session_key,
+                wire::ControlMeta {
+                    packet_id: PacketId(78),
+                    valid_until: wire::now_secs().saturating_add(60),
+                },
+                [9; wire::encrypted_message::NONCE_SIZE],
+            ),
+        )),
+    };
+    let outputs = engine.run_tick_collect(now, EngineInput::Incoming(wire::encode_record(&ready_record)));
+
+    assert!(matches!(
+        engine.peer.as_ref().map(|peer| &peer.session),
+        Some(PeerSession::Connected { .. })
+    ));
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        EngineOutput::PeerStatusChanged {
+            session: PeerSession::Connected { .. },
+            ..
+        }
+    )));
+}
+
+#[test]
 fn keepalive_deadline_is_derived_from_peer_state() {
     let mut config = EngineConfig::default();
     config.keep_alive = Some(KeepAliveConfig {

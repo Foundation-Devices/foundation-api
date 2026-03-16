@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use bc_components::XID;
 pub use state::{
     Engine, EngineState, InitiatorStage, KeepAliveState, OutboundWrite, PeerRecord, PeerSession,
-    Token, WriteId,
+    ResponderStage, Token, WriteId,
 };
 
 use crate::{

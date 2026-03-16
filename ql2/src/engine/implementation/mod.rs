@@ -13,7 +13,8 @@ use crate::{
         state::{ActiveWrite, ControlWritePayload, OutboundWriteKind, TimeoutKind},
         stream::{InFlightWriteState, StreamRole, StreamState},
         Engine, EngineInput, EngineOutput, InitiatorStage, KeepAliveConfig, KeepAliveState,
-        OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, StreamConfig, Token, WriteId,
+        OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, ResponderStage,
+        StreamConfig, Token, WriteId,
     },
     wire::{
         self,
@@ -231,7 +232,7 @@ impl Engine {
         };
         match &mut record.payload {
             wire::ArchivedQlPayload::Handshake(message) => {
-                self.handle_handshake(now, sender, message, crypto, emit)
+                self.handle_handshake(now, sender, &header, message, crypto, emit)
             }
             wire::ArchivedQlPayload::Stream(encrypted) => {
                 stream::handle_stream(self, now, sender, &header, encrypted, emit)
@@ -252,7 +253,8 @@ impl Engine {
         &mut self,
         now: Instant,
         peer: XID,
-        message: &wire::handshake::ArchivedHandshakeRecord,
+        header: &QlHeader,
+        message: &mut wire::handshake::ArchivedHandshakeRecord,
         crypto: &impl QlCrypto,
         emit: &mut impl OutputFn,
     ) {
@@ -264,7 +266,10 @@ impl Engine {
                 handshake::handle_hello_reply(self, now, peer, reply, emit)
             }
             wire::handshake::ArchivedHandshakeRecord::Confirm(confirm) => {
-                handshake::handle_confirm(self, now, peer, confirm, emit)
+                handshake::handle_confirm(self, now, peer, confirm, crypto, emit)
+            }
+            wire::handshake::ArchivedHandshakeRecord::Ready(ready) => {
+                handshake::handle_ready(self, now, peer, header, ready, emit)
             }
         }
     }
@@ -369,10 +374,9 @@ impl Engine {
     fn connected_session_for_token(&self, token: Option<Token>) -> Option<SymmetricKey> {
         let token = token?;
         self.peer.as_ref().and_then(|entry| match &entry.session {
-            PeerSession::Initiator {
-                session_key,
+            PeerSession::Responder {
                 handshake_token,
-                stage: InitiatorStage::SendingConfirm,
+                stage: ResponderStage::SendingReady { session_key, .. },
                 ..
             } if *handshake_token == token => Some(session_key.clone()),
             _ => None,
