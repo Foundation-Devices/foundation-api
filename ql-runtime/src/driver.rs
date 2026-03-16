@@ -9,14 +9,11 @@ use futures_lite::future::poll_fn;
 
 use crate::{
     engine::{Engine, EngineInput, EngineOutput, WriteId},
-    runtime::{
-        command::RuntimeCommand,
-        handle::{InboundByteStream, InboundStream, OutboundByteStream},
-        platform::{PlatformFuture, QlPlatform},
-        HandlerEvent, InboundEvent, OpenedStreamDelivery, Runtime,
-    },
+    command::RuntimeCommand,
+    handle::{InboundByteStream, InboundStream, OutboundByteStream},
+    platform::{PlatformFuture, QlPlatform},
     wire::stream::{BodyChunk, CloseCode, CloseTarget},
-    QlError, StreamId,
+    HandlerEvent, InboundEvent, OpenedStreamDelivery, QlError, Runtime, StreamId,
 };
 
 struct InFlightWrite<'a> {

@@ -14,12 +14,10 @@ use tokio::task::LocalSet;
 use crate::{
     engine::QlCrypto,
     identity::QlIdentity,
-    runtime::{
-        new_runtime, platform::PlatformFuture, HandlerEvent, KeepAliveConfig, PeerSession,
-        RuntimeConfig, RuntimeHandle,
-    },
+    new_runtime,
+    platform::PlatformFuture,
     wire::{self, QlPayload},
-    Peer, QlError,
+    HandlerEvent, KeepAliveConfig, Peer, PeerSession, QlError, RuntimeConfig, RuntimeHandle,
 };
 
 mod heartbeat;
@@ -148,7 +146,7 @@ impl QlCrypto for TestPlatform {
     }
 }
 
-impl crate::runtime::platform::QlPlatform for TestPlatform {
+impl crate::platform::QlPlatform for TestPlatform {
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         let write_delay = self.write_delay;
@@ -370,7 +368,7 @@ async fn assert_no_status_for(
     assert!(res.is_err(), "unexpected status event: {stage:?}");
 }
 
-async fn read_all(mut stream: crate::runtime::InboundByteStream) -> Result<Vec<u8>, QlError> {
+async fn read_all(mut stream: crate::InboundByteStream) -> Result<Vec<u8>, QlError> {
     let mut data = Vec::new();
     while let Some(chunk) = stream.next_chunk().await? {
         data.extend_from_slice(&chunk);

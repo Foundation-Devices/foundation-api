@@ -2,7 +2,7 @@ use async_channel::{Receiver, Sender};
 use futures_lite::future::poll_fn;
 
 use crate::{
-    runtime::{command::RuntimeCommand, InboundEvent, OpenedStreamDelivery, StreamConfig},
+    command::RuntimeCommand, InboundEvent, OpenedStreamDelivery, StreamConfig,
     wire::stream::{CloseCode, CloseTarget},
     Peer, QlError, StreamId,
 };

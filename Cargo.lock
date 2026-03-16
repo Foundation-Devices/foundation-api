@@ -1961,19 +1961,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "ql2"
+name = "ql-engine"
 version = "0.1.0"
 dependencies = [
- "async-channel",
- "atomic-waker",
  "bc-components",
  "chacha20poly1305",
  "dcbor",
+ "rkyv",
+ "thiserror",
+]
+
+[[package]]
+name = "ql-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "bc-components",
  "futures-lite",
  "oneshot",
  "piper",
- "rkyv",
- "thiserror",
+ "ql-engine",
  "tokio",
 ]
 

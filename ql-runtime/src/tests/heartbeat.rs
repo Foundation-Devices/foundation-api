@@ -132,7 +132,7 @@ async fn stream_activity_prevents_keepalive_timeout() {
             response.finish().await.unwrap();
         });
 
-        let stream = handle_b.open_stream(Vec::new(), crate::runtime::StreamConfig::default()).await;
+        let stream = handle_b.open_stream(Vec::new(), crate::StreamConfig::default()).await;
         let mut stream = stream.unwrap();
         stream.request.finish().await.unwrap();
         assert_eq!(stream.response.next_chunk().await.unwrap(), None);
@@ -201,7 +201,7 @@ async fn heartbeat_timeout_disconnects_and_fails_pending_open() {
         drop_flag.store(true, Ordering::Relaxed);
 
         let mut pending = handle_a
-            .open_stream(Vec::new(), crate::runtime::StreamConfig::default())
+            .open_stream(Vec::new(), crate::StreamConfig::default())
             .await
             .unwrap();
 

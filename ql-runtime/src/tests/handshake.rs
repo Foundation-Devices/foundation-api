@@ -94,7 +94,7 @@ async fn confirm_write_failure_disconnects_initiator() {
         });
 
         let mut first = handle_a
-            .open_stream(Vec::new(), crate::runtime::StreamConfig::default())
+            .open_stream(Vec::new(), crate::StreamConfig::default())
             .await
             .unwrap();
         let _ = first.request.finish().await;
@@ -109,7 +109,7 @@ async fn confirm_write_failure_disconnects_initiator() {
         .await;
 
         let mut second = handle_a
-            .open_stream(Vec::new(), crate::runtime::StreamConfig::default())
+            .open_stream(Vec::new(), crate::StreamConfig::default())
             .await
             .unwrap();
         second.request.finish().await.unwrap();

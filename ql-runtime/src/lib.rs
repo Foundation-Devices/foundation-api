@@ -1,6 +1,7 @@
 pub use handle::{
     DuplexStream, InboundByteStream, InboundStream, OutboundByteStream, RuntimeHandle,
 };
+pub use ql_engine::{engine, identity, wire, PacketId, Peer, QlError, StreamId};
 
 pub use crate::engine::{
     EngineConfig, HandshakeInitiator, KeepAliveConfig, PeerSession, StreamConfig,
@@ -15,7 +16,7 @@ pub mod platform;
 mod tests;
 
 use self::platform::QlPlatform;
-use crate::{identity::QlIdentity, StreamId};
+use crate::identity::QlIdentity;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {

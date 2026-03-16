@@ -1,5 +1,5 @@
 use crate::{
-    runtime::{OpenedStreamDelivery, StreamConfig},
+    OpenedStreamDelivery, StreamConfig,
     wire::stream::{CloseCode, CloseTarget},
     Peer, QlError, StreamId,
 };

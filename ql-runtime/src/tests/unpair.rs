@@ -44,7 +44,7 @@ async fn unpair_aborts_active_stream_and_clears_peer() {
         });
 
         let mut stream = handle_a
-            .open_stream(Vec::new(), crate::runtime::StreamConfig::default())
+            .open_stream(Vec::new(), crate::StreamConfig::default())
             .await
             .unwrap();
         stream.request.write_all(&[1, 2, 3, 4]).await.unwrap();
@@ -58,10 +58,10 @@ async fn unpair_aborts_active_stream_and_clears_peer() {
         assert!(matches!(write_err, QlError::Cancelled));
 
         let open_err_a = handle_a
-            .open_stream(Vec::new(), crate::runtime::StreamConfig::default())
+            .open_stream(Vec::new(), crate::StreamConfig::default())
             .await;
         let open_err_b = handle_b
-            .open_stream(Vec::new(), crate::runtime::StreamConfig::default())
+            .open_stream(Vec::new(), crate::StreamConfig::default())
             .await;
 
         assert!(matches!(open_err_a, Err(QlError::NoPeerBound)));

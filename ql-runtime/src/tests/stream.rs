@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::{
-    runtime::StreamConfig,
+    StreamConfig,
     wire::stream::{CloseCode, CloseTarget},
 };
 
