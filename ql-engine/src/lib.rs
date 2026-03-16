@@ -1,6 +1,6 @@
 pub mod engine;
 pub mod identity;
-pub mod mux;
+pub mod stream;
 // pub mod rpc;
 pub mod wire;
 

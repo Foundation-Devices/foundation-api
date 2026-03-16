@@ -1,6 +1,5 @@
 mod implementation;
 pub mod replay_cache;
-mod ring;
 mod state;
 pub(crate) mod stream;
 
