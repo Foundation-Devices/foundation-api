@@ -2,7 +2,6 @@ pub(crate) mod arena;
 pub mod engine;
 pub mod identity;
 pub mod stream;
-// pub mod rpc;
 pub mod wire;
 
 pub use wire::{PacketId, StreamId};

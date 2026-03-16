@@ -1,3 +1,6 @@
+pub(crate) mod internal;
+pub(crate) mod ring;
+
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
@@ -9,9 +12,6 @@ use crate::{
     },
     StreamId,
 };
-
-pub(crate) mod internal;
-pub(crate) mod ring;
 
 #[cfg(test)]
 mod tests;

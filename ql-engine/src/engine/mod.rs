@@ -1,7 +1,6 @@
 mod implementation;
 pub mod replay_cache;
 mod state;
-
 #[cfg(test)]
 mod tests;
 
