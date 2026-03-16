@@ -1,5 +1,9 @@
 pub(crate) mod internal;
 pub(crate) mod ring;
+pub(crate) mod state;
+
+#[cfg(test)]
+mod tests;
 
 use std::time::{Duration, Instant};
 
@@ -7,14 +11,11 @@ use thiserror::Error;
 
 use crate::{
     wire::{
-        stream::{BodyChunk, StreamBody, StreamFrameClose},
+        stream::{BodyChunk, CloseCode, CloseTarget, StreamBody, StreamFrameClose},
         StreamSeq,
     },
     StreamId,
 };
-
-#[cfg(test)]
-mod tests;
 
 pub const STREAM_WINDOW_CAPACITY: usize = 8;
 pub const STREAM_WINDOW_SIZE: u32 = STREAM_WINDOW_CAPACITY as u32;
@@ -192,14 +193,19 @@ pub enum WriteError {
 
 pub struct StreamFsm {
     config: StreamFsmConfig,
-    pub(crate) streams: internal::StreamStore,
+    pub(crate) streams: state::StreamStore,
     next_stream_id: u32,
     next_issue_id: u64,
 }
 
 impl StreamFsm {
     pub fn new(config: StreamFsmConfig) -> Self {
-        internal::new(config)
+        Self {
+            config,
+            streams: state::StreamStore::default(),
+            next_stream_id: 1,
+            next_issue_id: 1,
+        }
     }
 
     pub fn open_stream(
@@ -207,33 +213,33 @@ impl StreamFsm {
         request_head: Vec<u8>,
         request_prefix: Option<BodyChunk>,
     ) -> StreamId {
-        internal::open_stream(self, request_head, request_prefix)
+        self.open_stream_inner(request_head, request_prefix)
     }
 
     pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), StreamError> {
-        internal::write_stream(self, stream_id, bytes)
+        self.write_stream_inner(stream_id, bytes)
     }
 
     pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), StreamError> {
-        internal::finish_stream(self, stream_id)
+        self.finish_stream_inner(stream_id)
     }
 
     pub fn close_stream(
         &mut self,
         stream_id: StreamId,
-        target: crate::wire::stream::CloseTarget,
-        code: crate::wire::stream::CloseCode,
+        target: CloseTarget,
+        code: CloseCode,
         payload: Vec<u8>,
     ) -> Result<(), StreamError> {
-        internal::close_stream(self, stream_id, target, code, payload)
+        self.close_stream_inner(stream_id, target, code, payload)
     }
 
     pub fn receive(&mut self, now: Instant, body: StreamBody, events: &mut impl StreamEventSink) {
-        internal::receive(self, now, body, events);
+        self.receive_inner(now, body, events)
     }
 
     pub fn next_outbound(&mut self, now: Instant, valid_until: u64) -> Option<Outbound> {
-        internal::next_outbound(self, now, valid_until)
+        self.next_outbound_inner(now, valid_until)
     }
 
     pub fn complete_outbound(
@@ -243,19 +249,19 @@ impl StreamFsm {
         result: Result<(), WriteError>,
         events: &mut impl StreamEventSink,
     ) {
-        internal::complete_outbound(self, now, completion, result, events);
+        self.complete_outbound_inner(now, completion, result, events)
     }
 
     pub fn on_timer(&mut self, now: Instant, events: &mut impl StreamEventSink) {
-        internal::on_timer(self, now, events);
+        self.on_timer_inner(now, events)
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        internal::next_deadline(self)
+        self.next_deadline_inner()
     }
 
     pub fn abort(&mut self, error: StreamError, events: &mut impl StreamEventSink) {
-        internal::abort(self, error, events);
+        self.abort_inner(error, events);
     }
 
     pub fn set_local_namespace(&mut self, local_namespace: StreamNamespace) {
