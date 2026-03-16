@@ -133,10 +133,10 @@ impl Engine {
     pub fn new(config: EngineConfig, identity: QlIdentity, peer: Option<Peer>) -> Self {
         let local_namespace = peer
             .as_ref()
-            .map(|peer| state::StreamNamespace::for_local(identity.xid, peer.peer))
+            .map(|peer| stream::StreamNamespace::for_local(identity.xid, peer.peer))
             .map(|namespace| match namespace {
-                state::StreamNamespace::Low => crate::stream::StreamNamespace::Low,
-                state::StreamNamespace::High => crate::stream::StreamNamespace::High,
+                stream::StreamNamespace::Low => crate::stream::StreamNamespace::Low,
+                stream::StreamNamespace::High => crate::stream::StreamNamespace::High,
             })
             .unwrap_or(crate::stream::StreamNamespace::Low);
         Self {

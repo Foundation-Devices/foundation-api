@@ -13,9 +13,9 @@ use std::{
 use bc_components::{SymmetricKey, MLDSA, MLKEM, XID};
 
 use crate::{
-    engine::{state::StreamNamespace, *},
+    engine::*,
     identity::QlIdentity,
-    stream::internal::*,
+    stream::{internal::*, StreamNamespace},
     wire::{self, stream::*, QlHeader, QlPayload, QlRecord, StreamSeq},
     PacketId, Peer,
 };

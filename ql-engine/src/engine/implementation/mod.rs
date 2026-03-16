@@ -425,21 +425,13 @@ impl Engine {
         })
     }
 
+    // todo: this is called in too many places
     fn sync_stream_namespace(&mut self) {
+        use crate::stream::StreamNamespace;
         let namespace = self
             .peer
             .as_ref()
-            .map(|peer| {
-                match crate::engine::state::StreamNamespace::for_local(self.identity.xid, peer.peer)
-                {
-                    crate::engine::state::StreamNamespace::Low => {
-                        crate::stream::StreamNamespace::Low
-                    }
-                    crate::engine::state::StreamNamespace::High => {
-                        crate::stream::StreamNamespace::High
-                    }
-                }
-            })
+            .map(|peer| StreamNamespace::for_local(self.identity.xid, peer.peer))
             .unwrap_or(crate::stream::StreamNamespace::Low);
         self.streams.set_local_namespace(namespace);
     }

@@ -29,6 +29,13 @@ pub enum StreamNamespace {
 impl StreamNamespace {
     const BIT: u32 = 1 << 31;
 
+    pub fn for_local(local: bc_components::XID, peer: bc_components::XID) -> Self {
+        match local.data().cmp(peer.data()) {
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => Self::Low,
+            std::cmp::Ordering::Greater => Self::High,
+        }
+    }
+
     pub fn bit(self) -> u32 {
         match self {
             Self::Low => 0,

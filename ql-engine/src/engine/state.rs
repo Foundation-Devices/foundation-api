@@ -13,7 +13,7 @@ use crate::{
     identity::QlIdentity,
     stream::{self, StreamFsm},
     wire::handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
-    PacketId, Peer, StreamId,
+    PacketId, Peer,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -94,34 +94,6 @@ pub struct RecentReady {
     pub reply: HelloReply,
     pub ready: Ready,
     pub expires_at: Instant,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamNamespace {
-    Low,
-    High,
-}
-
-impl StreamNamespace {
-    const BIT: u32 = 1 << 31;
-
-    pub fn bit(self) -> u32 {
-        match self {
-            Self::Low => 0,
-            Self::High => Self::BIT,
-        }
-    }
-
-    pub fn for_local(local: XID, peer: XID) -> Self {
-        match local.data().cmp(peer.data()) {
-            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => Self::Low,
-            std::cmp::Ordering::Greater => Self::High,
-        }
-    }
-
-    pub fn matches(self, stream_id: StreamId) -> bool {
-        (stream_id.0 & Self::BIT) == self.bit()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -267,10 +239,8 @@ impl EngineState {
         deadline: Instant,
         bytes: Vec<u8>,
     ) {
-        self.control_outbound.push_back(ControlWrite {
-            token,
-            bytes,
-        });
+        self.control_outbound
+            .push_back(ControlWrite { token, bytes });
         self.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Outbound { token },
@@ -291,10 +261,7 @@ impl EngineState {
         bytes: Vec<u8>,
     ) -> Token {
         let token = self.next_token();
-        let message = ControlWrite {
-            token,
-            bytes,
-        };
+        let message = ControlWrite { token, bytes };
         if priority {
             self.control_outbound.push_front(message);
         } else {
