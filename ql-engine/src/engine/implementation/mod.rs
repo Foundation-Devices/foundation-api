@@ -88,7 +88,7 @@ impl Engine {
         };
 
         if let Err(error) = result {
-            if let OutboundWriteKind::Stream { completion, .. } = active.kind {
+            if let OutboundWriteKind::Stream(completion) = active.kind {
                 stream::complete_stream_write(self, now, completion, Err(error.clone()), emit);
             }
 
@@ -120,7 +120,7 @@ impl Engine {
             self.schedule_handshake_retry_after_write(token, now);
         }
 
-        if let OutboundWriteKind::Stream { completion, .. } = active.kind {
+        if let OutboundWriteKind::Stream(completion) = active.kind {
             stream::complete_stream_write(self, now, completion, Ok(()), emit);
         }
     }

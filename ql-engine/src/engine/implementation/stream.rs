@@ -17,10 +17,7 @@ impl<O: OutputFn> EngineStreamSink<'_, O> {
             .active_writes
             .retain(|_, active| match active.kind {
                 OutboundWriteKind::Control => true,
-                OutboundWriteKind::Stream {
-                    stream_id: active_stream_id,
-                    ..
-                } => active_stream_id != stream_id,
+                OutboundWriteKind::Stream(completion) => completion.stream_id() != stream_id,
             });
     }
 
@@ -241,10 +238,6 @@ pub fn take_next_stream_write(
         engine.state.now,
         wire::now_secs().saturating_add(engine.config.packet_expiration.as_secs()),
     )?;
-    let stream_id = match outbound.completion {
-        crate::stream::OutboundCompletion::Ack { stream_id }
-        | crate::stream::OutboundCompletion::Frame { stream_id, .. } => stream_id,
-    };
     let record = encrypt_stream(
         QlHeader {
             sender: engine.identity.xid,
@@ -256,10 +249,7 @@ pub fn take_next_stream_write(
     );
 
     Some(engine.issue_write(
-        OutboundWriteKind::Stream {
-            stream_id,
-            completion: outbound.completion,
-        },
+        OutboundWriteKind::Stream(outbound.completion),
         None,
         wire::encode_record(&record),
     ))

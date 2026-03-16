@@ -11,7 +11,7 @@ use super::{replay_cache::ReplayCache, EngineConfig};
 use crate::{
     arena::{ArenaKey, GenerationalArena},
     identity::QlIdentity,
-    stream::{OutboundCompletion, StreamFsm},
+    stream::{self, StreamFsm},
     wire::{
         handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
         stream::{CloseCode, CloseTarget},
@@ -28,10 +28,7 @@ pub struct WriteId(pub(crate) ArenaKey);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboundWriteKind {
     Control,
-    Stream {
-        stream_id: StreamId,
-        completion: OutboundCompletion,
-    },
+    Stream(stream::OutboundCompletion),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
