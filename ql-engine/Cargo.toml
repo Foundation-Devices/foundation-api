@@ -10,6 +10,11 @@ bc-components = { version = "0.28.0", default-features = false, features = [
   "pqcrypto",
 ] }
 chacha20poly1305 = { version = "0.10.1" }
-dcbor = { version = "0.23.3" }
-rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "unaligned", "pointer_width_32"] }
+rkyv = { version = "0.8", default-features = false, features = [
+  "std",
+  "bytecheck",
+  "little_endian",
+  "unaligned",
+  "pointer_width_32",
+] }
 thiserror = { version = "2" }
