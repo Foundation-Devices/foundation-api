@@ -961,7 +961,7 @@ fn take_next_write_drains_multiple_stream_frames_before_completion() {
     let SingleEngineHarness {
         now,
         mut engine,
-        peer,
+        peer: _,
         session_key,
     } = SingleEngineHarness::connected(EngineConfig::default(), 93, 12);
     let stream_id = engine.streams.next_stream_id();
@@ -1005,7 +1005,7 @@ fn take_next_write_does_not_reissue_outstanding_frame() {
     let SingleEngineHarness {
         now,
         mut engine,
-        peer,
+        peer: _,
         session_key: _session_key,
     } = SingleEngineHarness::connected(EngineConfig::default(), 95, 13);
     let stream_id = engine.streams.next_stream_id();
@@ -1021,7 +1021,7 @@ fn take_next_write_round_robins_across_ready_streams() {
     let SingleEngineHarness {
         now,
         mut engine,
-        peer,
+        peer: _,
         session_key,
     } = SingleEngineHarness::connected(EngineConfig::default(), 97, 14);
     let stream_id1 = engine.streams.next_stream_id();
