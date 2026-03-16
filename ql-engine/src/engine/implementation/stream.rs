@@ -231,7 +231,7 @@ pub fn take_next_stream_write(
     engine: &mut Engine,
     crypto: &impl QlCrypto,
 ) -> Option<OutboundWrite> {
-    let (recipient, session_key) = engine.stream_write_session()?;
+    let (recipient, session_key) = engine.peer_session()?;
     engine.sync_stream_namespace();
 
     let outbound = engine.streams.next_outbound(

@@ -420,7 +420,7 @@ impl Engine {
         }
     }
 
-    fn stream_write_session(&self) -> Option<(XID, SymmetricKey)> {
+    fn peer_session(&self) -> Option<(XID, SymmetricKey)> {
         self.peer.as_ref().and_then(|peer| {
             peer.session
                 .session_key()
@@ -458,6 +458,9 @@ impl Engine {
     }
 
     fn take_next_control_write(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
+        let Some((recipient, session_key)) = self.peer_session() else {
+            return None;
+        };
         while let Some(message) = self.state.control_outbound.pop_front() {
             let bytes = match message.payload {
                 ControlWritePayload::Encoded(bytes) => bytes,
@@ -467,9 +470,6 @@ impl Engine {
                     code,
                     payload,
                 } => {
-                    let Some((recipient, session_key)) = self.stream_write_session() else {
-                        continue;
-                    };
                     let body = StreamBody::Message(StreamMessage {
                         tx_seq: StreamSeq::START,
                         ack: StreamAck::EMPTY,
