@@ -242,7 +242,7 @@ pub fn take_next_stream_write(
         wire::now_secs().saturating_add(engine.config.packet_expiration.as_secs()),
     )?;
     let stream_id = match outbound.completion {
-        crate::stream::OutboundCompletion::Ack { stream_id, .. }
+        crate::stream::OutboundCompletion::Ack { stream_id }
         | crate::stream::OutboundCompletion::Frame { stream_id, .. } => stream_id,
     };
     let record = encrypt_stream(

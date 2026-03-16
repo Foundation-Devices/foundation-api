@@ -71,10 +71,7 @@ impl Default for StreamFsmConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OutboundCompletion {
-    Ack {
-        stream_id: StreamId,
-        issue_id: u64,
-    },
+    Ack { stream_id: StreamId },
     Frame {
         stream_id: StreamId,
         tx_seq: StreamSeq,

@@ -117,16 +117,20 @@ pub enum BufferIncomingResult {
     OutOfWindow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckState {
+    Idle,
+    Delayed { due_at: Instant },
+    Immediate,
+}
+
 #[derive(Debug)]
 pub struct StreamControl {
     pub pending: VecDeque<StreamFrame>,
     pub in_flight: SeqRing<STREAM_WINDOW_CAPACITY, InFlightFrame>,
     pub next_tx_seq: StreamSeq,
     pub recv_buffer: SeqRing<STREAM_WINDOW_CAPACITY, StreamFrame>,
-    pub ack_dirty: bool,
-    pub ack_immediate: bool,
-    pub ack_delay_deadline: Option<Instant>,
-    pub ack_issue_id: Option<u64>,
+    pub ack_state: AckState,
     pub last_sent_ack_base: StreamSeq,
     pub fast_recovery: Option<StreamSeq>,
 }
@@ -138,10 +142,7 @@ impl Default for StreamControl {
             in_flight: SeqRing::new(StreamSeq::START),
             next_tx_seq: StreamSeq::START,
             recv_buffer: SeqRing::new(StreamSeq::START),
-            ack_dirty: false,
-            ack_immediate: false,
-            ack_delay_deadline: None,
-            ack_issue_id: None,
+            ack_state: AckState::Idle,
             last_sent_ack_base: StreamSeq(0),
             fast_recovery: None,
         }
@@ -163,19 +164,25 @@ impl StreamControl {
         self.recv_buffer.base_seq().prev()
     }
 
-    pub fn note_ack(&mut self, immediate: bool) {
-        self.ack_dirty = true;
-        self.ack_immediate |= immediate;
+    pub fn note_ack(&mut self, now: Instant, ack_delay: Duration, immediate: bool) {
+        self.ack_state = match self.ack_state {
+            AckState::Immediate => AckState::Immediate,
+            AckState::Delayed { due_at } if !immediate && !ack_delay.is_zero() => {
+                AckState::Delayed { due_at }
+            }
+            _ if immediate || ack_delay.is_zero() => AckState::Immediate,
+            _ => AckState::Delayed {
+                due_at: now + ack_delay,
+            },
+        };
     }
 
     pub fn clear_ack_schedule(&mut self) {
-        self.ack_dirty = false;
-        self.ack_immediate = false;
-        self.ack_delay_deadline = None;
+        self.ack_state = AckState::Idle;
     }
 
     pub fn maybe_force_ack_for_progress(&mut self) {
-        if !self.ack_dirty {
+        if matches!(self.ack_state, AckState::Idle) {
             return;
         }
         let committed = self.committed_rx_seq();
@@ -184,7 +191,7 @@ impl StreamControl {
             .forward_distance_to(committed)
             .unwrap_or(0);
         if progressed >= STREAM_ACK_EAGER_THRESHOLD {
-            self.ack_immediate = true;
+            self.ack_state = AckState::Immediate;
         }
     }
 
@@ -202,13 +209,20 @@ impl StreamControl {
     }
 
     pub fn take_piggyback_ack(&mut self, inbound_alive: bool) -> StreamAck {
-        if !inbound_alive || !self.ack_dirty {
+        if !inbound_alive || matches!(self.ack_state, AckState::Idle) {
             return StreamAck::EMPTY;
         }
         let ack = self.current_ack();
         self.clear_ack_schedule();
         self.note_ack_sent(ack);
         ack
+    }
+
+    pub fn ack_deadline(&self) -> Option<Instant> {
+        match self.ack_state {
+            AckState::Delayed { due_at } => Some(due_at),
+            AckState::Idle | AckState::Immediate => None,
+        }
     }
 
     pub fn buffer_incoming(
@@ -334,7 +348,6 @@ impl StreamControl {
         self.recv_buffer
             .clear_with_base(self.committed_rx_seq().next());
         self.clear_ack_schedule();
-        self.ack_issue_id = None;
         self.fast_recovery = None;
     }
 
@@ -424,8 +437,7 @@ impl StreamState {
         if !self.control.pending.is_empty()
             || !self.control.in_flight.is_empty()
             || !self.control.recv_buffer.is_empty()
-            || self.control.ack_dirty
-            || self.control.ack_issue_id.is_some()
+            || !matches!(self.control.ack_state, AckState::Idle)
         {
             return false;
         }
@@ -740,23 +752,16 @@ pub fn receive(
                         }
                     }
                     BufferIncomingResult::Duplicate | BufferIncomingResult::AlreadyBuffered => {
-                        stream.control.note_ack(true);
-                        StreamFsm::schedule_stream_ack(
-                            &mut stream.control,
-                            now,
-                            stream_fsm.config.ack_delay,
-                        );
+                        stream
+                            .control
+                            .note_ack(now, stream_fsm.config.ack_delay, true);
                         StreamDisposition::Keep
                     }
                     BufferIncomingResult::Buffered { out_of_order } => {
-                        stream.control.note_ack(out_of_order);
-                        StreamFsm::drain_committed_frames(
-                            now,
-                            stream_id,
-                            stream,
-                            stream_fsm.config.ack_delay,
-                            events,
-                        )
+                        stream
+                            .control
+                            .note_ack(now, stream_fsm.config.ack_delay, out_of_order);
+                        StreamFsm::drain_committed_frames(stream_id, stream, events)
                     }
                 }
             };
@@ -790,28 +795,24 @@ pub fn next_outbound(
             continue;
         };
 
-        let issue_id = stream_fsm.next_issue_id();
         let outbound = match selection {
             OutboundSelection::Ack => {
                 let stream = stream_fsm.streams.get_mut(&stream_id)?;
                 let ack = stream.control.current_ack();
                 stream.control.clear_ack_schedule();
                 stream.control.note_ack_sent(ack);
-                stream.control.ack_issue_id = Some(issue_id);
                 Outbound {
                     body: StreamBody::Ack(StreamAckBody {
                         stream_id,
                         ack,
                         valid_until,
                     }),
-                    completion: OutboundCompletion::Ack {
-                        stream_id,
-                        issue_id,
-                    },
+                    completion: OutboundCompletion::Ack { stream_id },
                 }
             }
             OutboundSelection::InitialFrame { tx_seq }
             | OutboundSelection::RetryFrame { tx_seq } => {
+                let issue_id = stream_fsm.next_issue_id();
                 let stream = stream_fsm.streams.get_mut(&stream_id)?;
                 let inbound_alive = match stream.role {
                     StreamRole::Initiator(state) => !state.response.closed,
@@ -850,20 +851,16 @@ pub fn complete_outbound(
     events: &mut impl StreamEventSink,
 ) {
     match completion {
-        OutboundCompletion::Ack {
-            stream_id,
-            issue_id,
-        } => {
+        OutboundCompletion::Ack { stream_id } => {
             if let Some(stream) = stream_fsm.streams.get_mut(&stream_id) {
-                if stream.control.ack_issue_id == Some(issue_id) {
-                    stream.control.ack_issue_id = None;
-                    if result.is_err() {
-                        stream.control.note_ack(true);
-                    }
-                    if stream.can_reap() {
-                        stream_fsm.streams.remove(&stream_id);
-                        events.reaped(stream_id);
-                    }
+                if result.is_err() {
+                    stream
+                        .control
+                        .note_ack(now, stream_fsm.config.ack_delay, true);
+                }
+                if stream.can_reap() {
+                    stream_fsm.streams.remove(&stream_id);
+                    events.reaped(stream_id);
                 }
             }
         }
@@ -923,11 +920,10 @@ pub fn on_timer(stream_fsm: &mut StreamFsm, now: Instant, events: &mut impl Stre
                 if let Some(stream) = stream_fsm.streams.get_mut(&stream_id) {
                     if stream
                         .control
-                        .ack_delay_deadline
-                        .is_some_and(|deadline| deadline <= now)
+                        .ack_deadline()
+                        .is_some_and(|due_at| due_at <= now)
                     {
-                        stream.control.ack_delay_deadline = None;
-                        stream.control.ack_immediate = true;
+                        stream.control.ack_state = AckState::Immediate;
                     }
                 }
                 index += 1;
@@ -939,7 +935,7 @@ pub fn on_timer(stream_fsm: &mut StreamFsm, now: Instant, events: &mut impl Stre
 pub fn next_deadline(stream_fsm: &StreamFsm) -> Option<Instant> {
     let mut next = None;
     for stream in stream_fsm.streams.values() {
-        if let Some(deadline) = stream.control.ack_delay_deadline {
+        if let Some(deadline) = stream.control.ack_deadline() {
             next = min_deadline(next, deadline);
         }
         for (_, in_flight) in stream.control.in_flight.iter() {
@@ -997,10 +993,7 @@ impl StreamFsm {
             return Some(OutboundSelection::InitialFrame { tx_seq });
         }
 
-        (stream.control.ack_dirty
-            && stream.control.ack_immediate
-            && stream.control.ack_issue_id.is_none())
-        .then_some(OutboundSelection::Ack)
+        matches!(stream.control.ack_state, AckState::Immediate).then_some(OutboundSelection::Ack)
     }
 
     fn process_ack(
@@ -1107,24 +1100,9 @@ impl StreamFsm {
         }
     }
 
-    fn schedule_stream_ack(control: &mut StreamControl, now: Instant, ack_delay: Duration) {
-        if !control.ack_dirty {
-            return;
-        }
-        if control.ack_immediate || ack_delay.is_zero() {
-            control.ack_delay_deadline = None;
-            return;
-        }
-        if control.ack_delay_deadline.is_none() {
-            control.ack_delay_deadline = Some(now + ack_delay);
-        }
-    }
-
     fn drain_committed_frames(
-        now: Instant,
         stream_id: StreamId,
         stream: &mut StreamState,
-        ack_delay: Duration,
         events: &mut impl StreamEventSink,
     ) -> StreamDisposition {
         loop {
@@ -1152,7 +1130,6 @@ impl StreamFsm {
         }
 
         stream.control.maybe_force_ack_for_progress();
-        Self::schedule_stream_ack(&mut stream.control, now, ack_delay);
         if stream.can_reap() {
             StreamDisposition::Reap
         } else {
