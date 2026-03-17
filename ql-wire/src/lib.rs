@@ -155,19 +155,12 @@ pub(crate) fn deserialize_value<T>(
     low::deserialize::<T, WireArchiveError>(value).map_err(|_| WireError::InvalidPayload)
 }
 
-pub(crate) fn ensure_not_expired(valid_until: u64) -> Result<(), WireError> {
-    if now_secs() > valid_until {
+pub(crate) fn ensure_not_expired(meta: &ControlMeta, now_seconds: u64) -> Result<(), WireError> {
+    if now_seconds > meta.valid_until {
         Err(WireError::Expired)
     } else {
         Ok(())
     }
-}
-
-pub fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -175,23 +168,6 @@ mod tests {
     use bc_components::SymmetricKey;
 
     use super::*;
-
-    struct TestCrypto(std::sync::atomic::AtomicU8);
-
-    impl TestCrypto {
-        fn new(seed: u8) -> Self {
-            Self(std::sync::atomic::AtomicU8::new(seed))
-        }
-    }
-
-    impl QlCrypto for TestCrypto {
-        fn fill_random_bytes(&self, data: &mut [u8]) {
-            let seed = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            for (index, byte) in data.iter_mut().enumerate() {
-                *byte = seed.wrapping_add(index as u8);
-            }
-        }
-    }
 
     #[test]
     fn ql_record_round_trip() {
@@ -218,11 +194,5 @@ mod tests {
         let decoded = decode_record(&bytes).unwrap();
         assert_eq!(decoded.header, header);
         assert!(matches!(decoded.payload, QlPayload::Encrypted(_)));
-    }
-
-    #[test]
-    fn now_secs_advances() {
-        let _ = TestCrypto::new(1);
-        assert!(now_secs() > 0);
     }
 }

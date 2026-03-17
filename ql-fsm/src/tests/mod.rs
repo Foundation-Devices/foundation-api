@@ -60,7 +60,7 @@ impl Harness {
         let now = Instant::now();
         let time = FsmTime {
             instant: now,
-            unix_secs: ql_wire::now_secs(),
+            unix_secs: 1_700_000_000,
         };
 
         let mut harness = Self {

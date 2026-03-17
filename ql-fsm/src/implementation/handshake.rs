@@ -62,6 +62,7 @@ pub fn handle_hello(
             fsm.identity.xid,
             &entry.peer.signing_key,
             archived_hello,
+            fsm.state.now.unix_secs,
         )
         .is_err()
         {
@@ -122,6 +123,7 @@ pub fn handle_hello(
                 &peer.encapsulation_key,
                 archived_hello,
                 reply_meta,
+                fsm.state.now.unix_secs,
             );
 
             let (reply, secrets) = match responder {
@@ -221,6 +223,7 @@ pub fn handle_hello_reply(
                 archived_reply,
                 &initiator_secret,
                 confirm_meta,
+                fsm.state.now.unix_secs,
             ) {
                 Ok(result) => result,
                 Err(_) => return Ok(()),
@@ -293,6 +296,7 @@ pub fn handle_confirm(
             reply,
             confirm,
             secrets,
+            fsm.state.now.unix_secs,
         )
         .map(|session_key| (hello.clone(), reply.clone(), *deadline, session_key))
     };
@@ -356,7 +360,12 @@ pub fn handle_ready(
         }
     };
 
-    let body = match wire::handshake::decrypt_ready(header, ready, &session_key) {
+    let body = match wire::handshake::decrypt_ready(
+        header,
+        ready,
+        &session_key,
+        fsm.state.now.unix_secs,
+    ) {
         Ok(body) => body,
         Err(_) => return Ok(()),
     };
@@ -570,6 +579,7 @@ fn recent_ready_resend(
         &recent_ready.hello,
         &recent_ready.reply,
         confirm,
+        fsm.state.now.unix_secs,
     )
     .ok()?;
     Some(recent_ready.ready.clone())

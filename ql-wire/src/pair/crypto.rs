@@ -69,6 +69,7 @@ pub fn decrypt_pair_request(
     identity: &QlIdentity,
     header: &QlHeader,
     request: &mut super::ArchivedPairRequestRecord,
+    now_seconds: u64,
 ) -> Result<PairRequestBody, WireError> {
     let kem_ct = MLKEMCiphertext::try_from(&request.kem_ct)?;
     let aad = pairing_aad(header, &kem_ct);
@@ -77,7 +78,7 @@ pub fn decrypt_pair_request(
         .decapsulate_shared_secret(&kem_ct)
         .map_err(|_| WireError::InvalidPayload)?;
     let decrypted = decrypt_body(&session_key, &mut request.encrypted, &aad)?;
-    ensure_not_expired(decrypted.meta.valid_until)?;
+    ensure_not_expired(&decrypted.meta, now_seconds)?;
     if XID::from_signing_public_key(&decrypted.signing_pub_key) != header.sender {
         return Err(WireError::InvalidPayload);
     }

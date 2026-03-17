@@ -27,7 +27,12 @@ pub fn handle_pair(
     request: &mut ArchivedPairRequestRecord,
     crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
-    let payload = match wire::pair::decrypt_pair_request(&fsm.identity, header, request) {
+    let payload = match wire::pair::decrypt_pair_request(
+        &fsm.identity,
+        header,
+        request,
+        fsm.state.now.unix_secs,
+    ) {
         Ok(payload) => payload,
         Err(_) => return Ok(()),
     };

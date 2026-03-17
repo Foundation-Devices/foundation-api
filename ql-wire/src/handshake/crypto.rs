@@ -88,9 +88,10 @@ pub fn verify_hello(
     responder: XID,
     initiator_signing_key: &MLDSAPublicKey,
     hello: &ArchivedHello,
+    now_seconds: u64,
 ) -> Result<(), WireError> {
     let meta: ControlMeta = (&hello.meta).into();
-    ensure_not_expired(meta.valid_until)?;
+    ensure_not_expired(&meta, now_seconds)?;
     let signature = MLDSASignature::try_from(&hello.signature)?;
     let nonce: Nonce = deserialize_value(&hello.nonce)?;
     let kem_ct = MLKEMCiphertext::try_from(&hello.kem_ct)?;
@@ -106,8 +107,15 @@ pub fn respond_hello(
     initiator_encapsulation_key: &MLKEMPublicKey,
     hello: &ArchivedHello,
     meta: ControlMeta,
+    now_seconds: u64,
 ) -> Result<(HelloReply, ResponderSecrets), WireError> {
-    verify_hello(initiator, identity.xid, initiator_signing_key, hello)?;
+    verify_hello(
+        initiator,
+        identity.xid,
+        initiator_signing_key,
+        hello,
+        now_seconds,
+    )?;
     let hello_meta: ControlMeta = (&hello.meta).into();
     let initiator_nonce: Nonce = deserialize_value(&hello.nonce)?;
     let initiator_kem_ct = MLKEMCiphertext::try_from(&hello.kem_ct)?;
@@ -151,9 +159,10 @@ pub fn build_confirm(
     reply: &ArchivedHelloReply,
     initiator_secret: &SymmetricKey,
     meta: ControlMeta,
+    now_seconds: u64,
 ) -> Result<(Confirm, SymmetricKey), WireError> {
     let reply_meta: ControlMeta = (&reply.meta).into();
-    ensure_not_expired(reply_meta.valid_until)?;
+    ensure_not_expired(&reply_meta, now_seconds)?;
     let reply_nonce: Nonce = deserialize_value(&reply.nonce)?;
     let reply_kem_ct = MLKEMCiphertext::try_from(&reply.kem_ct)?;
     let reply_signature = MLDSASignature::try_from(&reply.signature)?;
@@ -188,6 +197,7 @@ pub fn finalize_confirm(
     reply: &HelloReply,
     confirm: &ArchivedConfirm,
     secrets: &ResponderSecrets,
+    now_seconds: u64,
 ) -> Result<SymmetricKey, WireError> {
     verify_confirm(
         initiator,
@@ -196,6 +206,7 @@ pub fn finalize_confirm(
         hello,
         reply,
         confirm,
+        now_seconds,
     )?;
     Ok(derive_session_key(
         &secrets.initiator_secret,
@@ -220,9 +231,10 @@ pub fn verify_confirm(
     hello: &Hello,
     reply: &HelloReply,
     confirm: &ArchivedConfirm,
+    now_seconds: u64,
 ) -> Result<(), WireError> {
     let confirm_meta: ControlMeta = (&confirm.meta).into();
-    ensure_not_expired(confirm_meta.valid_until)?;
+    ensure_not_expired(&confirm_meta, now_seconds)?;
     let confirm_signature = MLDSASignature::try_from(&confirm.signature)?;
     let transcript = handshake_transcript(
         initiator,
@@ -256,12 +268,13 @@ pub fn decrypt_ready(
     header: &QlHeader,
     ready: &mut ArchivedReady,
     session_key: &SymmetricKey,
+    now_seconds: u64,
 ) -> Result<ReadyBody, WireError> {
     let aad = header.aad();
     let plaintext = ready.encrypted.decrypt(session_key, &aad)?;
     let body = access_value::<super::ArchivedReadyBody>(plaintext)?;
     let body = deserialize_value(body)?;
-    ensure_not_expired(body.meta.valid_until)?;
+    ensure_not_expired(&body.meta, now_seconds)?;
     Ok(body)
 }
 
