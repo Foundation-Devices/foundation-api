@@ -366,7 +366,9 @@ fn tx_selective_ack_keeps_front_gap_pinned() {
     assert!(!fsm.state.tx_ring.contains_key(&SessionSeq(2)));
 
     fsm.write_stream(stream_id, b"x".to_vec()).unwrap();
-    assert!(fsm.next_outbound(now + Duration::from_millis(101)).is_none());
+    assert!(fsm
+        .next_outbound(now + Duration::from_millis(101))
+        .is_none());
 
     fsm.receive(
         now + Duration::from_millis(102),
@@ -459,7 +461,10 @@ fn retransmitted_stream_close_is_idempotent() {
         },
     );
 
-    assert_eq!(fsm.take_next_event(), Some(super::SessionEvent::Readable(stream_id)));
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Readable(stream_id))
+    );
     assert_eq!(
         fsm.take_next_inbound(stream_id),
         Some(super::StreamIncoming::Closed(frame.clone()))

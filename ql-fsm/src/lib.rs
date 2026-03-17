@@ -1,6 +1,7 @@
+mod error;
 pub(crate) mod implementation;
 pub(crate) mod replay_cache;
-pub mod session;
+mod session;
 pub(crate) mod state;
 #[cfg(test)]
 mod tests;
@@ -8,11 +9,11 @@ mod tests;
 use std::time::{Duration, Instant};
 
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey};
+pub use error::QlFsmError;
 use ql_wire::{
     CloseCode, CloseTarget, QlCrypto, QlIdentity, QlRecord, SessionCloseBody, SessionSeq,
-    StreamCloseFrame, StreamId, WireError, XID,
+    StreamCloseFrame, StreamId, XID,
 };
-use thiserror::Error;
 
 use crate::{
     replay_cache::ReplayCache,
@@ -95,28 +96,6 @@ impl Default for QlFsmConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum QlFsmError {
-    #[error("invalid payload")]
-    InvalidPayload,
-    #[error("invalid signature")]
-    InvalidSignature,
-    #[error("expired")]
-    Expired,
-    #[error("no peer bound")]
-    NoPeerBound,
-}
-
-impl From<WireError> for QlFsmError {
-    fn from(value: WireError) -> Self {
-        match value {
-            WireError::InvalidPayload => Self::InvalidPayload,
-            WireError::InvalidSignature => Self::InvalidSignature,
-            WireError::Expired => Self::Expired,
-        }
-    }
-}
-
 pub struct QlFsm {
     pub config: QlFsmConfig,
     pub identity: QlIdentity,
@@ -129,6 +108,7 @@ impl QlFsm {
     pub fn new(
         config: QlFsmConfig,
         identity: QlIdentity,
+        // remove this
         peer: Option<Peer>,
         now: FsmTime,
     ) -> Self {
@@ -236,29 +216,27 @@ impl QlFsm {
         self.take_next_event_inner()
     }
 
-    pub fn open_stream(&mut self) -> Result<StreamId, session::StreamError> {
+    pub fn open_stream(&mut self) -> Result<StreamId, QlFsmError> {
         if self.peer.is_none() {
-            return Err(session::StreamError::SessionClosed);
+            return Err(QlFsmError::NoPeerBound);
         }
-        self.session.open_stream()
+        self.session.open_stream().map_err(Into::into)
     }
 
-    pub fn write_stream(
-        &mut self,
-        stream_id: StreamId,
-        bytes: Vec<u8>,
-    ) -> Result<(), session::StreamError> {
+    pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), QlFsmError> {
         if self.peer.is_none() {
-            return Err(session::StreamError::SessionClosed);
+            return Err(QlFsmError::NoPeerBound);
         }
-        self.session.write_stream(stream_id, bytes)
+        self.session
+            .write_stream(stream_id, bytes)
+            .map_err(Into::into)
     }
 
-    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), session::StreamError> {
+    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), QlFsmError> {
         if self.peer.is_none() {
-            return Err(session::StreamError::SessionClosed);
+            return Err(QlFsmError::NoPeerBound);
         }
-        self.session.finish_stream(stream_id)
+        self.session.finish_stream(stream_id).map_err(Into::into)
     }
 
     pub fn close_stream(
@@ -267,37 +245,45 @@ impl QlFsm {
         target: CloseTarget,
         code: CloseCode,
         payload: Vec<u8>,
-    ) -> Result<(), session::StreamError> {
+    ) -> Result<(), QlFsmError> {
         if self.peer.is_none() {
-            return Err(session::StreamError::SessionClosed);
+            return Err(QlFsmError::NoPeerBound);
         }
-        self.session.close_stream(stream_id, target, code, payload)
+        self.session
+            .close_stream(stream_id, target, code, payload)
+            .map_err(Into::into)
     }
 
-    pub fn queue_ping(&mut self) -> Result<(), session::StreamError> {
+    pub fn queue_ping(&mut self) -> Result<(), QlFsmError> {
+        if self.peer.is_none() {
+            return Err(QlFsmError::NoPeerBound);
+        }
         if self
             .peer
             .as_ref()
             .and_then(|entry| entry.session.session_key())
             .is_none()
         {
-            return Err(session::StreamError::SessionClosed);
+            return Err(QlFsmError::SessionClosed);
         }
-        self.session.queue_ping()
+        self.session.queue_ping().map_err(Into::into)
     }
 
-    pub fn queue_unpair(&mut self) -> Result<(), session::StreamError> {
+    pub fn queue_unpair(&mut self) -> Result<(), QlFsmError> {
+        if self.peer.is_none() {
+            return Err(QlFsmError::NoPeerBound);
+        }
         if self
             .peer
             .as_ref()
             .and_then(|entry| entry.session.session_key())
             .is_none()
         {
-            return Err(session::StreamError::SessionClosed);
+            return Err(QlFsmError::SessionClosed);
         }
         // TODO: keep local peer/session state alive until this queued unpair is acked or times out,
         // then clear it locally. Right now this only requests remote unpair.
-        self.session.queue_unpair()
+        self.session.queue_unpair().map_err(Into::into)
     }
 
     pub fn take_next_session_event(&mut self) -> Option<QlSessionEvent> {
