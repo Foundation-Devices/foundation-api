@@ -30,19 +30,19 @@ pub fn receive(
 
     match &mut archived.payload {
         ArchivedQlPayload::Pair(request) => {
-            super::handle_pair(fsm, &header, request, crypto)?;
+            super::handle_pair(fsm, crypto, &header, request)?;
         }
         ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Hello(archived_hello)) => {
-            super::handle_hello(fsm, &header, archived_hello, crypto)?;
+            super::handle_hello(fsm, crypto, &header, archived_hello)?;
         }
         ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::HelloReply(archived_reply)) => {
             super::handle_hello_reply(fsm, &header, archived_reply)?;
         }
         ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Confirm(archived_confirm)) => {
-            super::handle_confirm(fsm, &header, archived_confirm, crypto)?;
+            super::handle_confirm(fsm, crypto, &header, archived_confirm)?;
         }
         ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Ready(archived_ready)) => {
-            super::handle_ready(fsm, &header, archived_ready, crypto)?;
+            super::handle_ready(fsm, crypto, &header, archived_ready)?;
         }
         ArchivedQlPayload::Encrypted(encrypted) => {
             let Some((_, session_key)) = super::peer_session(fsm) else {

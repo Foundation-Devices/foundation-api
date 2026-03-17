@@ -27,8 +27,8 @@ struct PairingProofData {
 }
 
 pub fn build_pair_request(
-    identity: &QlIdentity,
     crypto: &impl QlCrypto,
+    identity: &QlIdentity,
     recipient: XID,
     recipient_encapsulation_key: &MLKEMPublicKey,
     meta: ControlMeta,
@@ -67,8 +67,8 @@ pub fn build_pair_request(
 }
 
 pub fn decrypt_pair_request(
-    identity: &QlIdentity,
     crypto: &impl QlCrypto,
+    identity: &QlIdentity,
     header: &QlHeader,
     request: &mut super::ArchivedPairRequestRecord,
     now_seconds: u64,

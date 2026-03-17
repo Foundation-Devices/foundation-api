@@ -57,8 +57,8 @@ pub struct ResponderSecrets {
 }
 
 pub fn build_hello(
-    identity: &QlIdentity,
     crypto: &impl QlCrypto,
+    identity: &QlIdentity,
     recipient: XID,
     recipient_encapsulation_key: &MLKEMPublicKey,
     meta: ControlMeta,
@@ -100,8 +100,8 @@ pub fn verify_hello(
 }
 
 pub fn respond_hello(
-    identity: &QlIdentity,
     crypto: &impl QlCrypto,
+    identity: &QlIdentity,
     initiator: XID,
     initiator_signing_key: &MLDSAPublicKey,
     initiator_encapsulation_key: &MLKEMPublicKey,

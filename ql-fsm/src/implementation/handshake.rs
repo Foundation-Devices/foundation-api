@@ -48,9 +48,9 @@ pub fn handle_connect(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlF
 
 pub fn handle_hello(
     fsm: &mut QlFsm,
+    crypto: &impl QlCrypto,
     header: &QlHeader,
     archived_hello: &wire::handshake::ArchivedHello,
-    crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
     let hello: Hello = deserialize_archived(archived_hello)?;
     let action = {
@@ -116,8 +116,8 @@ pub fn handle_hello(
             let peer = fsm.peer.as_ref().map(|entry| entry.peer.clone()).unwrap();
             let reply_meta = next_control_meta(fsm, fsm.config.handshake_timeout);
             let responder = wire::handshake::respond_hello(
-                &fsm.identity,
                 crypto,
+                &fsm.identity,
                 peer.xid,
                 &peer.signing_key,
                 &peer.encapsulation_key,
@@ -261,9 +261,9 @@ pub fn handle_hello_reply(
 
 pub fn handle_confirm(
     fsm: &mut QlFsm,
+    crypto: &impl QlCrypto,
     header: &QlHeader,
     confirm: &wire::handshake::ArchivedConfirm,
-    crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
     if let Some(ready) = recent_ready_resend(fsm, header.sender, confirm) {
         enqueue_handshake(
@@ -345,9 +345,9 @@ pub fn handle_confirm(
 
 pub fn handle_ready(
     fsm: &mut QlFsm,
+    crypto: &impl QlCrypto,
     header: &QlHeader,
     ready: &mut wire::handshake::ArchivedReady,
-    crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
     let session_key = {
         let Some(entry) = fsm.peer.as_ref() else {
@@ -529,8 +529,8 @@ fn start_initiator_handshake(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<
     let peer = entry.peer.clone();
     let meta = next_control_meta(fsm, fsm.config.handshake_timeout);
     let (hello, initiator_secret) = wire::handshake::build_hello(
-        &fsm.identity,
         crypto,
+        &fsm.identity,
         peer.xid,
         &peer.encapsulation_key,
         meta,

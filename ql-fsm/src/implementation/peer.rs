@@ -11,8 +11,8 @@ pub fn handle_pair_local(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), 
     let meta = next_control_meta(fsm, fsm.config.control_expiration);
     let peer = fsm.peer.as_ref().ok_or(QlFsmError::NoPeerBound)?;
     let record = wire::pair::build_pair_request(
-        &fsm.identity,
         crypto,
+        &fsm.identity,
         peer.peer.xid,
         &peer.peer.encapsulation_key,
         meta,
@@ -23,13 +23,13 @@ pub fn handle_pair_local(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), 
 
 pub fn handle_pair(
     fsm: &mut QlFsm,
+    crypto: &impl QlCrypto,
     header: &QlHeader,
     request: &mut ArchivedPairRequestRecord,
-    crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
     let payload = match wire::pair::decrypt_pair_request(
-        &fsm.identity,
         crypto,
+        &fsm.identity,
         header,
         request,
         fsm.state.now.unix_secs,
