@@ -629,7 +629,7 @@ impl SessionFsm {
             return;
         };
 
-        if Self::target_affects_inbound(stream.role, frame.target) {
+        if Self::target_affects_inbound(stream.role, frame.target) && !stream.inbound_closed {
             stream.inbound_closed = true;
             stream.inbound_discarding = false;
             stream.pending_recv.clear();
@@ -640,7 +640,7 @@ impl SessionFsm {
                 .events
                 .push_back(SessionEvent::Readable(frame.stream_id));
         }
-        if Self::target_affects_outbound(stream.role, frame.target) {
+        if Self::target_affects_outbound(stream.role, frame.target) && !stream.outbound_closed {
             stream.outbound_closed = true;
             stream.send_queue.clear();
             self.state

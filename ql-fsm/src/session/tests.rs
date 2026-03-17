@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use ql_wire::{
     encrypted::ping::PingBody, CloseCode, CloseTarget, SessionAck, SessionBody, SessionEnvelope,
-    SessionSeq, StreamFrame,
+    SessionSeq, StreamCloseFrame, StreamFrame,
 };
 
 use super::{SessionFsm, SessionFsmConfig, SessionState};
@@ -336,4 +336,144 @@ fn receive_ping_schedules_ack_without_ping_pong() {
 
     fsm.receive(now + Duration::from_millis(20), ack(2, SessionAck::EMPTY));
     assert!(fsm.next_outbound(now + Duration::from_millis(30)).is_none());
+}
+
+#[test]
+fn tx_selective_ack_keeps_front_gap_pinned() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = fsm.open_stream().unwrap();
+
+    for byte in 0..64u8 {
+        fsm.write_stream(stream_id, vec![byte]).unwrap();
+        let _ = fsm
+            .next_outbound(now + Duration::from_millis(byte as u64))
+            .unwrap();
+    }
+
+    fsm.receive(
+        now + Duration::from_millis(100),
+        ack(
+            1,
+            SessionAck {
+                base: SessionSeq(0),
+                bitmap: u64::MAX ^ 1,
+            },
+        ),
+    );
+
+    assert!(fsm.state.tx_ring.contains_key(&SessionSeq(1)));
+    assert!(!fsm.state.tx_ring.contains_key(&SessionSeq(2)));
+
+    fsm.write_stream(stream_id, b"x".to_vec()).unwrap();
+    assert!(fsm.next_outbound(now + Duration::from_millis(101)).is_none());
+
+    fsm.receive(
+        now + Duration::from_millis(102),
+        ack(
+            2,
+            SessionAck {
+                base: SessionSeq(1),
+                bitmap: 0,
+            },
+        ),
+    );
+
+    assert_eq!(
+        fsm.next_outbound(now + Duration::from_millis(103))
+            .unwrap()
+            .seq,
+        SessionSeq(65)
+    );
+}
+
+#[test]
+fn rx_seq_past_window_closes_protocol() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+
+    fsm.receive(now, ping(65, SessionAck::EMPTY));
+
+    assert_eq!(fsm.session_state(), SessionState::Closed);
+    assert!(matches!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::SessionClosed(close)) if close.code == CloseCode::PROTOCOL
+    ));
+}
+
+#[test]
+fn duplicate_old_packet_seq_is_ignored() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 11);
+    let body = SessionBody::Stream(StreamFrame {
+        stream_id,
+        offset: 0,
+        bytes: b"x".to_vec(),
+        fin: false,
+    });
+
+    fsm.receive(
+        now,
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body: body.clone(),
+        },
+    );
+    let _ = fsm.take_next_event();
+    let _ = fsm.take_next_event();
+    let _ = fsm.take_next_inbound(stream_id);
+
+    fsm.receive(
+        now + Duration::from_millis(1),
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body,
+        },
+    );
+
+    assert!(fsm.take_next_event().is_none());
+    assert!(fsm.take_next_inbound(stream_id).is_none());
+}
+
+#[test]
+fn retransmitted_stream_close_is_idempotent() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = fsm.open_stream().unwrap();
+    let frame = StreamCloseFrame {
+        stream_id,
+        target: CloseTarget::Response,
+        code: CloseCode::CANCELLED,
+        payload: Vec::new(),
+    };
+
+    fsm.receive(
+        now,
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::StreamClose(frame.clone()),
+        },
+    );
+
+    assert_eq!(fsm.take_next_event(), Some(super::SessionEvent::Readable(stream_id)));
+    assert_eq!(
+        fsm.take_next_inbound(stream_id),
+        Some(super::StreamIncoming::Closed(frame.clone()))
+    );
+
+    fsm.receive(
+        now + Duration::from_millis(1),
+        SessionEnvelope {
+            seq: SessionSeq(2),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::StreamClose(frame),
+        },
+    );
+
+    assert!(fsm.take_next_event().is_none());
+    assert!(fsm.take_next_inbound(stream_id).is_none());
 }
