@@ -53,6 +53,8 @@ pub struct SessionFsmConfig {
     pub local_namespace: StreamNamespace,
     pub ack_delay: Duration,
     pub retransmit_timeout: Duration,
+    pub keepalive_interval: Duration,
+    pub peer_timeout: Duration,
 }
 
 impl Default for SessionFsmConfig {
@@ -61,6 +63,8 @@ impl Default for SessionFsmConfig {
             local_namespace: StreamNamespace::Low,
             ack_delay: Duration::from_millis(5),
             retransmit_timeout: Duration::from_millis(150),
+            keepalive_interval: Duration::from_secs(10),
+            peer_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -129,8 +133,8 @@ impl SessionFsm {
         self.close_stream_inner(stream_id, target, code, payload)
     }
 
-    pub fn queue_heartbeat(&mut self) -> Result<(), StreamError> {
-        self.queue_heartbeat_inner()
+    pub fn queue_ping(&mut self) -> Result<(), StreamError> {
+        self.queue_ping_inner()
     }
 
     pub fn queue_unpair(&mut self) -> Result<(), StreamError> {

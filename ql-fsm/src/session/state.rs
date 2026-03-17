@@ -109,7 +109,7 @@ pub struct PendingSessionBody {
 
 #[derive(Debug, Clone, Default)]
 pub struct PendingSessionControl {
-    pub heartbeat: bool,
+    pub ping: bool,
     pub unpair: bool,
     pub close: Option<SessionCloseBody>,
 }
@@ -129,6 +129,8 @@ pub enum AckState {
 
 pub struct SessionFsmState {
     pub now: Instant,
+    pub last_activity_at: Instant,
+    pub last_inbound_at: Instant,
     pub session_state: SessionState,
     pub next_stream_ordinal: u32,
     pub next_seq: SessionSeq,

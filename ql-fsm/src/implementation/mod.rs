@@ -83,15 +83,22 @@ impl QlFsm {
 
     pub fn on_timer_inner(&mut self) {
         handshake::handle_timer(self);
-        self.session.on_timer(self.state.now.instant);
-        self.drain_session_events();
+        if self.peer_session().is_some() {
+            self.session.on_timer(self.state.now.instant);
+            self.drain_session_events();
+        }
     }
 
     pub fn next_deadline_inner(&self) -> Option<std::time::Instant> {
-        [handshake::next_deadline(self), self.session.next_deadline()]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            handshake::next_deadline(self),
+            self.peer_session()
+                .map(|_| self.session.next_deadline())
+                .flatten(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub fn take_next_outbound_inner(&mut self, crypto: &impl QlCrypto) -> Option<QlRecord> {
@@ -169,6 +176,8 @@ impl QlFsm {
                 local_namespace,
                 ack_delay: self.config.session_ack_delay,
                 retransmit_timeout: self.config.session_retransmit_timeout,
+                keepalive_interval: self.config.session_keepalive_interval,
+                peer_timeout: self.config.session_peer_timeout,
             },
             self.state.now.instant,
         );

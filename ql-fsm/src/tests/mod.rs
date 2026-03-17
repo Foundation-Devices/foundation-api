@@ -96,6 +96,8 @@ impl Harness {
                 ),
                 ack_delay: config.session_ack_delay,
                 retransmit_timeout: config.session_retransmit_timeout,
+                keepalive_interval: config.session_keepalive_interval,
+                peer_timeout: config.session_peer_timeout,
             },
             harness.now,
         );
@@ -107,6 +109,8 @@ impl Harness {
                 ),
                 ack_delay: config.session_ack_delay,
                 retransmit_timeout: config.session_retransmit_timeout,
+                keepalive_interval: config.session_keepalive_interval,
+                peer_timeout: config.session_peer_timeout,
             },
             harness.now,
         );

@@ -42,6 +42,8 @@ impl QlFsm {
                     local_namespace,
                     ack_delay: config.session_ack_delay,
                     retransmit_timeout: config.session_retransmit_timeout,
+                    keepalive_interval: config.session_keepalive_interval,
+                    peer_timeout: config.session_peer_timeout,
                 },
                 now.instant,
             ),
@@ -156,7 +158,7 @@ impl QlFsm {
         self.session.close_stream(stream_id, target, code, payload)
     }
 
-    pub fn queue_heartbeat(&mut self) -> Result<(), session::StreamError> {
+    pub fn queue_ping(&mut self) -> Result<(), session::StreamError> {
         if self
             .peer
             .as_ref()
@@ -165,7 +167,7 @@ impl QlFsm {
         {
             return Err(session::StreamError::SessionClosed);
         }
-        self.session.queue_heartbeat()
+        self.session.queue_ping()
     }
 
     pub fn queue_unpair(&mut self) -> Result<(), session::StreamError> {

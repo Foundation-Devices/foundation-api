@@ -205,7 +205,7 @@ mod tests {
                 base: SessionSeq(3),
                 bitmap: 0b101,
             },
-            body: SessionBody::Heartbeat(encrypted::heartbeat::HeartbeatBody),
+            body: SessionBody::Ping(encrypted::ping::PingBody),
         };
         let record = encrypted::encrypt_record(
             header.clone(),

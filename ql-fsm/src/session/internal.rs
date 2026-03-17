@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use ql_wire::{
-    encrypted::{heartbeat::HeartbeatBody, unpair::UnpairBody},
+    encrypted::{ping::PingBody, unpair::UnpairBody},
     CloseCode, CloseTarget, SessionBody, SessionCloseBody, SessionEnvelope, SessionSeq,
     StreamCloseFrame, StreamFrame, StreamId,
 };
@@ -21,6 +21,8 @@ impl SessionFsm {
             config,
             state: SessionFsmState {
                 now,
+                last_activity_at: now,
+                last_inbound_at: now,
                 session_state: SessionState::Open,
                 next_stream_ordinal: 1,
                 next_seq: SessionSeq(1),
@@ -130,9 +132,9 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn queue_heartbeat_inner(&mut self) -> Result<(), StreamError> {
+    pub fn queue_ping_inner(&mut self) -> Result<(), StreamError> {
         self.ensure_session_open()?;
-        self.state.pending_control.heartbeat = true;
+        self.state.pending_control.ping = true;
         Ok(())
     }
 
@@ -154,16 +156,21 @@ impl SessionFsm {
             return;
         }
 
+        self.state.last_activity_at = self.state.now;
+        self.state.last_inbound_at = self.state.now;
+
         let seq = envelope.seq;
         if seq.0 < self.state.rx_ring.base_seq().0 || self.state.rx_ring.contains_key(&seq) {
-            self.schedule_ack(true);
+            if !matches!(envelope.body, SessionBody::Ack) {
+                self.schedule_ack(true);
+            }
             return;
         }
         match self.state.rx_ring.insert(seq, ()) {
             Ok(()) => {
                 let out_of_order = seq != self.state.rx_ring.base_seq();
                 self.state.rx_ring.advance_occupied_front();
-                if !matches!(envelope.body, SessionBody::Heartbeat(_)) {
+                if !matches!(envelope.body, SessionBody::Ack) {
                     self.schedule_ack(out_of_order);
                 }
             }
@@ -174,13 +181,16 @@ impl SessionFsm {
                 return;
             }
             Err(SeqRingInsertError::Occupied) => {
-                self.schedule_ack(true);
+                if !matches!(envelope.body, SessionBody::Ack) {
+                    self.schedule_ack(true);
+                }
                 return;
             }
         }
 
         match envelope.body {
-            SessionBody::Heartbeat(_) => {}
+            SessionBody::Ack => {}
+            SessionBody::Ping(_) => {}
             SessionBody::Unpair(_) => {
                 self.state.session_state = SessionState::Closed;
                 self.clear_streams();
@@ -221,7 +231,8 @@ impl SessionFsm {
             pending,
             sent_at: self.state.now,
         };
-        if !matches!(entry.pending.body, SessionBody::Heartbeat(_)) {
+        self.state.last_activity_at = self.state.now;
+        if entry.pending.retransmit {
             let _ = self.state.tx_ring.insert(seq, entry);
         }
         Some(envelope)
@@ -229,10 +240,26 @@ impl SessionFsm {
 
     pub fn on_timer_inner(&mut self) {
         self.collect_timeouts();
+        if self.state.session_state == SessionState::Closed {
+            return;
+        }
         if let AckState::Delayed { due_at } = self.state.ack_state {
             if due_at <= self.state.now {
                 self.state.ack_state = AckState::Immediate;
             }
+        }
+        if !self.config.peer_timeout.is_zero()
+            && self.state.last_inbound_at + self.config.peer_timeout <= self.state.now
+        {
+            self.fail_session(SessionCloseBody {
+                code: CloseCode::TIMEOUT,
+            });
+            return;
+        }
+        if !self.config.keepalive_interval.is_zero()
+            && self.state.last_activity_at + self.config.keepalive_interval <= self.state.now
+        {
+            self.state.pending_control.ping = true;
         }
     }
 
@@ -248,10 +275,22 @@ impl SessionFsm {
             .iter()
             .map(|(_, entry)| entry.sent_at + self.config.retransmit_timeout)
             .min();
-        [ack_deadline, retransmit_deadline]
-            .into_iter()
-            .flatten()
-            .min()
+        let keepalive_deadline = (self.state.session_state == SessionState::Open
+            && !self.config.keepalive_interval.is_zero()
+            && !self.state.pending_control.ping)
+            .then_some(self.state.last_activity_at + self.config.keepalive_interval);
+        let peer_timeout_deadline = (self.state.session_state == SessionState::Open
+            && !self.config.peer_timeout.is_zero())
+        .then_some(self.state.last_inbound_at + self.config.peer_timeout);
+        [
+            ack_deadline,
+            retransmit_deadline,
+            keepalive_deadline,
+            peer_timeout_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub fn take_next_event_inner(&mut self) -> Option<SessionEvent> {
@@ -285,10 +324,10 @@ impl SessionFsm {
                 priority: true,
             });
         }
-        if self.state.pending_control.heartbeat {
-            self.state.pending_control.heartbeat = false;
+        if self.state.pending_control.ping {
+            self.state.pending_control.ping = false;
             return Some(PendingSessionBody {
-                body: SessionBody::Heartbeat(HeartbeatBody),
+                body: SessionBody::Ping(PingBody),
                 retransmit: false,
                 priority: true,
             });
@@ -318,7 +357,7 @@ impl SessionFsm {
             AckState::Idle => false,
         };
         ack_due.then_some(PendingSessionBody {
-            body: SessionBody::Heartbeat(HeartbeatBody),
+            body: SessionBody::Ack,
             retransmit: false,
             priority: false,
         })
@@ -413,7 +452,8 @@ impl SessionFsm {
                 }
             }
             body => match body {
-                SessionBody::Heartbeat(_) => self.state.pending_control.heartbeat = true,
+                SessionBody::Ack => {}
+                SessionBody::Ping(_) => self.state.pending_control.ping = true,
                 SessionBody::Unpair(_) => self.state.pending_control.unpair = true,
                 SessionBody::Close(close) => self.state.pending_control.close = Some(close),
                 SessionBody::Stream(_) | SessionBody::StreamClose(_) => unreachable!(),

@@ -1,17 +1,25 @@
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    encrypted::heartbeat::HeartbeatBody, CloseCode, CloseTarget, SessionAck, SessionBody,
-    SessionEnvelope, SessionSeq, StreamFrame,
+    encrypted::ping::PingBody, CloseCode, CloseTarget, SessionAck, SessionBody, SessionEnvelope,
+    SessionSeq, StreamFrame,
 };
 
 use super::{SessionFsm, SessionFsmConfig, SessionState};
 
-fn heartbeat(seq: u64, ack: SessionAck) -> SessionEnvelope {
+fn ack(seq: u64, ack: SessionAck) -> SessionEnvelope {
     SessionEnvelope {
         seq: SessionSeq(seq),
         ack,
-        body: SessionBody::Heartbeat(HeartbeatBody),
+        body: SessionBody::Ack,
+    }
+}
+
+fn ping(seq: u64, ack: SessionAck) -> SessionEnvelope {
+    SessionEnvelope {
+        seq: SessionSeq(seq),
+        ack,
+        body: SessionBody::Ping(PingBody),
     }
 }
 
@@ -44,7 +52,7 @@ fn inbound_ack_removes_acked_tx_entries() {
 
     fsm.receive(
         now + Duration::from_millis(1),
-        heartbeat(
+        ack(
             1,
             SessionAck {
                 base: SessionSeq(1),
@@ -133,7 +141,7 @@ fn repeated_outbound_messages_keep_reporting_latest_receive_ack() {
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
-    fsm.receive(now, heartbeat(1, SessionAck::EMPTY));
+    fsm.receive(now, ack(1, SessionAck::EMPTY));
 
     fsm.write_stream(stream_id, b"one".to_vec()).unwrap();
     let first = fsm.next_outbound(now).unwrap();
@@ -295,4 +303,37 @@ fn next_outbound_round_robins_across_ready_streams() {
         scheduled,
         vec![stream_id_a, stream_id_b, stream_id_a, stream_id_b]
     );
+}
+
+#[test]
+fn idle_session_sends_ping_after_keepalive_interval() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionFsmConfig {
+            keepalive_interval: Duration::from_millis(50),
+            ..SessionFsmConfig::default()
+        },
+        now,
+    );
+
+    assert_eq!(fsm.next_deadline(), Some(now + Duration::from_millis(50)));
+    assert!(fsm.next_outbound(now + Duration::from_millis(49)).is_none());
+    fsm.on_timer(now + Duration::from_millis(50));
+
+    let envelope = fsm.next_outbound(now + Duration::from_millis(50)).unwrap();
+    assert!(matches!(envelope.body, SessionBody::Ping(PingBody)));
+}
+
+#[test]
+fn receive_ping_schedules_ack_without_ping_pong() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+
+    fsm.receive(now, ping(1, SessionAck::EMPTY));
+
+    let ack_envelope = fsm.next_outbound(now + Duration::from_millis(10)).unwrap();
+    assert_eq!(ack_envelope.body, SessionBody::Ack);
+
+    fsm.receive(now + Duration::from_millis(20), ack(2, SessionAck::EMPTY));
+    assert!(fsm.next_outbound(now + Duration::from_millis(30)).is_none());
 }

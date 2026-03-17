@@ -9,6 +9,8 @@ fn handshake_deadline_is_derived_from_peer_state() {
         handshake_timeout: Duration::from_secs(5),
         handshake_retry_interval: Duration::from_secs(10),
         max_handshake_retries: 0,
+        session_keepalive_interval: Duration::from_millis(1),
+        session_peer_timeout: Duration::from_millis(2),
         ..QlFsmConfig::default()
     };
     let mut harness = Harness::paired(config);

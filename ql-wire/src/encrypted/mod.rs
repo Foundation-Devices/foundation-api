@@ -8,7 +8,7 @@ use crate::{
 };
 
 pub mod close;
-pub mod heartbeat;
+pub mod ping;
 pub mod stream;
 pub mod unpair;
 
@@ -34,7 +34,8 @@ impl SessionAck {
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum SessionBody {
-    Heartbeat(heartbeat::HeartbeatBody),
+    Ack,
+    Ping(ping::PingBody),
     Unpair(unpair::UnpairBody),
     Stream(stream::StreamFrame),
     StreamClose(stream::StreamCloseFrame),

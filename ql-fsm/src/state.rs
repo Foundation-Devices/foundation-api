@@ -53,6 +53,8 @@ pub struct QlFsmConfig {
     pub control_expiration: Duration,
     pub session_ack_delay: Duration,
     pub session_retransmit_timeout: Duration,
+    pub session_keepalive_interval: Duration,
+    pub session_peer_timeout: Duration,
 }
 
 impl Default for QlFsmConfig {
@@ -64,6 +66,8 @@ impl Default for QlFsmConfig {
             control_expiration: Duration::from_secs(30),
             session_ack_delay: Duration::from_millis(5),
             session_retransmit_timeout: Duration::from_millis(150),
+            session_keepalive_interval: Duration::from_secs(10),
+            session_peer_timeout: Duration::from_secs(30),
         }
     }
 }
