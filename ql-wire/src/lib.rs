@@ -4,17 +4,9 @@
 //! - *Record - unencrypted messages
 //! - *Body - message content after decrypting
 
-use rkyv::{
-    api::{
-        high::{to_bytes_in, HighSerializer, HighValidator},
-        low::{self, LowDeserializer},
-    },
-    bytecheck::CheckBytes,
-    ser::allocator::ArenaHandle,
-    Archive, Deserialize, Portable, Serialize,
-};
 use thiserror::Error;
 
+mod codec;
 pub mod encrypted;
 pub mod encrypted_message;
 pub mod handshake;
@@ -34,9 +26,10 @@ pub use pq::{
     generate_ml_dsa_keypair, generate_ml_kem_keypair, MlDsaPrivateKey, MlDsaPublicKey,
     MlDsaSignature, MlKemCiphertext, MlKemPrivateKey, MlKemPublicKey, SessionKey,
 };
+use rkyv::{Archive, Deserialize, Serialize};
 pub use xid::XID;
 
-pub(crate) type WireArchiveError = rkyv::rancor::Error;
+pub(crate) use self::codec::{access_mut_value, access_value, deserialize_value, encode_value};
 
 #[derive(Debug, Clone)]
 pub struct QlIdentity {
@@ -110,6 +103,26 @@ pub struct QlRecord {
     pub payload: QlPayload,
 }
 
+impl QlRecord {
+    pub fn encode(&self) -> Vec<u8> {
+        encode_value(self)
+    }
+
+    pub fn access(bytes: &[u8]) -> Result<&ArchivedQlRecord, WireError> {
+        access_value(bytes)
+    }
+
+    pub fn access_mut(
+        bytes: &mut [u8],
+    ) -> Result<rkyv::seal::Seal<'_, ArchivedQlRecord>, WireError> {
+        access_mut_value(bytes)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        deserialize_value(Self::access(bytes)?)
+    }
+}
+
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct QlHeader {
     pub sender: XID,
@@ -142,45 +155,6 @@ pub enum QlPayload {
     Handshake(handshake::HandshakeRecord),
     Pair(pair::PairRequestRecord),
     Encrypted(encrypted_message::EncryptedMessage),
-}
-
-pub fn encode_record(record: &QlRecord) -> Vec<u8> {
-    encode_value(record)
-}
-
-pub fn access_record(bytes: &[u8]) -> Result<&ArchivedQlRecord, WireError> {
-    access_value(bytes)
-}
-
-pub fn access_record_mut(
-    bytes: &mut [u8],
-) -> Result<rkyv::seal::Seal<'_, ArchivedQlRecord>, WireError> {
-    rkyv::access_mut::<ArchivedQlRecord, WireArchiveError>(bytes)
-        .map_err(|_| WireError::InvalidPayload)
-}
-
-pub fn decode_record(bytes: &[u8]) -> Result<QlRecord, WireError> {
-    deserialize_value(access_record(bytes)?)
-}
-
-pub(crate) fn encode_value(
-    value: &impl for<'a> Serialize<HighSerializer<Vec<u8>, ArenaHandle<'a>, WireArchiveError>>,
-) -> Vec<u8> {
-    to_bytes_in::<_, WireArchiveError>(value, Vec::new())
-        .expect("wire serialization should not fail")
-}
-
-pub(crate) fn access_value<T>(bytes: &[u8]) -> Result<&T, WireError>
-where
-    T: Portable + for<'a> CheckBytes<HighValidator<'a, WireArchiveError>>,
-{
-    rkyv::access::<T, WireArchiveError>(bytes).map_err(|_| WireError::InvalidPayload)
-}
-
-pub(crate) fn deserialize_value<T>(
-    value: &impl rkyv::Deserialize<T, LowDeserializer<WireArchiveError>>,
-) -> Result<T, WireError> {
-    low::deserialize::<T, WireArchiveError>(value).map_err(|_| WireError::InvalidPayload)
 }
 
 pub(crate) fn ensure_not_expired(meta: &ControlMeta, now_seconds: u64) -> Result<(), WireError> {
@@ -284,8 +258,8 @@ mod tests {
         )
         .unwrap();
 
-        let bytes = encode_record(&record);
-        let decoded = decode_record(&bytes).unwrap();
+        let bytes = record.encode();
+        let decoded = QlRecord::decode(&bytes).unwrap();
         assert_eq!(decoded.header, header);
         assert!(matches!(decoded.payload, QlPayload::Encrypted(_)));
     }

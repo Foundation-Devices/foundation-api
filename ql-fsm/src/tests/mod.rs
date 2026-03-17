@@ -213,14 +213,14 @@ impl Harness {
     fn deliver_to_a(&mut self, record: QlRecord) {
         self.a
             .fsm
-            .receive(self.time(), ql_wire::encode_record(&record), &self.a.crypto)
+            .receive(self.time(), record.encode(), &self.a.crypto)
             .unwrap();
     }
 
     fn deliver_to_b(&mut self, record: QlRecord) {
         self.b
             .fsm
-            .receive(self.time(), ql_wire::encode_record(&record), &self.b.crypto)
+            .receive(self.time(), record.encode(), &self.b.crypto)
             .unwrap();
     }
 

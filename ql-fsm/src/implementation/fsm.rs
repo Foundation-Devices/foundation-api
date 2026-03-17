@@ -12,7 +12,7 @@ pub fn receive(
     mut bytes: Vec<u8>,
     crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
-    let archived = wire::access_record_mut(&mut bytes)?;
+    let archived = wire::QlRecord::access_mut(&mut bytes)?;
     let archived = unsafe { archived.unseal_unchecked() };
     let header: QlHeader = super::deserialize_archived(&archived.header)?;
 
