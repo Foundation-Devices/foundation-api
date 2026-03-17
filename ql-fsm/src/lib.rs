@@ -108,22 +108,15 @@ impl QlFsm {
     pub fn new(
         config: QlFsmConfig,
         identity: QlIdentity,
-        // remove this
-        peer: Option<Peer>,
         now: FsmTime,
     ) -> Self {
-        let peer = peer.map(PeerRecord::new);
-        let local_namespace = peer
-            .as_ref()
-            .map(|peer| session::StreamNamespace::for_local(identity.xid, peer.peer.xid))
-            .unwrap_or(session::StreamNamespace::Low);
         Self {
             config,
             identity,
-            peer,
+            peer: None,
             session: session::SessionFsm::new(
                 session::SessionFsmConfig {
-                    local_namespace,
+                    local_namespace: session::StreamNamespace::Low,
                     ack_delay: config.session_ack_delay,
                     retransmit_timeout: config.session_retransmit_timeout,
                     keepalive_interval: config.session_keepalive_interval,

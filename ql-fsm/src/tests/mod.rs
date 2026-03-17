@@ -63,18 +63,25 @@ impl Harness {
             unix_secs: ql_wire::now_secs(),
         };
 
-        Self {
+        let mut harness = Self {
             now,
             unix_secs: time.unix_secs,
             a: Node {
-                fsm: QlFsm::new(config, identity_a, Some(peer_a), time),
+                fsm: QlFsm::new(config, identity_a, time),
                 crypto: TestCrypto::new(1),
             },
             b: Node {
-                fsm: QlFsm::new(config, identity_b, Some(peer_b), time),
+                fsm: QlFsm::new(config, identity_b, time),
                 crypto: TestCrypto::new(2),
             },
-        }
+        };
+
+        harness.a.fsm.bind_peer(peer_a);
+        harness.b.fsm.bind_peer(peer_b);
+        while harness.a.fsm.take_next_event().is_some() {}
+        while harness.b.fsm.take_next_event().is_some() {}
+
+        harness
     }
 
     fn connected(config: QlFsmConfig) -> Self {
