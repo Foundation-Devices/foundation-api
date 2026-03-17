@@ -115,93 +115,6 @@ pub struct SessionFsm {
 
 impl SessionFsm {
     pub fn new(config: SessionFsmConfig, now: Instant) -> Self {
-        Self::new_inner(config, now)
-    }
-
-    pub fn open_stream(&mut self) -> Result<StreamId, StreamError> {
-        self.open_stream_inner()
-    }
-
-    pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), StreamError> {
-        self.write_stream_inner(stream_id, bytes)
-    }
-
-    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), StreamError> {
-        self.finish_stream_inner(stream_id)
-    }
-
-    pub fn close_stream(
-        &mut self,
-        stream_id: StreamId,
-        target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
-    ) -> Result<(), StreamError> {
-        self.close_stream_inner(stream_id, target, code, payload)
-    }
-
-    pub fn queue_ping(&mut self) -> Result<(), StreamError> {
-        self.queue_ping_inner()
-    }
-
-    pub fn queue_unpair(&mut self) -> Result<(), StreamError> {
-        self.queue_unpair_inner()
-    }
-
-    pub fn receive(&mut self, now: Instant, envelope: SessionEnvelope) {
-        self.state.now = now;
-        self.receive_inner(envelope);
-    }
-
-    pub fn take_next_write(&mut self, now: Instant) -> Option<SessionEnvelope> {
-        self.state.now = now;
-        self.take_next_write_inner()
-    }
-
-    pub fn confirm_write(&mut self, now: Instant, seq: SessionSeq) {
-        self.state.now = now;
-        self.confirm_write_inner(seq);
-    }
-
-    pub fn return_write(&mut self, seq: SessionSeq) {
-        self.return_write_inner(seq);
-    }
-
-    #[cfg(test)]
-    pub fn next_outbound(&mut self, now: Instant) -> Option<SessionEnvelope> {
-        self.state.now = now;
-        self.next_outbound_inner()
-    }
-
-    pub fn on_timer(&mut self, now: Instant) {
-        self.state.now = now;
-        self.on_timer_inner();
-    }
-
-    pub fn next_deadline(&self) -> Option<Instant> {
-        self.next_deadline_inner()
-    }
-
-    pub fn take_next_event(&mut self) -> Option<SessionEvent> {
-        self.take_next_event_inner()
-    }
-
-    pub fn take_next_inbound(&mut self, stream_id: StreamId) -> Option<StreamIncoming> {
-        self.take_next_inbound_inner(stream_id)
-    }
-
-    #[cfg(test)]
-    pub fn session_state(&self) -> SessionState {
-        self.session_state_inner()
-    }
-
-    pub fn has_pending_stream_work(&self) -> bool {
-        self.has_pending_stream_work_inner()
-    }
-}
-
-impl SessionFsm {
-    pub fn new_inner(config: SessionFsmConfig, now: Instant) -> Self {
         Self {
             config,
             state: SessionFsmState {
@@ -222,7 +135,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn open_stream_inner(&mut self) -> Result<StreamId, StreamError> {
+    pub fn open_stream(&mut self) -> Result<StreamId, StreamError> {
         self.ensure_session_open()?;
         let stream_id =
             StreamId(self.config.local_namespace.bit() | self.state.next_stream_ordinal);
@@ -233,11 +146,7 @@ impl SessionFsm {
         Ok(stream_id)
     }
 
-    pub fn write_stream_inner(
-        &mut self,
-        stream_id: StreamId,
-        bytes: Vec<u8>,
-    ) -> Result<(), StreamError> {
+    pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), StreamError> {
         self.ensure_session_open()?;
         if bytes.is_empty() {
             return Ok(());
@@ -265,7 +174,7 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn finish_stream_inner(&mut self, stream_id: StreamId) -> Result<(), StreamError> {
+    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), StreamError> {
         self.ensure_session_open()?;
         let stream = self
             .state
@@ -288,7 +197,7 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn close_stream_inner(
+    pub fn close_stream(
         &mut self,
         stream_id: StreamId,
         target: CloseTarget,
@@ -314,19 +223,20 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn queue_ping_inner(&mut self) -> Result<(), StreamError> {
+    pub fn queue_ping(&mut self) -> Result<(), StreamError> {
         self.ensure_session_open()?;
         self.state.pending_control.ping = true;
         Ok(())
     }
 
-    pub fn queue_unpair_inner(&mut self) -> Result<(), StreamError> {
+    pub fn queue_unpair(&mut self) -> Result<(), StreamError> {
         self.ensure_session_open()?;
         self.state.pending_control.unpair = true;
         Ok(())
     }
 
-    pub fn receive_inner(&mut self, envelope: SessionEnvelope) {
+    pub fn receive(&mut self, now: Instant, envelope: SessionEnvelope) {
+        self.state.now = now;
         self.collect_timeouts();
         self.process_ack(envelope.ack);
 
@@ -386,7 +296,8 @@ impl SessionFsm {
         }
     }
 
-    pub fn take_next_write_inner(&mut self) -> Option<SessionEnvelope> {
+    pub fn take_next_write(&mut self, now: Instant) -> Option<SessionEnvelope> {
+        self.state.now = now;
         self.collect_timeouts();
         let ack = self.state.current_ack();
         if let Some(seq) = self
@@ -428,7 +339,8 @@ impl SessionFsm {
         Some(SessionEnvelope { seq, ack, body })
     }
 
-    pub fn confirm_write_inner(&mut self, seq: SessionSeq) {
+    pub fn confirm_write(&mut self, now: Instant, seq: SessionSeq) {
+        self.state.now = now;
         let Some((retransmit, should_clear_ack)) = self.state.tx_ring.get(&seq).map(|entry| {
             (
                 entry.pending.retransmit,
@@ -466,7 +378,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn return_write_inner(&mut self, seq: SessionSeq) {
+    pub fn return_write(&mut self, seq: SessionSeq) {
         debug_assert!(matches!(
             self.state.tx_ring.get(&seq).map(|entry| entry.state),
             Some(TxState::Issued)
@@ -481,13 +393,14 @@ impl SessionFsm {
     }
 
     #[cfg(test)]
-    pub fn next_outbound_inner(&mut self) -> Option<SessionEnvelope> {
-        let envelope = self.take_next_write_inner()?;
-        self.confirm_write_inner(envelope.seq);
+    pub fn next_outbound(&mut self, now: Instant) -> Option<SessionEnvelope> {
+        let envelope = self.take_next_write(now)?;
+        self.confirm_write(now, envelope.seq);
         Some(envelope)
     }
 
-    pub fn on_timer_inner(&mut self) {
+    pub fn on_timer(&mut self, now: Instant) {
+        self.state.now = now;
         self.collect_timeouts();
         if self.state.session_state == SessionState::Closed {
             return;
@@ -512,7 +425,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn next_deadline_inner(&self) -> Option<Instant> {
+    pub fn next_deadline(&self) -> Option<Instant> {
         let ack_deadline = match self.state.ack_state {
             AckState::Idle => None,
             AckState::Immediate => Some(self.state.now),
@@ -545,11 +458,11 @@ impl SessionFsm {
         .min()
     }
 
-    pub fn take_next_event_inner(&mut self) -> Option<SessionEvent> {
+    pub fn take_next_event(&mut self) -> Option<SessionEvent> {
         self.state.events.pop_front()
     }
 
-    pub fn take_next_inbound_inner(&mut self, stream_id: StreamId) -> Option<StreamIncoming> {
+    pub fn take_next_inbound(&mut self, stream_id: StreamId) -> Option<StreamIncoming> {
         self.state
             .streams
             .get_mut(&stream_id)
@@ -557,11 +470,11 @@ impl SessionFsm {
     }
 
     #[cfg(test)]
-    pub fn session_state_inner(&self) -> SessionState {
+    pub fn session_state(&self) -> SessionState {
         self.state.session_state
     }
 
-    pub fn has_pending_stream_work_inner(&self) -> bool {
+    pub fn has_pending_stream_work(&self) -> bool {
         self.state
             .streams
             .values()
