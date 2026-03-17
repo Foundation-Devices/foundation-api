@@ -102,8 +102,8 @@ impl StreamState {
 #[derive(Debug, Clone)]
 pub struct PendingSessionBody {
     pub body: SessionBody,
+    /// whether the body should be retransmitted after a confirmed send times out without ack
     pub retransmit: bool,
-    pub priority: bool,
 }
 
 #[derive(Debug, Clone, Default)]

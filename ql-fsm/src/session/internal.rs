@@ -207,47 +207,42 @@ impl SessionFsm {
 
     pub fn take_next_write_inner(&mut self) -> Option<SessionEnvelope> {
         self.collect_timeouts();
-        let seq = match self
+        let ack = self.state.current_ack();
+        if let Some(seq) = self
             .state
             .tx_ring
             .iter()
             .find_map(|(seq, entry)| matches!(entry.state, TxState::Pending).then_some(seq))
         {
-            Some(seq) => seq,
-            None => {
-                let pending = self.next_pending_body()?;
-                if !self.state.tx_ring.accepts_seq(self.state.next_seq) {
-                    if pending.priority {
-                        self.requeue_pending_front(pending);
-                    }
-                    return None;
-                }
-
-                let seq = self.state.next_seq;
-                self.state.next_seq = SessionSeq(seq.0 + 1);
-                let _ = self.state.tx_ring.insert(
-                    seq,
-                    TxEntry {
-                        pending,
-                        state: TxState::Pending,
-                    },
-                );
-                seq
-            }
-        };
-
-        let ack = self.state.current_ack();
-        let body = {
             let Some(entry) = self.state.tx_ring.get_mut(&seq) else {
                 return None;
             };
-            debug_assert!(matches!(entry.state, TxState::Pending));
-            if !matches!(entry.state, TxState::Pending) {
-                return None;
-            }
             entry.state = TxState::Issued;
-            entry.pending.body.clone()
-        };
+            return Some(SessionEnvelope {
+                seq,
+                ack,
+                body: entry.pending.body.clone(),
+            });
+        }
+
+        if !self.state.tx_ring.accepts_seq(self.state.next_seq) {
+            return None;
+        }
+
+        let pending = self.next_pending_body()?;
+        let seq = self.state.next_seq;
+        self.state.next_seq = SessionSeq(seq.0 + 1);
+        let body = pending.body.clone();
+        self.state
+            .tx_ring
+            .insert(
+                seq,
+                TxEntry {
+                    pending,
+                    state: TxState::Issued,
+                },
+            )
+            .unwrap();
 
         Some(SessionEnvelope { seq, ack, body })
     }
@@ -395,7 +390,6 @@ impl SessionFsm {
             return Some(PendingSessionBody {
                 body: SessionBody::Close(close),
                 retransmit: true,
-                priority: true,
             });
         }
         if self.state.pending_control.unpair {
@@ -403,7 +397,6 @@ impl SessionFsm {
             return Some(PendingSessionBody {
                 body: SessionBody::Unpair(UnpairBody),
                 retransmit: true,
-                priority: true,
             });
         }
         if self.state.pending_control.ping {
@@ -411,7 +404,6 @@ impl SessionFsm {
             return Some(PendingSessionBody {
                 body: SessionBody::Ping(PingBody),
                 retransmit: false,
-                priority: true,
             });
         }
 
@@ -442,7 +434,6 @@ impl SessionFsm {
                 return Some(PendingSessionBody {
                     body: item.to_session_body(),
                     retransmit: true,
-                    priority: true,
                 });
             }
         }
@@ -455,7 +446,6 @@ impl SessionFsm {
         ack_due.then_some(PendingSessionBody {
             body: SessionBody::Ack,
             retransmit: false,
-            priority: false,
         })
     }
 
