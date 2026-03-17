@@ -1,7 +1,7 @@
 use ql_wire::{self as wire, pair::ArchivedPairRequestRecord, QlCrypto, QlHeader};
 
 use super::handshake;
-use crate::{Peer, PeerRecord, QlFsm, QlFsmError, QlFsmEvent};
+use crate::{state::PeerRecord, Peer, QlFsm, QlFsmError, QlFsmEvent};
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: Peer) {
     bind_peer_record(fsm, peer);

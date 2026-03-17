@@ -12,7 +12,8 @@ use rkyv::api::low;
 
 use crate::{
     session::{SessionFsm, SessionFsmConfig, StreamNamespace},
-    FsmTime, Peer, PeerSession, QlFsm, QlFsmConfig,
+    state::ConnectionState,
+    FsmTime, Peer, QlFsm, QlFsmConfig,
 };
 
 #[derive(Clone)]
@@ -80,11 +81,11 @@ impl Harness {
         let mut harness = Self::paired(config);
         let session_key = SymmetricKey::from_data([7; SymmetricKey::SYMMETRIC_KEY_SIZE]);
 
-        harness.a.fsm.peer.as_mut().unwrap().session = PeerSession::Connected {
+        harness.a.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected {
             session_key: session_key.clone(),
             recent_ready: None,
         };
-        harness.b.fsm.peer.as_mut().unwrap().session = PeerSession::Connected {
+        harness.b.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected {
             session_key,
             recent_ready: None,
         };

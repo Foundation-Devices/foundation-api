@@ -230,8 +230,11 @@ impl QlFsm {
                         .session_events
                         .push_back(QlSessionEvent::SessionClosed(close.clone()));
                     if let Some(entry) = self.peer.as_mut() {
-                        if matches!(entry.session, crate::PeerSession::Connected { .. }) {
-                            entry.session = crate::PeerSession::Disconnected;
+                        if matches!(
+                            entry.session,
+                            crate::state::ConnectionState::Connected { .. }
+                        ) {
+                            entry.session = crate::state::ConnectionState::Disconnected;
                             self.emit_peer_status();
                         }
                     }

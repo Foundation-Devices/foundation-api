@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use super::*;
-use crate::{session::StreamError, HandshakeInitiator, HandshakeResponder};
+use crate::{
+    session::StreamError,
+    state::{ConnectionState, HandshakeInitiator, HandshakeResponder},
+};
 
 #[test]
 fn handshake_deadline_is_derived_from_peer_state() {
@@ -30,14 +33,14 @@ fn handshake_deadline_is_derived_from_peer_state() {
     harness.a.fsm.on_timer(harness.time());
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Initiator { .. })
+        Some(ConnectionState::Initiator { .. })
     ));
 
     harness.advance(Duration::from_secs(1));
     harness.a.fsm.on_timer(harness.time());
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Disconnected)
+        Some(ConnectionState::Disconnected)
     ));
 }
 
@@ -63,7 +66,7 @@ fn initiator_retries_hello_after_retry_interval() {
     assert_eq!(harness.next_outbound_a(), Some(hello));
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Initiator {
+        Some(ConnectionState::Initiator {
             stage: HandshakeInitiator::WaitingHelloReply { retry_count: 1, .. },
             ..
         })
@@ -94,7 +97,7 @@ fn responder_retries_hello_reply_after_retry_interval() {
     assert_eq!(harness.next_outbound_b(), Some(reply));
     assert!(matches!(
         harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Responder {
+        Some(ConnectionState::Responder {
             stage: HandshakeResponder::WaitingConfirm { retry_count: 1, .. },
             ..
         })
@@ -127,7 +130,7 @@ fn initiator_retries_confirm_after_retry_interval() {
     assert_eq!(harness.next_outbound_a(), Some(confirm));
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Initiator {
+        Some(ConnectionState::Initiator {
             stage: HandshakeInitiator::WaitingReady { retry_count: 1, .. },
             ..
         })
@@ -192,7 +195,7 @@ fn responder_resends_ready_for_duplicate_confirm_after_connecting() {
 
     assert!(matches!(
         harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Connected {
+        Some(ConnectionState::Connected {
             recent_ready: Some(_),
             ..
         })
@@ -218,7 +221,7 @@ fn initiator_waits_for_ready_before_connecting() {
 
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Initiator {
+        Some(ConnectionState::Initiator {
             stage: HandshakeInitiator::WaitingReady { .. },
             ..
         })
@@ -234,7 +237,7 @@ fn initiator_waits_for_ready_before_connecting() {
     harness.deliver_to_a(ready);
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Connected { .. })
+        Some(ConnectionState::Connected { .. })
     ));
     assert!(harness.a.fsm.open_stream().is_ok());
 }
@@ -263,7 +266,7 @@ fn handshake_retry_limit_disconnects_initiator() {
     harness.a.fsm.on_timer(harness.time());
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Disconnected)
+        Some(ConnectionState::Disconnected)
     ));
 }
 
@@ -291,10 +294,10 @@ fn simultaneous_connect_converges_to_connected_peers() {
 
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Connected { .. })
+        Some(ConnectionState::Connected { .. })
     ));
     assert!(matches!(
         harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(PeerSession::Connected { .. })
+        Some(ConnectionState::Connected { .. })
     ));
 }

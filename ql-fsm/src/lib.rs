@@ -5,20 +5,115 @@ pub(crate) mod state;
 #[cfg(test)]
 mod tests;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use ql_wire::{CloseCode, CloseTarget, QlCrypto, QlIdentity, QlRecord, StreamId};
-pub use state::{
-    HandshakeInitiator, HandshakeResponder, Peer, PeerRecord, PeerSession, QlFsm, QlFsmConfig,
-    QlFsmError, QlFsmEvent, QlSessionEvent, RecentReady,
+use bc_components::{MLDSAPublicKey, MLKEMPublicKey};
+use ql_wire::{
+    CloseCode, CloseTarget, QlCrypto, QlIdentity, QlRecord, SessionCloseBody, StreamCloseFrame,
+    StreamId, WireError, XID,
 };
+use thiserror::Error;
 
-use crate::{replay_cache::ReplayCache, state::QlFsmState};
+use crate::{
+    replay_cache::ReplayCache,
+    session::SessionFsm,
+    state::{PeerRecord, QlFsmState},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FsmTime {
     pub instant: Instant,
     pub unix_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub xid: XID,
+    pub signing_key: MLDSAPublicKey,
+    pub encapsulation_key: MLKEMPublicKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerStatus {
+    Disconnected,
+    Initiator,
+    Responder,
+    Connected,
+}
+
+#[derive(Debug, Clone)]
+pub enum QlFsmEvent {
+    NewPeer(Peer),
+    ClearPeer,
+    PeerStatusChanged { peer: XID, status: PeerStatus },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QlSessionEvent {
+    Opened(StreamId),
+    Data { stream_id: StreamId, bytes: Vec<u8> },
+    Finished(StreamId),
+    Closed(StreamCloseFrame),
+    WritableClosed(StreamId),
+    Unpaired,
+    SessionClosed(SessionCloseBody),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct QlFsmConfig {
+    pub handshake_timeout: Duration,
+    pub handshake_retry_interval: Duration,
+    pub max_handshake_retries: u8,
+    pub control_expiration: Duration,
+    pub session_ack_delay: Duration,
+    pub session_retransmit_timeout: Duration,
+    pub session_keepalive_interval: Duration,
+    pub session_peer_timeout: Duration,
+}
+
+impl Default for QlFsmConfig {
+    fn default() -> Self {
+        Self {
+            handshake_timeout: Duration::from_secs(5),
+            handshake_retry_interval: Duration::from_millis(750),
+            max_handshake_retries: 3,
+            control_expiration: Duration::from_secs(30),
+            session_ack_delay: Duration::from_millis(5),
+            session_retransmit_timeout: Duration::from_millis(150),
+            session_keepalive_interval: Duration::from_secs(10),
+            session_peer_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum QlFsmError {
+    #[error("invalid payload")]
+    InvalidPayload,
+    #[error("invalid signature")]
+    InvalidSignature,
+    #[error("expired")]
+    Expired,
+    #[error("no peer bound")]
+    NoPeerBound,
+}
+
+impl From<WireError> for QlFsmError {
+    fn from(value: WireError) -> Self {
+        match value {
+            WireError::InvalidPayload => Self::InvalidPayload,
+            WireError::InvalidSignature => Self::InvalidSignature,
+            WireError::Expired => Self::Expired,
+        }
+    }
+}
+
+pub struct QlFsm {
+    pub config: QlFsmConfig,
+    pub identity: QlIdentity,
+    pub(crate) peer: Option<PeerRecord>,
+    pub(crate) session: SessionFsm,
+    pub(crate) state: QlFsmState,
 }
 
 impl QlFsm {

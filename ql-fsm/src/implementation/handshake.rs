@@ -9,7 +9,8 @@ use ql_wire::{
 use rkyv::api::low;
 
 use crate::{
-    HandshakeInitiator, HandshakeResponder, Peer, PeerSession, QlFsm, QlFsmError, RecentReady,
+    state::{ConnectionState, HandshakeInitiator, HandshakeResponder, RecentReady},
+    Peer, QlFsm, QlFsmError,
 };
 
 #[derive(Debug)]
@@ -65,7 +66,7 @@ pub fn handle_hello(
         }
 
         match &entry.session {
-            PeerSession::Initiator {
+            ConnectionState::Initiator {
                 hello: local_hello, ..
             } => {
                 if peer_hello_wins(local_hello, fsm.identity.xid, &hello, header.sender) {
@@ -74,7 +75,7 @@ pub fn handle_hello(
                     HelloAction::Ignore
                 }
             }
-            PeerSession::Responder {
+            ConnectionState::Responder {
                 hello: stored,
                 reply,
                 stage: HandshakeResponder::WaitingConfirm { .. },
@@ -88,7 +89,7 @@ pub fn handle_hello(
                     HelloAction::StartResponder
                 }
             }
-            PeerSession::Disconnected | PeerSession::Connected { .. } => {
+            ConnectionState::Disconnected | ConnectionState::Connected { .. } => {
                 HelloAction::StartResponder
             }
         }
@@ -123,7 +124,7 @@ pub fn handle_hello(
                 Ok(result) => result,
                 Err(_) => {
                     if let Some(entry) = fsm.peer.as_mut() {
-                        entry.session = PeerSession::Disconnected;
+                        entry.session = ConnectionState::Disconnected;
                     }
                     fsm.emit_peer_status();
                     return Ok(());
@@ -133,7 +134,7 @@ pub fn handle_hello(
             let deadline = fsm.state.now.instant + fsm.config.handshake_timeout;
             let retry_at = Some(fsm.state.now.instant + fsm.config.handshake_retry_interval);
             if let Some(entry) = fsm.peer.as_mut() {
-                entry.session = PeerSession::Responder {
+                entry.session = ConnectionState::Responder {
                     hello: hello.clone(),
                     reply: reply.clone(),
                     deadline,
@@ -166,7 +167,7 @@ pub fn handle_hello_reply(
             return Ok(());
         };
         match &entry.session {
-            PeerSession::Initiator {
+            ConnectionState::Initiator {
                 hello,
                 stage:
                     HandshakeInitiator::WaitingHelloReply {
@@ -178,7 +179,7 @@ pub fn handle_hello_reply(
                 initiator_secret: initiator_secret.clone(),
                 responder_signing_key: entry.peer.signing_key.clone(),
             },
-            PeerSession::Initiator {
+            ConnectionState::Initiator {
                 stage:
                     HandshakeInitiator::WaitingReady {
                         reply: stored,
@@ -226,7 +227,7 @@ pub fn handle_hello_reply(
             let deadline = fsm.state.now.instant + fsm.config.handshake_timeout;
             let retry_at = Some(fsm.state.now.instant + fsm.config.handshake_retry_interval);
             if let Some(entry) = fsm.peer.as_mut() {
-                entry.session = PeerSession::Initiator {
+                entry.session = ConnectionState::Initiator {
                     hello,
                     deadline,
                     stage: HandshakeInitiator::WaitingReady {
@@ -272,7 +273,7 @@ pub fn handle_confirm(
         let Some(entry) = fsm.peer.as_ref() else {
             return Ok(());
         };
-        let PeerSession::Responder {
+        let ConnectionState::Responder {
             hello,
             reply,
             deadline,
@@ -315,7 +316,7 @@ pub fn handle_confirm(
     );
 
     if let Some(entry) = fsm.peer.as_mut() {
-        entry.session = PeerSession::Connected {
+        entry.session = ConnectionState::Connected {
             session_key,
             recent_ready: Some(RecentReady {
                 hello,
@@ -345,7 +346,7 @@ pub fn handle_ready(
             return Ok(());
         };
         match &entry.session {
-            PeerSession::Initiator {
+            ConnectionState::Initiator {
                 stage: HandshakeInitiator::WaitingReady { session_key, .. },
                 ..
             } => session_key.clone(),
@@ -362,7 +363,7 @@ pub fn handle_ready(
     }
 
     if let Some(entry) = fsm.peer.as_mut() {
-        entry.session = PeerSession::Connected {
+        entry.session = ConnectionState::Connected {
             session_key,
             recent_ready: None,
         };
@@ -374,14 +375,14 @@ pub fn handle_ready(
 
 pub fn handle_timer(fsm: &mut QlFsm) {
     let now = fsm.state.now.instant;
-    if let Some(PeerSession::Connected {
+    if let Some(ConnectionState::Connected {
         recent_ready: Some(recent_ready),
         ..
     }) = fsm.peer.as_mut().map(|entry| &mut entry.session)
     {
         if recent_ready.expires_at <= now {
             if let Some(entry) = fsm.peer.as_mut() {
-                if let PeerSession::Connected { recent_ready, .. } = &mut entry.session {
+                if let ConnectionState::Connected { recent_ready, .. } = &mut entry.session {
                     *recent_ready = None;
                 }
             }
@@ -393,13 +394,13 @@ pub fn handle_timer(fsm: &mut QlFsm) {
 
     if let Some(entry) = fsm.peer.as_mut() {
         match &mut entry.session {
-            PeerSession::Initiator {
+            ConnectionState::Initiator {
                 hello,
                 deadline,
                 stage,
             } => {
                 if *deadline <= now {
-                    entry.session = PeerSession::Disconnected;
+                    entry.session = ConnectionState::Disconnected;
                     disconnected = true;
                 } else {
                     retry_action = handle_initiator_retry(
@@ -411,19 +412,19 @@ pub fn handle_timer(fsm: &mut QlFsm) {
                         fsm.config.max_handshake_retries,
                     );
                     if retry_action.is_none() && initiator_retries_exhausted(stage) {
-                        entry.session = PeerSession::Disconnected;
+                        entry.session = ConnectionState::Disconnected;
                         disconnected = true;
                     }
                 }
             }
-            PeerSession::Responder {
+            ConnectionState::Responder {
                 reply,
                 deadline,
                 stage,
                 ..
             } => {
                 if *deadline <= now {
-                    entry.session = PeerSession::Disconnected;
+                    entry.session = ConnectionState::Disconnected;
                     disconnected = true;
                 } else {
                     retry_action = handle_responder_retry(
@@ -435,12 +436,12 @@ pub fn handle_timer(fsm: &mut QlFsm) {
                         fsm.config.max_handshake_retries,
                     );
                     if retry_action.is_none() && responder_retries_exhausted(stage) {
-                        entry.session = PeerSession::Disconnected;
+                        entry.session = ConnectionState::Disconnected;
                         disconnected = true;
                     }
                 }
             }
-            PeerSession::Disconnected | PeerSession::Connected { .. } => {}
+            ConnectionState::Disconnected | ConnectionState::Connected { .. } => {}
         }
     }
 
@@ -467,7 +468,7 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
     let mut deadline = None;
     if let Some(entry) = fsm.peer.as_ref() {
         match &entry.session {
-            PeerSession::Initiator {
+            ConnectionState::Initiator {
                 deadline: session_deadline,
                 stage,
                 ..
@@ -475,7 +476,7 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
                 deadline = Some(*session_deadline);
                 deadline = min_optional(deadline, initiator_retry_at(stage));
             }
-            PeerSession::Responder {
+            ConnectionState::Responder {
                 deadline: session_deadline,
                 stage,
                 ..
@@ -483,13 +484,13 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
                 deadline = Some(*session_deadline);
                 deadline = min_optional(deadline, responder_retry_at(stage));
             }
-            PeerSession::Connected {
+            ConnectionState::Connected {
                 recent_ready: Some(recent_ready),
                 ..
             } => {
                 deadline = Some(recent_ready.expires_at);
             }
-            PeerSession::Disconnected | PeerSession::Connected { .. } => {}
+            ConnectionState::Disconnected | ConnectionState::Connected { .. } => {}
         }
     }
     deadline
@@ -499,7 +500,7 @@ fn start_initiator_handshake(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<
     let Some(entry) = fsm.peer.as_ref() else {
         return Err(QlFsmError::NoPeerBound);
     };
-    if !matches!(entry.session, PeerSession::Disconnected) {
+    if !matches!(entry.session, ConnectionState::Disconnected) {
         return Ok(());
     }
 
@@ -516,7 +517,7 @@ fn start_initiator_handshake(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<
     let retry_at = Some(fsm.state.now.instant + fsm.config.handshake_retry_interval);
 
     if let Some(entry) = fsm.peer.as_mut() {
-        entry.session = PeerSession::Initiator {
+        entry.session = ConnectionState::Initiator {
             hello: hello.clone(),
             deadline,
             stage: HandshakeInitiator::WaitingHelloReply {
@@ -538,7 +539,7 @@ fn recent_ready_resend(
     confirm: &wire::handshake::ArchivedConfirm,
 ) -> Option<Ready> {
     let entry = fsm.peer.as_ref()?;
-    let PeerSession::Connected {
+    let ConnectionState::Connected {
         recent_ready: Some(recent_ready),
         ..
     } = &entry.session
