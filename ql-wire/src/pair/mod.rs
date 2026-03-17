@@ -1,9 +1,11 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 use crate::{
-    codec::{push_value, read_exact, read_prefix, read_prefix_mut},
+    codec::{parse_mut, parse_ref, push_value, read_exact},
     control_meta_from_wire, control_meta_to_wire,
-    encrypted_message::{EncryptedMessage, EncryptedMessageMut, EncryptedMessageRef},
+    encrypted_message::{
+        EncryptedMessage, EncryptedMessageMut, EncryptedMessageRef, EncryptedMessageWire,
+    },
     ControlMeta, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext, MlKemPublicKey, WireError, XID,
 };
 
@@ -25,23 +27,15 @@ pub struct PairRequestBody {
     pub proof: MlDsaSignature,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PairRequestRecordRef<'a> {
-    pub kem_ct: MlKemCiphertext,
-    pub encrypted: EncryptedMessageRef<'a>,
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C, packed)]
+pub struct PairRequestRecordWire {
+    pub kem_ct: [u8; MlKemCiphertext::SIZE],
+    pub encrypted: [u8],
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct PairRequestRecordMut<'a> {
-    pub kem_ct: MlKemCiphertext,
-    pub encrypted: EncryptedMessageMut<'a>,
-}
-
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-struct PairRequestHeaderWire {
-    kem_ct: [u8; MlKemCiphertext::SIZE],
-}
+pub type PairRequestRecordRef<'a> = Ref<&'a [u8], PairRequestRecordWire>;
+pub type PairRequestRecordMut<'a> = Ref<&'a mut [u8], PairRequestRecordWire>;
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
@@ -53,47 +47,51 @@ struct PairRequestBodyWire {
     proof: [u8; MlDsaSignature::SIZE],
 }
 
+impl PairRequestRecordWire {
+    pub fn parse(bytes: &[u8]) -> Result<PairRequestRecordRef<'_>, WireError> {
+        let record: PairRequestRecordRef<'_> = parse_ref(bytes)?;
+        let _ = record.encrypted()?;
+        Ok(record)
+    }
+
+    pub fn parse_mut(bytes: &mut [u8]) -> Result<PairRequestRecordMut<'_>, WireError> {
+        let mut record: PairRequestRecordMut<'_> = parse_mut(bytes)?;
+        let _ = record.encrypted_mut()?;
+        Ok(record)
+    }
+
+    pub fn kem_ct(&self) -> MlKemCiphertext {
+        MlKemCiphertext::from_data(self.kem_ct)
+    }
+
+    pub fn encrypted(&self) -> Result<EncryptedMessageRef<'_>, WireError> {
+        EncryptedMessageWire::parse(&self.encrypted)
+    }
+
+    pub fn encrypted_mut(&mut self) -> Result<EncryptedMessageMut<'_>, WireError> {
+        EncryptedMessageWire::parse_mut(&mut self.encrypted)
+    }
+
+    pub fn to_pair_request_record(&self) -> PairRequestRecord {
+        PairRequestRecord {
+            kem_ct: self.kem_ct(),
+            encrypted: self
+                .encrypted()
+                .expect("validated pair request")
+                .to_encrypted_message(),
+        }
+    }
+}
+
 impl PairRequestRecord {
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
-        let header = PairRequestHeaderWire {
-            kem_ct: *self.kem_ct.as_bytes(),
-        };
-        push_value(out, &header);
-        self.encrypted.encode_into(out);
-    }
-}
-
-impl<'a> PairRequestRecordRef<'a> {
-    pub(crate) fn parse(bytes: &'a [u8]) -> Result<Self, WireError> {
-        let (header, payload) = read_prefix::<PairRequestHeaderWire>(bytes)?;
-        Ok(Self {
-            kem_ct: MlKemCiphertext::from_data(header.kem_ct),
-            encrypted: EncryptedMessageRef::parse(payload)?,
-        })
-    }
-
-    pub fn to_owned(&self) -> PairRequestRecord {
-        PairRequestRecord {
-            kem_ct: self.kem_ct,
-            encrypted: self.encrypted.to_owned(),
-        }
-    }
-}
-
-impl<'a> PairRequestRecordMut<'a> {
-    pub(crate) fn parse(bytes: &'a mut [u8]) -> Result<Self, WireError> {
-        let (header, payload) = read_prefix_mut::<PairRequestHeaderWire>(bytes)?;
-        Ok(Self {
-            kem_ct: MlKemCiphertext::from_data(header.kem_ct),
-            encrypted: EncryptedMessageMut::parse(payload)?,
-        })
-    }
-
-    pub fn to_owned(&self) -> PairRequestRecord {
-        PairRequestRecord {
-            kem_ct: self.kem_ct,
-            encrypted: self.encrypted.to_owned(),
-        }
+        push_value(
+            out,
+            &PairRequestHeaderWire {
+                kem_ct: *self.kem_ct.as_bytes(),
+            },
+        );
+        out.extend_from_slice(&self.encrypted.encode());
     }
 }
 
@@ -119,4 +117,10 @@ impl PairRequestBody {
             proof: MlDsaSignature::from_data(wire.proof),
         })
     }
+}
+
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
+#[repr(C)]
+struct PairRequestHeaderWire {
+    kem_ct: [u8; MlKemCiphertext::SIZE],
 }

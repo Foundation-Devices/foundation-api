@@ -42,15 +42,8 @@ pub struct ReadyBody {
     pub meta: ControlMeta,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadyRef<'a> {
-    pub encrypted: EncryptedMessageRef<'a>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct ReadyMut<'a> {
-    pub encrypted: EncryptedMessageMut<'a>,
-}
+pub type ReadyRef<'a> = EncryptedMessageRef<'a>;
+pub type ReadyMut<'a> = EncryptedMessageMut<'a>;
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
@@ -133,34 +126,6 @@ impl Confirm {
 impl Ready {
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
         self.encrypted.encode_into(out);
-    }
-}
-
-impl<'a> ReadyRef<'a> {
-    pub(crate) fn parse(bytes: &'a [u8]) -> Result<Self, WireError> {
-        Ok(Self {
-            encrypted: EncryptedMessageRef::parse(bytes)?,
-        })
-    }
-
-    pub fn to_owned(&self) -> Ready {
-        Ready {
-            encrypted: self.encrypted.to_owned(),
-        }
-    }
-}
-
-impl<'a> ReadyMut<'a> {
-    pub(crate) fn parse(bytes: &'a mut [u8]) -> Result<Self, WireError> {
-        Ok(Self {
-            encrypted: EncryptedMessageMut::parse(bytes)?,
-        })
-    }
-
-    pub fn to_owned(&self) -> Ready {
-        Ready {
-            encrypted: self.encrypted.to_owned(),
-        }
     }
 }
 

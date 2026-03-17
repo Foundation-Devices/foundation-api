@@ -1,16 +1,20 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 use crate::{
-    codec::{push_value, read_prefix, read_prefix_mut},
+    codec::{parse_mut, parse_ref, push_value},
     Nonce, QlCrypto, SessionKey, WireError, AUTH_SIZE, NONCE_SIZE,
 };
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-struct EncryptedMessageHeaderWire {
-    nonce: [u8; NONCE_SIZE],
-    auth: [u8; AUTH_SIZE],
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C, packed)]
+pub struct EncryptedMessageWire {
+    pub nonce: [u8; NONCE_SIZE],
+    pub auth: [u8; AUTH_SIZE],
+    pub ciphertext: [u8],
 }
+
+pub type EncryptedMessageRef<'a> = Ref<&'a [u8], EncryptedMessageWire>;
+pub type EncryptedMessageMut<'a> = Ref<&'a mut [u8], EncryptedMessageWire>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptedMessage {
@@ -19,18 +23,34 @@ pub struct EncryptedMessage {
     pub ciphertext: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncryptedMessageRef<'a> {
-    pub nonce: Nonce,
-    pub auth: [u8; AUTH_SIZE],
-    pub ciphertext: &'a [u8],
-}
+impl EncryptedMessageWire {
+    pub fn parse(bytes: &[u8]) -> Result<EncryptedMessageRef<'_>, WireError> {
+        parse_ref(bytes)
+    }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct EncryptedMessageMut<'a> {
-    pub nonce: Nonce,
-    pub auth: [u8; AUTH_SIZE],
-    pub ciphertext: &'a mut [u8],
+    pub fn parse_mut(bytes: &mut [u8]) -> Result<EncryptedMessageMut<'_>, WireError> {
+        parse_mut(bytes)
+    }
+
+    pub fn to_encrypted_message(&self) -> EncryptedMessage {
+        EncryptedMessage {
+            nonce: self.nonce,
+            auth: self.auth,
+            ciphertext: self.ciphertext.to_vec(),
+        }
+    }
+
+    pub fn decrypt<'a>(
+        &'a mut self,
+        crypto: &impl QlCrypto,
+        key: &SessionKey,
+        aad: &[u8],
+    ) -> Result<&'a mut [u8], WireError> {
+        if !crypto.decrypt_with_aead(key, &self.nonce, aad, &mut self.ciphertext, &self.auth) {
+            return Err(WireError::DecryptFailed);
+        }
+        Ok(&mut self.ciphertext)
+    }
 }
 
 impl EncryptedMessage {
@@ -41,23 +61,17 @@ impl EncryptedMessage {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        Ok(Self::parse(bytes)?.to_owned())
-    }
-
-    pub fn parse(bytes: &[u8]) -> Result<EncryptedMessageRef<'_>, WireError> {
-        EncryptedMessageRef::parse(bytes)
-    }
-
-    pub fn parse_mut(bytes: &mut [u8]) -> Result<EncryptedMessageMut<'_>, WireError> {
-        EncryptedMessageMut::parse(bytes)
+        Ok(EncryptedMessageWire::parse(bytes)?.to_encrypted_message())
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        let header = EncryptedMessageHeaderWire {
-            nonce: self.nonce,
-            auth: self.auth,
-        };
-        push_value(out, &header);
+        push_value(
+            out,
+            &EncryptedMessageHeaderWire {
+                nonce: self.nonce,
+                auth: self.auth,
+            },
+        );
         out.extend_from_slice(&self.ciphertext);
     }
 
@@ -92,52 +106,9 @@ impl EncryptedMessage {
     }
 }
 
-impl<'a> EncryptedMessageRef<'a> {
-    pub fn parse(bytes: &'a [u8]) -> Result<Self, WireError> {
-        let (header, ciphertext) = read_prefix::<EncryptedMessageHeaderWire>(bytes)?;
-        Ok(Self {
-            nonce: header.nonce,
-            auth: header.auth,
-            ciphertext,
-        })
-    }
-
-    pub fn to_owned(&self) -> EncryptedMessage {
-        EncryptedMessage {
-            nonce: self.nonce,
-            auth: self.auth,
-            ciphertext: self.ciphertext.to_vec(),
-        }
-    }
-}
-
-impl<'a> EncryptedMessageMut<'a> {
-    pub fn parse(bytes: &'a mut [u8]) -> Result<Self, WireError> {
-        let (header, ciphertext) = read_prefix_mut::<EncryptedMessageHeaderWire>(bytes)?;
-        Ok(Self {
-            nonce: header.nonce,
-            auth: header.auth,
-            ciphertext,
-        })
-    }
-
-    pub fn decrypt(
-        &mut self,
-        crypto: &impl QlCrypto,
-        key: &SessionKey,
-        aad: &[u8],
-    ) -> Result<&[u8], WireError> {
-        if !crypto.decrypt_with_aead(key, &self.nonce, aad, self.ciphertext, &self.auth) {
-            return Err(WireError::DecryptFailed);
-        }
-        Ok(self.ciphertext)
-    }
-
-    pub fn to_owned(&self) -> EncryptedMessage {
-        EncryptedMessage {
-            nonce: self.nonce,
-            auth: self.auth,
-            ciphertext: self.ciphertext.to_vec(),
-        }
-    }
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
+#[repr(C)]
+struct EncryptedMessageHeaderWire {
+    nonce: [u8; NONCE_SIZE],
+    auth: [u8; AUTH_SIZE],
 }

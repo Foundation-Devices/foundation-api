@@ -249,7 +249,7 @@ pub fn decrypt_ready(
     now_seconds: u64,
 ) -> Result<ReadyBody, WireError> {
     let aad = header.aad();
-    let plaintext = ready.encrypted.decrypt(crypto, session_key, &aad)?;
+    let plaintext = ready.decrypt(crypto, session_key, &aad)?;
     let body = ReadyBody::decode(plaintext)?;
     ensure_not_expired(&body.meta, now_seconds)?;
     Ok(body)

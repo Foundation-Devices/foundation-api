@@ -1,4 +1,4 @@
-use super::{PairRequestBody, PairRequestRecordMut};
+use super::{PairRequestBody, PairRequestRecordWire};
 use crate::{
     ensure_not_expired, pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext,
     MlKemPublicKey, QlCrypto, QlHeader, QlIdentity, QlPayload, QlRecord, WireError, NONCE_SIZE,
@@ -58,15 +58,16 @@ pub fn decrypt_pair_request(
     crypto: &impl QlCrypto,
     identity: &QlIdentity,
     header: &QlHeader,
-    request: &mut PairRequestRecordMut<'_>,
+    request: &mut PairRequestRecordWire,
     now_seconds: u64,
 ) -> Result<PairRequestBody, WireError> {
-    let kem_ct = request.kem_ct;
+    let kem_ct = request.kem_ct();
     let aad = pairing_aad(header, &kem_ct);
     let session_key = identity
         .encapsulation_private_key
         .decapsulate_shared_secret(&kem_ct)?;
-    let plaintext = request.encrypted.decrypt(crypto, &session_key, &aad)?;
+    let mut encrypted = request.encrypted_mut()?;
+    let plaintext = encrypted.decrypt(crypto, &session_key, &aad)?;
     let decrypted = PairRequestBody::decode(plaintext)?;
     ensure_not_expired(&decrypted.meta, now_seconds)?;
     if decrypted.xid != header.sender {

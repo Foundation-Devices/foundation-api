@@ -1,6 +1,6 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use super::stream::CloseCode;
+use super::CloseCode;
 use crate::{
     codec::{push_value, read_exact, U16Le},
     WireError,

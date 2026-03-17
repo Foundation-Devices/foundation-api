@@ -11,9 +11,8 @@ pub mod pair;
 mod pq;
 
 pub use encrypted::{
-    close::SessionCloseBody,
-    stream::{CloseCode, CloseTarget, StreamCloseFrame, StreamFrame},
-    SessionAck, SessionBody, SessionEnvelope,
+    close::SessionCloseBody, CloseCode, CloseTarget, SessionAck, SessionBody, SessionEnvelope,
+    StreamChunk, StreamClose,
 };
 pub use encrypted_message::{EncryptedMessage, EncryptedMessageMut, EncryptedMessageRef};
 pub use pq::{
@@ -136,13 +135,11 @@ pub enum QlPayload {
     Session(EncryptedMessage),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QlRecordRef<'a> {
     pub header: QlHeader,
     pub payload: QlPayloadRef<'a>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlPayloadRef<'a> {
     PairRequest(pair::PairRequestRecordRef<'a>),
     Hello(handshake::Hello),
@@ -152,13 +149,11 @@ pub enum QlPayloadRef<'a> {
     Session(EncryptedMessageRef<'a>),
 }
 
-#[derive(Debug, PartialEq, Eq)]
 pub struct QlRecordMut<'a> {
     pub header: QlHeader,
     pub payload: QlPayloadMut<'a>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
 pub enum QlPayloadMut<'a> {
     PairRequest(pair::PairRequestRecordMut<'a>),
     Hello(handshake::Hello),
@@ -287,12 +282,14 @@ impl<'a> QlRecordRef<'a> {
 impl<'a> QlPayloadRef<'a> {
     pub fn to_owned(&self) -> QlPayload {
         match self {
-            Self::PairRequest(request) => QlPayload::PairRequest(request.to_owned()),
+            Self::PairRequest(request) => QlPayload::PairRequest(request.to_pair_request_record()),
             Self::Hello(hello) => QlPayload::Hello(hello.clone()),
             Self::HelloReply(reply) => QlPayload::HelloReply(reply.clone()),
             Self::Confirm(confirm) => QlPayload::Confirm(confirm.clone()),
-            Self::Ready(ready) => QlPayload::Ready(ready.to_owned()),
-            Self::Session(encrypted) => QlPayload::Session(encrypted.to_owned()),
+            Self::Ready(ready) => QlPayload::Ready(handshake::Ready {
+                encrypted: ready.to_encrypted_message(),
+            }),
+            Self::Session(encrypted) => QlPayload::Session(encrypted.to_encrypted_message()),
         }
     }
 }
@@ -309,12 +306,14 @@ impl<'a> QlRecordMut<'a> {
 impl<'a> QlPayloadMut<'a> {
     pub fn to_owned(&self) -> QlPayload {
         match self {
-            Self::PairRequest(request) => QlPayload::PairRequest(request.to_owned()),
+            Self::PairRequest(request) => QlPayload::PairRequest(request.to_pair_request_record()),
             Self::Hello(hello) => QlPayload::Hello(hello.clone()),
             Self::HelloReply(reply) => QlPayload::HelloReply(reply.clone()),
             Self::Confirm(confirm) => QlPayload::Confirm(confirm.clone()),
-            Self::Ready(ready) => QlPayload::Ready(ready.to_owned()),
-            Self::Session(encrypted) => QlPayload::Session(encrypted.to_owned()),
+            Self::Ready(ready) => QlPayload::Ready(handshake::Ready {
+                encrypted: ready.to_encrypted_message(),
+            }),
+            Self::Session(encrypted) => QlPayload::Session(encrypted.to_encrypted_message()),
         }
     }
 }
@@ -375,15 +374,19 @@ fn parse_payload_ref<'a>(
 ) -> Result<QlPayloadRef<'a>, WireError> {
     match kind {
         RecordKind::PairRequest => Ok(QlPayloadRef::PairRequest(
-            pair::PairRequestRecordRef::parse(payload)?,
+            pair::PairRequestRecordWire::parse(payload)?,
         )),
         RecordKind::Hello => Ok(QlPayloadRef::Hello(handshake::Hello::decode(payload)?)),
         RecordKind::HelloReply => Ok(QlPayloadRef::HelloReply(handshake::HelloReply::decode(
             payload,
         )?)),
         RecordKind::Confirm => Ok(QlPayloadRef::Confirm(handshake::Confirm::decode(payload)?)),
-        RecordKind::Ready => Ok(QlPayloadRef::Ready(handshake::ReadyRef::parse(payload)?)),
-        RecordKind::Session => Ok(QlPayloadRef::Session(EncryptedMessageRef::parse(payload)?)),
+        RecordKind::Ready => Ok(QlPayloadRef::Ready(
+            encrypted_message::EncryptedMessageWire::parse(payload)?,
+        )),
+        RecordKind::Session => Ok(QlPayloadRef::Session(
+            encrypted_message::EncryptedMessageWire::parse(payload)?,
+        )),
     }
 }
 
@@ -393,15 +396,19 @@ fn parse_payload_mut<'a>(
 ) -> Result<QlPayloadMut<'a>, WireError> {
     match kind {
         RecordKind::PairRequest => Ok(QlPayloadMut::PairRequest(
-            pair::PairRequestRecordMut::parse(payload)?,
+            pair::PairRequestRecordWire::parse_mut(payload)?,
         )),
         RecordKind::Hello => Ok(QlPayloadMut::Hello(handshake::Hello::decode(payload)?)),
         RecordKind::HelloReply => Ok(QlPayloadMut::HelloReply(handshake::HelloReply::decode(
             payload,
         )?)),
         RecordKind::Confirm => Ok(QlPayloadMut::Confirm(handshake::Confirm::decode(payload)?)),
-        RecordKind::Ready => Ok(QlPayloadMut::Ready(handshake::ReadyMut::parse(payload)?)),
-        RecordKind::Session => Ok(QlPayloadMut::Session(EncryptedMessageMut::parse(payload)?)),
+        RecordKind::Ready => Ok(QlPayloadMut::Ready(
+            encrypted_message::EncryptedMessageWire::parse_mut(payload)?,
+        )),
+        RecordKind::Session => Ok(QlPayloadMut::Session(
+            encrypted_message::EncryptedMessageWire::parse_mut(payload)?,
+        )),
     }
 }
 
@@ -481,7 +488,7 @@ mod tests {
                 base: 3,
                 bitmap: 0b101,
             },
-            body: SessionBody::Stream(StreamFrame {
+            body: SessionBody::Stream(StreamChunk {
                 stream_id: 9,
                 offset: 11,
                 bytes: b"hello".to_vec(),
@@ -508,7 +515,7 @@ mod tests {
         };
         let decrypted =
             encrypted::decrypt_record(&crypto, &header, &mut encrypted, &session_key).unwrap();
-        assert_eq!(decrypted, body);
+        assert_eq!(decrypted.to_session_envelope().unwrap(), body);
     }
 
     #[test]
