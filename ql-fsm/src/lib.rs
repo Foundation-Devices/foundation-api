@@ -8,10 +8,9 @@ mod tests;
 use std::time::Instant;
 
 use ql_wire::{CloseCode, CloseTarget, QlCrypto, QlIdentity, QlRecord, StreamId};
-pub use state::QlSessionEvent;
 pub use state::{
     HandshakeInitiator, HandshakeResponder, Peer, PeerRecord, PeerSession, QlFsm, QlFsmConfig,
-    QlFsmError, QlFsmEvent, RecentReady,
+    QlFsmError, QlFsmEvent, QlSessionEvent, RecentReady,
 };
 
 use crate::{replay_cache::ReplayCache, state::QlFsmState};
@@ -90,11 +89,7 @@ impl QlFsm {
         self.next_deadline_inner()
     }
 
-    pub fn take_next_outbound(
-        &mut self,
-        now: FsmTime,
-        crypto: &impl QlCrypto,
-    ) -> Option<QlRecord> {
+    pub fn take_next_outbound(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Option<QlRecord> {
         self.state.now = now;
         self.take_next_outbound_inner(crypto)
     }

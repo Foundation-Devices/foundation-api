@@ -447,7 +447,7 @@ impl SessionFsm {
         let stream_id = frame.stream_id;
         let remote_namespace = self.config.local_namespace.remote();
         if !self.state.streams.contains_key(&stream_id) {
-            if !remote_namespace.matches(stream_id) || frame.offset != 0 {
+            if !remote_namespace.matches(stream_id) {
                 self.fail_session(SessionCloseBody {
                     code: CloseCode::PROTOCOL,
                 });

@@ -8,8 +8,7 @@ use ql_wire::{
     StreamFrame, StreamId,
 };
 
-use super::ring::SeqRing;
-use super::{SessionEvent, SessionState, StreamIncoming};
+use super::{ring::SeqRing, SessionEvent, SessionState, StreamIncoming};
 
 pub const SESSION_WINDOW_CAPACITY: usize = 64;
 

@@ -179,3 +179,120 @@ fn local_inbound_close_ignores_late_remote_bytes() {
     assert!(fsm.take_next_inbound(stream_id).is_none());
     assert!(fsm.take_next_event().is_none());
 }
+
+#[test]
+fn out_of_order_remote_stream_buffers_until_initial_bytes_arrive() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 7);
+
+    fsm.receive(
+        now,
+        SessionEnvelope {
+            seq: SessionSeq(2),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamFrame {
+                stream_id,
+                offset: 1,
+                bytes: b"b".to_vec(),
+                fin: false,
+            }),
+        },
+    );
+
+    assert_eq!(fsm.session_state(), SessionState::Open);
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Opened(stream_id))
+    );
+    assert!(fsm.take_next_inbound(stream_id).is_none());
+
+    fsm.receive(
+        now + Duration::from_millis(1),
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamFrame {
+                stream_id,
+                offset: 0,
+                bytes: b"a".to_vec(),
+                fin: false,
+            }),
+        },
+    );
+
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Readable(stream_id))
+    );
+    assert_eq!(
+        fsm.take_next_inbound(stream_id),
+        Some(super::StreamIncoming::Data(b"a".to_vec()))
+    );
+    assert_eq!(
+        fsm.take_next_inbound(stream_id),
+        Some(super::StreamIncoming::Data(b"b".to_vec()))
+    );
+}
+
+#[test]
+fn duplicate_committed_data_is_not_redelivered() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 9);
+    let body = SessionBody::Stream(StreamFrame {
+        stream_id,
+        offset: 0,
+        bytes: b"dup".to_vec(),
+        fin: false,
+    });
+
+    fsm.receive(
+        now,
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body: body.clone(),
+        },
+    );
+    let _ = fsm.take_next_event();
+    let _ = fsm.take_next_event();
+    let _ = fsm.take_next_inbound(stream_id);
+
+    fsm.receive(
+        now + Duration::from_millis(1),
+        SessionEnvelope {
+            seq: SessionSeq(2),
+            ack: SessionAck::EMPTY,
+            body,
+        },
+    );
+
+    assert!(fsm.take_next_event().is_none());
+    assert!(fsm.take_next_inbound(stream_id).is_none());
+}
+
+#[test]
+fn next_outbound_round_robins_across_ready_streams() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id_a = fsm.open_stream().unwrap();
+    let stream_id_b = fsm.open_stream().unwrap();
+
+    fsm.write_stream(stream_id_a, b"a-1".to_vec()).unwrap();
+    fsm.write_stream(stream_id_b, b"b-1".to_vec()).unwrap();
+    fsm.write_stream(stream_id_a, b"a-2".to_vec()).unwrap();
+    fsm.write_stream(stream_id_b, b"b-2".to_vec()).unwrap();
+
+    let scheduled: Vec<_> = (0..4)
+        .map(|_| match fsm.next_outbound(now).unwrap().body {
+            SessionBody::Stream(frame) => frame.stream_id,
+            other => panic!("expected stream frame, got {other:?}"),
+        })
+        .collect();
+
+    assert_eq!(
+        scheduled,
+        vec![stream_id_a, stream_id_b, stream_id_a, stream_id_b]
+    );
+}

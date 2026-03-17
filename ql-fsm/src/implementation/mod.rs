@@ -68,11 +68,11 @@ impl QlFsm {
                 let Some((_, session_key)) = self.peer_session() else {
                     return Ok(());
                 };
-                let envelope = match wire::encrypted::decrypt_record(&header, encrypted, &session_key)
-                {
-                    Ok(envelope) => envelope,
-                    Err(_) => return Ok(()),
-                };
+                let envelope =
+                    match wire::encrypted::decrypt_record(&header, encrypted, &session_key) {
+                        Ok(envelope) => envelope,
+                        Err(_) => return Ok(()),
+                    };
                 self.session.receive(self.state.now.instant, envelope);
                 self.drain_session_events();
             }
@@ -209,7 +209,9 @@ impl QlFsm {
                         .push_back(QlSessionEvent::WritableClosed(stream_id));
                 }
                 SessionEvent::Unpaired => {
-                    self.state.session_events.push_back(QlSessionEvent::Unpaired);
+                    self.state
+                        .session_events
+                        .push_back(QlSessionEvent::Unpaired);
                     self.peer = None;
                     self.reset_session();
                     self.state.events.push_back(QlFsmEvent::ClearPeer);
