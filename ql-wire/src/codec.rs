@@ -1,52 +1,66 @@
-use std::cell::RefCell;
-
-use rkyv::{
-    api::low::{self, LowDeserializer, LowSerializer, LowValidator},
-    bytecheck::CheckBytes,
-    rancor,
-    seal::Seal,
-    ser::allocator::{Arena, ArenaHandle},
-    Portable, Serialize,
+use zerocopy::{
+    byteorder::little_endian::{U16, U32, U64},
+    FromBytes, Immutable, IntoBytes, KnownLayout, Ref,
 };
 
-use crate::WireError;
+use crate::{QlHeader, WireError};
 
-std::thread_local! {
-    static ALLOC_ARENA: RefCell<Arena> = RefCell::new(Arena::new());
-}
+pub(crate) type U16Le = U16;
+pub(crate) type U32Le = U32;
+pub(crate) type U64Le = U64;
 
-pub(crate) fn encode_value(
-    value: &impl for<'a> Serialize<LowSerializer<Vec<u8>, ArenaHandle<'a>, rancor::Error>>,
-) -> Vec<u8> {
-    with_arena(|arena| {
-        low::to_bytes_in_with_alloc::<_, _, rancor::Error>(value, Vec::new(), arena)
-            .expect("wire serialization should not fail")
-    })
-}
-
-pub(crate) fn access_value<T>(bytes: &[u8]) -> Result<&T, WireError>
+pub(crate) fn push_value<T>(out: &mut Vec<u8>, value: &T)
 where
-    T: Portable + for<'a> CheckBytes<LowValidator<'a, rancor::Error>>,
+    T: IntoBytes + Immutable + ?Sized,
 {
-    low::access::<T, rancor::Error>(bytes).map_err(|_| WireError::InvalidPayload)
+    out.extend_from_slice(value.as_bytes());
 }
 
-pub(crate) fn access_mut_value<T>(bytes: &mut [u8]) -> Result<Seal<'_, T>, WireError>
+pub(crate) fn read_exact<T>(bytes: &[u8]) -> Result<T, WireError>
 where
-    T: Portable + for<'a> CheckBytes<LowValidator<'a, rancor::Error>>,
+    T: FromBytes + Copy,
 {
-    low::access_mut::<T, rancor::Error>(bytes).map_err(|_| WireError::InvalidPayload)
+    T::read_from_bytes(bytes).map_err(|_| WireError::InvalidPayload)
 }
 
-pub(crate) fn deserialize_value<T>(
-    value: &impl rkyv::Deserialize<T, LowDeserializer<rancor::Error>>,
-) -> Result<T, WireError> {
-    low::deserialize::<T, rancor::Error>(value).map_err(|_| WireError::InvalidPayload)
+pub(crate) fn read_prefix<T>(bytes: &[u8]) -> Result<(T, &[u8]), WireError>
+where
+    T: FromBytes + KnownLayout + Immutable + Copy,
+{
+    let (value, rest) = Ref::<_, T>::from_prefix(bytes).map_err(|_| WireError::InvalidPayload)?;
+    Ok((*value, rest))
 }
 
-fn with_arena<R>(f: impl FnOnce(ArenaHandle<'_>) -> R) -> R {
-    ALLOC_ARENA.with(|arena| {
-        let mut arena = arena.borrow_mut();
-        f(arena.acquire())
-    })
+pub(crate) fn read_prefix_mut<'a, T>(bytes: &'a mut [u8]) -> Result<(T, &'a mut [u8]), WireError>
+where
+    T: FromBytes + KnownLayout + Immutable + Copy,
+{
+    let (value, rest) = Ref::<_, T>::from_prefix(bytes).map_err(|_| WireError::InvalidPayload)?;
+    Ok((*value, rest))
+}
+
+pub(crate) fn ensure_empty(bytes: &[u8]) -> Result<(), WireError> {
+    if bytes.is_empty() {
+        Ok(())
+    } else {
+        Err(WireError::InvalidPayload)
+    }
+}
+
+pub(crate) fn append_field(out: &mut Vec<u8>, label: &[u8], value: &[u8]) {
+    append_framed_bytes(out, label);
+    append_framed_bytes(out, value);
+}
+
+pub(crate) fn append_framed_bytes(out: &mut Vec<u8>, value: &[u8]) {
+    out.extend_from_slice(&u64::try_from(value.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(value);
+}
+
+pub(crate) fn header_aad(header: &QlHeader) -> Vec<u8> {
+    let mut aad = Vec::new();
+    append_field(&mut aad, b"domain", b"ql-wire:header-aad:v1");
+    append_field(&mut aad, b"sender", &header.sender);
+    append_field(&mut aad, b"recipient", &header.recipient);
+    aad
 }

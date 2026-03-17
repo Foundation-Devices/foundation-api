@@ -2193,9 +2193,9 @@ dependencies = [
  "libcrux-aesgcm",
  "libcrux-ml-dsa",
  "libcrux-ml-kem",
- "rkyv",
  "sha2",
  "thiserror",
+ "zerocopy",
 ]
 
 [[package]]

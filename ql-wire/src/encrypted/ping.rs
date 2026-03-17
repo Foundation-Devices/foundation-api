@@ -1,4 +1,2 @@
-use rkyv::{Archive, Deserialize, Serialize};
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PingBody;

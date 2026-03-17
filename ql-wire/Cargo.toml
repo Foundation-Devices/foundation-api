@@ -8,14 +8,8 @@ license = "Proprietary"
 [dependencies]
 libcrux-ml-dsa = { version = "0.0.7", default-features = false, features = ["std", "mldsa87"] }
 libcrux-ml-kem = { version = "0.0.7", default-features = false, features = ["std", "mlkem1024"] }
-rkyv = { version = "0.8", default-features = false, features = [
-  "std",
-  "bytecheck",
-  "little_endian",
-  "unaligned",
-  "pointer_width_32",
-] }
 thiserror = { version = "2" }
+zerocopy = { version = "0.8", features = ["derive"] }
 
 [dev-dependencies]
 libcrux-aesgcm = "0.0.7"
