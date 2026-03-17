@@ -4,7 +4,7 @@ use rkyv::{Archive, Deserialize, Serialize};
 use crate::{
     access_value, deserialize_value, encode_value,
     encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage},
-    Nonce, QlHeader, QlPayload, QlRecord, SessionSeq, WireError,
+    Nonce, QlCrypto, QlHeader, QlPayload, QlRecord, SessionSeq, WireError,
 };
 
 pub mod close;
@@ -43,27 +43,29 @@ pub enum SessionBody {
 }
 
 pub fn encrypt_record(
+    crypto: &impl QlCrypto,
     header: QlHeader,
     session_key: &SymmetricKey,
     body: &SessionEnvelope,
     nonce: Nonce,
-) -> QlRecord {
+) -> Result<QlRecord, WireError> {
     let aad = header.aad();
     let body_bytes = encode_value(body);
-    let encrypted = EncryptedMessage::encrypt(session_key, body_bytes, &aad, nonce);
-    QlRecord {
+    let encrypted = EncryptedMessage::encrypt(crypto, session_key, body_bytes, &aad, nonce)?;
+    Ok(QlRecord {
         header,
         payload: QlPayload::Encrypted(encrypted),
-    }
+    })
 }
 
 pub fn decrypt_record(
+    crypto: &impl QlCrypto,
     header: &QlHeader,
     encrypted: &mut ArchivedEncryptedMessage,
     session_key: &SymmetricKey,
 ) -> Result<SessionEnvelope, WireError> {
     let aad = header.aad();
-    let plaintext = encrypted.decrypt(session_key, &aad)?;
+    let plaintext = encrypted.decrypt(crypto, session_key, &aad)?;
     let body = access_value::<ArchivedSessionEnvelope>(plaintext)?;
     deserialize_value(body)
 }

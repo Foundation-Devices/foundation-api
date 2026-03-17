@@ -9,7 +9,6 @@ license = "Proprietary"
 bc-components = { version = "0.28.0", default-features = false, features = [
   "pqcrypto",
 ] }
-chacha20poly1305 = { version = "0.10.1" }
 rkyv = { version = "0.8", default-features = false, features = [
   "std",
   "bytecheck",
@@ -18,3 +17,6 @@ rkyv = { version = "0.8", default-features = false, features = [
   "pointer_width_32",
 ] }
 thiserror = { version = "2" }
+
+[dev-dependencies]
+libcrux-aesgcm = "0.0.7"

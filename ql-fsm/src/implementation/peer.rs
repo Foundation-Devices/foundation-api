@@ -29,6 +29,7 @@ pub fn handle_pair(
 ) -> Result<(), QlFsmError> {
     let payload = match wire::pair::decrypt_pair_request(
         &fsm.identity,
+        crypto,
         header,
         request,
         fsm.state.now.unix_secs,

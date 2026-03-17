@@ -312,6 +312,7 @@ pub fn handle_confirm(
     }
 
     let ready = wire::handshake::build_ready(
+        crypto,
         QlHeader {
             sender: fsm.identity.xid,
             recipient: header.sender,
@@ -319,7 +320,7 @@ pub fn handle_confirm(
         &session_key,
         next_control_meta(fsm, fsm.config.handshake_timeout),
         next_encrypted_nonce(crypto),
-    );
+    )?;
 
     if let Some(entry) = fsm.peer.as_mut() {
         entry.session = ConnectionState::Connected {
@@ -346,6 +347,7 @@ pub fn handle_ready(
     fsm: &mut QlFsm,
     header: &QlHeader,
     ready: &mut wire::handshake::ArchivedReady,
+    crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
     let session_key = {
         let Some(entry) = fsm.peer.as_ref() else {
@@ -361,6 +363,7 @@ pub fn handle_ready(
     };
 
     let body = match wire::handshake::decrypt_ready(
+        crypto,
         header,
         ready,
         &session_key,

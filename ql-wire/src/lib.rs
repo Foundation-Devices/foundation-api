@@ -4,7 +4,7 @@
 //! - *Record - unencrypted messages
 //! - *Body - message content after decrypting
 
-use bc_components::{MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey};
+use bc_components::{MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SymmetricKey};
 use rkyv::{
     api::{
         high::{to_bytes_in, HighSerializer, HighValidator},
@@ -30,7 +30,7 @@ pub use encrypted::{
     stream::{CloseCode, CloseTarget, StreamCloseFrame, StreamFrame},
     SessionAck, SessionBody, SessionEnvelope,
 };
-pub use encrypted_message::Nonce;
+pub use encrypted_message::{Nonce, AUTH_SIZE};
 pub use id::{ControlId, SessionSeq, StreamId};
 pub use xid::XID;
 
@@ -64,6 +64,23 @@ impl QlIdentity {
 
 pub trait QlCrypto {
     fn fill_random_bytes(&self, data: &mut [u8]);
+
+    fn encrypt_with_aead(
+        &self,
+        key: &SymmetricKey,
+        nonce: &Nonce,
+        aad: &[u8],
+        buffer: &mut [u8],
+    ) -> Option<[u8; AUTH_SIZE]>;
+
+    fn decrypt_with_aead(
+        &self,
+        key: &SymmetricKey,
+        nonce: &Nonce,
+        aad: &[u8],
+        buffer: &mut [u8],
+        auth_tag: &[u8; AUTH_SIZE],
+    ) -> bool;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -74,6 +91,10 @@ pub enum WireError {
     InvalidSignature,
     #[error("expired")]
     Expired,
+    #[error("encryption failed")]
+    EncryptFailed,
+    #[error("decryption failed")]
+    DecryptFailed,
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -165,12 +186,74 @@ pub(crate) fn ensure_not_expired(meta: &ControlMeta, now_seconds: u64) -> Result
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
     use bc_components::SymmetricKey;
+    use libcrux_aesgcm::AesGcm256Key;
 
     use super::*;
 
+    struct TestCrypto(AtomicU8);
+
+    impl TestCrypto {
+        fn new(seed: u8) -> Self {
+            Self(AtomicU8::new(seed))
+        }
+    }
+
+    impl QlCrypto for TestCrypto {
+        fn fill_random_bytes(&self, data: &mut [u8]) {
+            let seed = self.0.fetch_add(1, Ordering::Relaxed);
+            for (index, byte) in data.iter_mut().enumerate() {
+                *byte = seed.wrapping_add(index as u8);
+            }
+        }
+
+        fn encrypt_with_aead(
+            &self,
+            key: &SymmetricKey,
+            nonce: &Nonce,
+            aad: &[u8],
+            buffer: &mut [u8],
+        ) -> Option<[u8; AUTH_SIZE]> {
+            let key: AesGcm256Key = (*key.data()).into();
+            let plaintext = buffer.to_vec();
+            let mut auth = [0u8; AUTH_SIZE];
+            key.encrypt(
+                buffer,
+                (&mut auth).into(),
+                (&nonce.0).into(),
+                aad,
+                &plaintext,
+            )
+                .ok()?;
+            Some(auth)
+        }
+
+        fn decrypt_with_aead(
+            &self,
+            key: &SymmetricKey,
+            nonce: &Nonce,
+            aad: &[u8],
+            buffer: &mut [u8],
+            auth_tag: &[u8; AUTH_SIZE],
+        ) -> bool {
+            let key: AesGcm256Key = (*key.data()).into();
+            let ciphertext = buffer.to_vec();
+            key.decrypt(
+                buffer,
+                (&nonce.0).into(),
+                aad,
+                &ciphertext,
+                auth_tag.into(),
+            )
+                .is_ok()
+        }
+    }
+
     #[test]
     fn ql_record_round_trip() {
+        let crypto = TestCrypto::new(1);
         let header = QlHeader {
             sender: XID([1; XID::XID_SIZE]),
             recipient: XID([2; XID::XID_SIZE]),
@@ -184,11 +267,13 @@ mod tests {
             body: SessionBody::Ping(encrypted::ping::PingBody),
         };
         let record = encrypted::encrypt_record(
+            &crypto,
             header.clone(),
             &SymmetricKey::from_data([7; SymmetricKey::SYMMETRIC_KEY_SIZE]),
             &body,
             Nonce([8; Nonce::NONCE_SIZE]),
-        );
+        )
+        .unwrap();
 
         let bytes = encode_record(&record);
         let decoded = decode_record(&bytes).unwrap();

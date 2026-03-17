@@ -19,3 +19,6 @@ rkyv = { version = "0.8", default-features = false, features = [
   "pointer_width_32",
 ] }
 thiserror = { version = "2" }
+
+[dev-dependencies]
+libcrux-aesgcm = "0.0.7"

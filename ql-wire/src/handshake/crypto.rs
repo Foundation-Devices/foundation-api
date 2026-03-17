@@ -252,26 +252,28 @@ pub fn verify_confirm(
 }
 
 pub fn build_ready(
+    crypto: &impl QlCrypto,
     header: QlHeader,
     session_key: &SymmetricKey,
     meta: ControlMeta,
     nonce: Nonce,
-) -> Ready {
+) -> Result<Ready, WireError> {
     let aad = header.aad();
     let body_bytes = encode_value(&ReadyBody { meta });
-    Ready {
-        encrypted: EncryptedMessage::encrypt(session_key, body_bytes, &aad, nonce),
-    }
+    Ok(Ready {
+        encrypted: EncryptedMessage::encrypt(crypto, session_key, body_bytes, &aad, nonce)?,
+    })
 }
 
 pub fn decrypt_ready(
+    crypto: &impl QlCrypto,
     header: &QlHeader,
     ready: &mut ArchivedReady,
     session_key: &SymmetricKey,
     now_seconds: u64,
 ) -> Result<ReadyBody, WireError> {
     let aad = header.aad();
-    let plaintext = ready.encrypted.decrypt(session_key, &aad)?;
+    let plaintext = ready.encrypted.decrypt(crypto, session_key, &aad)?;
     let body = access_value::<super::ArchivedReadyBody>(plaintext)?;
     let body = deserialize_value(body)?;
     ensure_not_expired(&body.meta, now_seconds)?;

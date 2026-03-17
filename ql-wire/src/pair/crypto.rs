@@ -58,7 +58,8 @@ pub fn build_pair_request(
     let aad = pairing_aad(&header, &kem_ct);
     let mut nonce_bytes = [0u8; Nonce::NONCE_SIZE];
     crypto.fill_random_bytes(&mut nonce_bytes);
-    let encrypted = EncryptedMessage::encrypt(&session_key, body_bytes, &aad, Nonce(nonce_bytes));
+    let encrypted =
+        EncryptedMessage::encrypt(crypto, &session_key, body_bytes, &aad, Nonce(nonce_bytes))?;
     Ok(QlRecord {
         header,
         payload: QlPayload::Pair(PairRequestRecord { kem_ct, encrypted }),
@@ -67,6 +68,7 @@ pub fn build_pair_request(
 
 pub fn decrypt_pair_request(
     identity: &QlIdentity,
+    crypto: &impl QlCrypto,
     header: &QlHeader,
     request: &mut super::ArchivedPairRequestRecord,
     now_seconds: u64,
@@ -77,7 +79,7 @@ pub fn decrypt_pair_request(
         .encapsulation_private_key
         .decapsulate_shared_secret(&kem_ct)
         .map_err(|_| WireError::InvalidPayload)?;
-    let decrypted = decrypt_body(&session_key, &mut request.encrypted, &aad)?;
+    let decrypted = decrypt_body(crypto, &session_key, &mut request.encrypted, &aad)?;
     ensure_not_expired(&decrypted.meta, now_seconds)?;
     if XID::from_signing_public_key(&decrypted.signing_pub_key) != header.sender {
         return Err(WireError::InvalidPayload);
@@ -116,11 +118,12 @@ fn pairing_proof_data(
 }
 
 fn decrypt_body(
+    crypto: &impl QlCrypto,
     key: &SymmetricKey,
     encrypted: &mut ArchivedEncryptedMessage,
     aad: &[u8],
 ) -> Result<PairRequestBody, WireError> {
-    let plaintext = encrypted.decrypt(key, aad)?;
+    let plaintext = encrypted.decrypt(crypto, key, aad)?;
     let body = access_value::<super::ArchivedPairRequestBody>(plaintext)?;
     deserialize_value(body)
 }

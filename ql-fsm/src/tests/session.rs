@@ -59,12 +59,12 @@ fn lost_encrypted_record_is_retried_and_acked() {
         .session_key()
         .unwrap()
         .clone();
-    let first_body = decrypt_envelope(&first, &session_key);
+    let first_body = decrypt_envelope(&harness.b.crypto, &first, &session_key);
 
     harness.advance(config.session_retransmit_timeout + Duration::from_millis(1));
 
     let retried = harness.next_outbound_a().unwrap();
-    let retried_body = decrypt_envelope(&retried, &session_key);
+    let retried_body = decrypt_envelope(&harness.b.crypto, &retried, &session_key);
 
     assert_ne!(first_body.seq, retried_body.seq);
     assert_eq!(first_body.body, retried_body.body);
@@ -258,7 +258,7 @@ fn returned_session_write_is_reissued_with_same_seq() {
         .session_key()
         .unwrap()
         .clone();
-    let first = decrypt_envelope(&record, &session_key);
+    let first = decrypt_envelope(&harness.b.crypto, &record, &session_key);
 
     harness.return_write_a(id);
 
@@ -267,7 +267,7 @@ fn returned_session_write_is_reissued_with_same_seq() {
         .session_write_id
         .expect("expected reissued session write");
     let record = write.record;
-    let reissued = decrypt_envelope(&record, &session_key);
+    let reissued = decrypt_envelope(&harness.b.crypto, &record, &session_key);
 
     assert_eq!(reissued_id, id);
     assert_eq!(reissued.seq, first.seq);
@@ -315,7 +315,7 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
         .session_key()
         .unwrap()
         .clone();
-    let first = decrypt_envelope(&record, &session_key);
+    let first = decrypt_envelope(&harness.b.crypto, &record, &session_key);
 
     harness.advance(config.session_retransmit_timeout + Duration::from_millis(1));
     harness.a.fsm.on_timer(harness.time());
@@ -327,7 +327,7 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
     let write = harness.next_write_a().unwrap();
     assert!(write.session_write_id.is_some(), "expected retransmit");
     let record = write.record;
-    let retried = decrypt_envelope(&record, &session_key);
+    let retried = decrypt_envelope(&harness.b.crypto, &record, &session_key);
 
     assert_ne!(retried.seq, first.seq);
     assert_eq!(retried.body, first.body);

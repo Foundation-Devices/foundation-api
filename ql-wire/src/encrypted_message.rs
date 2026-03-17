@@ -1,8 +1,7 @@
 use bc_components::SymmetricKey;
-use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit};
 use rkyv::{seal::Seal, vec::ArchivedVec, Archive, Deserialize, Serialize};
 
-use crate::WireError;
+use crate::{QlCrypto, WireError};
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Nonce(pub [u8; Self::NONCE_SIZE]);
@@ -21,43 +20,51 @@ pub struct EncryptedMessage {
 }
 
 impl EncryptedMessage {
-    pub fn encrypt(key: &SymmetricKey, mut plaintext: Vec<u8>, aad: &[u8], nonce: Nonce) -> Self {
-        let cipher = ChaCha20Poly1305::new(key.data().into());
-        let auth = cipher
-            .encrypt_in_place_detached((&nonce.0).into(), aad, &mut plaintext)
-            .expect("chacha20poly1305 encryption should succeed");
-        Self {
+    pub fn encrypt(
+        crypto: &impl QlCrypto,
+        key: &SymmetricKey,
+        mut plaintext: Vec<u8>,
+        aad: &[u8],
+        nonce: Nonce,
+    ) -> Result<Self, WireError> {
+        let auth = crypto
+            .encrypt_with_aead(key, &nonce, aad, &mut plaintext)
+            .ok_or(WireError::EncryptFailed)?;
+        Ok(Self {
             ciphertext: plaintext,
             nonce,
-            auth: auth.into(),
-        }
+            auth,
+        })
     }
 
-    pub fn decrypt(&self, key: &SymmetricKey, aad: &[u8]) -> Result<Vec<u8>, WireError> {
-        let cipher = ChaCha20Poly1305::new(key.data().into());
+    pub fn decrypt(
+        &self,
+        crypto: &impl QlCrypto,
+        key: &SymmetricKey,
+        aad: &[u8],
+    ) -> Result<Vec<u8>, WireError> {
         let mut plaintext = self.ciphertext.clone();
-        cipher
-            .decrypt_in_place_detached(
-                (&self.nonce.0).into(),
-                aad,
-                &mut plaintext,
-                (&self.auth).into(),
-            )
-            .map_err(|_| WireError::InvalidPayload)?;
+        if !crypto.decrypt_with_aead(key, &self.nonce, aad, &mut plaintext, &self.auth) {
+            return Err(WireError::DecryptFailed);
+        }
         Ok(plaintext)
     }
 }
 
 impl ArchivedEncryptedMessage {
-    pub fn decrypt(&mut self, key: &SymmetricKey, aad: &[u8]) -> Result<&[u8], WireError> {
-        let cipher = ChaCha20Poly1305::new(key.data().into());
-        let nonce = &self.nonce;
+    pub fn decrypt(
+        &mut self,
+        crypto: &impl QlCrypto,
+        key: &SymmetricKey,
+        aad: &[u8],
+    ) -> Result<&[u8], WireError> {
+        let nonce = Nonce(self.nonce.0);
         let auth = self.auth;
         let ciphertext = ArchivedVec::as_slice_seal(Seal::new(&mut self.ciphertext));
         let ciphertext = unsafe { ciphertext.unseal_unchecked() };
-        cipher
-            .decrypt_in_place_detached((&nonce.0).into(), aad, ciphertext, (&auth).into())
-            .map_err(|_| WireError::InvalidPayload)?;
+        if !crypto.decrypt_with_aead(key, &nonce, aad, ciphertext, &auth) {
+            return Err(WireError::DecryptFailed);
+        }
         Ok(ciphertext)
     }
 }

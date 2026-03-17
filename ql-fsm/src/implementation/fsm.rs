@@ -42,16 +42,17 @@ pub fn receive(
             super::handle_confirm(fsm, &header, archived_confirm, crypto)?;
         }
         ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Ready(archived_ready)) => {
-            super::handle_ready(fsm, &header, archived_ready)?;
+            super::handle_ready(fsm, &header, archived_ready, crypto)?;
         }
         ArchivedQlPayload::Encrypted(encrypted) => {
             let Some((_, session_key)) = super::peer_session(fsm) else {
                 return Ok(());
             };
-            let envelope = match wire::encrypted::decrypt_record(&header, encrypted, &session_key) {
-                Ok(envelope) => envelope,
-                Err(_) => return Ok(()),
-            };
+            let envelope =
+                match wire::encrypted::decrypt_record(crypto, &header, encrypted, &session_key) {
+                    Ok(envelope) => envelope,
+                    Err(_) => return Ok(()),
+                };
             fsm.session.receive(fsm.state.now.instant, envelope);
             super::drain_session_events(fsm);
         }
@@ -106,6 +107,7 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     crypto.fill_random_bytes(&mut nonce);
     Some(OutboundWrite {
         record: wire::encrypted::encrypt_record(
+            crypto,
             QlHeader {
                 sender: fsm.identity.xid,
                 recipient,
@@ -113,7 +115,8 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
             &session_key,
             &envelope,
             Nonce(nonce),
-        ),
+        )
+        .ok()?,
         session_write_id: Some(SessionWriteId(envelope.seq)),
     })
 }

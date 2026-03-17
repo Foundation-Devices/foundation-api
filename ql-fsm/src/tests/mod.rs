@@ -7,6 +7,7 @@ use std::{
 };
 
 use bc_components::{SymmetricKey, MLDSA, MLKEM};
+use libcrux_aesgcm::AesGcm256Key;
 use ql_wire::{self, QlCrypto, QlIdentity, QlPayload, QlRecord};
 use rkyv::api::low;
 
@@ -36,6 +37,47 @@ impl QlCrypto for TestCrypto {
         let value = self.seed.wrapping_add(self.counter.get());
         self.counter.set(self.counter.get().wrapping_add(1));
         data.fill(value);
+    }
+
+    fn encrypt_with_aead(
+        &self,
+        key: &SymmetricKey,
+        nonce: &ql_wire::Nonce,
+        aad: &[u8],
+        buffer: &mut [u8],
+    ) -> Option<[u8; ql_wire::AUTH_SIZE]> {
+        let key: AesGcm256Key = (*key.data()).into();
+        let plaintext = buffer.to_vec();
+        let mut auth = [0u8; ql_wire::AUTH_SIZE];
+        key.encrypt(
+            buffer,
+            (&mut auth).into(),
+            (&nonce.0).into(),
+            aad,
+            &plaintext,
+        )
+            .ok()?;
+        Some(auth)
+    }
+
+    fn decrypt_with_aead(
+        &self,
+        key: &SymmetricKey,
+        nonce: &ql_wire::Nonce,
+        aad: &[u8],
+        buffer: &mut [u8],
+        auth_tag: &[u8; ql_wire::AUTH_SIZE],
+    ) -> bool {
+        let key: AesGcm256Key = (*key.data()).into();
+        let ciphertext = buffer.to_vec();
+        key.decrypt(
+            buffer,
+            (&nonce.0).into(),
+            aad,
+            &ciphertext,
+            auth_tag.into(),
+        )
+            .is_ok()
     }
 }
 
@@ -221,12 +263,16 @@ fn peer_from_identity(identity: &QlIdentity) -> Peer {
     }
 }
 
-fn decrypt_envelope(record: &QlRecord, session_key: &SymmetricKey) -> ql_wire::SessionEnvelope {
+fn decrypt_envelope(
+    crypto: &impl QlCrypto,
+    record: &QlRecord,
+    session_key: &SymmetricKey,
+) -> ql_wire::SessionEnvelope {
     let aad = record.header.aad();
     let QlPayload::Encrypted(encrypted) = &record.payload else {
         panic!("expected encrypted payload");
     };
-    let plaintext = encrypted.decrypt(session_key, &aad).unwrap();
+    let plaintext = encrypted.decrypt(crypto, session_key, &aad).unwrap();
     let archived =
         rkyv::access::<ql_wire::encrypted::ArchivedSessionEnvelope, rkyv::rancor::Error>(
             &plaintext,
