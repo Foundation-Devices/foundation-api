@@ -67,7 +67,7 @@ impl QlCrypto for TestCrypto {
             aad,
             &plaintext,
         )
-            .ok()?;
+        .ok()?;
         Some(auth)
     }
 
@@ -81,13 +81,7 @@ impl QlCrypto for TestCrypto {
     ) -> bool {
         let key: AesGcm256Key = (*key.data()).into();
         let ciphertext = buffer.to_vec();
-        key.decrypt(
-            buffer,
-            (&nonce.0).into(),
-            aad,
-            &ciphertext,
-            auth_tag.into(),
-        )
+        key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
             .is_ok()
     }
 }

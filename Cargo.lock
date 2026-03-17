@@ -2175,11 +2175,14 @@ name = "ql-runtime"
 version = "0.1.0"
 dependencies = [
  "async-channel",
- "bc-components",
  "futures-lite",
+ "libcrux-aesgcm",
  "oneshot",
  "piper",
- "ql-engine",
+ "ql-fsm",
+ "ql-wire",
+ "sha2",
+ "thiserror",
  "tokio",
 ]
 

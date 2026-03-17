@@ -22,15 +22,9 @@ pub fn build_hello(
     meta: ControlMeta,
 ) -> Result<(Hello, SessionKey), WireError> {
     let nonce = next_nonce(crypto);
-    let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
-    let proof_data = hash_hello_proof_data(
-        crypto,
-        identity.xid,
-        recipient,
-        &meta,
-        &nonce,
-        &kem_ct,
-    );
+    let (session_key, kem_ct) =
+        recipient_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
+    let proof_data = hash_hello_proof_data(crypto, identity.xid, recipient, &meta, &nonce, &kem_ct);
     let signature = identity.signing_private_key.sign(crypto, &proof_data)?;
     Ok((
         Hello {
@@ -85,7 +79,8 @@ pub fn respond_hello(
         .encapsulation_private_key
         .decapsulate_shared_secret(&initiator_kem_ct)?;
     let nonce = next_nonce(crypto);
-    let (responder_secret, kem_ct) = initiator_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
+    let (responder_secret, kem_ct) =
+        initiator_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
     let transcript = hash_handshake_transcript(
         crypto,
         initiator,

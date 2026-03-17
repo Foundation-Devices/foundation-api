@@ -1,10 +1,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::{
-    StreamConfig,
-    wire::stream::{CloseCode, CloseTarget},
-};
+use crate::{CloseCode, CloseTarget};
 
 #[tokio::test(flavor = "current_thread")]
 async fn open_stream_duplex_happy_path() {
@@ -12,8 +9,8 @@ async fn open_stream_duplex_happy_path() {
         let config = default_runtime_config();
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
+        let identity_a = new_identity(11);
+        let identity_b = new_identity(73);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -34,7 +31,6 @@ async fn open_stream_duplex_happy_path() {
             let inbound = match inbound_b.recv().await.unwrap() {
                 HandlerEvent::Stream(stream) => stream,
             };
-            assert_eq!(inbound.request_head, b"req-head".to_vec());
 
             let mut request = inbound.request;
             let mut response = inbound.response;
@@ -47,15 +43,15 @@ async fn open_stream_duplex_happy_path() {
             response.finish().await.unwrap();
         });
 
-        let mut stream = handle_a
-            .open_stream(b"req-head".to_vec(), StreamConfig::default())
-            .await
-            .unwrap();
+        let mut stream = handle_a.open_stream().await.unwrap();
         stream.request.write_all(&[1, 2]).await.unwrap();
         assert_eq!(stream.response.next_chunk().await.unwrap(), Some(vec![9]));
         stream.request.write_all(&[3, 4]).await.unwrap();
         stream.request.finish().await.unwrap();
-        assert_eq!(stream.response.next_chunk().await.unwrap(), Some(vec![8, 7]));
+        assert_eq!(
+            stream.response.next_chunk().await.unwrap(),
+            Some(vec![8, 7])
+        );
         assert_eq!(stream.response.next_chunk().await.unwrap(), None);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -77,8 +73,8 @@ async fn stream_backpressure_with_small_runtime_buffer() {
 
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
+        let identity_a = new_identity(11);
+        let identity_b = new_identity(73);
         let (done_tx, done_rx) = async_channel::bounded(1);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
@@ -105,10 +101,7 @@ async fn stream_backpressure_with_small_runtime_buffer() {
             done_tx.send(request_data).await.unwrap();
         });
 
-        let mut stream = handle_a
-            .open_stream(Vec::new(), StreamConfig::default())
-            .await
-            .unwrap();
+        let mut stream = handle_a.open_stream().await.unwrap();
         stream.request.write_all(&payload).await.unwrap();
         stream.request.finish().await.unwrap();
         assert_eq!(stream.response.next_chunk().await.unwrap(), None);
@@ -128,13 +121,13 @@ async fn stream_backpressure_with_small_runtime_buffer() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn dropping_responder_rejects_as_unhandled() {
+async fn dropping_responder_closes_initiator_response() {
     run_local_test(async {
         let config = default_runtime_config();
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
+        let identity_a = new_identity(11);
+        let identity_b = new_identity(73);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -158,10 +151,7 @@ async fn dropping_responder_rejects_as_unhandled() {
             drop(stream.response);
         });
 
-        let mut stream = handle_a
-            .open_stream(Vec::new(), StreamConfig::default())
-            .await
-            .unwrap();
+        let mut stream = handle_a.open_stream().await.unwrap();
         stream.request.finish().await.unwrap();
 
         let err = stream.response.next_chunk().await.unwrap_err();
@@ -191,8 +181,8 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
         };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
+        let identity_a = new_identity(11);
+        let identity_b = new_identity(73);
         let (go_tx, go_rx) = async_channel::bounded(1);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
@@ -223,12 +213,12 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             assert!(matches!(err, QlError::Cancelled));
         });
 
-        let mut stream = handle_a
-            .open_stream(Vec::new(), StreamConfig::default())
-            .await
-            .unwrap();
+        let mut stream = handle_a.open_stream().await.unwrap();
         stream.request.finish().await.unwrap();
-        assert_eq!(stream.response.next_chunk().await.unwrap(), Some(vec![1, 2, 3, 4]));
+        assert_eq!(
+            stream.response.next_chunk().await.unwrap(),
+            Some(vec![1, 2, 3, 4])
+        );
         drop(stream.response);
         go_tx.send(()).await.unwrap();
 
@@ -251,8 +241,8 @@ async fn max_concurrent_message_writes_is_respected() {
         let (platform_a, outbound_a, status_a) =
             TestPlatform::new_with_delayed_writes(1, Duration::from_millis(40), stats.clone());
         let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
+        let identity_a = new_identity(11);
+        let identity_b = new_identity(73);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -274,10 +264,8 @@ async fn max_concurrent_message_writes_is_respected() {
                 let stream = match inbound_b.recv().await.unwrap() {
                     HandlerEvent::Stream(stream) => stream,
                 };
-                let request = stream.request;
-                let response = stream.response;
-                let _ = read_all(request).await;
-                let _ = response.finish().await;
+                let _ = read_all(stream.request).await;
+                let _ = stream.response.finish().await;
             }
         });
 
@@ -285,10 +273,7 @@ async fn max_concurrent_message_writes_is_respected() {
         for i in 0..4u8 {
             let handle = handle_a.clone();
             tasks.push(tokio::task::spawn_local(async move {
-                let mut stream = handle
-                    .open_stream(vec![i], StreamConfig::default())
-                    .await
-                    .unwrap();
+                let mut stream = handle.open_stream().await.unwrap();
                 stream.request.write_all(&[i; 8]).await.unwrap();
                 stream.request.finish().await.unwrap();
                 assert_eq!(stream.response.next_chunk().await.unwrap(), None);
@@ -317,21 +302,20 @@ async fn max_concurrent_message_writes_is_respected() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn stream_round_trip_survives_packet_drops() {
+async fn stream_round_trip_survives_encrypted_packet_drops() {
     run_local_test(async {
         let config = RuntimeConfig {
-            engine: crate::engine::EngineConfig {
-                stream_retry_limit: 12,
-                stream_ack_timeout: Duration::from_millis(20),
-                ..default_runtime_config().engine
+            fsm: QlFsmConfig {
+                session_retransmit_timeout: Duration::from_millis(20),
+                ..default_runtime_config().fsm
             },
             stream_send_buffer_bytes: 4,
             ..default_runtime_config()
         };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
+        let identity_a = new_identity(11);
+        let identity_b = new_identity(73);
 
         let request_payload: Vec<u8> = (0..32).collect();
         let response_payload: Vec<u8> = (100..132).collect();
@@ -343,8 +327,8 @@ async fn stream_round_trip_survives_packet_drops() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_drop_every_nth_stream_forwarder(outbound_a, handle_b.clone(), 3);
-        spawn_drop_every_nth_stream_forwarder(outbound_b, handle_a.clone(), 3);
+        spawn_drop_every_nth_encrypted_forwarder(outbound_a, handle_b.clone(), 3);
+        spawn_drop_every_nth_encrypted_forwarder(outbound_b, handle_a.clone(), 3);
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect().unwrap();
@@ -363,10 +347,7 @@ async fn stream_round_trip_survives_packet_drops() {
             received_request
         });
 
-        let mut stream = handle_a
-            .open_stream(Vec::new(), StreamConfig::default())
-            .await
-            .unwrap();
+        let mut stream = handle_a.open_stream().await.unwrap();
         stream.request.write_all(&request_payload).await.unwrap();
         stream.request.finish().await.unwrap();
 

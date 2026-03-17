@@ -2,9 +2,8 @@ use async_channel::{Receiver, Sender};
 use futures_lite::future::poll_fn;
 
 use crate::{
-    command::RuntimeCommand, InboundEvent, OpenedStreamDelivery, StreamConfig,
-    wire::stream::{CloseCode, CloseTarget},
-    Peer, QlError, StreamId,
+    command::RuntimeCommand, CloseCode, CloseTarget, InboundEvent, OpenedStreamDelivery, Peer,
+    QlError, StreamId,
 };
 
 #[derive(Clone)]
@@ -22,7 +21,6 @@ pub struct DuplexStream {
 #[derive(Debug)]
 pub struct InboundStream {
     pub stream_id: StreamId,
-    pub request_head: Vec<u8>,
     pub request: InboundByteStream,
     pub response: OutboundByteStream,
 }
@@ -243,20 +241,14 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::Incoming(bytes))
     }
 
-    pub async fn open_stream(
-        &self,
-        request_head: Vec<u8>,
-        config: StreamConfig,
-    ) -> Result<DuplexStream, QlError> {
+    pub async fn open_stream(&self) -> Result<DuplexStream, QlError> {
         let (request_reader, request_writer) = piper::pipe(self.stream_send_buffer_bytes);
         let (start_tx, start_rx) = oneshot::channel();
 
         self.tx
             .send(RuntimeCommand::OpenStream {
-                request_head,
                 request_reader,
                 start: start_tx,
-                config,
             })
             .await
             .map_err(|_| QlError::Cancelled)?;

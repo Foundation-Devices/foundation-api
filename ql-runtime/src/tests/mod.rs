@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     future::Future,
     sync::{
         atomic::{AtomicU8, AtomicUsize, Ordering},
@@ -8,16 +9,17 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender};
-use bc_components::{MLDSA, MLKEM};
+use libcrux_aesgcm::AesGcm256Key;
+use ql_wire::{
+    generate_ml_dsa_keypair, generate_ml_kem_keypair, Nonce, QlCrypto, QlIdentity, QlPayload,
+    QlRecord, SessionKey, AUTH_SIZE, XID,
+};
+use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
 
 use crate::{
-    engine::QlCrypto,
-    identity::QlIdentity,
-    new_runtime,
-    platform::PlatformFuture,
-    wire::{self, QlPayload},
-    HandlerEvent, KeepAliveConfig, Peer, PeerSession, QlError, RuntimeConfig, RuntimeHandle,
+    new_runtime, platform::PlatformFuture, HandlerEvent, Peer, PeerStatus, QlError, QlFsmConfig,
+    RuntimeConfig, RuntimeHandle,
 };
 
 mod handshake;
@@ -35,7 +37,7 @@ enum PeerStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatusEvent {
-    peer: bc_components::XID,
+    peer: XID,
     stage: PeerStage,
 }
 
@@ -58,14 +60,79 @@ impl WriteStats {
     }
 }
 
+struct DeterministicCrypto {
+    seed: u8,
+    counter: Cell<u8>,
+}
+
+impl DeterministicCrypto {
+    fn new(seed: u8) -> Self {
+        Self {
+            seed,
+            counter: Cell::new(0),
+        }
+    }
+}
+
+impl QlCrypto for DeterministicCrypto {
+    fn fill_random_bytes(&self, data: &mut [u8]) {
+        let value = self.seed.wrapping_add(self.counter.get());
+        self.counter.set(self.counter.get().wrapping_add(1));
+        data.fill(value);
+    }
+
+    fn hash(&self, parts: &[&[u8]]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        for part in parts {
+            hasher.update(part);
+        }
+        hasher.finalize().into()
+    }
+
+    fn encrypt_with_aead(
+        &self,
+        key: &SessionKey,
+        nonce: &Nonce,
+        aad: &[u8],
+        buffer: &mut [u8],
+    ) -> Option<[u8; AUTH_SIZE]> {
+        let key: AesGcm256Key = (*key.data()).into();
+        let plaintext = buffer.to_vec();
+        let mut auth = [0u8; AUTH_SIZE];
+        key.encrypt(
+            buffer,
+            (&mut auth).into(),
+            (&nonce.0).into(),
+            aad,
+            &plaintext,
+        )
+        .ok()?;
+        Some(auth)
+    }
+
+    fn decrypt_with_aead(
+        &self,
+        key: &SessionKey,
+        nonce: &Nonce,
+        aad: &[u8],
+        buffer: &mut [u8],
+        auth_tag: &[u8; AUTH_SIZE],
+    ) -> bool {
+        let key: AesGcm256Key = (*key.data()).into();
+        let ciphertext = buffer.to_vec();
+        key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
+            .is_ok()
+    }
+}
+
 struct TestPlatform {
     outbound: Sender<Vec<u8>>,
     status: Sender<StatusEvent>,
     inbound: Option<Sender<HandlerEvent>>,
     nonce_seed: u8,
     nonce_counter: AtomicU8,
-    stream_write_counter: AtomicUsize,
-    fail_stream_write_at: Option<usize>,
+    encrypted_write_counter: AtomicUsize,
+    fail_encrypted_write_at: Option<usize>,
     write_delay: Duration,
     write_stats: Option<WriteStats>,
 }
@@ -89,11 +156,17 @@ impl TestPlatform {
         (platform, outbound_rx, status_rx, inbound_rx)
     }
 
-    fn new_with_stream_write_failure(
+    fn new_with_session_write_failure(
         seed: u8,
-        fail_stream_write_at: usize,
+        fail_encrypted_write_at: usize,
     ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
-        Self::new_inner(seed, None, Some(fail_stream_write_at), Duration::ZERO, None)
+        Self::new_inner(
+            seed,
+            None,
+            Some(fail_encrypted_write_at),
+            Duration::ZERO,
+            None,
+        )
     }
 
     fn new_with_delayed_writes(
@@ -107,7 +180,7 @@ impl TestPlatform {
     fn new_inner(
         seed: u8,
         inbound: Option<Sender<HandlerEvent>>,
-        fail_stream_write_at: Option<usize>,
+        fail_encrypted_write_at: Option<usize>,
         write_delay: Duration,
         write_stats: Option<WriteStats>,
     ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
@@ -120,8 +193,8 @@ impl TestPlatform {
                 inbound,
                 nonce_seed: seed,
                 nonce_counter: AtomicU8::new(0),
-                stream_write_counter: AtomicUsize::new(0),
-                fail_stream_write_at,
+                encrypted_write_counter: AtomicUsize::new(0),
+                fail_encrypted_write_at,
                 write_delay,
                 write_stats,
             },
@@ -138,13 +211,56 @@ impl QlCrypto for TestPlatform {
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
         data.fill(value);
     }
+
+    fn hash(&self, parts: &[&[u8]]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        for part in parts {
+            hasher.update(part);
+        }
+        hasher.finalize().into()
+    }
+
+    fn encrypt_with_aead(
+        &self,
+        key: &SessionKey,
+        nonce: &Nonce,
+        aad: &[u8],
+        buffer: &mut [u8],
+    ) -> Option<[u8; AUTH_SIZE]> {
+        let key: AesGcm256Key = (*key.data()).into();
+        let plaintext = buffer.to_vec();
+        let mut auth = [0u8; AUTH_SIZE];
+        key.encrypt(
+            buffer,
+            (&mut auth).into(),
+            (&nonce.0).into(),
+            aad,
+            &plaintext,
+        )
+        .ok()?;
+        Some(auth)
+    }
+
+    fn decrypt_with_aead(
+        &self,
+        key: &SessionKey,
+        nonce: &Nonce,
+        aad: &[u8],
+        buffer: &mut [u8],
+        auth_tag: &[u8; AUTH_SIZE],
+    ) -> bool {
+        let key: AesGcm256Key = (*key.data()).into();
+        let ciphertext = buffer.to_vec();
+        key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
+            .is_ok()
+    }
 }
 
 impl crate::platform::QlPlatform for TestPlatform {
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         let write_delay = self.write_delay;
-        let fail_stream_write_at = self.fail_stream_write_at;
+        let fail_encrypted_write_at = self.fail_encrypted_write_at;
         let write_stats = self.write_stats.clone();
 
         Box::pin(async move {
@@ -158,9 +274,9 @@ impl crate::platform::QlPlatform for TestPlatform {
             }
 
             let mut should_fail = false;
-            if is_stream_payload(&message) {
-                let count = self.stream_write_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                should_fail = fail_stream_write_at == Some(count);
+            if is_encrypted_payload(&message) {
+                let count = self.encrypted_write_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                should_fail = fail_encrypted_write_at == Some(count);
             }
 
             let result = if should_fail {
@@ -192,12 +308,12 @@ impl crate::platform::QlPlatform for TestPlatform {
 
     fn clear_peer(&self) {}
 
-    fn handle_peer_status(&self, peer: bc_components::XID, session: &PeerSession) {
-        let stage = match session {
-            PeerSession::Disconnected => PeerStage::Disconnected,
-            PeerSession::Initiator { .. } => PeerStage::Initiator,
-            PeerSession::Responder { .. } => PeerStage::Responder,
-            PeerSession::Connected { .. } => PeerStage::Connected,
+    fn handle_peer_status(&self, peer: XID, status: PeerStatus) {
+        let stage = match status {
+            PeerStatus::Disconnected => PeerStage::Disconnected,
+            PeerStatus::Initiator => PeerStage::Initiator,
+            PeerStatus::Responder => PeerStage::Responder,
+            PeerStatus::Connected => PeerStage::Connected,
         };
         let _ = self.status.try_send(StatusEvent { peer, stage });
     }
@@ -209,16 +325,18 @@ impl crate::platform::QlPlatform for TestPlatform {
     }
 }
 
-fn is_stream_payload(bytes: &[u8]) -> bool {
-    wire::decode_record(bytes)
+fn is_encrypted_payload(bytes: &[u8]) -> bool {
+    QlRecord::decode(bytes)
         .ok()
-        .is_some_and(|record| matches!(record.payload, QlPayload::Stream(_)))
+        .is_some_and(|record| matches!(record.payload, QlPayload::Encrypted(_)))
 }
 
-fn new_identity() -> QlIdentity {
-    let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
-    let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
+fn new_identity(seed: u8) -> QlIdentity {
+    let crypto = DeterministicCrypto::new(seed);
+    let (signing_private, signing_public) = generate_ml_dsa_keypair(&crypto);
+    let (encapsulation_private, encapsulation_public) = generate_ml_kem_keypair(&crypto);
     QlIdentity::from_keys(
+        XID([seed; XID::XID_SIZE]),
         signing_private,
         signing_public,
         encapsulation_private,
@@ -228,7 +346,7 @@ fn new_identity() -> QlIdentity {
 
 fn peer_from_identity(identity: &QlIdentity) -> Peer {
     Peer {
-        peer: identity.xid,
+        xid: identity.xid,
         signing_key: identity.signing_public_key.clone(),
         encapsulation_key: identity.encapsulation_public_key.clone(),
     }
@@ -252,51 +370,19 @@ fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
     });
 }
 
-fn spawn_drop_every_nth_stream_forwarder(
+fn spawn_drop_every_nth_encrypted_forwarder(
     outbound: Receiver<Vec<u8>>,
     handle: RuntimeHandle,
     nth: usize,
 ) {
     tokio::task::spawn_local(async move {
-        let mut stream_count = 0usize;
+        let mut encrypted_count = 0usize;
         while let Ok(bytes) = outbound.recv().await {
-            if nth > 0 && is_stream_payload(&bytes) {
-                stream_count = stream_count.saturating_add(1);
-                if stream_count % nth == 0 {
+            if nth > 0 && is_encrypted_payload(&bytes) {
+                encrypted_count = encrypted_count.saturating_add(1);
+                if encrypted_count % nth == 0 {
                     continue;
                 }
-            }
-            handle.send_incoming(bytes);
-        }
-    });
-}
-
-fn is_heartbeat(bytes: &[u8]) -> bool {
-    wire::decode_record(bytes)
-        .ok()
-        .is_some_and(|record| matches!(record.payload, QlPayload::Heartbeat(_)))
-}
-
-fn spawn_heartbeat_tap_forwarder(
-    outbound: Receiver<Vec<u8>>,
-    handle: RuntimeHandle,
-    heartbeat_tx: Sender<()>,
-) {
-    tokio::task::spawn_local(async move {
-        while let Ok(bytes) = outbound.recv().await {
-            if is_heartbeat(&bytes) {
-                let _ = heartbeat_tx.send(()).await;
-            }
-            handle.send_incoming(bytes);
-        }
-    });
-}
-
-fn spawn_drop_heartbeat_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
-    tokio::task::spawn_local(async move {
-        while let Ok(bytes) = outbound.recv().await {
-            if is_heartbeat(&bytes) {
-                continue;
             }
             handle.send_incoming(bytes);
         }
@@ -326,11 +412,7 @@ where
     local.run_until(future).await;
 }
 
-async fn await_status(
-    receiver: &Receiver<StatusEvent>,
-    peer: bc_components::XID,
-    stage: PeerStage,
-) {
+async fn await_status(receiver: &Receiver<StatusEvent>, peer: XID, stage: PeerStage) {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if let Ok(event) = receiver.recv().await {
@@ -346,7 +428,7 @@ async fn await_status(
 
 async fn assert_no_status_for(
     receiver: &Receiver<StatusEvent>,
-    peer: bc_components::XID,
+    peer: XID,
     stage: PeerStage,
     window: Duration,
 ) {
@@ -372,10 +454,11 @@ async fn read_all(mut stream: crate::InboundByteStream) -> Result<Vec<u8>, QlErr
 
 fn default_runtime_config() -> RuntimeConfig {
     RuntimeConfig {
-        engine: crate::engine::EngineConfig {
+        fsm: QlFsmConfig {
             handshake_timeout: Duration::from_millis(300),
-            stream_ack_timeout: Duration::from_millis(30),
-            stream_retry_limit: 8,
+            session_retransmit_timeout: Duration::from_millis(30),
+            session_keepalive_interval: Duration::ZERO,
+            session_peer_timeout: Duration::ZERO,
             ..Default::default()
         },
         ..Default::default()

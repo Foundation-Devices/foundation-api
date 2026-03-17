@@ -2,9 +2,10 @@ use super::{PairRequestBody, PairRequestRecord};
 use crate::{
     access_value, deserialize_value, encode_value,
     encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage},
-    ensure_not_expired, pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext,
-    MlKemPublicKey, Nonce, QlCrypto, QlHeader, QlIdentity, QlPayload, QlRecord, SessionKey,
-    WireError, XID,
+    ensure_not_expired,
+    pq::ML_KEM_SUITE_TAG,
+    ControlMeta, MlDsaPublicKey, MlKemCiphertext, MlKemPublicKey, Nonce, QlCrypto, QlHeader,
+    QlIdentity, QlPayload, QlRecord, SessionKey, WireError, XID,
 };
 
 pub fn build_pair_request(
@@ -14,7 +15,8 @@ pub fn build_pair_request(
     recipient_encapsulation_key: &MlKemPublicKey,
     meta: ControlMeta,
 ) -> Result<QlRecord, WireError> {
-    let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
+    let (session_key, kem_ct) =
+        recipient_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
     let header = QlHeader {
         sender: identity.xid,
         recipient,
@@ -76,7 +78,10 @@ pub fn decrypt_pair_request(
         &decrypted.signing_pub_key,
         &decrypted.encapsulation_pub_key,
     );
-    if decrypted.signing_pub_key.verify(&decrypted.proof, &proof_data) {
+    if decrypted
+        .signing_pub_key
+        .verify(&decrypted.proof, &proof_data)
+    {
         Ok(decrypted)
     } else {
         Err(WireError::InvalidSignature)

@@ -1,11 +1,8 @@
 pub use handle::{
     DuplexStream, InboundByteStream, InboundStream, OutboundByteStream, RuntimeHandle,
 };
-pub use ql_engine::{engine, identity, wire, PacketId, Peer, QlError, StreamId};
-
-pub use crate::engine::{
-    EngineConfig, HandshakeInitiator, KeepAliveConfig, PeerSession, StreamConfig,
-};
+pub use ql_fsm::{Peer, PeerStatus, QlFsmConfig, QlFsmError, SessionWriteId};
+pub use ql_wire::{self as wire, CloseCode, CloseTarget, QlIdentity, StreamId, XID};
 
 pub(crate) mod command;
 pub(crate) mod driver;
@@ -15,12 +12,64 @@ pub mod platform;
 #[cfg(test)]
 mod tests;
 
+use thiserror::Error;
+
 use self::platform::QlPlatform;
-use crate::identity::QlIdentity;
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum QlError {
+    #[error("invalid payload")]
+    InvalidPayload,
+    #[error("invalid signature")]
+    InvalidSignature,
+    #[error("expired")]
+    Expired,
+    #[error("signing failed")]
+    SigningFailed,
+    #[error("encryption failed")]
+    EncryptFailed,
+    #[error("decryption failed")]
+    DecryptFailed,
+    #[error("missing stream")]
+    MissingStream,
+    #[error("stream is not writable")]
+    NotWritable,
+    #[error("session is closed")]
+    SessionClosed,
+    #[error("no peer bound")]
+    NoPeerBound,
+    #[error("send failed")]
+    SendFailed,
+    #[error("stream closed {code:?}")]
+    StreamClosed {
+        target: CloseTarget,
+        code: CloseCode,
+        payload: Vec<u8>,
+    },
+    #[error("cancelled")]
+    Cancelled,
+}
+
+impl From<QlFsmError> for QlError {
+    fn from(value: QlFsmError) -> Self {
+        match value {
+            QlFsmError::InvalidPayload => Self::InvalidPayload,
+            QlFsmError::InvalidSignature => Self::InvalidSignature,
+            QlFsmError::Expired => Self::Expired,
+            QlFsmError::SigningFailed => Self::SigningFailed,
+            QlFsmError::EncryptFailed => Self::EncryptFailed,
+            QlFsmError::DecryptFailed => Self::DecryptFailed,
+            QlFsmError::MissingStream => Self::MissingStream,
+            QlFsmError::NotWritable => Self::NotWritable,
+            QlFsmError::SessionClosed => Self::SessionClosed,
+            QlFsmError::NoPeerBound => Self::NoPeerBound,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
-    pub engine: EngineConfig,
+    pub fsm: QlFsmConfig,
     pub stream_send_buffer_bytes: usize,
     pub max_concurrent_message_writes: usize,
 }
@@ -28,7 +77,7 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            engine: EngineConfig::default(),
+            fsm: QlFsmConfig::default(),
             stream_send_buffer_bytes: 64 * 1024,
             max_concurrent_message_writes: 4,
         }
