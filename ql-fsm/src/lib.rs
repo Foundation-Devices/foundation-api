@@ -105,11 +105,7 @@ pub struct QlFsm {
 }
 
 impl QlFsm {
-    pub fn new(
-        config: QlFsmConfig,
-        identity: QlIdentity,
-        now: FsmTime,
-    ) -> Self {
+    pub fn new(config: QlFsmConfig, identity: QlIdentity, now: FsmTime) -> Self {
         Self {
             config,
             identity,
@@ -192,11 +188,11 @@ impl QlFsm {
         implementation::confirm_session_write(self, write_id);
     }
 
-    /// Returns a previously issued session write to the FSM because it was NOT handed to the transport.
+    /// Reports that a previously issued session write was not accepted by the transport.
     ///
     /// This must be called at most once for a `SessionWriteId` returned by
     /// [`Self::take_next_write`] whose `session_write_id` was `Some`.
-    pub fn return_session_write(&mut self, write_id: SessionWriteId) {
+    pub fn reject_session_write(&mut self, write_id: SessionWriteId) {
         implementation::return_session_write(self, write_id);
     }
 

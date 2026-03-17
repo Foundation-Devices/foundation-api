@@ -176,7 +176,7 @@ impl Harness {
     }
 
     fn return_write_a(&mut self, write_id: SessionWriteId) {
-        self.a.fsm.return_session_write(write_id);
+        self.a.fsm.reject_session_write(write_id);
     }
 
     fn pump(&mut self) {
