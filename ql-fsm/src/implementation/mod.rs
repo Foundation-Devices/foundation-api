@@ -1,307 +1,144 @@
-pub mod handshake;
-pub mod peer;
+mod fsm;
+mod handshake;
+mod peer;
 
 use std::time::Duration;
 
-use ql_wire::{
-    self as wire, handshake::ArchivedHandshakeRecord, ArchivedQlPayload, ControlId, ControlMeta,
-    Nonce, QlCrypto, QlHeader, QlPayload, QlRecord, XID,
-};
+pub use fsm::*;
+pub use handshake::*;
+pub use peer::*;
+use ql_wire::{self as wire, ControlId, ControlMeta, QlHeader, QlPayload, QlRecord, XID};
 use rkyv::api::low;
 
 use crate::{
     session::{SessionEvent, SessionFsmConfig, StreamIncoming, StreamNamespace},
-    OutboundWrite, Peer, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId,
+    QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent,
 };
 
-impl QlFsm {
-    pub fn bind_peer_inner(&mut self, peer: Peer) {
-        peer::handle_bind_peer(self, peer);
-    }
-
-    pub fn pair_inner(&mut self, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
-        peer::handle_pair_local(self, crypto)
-    }
-
-    pub fn connect_inner(&mut self, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
-        handshake::handle_connect(self, crypto)
-    }
-
-    pub fn receive_inner(
-        &mut self,
-        mut bytes: Vec<u8>,
-        crypto: &impl QlCrypto,
-    ) -> Result<(), QlFsmError> {
-        let archived = wire::access_record_mut(&mut bytes)?;
-        let archived = unsafe { archived.unseal_unchecked() };
-        let header: QlHeader = deserialize_archived(&archived.header)?;
-
-        if header.recipient != self.identity.xid {
-            return Ok(());
-        }
-        if !matches!(&archived.payload, ArchivedQlPayload::Pair(_)) {
-            let Some(peer) = self.peer.as_ref().map(|entry| entry.peer.xid) else {
-                return Ok(());
-            };
-            if header.sender != peer {
-                return Ok(());
-            }
-        }
-
-        match &mut archived.payload {
-            ArchivedQlPayload::Pair(request) => {
-                peer::handle_pair(self, &header, request, crypto)?;
-            }
-            ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Hello(archived_hello)) => {
-                handshake::handle_hello(self, &header, archived_hello, crypto)?;
-            }
-            ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::HelloReply(archived_reply)) => {
-                handshake::handle_hello_reply(self, &header, archived_reply)?;
-            }
-            ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Confirm(archived_confirm)) => {
-                handshake::handle_confirm(self, &header, archived_confirm, crypto)?;
-            }
-            ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Ready(archived_ready)) => {
-                handshake::handle_ready(self, &header, archived_ready)?;
-            }
-            ArchivedQlPayload::Encrypted(encrypted) => {
-                let Some((_, session_key)) = self.peer_session() else {
-                    return Ok(());
-                };
-                let envelope =
-                    match wire::encrypted::decrypt_record(&header, encrypted, &session_key) {
-                        Ok(envelope) => envelope,
-                        Err(_) => return Ok(()),
-                    };
-                self.session.receive(self.state.now.instant, envelope);
-                self.drain_session_events();
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn on_timer_inner(&mut self) {
-        handshake::handle_timer(self);
-        if self.peer_session().is_some() {
-            self.session.on_timer(self.state.now.instant);
-            self.drain_session_events();
-        }
-    }
-
-    pub fn next_deadline_inner(&self) -> Option<std::time::Instant> {
-        [
-            handshake::next_deadline(self),
-            self.peer_session()
-                .map(|_| self.session.next_deadline())
-                .flatten(),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
-    }
-
-    pub fn take_next_write_inner(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
-        if let Some(record) = self.state.outbound.pop_front() {
-            return Some(OutboundWrite {
-                record,
-                session_write_id: None,
-            });
-        }
-
-        if matches!(
-            self.peer.as_ref().map(|entry| &entry.session),
-            Some(crate::state::ConnectionState::Disconnected)
-        ) && self.session.has_pending_stream_work()
-        {
-            let _ = self.connect_inner(crypto);
-            if let Some(record) = self.state.outbound.pop_front() {
-                return Some(OutboundWrite {
-                    record,
-                    session_write_id: None,
-                });
-            }
-        }
-
-        let (recipient, session_key) = self.peer_session()?;
-        let envelope = self.session.take_next_write(self.state.now.instant)?;
-        let mut nonce = [0u8; Nonce::NONCE_SIZE];
-        crypto.fill_random_bytes(&mut nonce);
-        Some(OutboundWrite {
-            record: wire::encrypted::encrypt_record(
-                QlHeader {
-                    sender: self.identity.xid,
-                    recipient,
-                },
-                &session_key,
-                &envelope,
-                Nonce(nonce),
-            ),
-            session_write_id: Some(SessionWriteId(envelope.seq)),
-        })
-    }
-
-    pub fn confirm_session_write_inner(&mut self, write_id: SessionWriteId) {
-        self.session
-            .confirm_write(self.state.now.instant, write_id.0);
-    }
-
-    pub fn return_session_write_inner(&mut self, write_id: SessionWriteId) {
-        self.session.return_write(write_id.0);
-    }
-
-    pub fn kill_session_inner(&mut self, code: ql_wire::CloseCode) {
-        let Some(entry) = self.peer.as_mut() else {
-            return;
-        };
-        if !matches!(
-            entry.session,
-            crate::state::ConnectionState::Connected { .. }
-        ) {
-            return;
-        }
-
-        entry.session = crate::state::ConnectionState::Disconnected;
-        self.emit_peer_status();
-        self.reset_session();
-        self.state
-            .session_events
-            .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionCloseBody {
-                code,
-            }));
-    }
-
-    pub fn take_next_event_inner(&mut self) -> Option<QlFsmEvent> {
-        self.state.events.pop_front()
-    }
-
-    fn emit_peer_status(&mut self) {
-        if let Some(entry) = self.peer.as_ref() {
-            self.state.events.push_back(QlFsmEvent::PeerStatusChanged {
-                peer: entry.peer.xid,
-                status: entry.session.status(),
-            });
-        }
-    }
-
-    fn next_control_meta(&mut self, lifetime: Duration) -> ControlMeta {
-        let control_id = ControlId(self.state.next_control_id);
-        self.state.next_control_id = self.state.next_control_id.wrapping_add(1);
-        ControlMeta {
-            control_id,
-            valid_until: deadline_after_secs(self.state.now.unix_secs, lifetime),
-        }
-    }
-
-    fn enqueue_handshake(&mut self, peer: XID, record: wire::handshake::HandshakeRecord) {
-        self.state.outbound.push_back(QlRecord {
-            header: QlHeader {
-                sender: self.identity.xid,
-                recipient: peer,
-            },
-            payload: QlPayload::Handshake(record),
+fn emit_peer_status(fsm: &mut QlFsm) {
+    if let Some(entry) = fsm.peer.as_ref() {
+        fsm.state.events.push_back(QlFsmEvent::PeerStatusChanged {
+            peer: entry.peer.xid,
+            status: entry.session.status(),
         });
     }
+}
 
-    fn is_replayed_control(&mut self, peer: XID, meta: ControlMeta) -> bool {
-        self.state
-            .replay_cache
-            .check_and_store_valid_until(peer, meta, self.state.now.unix_secs)
+fn next_control_meta(fsm: &mut QlFsm, lifetime: Duration) -> ControlMeta {
+    let control_id = ControlId(fsm.state.next_control_id);
+    fsm.state.next_control_id = fsm.state.next_control_id.wrapping_add(1);
+    ControlMeta {
+        control_id,
+        valid_until: deadline_after_secs(fsm.state.now.unix_secs, lifetime),
     }
+}
 
-    fn peer_session(&self) -> Option<(XID, bc_components::SymmetricKey)> {
-        let entry = self.peer.as_ref()?;
-        let session_key = entry.session.session_key()?.clone();
-        Some((entry.peer.xid, session_key))
+fn enqueue_handshake(fsm: &mut QlFsm, peer: XID, record: wire::handshake::HandshakeRecord) {
+    fsm.state.outbound.push_back(QlRecord {
+        header: QlHeader {
+            sender: fsm.identity.xid,
+            recipient: peer,
+        },
+        payload: QlPayload::Handshake(record),
+    });
+}
+
+fn is_replayed_control(fsm: &mut QlFsm, peer: XID, meta: ControlMeta) -> bool {
+    fsm.state
+        .replay_cache
+        .check_and_store_valid_until(peer, meta, fsm.state.now.unix_secs)
+}
+
+fn peer_session(fsm: &QlFsm) -> Option<(XID, bc_components::SymmetricKey)> {
+    let entry = fsm.peer.as_ref()?;
+    let session_key = entry.session.session_key()?.clone();
+    Some((entry.peer.xid, session_key))
+}
+
+fn reset_session(fsm: &mut QlFsm) {
+    let local_namespace = fsm
+        .peer
+        .as_ref()
+        .map(|peer| StreamNamespace::for_local(fsm.identity.xid, peer.peer.xid))
+        .unwrap_or(StreamNamespace::Low);
+    fsm.session = crate::session::SessionFsm::new(
+        SessionFsmConfig {
+            local_namespace,
+            ack_delay: fsm.config.session_ack_delay,
+            retransmit_timeout: fsm.config.session_retransmit_timeout,
+            keepalive_interval: fsm.config.session_keepalive_interval,
+            peer_timeout: fsm.config.session_peer_timeout,
+        },
+        fsm.state.now.instant,
+    );
+}
+
+fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::CloseCode) {
+    if !fsm.session.has_pending_stream_work() {
+        return;
     }
+    reset_session(fsm);
+    fsm.state
+        .session_events
+        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionCloseBody {
+            code,
+        }));
+}
 
-    fn reset_session(&mut self) {
-        let local_namespace = self
-            .peer
-            .as_ref()
-            .map(|peer| StreamNamespace::for_local(self.identity.xid, peer.peer.xid))
-            .unwrap_or(StreamNamespace::Low);
-        self.session = crate::session::SessionFsm::new(
-            SessionFsmConfig {
-                local_namespace,
-                ack_delay: self.config.session_ack_delay,
-                retransmit_timeout: self.config.session_retransmit_timeout,
-                keepalive_interval: self.config.session_keepalive_interval,
-                peer_timeout: self.config.session_peer_timeout,
-            },
-            self.state.now.instant,
-        );
-    }
-
-    fn fail_pending_connect_session(&mut self, code: ql_wire::CloseCode) {
-        if !self.session.has_pending_stream_work() {
-            return;
-        }
-        self.reset_session();
-        self.state
-            .session_events
-            .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionCloseBody {
-                code,
-            }));
-    }
-
-    fn drain_session_events(&mut self) {
-        while let Some(event) = self.session.take_next_event() {
-            match event {
-                SessionEvent::Opened(stream_id) => {
-                    self.state
-                        .session_events
-                        .push_back(QlSessionEvent::Opened(stream_id));
-                }
-                SessionEvent::Readable(stream_id) => {
-                    while let Some(incoming) = self.session.take_next_inbound(stream_id) {
-                        match incoming {
-                            StreamIncoming::Data(bytes) => {
-                                self.state
-                                    .session_events
-                                    .push_back(QlSessionEvent::Data { stream_id, bytes });
-                            }
-                            StreamIncoming::Finished => {
-                                self.state
-                                    .session_events
-                                    .push_back(QlSessionEvent::Finished(stream_id));
-                            }
-                            StreamIncoming::Closed(frame) => {
-                                self.state
-                                    .session_events
-                                    .push_back(QlSessionEvent::Closed(frame));
-                            }
+fn drain_session_events(fsm: &mut QlFsm) {
+    while let Some(event) = fsm.session.take_next_event() {
+        match event {
+            SessionEvent::Opened(stream_id) => {
+                fsm.state
+                    .session_events
+                    .push_back(QlSessionEvent::Opened(stream_id));
+            }
+            SessionEvent::Readable(stream_id) => {
+                while let Some(incoming) = fsm.session.take_next_inbound(stream_id) {
+                    match incoming {
+                        StreamIncoming::Data(bytes) => {
+                            fsm.state
+                                .session_events
+                                .push_back(QlSessionEvent::Data { stream_id, bytes });
+                        }
+                        StreamIncoming::Finished => {
+                            fsm.state
+                                .session_events
+                                .push_back(QlSessionEvent::Finished(stream_id));
+                        }
+                        StreamIncoming::Closed(frame) => {
+                            fsm.state
+                                .session_events
+                                .push_back(QlSessionEvent::Closed(frame));
                         }
                     }
                 }
-                SessionEvent::WritableClosed(stream_id) => {
-                    self.state
-                        .session_events
-                        .push_back(QlSessionEvent::WritableClosed(stream_id));
-                }
-                SessionEvent::Unpaired => {
-                    self.state
-                        .session_events
-                        .push_back(QlSessionEvent::Unpaired);
-                    self.peer = None;
-                    self.reset_session();
-                    self.state.events.push_back(QlFsmEvent::ClearPeer);
-                }
-                SessionEvent::SessionClosed(close) => {
-                    self.state
-                        .session_events
-                        .push_back(QlSessionEvent::SessionClosed(close.clone()));
-                    if let Some(entry) = self.peer.as_mut() {
-                        if matches!(
-                            entry.session,
-                            crate::state::ConnectionState::Connected { .. }
-                        ) {
-                            entry.session = crate::state::ConnectionState::Disconnected;
-                            self.emit_peer_status();
-                        }
+            }
+            SessionEvent::WritableClosed(stream_id) => {
+                fsm.state
+                    .session_events
+                    .push_back(QlSessionEvent::WritableClosed(stream_id));
+            }
+            SessionEvent::Unpaired => {
+                fsm.state.session_events.push_back(QlSessionEvent::Unpaired);
+                fsm.peer = None;
+                reset_session(fsm);
+                fsm.state.events.push_back(QlFsmEvent::ClearPeer);
+            }
+            SessionEvent::SessionClosed(close) => {
+                fsm.state
+                    .session_events
+                    .push_back(QlSessionEvent::SessionClosed(close.clone()));
+                if let Some(entry) = fsm.peer.as_mut() {
+                    if matches!(
+                        entry.session,
+                        crate::state::ConnectionState::Connected { .. }
+                    ) {
+                        entry.session = crate::state::ConnectionState::Disconnected;
+                        emit_peer_status(fsm);
                     }
-                    self.reset_session();
                 }
+                reset_session(fsm);
             }
         }
     }

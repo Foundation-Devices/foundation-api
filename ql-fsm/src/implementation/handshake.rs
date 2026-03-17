@@ -6,8 +6,11 @@ use ql_wire::{
     handshake::{Confirm, Hello, HelloReply, Ready},
     ControlMeta, QlCrypto, QlHeader, XID,
 };
-use rkyv::api::low;
 
+use super::{
+    deserialize_archived, emit_peer_status, enqueue_handshake, fail_pending_connect_session,
+    is_replayed_control, next_control_meta,
+};
 use crate::{
     state::{ConnectionState, HandshakeInitiator, HandshakeResponder, RecentReady},
     Peer, QlFsm, QlFsmError,
@@ -98,18 +101,19 @@ pub fn handle_hello(
     match action {
         HelloAction::Ignore => {}
         HelloAction::ResendReply { reply } => {
-            fsm.enqueue_handshake(
+            enqueue_handshake(
+                fsm,
                 header.sender,
                 wire::handshake::HandshakeRecord::HelloReply(reply),
             );
         }
         HelloAction::StartResponder => {
-            if fsm.is_replayed_control(header.sender, hello.meta) {
+            if is_replayed_control(fsm, header.sender, hello.meta) {
                 return Ok(());
             }
 
             let peer = fsm.peer.as_ref().map(|entry| entry.peer.clone()).unwrap();
-            let reply_meta = fsm.next_control_meta(fsm.config.handshake_timeout);
+            let reply_meta = next_control_meta(fsm, fsm.config.handshake_timeout);
             let responder = wire::handshake::respond_hello(
                 &fsm.identity,
                 crypto,
@@ -126,7 +130,7 @@ pub fn handle_hello(
                     if let Some(entry) = fsm.peer.as_mut() {
                         entry.session = ConnectionState::Disconnected;
                     }
-                    fsm.emit_peer_status();
+                    emit_peer_status(fsm);
                     return Ok(());
                 }
             };
@@ -145,11 +149,12 @@ pub fn handle_hello(
                     },
                 };
             }
-            fsm.enqueue_handshake(
+            enqueue_handshake(
+                fsm,
                 header.sender,
                 wire::handshake::HandshakeRecord::HelloReply(reply),
             );
-            fsm.emit_peer_status();
+            emit_peer_status(fsm);
         }
     }
 
@@ -196,7 +201,8 @@ pub fn handle_hello_reply(
 
     match action {
         HelloReplyAction::ResendConfirm { confirm } => {
-            fsm.enqueue_handshake(
+            enqueue_handshake(
+                fsm,
                 header.sender,
                 wire::handshake::HandshakeRecord::Confirm(confirm),
             );
@@ -206,7 +212,7 @@ pub fn handle_hello_reply(
             initiator_secret,
             responder_signing_key,
         } => {
-            let confirm_meta = fsm.next_control_meta(fsm.config.handshake_timeout);
+            let confirm_meta = next_control_meta(fsm, fsm.config.handshake_timeout);
             let (confirm, session_key) = match wire::handshake::build_confirm(
                 &fsm.identity,
                 header.sender,
@@ -220,7 +226,7 @@ pub fn handle_hello_reply(
                 Err(_) => return Ok(()),
             };
 
-            if fsm.is_replayed_control(header.sender, reply.meta) {
+            if is_replayed_control(fsm, header.sender, reply.meta) {
                 return Ok(());
             }
 
@@ -239,7 +245,8 @@ pub fn handle_hello_reply(
                     },
                 };
             }
-            fsm.enqueue_handshake(
+            enqueue_handshake(
+                fsm,
                 header.sender,
                 wire::handshake::HandshakeRecord::Confirm(confirm),
             );
@@ -249,12 +256,6 @@ pub fn handle_hello_reply(
     Ok(())
 }
 
-fn deserialize_archived<T>(
-    value: &impl rkyv::Deserialize<T, low::LowDeserializer<rkyv::rancor::Error>>,
-) -> Result<T, QlFsmError> {
-    low::deserialize::<T, rkyv::rancor::Error>(value).map_err(|_| QlFsmError::InvalidPayload)
-}
-
 pub fn handle_confirm(
     fsm: &mut QlFsm,
     header: &QlHeader,
@@ -262,7 +263,8 @@ pub fn handle_confirm(
     crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
     if let Some(ready) = recent_ready_resend(fsm, header.sender, confirm) {
-        fsm.enqueue_handshake(
+        enqueue_handshake(
+            fsm,
             header.sender,
             wire::handshake::HandshakeRecord::Ready(ready),
         );
@@ -301,7 +303,7 @@ pub fn handle_confirm(
     };
 
     let meta: ControlMeta = (&confirm.meta).into();
-    if fsm.is_replayed_control(header.sender, meta) {
+    if is_replayed_control(fsm, header.sender, meta) {
         return Ok(());
     }
 
@@ -311,7 +313,7 @@ pub fn handle_confirm(
             recipient: header.sender,
         },
         &session_key,
-        fsm.next_control_meta(fsm.config.handshake_timeout),
+        next_control_meta(fsm, fsm.config.handshake_timeout),
         next_encrypted_nonce(crypto),
     );
 
@@ -327,11 +329,12 @@ pub fn handle_confirm(
         };
     }
 
-    fsm.enqueue_handshake(
+    enqueue_handshake(
+        fsm,
         header.sender,
         wire::handshake::HandshakeRecord::Ready(ready),
     );
-    fsm.emit_peer_status();
+    emit_peer_status(fsm);
     Ok(())
 }
 
@@ -357,7 +360,7 @@ pub fn handle_ready(
         Ok(body) => body,
         Err(_) => return Ok(()),
     };
-    if fsm.is_replayed_control(header.sender, body.meta) {
+    if is_replayed_control(fsm, header.sender, body.meta) {
         return Ok(());
     }
 
@@ -367,7 +370,7 @@ pub fn handle_ready(
             recent_ready: None,
         };
     }
-    fsm.emit_peer_status();
+    emit_peer_status(fsm);
     Ok(())
 }
 
@@ -444,26 +447,34 @@ pub fn handle_timer(fsm: &mut QlFsm) {
     }
 
     if disconnected {
-        fsm.fail_pending_connect_session(ql_wire::CloseCode::TIMEOUT);
-        fsm.emit_peer_status();
+        fail_pending_connect_session(fsm, ql_wire::CloseCode::TIMEOUT);
+        emit_peer_status(fsm);
     }
 
     if let Some(action) = retry_action {
         match action {
             RetryAction::Hello { peer, hello } => {
-                fsm.enqueue_handshake(peer, wire::handshake::HandshakeRecord::Hello(hello));
+                enqueue_handshake(fsm, peer, wire::handshake::HandshakeRecord::Hello(hello));
             }
             RetryAction::HelloReply { peer, reply } => {
-                fsm.enqueue_handshake(peer, wire::handshake::HandshakeRecord::HelloReply(reply));
+                enqueue_handshake(
+                    fsm,
+                    peer,
+                    wire::handshake::HandshakeRecord::HelloReply(reply),
+                );
             }
             RetryAction::Confirm { peer, confirm } => {
-                fsm.enqueue_handshake(peer, wire::handshake::HandshakeRecord::Confirm(confirm));
+                enqueue_handshake(
+                    fsm,
+                    peer,
+                    wire::handshake::HandshakeRecord::Confirm(confirm),
+                );
             }
         }
     }
 }
 
-pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
+pub fn next_handshake_deadline(fsm: &QlFsm) -> Option<Instant> {
     let mut deadline = None;
     if let Some(entry) = fsm.peer.as_ref() {
         match &entry.session {
@@ -504,7 +515,7 @@ fn start_initiator_handshake(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<
     }
 
     let peer = entry.peer.clone();
-    let meta = fsm.next_control_meta(fsm.config.handshake_timeout);
+    let meta = next_control_meta(fsm, fsm.config.handshake_timeout);
     let (hello, initiator_secret) = wire::handshake::build_hello(
         &fsm.identity,
         crypto,
@@ -527,8 +538,12 @@ fn start_initiator_handshake(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<
         };
     }
 
-    fsm.enqueue_handshake(peer.xid, wire::handshake::HandshakeRecord::Hello(hello));
-    fsm.emit_peer_status();
+    enqueue_handshake(
+        fsm,
+        peer.xid,
+        wire::handshake::HandshakeRecord::Hello(hello),
+    );
+    emit_peer_status(fsm);
     Ok(())
 }
 

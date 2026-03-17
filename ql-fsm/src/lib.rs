@@ -143,17 +143,17 @@ impl QlFsm {
     }
 
     pub fn bind_peer(&mut self, peer: Peer) {
-        self.bind_peer_inner(peer);
+        implementation::handle_bind_peer(self, peer);
     }
 
     pub fn pair(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
         self.state.now = now;
-        self.pair_inner(crypto)
+        implementation::handle_pair_local(self, crypto)
     }
 
     pub fn connect(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
         self.state.now = now;
-        self.connect_inner(crypto)
+        implementation::handle_connect(self, crypto)
     }
 
     pub fn receive(
@@ -163,16 +163,16 @@ impl QlFsm {
         crypto: &impl QlCrypto,
     ) -> Result<(), QlFsmError> {
         self.state.now = now;
-        self.receive_inner(bytes, crypto)
+        implementation::receive(self, bytes, crypto)
     }
 
     pub fn on_timer(&mut self, now: FsmTime) {
         self.state.now = now;
-        self.on_timer_inner();
+        implementation::on_timer(self);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.next_deadline_inner()
+        implementation::next_deadline(self)
     }
 
     /// Returns the next outbound record.
@@ -187,7 +187,7 @@ impl QlFsm {
         crypto: &impl QlCrypto,
     ) -> Option<OutboundWrite> {
         self.state.now = now;
-        self.take_next_write_inner(crypto)
+        implementation::take_next_write(self, crypto)
     }
 
     /// Marks a previously issued session write as successfully handed to the transport.
@@ -196,7 +196,7 @@ impl QlFsm {
     /// [`Self::take_next_write`] whose `session_write_id` was `Some`.
     pub fn confirm_session_write(&mut self, now: FsmTime, write_id: SessionWriteId) {
         self.state.now = now;
-        self.confirm_session_write_inner(write_id);
+        implementation::confirm_session_write(self, write_id);
     }
 
     /// Returns a previously issued session write to the FSM because it was NOT handed to the transport.
@@ -204,39 +204,28 @@ impl QlFsm {
     /// This must be called at most once for a `SessionWriteId` returned by
     /// [`Self::take_next_write`] whose `session_write_id` was `Some`.
     pub fn return_session_write(&mut self, write_id: SessionWriteId) {
-        self.return_session_write_inner(write_id);
+        implementation::return_session_write(self, write_id);
     }
 
     /// Aborts the current encrypted session locally.
     pub fn kill_session(&mut self, code: CloseCode) {
-        self.kill_session_inner(code);
+        implementation::kill_session(self, code);
     }
 
     pub fn take_next_event(&mut self) -> Option<QlFsmEvent> {
-        self.take_next_event_inner()
+        implementation::take_next_event(self)
     }
 
     pub fn open_stream(&mut self) -> Result<StreamId, QlFsmError> {
-        if self.peer.is_none() {
-            return Err(QlFsmError::NoPeerBound);
-        }
-        self.session.open_stream().map_err(Into::into)
+        implementation::open_stream(self)
     }
 
     pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), QlFsmError> {
-        if self.peer.is_none() {
-            return Err(QlFsmError::NoPeerBound);
-        }
-        self.session
-            .write_stream(stream_id, bytes)
-            .map_err(Into::into)
+        implementation::write_stream(self, stream_id, bytes)
     }
 
     pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), QlFsmError> {
-        if self.peer.is_none() {
-            return Err(QlFsmError::NoPeerBound);
-        }
-        self.session.finish_stream(stream_id).map_err(Into::into)
+        implementation::finish_stream(self, stream_id)
     }
 
     pub fn close_stream(
@@ -246,47 +235,18 @@ impl QlFsm {
         code: CloseCode,
         payload: Vec<u8>,
     ) -> Result<(), QlFsmError> {
-        if self.peer.is_none() {
-            return Err(QlFsmError::NoPeerBound);
-        }
-        self.session
-            .close_stream(stream_id, target, code, payload)
-            .map_err(Into::into)
+        implementation::close_stream(self, stream_id, target, code, payload)
     }
 
     pub fn queue_ping(&mut self) -> Result<(), QlFsmError> {
-        if self.peer.is_none() {
-            return Err(QlFsmError::NoPeerBound);
-        }
-        if self
-            .peer
-            .as_ref()
-            .and_then(|entry| entry.session.session_key())
-            .is_none()
-        {
-            return Err(QlFsmError::SessionClosed);
-        }
-        self.session.queue_ping().map_err(Into::into)
+        implementation::queue_ping(self)
     }
 
     pub fn queue_unpair(&mut self) -> Result<(), QlFsmError> {
-        if self.peer.is_none() {
-            return Err(QlFsmError::NoPeerBound);
-        }
-        if self
-            .peer
-            .as_ref()
-            .and_then(|entry| entry.session.session_key())
-            .is_none()
-        {
-            return Err(QlFsmError::SessionClosed);
-        }
-        // TODO: keep local peer/session state alive until this queued unpair is acked or times out,
-        // then clear it locally. Right now this only requests remote unpair.
-        self.session.queue_unpair().map_err(Into::into)
+        implementation::queue_unpair(self)
     }
 
     pub fn take_next_session_event(&mut self) -> Option<QlSessionEvent> {
-        self.state.session_events.pop_front()
+        implementation::take_next_session_event(self)
     }
 }

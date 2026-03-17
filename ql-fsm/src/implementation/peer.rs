@@ -1,6 +1,6 @@
 use ql_wire::{self as wire, pair::ArchivedPairRequestRecord, QlCrypto, QlHeader};
 
-use super::handshake;
+use super::{emit_peer_status, handshake, is_replayed_control, next_control_meta, reset_session};
 use crate::{state::PeerRecord, Peer, QlFsm, QlFsmError, QlFsmEvent};
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: Peer) {
@@ -8,7 +8,7 @@ pub fn handle_bind_peer(fsm: &mut QlFsm, peer: Peer) {
 }
 
 pub fn handle_pair_local(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
-    let meta = fsm.next_control_meta(fsm.config.control_expiration);
+    let meta = next_control_meta(fsm, fsm.config.control_expiration);
     let peer = fsm.peer.as_ref().ok_or(QlFsmError::NoPeerBound)?;
     let record = wire::pair::build_pair_request(
         &fsm.identity,
@@ -36,7 +36,7 @@ pub fn handle_pair(
         signing_key: payload.signing_pub_key,
         encapsulation_key: payload.encapsulation_pub_key,
     };
-    if fsm.is_replayed_control(peer.xid, payload.meta) {
+    if is_replayed_control(fsm, peer.xid, payload.meta) {
         return Ok(());
     }
 
@@ -51,7 +51,7 @@ pub fn handle_pair(
 
 fn bind_peer_record(fsm: &mut QlFsm, peer: Peer) {
     fsm.peer = Some(PeerRecord::new(peer.clone()));
-    fsm.reset_session();
+    reset_session(fsm);
     fsm.state.events.push_back(QlFsmEvent::NewPeer(peer));
-    fsm.emit_peer_status();
+    emit_peer_status(fsm);
 }
