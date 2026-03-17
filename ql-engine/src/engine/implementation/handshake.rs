@@ -29,11 +29,7 @@ enum HelloReplyAction {
     },
 }
 
-pub fn handle_connect(
-    engine: &mut Engine,
-    crypto: &impl QlCrypto,
-    events: &mut impl EngineEventSink,
-) {
+pub fn handle_connect(engine: &mut Engine, crypto: &impl QlCrypto) {
     let now = engine.state.now;
     let Some(_) = engine.peer.as_ref() else {
         return;
@@ -48,7 +44,7 @@ pub fn handle_connect(
         start_initiator_handshake(config, identity, state, peer_record, now, crypto)
     };
     if started {
-        engine.emit_peer_status(events);
+        engine.emit_peer_status();
     }
 }
 
@@ -57,7 +53,6 @@ pub fn handle_hello(
     peer: XID,
     hello: &wire::handshake::ArchivedHello,
     crypto: &impl QlCrypto,
-    events: &mut impl EngineEventSink,
 ) {
     let now = engine.state.now;
     let action = match engine.peer.as_ref() {
@@ -127,7 +122,7 @@ pub fn handle_hello(
                 )
             };
             if changed {
-                engine.emit_peer_status(events);
+                engine.emit_peer_status();
             }
         }
         HelloAction::ResendReply {
@@ -359,7 +354,6 @@ pub fn handle_ready(
     peer: XID,
     header: &QlHeader,
     ready: &mut wire::handshake::ArchivedReady,
-    events: &mut impl EngineEventSink,
 ) {
     let session_key = {
         let Some(peer_record) = engine.peer.as_ref() else {
@@ -392,7 +386,7 @@ pub fn handle_ready(
         };
     }
     engine.record_activity();
-    engine.emit_peer_status(events);
+    engine.emit_peer_status();
 }
 
 fn start_initiator_handshake(

@@ -1,13 +1,12 @@
 mod implementation;
 pub mod replay_cache;
-mod sink;
 mod state;
 #[cfg(test)]
 mod tests;
 
 use std::time::{Duration, Instant};
 
-pub use sink::EngineEventSink;
+use bc_components::XID;
 pub use state::{
     Engine, EngineState, HandshakeInitiator, HandshakeResponder, KeepAliveState, OutboundWrite,
     PeerRecord, PeerSession, RecentReady, Token, WriteId,
@@ -22,6 +21,45 @@ use crate::{
 
 pub trait QlCrypto {
     fn fill_random_bytes(&self, data: &mut [u8]);
+}
+
+#[derive(Debug, Clone)]
+pub enum EngineEvent {
+    PeerStatusChanged {
+        peer: XID,
+        session: PeerSession,
+    },
+    PersistPeer(Peer),
+    ClearPeer,
+
+    InboundStreamOpened {
+        stream_id: StreamId,
+        request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
+    },
+    InboundData {
+        stream_id: StreamId,
+        bytes: Vec<u8>,
+    },
+    InboundFinished {
+        stream_id: StreamId,
+    },
+    InboundFailed {
+        stream_id: StreamId,
+        error: QlError,
+    },
+
+    OutboundClosed {
+        stream_id: StreamId,
+    },
+    OutboundFailed {
+        stream_id: StreamId,
+        error: QlError,
+    },
+
+    StreamReaped {
+        stream_id: StreamId,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -99,9 +137,9 @@ impl Engine {
         self.open_stream_inner(request_head, request_prefix, config)
     }
 
-    pub fn bind_peer(&mut self, now: Instant, peer: Peer, events: &mut impl EngineEventSink) {
+    pub fn bind_peer(&mut self, now: Instant, peer: Peer) {
         self.state.now = now;
-        self.bind_peer_inner(peer, events);
+        self.bind_peer_inner(peer);
     }
 
     pub fn pair(&mut self, now: Instant, crypto: &impl QlCrypto) {
@@ -109,19 +147,14 @@ impl Engine {
         self.pair_inner(crypto);
     }
 
-    pub fn connect(
-        &mut self,
-        now: Instant,
-        crypto: &impl QlCrypto,
-        events: &mut impl EngineEventSink,
-    ) {
+    pub fn connect(&mut self, now: Instant, crypto: &impl QlCrypto) {
         self.state.now = now;
-        self.connect_inner(crypto, events);
+        self.connect_inner(crypto);
     }
 
-    pub fn unpair(&mut self, now: Instant, events: &mut impl EngineEventSink) {
+    pub fn unpair(&mut self, now: Instant) {
         self.state.now = now;
-        self.unpair_inner(events);
+        self.unpair_inner();
     }
 
     pub fn take_next_write(
@@ -133,15 +166,9 @@ impl Engine {
         self.take_next_write_inner(crypto)
     }
 
-    pub fn complete_write(
-        &mut self,
-        now: Instant,
-        write_id: WriteId,
-        result: Result<(), QlError>,
-        events: &mut impl EngineEventSink,
-    ) {
+    pub fn complete_write(&mut self, now: Instant, write_id: WriteId, result: Result<(), QlError>) {
         self.state.now = now;
-        self.complete_write_inner(write_id, result, events);
+        self.complete_write_inner(write_id, result);
     }
 
     pub fn write_stream(
@@ -171,33 +198,34 @@ impl Engine {
         self.close_stream_inner(stream_id, target, code, payload)
     }
 
-    pub fn receive(
-        &mut self,
-        now: Instant,
-        bytes: Vec<u8>,
-        crypto: &impl QlCrypto,
-        events: &mut impl EngineEventSink,
-    ) {
+    pub fn receive(&mut self, now: Instant, bytes: Vec<u8>, crypto: &impl QlCrypto) {
         self.state.now = now;
-        self.receive_inner(bytes, crypto, events);
+        self.receive_inner(bytes, crypto);
     }
 
-    pub fn on_timer(
-        &mut self,
-        now: Instant,
-        crypto: &impl QlCrypto,
-        events: &mut impl EngineEventSink,
-    ) {
+    pub fn on_timer(&mut self, now: Instant, crypto: &impl QlCrypto) {
         self.state.now = now;
-        self.on_timer_inner(crypto, events);
+        self.on_timer_inner(crypto);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
         self.next_deadline_inner()
     }
 
-    pub fn abort(&mut self, now: Instant, error: QlError, events: &mut impl EngineEventSink) {
+    pub fn take_next_event(&mut self) -> Option<EngineEvent> {
+        self.state.pending_events.pop_front()
+    }
+
+    pub fn has_pending_events(&self) -> bool {
+        !self.state.pending_events.is_empty()
+    }
+
+    pub fn drain_events(&mut self) -> std::collections::vec_deque::Drain<'_, EngineEvent> {
+        self.state.pending_events.drain(..)
+    }
+
+    pub fn abort(&mut self, now: Instant, error: QlError) {
         self.state.now = now;
-        self.abort_inner(error, events);
+        self.abort_inner(error);
     }
 }

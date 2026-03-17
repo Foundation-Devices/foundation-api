@@ -7,7 +7,7 @@ use std::{
 
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
-use super::{replay_cache::ReplayCache, EngineConfig};
+use super::{replay_cache::ReplayCache, EngineConfig, EngineEvent};
 use crate::{
     arena::{ArenaKey, GenerationalArena},
     identity::QlIdentity,
@@ -197,6 +197,7 @@ pub struct EngineState {
 
     pub next_token: Cell<u64>,
     pub next_packet_id: Cell<u32>,
+    pub pending_events: VecDeque<EngineEvent>,
     pub control_outbound: VecDeque<ControlWrite>,
     pub active_writes: GenerationalArena<ActiveWrite>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
@@ -209,6 +210,7 @@ impl EngineState {
             replay_cache: ReplayCache::new(),
             next_token: Cell::new(1),
             next_packet_id: Cell::new(1),
+            pending_events: VecDeque::new(),
             control_outbound: VecDeque::new(),
             active_writes: GenerationalArena::new(),
             timeouts: BinaryHeap::new(),
