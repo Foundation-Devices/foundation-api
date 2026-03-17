@@ -488,8 +488,6 @@ impl<P: QlPlatform> Runtime<P> {
         let mut fsm = QlFsm::new(config.fsm, identity, now());
         if let Some(peer) = platform.load_peer().await {
             fsm.bind_peer(peer);
-            while fsm.take_next_event().is_some() {}
-            while fsm.take_next_session_event().is_some() {}
         }
 
         let mut state = DriverState {
