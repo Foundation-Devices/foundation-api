@@ -1,10 +1,9 @@
 use std::{cmp::Ordering, time::Instant};
 
-use bc_components::{MLDSAPublicKey, SymmetricKey};
 use ql_wire::{
     self as wire,
     handshake::{Confirm, Hello, HelloReply, Ready},
-    ControlMeta, QlCrypto, QlHeader, XID,
+    ControlMeta, MlDsaPublicKey, QlCrypto, QlHeader, SessionKey, XID,
 };
 
 use super::{
@@ -27,8 +26,8 @@ enum HelloAction {
 enum HelloReplyAction {
     Advance {
         hello: Hello,
-        initiator_secret: SymmetricKey,
-        responder_signing_key: MLDSAPublicKey,
+        initiator_secret: SessionKey,
+        responder_signing_key: MlDsaPublicKey,
     },
     ResendConfirm {
         confirm: Confirm,
@@ -58,6 +57,7 @@ pub fn handle_hello(
             return Ok(());
         };
         if wire::handshake::verify_hello(
+            crypto,
             header.sender,
             fsm.identity.xid,
             &entry.peer.signing_key,
@@ -165,6 +165,7 @@ pub fn handle_hello(
 
 pub fn handle_hello_reply(
     fsm: &mut QlFsm,
+    crypto: &impl QlCrypto,
     header: &QlHeader,
     archived_reply: &wire::handshake::ArchivedHelloReply,
 ) -> Result<(), QlFsmError> {
@@ -216,6 +217,7 @@ pub fn handle_hello_reply(
         } => {
             let confirm_meta = next_control_meta(fsm, fsm.config.handshake_timeout);
             let (confirm, session_key) = match wire::handshake::build_confirm(
+                crypto,
                 &fsm.identity,
                 header.sender,
                 &responder_signing_key,
@@ -265,7 +267,7 @@ pub fn handle_confirm(
     header: &QlHeader,
     confirm: &wire::handshake::ArchivedConfirm,
 ) -> Result<(), QlFsmError> {
-    if let Some(ready) = recent_ready_resend(fsm, header.sender, confirm) {
+    if let Some(ready) = recent_ready_resend(fsm, crypto, header.sender, confirm) {
         enqueue_handshake(
             fsm,
             header.sender,
@@ -289,6 +291,7 @@ pub fn handle_confirm(
         };
 
         wire::handshake::finalize_confirm(
+            crypto,
             header.sender,
             fsm.identity.xid,
             &entry.peer.signing_key,
@@ -561,6 +564,7 @@ fn start_initiator_handshake(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<
 
 fn recent_ready_resend(
     fsm: &QlFsm,
+    crypto: &impl QlCrypto,
     peer: XID,
     confirm: &wire::handshake::ArchivedConfirm,
 ) -> Option<Ready> {
@@ -576,6 +580,7 @@ fn recent_ready_resend(
         return None;
     }
     wire::handshake::verify_confirm(
+        crypto,
         peer,
         fsm.identity.xid,
         &entry.peer.signing_key,

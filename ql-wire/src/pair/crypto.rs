@@ -1,55 +1,39 @@
-use bc_components::{MLDSAPublicKey, MLKEMCiphertext, MLKEMPublicKey, SymmetricKey};
-use rkyv::{Archive, Serialize};
-
 use super::{PairRequestBody, PairRequestRecord};
 use crate::{
     access_value, deserialize_value, encode_value,
     encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage},
-    ensure_not_expired, AsWireMlDsaPublicKey, AsWireMlKemCiphertext, AsWireMlKemPublicKey,
-    ControlMeta, Nonce, QlCrypto, QlHeader, QlIdentity, QlPayload, QlRecord, WireError, XID,
+    ensure_not_expired, pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext,
+    MlKemPublicKey, Nonce, QlCrypto, QlHeader, QlIdentity, QlPayload, QlRecord, SessionKey,
+    WireError, XID,
 };
-
-#[derive(Archive, Serialize)]
-struct PairingAad {
-    header: QlHeader,
-    #[rkyv(with = AsWireMlKemCiphertext)]
-    kem_ct: MLKEMCiphertext,
-}
-
-#[derive(Archive, Serialize)]
-struct PairingProofData {
-    aad: Vec<u8>,
-    meta: ControlMeta,
-    #[rkyv(with = AsWireMlDsaPublicKey)]
-    signing_pub_key: MLDSAPublicKey,
-    #[rkyv(with = AsWireMlKemPublicKey)]
-    encapsulation_pub_key: MLKEMPublicKey,
-}
 
 pub fn build_pair_request(
     crypto: &impl QlCrypto,
     identity: &QlIdentity,
     recipient: XID,
-    recipient_encapsulation_key: &MLKEMPublicKey,
+    recipient_encapsulation_key: &MlKemPublicKey,
     meta: ControlMeta,
 ) -> Result<QlRecord, WireError> {
-    let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
+    let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
     let header = QlHeader {
         sender: identity.xid,
         recipient,
     };
     let signing_pub_key = identity.signing_public_key.clone();
     let sender_encapsulation_key = identity.encapsulation_public_key.clone();
-    let proof_data = pairing_proof_data(
+    let proof_data = hash_pairing_proof_data(
+        crypto,
         &header,
         &kem_ct,
         &meta,
+        identity.xid,
         &signing_pub_key,
         &sender_encapsulation_key,
     );
-    let proof = identity.signing_private_key.sign(&proof_data);
+    let proof = identity.signing_private_key.sign(crypto, &proof_data)?;
     let body = PairRequestBody {
         meta,
+        xid: identity.xid,
         signing_pub_key,
         encapsulation_pub_key: sender_encapsulation_key,
         proof,
@@ -73,53 +57,66 @@ pub fn decrypt_pair_request(
     request: &mut super::ArchivedPairRequestRecord,
     now_seconds: u64,
 ) -> Result<PairRequestBody, WireError> {
-    let kem_ct = MLKEMCiphertext::try_from(&request.kem_ct)?;
+    let kem_ct = deserialize_value(&request.kem_ct)?;
     let aad = pairing_aad(header, &kem_ct);
     let session_key = identity
         .encapsulation_private_key
-        .decapsulate_shared_secret(&kem_ct)
-        .map_err(|_| WireError::InvalidPayload)?;
+        .decapsulate_shared_secret(&kem_ct)?;
     let decrypted = decrypt_body(crypto, &session_key, &mut request.encrypted, &aad)?;
     ensure_not_expired(&decrypted.meta, now_seconds)?;
-    if XID::from_signing_public_key(&decrypted.signing_pub_key) != header.sender {
+    if decrypted.xid != header.sender {
         return Err(WireError::InvalidPayload);
     }
-    let proof_data = pairing_proof_data(
+    let proof_data = hash_pairing_proof_data(
+        crypto,
         header,
         &kem_ct,
         &decrypted.meta,
+        decrypted.xid,
         &decrypted.signing_pub_key,
         &decrypted.encapsulation_pub_key,
     );
-    if decrypted
-        .signing_pub_key
-        .verify(&decrypted.proof, &proof_data)
-        .unwrap_or(false)
-    {
+    if decrypted.signing_pub_key.verify(&decrypted.proof, &proof_data) {
         Ok(decrypted)
     } else {
         Err(WireError::InvalidSignature)
     }
 }
 
-fn pairing_proof_data(
+fn hash_pairing_proof_data(
+    crypto: &impl QlCrypto,
     header: &QlHeader,
-    kem_ct: &MLKEMCiphertext,
+    kem_ct: &MlKemCiphertext,
     meta: &ControlMeta,
-    signing_pub_key: &MLDSAPublicKey,
-    encapsulation_pub_key: &MLKEMPublicKey,
-) -> Vec<u8> {
-    encode_value(&PairingProofData {
-        aad: pairing_aad(header, kem_ct),
-        meta: *meta,
-        signing_pub_key: signing_pub_key.clone(),
-        encapsulation_pub_key: encapsulation_pub_key.clone(),
-    })
+    xid: XID,
+    signing_pub_key: &MlDsaPublicKey,
+    encapsulation_pub_key: &MlKemPublicKey,
+) -> [u8; 32] {
+    let aad = pairing_aad(header, kem_ct);
+    let control_id = meta.control_id.0.to_le_bytes();
+    let valid_until = meta.valid_until.to_le_bytes();
+    crypto.hash(&[
+        b"ql-wire:pair-proof:v1",
+        b"aad",
+        &aad,
+        b"control-id",
+        &control_id,
+        b"valid-until",
+        &valid_until,
+        b"xid",
+        &xid.0,
+        b"signing-pub-key",
+        signing_pub_key.as_bytes(),
+        b"encapsulation-pub-key-suite",
+        ML_KEM_SUITE_TAG,
+        b"encapsulation-pub-key",
+        encapsulation_pub_key.as_bytes(),
+    ])
 }
 
 fn decrypt_body(
     crypto: &impl QlCrypto,
-    key: &SymmetricKey,
+    key: &SessionKey,
     encrypted: &mut ArchivedEncryptedMessage,
     aad: &[u8],
 ) -> Result<PairRequestBody, WireError> {
@@ -128,9 +125,22 @@ fn decrypt_body(
     deserialize_value(body)
 }
 
-pub(crate) fn pairing_aad(header: &QlHeader, kem_ct: &MLKEMCiphertext) -> Vec<u8> {
-    encode_value(&PairingAad {
-        header: header.clone(),
-        kem_ct: kem_ct.clone(),
-    })
+pub(crate) fn pairing_aad(header: &QlHeader, kem_ct: &MlKemCiphertext) -> Vec<u8> {
+    let mut aad = Vec::new();
+    append_field(&mut aad, b"domain", b"ql-wire:pair-aad:v1");
+    append_field(&mut aad, b"sender", &header.sender.0);
+    append_field(&mut aad, b"recipient", &header.recipient.0);
+    append_field(&mut aad, b"kem-suite", ML_KEM_SUITE_TAG);
+    append_field(&mut aad, b"kem-ct", kem_ct.as_bytes());
+    aad
+}
+
+fn append_field(out: &mut Vec<u8>, label: &[u8], value: &[u8]) {
+    append_framed_bytes(out, label);
+    append_framed_bytes(out, value);
+}
+
+fn append_framed_bytes(out: &mut Vec<u8>, value: &[u8]) {
+    out.extend_from_slice(&u64::try_from(value.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(value);
 }

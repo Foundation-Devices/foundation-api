@@ -1,7 +1,6 @@
-use bc_components::SymmetricKey;
 use rkyv::{seal::Seal, vec::ArchivedVec, Archive, Deserialize, Serialize};
 
-use crate::{QlCrypto, WireError};
+use crate::{QlCrypto, SessionKey, WireError};
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Nonce(pub [u8; Self::NONCE_SIZE]);
@@ -22,7 +21,7 @@ pub struct EncryptedMessage {
 impl EncryptedMessage {
     pub fn encrypt(
         crypto: &impl QlCrypto,
-        key: &SymmetricKey,
+        key: &SessionKey,
         mut plaintext: Vec<u8>,
         aad: &[u8],
         nonce: Nonce,
@@ -40,7 +39,7 @@ impl EncryptedMessage {
     pub fn decrypt(
         &self,
         crypto: &impl QlCrypto,
-        key: &SymmetricKey,
+        key: &SessionKey,
         aad: &[u8],
     ) -> Result<Vec<u8>, WireError> {
         let mut plaintext = self.ciphertext.clone();
@@ -55,7 +54,7 @@ impl ArchivedEncryptedMessage {
     pub fn decrypt(
         &mut self,
         crypto: &impl QlCrypto,
-        key: &SymmetricKey,
+        key: &SessionKey,
         aad: &[u8],
     ) -> Result<&[u8], WireError> {
         let nonce = Nonce(self.nonce.0);

@@ -1,10 +1,9 @@
-use bc_components::SymmetricKey;
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::{
     access_value, deserialize_value, encode_value,
     encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage},
-    Nonce, QlCrypto, QlHeader, QlPayload, QlRecord, SessionSeq, WireError,
+    Nonce, QlCrypto, QlHeader, QlPayload, QlRecord, SessionKey, SessionSeq, WireError,
 };
 
 pub mod close;
@@ -45,7 +44,7 @@ pub enum SessionBody {
 pub fn encrypt_record(
     crypto: &impl QlCrypto,
     header: QlHeader,
-    session_key: &SymmetricKey,
+    session_key: &SessionKey,
     body: &SessionEnvelope,
     nonce: Nonce,
 ) -> Result<QlRecord, WireError> {
@@ -62,7 +61,7 @@ pub fn decrypt_record(
     crypto: &impl QlCrypto,
     header: &QlHeader,
     encrypted: &mut ArchivedEncryptedMessage,
-    session_key: &SymmetricKey,
+    session_key: &SessionKey,
 ) -> Result<SessionEnvelope, WireError> {
     let aad = header.aad();
     let plaintext = encrypted.decrypt(crypto, session_key, &aad)?;

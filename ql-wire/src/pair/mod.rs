@@ -1,9 +1,8 @@
-use bc_components::{MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, MLKEMPublicKey};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::{
-    encrypted_message::EncryptedMessage, AsWireMlDsaPublicKey, AsWireMlDsaSignature,
-    AsWireMlKemCiphertext, AsWireMlKemPublicKey, ControlMeta,
+    encrypted_message::EncryptedMessage, ControlMeta, MlDsaPublicKey, MlDsaSignature,
+    MlKemCiphertext, MlKemPublicKey, XID,
 };
 
 mod crypto;
@@ -11,18 +10,15 @@ pub use crypto::*;
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PairRequestRecord {
-    #[rkyv(with = AsWireMlKemCiphertext)]
-    pub kem_ct: MLKEMCiphertext,
+    pub kem_ct: MlKemCiphertext,
     pub encrypted: EncryptedMessage,
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PairRequestBody {
     pub meta: ControlMeta,
-    #[rkyv(with = AsWireMlDsaPublicKey)]
-    pub signing_pub_key: MLDSAPublicKey,
-    #[rkyv(with = AsWireMlKemPublicKey)]
-    pub encapsulation_pub_key: MLKEMPublicKey,
-    #[rkyv(with = AsWireMlDsaSignature)]
-    pub proof: MLDSASignature,
+    pub xid: XID,
+    pub signing_pub_key: MlDsaPublicKey,
+    pub encapsulation_pub_key: MlKemPublicKey,
+    pub proof: MlDsaSignature,
 }

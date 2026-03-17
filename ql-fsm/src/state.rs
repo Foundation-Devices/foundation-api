@@ -1,9 +1,8 @@
 use std::{collections::VecDeque, time::Instant};
 
-use bc_components::SymmetricKey;
 use ql_wire::{
     handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
-    QlRecord,
+    QlRecord, SessionKey,
 };
 
 use crate::{replay_cache::ReplayCache, FsmTime, Peer, PeerStatus, QlFsmEvent, QlSessionEvent};
@@ -11,14 +10,14 @@ use crate::{replay_cache::ReplayCache, FsmTime, Peer, PeerStatus, QlFsmEvent, Ql
 #[derive(Debug, Clone)]
 pub enum HandshakeInitiator {
     WaitingHelloReply {
-        initiator_secret: SymmetricKey,
+        initiator_secret: SessionKey,
         retry_count: u8,
         retry_at: Option<Instant>,
     },
     WaitingReady {
         reply: HelloReply,
         confirm: Confirm,
-        session_key: SymmetricKey,
+        session_key: SessionKey,
         retry_count: u8,
         retry_at: Option<Instant>,
     },
@@ -56,7 +55,7 @@ pub enum ConnectionState {
         stage: HandshakeResponder,
     },
     Connected {
-        session_key: SymmetricKey,
+        session_key: SessionKey,
         recent_ready: Option<RecentReady>,
     },
 }
@@ -71,7 +70,7 @@ impl ConnectionState {
         }
     }
 
-    pub fn session_key(&self) -> Option<&SymmetricKey> {
+    pub fn session_key(&self) -> Option<&SessionKey> {
         match self {
             Self::Connected { session_key, .. } => Some(session_key),
             _ => None,

@@ -36,7 +36,7 @@ pub fn receive(
             super::handle_hello(fsm, crypto, &header, archived_hello)?;
         }
         ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::HelloReply(archived_reply)) => {
-            super::handle_hello_reply(fsm, &header, archived_reply)?;
+            super::handle_hello_reply(fsm, crypto, &header, archived_reply)?;
         }
         ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Confirm(archived_confirm)) => {
             super::handle_confirm(fsm, crypto, &header, archived_confirm)?;

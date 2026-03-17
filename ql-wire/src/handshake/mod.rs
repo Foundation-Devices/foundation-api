@@ -1,9 +1,8 @@
-use bc_components::{MLDSAPublicKey, MLDSASignature, MLKEMCiphertext};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::{
-    encrypted_message::EncryptedMessage, AsWireMlDsaSignature, AsWireMlKemCiphertext, ControlMeta,
-    Nonce, WireError,
+    encrypted_message::EncryptedMessage, ControlMeta, MlDsaPublicKey, MlDsaSignature,
+    MlKemCiphertext, Nonce, WireError,
 };
 
 mod crypto;
@@ -21,27 +20,22 @@ pub enum HandshakeRecord {
 pub struct Hello {
     pub meta: ControlMeta,
     pub nonce: Nonce,
-    #[rkyv(with = AsWireMlKemCiphertext)]
-    pub kem_ct: MLKEMCiphertext,
-    #[rkyv(with = AsWireMlDsaSignature)]
-    pub signature: MLDSASignature,
+    pub kem_ct: MlKemCiphertext,
+    pub signature: MlDsaSignature,
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct HelloReply {
     pub meta: ControlMeta,
     pub nonce: Nonce,
-    #[rkyv(with = AsWireMlKemCiphertext)]
-    pub kem_ct: MLKEMCiphertext,
-    #[rkyv(with = AsWireMlDsaSignature)]
-    pub signature: MLDSASignature,
+    pub kem_ct: MlKemCiphertext,
+    pub signature: MlDsaSignature,
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Confirm {
     pub meta: ControlMeta,
-    #[rkyv(with = AsWireMlDsaSignature)]
-    pub signature: MLDSASignature,
+    pub signature: MlDsaSignature,
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -55,12 +49,13 @@ pub struct ReadyBody {
 }
 
 pub fn verify_signature(
-    signing_key: &MLDSAPublicKey,
-    signature: &MLDSASignature,
+    signing_key: &MlDsaPublicKey,
+    signature: &MlDsaSignature,
     proof_data: &[u8],
 ) -> Result<(), WireError> {
-    match signing_key.verify(signature, proof_data) {
-        Ok(true) => Ok(()),
-        _ => Err(WireError::InvalidSignature),
+    if signing_key.verify(signature, proof_data) {
+        Ok(())
+    } else {
+        Err(WireError::InvalidSignature)
     }
 }

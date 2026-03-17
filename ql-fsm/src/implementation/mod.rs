@@ -7,7 +7,9 @@ use std::time::Duration;
 pub use fsm::*;
 pub use handshake::*;
 pub use peer::*;
-use ql_wire::{self as wire, ControlId, ControlMeta, QlHeader, QlPayload, QlRecord, XID};
+use ql_wire::{
+    self as wire, ControlId, ControlMeta, QlHeader, QlPayload, QlRecord, SessionKey, XID,
+};
 use rkyv::api::low;
 
 use crate::{
@@ -49,7 +51,7 @@ fn is_replayed_control(fsm: &mut QlFsm, peer: XID, meta: ControlMeta) -> bool {
         .check_and_store_valid_until(peer, meta, fsm.state.now.unix_secs)
 }
 
-fn peer_session(fsm: &QlFsm) -> Option<(XID, bc_components::SymmetricKey)> {
+fn peer_session(fsm: &QlFsm) -> Option<(XID, SessionKey)> {
     let entry = fsm.peer.as_ref()?;
     let session_key = entry.session.session_key()?.clone();
     Some((entry.peer.xid, session_key))

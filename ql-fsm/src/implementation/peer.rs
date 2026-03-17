@@ -38,7 +38,7 @@ pub fn handle_pair(
         Err(_) => return Ok(()),
     };
     let peer = Peer {
-        xid: ql_wire::XID::from_signing_public_key(&payload.signing_pub_key),
+        xid: payload.xid,
         signing_key: payload.signing_pub_key,
         encapsulation_key: payload.encapsulation_pub_key,
     };

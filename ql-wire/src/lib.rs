@@ -4,7 +4,6 @@
 //! - *Record - unencrypted messages
 //! - *Body - message content after decrypting
 
-use bc_components::{MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SymmetricKey};
 use rkyv::{
     api::{
         high::{to_bytes_in, HighSerializer, HighValidator},
@@ -16,15 +15,14 @@ use rkyv::{
 };
 use thiserror::Error;
 
-mod codec;
 pub mod encrypted;
 pub mod encrypted_message;
 pub mod handshake;
 mod id;
 pub mod pair;
+mod pq;
 mod xid;
 
-pub(crate) use codec::*;
 pub use encrypted::{
     close::SessionCloseBody,
     stream::{CloseCode, CloseTarget, StreamCloseFrame, StreamFrame},
@@ -32,6 +30,10 @@ pub use encrypted::{
 };
 pub use encrypted_message::{Nonce, AUTH_SIZE};
 pub use id::{ControlId, SessionSeq, StreamId};
+pub use pq::{
+    generate_ml_dsa_keypair, generate_ml_kem_keypair, MlDsaPrivateKey, MlDsaPublicKey,
+    MlDsaSignature, MlKemCiphertext, MlKemPrivateKey, MlKemPublicKey, SessionKey,
+};
 pub use xid::XID;
 
 pub(crate) type WireArchiveError = rkyv::rancor::Error;
@@ -39,21 +41,22 @@ pub(crate) type WireArchiveError = rkyv::rancor::Error;
 #[derive(Debug, Clone)]
 pub struct QlIdentity {
     pub xid: XID,
-    pub signing_private_key: MLDSAPrivateKey,
-    pub signing_public_key: MLDSAPublicKey,
-    pub encapsulation_private_key: MLKEMPrivateKey,
-    pub encapsulation_public_key: MLKEMPublicKey,
+    pub signing_private_key: MlDsaPrivateKey,
+    pub signing_public_key: MlDsaPublicKey,
+    pub encapsulation_private_key: MlKemPrivateKey,
+    pub encapsulation_public_key: MlKemPublicKey,
 }
 
 impl QlIdentity {
     pub fn from_keys(
-        signing_private_key: MLDSAPrivateKey,
-        signing_public_key: MLDSAPublicKey,
-        encapsulation_private_key: MLKEMPrivateKey,
-        encapsulation_public_key: MLKEMPublicKey,
+        xid: XID,
+        signing_private_key: MlDsaPrivateKey,
+        signing_public_key: MlDsaPublicKey,
+        encapsulation_private_key: MlKemPrivateKey,
+        encapsulation_public_key: MlKemPublicKey,
     ) -> Self {
         Self {
-            xid: XID::from_signing_public_key(&signing_public_key),
+            xid,
             signing_private_key,
             signing_public_key,
             encapsulation_private_key,
@@ -65,9 +68,11 @@ impl QlIdentity {
 pub trait QlCrypto {
     fn fill_random_bytes(&self, data: &mut [u8]);
 
+    fn hash(&self, parts: &[&[u8]]) -> [u8; 32];
+
     fn encrypt_with_aead(
         &self,
-        key: &SymmetricKey,
+        key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
@@ -75,7 +80,7 @@ pub trait QlCrypto {
 
     fn decrypt_with_aead(
         &self,
-        key: &SymmetricKey,
+        key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
@@ -91,6 +96,8 @@ pub enum WireError {
     InvalidSignature,
     #[error("expired")]
     Expired,
+    #[error("signing failed")]
+    SigningFailed,
     #[error("encryption failed")]
     EncryptFailed,
     #[error("decryption failed")]
@@ -188,8 +195,8 @@ pub(crate) fn ensure_not_expired(meta: &ControlMeta, now_seconds: u64) -> Result
 mod tests {
     use std::sync::atomic::{AtomicU8, Ordering};
 
-    use bc_components::SymmetricKey;
     use libcrux_aesgcm::AesGcm256Key;
+    use sha2::{Digest, Sha256};
 
     use super::*;
 
@@ -209,9 +216,17 @@ mod tests {
             }
         }
 
+        fn hash(&self, parts: &[&[u8]]) -> [u8; 32] {
+            let mut hasher = Sha256::new();
+            for part in parts {
+                hasher.update(part);
+            }
+            hasher.finalize().into()
+        }
+
         fn encrypt_with_aead(
             &self,
-            key: &SymmetricKey,
+            key: &SessionKey,
             nonce: &Nonce,
             aad: &[u8],
             buffer: &mut [u8],
@@ -226,13 +241,13 @@ mod tests {
                 aad,
                 &plaintext,
             )
-                .ok()?;
+            .ok()?;
             Some(auth)
         }
 
         fn decrypt_with_aead(
             &self,
-            key: &SymmetricKey,
+            key: &SessionKey,
             nonce: &Nonce,
             aad: &[u8],
             buffer: &mut [u8],
@@ -240,13 +255,7 @@ mod tests {
         ) -> bool {
             let key: AesGcm256Key = (*key.data()).into();
             let ciphertext = buffer.to_vec();
-            key.decrypt(
-                buffer,
-                (&nonce.0).into(),
-                aad,
-                &ciphertext,
-                auth_tag.into(),
-            )
+            key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
                 .is_ok()
         }
     }
@@ -269,7 +278,7 @@ mod tests {
         let record = encrypted::encrypt_record(
             &crypto,
             header.clone(),
-            &SymmetricKey::from_data([7; SymmetricKey::SYMMETRIC_KEY_SIZE]),
+            &SessionKey::from_data([7; SessionKey::SIZE]),
             &body,
             Nonce([8; Nonce::NONCE_SIZE]),
         )

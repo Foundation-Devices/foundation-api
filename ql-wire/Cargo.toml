@@ -6,9 +6,8 @@ description = "Quantum Link wire format types and crypto helpers"
 license = "Proprietary"
 
 [dependencies]
-bc-components = { version = "0.28.0", default-features = false, features = [
-  "pqcrypto",
-] }
+libcrux-ml-dsa = { version = "0.0.7", default-features = false, features = ["std", "mldsa87"] }
+libcrux-ml-kem = { version = "0.0.7", default-features = false, features = ["std", "mlkem1024"] }
 rkyv = { version = "0.8", default-features = false, features = [
   "std",
   "bytecheck",
@@ -20,3 +19,4 @@ thiserror = { version = "2" }
 
 [dev-dependencies]
 libcrux-aesgcm = "0.0.7"
+sha2 = "0.10"

@@ -8,11 +8,10 @@ mod tests;
 
 use std::time::{Duration, Instant};
 
-use bc_components::{MLDSAPublicKey, MLKEMPublicKey};
 pub use error::QlFsmError;
 use ql_wire::{
-    CloseCode, CloseTarget, QlCrypto, QlIdentity, QlRecord, SessionCloseBody, SessionSeq,
-    StreamCloseFrame, StreamId, XID,
+    CloseCode, CloseTarget, MlDsaPublicKey, MlKemPublicKey, QlCrypto, QlIdentity, QlRecord,
+    SessionCloseBody, SessionSeq, StreamCloseFrame, StreamId, XID,
 };
 
 use crate::{
@@ -30,8 +29,8 @@ pub struct FsmTime {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
     pub xid: XID,
-    pub signing_key: MLDSAPublicKey,
-    pub encapsulation_key: MLKEMPublicKey,
+    pub signing_key: MlDsaPublicKey,
+    pub encapsulation_key: MlKemPublicKey,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

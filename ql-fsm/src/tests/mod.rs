@@ -6,10 +6,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bc_components::{SymmetricKey, MLDSA, MLKEM};
 use libcrux_aesgcm::AesGcm256Key;
-use ql_wire::{self, QlCrypto, QlIdentity, QlPayload, QlRecord};
+use ql_wire::{
+    self, generate_ml_dsa_keypair, generate_ml_kem_keypair, QlCrypto, QlIdentity, QlPayload,
+    QlRecord, SessionKey, XID,
+};
 use rkyv::api::low;
+use sha2::{Digest, Sha256};
 
 use crate::{
     session::{SessionFsm, SessionFsmConfig, StreamNamespace},
@@ -39,9 +42,17 @@ impl QlCrypto for TestCrypto {
         data.fill(value);
     }
 
+    fn hash(&self, parts: &[&[u8]]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        for part in parts {
+            hasher.update(part);
+        }
+        hasher.finalize().into()
+    }
+
     fn encrypt_with_aead(
         &self,
-        key: &SymmetricKey,
+        key: &SessionKey,
         nonce: &ql_wire::Nonce,
         aad: &[u8],
         buffer: &mut [u8],
@@ -62,7 +73,7 @@ impl QlCrypto for TestCrypto {
 
     fn decrypt_with_aead(
         &self,
-        key: &SymmetricKey,
+        key: &SessionKey,
         nonce: &ql_wire::Nonce,
         aad: &[u8],
         buffer: &mut [u8],
@@ -95,8 +106,8 @@ struct Harness {
 
 impl Harness {
     fn paired(config: QlFsmConfig) -> Self {
-        let identity_a = test_identity();
-        let identity_b = test_identity();
+        let identity_a = test_identity(11);
+        let identity_b = test_identity(73);
         let peer_a = peer_from_identity(&identity_b);
         let peer_b = peer_from_identity(&identity_a);
         let now = Instant::now();
@@ -128,7 +139,7 @@ impl Harness {
 
     fn connected(config: QlFsmConfig) -> Self {
         let mut harness = Self::paired(config);
-        let session_key = SymmetricKey::from_data([7; SymmetricKey::SYMMETRIC_KEY_SIZE]);
+        let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
 
         harness.a.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected {
             session_key: session_key.clone(),
@@ -244,10 +255,12 @@ impl Harness {
     }
 }
 
-fn test_identity() -> QlIdentity {
-    let (signing_private, signing_public) = MLDSA::MLDSA44.keypair();
-    let (encapsulation_private, encapsulation_public) = MLKEM::MLKEM512.keypair();
+fn test_identity(seed: u8) -> QlIdentity {
+    let crypto = TestCrypto::new(seed);
+    let (signing_private, signing_public) = generate_ml_dsa_keypair(&crypto);
+    let (encapsulation_private, encapsulation_public) = generate_ml_kem_keypair(&crypto);
     QlIdentity::from_keys(
+        XID([seed; XID::XID_SIZE]),
         signing_private,
         signing_public,
         encapsulation_private,
@@ -266,7 +279,7 @@ fn peer_from_identity(identity: &QlIdentity) -> Peer {
 fn decrypt_envelope(
     crypto: &impl QlCrypto,
     record: &QlRecord,
-    session_key: &SymmetricKey,
+    session_key: &SessionKey,
 ) -> ql_wire::SessionEnvelope {
     let aad = record.header.aad();
     let QlPayload::Encrypted(encrypted) = &record.payload else {
