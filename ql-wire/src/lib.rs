@@ -124,6 +124,13 @@ pub fn access_record(bytes: &[u8]) -> Result<&ArchivedQlRecord, WireError> {
     access_value(bytes)
 }
 
+pub fn access_record_mut(
+    bytes: &mut [u8],
+) -> Result<rkyv::seal::Seal<'_, ArchivedQlRecord>, WireError> {
+    rkyv::access_mut::<ArchivedQlRecord, WireArchiveError>(bytes)
+        .map_err(|_| WireError::InvalidPayload)
+}
+
 pub fn decode_record(bytes: &[u8]) -> Result<QlRecord, WireError> {
     deserialize_value(access_record(bytes)?)
 }

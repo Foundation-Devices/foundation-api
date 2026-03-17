@@ -1,0 +1,20 @@
+[package]
+name = "ql-fsm"
+version = "0.1.0"
+edition = "2021"
+description = "Quantum Link synchronous finite state machine"
+license = "Proprietary"
+
+[dependencies]
+bc-components = { version = "0.28.0", default-features = false, features = [
+  "pqcrypto",
+] }
+ql-wire = { path = "../ql-wire" }
+rkyv = { version = "0.8", default-features = false, features = [
+  "std",
+  "bytecheck",
+  "little_endian",
+  "unaligned",
+  "pointer_width_32",
+] }
+thiserror = { version = "2" }

@@ -1971,6 +1971,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ql-fsm"
+version = "0.1.0"
+dependencies = [
+ "bc-components",
+ "ql-wire",
+ "rkyv",
+ "thiserror",
+]
+
+[[package]]
 name = "ql-runtime"
 version = "0.1.0"
 dependencies = [
