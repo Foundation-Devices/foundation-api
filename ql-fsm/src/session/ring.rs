@@ -144,3 +144,54 @@ impl<'a, const N: usize, T> Iterator for SeqRingIter<'a, N, T> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_iter_and_bitmap() {
+        let mut ring = SeqRing::<4, u8>::new(SessionSeq(10));
+
+        ring.insert(SessionSeq(10), 1).unwrap();
+        ring.insert(SessionSeq(12), 3).unwrap();
+
+        assert_eq!(ring.bitmap(), 0b0101);
+        assert_eq!(
+            ring.iter()
+                .map(|(seq, value)| (seq, *value))
+                .collect::<Vec<_>>(),
+            vec![(SessionSeq(10), 1), (SessionSeq(12), 3)]
+        );
+    }
+
+    #[test]
+    fn advance_fronts() {
+        let mut ring = SeqRing::<4, u8>::new(SessionSeq(10));
+
+        ring.insert(SessionSeq(11), 2).unwrap();
+        ring.advance_empty_front_until(SessionSeq(11));
+        assert_eq!(ring.base_seq(), SessionSeq(11));
+        assert_eq!(ring.get(&SessionSeq(11)), Some(&2));
+
+        ring.advance_occupied_front();
+        assert_eq!(ring.base_seq(), SessionSeq(12));
+        assert!(ring.get(&SessionSeq(11)).is_none());
+    }
+
+    #[test]
+    fn insert_errors() {
+        let mut ring = SeqRing::<2, u8>::new(SessionSeq(5));
+
+        ring.insert(SessionSeq(5), 1).unwrap();
+
+        assert_eq!(
+            ring.insert(SessionSeq(5), 2),
+            Err(SeqRingInsertError::Occupied)
+        );
+        assert_eq!(
+            ring.insert(SessionSeq(7), 3),
+            Err(SeqRingInsertError::OutOfWindow)
+        );
+    }
+}
