@@ -1,7 +1,7 @@
 use super::{verify_signature, Confirm, Hello, HelloReply, Ready, ReadyBody, ReadyMut};
 use crate::{
-    ensure_not_expired, pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext,
-    MlKemPublicKey, Nonce, QlCrypto, QlHeader, QlIdentity, SessionKey, WireError, NONCE_SIZE, XID,
+    pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext, MlKemPublicKey, Nonce,
+    QlCrypto, QlHeader, QlIdentity, SessionKey, WireError, NONCE_SIZE, XID,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub fn verify_hello(
     hello: &Hello,
     now_seconds: u64,
 ) -> Result<(), WireError> {
-    ensure_not_expired(&hello.meta, now_seconds)?;
+    hello.meta.ensure_not_expired(now_seconds)?;
     let proof_data = hash_hello_proof_data(
         crypto,
         initiator,
@@ -114,7 +114,7 @@ pub fn build_confirm(
     meta: ControlMeta,
     now_seconds: u64,
 ) -> Result<(Confirm, SessionKey), WireError> {
-    ensure_not_expired(&reply.meta, now_seconds)?;
+    reply.meta.ensure_not_expired(now_seconds)?;
     let transcript = hash_handshake_transcript(
         crypto,
         identity.xid,
@@ -205,7 +205,7 @@ pub fn verify_confirm(
     confirm: &Confirm,
     now_seconds: u64,
 ) -> Result<(), WireError> {
-    ensure_not_expired(&confirm.meta, now_seconds)?;
+    confirm.meta.ensure_not_expired(now_seconds)?;
     let proof_data = hash_confirm_proof_data(
         crypto,
         &confirm.meta,
@@ -251,7 +251,7 @@ pub fn decrypt_ready(
     let aad = header.aad();
     let plaintext = ready.decrypt(crypto, session_key, &aad)?;
     let body = ReadyBody::decode(plaintext)?;
-    ensure_not_expired(&body.meta, now_seconds)?;
+    body.meta.ensure_not_expired(now_seconds)?;
     Ok(body)
 }
 
@@ -263,20 +263,20 @@ fn hash_hello_proof_data(
     nonce: &Nonce,
     kem_ct: &MlKemCiphertext,
 ) -> [u8; 32] {
-    let control_id = meta.control_id.to_le_bytes();
+    let control_id = meta.control_id.0.to_le_bytes();
     let valid_until = meta.valid_until.to_le_bytes();
     crypto.hash(&[
         b"ql-wire:hello-proof:v1",
         b"initiator",
-        &initiator,
+        &initiator.0,
         b"responder",
-        &responder,
+        &responder.0,
         b"control-id",
         &control_id,
         b"valid-until",
         &valid_until,
         b"nonce",
-        nonce,
+        &nonce.0,
         b"kem-suite",
         ML_KEM_SUITE_TAG,
         b"kem-ct",
@@ -295,22 +295,22 @@ fn hash_handshake_transcript(
     responder_nonce: &Nonce,
     responder_kem_ct: &MlKemCiphertext,
 ) -> [u8; 32] {
-    let hello_control_id = hello_meta.control_id.to_le_bytes();
+    let hello_control_id = hello_meta.control_id.0.to_le_bytes();
     let hello_valid_until = hello_meta.valid_until.to_le_bytes();
-    let reply_control_id = reply_meta.control_id.to_le_bytes();
+    let reply_control_id = reply_meta.control_id.0.to_le_bytes();
     let reply_valid_until = reply_meta.valid_until.to_le_bytes();
     crypto.hash(&[
         b"ql-wire:handshake-transcript:v1",
         b"initiator",
-        &initiator,
+        &initiator.0,
         b"responder",
-        &responder,
+        &responder.0,
         b"hello-control-id",
         &hello_control_id,
         b"hello-valid-until",
         &hello_valid_until,
         b"initiator-nonce",
-        initiator_nonce,
+        &initiator_nonce.0,
         b"initiator-kem-suite",
         ML_KEM_SUITE_TAG,
         b"initiator-kem-ct",
@@ -320,7 +320,7 @@ fn hash_handshake_transcript(
         b"reply-valid-until",
         &reply_valid_until,
         b"responder-nonce",
-        responder_nonce,
+        &responder_nonce.0,
         b"responder-kem-suite",
         ML_KEM_SUITE_TAG,
         b"responder-kem-ct",
@@ -340,11 +340,11 @@ fn hash_confirm_proof_data(
     responder_nonce: &Nonce,
     responder_kem_ct: &MlKemCiphertext,
 ) -> [u8; 32] {
-    let confirm_control_id = confirm_meta.control_id.to_le_bytes();
+    let confirm_control_id = confirm_meta.control_id.0.to_le_bytes();
     let confirm_valid_until = confirm_meta.valid_until.to_le_bytes();
-    let hello_control_id = hello_meta.control_id.to_le_bytes();
+    let hello_control_id = hello_meta.control_id.0.to_le_bytes();
     let hello_valid_until = hello_meta.valid_until.to_le_bytes();
-    let reply_control_id = reply_meta.control_id.to_le_bytes();
+    let reply_control_id = reply_meta.control_id.0.to_le_bytes();
     let reply_valid_until = reply_meta.valid_until.to_le_bytes();
     crypto.hash(&[
         b"ql-wire:confirm-proof:v1",
@@ -353,15 +353,15 @@ fn hash_confirm_proof_data(
         b"confirm-valid-until",
         &confirm_valid_until,
         b"initiator",
-        &initiator,
+        &initiator.0,
         b"responder",
-        &responder,
+        &responder.0,
         b"hello-control-id",
         &hello_control_id,
         b"hello-valid-until",
         &hello_valid_until,
         b"initiator-nonce",
-        initiator_nonce,
+        &initiator_nonce.0,
         b"initiator-kem-suite",
         ML_KEM_SUITE_TAG,
         b"initiator-kem-ct",
@@ -371,7 +371,7 @@ fn hash_confirm_proof_data(
         b"reply-valid-until",
         &reply_valid_until,
         b"responder-nonce",
-        responder_nonce,
+        &responder_nonce.0,
         b"responder-kem-suite",
         ML_KEM_SUITE_TAG,
         b"responder-kem-ct",
@@ -382,7 +382,7 @@ fn hash_confirm_proof_data(
 fn next_nonce(crypto: &impl QlCrypto) -> Nonce {
     let mut data = [0u8; NONCE_SIZE];
     crypto.fill_random_bytes(&mut data);
-    data
+    Nonce(data)
 }
 
 fn derive_session_key(
@@ -398,9 +398,9 @@ fn derive_session_key(
     responder_nonce: &Nonce,
     responder_kem_ct: &MlKemCiphertext,
 ) -> SessionKey {
-    let hello_control_id = hello_meta.control_id.to_le_bytes();
+    let hello_control_id = hello_meta.control_id.0.to_le_bytes();
     let hello_valid_until = hello_meta.valid_until.to_le_bytes();
-    let reply_control_id = reply_meta.control_id.to_le_bytes();
+    let reply_control_id = reply_meta.control_id.0.to_le_bytes();
     let reply_valid_until = reply_meta.valid_until.to_le_bytes();
     SessionKey::from_data(crypto.hash(&[
         b"ql-wire:session-key:v1",
@@ -409,15 +409,15 @@ fn derive_session_key(
         b"responder-secret",
         responder_secret.as_bytes(),
         b"initiator",
-        &initiator,
+        &initiator.0,
         b"responder",
-        &responder,
+        &responder.0,
         b"hello-control-id",
         &hello_control_id,
         b"hello-valid-until",
         &hello_valid_until,
         b"initiator-nonce",
-        initiator_nonce,
+        &initiator_nonce.0,
         b"initiator-kem-suite",
         ML_KEM_SUITE_TAG,
         b"initiator-kem-ct",
@@ -427,7 +427,7 @@ fn derive_session_key(
         b"reply-valid-until",
         &reply_valid_until,
         b"responder-nonce",
-        responder_nonce,
+        &responder_nonce.0,
         b"responder-kem-suite",
         ML_KEM_SUITE_TAG,
         b"responder-kem-ct",

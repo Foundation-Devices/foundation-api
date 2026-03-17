@@ -71,7 +71,7 @@ pub fn append_framed_bytes(out: &mut Vec<u8>, value: &[u8]) {
 pub fn header_aad(header: &QlHeader) -> Vec<u8> {
     let mut aad = Vec::new();
     append_field(&mut aad, b"domain", b"ql-wire:header-aad:v1");
-    append_field(&mut aad, b"sender", &header.sender);
-    append_field(&mut aad, b"recipient", &header.recipient);
+    append_field(&mut aad, b"sender", &header.sender.0);
+    append_field(&mut aad, b"recipient", &header.recipient.0);
     aad
 }

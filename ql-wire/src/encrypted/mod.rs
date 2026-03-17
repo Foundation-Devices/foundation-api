@@ -3,7 +3,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 use crate::{
     codec::{parse_mut, parse_ref, push_value, U64Le},
     encrypted_message::{EncryptedMessage, EncryptedMessageWire},
-    Nonce, QlCrypto, QlHeader, QlPayload, QlRecord, SessionKey, SessionSeq, WireError,
+    Nonce, QlCrypto, QlHeader, QlPayload, QlRecord, SessionKey, WireError,
 };
 
 pub mod close;
@@ -16,6 +16,14 @@ pub use stream_chunk::{StreamChunk, StreamChunkMut, StreamChunkRef, StreamChunkW
 pub use stream_close::{
     CloseCode, CloseTarget, StreamClose, StreamCloseMut, StreamCloseRef, StreamCloseWire,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct SessionSeq(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct StreamId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionEnvelope {
@@ -31,7 +39,10 @@ pub struct SessionAck {
 }
 
 impl SessionAck {
-    pub const EMPTY: Self = Self { base: 0, bitmap: 0 };
+    pub const EMPTY: Self = Self {
+        base: SessionSeq(0),
+        bitmap: 0,
+    };
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +122,7 @@ impl SessionEnvelopeWire {
 
     pub fn ack(&self) -> SessionAck {
         SessionAck {
-            base: self.ack_base.get(),
+            base: SessionSeq(self.ack_base.get()),
             bitmap: self.ack_bitmap.get(),
         }
     }
@@ -184,7 +195,7 @@ impl SessionEnvelopeWire {
             SessionBodyRef::Close(body) => SessionBody::Close(body),
         };
         Ok(SessionEnvelope {
-            seq: self.seq.get(),
+            seq: SessionSeq(self.seq.get()),
             ack: self.ack(),
             body,
         })
@@ -203,8 +214,8 @@ impl SessionEnvelope {
             SessionBody::Close(_) => SessionBodyKind::Close,
         };
         let header = SessionEnvelopeHeaderWire {
-            seq: U64Le::new(self.seq),
-            ack_base: U64Le::new(self.ack.base),
+            seq: U64Le::new(self.seq.0),
+            ack_base: U64Le::new(self.ack.base.0),
             ack_bitmap: U64Le::new(self.ack.bitmap),
             kind: kind as u8,
         };

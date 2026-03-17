@@ -1,8 +1,9 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
+use super::StreamId;
 use crate::{
     codec::{parse_mut, parse_ref, push_value, U32Le, U64Le},
-    StreamId, WireError,
+    WireError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +45,7 @@ impl StreamChunkWire {
 
     pub fn to_stream_chunk(&self) -> Result<StreamChunk, WireError> {
         Ok(StreamChunk {
-            stream_id: self.stream_id.get(),
+            stream_id: StreamId(self.stream_id.get()),
             offset: self.offset.get(),
             bytes: self.bytes.to_vec(),
             fin: self.fin()?,
@@ -55,7 +56,7 @@ impl StreamChunkWire {
 impl StreamChunk {
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
         let header = StreamChunkHeaderWire {
-            stream_id: U32Le::new(self.stream_id),
+            stream_id: U32Le::new(self.stream_id.0),
             offset: U64Le::new(self.offset),
             fin: u8::from(self.fin),
         };

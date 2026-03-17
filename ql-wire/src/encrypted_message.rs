@@ -34,7 +34,7 @@ impl EncryptedMessageWire {
 
     pub fn to_encrypted_message(&self) -> EncryptedMessage {
         EncryptedMessage {
-            nonce: self.nonce,
+            nonce: Nonce(self.nonce),
             auth: self.auth,
             ciphertext: self.ciphertext.to_vec(),
         }
@@ -46,7 +46,8 @@ impl EncryptedMessageWire {
         key: &SessionKey,
         aad: &[u8],
     ) -> Result<&'a mut [u8], WireError> {
-        if !crypto.decrypt_with_aead(key, &self.nonce, aad, &mut self.ciphertext, &self.auth) {
+        let nonce = Nonce(self.nonce);
+        if !crypto.decrypt_with_aead(key, &nonce, aad, &mut self.ciphertext, &self.auth) {
             return Err(WireError::DecryptFailed);
         }
         Ok(&mut self.ciphertext)
@@ -68,7 +69,7 @@ impl EncryptedMessage {
         push_value(
             out,
             &EncryptedMessageHeaderWire {
-                nonce: self.nonce,
+                nonce: self.nonce.0,
                 auth: self.auth,
             },
         );

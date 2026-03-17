@@ -1,8 +1,7 @@
 use super::{PairRequestBody, PairRequestRecordWire};
 use crate::{
-    ensure_not_expired, pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext,
-    MlKemPublicKey, QlCrypto, QlHeader, QlIdentity, QlPayload, QlRecord, WireError, NONCE_SIZE,
-    XID,
+    pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext, MlKemPublicKey, QlCrypto,
+    QlHeader, QlIdentity, QlPayload, QlRecord, WireError, NONCE_SIZE, XID,
 };
 
 pub fn build_pair_request(
@@ -46,7 +45,7 @@ pub fn build_pair_request(
         &session_key,
         body_bytes,
         &aad,
-        nonce,
+        crate::Nonce(nonce),
     )?;
     Ok(QlRecord {
         header,
@@ -69,7 +68,7 @@ pub fn decrypt_pair_request(
     let mut encrypted = request.encrypted_mut()?;
     let plaintext = encrypted.decrypt(crypto, &session_key, &aad)?;
     let decrypted = PairRequestBody::decode(plaintext)?;
-    ensure_not_expired(&decrypted.meta, now_seconds)?;
+    decrypted.meta.ensure_not_expired(now_seconds)?;
     if decrypted.xid != header.sender {
         return Err(WireError::InvalidPayload);
     }
@@ -102,7 +101,7 @@ fn hash_pairing_proof_data(
     encapsulation_pub_key: &MlKemPublicKey,
 ) -> [u8; 32] {
     let aad = pairing_aad(header, kem_ct);
-    let control_id = meta.control_id.to_le_bytes();
+    let control_id = meta.control_id.0.to_le_bytes();
     let valid_until = meta.valid_until.to_le_bytes();
     crypto.hash(&[
         b"ql-wire:pair-proof:v1",
@@ -113,7 +112,7 @@ fn hash_pairing_proof_data(
         b"valid-until",
         &valid_until,
         b"xid",
-        &xid,
+        &xid.0,
         b"signing-pub-key",
         signing_pub_key.as_bytes(),
         b"encapsulation-pub-key-suite",
@@ -126,8 +125,8 @@ fn hash_pairing_proof_data(
 pub(crate) fn pairing_aad(header: &QlHeader, kem_ct: &MlKemCiphertext) -> Vec<u8> {
     let mut aad = Vec::new();
     crate::codec::append_field(&mut aad, b"domain", b"ql-wire:pair-aad:v1");
-    crate::codec::append_field(&mut aad, b"sender", &header.sender);
-    crate::codec::append_field(&mut aad, b"recipient", &header.recipient);
+    crate::codec::append_field(&mut aad, b"sender", &header.sender.0);
+    crate::codec::append_field(&mut aad, b"recipient", &header.recipient.0);
     crate::codec::append_field(&mut aad, b"kem-suite", ML_KEM_SUITE_TAG);
     crate::codec::append_field(&mut aad, b"kem-ct", kem_ct.as_bytes());
     aad

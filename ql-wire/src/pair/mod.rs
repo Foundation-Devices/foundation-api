@@ -2,7 +2,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 use crate::{
     codec::{parse_mut, parse_ref, push_value, read_exact},
-    control_meta_from_wire, control_meta_to_wire,
+    control::{control_meta_from_wire, control_meta_to_wire, ControlMetaWire},
     encrypted_message::{
         EncryptedMessage, EncryptedMessageMut, EncryptedMessageRef, EncryptedMessageWire,
     },
@@ -40,7 +40,7 @@ pub type PairRequestRecordMut<'a> = Ref<&'a mut [u8], PairRequestRecordWire>;
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
 struct PairRequestBodyWire {
-    meta: crate::ControlMetaWire,
+    meta: ControlMetaWire,
     xid: [u8; crate::XID_SIZE],
     signing_pub_key: [u8; MlDsaPublicKey::SIZE],
     encapsulation_pub_key: [u8; MlKemPublicKey::SIZE],
@@ -99,7 +99,7 @@ impl PairRequestBody {
     pub(crate) fn encode(&self) -> Vec<u8> {
         let wire = PairRequestBodyWire {
             meta: control_meta_to_wire(&self.meta),
-            xid: self.xid,
+            xid: self.xid.0,
             signing_pub_key: *self.signing_pub_key.as_bytes(),
             encapsulation_pub_key: *self.encapsulation_pub_key.as_bytes(),
             proof: *self.proof.as_bytes(),
@@ -111,7 +111,7 @@ impl PairRequestBody {
         let wire: PairRequestBodyWire = read_exact(bytes)?;
         Ok(Self {
             meta: control_meta_from_wire(wire.meta),
-            xid: wire.xid,
+            xid: XID(wire.xid),
             signing_pub_key: MlDsaPublicKey::from_data(wire.signing_pub_key),
             encapsulation_pub_key: MlKemPublicKey::from_data(wire.encapsulation_pub_key),
             proof: MlDsaSignature::from_data(wire.proof),

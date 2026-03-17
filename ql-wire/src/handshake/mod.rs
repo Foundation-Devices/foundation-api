@@ -2,7 +2,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::{
     codec::{push_value, read_exact},
-    control_meta_from_wire, control_meta_to_wire,
+    control::{control_meta_from_wire, control_meta_to_wire, ControlMetaWire},
     encrypted_message::{EncryptedMessage, EncryptedMessageMut, EncryptedMessageRef},
     ControlMeta, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext, Nonce, WireError,
 };
@@ -48,7 +48,7 @@ pub type ReadyMut<'a> = EncryptedMessageMut<'a>;
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
 struct HelloWire {
-    meta: crate::ControlMetaWire,
+    meta: ControlMetaWire,
     nonce: [u8; crate::NONCE_SIZE],
     kem_ct: [u8; MlKemCiphertext::SIZE],
     signature: [u8; MlDsaSignature::SIZE],
@@ -57,7 +57,7 @@ struct HelloWire {
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
 struct ConfirmWire {
-    meta: crate::ControlMetaWire,
+    meta: ControlMetaWire,
     signature: [u8; MlDsaSignature::SIZE],
 }
 
@@ -65,7 +65,7 @@ impl Hello {
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
         let wire = HelloWire {
             meta: control_meta_to_wire(&self.meta),
-            nonce: self.nonce,
+            nonce: self.nonce.0,
             kem_ct: *self.kem_ct.as_bytes(),
             signature: *self.signature.as_bytes(),
         };
@@ -76,7 +76,7 @@ impl Hello {
         let wire: HelloWire = read_exact(bytes)?;
         Ok(Self {
             meta: control_meta_from_wire(wire.meta),
-            nonce: wire.nonce,
+            nonce: Nonce(wire.nonce),
             kem_ct: MlKemCiphertext::from_data(wire.kem_ct),
             signature: MlDsaSignature::from_data(wire.signature),
         })
@@ -136,7 +136,7 @@ impl ReadyBody {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let wire: crate::ControlMetaWire = read_exact(bytes)?;
+        let wire: ControlMetaWire = read_exact(bytes)?;
         Ok(Self {
             meta: control_meta_from_wire(wire),
         })

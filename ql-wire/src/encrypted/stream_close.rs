@@ -1,8 +1,9 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
+use super::StreamId;
 use crate::{
     codec::{parse_mut, parse_ref, push_value, U16Le, U32Le},
-    StreamId, WireError,
+    WireError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +81,7 @@ impl StreamCloseWire {
 
     pub fn to_stream_close(&self) -> Result<StreamClose, WireError> {
         Ok(StreamClose {
-            stream_id: self.stream_id.get(),
+            stream_id: StreamId(self.stream_id.get()),
             target: self.target()?,
             code: CloseCode(self.code.get()),
             payload: self.payload.to_vec(),
@@ -91,7 +92,7 @@ impl StreamCloseWire {
 impl StreamClose {
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
         let header = StreamCloseHeaderWire {
-            stream_id: U32Le::new(self.stream_id),
+            stream_id: U32Le::new(self.stream_id.0),
             target: self.target.to_wire(),
             code: U16Le::new(self.code.0),
         };
