@@ -7,6 +7,7 @@ use rkyv::{Archive, Deserialize, Serialize};
 pub struct XID(pub [u8; Self::XID_SIZE]);
 
 impl XID {
+    // todo: change to 16 bytes
     pub const XID_SIZE: usize = 32;
 
     pub fn from_signing_public_key(signing_public_key: &MLDSAPublicKey) -> Self {
