@@ -51,6 +51,7 @@ pub fn handle_pair(
 
 fn bind_peer_record(fsm: &mut QlFsm, peer: Peer) {
     fsm.peer = Some(PeerRecord::new(peer.clone()));
-    fsm.state.events.push_back(QlFsmEvent::PersistPeer(peer));
+    fsm.reset_session();
+    fsm.state.events.push_back(QlFsmEvent::NewPeer(peer));
     fsm.emit_peer_status();
 }

@@ -103,8 +103,8 @@ pub struct SessionFsm {
 }
 
 impl SessionFsm {
-    pub fn new(config: SessionFsmConfig) -> Self {
-        Self::new_inner(config)
+    pub fn new(config: SessionFsmConfig, now: Instant) -> Self {
+        Self::new_inner(config, now)
     }
 
     pub fn open_stream(&mut self) -> Result<StreamId, StreamError> {

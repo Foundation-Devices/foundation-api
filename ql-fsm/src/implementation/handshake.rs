@@ -325,6 +325,7 @@ pub fn handle_confirm(
             }),
         };
     }
+    fsm.reset_session();
 
     fsm.enqueue_handshake(
         header.sender,
@@ -366,6 +367,7 @@ pub fn handle_ready(
             recent_ready: None,
         };
     }
+    fsm.reset_session();
     fsm.emit_peer_status();
     Ok(())
 }

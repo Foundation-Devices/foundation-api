@@ -6,11 +6,11 @@ use std::{
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey};
 use ql_wire::{
     handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
-    QlIdentity, QlRecord, WireError, XID,
+    QlIdentity, QlRecord, SessionCloseBody, StreamCloseFrame, StreamId, WireError, XID,
 };
 use thiserror::Error;
 
-use crate::{replay_cache::ReplayCache, FsmTime};
+use crate::{replay_cache::ReplayCache, session::SessionFsm, FsmTime};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
@@ -29,9 +29,20 @@ pub enum PeerStatus {
 
 #[derive(Debug, Clone)]
 pub enum QlFsmEvent {
-    PersistPeer(Peer),
+    NewPeer(Peer),
     ClearPeer,
     PeerStatusChanged { peer: XID, status: PeerStatus },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QlSessionEvent {
+    Opened(StreamId),
+    Data { stream_id: StreamId, bytes: Vec<u8> },
+    Finished(StreamId),
+    Closed(StreamCloseFrame),
+    WritableClosed(StreamId),
+    Unpaired,
+    SessionClosed(SessionCloseBody),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -40,6 +51,8 @@ pub struct QlFsmConfig {
     pub handshake_retry_interval: Duration,
     pub max_handshake_retries: u8,
     pub control_expiration: Duration,
+    pub session_ack_delay: Duration,
+    pub session_retransmit_timeout: Duration,
 }
 
 impl Default for QlFsmConfig {
@@ -49,6 +62,8 @@ impl Default for QlFsmConfig {
             handshake_retry_interval: Duration::from_millis(750),
             max_handshake_retries: 3,
             control_expiration: Duration::from_secs(30),
+            session_ack_delay: Duration::from_millis(5),
+            session_retransmit_timeout: Duration::from_millis(150),
         }
     }
 }
@@ -165,6 +180,7 @@ pub struct QlFsm {
     pub config: QlFsmConfig,
     pub identity: QlIdentity,
     pub peer: Option<PeerRecord>,
+    pub session: SessionFsm,
     pub state: QlFsmState,
 }
 
@@ -173,5 +189,6 @@ pub struct QlFsmState {
     pub next_control_id: u32,
     pub outbound: VecDeque<QlRecord>,
     pub events: VecDeque<QlFsmEvent>,
+    pub session_events: VecDeque<QlSessionEvent>,
     pub now: FsmTime,
 }

@@ -18,7 +18,7 @@ fn heartbeat(seq: u64, ack: SessionAck) -> SessionEnvelope {
 #[test]
 fn outbound_session_seq_increments_monotonically() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default());
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
     fsm.write_stream(stream_id, b"one".to_vec()).unwrap();
@@ -34,7 +34,7 @@ fn outbound_session_seq_increments_monotonically() {
 #[test]
 fn inbound_ack_removes_acked_tx_entries() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default());
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
     fsm.write_stream(stream_id, b"one".to_vec()).unwrap();
@@ -59,9 +59,23 @@ fn inbound_ack_removes_acked_tx_entries() {
 #[test]
 fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default());
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id_a = ql_wire::StreamId(super::StreamNamespace::High.bit() | 1);
+    let stream_id_b = ql_wire::StreamId(super::StreamNamespace::High.bit() | 2);
 
-    fsm.receive(now, heartbeat(2, SessionAck::EMPTY));
+    fsm.receive(
+        now,
+        SessionEnvelope {
+            seq: SessionSeq(2),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamFrame {
+                stream_id: stream_id_a,
+                offset: 0,
+                bytes: b"a".to_vec(),
+                fin: false,
+            }),
+        },
+    );
     let gap_ack = fsm.next_outbound(now).unwrap();
     assert_eq!(gap_ack.seq, SessionSeq(1));
     assert_eq!(
@@ -74,7 +88,16 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
 
     fsm.receive(
         now + Duration::from_millis(1),
-        heartbeat(1, SessionAck::EMPTY),
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamFrame {
+                stream_id: stream_id_b,
+                offset: 0,
+                bytes: b"b".to_vec(),
+                fin: false,
+            }),
+        },
     );
     let contiguous_ack = fsm.next_outbound(now + Duration::from_millis(10)).unwrap();
     assert_eq!(contiguous_ack.seq, SessionSeq(2));
@@ -90,7 +113,7 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
 #[test]
 fn retransmit_requeues_body_with_new_session_seq() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default());
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
     fsm.write_stream(stream_id, b"retry-me".to_vec()).unwrap();
@@ -107,7 +130,7 @@ fn retransmit_requeues_body_with_new_session_seq() {
 #[test]
 fn repeated_outbound_messages_keep_reporting_latest_receive_ack() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default());
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
     fsm.receive(now, heartbeat(1, SessionAck::EMPTY));
@@ -127,7 +150,7 @@ fn repeated_outbound_messages_keep_reporting_latest_receive_ack() {
 #[test]
 fn local_inbound_close_ignores_late_remote_bytes() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default());
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
     fsm.close_stream(

@@ -16,8 +16,7 @@ use super::{
 };
 
 impl SessionFsm {
-    pub fn new_inner(config: SessionFsmConfig) -> Self {
-        let now = Instant::now();
+    pub fn new_inner(config: SessionFsmConfig, now: Instant) -> Self {
         Self {
             config,
             state: SessionFsmState {
@@ -164,7 +163,9 @@ impl SessionFsm {
             Ok(()) => {
                 let out_of_order = seq != self.state.rx_ring.base_seq();
                 self.state.rx_ring.advance_occupied_front();
-                self.schedule_ack(out_of_order);
+                if !matches!(envelope.body, SessionBody::Heartbeat(_)) {
+                    self.schedule_ack(out_of_order);
+                }
             }
             Err(SeqRingInsertError::OutOfWindow) => {
                 self.fail_session(SessionCloseBody {
@@ -220,7 +221,9 @@ impl SessionFsm {
             pending,
             sent_at: self.state.now,
         };
-        let _ = self.state.tx_ring.insert(seq, entry);
+        if !matches!(entry.pending.body, SessionBody::Heartbeat(_)) {
+            let _ = self.state.tx_ring.insert(seq, entry);
+        }
         Some(envelope)
     }
 
