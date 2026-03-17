@@ -11,7 +11,7 @@ use rkyv::api::low;
 
 use crate::{
     session::{SessionEvent, SessionFsmConfig, StreamIncoming, StreamNamespace},
-    Peer, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent,
+    OutboundWrite, Peer, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId,
 };
 
 impl QlFsm {
@@ -101,9 +101,12 @@ impl QlFsm {
         .min()
     }
 
-    pub fn take_next_outbound_inner(&mut self, crypto: &impl QlCrypto) -> Option<QlRecord> {
+    pub fn take_next_write_inner(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
         if let Some(record) = self.state.outbound.pop_front() {
-            return Some(record);
+            return Some(OutboundWrite {
+                record,
+                session_write_id: None,
+            });
         }
 
         if matches!(
@@ -113,23 +116,59 @@ impl QlFsm {
         {
             let _ = self.connect_inner(crypto);
             if let Some(record) = self.state.outbound.pop_front() {
-                return Some(record);
+                return Some(OutboundWrite {
+                    record,
+                    session_write_id: None,
+                });
             }
         }
 
         let (recipient, session_key) = self.peer_session()?;
-        let envelope = self.session.next_outbound(self.state.now.instant)?;
+        let envelope = self.session.take_next_write(self.state.now.instant)?;
         let mut nonce = [0u8; Nonce::NONCE_SIZE];
         crypto.fill_random_bytes(&mut nonce);
-        Some(wire::encrypted::encrypt_record(
-            QlHeader {
-                sender: self.identity.xid,
-                recipient,
-            },
-            &session_key,
-            &envelope,
-            Nonce(nonce),
-        ))
+        Some(OutboundWrite {
+            record: wire::encrypted::encrypt_record(
+                QlHeader {
+                    sender: self.identity.xid,
+                    recipient,
+                },
+                &session_key,
+                &envelope,
+                Nonce(nonce),
+            ),
+            session_write_id: Some(SessionWriteId(envelope.seq)),
+        })
+    }
+
+    pub fn confirm_session_write_inner(&mut self, write_id: SessionWriteId) {
+        self.session
+            .confirm_write(self.state.now.instant, write_id.0);
+    }
+
+    pub fn return_session_write_inner(&mut self, write_id: SessionWriteId) {
+        self.session.return_write(write_id.0);
+    }
+
+    pub fn kill_session_inner(&mut self, code: ql_wire::CloseCode) {
+        let Some(entry) = self.peer.as_mut() else {
+            return;
+        };
+        if !matches!(
+            entry.session,
+            crate::state::ConnectionState::Connected { .. }
+        ) {
+            return;
+        }
+
+        entry.session = crate::state::ConnectionState::Disconnected;
+        self.emit_peer_status();
+        self.reset_session();
+        self.state
+            .session_events
+            .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionCloseBody {
+                code,
+            }));
     }
 
     pub fn take_next_event_inner(&mut self) -> Option<QlFsmEvent> {

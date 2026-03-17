@@ -233,3 +233,120 @@ fn queued_stream_work_is_failed_when_handshake_times_out() {
     );
     assert!(harness.next_outbound_a().is_none());
 }
+
+#[test]
+fn returned_session_write_is_reissued_with_same_seq() {
+    let mut harness = Harness::connected(QlFsmConfig::default());
+
+    let stream_id = harness.a.fsm.open_stream().unwrap();
+    harness
+        .a
+        .fsm
+        .write_stream(stream_id, b"retry".to_vec())
+        .unwrap();
+
+    let write = harness.next_write_a().unwrap();
+    let id = write.session_write_id.expect("expected session write");
+    let record = write.record;
+    let session_key = harness
+        .b
+        .fsm
+        .peer
+        .as_ref()
+        .unwrap()
+        .session
+        .session_key()
+        .unwrap()
+        .clone();
+    let first = decrypt_envelope(&record, &session_key);
+
+    harness.return_write_a(id);
+
+    let write = harness.next_write_a().unwrap();
+    let reissued_id = write
+        .session_write_id
+        .expect("expected reissued session write");
+    let record = write.record;
+    let reissued = decrypt_envelope(&record, &session_key);
+
+    assert_eq!(reissued_id, id);
+    assert_eq!(reissued.seq, first.seq);
+    assert_eq!(reissued.body, first.body);
+
+    harness.confirm_write_a(reissued_id);
+    harness.deliver_to_b(record);
+    harness.pump();
+
+    assert_eq!(
+        harness.b.fsm.take_next_session_event(),
+        Some(QlSessionEvent::Opened(stream_id))
+    );
+    assert_eq!(
+        harness.b.fsm.take_next_session_event(),
+        Some(QlSessionEvent::Data {
+            stream_id,
+            bytes: b"retry".to_vec(),
+        })
+    );
+}
+
+#[test]
+fn unconfirmed_session_write_does_not_start_retransmit_timer() {
+    let config = QlFsmConfig::default();
+    let mut harness = Harness::connected(config);
+
+    let stream_id = harness.a.fsm.open_stream().unwrap();
+    harness
+        .a
+        .fsm
+        .write_stream(stream_id, b"retry".to_vec())
+        .unwrap();
+
+    let write = harness.next_write_a().unwrap();
+    let id = write.session_write_id.expect("expected session write");
+    let record = write.record;
+    let session_key = harness
+        .b
+        .fsm
+        .peer
+        .as_ref()
+        .unwrap()
+        .session
+        .session_key()
+        .unwrap()
+        .clone();
+    let first = decrypt_envelope(&record, &session_key);
+
+    harness.advance(config.session_retransmit_timeout + Duration::from_millis(1));
+    harness.a.fsm.on_timer(harness.time());
+    assert!(harness.next_write_a().is_none());
+
+    harness.confirm_write_a(id);
+    harness.advance(config.session_retransmit_timeout + Duration::from_millis(1));
+
+    let write = harness.next_write_a().unwrap();
+    assert!(write.session_write_id.is_some(), "expected retransmit");
+    let record = write.record;
+    let retried = decrypt_envelope(&record, &session_key);
+
+    assert_ne!(retried.seq, first.seq);
+    assert_eq!(retried.body, first.body);
+}
+
+#[test]
+fn kill_session_disconnects_locally() {
+    let mut harness = Harness::connected(QlFsmConfig::default());
+
+    harness.a.fsm.kill_session(ql_wire::CloseCode::CANCELLED);
+
+    assert!(matches!(
+        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(crate::state::ConnectionState::Disconnected)
+    ));
+    assert_eq!(
+        harness.a.fsm.take_next_session_event(),
+        Some(QlSessionEvent::SessionClosed(SessionCloseBody {
+            code: ql_wire::CloseCode::CANCELLED
+        }))
+    );
+}

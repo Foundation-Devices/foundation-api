@@ -8,7 +8,8 @@ mod tests;
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    CloseCode, CloseTarget, SessionCloseBody, SessionEnvelope, StreamCloseFrame, StreamId, XID,
+    CloseCode, CloseTarget, SessionCloseBody, SessionEnvelope, SessionSeq, StreamCloseFrame,
+    StreamId, XID,
 };
 
 use self::state::SessionFsmState;
@@ -148,6 +149,20 @@ impl SessionFsm {
     pub fn receive(&mut self, now: Instant, envelope: SessionEnvelope) {
         self.state.now = now;
         self.receive_inner(envelope);
+    }
+
+    pub fn take_next_write(&mut self, now: Instant) -> Option<SessionEnvelope> {
+        self.state.now = now;
+        self.take_next_write_inner()
+    }
+
+    pub fn confirm_write(&mut self, now: Instant, seq: SessionSeq) {
+        self.state.now = now;
+        self.confirm_write_inner(seq);
+    }
+
+    pub fn return_write(&mut self, seq: SessionSeq) {
+        self.return_write_inner(seq);
     }
 
     pub fn next_outbound(&mut self, now: Instant) -> Option<SessionEnvelope> {

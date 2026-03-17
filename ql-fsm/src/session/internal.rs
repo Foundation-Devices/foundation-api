@@ -10,7 +10,7 @@ use super::{
     ring::SeqRingInsertError,
     state::{
         AckState, PendingChunk, PendingSessionBody, PendingStreamBody, SessionFsmState, StreamRole,
-        StreamState, TxEntry,
+        StreamState, TxEntry, TxState,
     },
     SessionEvent, SessionFsm, SessionFsmConfig, SessionState, StreamError, StreamIncoming,
 };
@@ -208,33 +208,108 @@ impl SessionFsm {
         }
     }
 
-    pub fn next_outbound_inner(&mut self) -> Option<SessionEnvelope> {
+    pub fn take_next_write_inner(&mut self) -> Option<SessionEnvelope> {
         self.collect_timeouts();
-        let pending = self.next_pending_body()?;
-        if !self.state.tx_ring.accepts_seq(self.state.next_seq) {
-            if pending.priority {
-                self.requeue_pending_front(pending);
+        let seq = match self
+            .state
+            .tx_ring
+            .iter()
+            .find_map(|(seq, entry)| matches!(entry.state, TxState::Pending).then_some(seq))
+        {
+            Some(seq) => seq,
+            None => {
+                let pending = self.next_pending_body()?;
+                if !self.state.tx_ring.accepts_seq(self.state.next_seq) {
+                    if pending.priority {
+                        self.requeue_pending_front(pending);
+                    }
+                    return None;
+                }
+
+                let seq = self.state.next_seq;
+                self.state.next_seq = SessionSeq(seq.0 + 1);
+                let _ = self.state.tx_ring.insert(
+                    seq,
+                    TxEntry {
+                        pending,
+                        state: TxState::Pending,
+                    },
+                );
+                seq
             }
-            return None;
+        };
+
+        let ack = self.state.current_ack();
+        let body = {
+            let Some(entry) = self.state.tx_ring.get_mut(&seq) else {
+                return None;
+            };
+            debug_assert!(matches!(entry.state, TxState::Pending));
+            if !matches!(entry.state, TxState::Pending) {
+                return None;
+            }
+            entry.state = TxState::Issued;
+            entry.pending.body.clone()
+        };
+
+        Some(SessionEnvelope { seq, ack, body })
+    }
+
+    pub fn confirm_write_inner(&mut self, seq: SessionSeq) {
+        let Some((retransmit, should_clear_ack)) = self.state.tx_ring.get(&seq).map(|entry| {
+            (
+                entry.pending.retransmit,
+                matches!(entry.pending.body, SessionBody::Ack),
+            )
+        }) else {
+            return;
+        };
+        debug_assert!(matches!(
+            self.state.tx_ring.get(&seq).map(|entry| entry.state),
+            Some(TxState::Issued)
+        ));
+        if !matches!(
+            self.state.tx_ring.get(&seq).map(|entry| entry.state),
+            Some(TxState::Issued)
+        ) {
+            return;
         }
 
-        let seq = self.state.next_seq;
-        self.state.next_seq = SessionSeq(seq.0 + 1);
-        let ack = self.state.current_ack();
-        self.state.clear_ack_schedule();
-        let envelope = SessionEnvelope {
-            seq,
-            ack,
-            body: pending.body.clone(),
-        };
-        let entry = TxEntry {
-            pending,
-            sent_at: self.state.now,
-        };
         self.state.last_activity_at = self.state.now;
-        if entry.pending.retransmit {
-            let _ = self.state.tx_ring.insert(seq, entry);
+        if retransmit {
+            if let Some(entry) = self.state.tx_ring.get_mut(&seq) {
+                entry.state = TxState::Sent {
+                    sent_at: self.state.now,
+                };
+            }
+        } else {
+            let _ = self.state.tx_ring.remove(&seq);
+            self.state
+                .tx_ring
+                .advance_empty_front_until(self.state.next_seq);
+            if should_clear_ack {
+                self.state.clear_ack_schedule();
+            }
         }
+    }
+
+    pub fn return_write_inner(&mut self, seq: SessionSeq) {
+        debug_assert!(matches!(
+            self.state.tx_ring.get(&seq).map(|entry| entry.state),
+            Some(TxState::Issued)
+        ));
+        let Some(entry) = self.state.tx_ring.get_mut(&seq) else {
+            return;
+        };
+        if !matches!(entry.state, TxState::Issued) {
+            return;
+        }
+        entry.state = TxState::Pending;
+    }
+
+    pub fn next_outbound_inner(&mut self) -> Option<SessionEnvelope> {
+        let envelope = self.take_next_write_inner()?;
+        self.confirm_write_inner(envelope.seq);
         Some(envelope)
     }
 
@@ -273,7 +348,10 @@ impl SessionFsm {
             .state
             .tx_ring
             .iter()
-            .map(|(_, entry)| entry.sent_at + self.config.retransmit_timeout)
+            .filter_map(|(_, entry)| match entry.state {
+                TxState::Sent { sent_at } => Some(sent_at + self.config.retransmit_timeout),
+                TxState::Pending | TxState::Issued => None,
+            })
             .min();
         let keepalive_deadline = (self.state.session_state == SessionState::Open
             && !self.config.keepalive_interval.is_zero()
@@ -383,7 +461,10 @@ impl SessionFsm {
             .state
             .tx_ring
             .iter()
-            .filter_map(|(seq, _)| Self::ack_covers(ack, seq).then_some(seq))
+            .filter_map(|(seq, entry)| {
+                (matches!(entry.state, TxState::Sent { .. }) && Self::ack_covers(ack, seq))
+                    .then_some(seq)
+            })
             .collect();
         for seq in acked {
             let _ = self.state.tx_ring.remove(&seq);
@@ -416,12 +497,19 @@ impl SessionFsm {
     }
 
     fn collect_timeouts(&mut self) {
+        // todo: this allocation looks un-necessary?
+        // just moving between queues, doesn't require intermediate collection.
         let expired: Vec<_> = self
             .state
             .tx_ring
             .iter()
-            .filter_map(|(seq, entry)| {
-                (entry.sent_at + self.config.retransmit_timeout <= self.state.now).then_some(seq)
+            .filter_map(|(seq, entry)| match entry.state {
+                TxState::Sent { sent_at }
+                    if sent_at + self.config.retransmit_timeout <= self.state.now =>
+                {
+                    Some(seq)
+                }
+                TxState::Pending | TxState::Issued | TxState::Sent { .. } => None,
             })
             .collect();
 

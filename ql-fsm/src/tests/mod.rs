@@ -13,7 +13,7 @@ use rkyv::api::low;
 use crate::{
     session::{SessionFsm, SessionFsmConfig, StreamNamespace},
     state::ConnectionState,
-    FsmTime, Peer, QlFsm, QlFsmConfig,
+    FsmTime, OutboundWrite, Peer, QlFsm, QlFsmConfig, SessionWriteId,
 };
 
 #[derive(Clone)]
@@ -131,11 +131,23 @@ impl Harness {
     }
 
     fn next_outbound_a(&mut self) -> Option<QlRecord> {
-        self.a.fsm.take_next_outbound(self.time(), &self.a.crypto)
+        let write = self.a.fsm.take_next_write(self.time(), &self.a.crypto)?;
+        if let Some(id) = write.session_write_id {
+            self.a.fsm.confirm_session_write(self.time(), id);
+        }
+        Some(write.record)
     }
 
     fn next_outbound_b(&mut self) -> Option<QlRecord> {
-        self.b.fsm.take_next_outbound(self.time(), &self.b.crypto)
+        let write = self.b.fsm.take_next_write(self.time(), &self.b.crypto)?;
+        if let Some(id) = write.session_write_id {
+            self.b.fsm.confirm_session_write(self.time(), id);
+        }
+        Some(write.record)
+    }
+
+    fn next_write_a(&mut self) -> Option<OutboundWrite> {
+        self.a.fsm.take_next_write(self.time(), &self.a.crypto)
     }
 
     fn deliver_to_a(&mut self, record: QlRecord) {
@@ -150,6 +162,14 @@ impl Harness {
             .fsm
             .receive(self.time(), ql_wire::encode_record(&record), &self.b.crypto)
             .unwrap();
+    }
+
+    fn confirm_write_a(&mut self, write_id: SessionWriteId) {
+        self.a.fsm.confirm_session_write(self.time(), write_id);
+    }
+
+    fn return_write_a(&mut self, write_id: SessionWriteId) {
+        self.a.fsm.return_session_write(write_id);
     }
 
     fn pump(&mut self) {

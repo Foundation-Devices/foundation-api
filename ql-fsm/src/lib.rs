@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey};
 use ql_wire::{
-    CloseCode, CloseTarget, QlCrypto, QlIdentity, QlRecord, SessionCloseBody, StreamCloseFrame,
-    StreamId, WireError, XID,
+    CloseCode, CloseTarget, QlCrypto, QlIdentity, QlRecord, SessionCloseBody, SessionSeq,
+    StreamCloseFrame, StreamId, WireError, XID,
 };
 use thiserror::Error;
 
@@ -57,6 +57,15 @@ pub enum QlSessionEvent {
     WritableClosed(StreamId),
     Unpaired,
     SessionClosed(SessionCloseBody),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionWriteId(pub SessionSeq);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutboundWrite {
+    pub record: QlRecord,
+    pub session_write_id: Option<SessionWriteId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -186,9 +195,41 @@ impl QlFsm {
         self.next_deadline_inner()
     }
 
-    pub fn take_next_outbound(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Option<QlRecord> {
+    /// Returns the next outbound record.
+    ///
+    /// If `session_write_id` is `Some`, it must be followed by exactly one of
+    /// [`Self::confirm_session_write`] or [`Self::return_session_write`].
+    ///
+    /// If `session_write_id` is `None`, the record is fire-and-forget.
+    pub fn take_next_write(
+        &mut self,
+        now: FsmTime,
+        crypto: &impl QlCrypto,
+    ) -> Option<OutboundWrite> {
         self.state.now = now;
-        self.take_next_outbound_inner(crypto)
+        self.take_next_write_inner(crypto)
+    }
+
+    /// Marks a previously issued session write as successfully handed to the transport.
+    ///
+    /// This must be called at most once for a `SessionWriteId` returned by
+    /// [`Self::take_next_write`] whose `session_write_id` was `Some`.
+    pub fn confirm_session_write(&mut self, now: FsmTime, write_id: SessionWriteId) {
+        self.state.now = now;
+        self.confirm_session_write_inner(write_id);
+    }
+
+    /// Returns a previously issued session write to the FSM because it was NOT handed to the transport.
+    ///
+    /// This must be called at most once for a `SessionWriteId` returned by
+    /// [`Self::take_next_write`] whose `session_write_id` was `Some`.
+    pub fn return_session_write(&mut self, write_id: SessionWriteId) {
+        self.return_session_write_inner(write_id);
+    }
+
+    /// Aborts the current encrypted session locally.
+    pub fn kill_session(&mut self, code: CloseCode) {
+        self.kill_session_inner(code);
     }
 
     pub fn take_next_event(&mut self) -> Option<QlFsmEvent> {

@@ -117,7 +117,14 @@ pub struct PendingSessionControl {
 #[derive(Debug, Clone)]
 pub struct TxEntry {
     pub pending: PendingSessionBody,
-    pub sent_at: Instant,
+    pub state: TxState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxState {
+    Pending,
+    Issued,
+    Sent { sent_at: Instant },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

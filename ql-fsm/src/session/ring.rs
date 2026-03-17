@@ -43,6 +43,11 @@ impl<const N: usize, T> SeqRing<N, T> {
         self.slots[index].as_ref()
     }
 
+    pub fn get_mut(&mut self, seq: &SessionSeq) -> Option<&mut T> {
+        let index = self.index_for(*seq)?;
+        self.slots[index].as_mut()
+    }
+
     pub fn insert(&mut self, seq: SessionSeq, value: T) -> Result<(), SeqRingInsertError> {
         let index = self.index_for(seq).ok_or(SeqRingInsertError::OutOfWindow)?;
         if self.slots[index].is_some() {
