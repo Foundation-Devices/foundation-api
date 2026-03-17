@@ -657,6 +657,8 @@ impl SessionFsm {
         Ok(())
     }
 
+    // todo: we probably want to have a new session state, for "needs_close"
+    // that carries the sessionclosed payload. that is fatal, and needs higher priority
     fn fail_session(&mut self, close: SessionCloseBody) {
         if self.state.session_state == SessionState::Closed {
             return;
