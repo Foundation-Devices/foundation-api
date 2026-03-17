@@ -163,7 +163,6 @@ impl PeerRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutKind {
     Outbound { token: Token },
-    HandshakeRetry { token: Token },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,13 +245,6 @@ impl EngineState {
         self.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Outbound { token },
-        }));
-    }
-
-    pub fn schedule_handshake_retry(&mut self, token: Token, at: Instant) {
-        self.timeouts.push(Reverse(TimeoutEntry {
-            at,
-            kind: TimeoutKind::HandshakeRetry { token },
         }));
     }
 

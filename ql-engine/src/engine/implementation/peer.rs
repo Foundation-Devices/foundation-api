@@ -2,10 +2,13 @@ use super::*;
 
 pub fn handle_bind_peer(engine: &mut Engine, peer: Peer) {
     if let Some(peer) = engine.peer.as_ref().map(|existing| existing.peer) {
-        engine.state.pending_events.push_back(EngineEvent::PeerStatusChanged {
-            peer,
-            session: PeerSession::Disconnected,
-        });
+        engine
+            .state
+            .pending_events
+            .push_back(EngineEvent::PeerStatusChanged {
+                peer,
+                session: PeerSession::Disconnected,
+            });
     }
     bind_peer_record(engine, peer);
 }
@@ -122,7 +125,10 @@ fn bind_peer_record(engine: &mut Engine, peer: Peer) {
     ));
     engine.emit_peer_status();
     if let Some(peer) = engine.peer.as_ref().map(PeerRecord::snapshot) {
-        engine.state.pending_events.push_back(EngineEvent::PersistPeer(peer));
+        engine
+            .state
+            .pending_events
+            .push_back(EngineEvent::PersistPeer(peer));
     }
 }
 
@@ -140,9 +146,15 @@ fn unpair_peer(engine: &mut Engine) {
     engine.drop_outbound();
     engine.abort_streams(QlError::SendFailed);
     engine.peer = None;
-    engine.state.pending_events.push_back(EngineEvent::PeerStatusChanged {
-        peer,
-        session: PeerSession::Disconnected,
-    });
-    engine.state.pending_events.push_back(EngineEvent::ClearPeer);
+    engine
+        .state
+        .pending_events
+        .push_back(EngineEvent::PeerStatusChanged {
+            peer,
+            session: PeerSession::Disconnected,
+        });
+    engine
+        .state
+        .pending_events
+        .push_back(EngineEvent::ClearPeer);
 }

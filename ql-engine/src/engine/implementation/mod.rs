@@ -145,9 +145,6 @@ impl Engine {
                         .control_outbound
                         .retain(|message| message.token != token);
                 }
-                TimeoutKind::HandshakeRetry { token } => {
-                    self.handle_handshake_retry_timeout(token);
-                }
             }
         }
 
@@ -172,6 +169,13 @@ impl Engine {
         if handshake_due {
             self.fail_handshake(QlError::Timeout);
             return;
+        }
+
+        let handshake_retry_due = self
+            .handshake_retry_deadline()
+            .is_some_and(|deadline| deadline <= now);
+        if handshake_retry_due {
+            self.handle_handshake_retry_timeout();
         }
 
         let keepalive_due = self
@@ -211,6 +215,7 @@ impl Engine {
         [
             self.state.next_deadline(),
             self.streams.next_deadline(),
+            self.handshake_retry_deadline(),
             self.handshake_deadline(),
             self.keep_alive_deadline(),
         ]
@@ -350,9 +355,10 @@ impl Engine {
         self.abort_streams(error);
     }
 
-    fn handle_handshake_retry_timeout(&mut self, token: Token) {
+    fn handle_handshake_retry_timeout(&mut self) {
         enum RetryAction {
             Resend {
+                token: Token,
                 peer: XID,
                 deadline: Instant,
                 record: wire::handshake::HandshakeRecord,
@@ -378,13 +384,15 @@ impl Engine {
                             retry_at,
                         },
                     ..
-                } if *handshake_token == token && retry_at.is_some_and(|at| at <= now) => {
+                } if retry_at.is_some_and(|at| at <= now) => {
+                    let token = *handshake_token;
                     *retry_at = None;
                     if *retry_count >= self.config.max_handshake_retries {
                         RetryAction::Fail
                     } else {
                         *retry_count = retry_count.saturating_add(1);
                         RetryAction::Resend {
+                            token,
                             peer,
                             deadline: *deadline,
                             record: wire::handshake::HandshakeRecord::Hello(hello.clone()),
@@ -402,13 +410,15 @@ impl Engine {
                             ..
                         },
                     ..
-                } if *handshake_token == token && retry_at.is_some_and(|at| at <= now) => {
+                } if retry_at.is_some_and(|at| at <= now) => {
+                    let token = *handshake_token;
                     *retry_at = None;
                     if *retry_count >= self.config.max_handshake_retries {
                         RetryAction::Fail
                     } else {
                         *retry_count = retry_count.saturating_add(1);
                         RetryAction::Resend {
+                            token,
                             peer,
                             deadline: *deadline,
                             record: wire::handshake::HandshakeRecord::Confirm(confirm.clone()),
@@ -426,13 +436,15 @@ impl Engine {
                             ..
                         },
                     ..
-                } if *handshake_token == token && retry_at.is_some_and(|at| at <= now) => {
+                } if retry_at.is_some_and(|at| at <= now) => {
+                    let token = *handshake_token;
                     *retry_at = None;
                     if *retry_count >= self.config.max_handshake_retries {
                         RetryAction::Fail
                     } else {
                         *retry_count = retry_count.saturating_add(1);
                         RetryAction::Resend {
+                            token,
                             peer,
                             deadline: *deadline,
                             record: wire::handshake::HandshakeRecord::HelloReply(reply.clone()),
@@ -445,6 +457,7 @@ impl Engine {
 
         match action {
             RetryAction::Resend {
+                token,
                 peer,
                 deadline,
                 record,
@@ -493,6 +506,30 @@ impl Engine {
                 Some(*deadline)
             }
             PeerSession::Disconnected | PeerSession::Connected { .. } => None,
+        }
+    }
+
+    fn handshake_retry_deadline(&self) -> Option<Instant> {
+        let entry = self.peer.as_ref()?;
+        match &entry.session {
+            PeerSession::Initiator {
+                stage: HandshakeInitiator::WaitingHelloReply { retry_at, .. },
+                ..
+            }
+            | PeerSession::Initiator {
+                stage: HandshakeInitiator::WaitingReady { retry_at, .. },
+                ..
+            }
+            | PeerSession::Responder {
+                stage: HandshakeResponder::WaitingConfirm { retry_at, .. },
+                ..
+            } => *retry_at,
+            PeerSession::Disconnected
+            | PeerSession::Responder {
+                stage: HandshakeResponder::SendingReady { .. },
+                ..
+            }
+            | PeerSession::Connected { .. } => None,
         }
     }
 
@@ -583,7 +620,7 @@ impl Engine {
         let Some(entry) = self.peer.as_mut() else {
             return;
         };
-        let scheduled = match &mut entry.session {
+        match &mut entry.session {
             PeerSession::Initiator {
                 handshake_token,
                 stage:
@@ -594,7 +631,6 @@ impl Engine {
                 ..
             } if *handshake_token == token => {
                 *stage_retry_at = Some(retry_at);
-                true
             }
             PeerSession::Initiator {
                 handshake_token,
@@ -606,7 +642,6 @@ impl Engine {
                 ..
             } if *handshake_token == token => {
                 *stage_retry_at = Some(retry_at);
-                true
             }
             PeerSession::Responder {
                 handshake_token,
@@ -618,12 +653,8 @@ impl Engine {
                 ..
             } if *handshake_token == token => {
                 *stage_retry_at = Some(retry_at);
-                true
             }
-            _ => false,
-        };
-        if scheduled {
-            self.state.schedule_handshake_retry(token, retry_at);
+            _ => {}
         }
     }
 
