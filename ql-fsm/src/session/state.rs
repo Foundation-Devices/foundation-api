@@ -1,8 +1,9 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, VecDeque},
     time::Instant,
 };
 
+use indexmap::IndexMap;
 use ql_wire::{
     CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamCloseFrame,
     StreamFrame, StreamId,
@@ -74,7 +75,6 @@ pub struct StreamState {
     pub inbound_finished: bool,
     pub inbound_closed: bool,
     pub inbound_discarding: bool,
-    pub ready_enqueued: bool,
 }
 
 impl StreamState {
@@ -91,7 +91,6 @@ impl StreamState {
             inbound_finished: false,
             inbound_closed: false,
             inbound_discarding: false,
-            ready_enqueued: false,
         }
     }
 
@@ -145,8 +144,10 @@ pub struct SessionFsmState {
     pub rx_ring: SeqRing<SESSION_WINDOW_CAPACITY, ()>,
     pub ack_state: AckState,
     pub pending_control: PendingSessionControl,
-    pub streams: HashMap<StreamId, StreamState>,
-    pub ready_streams: VecDeque<StreamId>,
+    /// `IndexMap` has stable (and fast) iteration order for round-robin
+    /// scheduling, so we do not need a separate ready queue
+    pub streams: IndexMap<StreamId, StreamState>,
+    pub next_stream_index: usize,
     pub events: VecDeque<SessionEvent>,
 }
 

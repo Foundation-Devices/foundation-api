@@ -9,6 +9,7 @@ license = "Proprietary"
 bc-components = { version = "0.28.0", default-features = false, features = [
   "pqcrypto",
 ] }
+indexmap = "2"
 ql-wire = { path = "../ql-wire" }
 rkyv = { version = "0.8", default-features = false, features = [
   "std",

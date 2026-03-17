@@ -31,7 +31,7 @@ impl SessionFsm {
                 ack_state: AckState::Idle,
                 pending_control: Default::default(),
                 streams: Default::default(),
-                ready_streams: Default::default(),
+                next_stream_index: 0,
                 events: Default::default(),
             },
         }
@@ -77,7 +77,6 @@ impl SessionFsm {
         stream
             .send_queue
             .push_back(PendingStreamBody::Stream(frame));
-        Self::mark_stream_ready(&mut self.state, stream_id);
         Ok(())
     }
 
@@ -101,7 +100,6 @@ impl SessionFsm {
                 bytes: Vec::new(),
                 fin: true,
             }));
-        Self::mark_stream_ready(&mut self.state, stream_id);
         Ok(())
     }
 
@@ -128,7 +126,6 @@ impl SessionFsm {
                 code,
                 payload,
             }));
-        Self::mark_stream_ready(&mut self.state, stream_id);
         Ok(())
     }
 
@@ -418,22 +415,36 @@ impl SessionFsm {
             });
         }
 
-        while let Some(stream_id) = self.state.ready_streams.pop_front() {
-            let Some(stream) = self.state.streams.get_mut(&stream_id) else {
-                continue;
-            };
-            stream.ready_enqueued = false;
-            let Some(item) = stream.send_queue.pop_front() else {
-                continue;
-            };
-            if !stream.send_queue.is_empty() {
-                Self::mark_stream_ready(&mut self.state, stream_id);
+        let len = self.state.streams.len();
+        if len > 0 {
+            let start = self.state.next_stream_index % len;
+            for offset in 0..len {
+                let index = (start + offset) % len;
+                let has_pending = self
+                    .state
+                    .streams
+                    .get_index(index)
+                    .is_some_and(|(_, stream)| !stream.send_queue.is_empty());
+                if !has_pending {
+                    continue;
+                }
+
+                let item = {
+                    let Some((_, stream)) = self.state.streams.get_index_mut(index) else {
+                        continue;
+                    };
+                    let Some(item) = stream.send_queue.pop_front() else {
+                        continue;
+                    };
+                    item
+                };
+                self.state.next_stream_index = (index + 1) % len;
+                return Some(PendingSessionBody {
+                    body: item.to_session_body(),
+                    retransmit: true,
+                    priority: true,
+                });
             }
-            return Some(PendingSessionBody {
-                body: item.to_session_body(),
-                retransmit: true,
-                priority: true,
-            });
         }
 
         let ack_due = match self.state.ack_state {
@@ -530,20 +541,16 @@ impl SessionFsm {
         match pending.body {
             SessionBody::Stream(frame) => {
                 if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
-                    let stream_id = frame.stream_id;
                     stream
                         .send_queue
                         .push_front(PendingStreamBody::Stream(frame));
-                    Self::mark_stream_ready_front(&mut self.state, stream_id);
                 }
             }
             SessionBody::StreamClose(frame) => {
                 if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
-                    let stream_id = frame.stream_id;
                     stream
                         .send_queue
                         .push_front(PendingStreamBody::StreamClose(frame));
-                    Self::mark_stream_ready_front(&mut self.state, stream_id);
                 }
             }
             body => match body {
@@ -554,28 +561,6 @@ impl SessionFsm {
                 SessionBody::Stream(_) | SessionBody::StreamClose(_) => unreachable!(),
             },
         }
-    }
-
-    fn mark_stream_ready(state: &mut SessionFsmState, stream_id: StreamId) {
-        let Some(stream) = state.streams.get_mut(&stream_id) else {
-            return;
-        };
-        if stream.ready_enqueued {
-            return;
-        }
-        stream.ready_enqueued = true;
-        state.ready_streams.push_back(stream_id);
-    }
-
-    fn mark_stream_ready_front(state: &mut SessionFsmState, stream_id: StreamId) {
-        let Some(stream) = state.streams.get_mut(&stream_id) else {
-            return;
-        };
-        if stream.ready_enqueued {
-            return;
-        }
-        stream.ready_enqueued = true;
-        state.ready_streams.push_front(stream_id);
     }
 
     fn handle_stream_frame(&mut self, frame: StreamFrame) {
@@ -762,7 +747,7 @@ impl SessionFsm {
     }
 
     fn clear_streams(&mut self) {
-        self.state.ready_streams.clear();
+        self.state.next_stream_index = 0;
         self.state.streams.clear();
     }
 }
