@@ -326,7 +326,6 @@ pub fn handle_confirm(
             }),
         };
     }
-    fsm.reset_session();
 
     fsm.enqueue_handshake(
         header.sender,
@@ -368,7 +367,6 @@ pub fn handle_ready(
             recent_ready: None,
         };
     }
-    fsm.reset_session();
     fsm.emit_peer_status();
     Ok(())
 }
@@ -446,6 +444,7 @@ pub fn handle_timer(fsm: &mut QlFsm) {
     }
 
     if disconnected {
+        fsm.fail_pending_connect_session(ql_wire::CloseCode::TIMEOUT);
         fsm.emit_peer_status();
     }
 

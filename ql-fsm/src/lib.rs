@@ -196,12 +196,7 @@ impl QlFsm {
     }
 
     pub fn open_stream(&mut self) -> Result<StreamId, session::StreamError> {
-        if self
-            .peer
-            .as_ref()
-            .and_then(|entry| entry.session.session_key())
-            .is_none()
-        {
+        if self.peer.is_none() {
             return Err(session::StreamError::SessionClosed);
         }
         self.session.open_stream()
@@ -212,24 +207,14 @@ impl QlFsm {
         stream_id: StreamId,
         bytes: Vec<u8>,
     ) -> Result<(), session::StreamError> {
-        if self
-            .peer
-            .as_ref()
-            .and_then(|entry| entry.session.session_key())
-            .is_none()
-        {
+        if self.peer.is_none() {
             return Err(session::StreamError::SessionClosed);
         }
         self.session.write_stream(stream_id, bytes)
     }
 
     pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), session::StreamError> {
-        if self
-            .peer
-            .as_ref()
-            .and_then(|entry| entry.session.session_key())
-            .is_none()
-        {
+        if self.peer.is_none() {
             return Err(session::StreamError::SessionClosed);
         }
         self.session.finish_stream(stream_id)
@@ -242,12 +227,7 @@ impl QlFsm {
         code: CloseCode,
         payload: Vec<u8>,
     ) -> Result<(), session::StreamError> {
-        if self
-            .peer
-            .as_ref()
-            .and_then(|entry| entry.session.session_key())
-            .is_none()
-        {
+        if self.peer.is_none() {
             return Err(session::StreamError::SessionClosed);
         }
         self.session.close_stream(stream_id, target, code, payload)

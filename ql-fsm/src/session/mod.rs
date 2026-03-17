@@ -175,4 +175,8 @@ impl SessionFsm {
     pub fn session_state(&self) -> SessionState {
         self.session_state_inner()
     }
+
+    pub fn has_pending_stream_work(&self) -> bool {
+        self.has_pending_stream_work_inner()
+    }
 }

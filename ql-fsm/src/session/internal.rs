@@ -308,6 +308,13 @@ impl SessionFsm {
         self.state.session_state
     }
 
+    pub fn has_pending_stream_work_inner(&self) -> bool {
+        self.state
+            .streams
+            .values()
+            .any(|stream| !stream.send_queue.is_empty())
+    }
+
     fn next_pending_body(&mut self) -> Option<PendingSessionBody> {
         if let Some(close) = self.state.pending_control.close.take() {
             return Some(PendingSessionBody {

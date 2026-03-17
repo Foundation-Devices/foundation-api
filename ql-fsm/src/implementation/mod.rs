@@ -106,6 +106,17 @@ impl QlFsm {
             return Some(record);
         }
 
+        if matches!(
+            self.peer.as_ref().map(|entry| &entry.session),
+            Some(crate::state::ConnectionState::Disconnected)
+        ) && self.session.has_pending_stream_work()
+        {
+            let _ = self.connect_inner(crypto);
+            if let Some(record) = self.state.outbound.pop_front() {
+                return Some(record);
+            }
+        }
+
         let (recipient, session_key) = self.peer_session()?;
         let envelope = self.session.next_outbound(self.state.now.instant)?;
         let mut nonce = [0u8; Nonce::NONCE_SIZE];
@@ -181,6 +192,18 @@ impl QlFsm {
             },
             self.state.now.instant,
         );
+    }
+
+    fn fail_pending_connect_session(&mut self, code: ql_wire::CloseCode) {
+        if !self.session.has_pending_stream_work() {
+            return;
+        }
+        self.reset_session();
+        self.state
+            .session_events
+            .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionCloseBody {
+                code,
+            }));
     }
 
     fn drain_session_events(&mut self) {

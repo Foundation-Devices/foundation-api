@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use ql_wire::SessionCloseBody;
+
 use super::*;
 use crate::{session::StreamNamespace, QlFsmEvent, QlSessionEvent};
 
@@ -157,4 +159,77 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
             bytes: b"from-a".to_vec(),
         })
     );
+}
+
+#[test]
+fn queued_stream_work_auto_connects_and_drains_after_handshake() {
+    let mut harness = Harness::paired(QlFsmConfig::default());
+
+    let stream_id = harness.a.fsm.open_stream().unwrap();
+    harness
+        .a
+        .fsm
+        .write_stream(stream_id, b"queued".to_vec())
+        .unwrap();
+    harness.a.fsm.finish_stream(stream_id).unwrap();
+
+    harness.pump();
+
+    assert!(matches!(
+        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(crate::state::ConnectionState::Connected { .. })
+    ));
+    assert!(matches!(
+        harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(crate::state::ConnectionState::Connected { .. })
+    ));
+    assert_eq!(
+        harness.b.fsm.take_next_session_event(),
+        Some(QlSessionEvent::Opened(stream_id))
+    );
+    assert_eq!(
+        harness.b.fsm.take_next_session_event(),
+        Some(QlSessionEvent::Data {
+            stream_id,
+            bytes: b"queued".to_vec(),
+        })
+    );
+    assert_eq!(
+        harness.b.fsm.take_next_session_event(),
+        Some(QlSessionEvent::Finished(stream_id))
+    );
+}
+
+#[test]
+fn queued_stream_work_is_failed_when_handshake_times_out() {
+    let config = QlFsmConfig {
+        handshake_retry_interval: Duration::from_millis(50),
+        max_handshake_retries: 0,
+        ..QlFsmConfig::default()
+    };
+    let mut harness = Harness::paired(config);
+
+    let stream_id = harness.a.fsm.open_stream().unwrap();
+    harness
+        .a
+        .fsm
+        .write_stream(stream_id, b"queued".to_vec())
+        .unwrap();
+
+    let _hello = harness.next_outbound_a().unwrap();
+
+    harness.advance(config.handshake_retry_interval);
+    harness.a.fsm.on_timer(harness.time());
+
+    assert!(matches!(
+        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(crate::state::ConnectionState::Disconnected)
+    ));
+    assert_eq!(
+        harness.a.fsm.take_next_session_event(),
+        Some(QlSessionEvent::SessionClosed(SessionCloseBody {
+            code: ql_wire::CloseCode::TIMEOUT
+        }))
+    );
+    assert!(harness.next_outbound_a().is_none());
 }

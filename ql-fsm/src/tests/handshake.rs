@@ -1,10 +1,9 @@
 use std::time::Duration;
 
+use ql_wire::QlPayload;
+
 use super::*;
-use crate::{
-    session::StreamError,
-    state::{ConnectionState, HandshakeInitiator, HandshakeResponder},
-};
+use crate::state::{ConnectionState, HandshakeInitiator, HandshakeResponder};
 
 #[test]
 fn handshake_deadline_is_derived_from_peer_state() {
@@ -226,20 +225,36 @@ fn initiator_waits_for_ready_before_connecting() {
             ..
         })
     ));
-    assert_eq!(harness.a.fsm.open_stream(), Err(StreamError::SessionClosed));
+    let stream_id = harness.a.fsm.open_stream().unwrap();
+    harness
+        .a
+        .fsm
+        .write_stream(stream_id, b"queued".to_vec())
+        .unwrap();
 
     let confirm = harness.next_outbound_a().unwrap();
+    assert!(matches!(
+        confirm.payload,
+        QlPayload::Handshake(ql_wire::handshake::HandshakeRecord::Confirm(_))
+    ));
     harness.deliver_to_b(confirm);
     let ready = harness.next_outbound_b().unwrap();
 
-    assert_eq!(harness.a.fsm.open_stream(), Err(StreamError::SessionClosed));
+    assert!(matches!(
+        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(ConnectionState::Initiator {
+            stage: HandshakeInitiator::WaitingReady { .. },
+            ..
+        })
+    ));
 
     harness.deliver_to_a(ready);
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
         Some(ConnectionState::Connected { .. })
     ));
-    assert!(harness.a.fsm.open_stream().is_ok());
+    let record = harness.next_outbound_a().unwrap();
+    assert!(matches!(record.payload, QlPayload::Encrypted(_)));
 }
 
 #[test]
