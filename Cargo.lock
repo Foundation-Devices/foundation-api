@@ -1984,6 +1984,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ql-wire"
+version = "0.1.0"
+dependencies = [
+ "bc-components",
+ "chacha20poly1305",
+ "rkyv",
+ "thiserror",
+]
+
+[[package]]
 name = "quantum-link-macros"
 version = "0.1.0"
 dependencies = [
