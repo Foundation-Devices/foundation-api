@@ -1,280 +1,75 @@
-use bc_components::{
-    MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, MLKEMPublicKey, MLDSA, MLKEM,
-};
-use rkyv::{
-    rancor::{Fallible, Source},
-    with::{ArchiveWith, DeserializeWith, SerializeWith},
-    Archive, Archived, Deserialize, Place, Resolver, Serialize,
+use zerocopy::{
+    byte_slice::{ByteSlice, SplitByteSlice},
+    byteorder::little_endian,
+    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes,
 };
 
-use crate::WireError;
+use crate::{QlHeader, WireError};
 
-macro_rules! impl_wire_wrapper {
-    ($marker:ident, $external:ty, $wire:ty) => {
-        pub(crate) struct $marker;
+pub type U16Le = little_endian::U16;
+pub type U32Le = little_endian::U32;
+pub type U64Le = little_endian::U64;
 
-        impl ArchiveWith<$external> for $marker {
-            type Archived = Archived<$wire>;
-            type Resolver = Resolver<$wire>;
-
-            fn resolve_with(
-                field: &$external,
-                resolver: Self::Resolver,
-                out: Place<Self::Archived>,
-            ) {
-                <$wire>::from(field).resolve(resolver, out);
-            }
-        }
-
-        impl<S> SerializeWith<$external, S> for $marker
-        where
-            S: Fallible + ?Sized,
-            $wire: Serialize<S>,
-        {
-            fn serialize_with(
-                field: &$external,
-                serializer: &mut S,
-            ) -> Result<Self::Resolver, S::Error> {
-                <$wire>::from(field).serialize(serializer)
-            }
-        }
-
-        impl<D> DeserializeWith<Archived<$wire>, $external, D> for $marker
-        where
-            D: Fallible + ?Sized,
-            D::Error: Source,
-            Archived<$wire>: Deserialize<$wire, D>,
-            $wire: TryInto<$external, Error = WireError>,
-        {
-            fn deserialize_with(
-                field: &Archived<$wire>,
-                deserializer: &mut D,
-            ) -> Result<$external, D::Error> {
-                field
-                    .deserialize(deserializer)?
-                    .try_into()
-                    .map_err(D::Error::new)
-            }
-        }
-    };
+pub fn push_value<T>(out: &mut Vec<u8>, value: &T)
+where
+    T: IntoBytes + Immutable + ?Sized,
+{
+    out.extend_from_slice(value.as_bytes());
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub(crate) enum WireMlDsaLevel {
-    MlDsa44 = 2,
-    MlDsa65 = 3,
-    MlDsa87 = 5,
+pub fn read_exact<T>(bytes: &[u8]) -> Result<T, WireError>
+where
+    T: FromBytes + Copy,
+{
+    T::read_from_bytes(bytes).map_err(|_| WireError::InvalidPayload)
 }
 
-impl TryFrom<WireMlDsaLevel> for MLDSA {
-    type Error = WireError;
+pub fn read_byte<T>(byte: u8) -> Result<T, WireError>
+where
+    T: TryFromBytes + Copy,
+{
+    T::try_read_from_bytes(core::slice::from_ref(&byte)).map_err(|_| WireError::InvalidPayload)
+}
 
-    fn try_from(value: WireMlDsaLevel) -> Result<Self, Self::Error> {
-        Ok(match value {
-            WireMlDsaLevel::MlDsa44 => MLDSA::MLDSA44,
-            WireMlDsaLevel::MlDsa65 => MLDSA::MLDSA65,
-            WireMlDsaLevel::MlDsa87 => MLDSA::MLDSA87,
-        })
+pub fn read_prefix<T, B>(bytes: B) -> Result<(T, B), WireError>
+where
+    B: SplitByteSlice,
+    T: FromBytes + KnownLayout + Immutable + Copy,
+{
+    let (value, rest) = Ref::<_, T>::from_prefix(bytes).map_err(|_| WireError::InvalidPayload)?;
+    Ok((*value, rest))
+}
+
+pub fn parse<T, B>(bytes: B) -> Result<Ref<B, T>, WireError>
+where
+    B: ByteSlice,
+    T: KnownLayout + Immutable + ?Sized,
+{
+    Ref::<_, T>::from_bytes(bytes).map_err(|_| WireError::InvalidPayload)
+}
+
+pub fn ensure_empty(bytes: &[u8]) -> Result<(), WireError> {
+    if bytes.is_empty() {
+        Ok(())
+    } else {
+        Err(WireError::InvalidPayload)
     }
 }
 
-impl From<MLDSA> for WireMlDsaLevel {
-    fn from(value: MLDSA) -> Self {
-        match value {
-            MLDSA::MLDSA44 => Self::MlDsa44,
-            MLDSA::MLDSA65 => Self::MlDsa65,
-            MLDSA::MLDSA87 => Self::MlDsa87,
-        }
-    }
+pub fn append_field(out: &mut Vec<u8>, label: &[u8], value: &[u8]) {
+    append_framed_bytes(out, label);
+    append_framed_bytes(out, value);
 }
 
-impl From<&ArchivedWireMlDsaLevel> for MLDSA {
-    fn from(value: &ArchivedWireMlDsaLevel) -> Self {
-        match value {
-            ArchivedWireMlDsaLevel::MlDsa44 => MLDSA::MLDSA44,
-            ArchivedWireMlDsaLevel::MlDsa65 => MLDSA::MLDSA65,
-            ArchivedWireMlDsaLevel::MlDsa87 => MLDSA::MLDSA87,
-        }
-    }
+pub fn append_framed_bytes(out: &mut Vec<u8>, value: &[u8]) {
+    out.extend_from_slice(&u64::try_from(value.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(value);
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub(crate) enum WireMlKemLevel {
-    MlKem512 = 1,
-    MlKem768 = 2,
-    MlKem1024 = 3,
+pub fn header_aad(header: &QlHeader) -> Vec<u8> {
+    let mut aad = Vec::new();
+    append_field(&mut aad, b"domain", b"ql-wire:header-aad:v1");
+    append_field(&mut aad, b"sender", &header.sender.0);
+    append_field(&mut aad, b"recipient", &header.recipient.0);
+    aad
 }
-
-impl TryFrom<WireMlKemLevel> for MLKEM {
-    type Error = WireError;
-
-    fn try_from(value: WireMlKemLevel) -> Result<Self, Self::Error> {
-        Ok(match value {
-            WireMlKemLevel::MlKem512 => MLKEM::MLKEM512,
-            WireMlKemLevel::MlKem768 => MLKEM::MLKEM768,
-            WireMlKemLevel::MlKem1024 => MLKEM::MLKEM1024,
-        })
-    }
-}
-
-impl From<MLKEM> for WireMlKemLevel {
-    fn from(value: MLKEM) -> Self {
-        match value {
-            MLKEM::MLKEM512 => Self::MlKem512,
-            MLKEM::MLKEM768 => Self::MlKem768,
-            MLKEM::MLKEM1024 => Self::MlKem1024,
-        }
-    }
-}
-
-impl From<&ArchivedWireMlKemLevel> for MLKEM {
-    fn from(value: &ArchivedWireMlKemLevel) -> Self {
-        match value {
-            ArchivedWireMlKemLevel::MlKem512 => MLKEM::MLKEM512,
-            ArchivedWireMlKemLevel::MlKem768 => MLKEM::MLKEM768,
-            ArchivedWireMlKemLevel::MlKem1024 => MLKEM::MLKEM1024,
-        }
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WireMlDsaPublicKey {
-    pub(crate) level: WireMlDsaLevel,
-    pub(crate) bytes: Vec<u8>,
-}
-
-impl TryFrom<WireMlDsaPublicKey> for MLDSAPublicKey {
-    type Error = WireError;
-
-    fn try_from(value: WireMlDsaPublicKey) -> Result<Self, Self::Error> {
-        MLDSAPublicKey::from_bytes(value.level.try_into()?, &value.bytes)
-            .map_err(|_| WireError::InvalidPayload)
-    }
-}
-
-impl From<&MLDSAPublicKey> for WireMlDsaPublicKey {
-    fn from(value: &MLDSAPublicKey) -> Self {
-        Self {
-            level: value.level().into(),
-            bytes: value.as_bytes().to_vec(),
-        }
-    }
-}
-
-impl TryFrom<&ArchivedWireMlDsaPublicKey> for MLDSAPublicKey {
-    type Error = WireError;
-
-    fn try_from(value: &ArchivedWireMlDsaPublicKey) -> Result<Self, Self::Error> {
-        MLDSAPublicKey::from_bytes((&value.level).into(), value.bytes.as_slice())
-            .map_err(|_| WireError::InvalidPayload)
-    }
-}
-
-impl_wire_wrapper!(AsWireMlDsaPublicKey, MLDSAPublicKey, WireMlDsaPublicKey);
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WireMlDsaSignature {
-    pub(crate) level: WireMlDsaLevel,
-    pub(crate) bytes: Vec<u8>,
-}
-
-impl TryFrom<WireMlDsaSignature> for MLDSASignature {
-    type Error = WireError;
-
-    fn try_from(value: WireMlDsaSignature) -> Result<Self, Self::Error> {
-        MLDSASignature::from_bytes(value.level.try_into()?, &value.bytes)
-            .map_err(|_| WireError::InvalidPayload)
-    }
-}
-
-impl From<&MLDSASignature> for WireMlDsaSignature {
-    fn from(value: &MLDSASignature) -> Self {
-        Self {
-            level: value.level().into(),
-            bytes: value.as_bytes().to_vec(),
-        }
-    }
-}
-
-impl TryFrom<&ArchivedWireMlDsaSignature> for MLDSASignature {
-    type Error = WireError;
-
-    fn try_from(value: &ArchivedWireMlDsaSignature) -> Result<Self, Self::Error> {
-        MLDSASignature::from_bytes((&value.level).into(), value.bytes.as_slice())
-            .map_err(|_| WireError::InvalidPayload)
-    }
-}
-
-impl_wire_wrapper!(AsWireMlDsaSignature, MLDSASignature, WireMlDsaSignature);
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WireMlKemPublicKey {
-    pub(crate) level: WireMlKemLevel,
-    pub(crate) bytes: Vec<u8>,
-}
-
-impl TryFrom<WireMlKemPublicKey> for MLKEMPublicKey {
-    type Error = WireError;
-
-    fn try_from(value: WireMlKemPublicKey) -> Result<Self, Self::Error> {
-        MLKEMPublicKey::from_bytes(value.level.try_into()?, &value.bytes)
-            .map_err(|_| WireError::InvalidPayload)
-    }
-}
-
-impl From<&MLKEMPublicKey> for WireMlKemPublicKey {
-    fn from(value: &MLKEMPublicKey) -> Self {
-        Self {
-            level: value.level().into(),
-            bytes: value.as_bytes().to_vec(),
-        }
-    }
-}
-
-impl TryFrom<&ArchivedWireMlKemPublicKey> for MLKEMPublicKey {
-    type Error = WireError;
-
-    fn try_from(value: &ArchivedWireMlKemPublicKey) -> Result<Self, Self::Error> {
-        MLKEMPublicKey::from_bytes((&value.level).into(), value.bytes.as_slice())
-            .map_err(|_| WireError::InvalidPayload)
-    }
-}
-
-impl_wire_wrapper!(AsWireMlKemPublicKey, MLKEMPublicKey, WireMlKemPublicKey);
-
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WireMlKemCiphertext {
-    pub(crate) level: WireMlKemLevel,
-    pub(crate) bytes: Vec<u8>,
-}
-
-impl TryFrom<WireMlKemCiphertext> for MLKEMCiphertext {
-    type Error = WireError;
-
-    fn try_from(value: WireMlKemCiphertext) -> Result<Self, Self::Error> {
-        MLKEMCiphertext::from_bytes(value.level.try_into()?, &value.bytes)
-            .map_err(|_| WireError::InvalidPayload)
-    }
-}
-
-impl From<&MLKEMCiphertext> for WireMlKemCiphertext {
-    fn from(value: &MLKEMCiphertext) -> Self {
-        Self {
-            level: value.level().into(),
-            bytes: value.as_bytes().to_vec(),
-        }
-    }
-}
-
-impl TryFrom<&ArchivedWireMlKemCiphertext> for MLKEMCiphertext {
-    type Error = WireError;
-
-    fn try_from(value: &ArchivedWireMlKemCiphertext) -> Result<Self, Self::Error> {
-        MLKEMCiphertext::from_bytes((&value.level).into(), value.bytes.as_slice())
-            .map_err(|_| WireError::InvalidPayload)
-    }
-}
-
-impl_wire_wrapper!(AsWireMlKemCiphertext, MLKEMCiphertext, WireMlKemCiphertext);

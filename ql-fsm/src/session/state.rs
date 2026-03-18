@@ -1,15 +1,15 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, VecDeque},
     time::Instant,
 };
 
+use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamCloseFrame,
-    StreamFrame, StreamId,
+    CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamChunk, StreamClose,
+    StreamId,
 };
 
-use super::ring::SeqRing;
-use super::{SessionEvent, SessionState, StreamIncoming};
+use super::{ring::SeqRing, SessionEvent, SessionState, StreamIncoming};
 
 pub const SESSION_WINDOW_CAPACITY: usize = 64;
 
@@ -49,15 +49,15 @@ impl PendingChunk {
 
 #[derive(Debug, Clone)]
 pub enum PendingStreamBody {
-    Stream(StreamFrame),
-    StreamClose(StreamCloseFrame),
+    Chunk(StreamChunk),
+    Close(StreamClose),
 }
 
 impl PendingStreamBody {
     pub fn to_session_body(&self) -> SessionBody {
         match self {
-            Self::Stream(frame) => SessionBody::Stream(frame.clone()),
-            Self::StreamClose(frame) => SessionBody::StreamClose(frame.clone()),
+            Self::Chunk(frame) => SessionBody::Stream(frame.clone()),
+            Self::Close(frame) => SessionBody::StreamClose(frame.clone()),
         }
     }
 }
@@ -75,7 +75,6 @@ pub struct StreamState {
     pub inbound_finished: bool,
     pub inbound_closed: bool,
     pub inbound_discarding: bool,
-    pub ready_enqueued: bool,
 }
 
 impl StreamState {
@@ -92,7 +91,6 @@ impl StreamState {
             inbound_finished: false,
             inbound_closed: false,
             inbound_discarding: false,
-            ready_enqueued: false,
         }
     }
 
@@ -104,13 +102,13 @@ impl StreamState {
 #[derive(Debug, Clone)]
 pub struct PendingSessionBody {
     pub body: SessionBody,
+    /// whether the body should be retransmitted after a confirmed send times out without ack
     pub retransmit: bool,
-    pub priority: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct PendingSessionControl {
-    pub heartbeat: bool,
+    pub ping: bool,
     pub unpair: bool,
     pub close: Option<SessionCloseBody>,
 }
@@ -118,7 +116,14 @@ pub struct PendingSessionControl {
 #[derive(Debug, Clone)]
 pub struct TxEntry {
     pub pending: PendingSessionBody,
-    pub sent_at: Instant,
+    pub state: TxState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxState {
+    Pending,
+    Issued,
+    Sent { sent_at: Instant },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +135,8 @@ pub enum AckState {
 
 pub struct SessionFsmState {
     pub now: Instant,
+    pub last_activity_at: Instant,
+    pub last_inbound_at: Instant,
     pub session_state: SessionState,
     pub next_stream_ordinal: u32,
     pub next_seq: SessionSeq,
@@ -137,8 +144,10 @@ pub struct SessionFsmState {
     pub rx_ring: SeqRing<SESSION_WINDOW_CAPACITY, ()>,
     pub ack_state: AckState,
     pub pending_control: PendingSessionControl,
-    pub streams: HashMap<StreamId, StreamState>,
-    pub ready_streams: VecDeque<StreamId>,
+    /// `IndexMap` has stable (and fast) iteration order for round-robin
+    /// scheduling, so we do not need a separate ready queue
+    pub streams: IndexMap<StreamId, StreamState>,
+    pub next_stream_index: usize,
     pub events: VecDeque<SessionEvent>,
 }
 

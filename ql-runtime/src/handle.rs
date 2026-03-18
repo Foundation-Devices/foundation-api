@@ -2,9 +2,8 @@ use async_channel::{Receiver, Sender};
 use futures_lite::future::poll_fn;
 
 use crate::{
-    command::RuntimeCommand, InboundEvent, OpenedStreamDelivery, StreamConfig,
-    wire::stream::{CloseCode, CloseTarget},
-    Peer, QlError, StreamId,
+    command::RuntimeCommand, CloseCode, CloseTarget, InboundEvent, OpenedStreamDelivery, Peer,
+    QlError, StreamId,
 };
 
 #[derive(Clone)]
@@ -13,21 +12,21 @@ pub struct RuntimeHandle {
     pub(crate) stream_send_buffer_bytes: usize,
 }
 
-pub struct DuplexStream {
+#[derive(Debug)]
+pub struct OutboundStream {
     pub stream_id: StreamId,
-    pub request: OutboundByteStream,
-    pub response: InboundByteStream,
+    pub request: ByteWriter,
+    pub response: ByteReader,
 }
 
 #[derive(Debug)]
 pub struct InboundStream {
     pub stream_id: StreamId,
-    pub request_head: Vec<u8>,
-    pub request: InboundByteStream,
-    pub response: OutboundByteStream,
+    pub request: ByteReader,
+    pub response: ByteWriter,
 }
 
-pub struct InboundByteStream {
+pub struct ByteReader {
     stream_id: StreamId,
     target: CloseTarget,
     rx: Receiver<InboundEvent>,
@@ -35,7 +34,7 @@ pub struct InboundByteStream {
     finished: bool,
 }
 
-impl std::fmt::Debug for InboundByteStream {
+impl std::fmt::Debug for ByteReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InboundByteStream")
             .field("stream_id", &self.stream_id)
@@ -45,14 +44,14 @@ impl std::fmt::Debug for InboundByteStream {
     }
 }
 
-pub struct OutboundByteStream {
+pub struct ByteWriter {
     stream_id: StreamId,
     target: CloseTarget,
     writer: Option<piper::Writer>,
     tx: Sender<RuntimeCommand>,
 }
 
-impl std::fmt::Debug for OutboundByteStream {
+impl std::fmt::Debug for ByteWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OutboundByteStream")
             .field("stream_id", &self.stream_id)
@@ -62,7 +61,7 @@ impl std::fmt::Debug for OutboundByteStream {
     }
 }
 
-impl InboundByteStream {
+impl ByteReader {
     pub(crate) fn new(
         stream_id: StreamId,
         target: CloseTarget,
@@ -116,7 +115,7 @@ impl InboundByteStream {
     }
 }
 
-impl Drop for InboundByteStream {
+impl Drop for ByteReader {
     fn drop(&mut self) {
         if self.finished {
             return;
@@ -130,7 +129,7 @@ impl Drop for InboundByteStream {
     }
 }
 
-impl OutboundByteStream {
+impl ByteWriter {
     pub(crate) fn new(
         stream_id: StreamId,
         target: CloseTarget,
@@ -202,7 +201,7 @@ impl OutboundByteStream {
     }
 }
 
-impl Drop for OutboundByteStream {
+impl Drop for ByteWriter {
     fn drop(&mut self) {
         if self.writer.take().is_none() {
             return;
@@ -243,20 +242,14 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::Incoming(bytes))
     }
 
-    pub async fn open_stream(
-        &self,
-        request_head: Vec<u8>,
-        config: StreamConfig,
-    ) -> Result<DuplexStream, QlError> {
+    pub async fn open_stream(&self) -> Result<OutboundStream, QlError> {
         let (request_reader, request_writer) = piper::pipe(self.stream_send_buffer_bytes);
         let (start_tx, start_rx) = oneshot::channel();
 
         self.tx
             .send(RuntimeCommand::OpenStream {
-                request_head,
                 request_reader,
                 start: start_tx,
-                config,
             })
             .await
             .map_err(|_| QlError::Cancelled)?;
@@ -266,20 +259,15 @@ impl RuntimeHandle {
             response,
         } = start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
 
-        Ok(DuplexStream {
+        Ok(OutboundStream {
             stream_id,
-            request: OutboundByteStream::new(
+            request: ByteWriter::new(
                 stream_id,
                 CloseTarget::Request,
                 request_writer,
                 self.tx.clone(),
             ),
-            response: InboundByteStream::new(
-                stream_id,
-                CloseTarget::Response,
-                response,
-                self.tx.clone(),
-            ),
+            response: ByteReader::new(stream_id, CloseTarget::Response, response, self.tx.clone()),
         })
     }
 }

@@ -7,13 +7,14 @@ license = "Proprietary"
 
 [dependencies]
 async-channel = { version = "2.5" }
-bc-components = { version = "0.28.0", default-features = false, features = [
-  "pqcrypto",
-] }
 futures-lite = { version = "2.5" }
 oneshot = { version = "0.1.11" }
 piper = { version = "0.2.4" }
-ql-engine = { path = "../ql-engine" }
+ql-fsm = { path = "../ql-fsm" }
+ql-wire = { path = "../ql-wire" }
+thiserror = { version = "2" }
 
 [dev-dependencies]
+libcrux-aesgcm = "0.0.7"
+sha2 = "0.10"
 tokio = { version = "1.44", features = ["macros", "rt", "time", "sync"] }

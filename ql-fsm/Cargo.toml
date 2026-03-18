@@ -6,15 +6,10 @@ description = "Quantum Link synchronous finite state machine"
 license = "Proprietary"
 
 [dependencies]
-bc-components = { version = "0.28.0", default-features = false, features = [
-  "pqcrypto",
-] }
+indexmap = "2"
 ql-wire = { path = "../ql-wire" }
-rkyv = { version = "0.8", default-features = false, features = [
-  "std",
-  "bytecheck",
-  "little_endian",
-  "unaligned",
-  "pointer_width_32",
-] }
 thiserror = { version = "2" }
+
+[dev-dependencies]
+libcrux-aesgcm = "0.0.7"
+sha2 = "0.10"

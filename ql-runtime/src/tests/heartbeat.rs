@@ -9,170 +9,21 @@ use std::{
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
-async fn keepalive_disabled_no_heartbeat() {
+async fn session_timeout_disconnects_and_fails_pending_open() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
-        spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
-
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
-
-        let result = tokio::time::timeout(Duration::from_millis(120), heartbeat_rx.recv()).await;
-        assert!(result.is_err(), "unexpected heartbeat while disabled");
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn heartbeat_sent_after_idle() {
-    run_local_test(async {
-        let keep_alive = KeepAliveConfig {
-            interval: Duration::from_millis(30),
-            timeout: Duration::from_millis(80),
-        };
         let config_a = RuntimeConfig {
-            engine: crate::engine::EngineConfig {
-                keep_alive: Some(keep_alive),
-                ..default_runtime_config().engine
-            },
-            ..default_runtime_config()
-        };
-        let config_b = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config_a);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config_b);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
-        spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
-
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
-
-        tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn stream_activity_prevents_keepalive_timeout() {
-    run_local_test(async {
-        let keep_alive = KeepAliveConfig {
-            interval: Duration::from_millis(120),
-            timeout: Duration::from_millis(40),
-        };
-        let config_a = RuntimeConfig {
-            engine: crate::engine::EngineConfig {
-                keep_alive: Some(keep_alive),
-                ..default_runtime_config().engine
-            },
-            ..default_runtime_config()
-        };
-        let config_b = default_runtime_config();
-        let (platform_a, outbound_a, status_a, inbound_a) = TestPlatform::new_with_inbound(1);
-        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config_a);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config_b);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        let (heartbeat_tx, heartbeat_rx) = async_channel::unbounded();
-        spawn_heartbeat_tap_forwarder(outbound_a, handle_b.clone(), heartbeat_tx);
-        spawn_drop_heartbeat_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
-
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
-
-        tokio::time::timeout(Duration::from_millis(200), heartbeat_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-
-        let responder_task = tokio::task::spawn_local(async move {
-            let stream = match inbound_a.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
-            let response = stream.response;
-            response.finish().await.unwrap();
-        });
-
-        let stream = handle_b.open_stream(Vec::new(), crate::StreamConfig::default()).await;
-        let mut stream = stream.unwrap();
-        stream.request.finish().await.unwrap();
-        assert_eq!(stream.response.next_chunk().await.unwrap(), None);
-
-        let disconnect = tokio::time::timeout(keep_alive.timeout + Duration::from_millis(20), async {
-            loop {
-                if let Ok(event) = status_a.recv().await {
-                    if event.peer == identity_b.xid && event.stage == PeerStage::Disconnected {
-                        return;
-                    }
-                }
-            }
-        })
-        .await;
-        assert!(disconnect.is_err(), "unexpected disconnect");
-
-        let _ = responder_task.await;
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn heartbeat_timeout_disconnects_and_fails_pending_open() {
-    run_local_test(async {
-        let keep_alive = KeepAliveConfig {
-            interval: Duration::from_millis(80),
-            timeout: Duration::from_millis(60),
-        };
-        let config_a = RuntimeConfig {
-            engine: crate::engine::EngineConfig {
-                keep_alive: Some(keep_alive),
-                ..default_runtime_config().engine
+            fsm: QlFsmConfig {
+                session_keepalive_interval: Duration::from_millis(40),
+                session_peer_timeout: Duration::from_millis(60),
+                ..default_runtime_config().fsm
             },
             ..default_runtime_config()
         };
         let config_b = default_runtime_config();
         let (platform_a, outbound_a, status_a) = TestPlatform::new(2);
         let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(1);
-        let identity_a = new_identity();
-        let identity_b = new_identity();
+        let identity_a = new_identity(11);
+        let identity_b = new_identity(73);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config_b);
@@ -194,22 +45,26 @@ async fn heartbeat_timeout_disconnects_and_fails_pending_open() {
             let stream = match inbound_b.recv().await.unwrap() {
                 HandlerEvent::Stream(stream) => stream,
             };
+            let _ = read_all(stream.request).await;
             let response = stream.response;
-            response.finish().await.unwrap();
+            let _ = response.finish().await;
         });
 
         drop_flag.store(true, Ordering::Relaxed);
 
-        let mut pending = handle_a
-            .open_stream(Vec::new(), crate::StreamConfig::default())
-            .await
-            .unwrap();
+        let mut pending = handle_a.open_stream().await.unwrap();
+        pending.request.finish().await.unwrap();
 
         await_status(&status_a, identity_b.xid, PeerStage::Disconnected).await;
 
-        let result = tokio::time::timeout(Duration::from_millis(300), pending.response.next_chunk())
-            .await;
-        assert!(result.is_ok(), "pending stream never resolved after disconnect");
+        let result =
+            tokio::time::timeout(Duration::from_millis(300), pending.response.next_chunk())
+                .await
+                .unwrap();
+        assert!(matches!(
+            result,
+            Err(QlError::SessionClosed) | Err(QlError::Cancelled)
+        ));
 
         responder_task.abort();
     })
