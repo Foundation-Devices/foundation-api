@@ -1,35 +1,31 @@
 //! quantum link protocol wire format
 
 mod codec;
-pub mod control;
-pub mod encrypted;
-pub mod encrypted_message;
-pub mod error;
-pub mod handshake;
-pub mod header;
-pub mod identity;
-pub mod nonce;
-pub mod pair;
+mod control;
+mod encrypted;
+mod encrypted_message;
+mod error;
+mod handshake;
+mod header;
+mod identity;
+mod nonce;
+mod pair;
 mod pq;
-pub mod record;
-pub mod xid;
+mod record;
+mod xid;
 
-pub use control::{ControlId, ControlMeta};
-pub use encrypted::{
-    close::SessionCloseBody, CloseCode, CloseTarget, SessionAck, SessionBody, SessionEnvelope,
-    SessionSeq, StreamChunk, StreamClose, StreamId,
-};
-pub use encrypted_message::{EncryptedMessage, EncryptedMessageRef};
-pub use error::WireError;
-pub use header::QlHeader;
-pub use identity::QlIdentity;
-pub use nonce::Nonce;
-pub use pq::{
-    generate_ml_dsa_keypair, generate_ml_kem_keypair, MlDsaPrivateKey, MlDsaPublicKey,
-    MlDsaSignature, MlKemCiphertext, MlKemPrivateKey, MlKemPublicKey, SessionKey,
-};
-pub use record::{QlPayload, QlPayloadRef, QlRecord, QlRecordRef};
-pub use xid::XID;
+pub use control::*;
+pub use encrypted::*;
+pub use encrypted_message::*;
+pub use error::*;
+pub use handshake::*;
+pub use header::*;
+pub use identity::*;
+pub use nonce::*;
+pub use pair::*;
+pub use pq::*;
+pub use record::*;
+pub use xid::*;
 
 pub const QL_WIRE_VERSION: u8 = 1;
 

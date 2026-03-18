@@ -284,7 +284,7 @@ fn protocol_record_size_breakdown() {
         SessionEnvelope {
             seq: SessionSeq(2),
             ack: SessionAck::EMPTY,
-            body: SessionBody::Ping(encrypted::ping::PingBody),
+            body: SessionBody::Ping(PingBody),
         },
     );
     let session_unpair = session_record(
@@ -293,7 +293,7 @@ fn protocol_record_size_breakdown() {
         SessionEnvelope {
             seq: SessionSeq(3),
             ack: SessionAck::EMPTY,
-            body: SessionBody::Unpair(encrypted::unpair::UnpairBody),
+            body: SessionBody::Unpair(UnpairBody),
         },
     );
     let session_stream_empty = session_record(
