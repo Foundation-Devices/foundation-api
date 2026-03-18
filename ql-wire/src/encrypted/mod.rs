@@ -95,27 +95,12 @@ impl SessionEnvelopeWire {
         parse(bytes)
     }
 
-    pub fn seq(&self) -> SessionSeq {
-        SessionSeq(self.seq.get())
-    }
-
-    pub fn ack(&self) -> SessionAck {
-        SessionAck {
-            base: SessionSeq(self.ack_base.get()),
-            bitmap: self.ack_bitmap.get(),
-        }
-    }
-
     fn body_kind(&self) -> Result<SessionBodyKind, WireError> {
         crate::codec::read_byte(self.kind)
     }
 
-    pub fn body(&self) -> Result<SessionBodyRef<&[u8]>, WireError> {
-        parse_session_body(self.body_kind()?, &self.body)
-    }
-
     pub fn to_session_envelope(&self) -> Result<SessionEnvelope, WireError> {
-        let body = match self.body()? {
+        let body = match parse_session_body(self.body_kind()?, &self.body)? {
             SessionBodyRef::Ack => SessionBody::Ack,
             SessionBodyRef::Ping => SessionBody::Ping(ping::PingBody),
             SessionBodyRef::Unpair => SessionBody::Unpair(unpair::UnpairBody),
@@ -126,14 +111,13 @@ impl SessionEnvelopeWire {
             SessionBodyRef::Close(body) => SessionBody::Close(body),
         };
         Ok(SessionEnvelope {
-            seq: self.seq(),
-            ack: self.ack(),
+            seq: SessionSeq(self.seq.get()),
+            ack: SessionAck {
+                base: SessionSeq(self.ack_base.get()),
+                bitmap: self.ack_bitmap.get(),
+            },
             body,
         })
-    }
-
-    pub fn body_mut(&mut self) -> Result<SessionBodyRef<&mut [u8]>, WireError> {
-        parse_session_body(self.body_kind()?, &mut self.body)
     }
 }
 

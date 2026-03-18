@@ -66,33 +66,13 @@ impl StreamCloseWire {
         parse(bytes)
     }
 
-    pub fn stream_id(&self) -> StreamId {
-        StreamId(self.stream_id.get())
-    }
-
-    pub fn target(&self) -> Result<CloseTarget, WireError> {
-        crate::codec::read_byte(self.target)
-    }
-
-    pub fn code(&self) -> CloseCode {
-        CloseCode(self.code.get())
-    }
-
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
-    }
-
     pub fn to_stream_close(&self) -> Result<StreamClose, WireError> {
         Ok(StreamClose {
-            stream_id: self.stream_id(),
-            target: self.target()?,
-            code: self.code(),
-            payload: self.payload().to_vec(),
+            stream_id: StreamId(self.stream_id.get()),
+            target: crate::codec::read_byte(self.target)?,
+            code: CloseCode(self.code.get()),
+            payload: self.payload.to_vec(),
         })
-    }
-
-    pub fn payload_mut(&mut self) -> &mut [u8] {
-        &mut self.payload
     }
 }
 

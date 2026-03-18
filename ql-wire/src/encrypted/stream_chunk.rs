@@ -32,33 +32,13 @@ impl StreamChunkWire {
         parse(bytes)
     }
 
-    pub fn stream_id(&self) -> StreamId {
-        StreamId(self.stream_id.get())
-    }
-
-    pub fn fin(&self) -> Result<bool, WireError> {
-        crate::codec::read_byte(self.fin)
-    }
-
-    pub fn offset(&self) -> u64 {
-        self.offset.get()
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
     pub fn to_stream_chunk(&self) -> Result<StreamChunk, WireError> {
         Ok(StreamChunk {
-            stream_id: self.stream_id(),
-            offset: self.offset(),
-            bytes: self.bytes().to_vec(),
-            fin: self.fin()?,
+            stream_id: StreamId(self.stream_id.get()),
+            offset: self.offset.get(),
+            bytes: self.bytes.to_vec(),
+            fin: crate::codec::read_byte(self.fin)?,
         })
-    }
-
-    pub fn bytes_mut(&mut self) -> &mut [u8] {
-        &mut self.bytes
     }
 }
 

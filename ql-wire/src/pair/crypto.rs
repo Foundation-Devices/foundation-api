@@ -62,12 +62,13 @@ pub fn decrypt_pair_request<B: ByteSliceMut>(
     request: &mut PairRequestRecordRef<B>,
     now_seconds: u64,
 ) -> Result<PairRequestBody, WireError> {
-    let kem_ct = request.kem_ct();
+    let kem_ct = MlKemCiphertext::from_data(request.kem_ct);
     let aad = pairing_aad(header, &kem_ct);
     let session_key = identity
         .encapsulation_private_key
         .decapsulate_shared_secret(&kem_ct)?;
-    let mut encrypted = request.encrypted_mut()?;
+    let mut encrypted =
+        crate::encrypted_message::EncryptedMessageWire::parse(&mut request.encrypted)?;
     let plaintext = encrypted.decrypt(crypto, &session_key, &aad)?;
     let decrypted = PairRequestBody::decode(plaintext)?;
     decrypted.meta.ensure_not_expired(now_seconds)?;

@@ -29,28 +29,12 @@ impl EncryptedMessageWire {
         parse(bytes)
     }
 
-    pub fn nonce(&self) -> Nonce {
-        Nonce(self.nonce)
-    }
-
-    pub fn auth(&self) -> &[u8; EncryptedMessage::AUTH_SIZE] {
-        &self.auth
-    }
-
-    pub fn ciphertext(&self) -> &[u8] {
-        &self.ciphertext
-    }
-
     pub fn to_encrypted_message(&self) -> EncryptedMessage {
         EncryptedMessage {
-            nonce: self.nonce(),
-            auth: *self.auth(),
-            ciphertext: self.ciphertext().to_vec(),
+            nonce: Nonce(self.nonce),
+            auth: self.auth,
+            ciphertext: self.ciphertext.to_vec(),
         }
-    }
-
-    pub fn ciphertext_mut(&mut self) -> &mut [u8] {
-        &mut self.ciphertext
     }
 
     pub fn decrypt<'a>(
@@ -59,7 +43,7 @@ impl EncryptedMessageWire {
         key: &SessionKey,
         aad: &[u8],
     ) -> Result<&'a mut [u8], WireError> {
-        let nonce = self.nonce();
+        let nonce = Nonce(self.nonce);
         let auth = self.auth;
         if !crypto.decrypt_with_aead(key, &nonce, aad, &mut self.ciphertext, &auth) {
             return Err(WireError::DecryptFailed);

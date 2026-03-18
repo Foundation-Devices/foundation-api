@@ -5,7 +5,7 @@ use zerocopy::{
 use crate::{
     codec::{parse, push_value, read_exact},
     control::{control_meta_from_wire, control_meta_to_wire, ControlMetaWire},
-    encrypted_message::{EncryptedMessage, EncryptedMessageRef, EncryptedMessageWire},
+    encrypted_message::{EncryptedMessage, EncryptedMessageWire},
     ControlMeta, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext, MlKemPublicKey, WireError, XID,
 };
 
@@ -49,30 +49,17 @@ struct PairRequestBodyWire {
 impl PairRequestRecordWire {
     pub fn parse<B: ByteSlice>(bytes: B) -> Result<PairRequestRecordRef<B>, WireError> {
         let record: PairRequestRecordRef<B> = parse(bytes)?;
-        let _ = record.encrypted()?;
+        let _ = EncryptedMessageWire::parse(&record.encrypted)?;
         Ok(record)
-    }
-
-    pub fn kem_ct(&self) -> MlKemCiphertext {
-        MlKemCiphertext::from_data(self.kem_ct)
-    }
-
-    pub fn encrypted(&self) -> Result<EncryptedMessageRef<&[u8]>, WireError> {
-        EncryptedMessageWire::parse(&self.encrypted)
     }
 
     pub fn to_pair_request_record(&self) -> PairRequestRecord {
         PairRequestRecord {
-            kem_ct: self.kem_ct(),
-            encrypted: self
-                .encrypted()
+            kem_ct: MlKemCiphertext::from_data(self.kem_ct),
+            encrypted: EncryptedMessageWire::parse(&self.encrypted)
                 .expect("validated pair request")
                 .to_encrypted_message(),
         }
-    }
-
-    pub fn encrypted_mut(&mut self) -> Result<EncryptedMessageRef<&mut [u8]>, WireError> {
-        EncryptedMessageWire::parse(&mut self.encrypted)
     }
 }
 
