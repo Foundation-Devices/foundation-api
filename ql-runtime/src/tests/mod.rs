@@ -331,7 +331,7 @@ fn is_encrypted_payload(bytes: &[u8]) -> bool {
         .is_some_and(|record| matches!(record.payload, QlPayload::Session(_)))
 }
 
-fn new_identity(seed: u8) -> QlIdentity {
+pub(crate) fn new_identity(seed: u8) -> QlIdentity {
     let crypto = DeterministicCrypto::new(seed);
     let (signing_private, signing_public) = generate_ml_dsa_keypair(&crypto);
     let (encapsulation_private, encapsulation_public) = generate_ml_kem_keypair(&crypto);

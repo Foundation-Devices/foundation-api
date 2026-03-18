@@ -91,6 +91,13 @@ impl InboundIo {
         Self::Open(tx)
     }
 
+    fn close(&mut self) {
+        if let Self::Open(tx) = self {
+            tx.close();
+        }
+        *self = Self::Closed;
+    }
+
     fn write_or_close(&mut self, bytes: Vec<u8>) -> bool {
         let Self::Open(tx) = self else {
             return true;
@@ -246,7 +253,16 @@ impl DriverState {
                 code,
                 payload,
             } => {
+                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                    if target == CloseTarget::Both || target == stream.inbound_target() {
+                        stream.inbound_mut().close();
+                    }
+                    if target == CloseTarget::Both || target == stream.outbound_target() {
+                        stream.outbound_mut().close();
+                    }
+                }
                 let _ = self.fsm.close_stream(stream_id, target, code, payload);
+                self.try_reap_stream(stream_id);
                 self.finish_step(platform, in_flight);
             }
         }
@@ -368,9 +384,10 @@ impl DriverState {
             let target = stream.inbound_target();
             let should_close = stream.inbound_mut().write_or_close(bytes);
             if should_close {
-                let _ =
-                    self.fsm
-                        .close_stream(stream_id, target, CloseCode::CANCELLED, Vec::new());
+                let _ = self
+                    .fsm
+                    .close_stream(stream_id, target, CloseCode::CANCELLED, Vec::new());
+                self.try_reap_stream(stream_id);
                 break;
             }
         }
@@ -381,6 +398,7 @@ impl DriverState {
             return;
         };
         stream.inbound_mut().finish();
+        self.try_reap_stream(stream_id);
     }
 
     fn handle_closed_stream(&mut self, frame: ql_wire::StreamClose) {
@@ -400,6 +418,7 @@ impl DriverState {
         if frame.target == CloseTarget::Both || frame.target == stream.outbound_target() {
             stream.outbound_mut().close();
         }
+        self.try_reap_stream(frame.stream_id);
     }
 
     fn handle_writable_closed(&mut self, stream_id: StreamId) {
@@ -407,6 +426,7 @@ impl DriverState {
             return;
         };
         stream.outbound_mut().close();
+        self.try_reap_stream(stream_id);
     }
 
     fn fail_all_streams(&mut self, error: QlError) {
@@ -447,6 +467,24 @@ impl DriverState {
         }
         if finished {
             let _ = self.fsm.finish_stream(stream_id);
+            if let Some(stream) = self.streams.get_mut(&stream_id) {
+                stream.outbound_mut().close();
+            }
+            self.try_reap_stream(stream_id);
+        }
+    }
+
+    fn try_reap_stream(&mut self, stream_id: StreamId) {
+        let should_reap = self.streams.get(&stream_id).is_some_and(|stream| match stream {
+            DriverStreamIo::Initiator { request, response } => {
+                matches!(request, OutboundIo::Closed) && matches!(response, InboundIo::Closed)
+            }
+            DriverStreamIo::Responder { request, response } => {
+                matches!(request, InboundIo::Closed) && matches!(response, OutboundIo::Closed)
+            }
+        });
+        if should_reap {
+            self.streams.remove(&stream_id);
         }
     }
 }
@@ -558,4 +596,171 @@ fn unix_now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::new_identity;
+    use ql_wire::{CloseCode, StreamClose, XID};
+    use ql_fsm::Peer;
+
+    struct NoopPlatform;
+
+    impl ql_wire::QlCrypto for NoopPlatform {
+        fn fill_random_bytes(&self, data: &mut [u8]) {
+            data.fill(0);
+        }
+
+        fn hash(&self, _parts: &[&[u8]]) -> [u8; 32] {
+            [0; 32]
+        }
+
+        fn encrypt_with_aead(
+            &self,
+            _key: &ql_wire::SessionKey,
+            _nonce: &ql_wire::Nonce,
+            _aad: &[u8],
+            _buffer: &mut [u8],
+        ) -> Option<[u8; ql_wire::EncryptedMessage::AUTH_SIZE]> {
+            None
+        }
+
+        fn decrypt_with_aead(
+            &self,
+            _key: &ql_wire::SessionKey,
+            _nonce: &ql_wire::Nonce,
+            _aad: &[u8],
+            _buffer: &mut [u8],
+            _auth_tag: &[u8; ql_wire::EncryptedMessage::AUTH_SIZE],
+        ) -> bool {
+            false
+        }
+    }
+
+    impl QlPlatform for NoopPlatform {
+        fn write_message(&self, _message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn sleep(&self, _duration: Duration) -> PlatformFuture<'_, ()> {
+            Box::pin(async {})
+        }
+
+        fn load_peer(&self) -> PlatformFuture<'_, Option<Peer>> {
+            Box::pin(async { None })
+        }
+
+        fn persist_peer(&self, _peer: Peer) {}
+
+        fn clear_peer(&self) {}
+
+        fn handle_peer_status(&self, _peer: XID, _status: ql_fsm::PeerStatus) {}
+
+        fn handle_inbound(&self, _event: HandlerEvent) {}
+    }
+
+    fn new_driver_state() -> DriverState {
+        let (runtime_tx, _runtime_rx) = async_channel::unbounded();
+        DriverState {
+            fsm: QlFsm::new(ql_fsm::QlFsmConfig::default(), new_identity(7), now()),
+            streams: HashMap::new(),
+            runtime_tx,
+            stream_send_buffer_bytes: 16,
+            max_concurrent_message_writes: 1,
+        }
+    }
+
+    #[test]
+    fn handle_inbound_finished_reaps_closed_initiator_stream() {
+        let mut state = new_driver_state();
+        let stream_id = StreamId(1);
+        let (response_tx, _response_rx) = async_channel::unbounded();
+
+        state.streams.insert(
+            stream_id,
+            DriverStreamIo::Initiator {
+                request: OutboundIo::Closed,
+                response: InboundIo::new(response_tx),
+            },
+        );
+
+        state.handle_inbound_finished(stream_id);
+
+        assert!(!state.streams.contains_key(&stream_id));
+    }
+
+    #[test]
+    fn handle_closed_stream_reaps_when_both_halves_close() {
+        let mut state = new_driver_state();
+        let stream_id = StreamId(2);
+        let (request_tx, _request_rx) = async_channel::unbounded();
+        let (response_reader, _response_writer) = piper::pipe(1);
+
+        state.streams.insert(
+            stream_id,
+            DriverStreamIo::Responder {
+                request: InboundIo::new(request_tx),
+                response: OutboundIo::new(response_reader),
+            },
+        );
+
+        state.handle_closed_stream(StreamClose {
+            stream_id,
+            target: CloseTarget::Both,
+            code: CloseCode::CANCELLED,
+            payload: Vec::new(),
+        });
+
+        assert!(!state.streams.contains_key(&stream_id));
+    }
+
+    #[test]
+    fn poll_stream_reaps_after_local_finish_when_inbound_is_closed() {
+        let mut state = new_driver_state();
+        let stream_id = StreamId(3);
+        let (request_reader, request_writer) = piper::pipe(1);
+
+        drop(request_writer);
+        state.streams.insert(
+            stream_id,
+            DriverStreamIo::Initiator {
+                request: OutboundIo::new(request_reader),
+                response: InboundIo::Closed,
+            },
+        );
+
+        state.poll_stream(stream_id);
+
+        assert!(!state.streams.contains_key(&stream_id));
+    }
+
+    #[test]
+    fn local_close_command_reaps_when_other_half_is_already_closed() {
+        let mut state = new_driver_state();
+        let stream_id = StreamId(4);
+        let (request_reader, _request_writer) = piper::pipe(1);
+        let mut in_flight = Vec::new();
+
+        state.streams.insert(
+            stream_id,
+            DriverStreamIo::Initiator {
+                request: OutboundIo::new(request_reader),
+                response: InboundIo::Closed,
+            },
+        );
+
+        state.drive_command(
+            RuntimeCommand::CloseStream {
+                stream_id,
+                target: CloseTarget::Request,
+                code: CloseCode::CANCELLED,
+                payload: Vec::new(),
+            },
+            &NoopPlatform,
+            &mut in_flight,
+        );
+
+        assert!(!state.streams.contains_key(&stream_id));
+    }
 }
