@@ -10,7 +10,7 @@ use ql_fsm::{FsmTime, QlFsm, QlFsmEvent, QlSessionEvent, SessionWriteId};
 
 use crate::{
     command::RuntimeCommand,
-    handle::{InboundByteStream, InboundStream, OutboundByteStream},
+    handle::{ByteReader, ByteWriter, InboundStream},
     platform::{PlatformFuture, QlPlatform},
     CloseCode, CloseTarget, HandlerEvent, InboundEvent, OpenedStreamDelivery, QlError, Runtime,
     StreamId,
@@ -331,13 +331,13 @@ impl DriverState {
 
         platform.handle_inbound(HandlerEvent::Stream(InboundStream {
             stream_id,
-            request: InboundByteStream::new(
+            request: ByteReader::new(
                 stream_id,
                 CloseTarget::Request,
                 request_rx,
                 self.runtime_tx.clone(),
             ),
-            response: OutboundByteStream::new(
+            response: ByteWriter::new(
                 stream_id,
                 CloseTarget::Response,
                 response_writer,

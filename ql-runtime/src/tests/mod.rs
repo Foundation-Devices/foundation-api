@@ -444,7 +444,7 @@ async fn assert_no_status_for(
     assert!(res.is_err(), "unexpected status event: {stage:?}");
 }
 
-async fn read_all(mut stream: crate::InboundByteStream) -> Result<Vec<u8>, QlError> {
+async fn read_all(mut stream: crate::ByteReader) -> Result<Vec<u8>, QlError> {
     let mut data = Vec::new();
     while let Some(chunk) = stream.next_chunk().await? {
         data.extend_from_slice(&chunk);

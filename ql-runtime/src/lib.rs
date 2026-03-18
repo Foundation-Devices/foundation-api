@@ -1,6 +1,4 @@
-pub use handle::{
-    DuplexStream, InboundByteStream, InboundStream, OutboundByteStream, RuntimeHandle,
-};
+pub use handle::{ByteReader, ByteWriter, InboundStream, OutboundStream, RuntimeHandle};
 pub use ql_fsm::{Peer, PeerStatus, QlFsmConfig, QlFsmError, SessionWriteId};
 pub use ql_wire::{self as wire, CloseCode, CloseTarget, QlIdentity, StreamId, XID};
 
