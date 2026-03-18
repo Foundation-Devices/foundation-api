@@ -8,7 +8,7 @@ use crate::{
     encrypted_message::{EncryptedMessage, EncryptedMessageRef, EncryptedMessageWire},
     handshake,
     header::{decode_record_header, encode_record_header, QlHeader},
-    pair, WireError,
+    pair, WireError, QL_WIRE_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +70,7 @@ impl RecordKind {
 impl QlRecord {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        out.push(QL_WIRE_VERSION);
         let header = encode_record_header(&self.header, RecordKind::for_payload(&self.payload));
         codec::push_value(&mut out, &header);
         match &self.payload {
@@ -98,7 +99,11 @@ impl QlRecord {
 
 impl<B: SplitByteSlice> QlRecordRef<B> {
     pub fn parse(bytes: B) -> Result<Self, WireError> {
-        let (header, payload_bytes) = decode_record_header(bytes)?;
+        let (version, payload_bytes) = codec::read_prefix::<u8, B>(bytes)?;
+        if version != QL_WIRE_VERSION {
+            return Err(WireError::InvalidPayload);
+        }
+        let (header, payload_bytes) = decode_record_header(payload_bytes)?;
         let payload = parse_payload(header.kind, payload_bytes)?;
         Ok(Self {
             header: header.header,

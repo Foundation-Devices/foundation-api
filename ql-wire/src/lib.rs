@@ -31,6 +31,8 @@ pub use pq::{
 pub use record::{QlPayload, QlPayloadRef, QlRecord, QlRecordRef};
 pub use xid::XID;
 
+pub const QL_WIRE_VERSION: u8 = 1;
+
 pub trait QlCrypto {
     fn fill_random_bytes(&self, data: &mut [u8]);
 
