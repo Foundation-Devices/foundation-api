@@ -14,8 +14,8 @@ use ql_wire::{
 use self::{
     ring::SeqRingInsertError,
     state::{
-        AckState, InboundState, OutboundState, PendingRxChunk, PendingSessionBody,
-        SessionFsmState, StreamRole, StreamState, TxEntry, TxState,
+        AckState, InboundState, OutboundState, PendingRxChunk, PendingSessionBody, SessionFsmState,
+        StreamOpenState, StreamRole, StreamState, TxEntry, TxState,
     },
 };
 
@@ -185,19 +185,22 @@ impl SessionFsm {
         payload: Vec<u8>,
     ) -> Result<(), StreamError> {
         self.ensure_session_open()?;
-        let stream = self
-            .state
-            .streams
-            .get_mut(&stream_id)
-            .ok_or(StreamError::MissingStream)?;
+        {
+            let stream = self
+                .state
+                .streams
+                .get_mut(&stream_id)
+                .ok_or(StreamError::MissingStream)?;
 
-        Self::apply_close_to_stream(stream, target);
-        stream.pending_close = Some(StreamClose {
-            stream_id,
-            target,
-            code,
-            payload,
-        });
+            Self::apply_close_to_stream(stream, target);
+            stream.pending_close = Some(StreamClose {
+                stream_id,
+                target,
+                code,
+                payload,
+            });
+        }
+        self.try_reap_stream(stream_id);
         Ok(())
     }
 
@@ -206,28 +209,32 @@ impl SessionFsm {
         stream_id: StreamId,
         out: &mut [u8],
     ) -> Result<usize, StreamError> {
-        let stream = self
-            .state
-            .streams
-            .get_mut(&stream_id)
-            .ok_or(StreamError::MissingStream)?;
-        if out.is_empty() || stream.recv_buf.is_empty() {
-            return Ok(0);
-        }
+        let written = {
+            let stream = self
+                .state
+                .streams
+                .get_mut(&stream_id)
+                .ok_or(StreamError::MissingStream)?;
+            if out.is_empty() || stream.recv_buf.is_empty() {
+                return Ok(0);
+            }
 
-        let (front, back) = stream.recv_buf.as_slices();
-        let front_len = front.len().min(out.len());
-        out[..front_len].copy_from_slice(&front[..front_len]);
+            let (front, back) = stream.recv_buf.as_slices();
+            let front_len = front.len().min(out.len());
+            out[..front_len].copy_from_slice(&front[..front_len]);
 
-        let mut written = front_len;
-        let remaining = out.len() - front_len;
-        if remaining > 0 {
-            let back_len = back.len().min(remaining);
-            out[written..written + back_len].copy_from_slice(&back[..back_len]);
-            written += back_len;
-        }
+            let mut written = front_len;
+            let remaining = out.len() - front_len;
+            if remaining > 0 {
+                let back_len = back.len().min(remaining);
+                out[written..written + back_len].copy_from_slice(&back[..back_len]);
+                written += back_len;
+            }
 
-        stream.recv_buf.drain(..written);
+            stream.recv_buf.drain(..written);
+            written
+        };
+        self.try_reap_stream(stream_id);
         Ok(written)
     }
 
@@ -318,11 +325,10 @@ impl SessionFsm {
         self.collect_timeouts();
         let ack = self.state.current_ack();
         loop {
-            let Some(seq) = self
-                .state
-                .tx_ring
-                .iter()
-                .find_map(|(seq, entry)| matches!(entry.state, TxState::Pending).then_some(seq))
+            let Some(seq) =
+                self.state.tx_ring.iter().find_map(|(seq, entry)| {
+                    matches!(entry.state, TxState::Pending).then_some(seq)
+                })
             else {
                 break;
             };
@@ -551,37 +557,32 @@ impl SessionFsm {
                     let Some((&stream_id, stream)) = self.state.streams.get_index_mut(index) else {
                         continue;
                     };
-                    if let Some(close) = stream.pending_close.take() {
-                        Some(SessionBody::StreamClose(close))
-                    } else if !stream.send_buf.is_empty() {
-                        let len = stream.send_buf.len().min(self.config.stream_chunk_size);
-                        let bytes: Vec<_> = stream.send_buf.drain(..len).collect();
-                        let fin = if stream.send_buf.is_empty()
-                            && matches!(stream.outbound_state, OutboundState::FinQueued)
-                        {
-                            stream.outbound_state = OutboundState::Finished;
-                            true
-                        } else {
-                            false
-                        };
-                        let frame = StreamChunk {
-                            stream_id,
-                            offset: stream.next_send_offset,
-                            bytes,
-                            fin,
-                        };
-                        stream.next_send_offset += frame.bytes.len() as u64;
-                        Some(SessionBody::Stream(frame))
-                    } else if matches!(stream.outbound_state, OutboundState::FinQueued) {
-                        stream.outbound_state = OutboundState::Finished;
-                        Some(SessionBody::Stream(StreamChunk {
-                            stream_id,
-                            offset: stream.next_send_offset,
-                            bytes: Vec::new(),
-                            fin: true,
-                        }))
-                    } else {
-                        None
+                    match stream.open_state {
+                        StreamOpenState::PendingSend => {
+                            let body = Self::take_stream_frame(
+                                stream,
+                                stream_id,
+                                self.config.stream_chunk_size,
+                            )
+                            .map(SessionBody::Stream);
+                            if body.is_some() {
+                                stream.open_state = StreamOpenState::WaitingForAck;
+                            }
+                            body
+                        }
+                        StreamOpenState::WaitingForAck => None,
+                        StreamOpenState::Opened => {
+                            if let Some(close) = stream.pending_close.take() {
+                                Some(SessionBody::StreamClose(close))
+                            } else {
+                                Self::take_stream_frame(
+                                    stream,
+                                    stream_id,
+                                    self.config.stream_chunk_size,
+                                )
+                                .map(SessionBody::Stream)
+                            }
+                        }
                     }
                 };
                 let Some(body) = body else {
@@ -615,17 +616,36 @@ impl SessionFsm {
     }
 
     fn process_ack(&mut self, ack: ql_wire::SessionAck) {
-        let acked: Vec<_> = self
-            .state
-            .tx_ring
-            .iter()
-            .filter_map(|(seq, entry)| {
-                (matches!(entry.state, TxState::Sent { .. }) && Self::ack_covers(ack, seq))
-                    .then_some(seq)
-            })
-            .collect();
-        for seq in acked {
+        loop {
+            let Some((seq, stream_id, opens_stream)) =
+                self.state.tx_ring.iter().find_map(|(seq, entry)| {
+                    if !matches!(entry.state, TxState::Sent { .. }) || !Self::ack_covers(ack, seq) {
+                        return None;
+                    }
+
+                    let (stream_id, opens_stream) = match &entry.pending.body {
+                        SessionBody::Stream(frame) => (Some(frame.stream_id), frame.offset == 0),
+                        SessionBody::StreamClose(frame) => (Some(frame.stream_id), false),
+                        _ => (None, false),
+                    };
+
+                    Some((seq, stream_id, opens_stream))
+                })
+            else {
+                break;
+            };
+
             let _ = self.state.tx_ring.remove(&seq);
+            if let Some(stream_id) = stream_id {
+                if opens_stream {
+                    if let Some(stream) = self.state.streams.get_mut(&stream_id) {
+                        if matches!(stream.open_state, StreamOpenState::WaitingForAck) {
+                            stream.open_state = StreamOpenState::Opened;
+                        }
+                    }
+                }
+                self.try_reap_stream(stream_id);
+            }
         }
         self.state
             .tx_ring
@@ -708,7 +728,11 @@ impl SessionFsm {
                         .state
                         .streams
                         .get(&frame.stream_id)
-                        .is_some_and(|stream| !matches!(stream.outbound_state, OutboundState::Closed))
+                        .is_some_and(|stream| {
+                            !matches!(stream.outbound_state, OutboundState::Closed)
+                                || (matches!(stream.open_state, StreamOpenState::WaitingForAck)
+                                    && frame.offset == 0)
+                        })
             }
             SessionBody::StreamClose(frame) => {
                 self.state.session_state == SessionState::Open
@@ -725,6 +749,9 @@ impl SessionFsm {
                 self.fail_session(SessionCloseBody {
                     code: CloseCode::PROTOCOL,
                 });
+                return;
+            }
+            if frame.offset != 0 {
                 return;
             }
             self.state
@@ -772,11 +799,16 @@ impl SessionFsm {
             let became_finished =
                 !was_finished && matches!(stream.inbound_state, InboundState::Finished);
             if became_readable {
-                self.state.events.push_back(SessionEvent::Readable(stream_id));
+                self.state
+                    .events
+                    .push_back(SessionEvent::Readable(stream_id));
             }
             if became_finished {
-                self.state.events.push_back(SessionEvent::Finished(stream_id));
+                self.state
+                    .events
+                    .push_back(SessionEvent::Finished(stream_id));
             }
+            self.try_reap_stream(stream_id);
             return;
         }
 
@@ -813,7 +845,9 @@ impl SessionFsm {
             stream.inbound_state = InboundState::Closed(frame.clone());
             stream.recv_buf.clear();
             stream.pending_recv.clear();
-            self.state.events.push_back(SessionEvent::Closed(frame.clone()));
+            self.state
+                .events
+                .push_back(SessionEvent::Closed(frame.clone()));
         }
         if Self::target_affects_outbound(stream.role, frame.target)
             && !matches!(stream.outbound_state, OutboundState::Closed)
@@ -825,6 +859,7 @@ impl SessionFsm {
                 .events
                 .push_back(SessionEvent::WritableClosed(frame.stream_id));
         }
+        self.try_reap_stream(frame.stream_id);
     }
 
     fn apply_close_to_stream(stream: &mut StreamState, target: CloseTarget) {
@@ -895,6 +930,112 @@ impl SessionFsm {
 
         stream.pending_recv.insert(offset, chunk);
         Ok(())
+    }
+
+    fn take_stream_frame(
+        stream: &mut StreamState,
+        stream_id: StreamId,
+        chunk_size: usize,
+    ) -> Option<StreamChunk> {
+        if !stream.send_buf.is_empty() {
+            let len = stream.send_buf.len().min(chunk_size);
+            let bytes: Vec<_> = stream.send_buf.drain(..len).collect();
+            let fin = if stream.send_buf.is_empty()
+                && matches!(stream.outbound_state, OutboundState::FinQueued)
+            {
+                stream.outbound_state = OutboundState::Finished;
+                true
+            } else {
+                false
+            };
+            let frame = StreamChunk {
+                stream_id,
+                offset: stream.next_send_offset,
+                bytes,
+                fin,
+            };
+            stream.next_send_offset += frame.bytes.len() as u64;
+            return Some(frame);
+        }
+
+        if matches!(stream.outbound_state, OutboundState::FinQueued) {
+            stream.outbound_state = OutboundState::Finished;
+            return Some(StreamChunk {
+                stream_id,
+                offset: stream.next_send_offset,
+                bytes: Vec::new(),
+                fin: true,
+            });
+        }
+
+        None
+    }
+
+    fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
+        let tx_ring_references_stream =
+            self.state
+                .tx_ring
+                .iter()
+                .any(|(_, entry)| match &entry.pending.body {
+                    SessionBody::Stream(frame) => frame.stream_id == stream_id,
+                    SessionBody::StreamClose(frame) => frame.stream_id == stream_id,
+                    _ => false,
+                });
+
+        if tx_ring_references_stream {
+            return false;
+        }
+
+        match stream.open_state {
+            StreamOpenState::WaitingForAck => false,
+            StreamOpenState::PendingSend => {
+                matches!(stream.outbound_state, OutboundState::Closed)
+                    && stream.send_buf.is_empty()
+                    && stream.recv_buf.is_empty()
+                    && stream.pending_recv.is_empty()
+            }
+            StreamOpenState::Opened => {
+                stream.pending_close.is_none()
+                    && stream.send_buf.is_empty()
+                    && stream.recv_buf.is_empty()
+                    && stream.pending_recv.is_empty()
+                    && matches!(
+                        stream.inbound_state,
+                        InboundState::Finished | InboundState::Closed(_) | InboundState::Discarding
+                    )
+                    && matches!(
+                        stream.outbound_state,
+                        OutboundState::Finished | OutboundState::Closed
+                    )
+            }
+        }
+    }
+
+    fn try_reap_stream(&mut self, stream_id: StreamId) {
+        let should_reap = self
+            .state
+            .streams
+            .get(&stream_id)
+            .is_some_and(|stream| self.stream_is_reapable(stream_id, stream));
+        if !should_reap {
+            return;
+        }
+
+        let Some(index) = self.state.streams.get_index_of(&stream_id) else {
+            return;
+        };
+        self.state.streams.shift_remove(&stream_id);
+
+        if self.state.streams.is_empty() {
+            self.state.next_stream_index = 0;
+            return;
+        }
+        if index < self.state.next_stream_index {
+            self.state.next_stream_index -= 1;
+        }
+        if self.state.next_stream_index >= self.state.streams.len() {
+            self.state.next_stream_index %= self.state.streams.len();
+        }
     }
 
     fn fail_session(&mut self, close: SessionCloseBody) {

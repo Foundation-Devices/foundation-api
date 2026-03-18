@@ -54,6 +54,13 @@ pub enum OutboundState {
     Closed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamOpenState {
+    PendingSend,
+    WaitingForAck,
+    Opened,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InboundState {
     Open,
@@ -65,6 +72,7 @@ pub enum InboundState {
 #[derive(Debug)]
 pub struct StreamState {
     pub role: StreamRole,
+    pub open_state: StreamOpenState,
     pub send_buf: VecDeque<u8>,
     pub pending_close: Option<StreamClose>,
     pub recv_buf: VecDeque<u8>,
@@ -79,6 +87,10 @@ impl StreamState {
     pub fn new(role: StreamRole) -> Self {
         Self {
             role,
+            open_state: match role {
+                StreamRole::Initiator => StreamOpenState::PendingSend,
+                StreamRole::Responder => StreamOpenState::Opened,
+            },
             send_buf: VecDeque::new(),
             pending_close: None,
             recv_buf: VecDeque::new(),
