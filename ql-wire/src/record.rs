@@ -1,4 +1,7 @@
-use zerocopy::byte_slice::{ByteSlice, SplitByteSlice};
+use zerocopy::{
+    byte_slice::{ByteSlice, SplitByteSlice},
+    Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned,
+};
 
 use crate::{
     codec,
@@ -38,7 +41,9 @@ pub enum QlPayloadRef<B> {
     Session(EncryptedMessageRef<B>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, TryFromBytes, KnownLayout, Immutable, IntoBytes, Unaligned,
+)]
 #[repr(u8)]
 pub(crate) enum RecordKind {
     PairRequest = 1,
@@ -50,18 +55,6 @@ pub(crate) enum RecordKind {
 }
 
 impl RecordKind {
-    pub(crate) fn from_byte(value: u8) -> Result<Self, WireError> {
-        match value {
-            1 => Ok(Self::PairRequest),
-            2 => Ok(Self::Hello),
-            3 => Ok(Self::HelloReply),
-            4 => Ok(Self::Confirm),
-            5 => Ok(Self::Ready),
-            6 => Ok(Self::Session),
-            _ => Err(WireError::InvalidPayload),
-        }
-    }
-
     fn for_payload(payload: &QlPayload) -> Self {
         match payload {
             QlPayload::PairRequest(_) => Self::PairRequest,

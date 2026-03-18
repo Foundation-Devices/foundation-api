@@ -1,6 +1,6 @@
 use zerocopy::{
     byte_slice::{ByteSlice, ByteSliceMut},
-    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
+    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes, Unaligned,
 };
 
 use super::StreamId;
@@ -17,7 +17,9 @@ pub struct StreamClose {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, TryFromBytes, KnownLayout, Immutable, IntoBytes, Unaligned,
+)]
 #[repr(u8)]
 pub enum CloseTarget {
     Request = 1,
@@ -26,15 +28,6 @@ pub enum CloseTarget {
 }
 
 impl CloseTarget {
-    pub(crate) fn from_wire(value: u8) -> Result<Self, WireError> {
-        match value {
-            1 => Ok(Self::Request),
-            2 => Ok(Self::Response),
-            3 => Ok(Self::Both),
-            _ => Err(WireError::InvalidPayload),
-        }
-    }
-
     pub(crate) const fn to_wire(self) -> u8 {
         self as u8
     }
@@ -82,7 +75,7 @@ impl<B: ByteSlice> StreamCloseRef<B> {
     }
 
     pub fn target(&self) -> Result<CloseTarget, WireError> {
-        CloseTarget::from_wire(self.wire.target)
+        crate::codec::read_byte(self.wire.target)
     }
 
     pub fn code(&self) -> CloseCode {

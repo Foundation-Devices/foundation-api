@@ -1,6 +1,6 @@
 use zerocopy::{
     byte_slice::{ByteSlice, ByteSliceMut},
-    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
+    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes, Unaligned,
 };
 
 use crate::{
@@ -65,7 +65,9 @@ pub enum SessionBodyRef<B> {
     Close(close::SessionCloseBody),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, TryFromBytes, KnownLayout, Immutable, IntoBytes, Unaligned,
+)]
 #[repr(u8)]
 enum SessionBodyKind {
     Ack = 1,
@@ -74,20 +76,6 @@ enum SessionBodyKind {
     Stream = 4,
     StreamClose = 5,
     Close = 6,
-}
-
-impl SessionBodyKind {
-    fn from_byte(value: u8) -> Result<Self, WireError> {
-        match value {
-            1 => Ok(Self::Ack),
-            2 => Ok(Self::Ping),
-            3 => Ok(Self::Unpair),
-            4 => Ok(Self::Stream),
-            5 => Ok(Self::StreamClose),
-            6 => Ok(Self::Close),
-            _ => Err(WireError::InvalidPayload),
-        }
-    }
 }
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
@@ -123,7 +111,7 @@ impl<B: ByteSlice> SessionEnvelopeRef<B> {
     }
 
     fn body_kind(&self) -> Result<SessionBodyKind, WireError> {
-        SessionBodyKind::from_byte(self.wire.kind)
+        crate::codec::read_byte(self.wire.kind)
     }
 
     pub fn body(&self) -> Result<SessionBodyRef<&[u8]>, WireError> {

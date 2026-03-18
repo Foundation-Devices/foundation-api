@@ -1,7 +1,7 @@
 use zerocopy::{
     byte_slice::{ByteSlice, SplitByteSlice},
     byteorder::little_endian,
-    FromBytes, Immutable, IntoBytes, KnownLayout, Ref,
+    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes,
 };
 
 use crate::{QlHeader, WireError};
@@ -22,6 +22,13 @@ where
     T: FromBytes + Copy,
 {
     T::read_from_bytes(bytes).map_err(|_| WireError::InvalidPayload)
+}
+
+pub fn read_byte<T>(byte: u8) -> Result<T, WireError>
+where
+    T: TryFromBytes + Copy,
+{
+    T::try_read_from_bytes(core::slice::from_ref(&byte)).map_err(|_| WireError::InvalidPayload)
 }
 
 pub fn read_prefix<T, B>(bytes: B) -> Result<(T, B), WireError>

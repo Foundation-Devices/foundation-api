@@ -1,10 +1,19 @@
 use zerocopy::{
-    byte_slice::SplitByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
+    byte_slice::SplitByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes,
+    Unaligned,
 };
 
 use crate::{codec, record::RecordKind, WireError, XID};
 
 pub const QL_WIRE_VERSION: u8 = 1;
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, TryFromBytes, KnownLayout, Immutable, IntoBytes, Unaligned,
+)]
+#[repr(u8)]
+enum QlWireVersion {
+    V1 = QL_WIRE_VERSION,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QlHeader {
@@ -35,7 +44,7 @@ pub(crate) struct DecodedRecordHeader {
 
 pub(crate) fn encode_record_header(header: &QlHeader, kind: RecordKind) -> QlRecordHeaderWire {
     QlRecordHeaderWire {
-        version: QL_WIRE_VERSION,
+        version: QlWireVersion::V1 as u8,
         kind: kind as u8,
         sender: header.sender.0,
         recipient: header.recipient.0,
@@ -46,12 +55,10 @@ pub(crate) fn decode_record_header<B: SplitByteSlice>(
     bytes: B,
 ) -> Result<(DecodedRecordHeader, B), WireError> {
     let (wire, payload_bytes) = codec::read_prefix::<QlRecordHeaderWire, B>(bytes)?;
-    if wire.version != QL_WIRE_VERSION {
-        return Err(WireError::InvalidPayload);
-    }
+    let QlWireVersion::V1 = codec::read_byte(wire.version)?;
     Ok((
         DecodedRecordHeader {
-            kind: RecordKind::from_byte(wire.kind)?,
+            kind: codec::read_byte(wire.kind)?,
             header: QlHeader {
                 sender: XID(wire.sender),
                 recipient: XID(wire.recipient),

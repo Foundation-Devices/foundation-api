@@ -42,11 +42,7 @@ impl<B: ByteSlice> StreamChunkRef<B> {
     }
 
     pub fn fin(&self) -> Result<bool, WireError> {
-        match self.wire.fin {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(WireError::InvalidPayload),
-        }
+        crate::codec::read_byte(self.wire.fin)
     }
 
     pub fn offset(&self) -> u64 {
