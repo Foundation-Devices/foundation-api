@@ -91,11 +91,6 @@ impl RuntimeConfig {
 }
 
 #[derive(Debug)]
-pub enum HandlerEvent {
-    Stream(InboundStream),
-}
-
-#[derive(Debug)]
 pub(crate) enum InboundEvent {
     Data(Vec<u8>),
     Finished,

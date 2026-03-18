@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
 
 use crate::{
-    new_runtime, platform::PlatformFuture, HandlerEvent, Peer, PeerStatus, QlError, QlFsmConfig,
+    new_runtime, platform::PlatformFuture, InboundStream, Peer, PeerStatus, QlError, QlFsmConfig,
     RuntimeConfig, RuntimeHandle,
 };
 
@@ -128,7 +128,7 @@ impl QlCrypto for DeterministicCrypto {
 struct TestPlatform {
     outbound: Sender<Vec<u8>>,
     status: Sender<StatusEvent>,
-    inbound: Option<Sender<HandlerEvent>>,
+    inbound: Option<Sender<InboundStream>>,
     nonce_seed: u8,
     nonce_counter: AtomicU8,
     encrypted_write_counter: AtomicUsize,
@@ -148,7 +148,7 @@ impl TestPlatform {
         Self,
         Receiver<Vec<u8>>,
         Receiver<StatusEvent>,
-        Receiver<HandlerEvent>,
+        Receiver<InboundStream>,
     ) {
         let (inbound_tx, inbound_rx) = async_channel::unbounded();
         let (platform, outbound_rx, status_rx) =
@@ -179,7 +179,7 @@ impl TestPlatform {
 
     fn new_inner(
         seed: u8,
-        inbound: Option<Sender<HandlerEvent>>,
+        inbound: Option<Sender<InboundStream>>,
         fail_encrypted_write_at: Option<usize>,
         write_delay: Duration,
         write_stats: Option<WriteStats>,
@@ -318,7 +318,7 @@ impl crate::platform::QlPlatform for TestPlatform {
         let _ = self.status.try_send(StatusEvent { peer, stage });
     }
 
-    fn handle_inbound(&self, event: HandlerEvent) {
+    fn handle_inbound(&self, event: InboundStream) {
         if let Some(tx) = &self.inbound {
             let _ = tx.try_send(event);
         }

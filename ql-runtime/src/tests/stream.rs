@@ -28,9 +28,7 @@ async fn open_stream_duplex_happy_path() {
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let inbound = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
+            let inbound = inbound_b.recv().await.unwrap();
 
             let mut request = inbound.request;
             let mut response = inbound.response;
@@ -93,9 +91,7 @@ async fn stream_backpressure_with_small_runtime_buffer() {
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
+            let stream = inbound_b.recv().await.unwrap();
             let request_data = read_all(stream.request).await.unwrap();
             stream.response.finish().await.unwrap();
             done_tx.send(request_data).await.unwrap();
@@ -145,9 +141,7 @@ async fn dropping_responder_closes_initiator_response() {
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
+            let stream = inbound_b.recv().await.unwrap();
             drop(stream.response);
         });
 
@@ -201,9 +195,7 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
+            let stream = inbound_b.recv().await.unwrap();
             let mut request = stream.request;
             let mut response = stream.response;
             assert_eq!(request.next_chunk().await.unwrap(), None);
@@ -261,9 +253,7 @@ async fn max_concurrent_message_writes_is_respected() {
 
         let responder = tokio::task::spawn_local(async move {
             for _ in 0..4 {
-                let stream = match inbound_b.recv().await.unwrap() {
-                    HandlerEvent::Stream(stream) => stream,
-                };
+                let stream = inbound_b.recv().await.unwrap();
                 let _ = read_all(stream.request).await;
                 let _ = stream.response.finish().await;
             }
@@ -337,9 +327,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
+            let stream = inbound_b.recv().await.unwrap();
             let received_request = read_all(stream.request).await.unwrap();
             let mut response = stream.response;
             response.write_all(&response_payload).await.unwrap();

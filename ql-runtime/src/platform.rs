@@ -15,5 +15,5 @@ pub trait QlPlatform: QlCrypto {
     fn clear_peer(&self);
 
     fn handle_peer_status(&self, peer: XID, status: PeerStatus);
-    fn handle_inbound(&self, event: super::HandlerEvent);
+    fn handle_inbound(&self, event: super::InboundStream);
 }

@@ -50,9 +50,7 @@ async fn opening_stream_auto_connects() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
+            let stream = inbound_b.recv().await.unwrap();
             let request = read_all(stream.request).await.unwrap();
             stream.response.finish().await.unwrap();
             request
@@ -131,9 +129,7 @@ async fn rejected_session_write_is_reissued() {
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
+            let stream = inbound_b.recv().await.unwrap();
             let request = read_all(stream.request).await.unwrap();
             stream.response.finish().await.unwrap();
             request

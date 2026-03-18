@@ -25,9 +25,7 @@ async fn unpair_clears_remote_peer_and_aborts_active_stream() {
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
+            let stream = inbound_b.recv().await.unwrap();
             let mut request = stream.request;
             let _ = request.next_chunk().await;
             let second = request.next_chunk().await;

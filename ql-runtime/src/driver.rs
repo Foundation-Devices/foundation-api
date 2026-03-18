@@ -12,8 +12,7 @@ use crate::{
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, InboundStream},
     platform::{PlatformFuture, QlPlatform},
-    CloseCode, CloseTarget, HandlerEvent, InboundEvent, OpenedStreamDelivery, QlError, Runtime,
-    StreamId,
+    CloseCode, CloseTarget, InboundEvent, OpenedStreamDelivery, QlError, Runtime, StreamId,
 };
 
 struct InFlightWrite<'a> {
@@ -343,7 +342,7 @@ impl DriverState {
             },
         );
 
-        platform.handle_inbound(HandlerEvent::Stream(InboundStream {
+        platform.handle_inbound(InboundStream {
             stream_id,
             request: ByteReader::new(
                 stream_id,
@@ -357,7 +356,7 @@ impl DriverState {
                 response_writer,
                 self.runtime_tx.clone(),
             ),
-        }));
+        });
     }
 
     fn handle_inbound_readable(&mut self, stream_id: StreamId) {
@@ -661,7 +660,7 @@ mod tests {
 
         fn handle_peer_status(&self, _peer: XID, _status: ql_fsm::PeerStatus) {}
 
-        fn handle_inbound(&self, _event: HandlerEvent) {}
+        fn handle_inbound(&self, _event: InboundStream) {}
     }
 
     fn new_driver_state() -> DriverState {

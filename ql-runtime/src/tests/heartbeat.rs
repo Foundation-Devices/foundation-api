@@ -42,9 +42,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
 
         let responder_task = tokio::task::spawn_local(async move {
-            let stream = match inbound_b.recv().await.unwrap() {
-                HandlerEvent::Stream(stream) => stream,
-            };
+            let stream = inbound_b.recv().await.unwrap();
             let _ = read_all(stream.request).await;
             let response = stream.response;
             let _ = response.finish().await;
