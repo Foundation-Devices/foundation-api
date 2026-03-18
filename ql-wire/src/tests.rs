@@ -196,3 +196,183 @@ fn ready_round_trip_and_decrypt() {
     let body = handshake::decrypt_ready(&crypto, &header, &mut ready, &session_key, 100).unwrap();
     assert_eq!(body.meta, meta);
 }
+
+#[test]
+fn protocol_record_size_breakdown() {
+    fn meta(id: u32) -> ControlMeta {
+        ControlMeta {
+            control_id: ControlId(id),
+            valid_until: 1_000,
+        }
+    }
+
+    fn header() -> QlHeader {
+        QlHeader {
+            sender: XID([1; XID::SIZE]),
+            recipient: XID([2; XID::SIZE]),
+        }
+    }
+
+    fn encrypted(tag: u8, ciphertext_len: usize) -> EncryptedMessage {
+        EncryptedMessage {
+            nonce: Nonce([tag; Nonce::SIZE]),
+            auth: [tag; EncryptedMessage::AUTH_SIZE],
+            ciphertext: vec![tag; ciphertext_len],
+        }
+    }
+
+    fn session_record(header: QlHeader, tag: u8, body: SessionEnvelope) -> QlRecord {
+        let ciphertext_len = body.encode().len();
+        QlRecord {
+            header,
+            payload: QlPayload::Session(encrypted(tag, ciphertext_len)),
+        }
+    }
+
+    let header = header();
+    let hello = QlRecord {
+        header,
+        payload: QlPayload::Hello(handshake::Hello {
+            meta: meta(1),
+            nonce: Nonce([3; Nonce::SIZE]),
+            kem_ct: MlKemCiphertext::from_data([4; MlKemCiphertext::SIZE]),
+            signature: MlDsaSignature::from_data([5; MlDsaSignature::SIZE]),
+        }),
+    };
+    let hello_reply = QlRecord {
+        header,
+        payload: QlPayload::HelloReply(handshake::HelloReply {
+            meta: meta(2),
+            nonce: Nonce([6; Nonce::SIZE]),
+            kem_ct: MlKemCiphertext::from_data([7; MlKemCiphertext::SIZE]),
+            signature: MlDsaSignature::from_data([8; MlDsaSignature::SIZE]),
+        }),
+    };
+    let confirm = QlRecord {
+        header,
+        payload: QlPayload::Confirm(handshake::Confirm {
+            meta: meta(3),
+            signature: MlDsaSignature::from_data([9; MlDsaSignature::SIZE]),
+        }),
+    };
+    let pair_request = QlRecord {
+        header,
+        payload: QlPayload::PairRequest(pair::PairRequestRecord {
+            kem_ct: MlKemCiphertext::from_data([10; MlKemCiphertext::SIZE]),
+            encrypted: encrypted(11, 0),
+        }),
+    };
+    let ready = QlRecord {
+        header,
+        payload: QlPayload::Ready(handshake::Ready {
+            encrypted: encrypted(12, 0),
+        }),
+    };
+
+    let session_ack = session_record(
+        header,
+        13,
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Ack,
+        },
+    );
+    let session_ping = session_record(
+        header,
+        14,
+        SessionEnvelope {
+            seq: SessionSeq(2),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Ping(encrypted::ping::PingBody),
+        },
+    );
+    let session_unpair = session_record(
+        header,
+        15,
+        SessionEnvelope {
+            seq: SessionSeq(3),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Unpair(encrypted::unpair::UnpairBody),
+        },
+    );
+    let session_stream_empty = session_record(
+        header,
+        16,
+        SessionEnvelope {
+            seq: SessionSeq(4),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamChunk {
+                stream_id: StreamId(1),
+                offset: 0,
+                fin: false,
+                bytes: Vec::new(),
+            }),
+        },
+    );
+    let session_stream_fin = session_record(
+        header,
+        17,
+        SessionEnvelope {
+            seq: SessionSeq(5),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamChunk {
+                stream_id: StreamId(1),
+                offset: 0,
+                fin: true,
+                bytes: Vec::new(),
+            }),
+        },
+    );
+    let session_stream_close = session_record(
+        header,
+        18,
+        SessionEnvelope {
+            seq: SessionSeq(6),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::StreamClose(StreamClose {
+                stream_id: StreamId(1),
+                target: CloseTarget::Both,
+                code: CloseCode::PROTOCOL,
+                payload: Vec::new(),
+            }),
+        },
+    );
+    let session_close = session_record(
+        header,
+        19,
+        SessionEnvelope {
+            seq: SessionSeq(7),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Close(SessionCloseBody {
+                code: CloseCode::PROTOCOL,
+            }),
+        },
+    );
+
+    let print_size = |label: &str, size: usize| {
+        println!("{label:<32}: {size} bytes");
+    };
+
+    print_size("ql-wire hello", hello.encode().len());
+    print_size("ql-wire hello_reply", hello_reply.encode().len());
+    print_size("ql-wire confirm", confirm.encode().len());
+    print_size("ql-wire pair_request empty", pair_request.encode().len());
+    print_size("ql-wire ready empty", ready.encode().len());
+    print_size("ql-wire session ack", session_ack.encode().len());
+    print_size("ql-wire session ping", session_ping.encode().len());
+    print_size("ql-wire session unpair", session_unpair.encode().len());
+    print_size(
+        "ql-wire session stream empty",
+        session_stream_empty.encode().len(),
+    );
+    print_size(
+        "ql-wire session stream fin",
+        session_stream_fin.encode().len(),
+    );
+    print_size(
+        "ql-wire session stream close",
+        session_stream_close.encode().len(),
+    );
+    print_size("ql-wire session close", session_close.encode().len());
+}
