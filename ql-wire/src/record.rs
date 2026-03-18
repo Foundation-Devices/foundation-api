@@ -1,11 +1,9 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
-
 use crate::{
     codec,
     encrypted_message::{EncryptedMessage, EncryptedMessageMut, EncryptedMessageRef},
     handshake,
-    header::QlHeader,
-    pair, WireError, XID, XID_SIZE,
+    header::{decode_record_header, decode_record_header_mut, encode_record_header, QlHeader},
+    pair, WireError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,26 +86,10 @@ impl RecordKind {
     }
 }
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-struct QlRecordHeaderWire {
-    version: u8,
-    kind: u8,
-    sender: [u8; XID_SIZE],
-    recipient: [u8; XID_SIZE],
-}
-
-const QL_WIRE_VERSION: u8 = 1;
-
 impl QlRecord {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        let header = QlRecordHeaderWire {
-            version: QL_WIRE_VERSION,
-            kind: RecordKind::for_payload(&self.payload) as u8,
-            sender: self.header.sender.0,
-            recipient: self.header.recipient.0,
-        };
+        let header = encode_record_header(&self.header, RecordKind::for_payload(&self.payload));
         codec::push_value(&mut out, &header);
         match &self.payload {
             QlPayload::PairRequest(request) => request.encode_into(&mut out),
@@ -189,48 +171,6 @@ impl<'a> QlPayloadMut<'a> {
             Self::Session(encrypted) => QlPayload::Session(encrypted.to_encrypted_message()),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct DecodedRecordHeader {
-    kind: RecordKind,
-    header: QlHeader,
-}
-
-fn decode_record_header(bytes: &[u8]) -> Result<(DecodedRecordHeader, &[u8]), WireError> {
-    let (wire, payload_bytes) = codec::read_prefix::<QlRecordHeaderWire>(bytes)?;
-    if wire.version != QL_WIRE_VERSION {
-        return Err(WireError::InvalidPayload);
-    }
-    Ok((
-        DecodedRecordHeader {
-            kind: RecordKind::from_byte(wire.kind)?,
-            header: QlHeader {
-                sender: XID(wire.sender),
-                recipient: XID(wire.recipient),
-            },
-        },
-        payload_bytes,
-    ))
-}
-
-fn decode_record_header_mut(
-    bytes: &mut [u8],
-) -> Result<(DecodedRecordHeader, &mut [u8]), WireError> {
-    let (wire, payload_bytes) = codec::read_prefix_mut::<QlRecordHeaderWire>(bytes)?;
-    if wire.version != QL_WIRE_VERSION {
-        return Err(WireError::InvalidPayload);
-    }
-    Ok((
-        DecodedRecordHeader {
-            kind: RecordKind::from_byte(wire.kind)?,
-            header: QlHeader {
-                sender: XID(wire.sender),
-                recipient: XID(wire.recipient),
-            },
-        },
-        payload_bytes,
-    ))
 }
 
 fn parse_payload_ref<'a>(

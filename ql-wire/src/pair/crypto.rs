@@ -1,7 +1,7 @@
 use super::{PairRequestBody, PairRequestRecordWire};
 use crate::{
     pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext, MlKemPublicKey, QlCrypto,
-    QlHeader, QlIdentity, QlPayload, QlRecord, WireError, NONCE_SIZE, XID,
+    QlHeader, QlIdentity, QlPayload, QlRecord, WireError, XID,
 };
 
 pub fn build_pair_request(
@@ -38,7 +38,7 @@ pub fn build_pair_request(
     };
     let body_bytes = body.encode();
     let aad = pairing_aad(&header, &kem_ct);
-    let mut nonce = [0u8; NONCE_SIZE];
+    let mut nonce = [0u8; crate::Nonce::SIZE];
     crypto.fill_random_bytes(&mut nonce);
     let encrypted = crate::encrypted_message::EncryptedMessage::encrypt(
         crypto,

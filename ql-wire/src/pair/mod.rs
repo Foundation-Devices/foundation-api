@@ -41,7 +41,7 @@ pub type PairRequestRecordMut<'a> = Ref<&'a mut [u8], PairRequestRecordWire>;
 #[repr(C)]
 struct PairRequestBodyWire {
     meta: ControlMetaWire,
-    xid: [u8; crate::XID_SIZE],
+    xid: [u8; XID::SIZE],
     signing_pub_key: [u8; MlDsaPublicKey::SIZE],
     encapsulation_pub_key: [u8; MlKemPublicKey::SIZE],
     proof: [u8; MlDsaSignature::SIZE],

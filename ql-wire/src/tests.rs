@@ -35,10 +35,10 @@ impl QlCrypto for TestCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> Option<[u8; AUTH_SIZE]> {
+    ) -> Option<[u8; EncryptedMessage::AUTH_SIZE]> {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
-        let mut auth = [0u8; AUTH_SIZE];
+        let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
         key.encrypt(
             buffer,
             (&mut auth).into(),
@@ -56,7 +56,7 @@ impl QlCrypto for TestCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-        auth_tag: &[u8; AUTH_SIZE],
+        auth_tag: &[u8; EncryptedMessage::AUTH_SIZE],
     ) -> bool {
         let key: AesGcm256Key = (*key.data()).into();
         let ciphertext = buffer.to_vec();
@@ -69,8 +69,8 @@ impl QlCrypto for TestCrypto {
 fn encrypted_session_record_round_trip_and_decrypt() {
     let crypto = TestCrypto::new(1);
     let header = QlHeader {
-        sender: XID([1; XID_SIZE]),
-        recipient: XID([2; XID_SIZE]),
+        sender: XID([1; XID::SIZE]),
+        recipient: XID([2; XID::SIZE]),
     };
     let body = SessionEnvelope {
         seq: SessionSeq(7),
@@ -86,9 +86,14 @@ fn encrypted_session_record_round_trip_and_decrypt() {
         }),
     };
     let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
-    let record =
-        encrypted::encrypt_record(&crypto, header, &session_key, &body, Nonce([8; NONCE_SIZE]))
-            .unwrap();
+    let record = encrypted::encrypt_record(
+        &crypto,
+        header,
+        &session_key,
+        &body,
+        Nonce([8; Nonce::SIZE]),
+    )
+    .unwrap();
 
     let bytes = record.encode();
     let decoded = QlRecord::decode(&bytes).unwrap();
@@ -117,14 +122,14 @@ fn pair_request_round_trip_and_decrypt() {
     let recipient_kem = generate_ml_kem_keypair(&crypto);
 
     let sender = QlIdentity::new(
-        XID([3; XID_SIZE]),
+        XID([3; XID::SIZE]),
         sender_signing.0,
         sender_signing.1,
         sender_kem.0,
         sender_kem.1,
     );
     let recipient = QlIdentity::new(
-        XID([4; XID_SIZE]),
+        XID([4; XID::SIZE]),
         recipient_signing.0,
         recipient_signing.1,
         recipient_kem.0,
@@ -159,17 +164,22 @@ fn pair_request_round_trip_and_decrypt() {
 fn ready_round_trip_and_decrypt() {
     let crypto = TestCrypto::new(30);
     let header = QlHeader {
-        sender: XID([5; XID_SIZE]),
-        recipient: XID([6; XID_SIZE]),
+        sender: XID([5; XID::SIZE]),
+        recipient: XID([6; XID::SIZE]),
     };
     let session_key = SessionKey::from_data([11; SessionKey::SIZE]);
     let meta = ControlMeta {
         control_id: ControlId(77),
         valid_until: 500,
     };
-    let ready =
-        handshake::build_ready(&crypto, header, &session_key, meta, Nonce([12; NONCE_SIZE]))
-            .unwrap();
+    let ready = handshake::build_ready(
+        &crypto,
+        header,
+        &session_key,
+        meta,
+        Nonce([12; Nonce::SIZE]),
+    )
+    .unwrap();
     let record = QlRecord {
         header,
         payload: QlPayload::Ready(ready),

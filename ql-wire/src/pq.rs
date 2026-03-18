@@ -3,14 +3,6 @@ use libcrux_ml_kem::{mlkem1024, KEY_GENERATION_SEED_SIZE, SHARED_SECRET_SIZE};
 
 use crate::{QlCrypto, WireError};
 
-const MLDSA87_SIGNING_KEY_SIZE: usize = ml_dsa_87::MLDSA87SigningKey::len();
-const MLDSA87_VERIFICATION_KEY_SIZE: usize = ml_dsa_87::MLDSA87VerificationKey::len();
-const MLDSA87_SIGNATURE_SIZE: usize = ml_dsa_87::MLDSA87Signature::len();
-
-const MLKEM_PUBLIC_KEY_SIZE: usize = mlkem1024::MlKem1024PublicKey::len();
-const MLKEM_PRIVATE_KEY_SIZE: usize = mlkem1024::MlKem1024PrivateKey::len();
-const MLKEM_CIPHERTEXT_SIZE: usize = mlkem1024::MlKem1024Ciphertext::len();
-
 pub(crate) const ML_KEM_SUITE_TAG: &[u8] = b"ml-kem-1024";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,16 +31,16 @@ impl AsRef<[u8]> for SessionKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MlDsaPrivateKey([u8; MLDSA87_SIGNING_KEY_SIZE]);
+pub struct MlDsaPrivateKey([u8; MlDsaPrivateKey::SIZE]);
 
 impl MlDsaPrivateKey {
-    pub const SIZE: usize = MLDSA87_SIGNING_KEY_SIZE;
+    pub const SIZE: usize = ml_dsa_87::MLDSA87SigningKey::len();
 
-    pub const fn from_data(data: [u8; MLDSA87_SIGNING_KEY_SIZE]) -> Self {
+    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(data)
     }
 
-    pub const fn as_bytes(&self) -> &[u8; MLDSA87_SIGNING_KEY_SIZE] {
+    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
     }
 
@@ -67,16 +59,16 @@ impl MlDsaPrivateKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MlDsaPublicKey([u8; MLDSA87_VERIFICATION_KEY_SIZE]);
+pub struct MlDsaPublicKey([u8; MlDsaPublicKey::SIZE]);
 
 impl MlDsaPublicKey {
-    pub const SIZE: usize = MLDSA87_VERIFICATION_KEY_SIZE;
+    pub const SIZE: usize = ml_dsa_87::MLDSA87VerificationKey::len();
 
-    pub const fn from_data(data: [u8; MLDSA87_VERIFICATION_KEY_SIZE]) -> Self {
+    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(data)
     }
 
-    pub const fn as_bytes(&self) -> &[u8; MLDSA87_VERIFICATION_KEY_SIZE] {
+    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
     }
 
@@ -88,31 +80,31 @@ impl MlDsaPublicKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MlDsaSignature([u8; MLDSA87_SIGNATURE_SIZE]);
+pub struct MlDsaSignature([u8; MlDsaSignature::SIZE]);
 
 impl MlDsaSignature {
-    pub const SIZE: usize = MLDSA87_SIGNATURE_SIZE;
+    pub const SIZE: usize = ml_dsa_87::MLDSA87Signature::len();
 
-    pub const fn from_data(data: [u8; MLDSA87_SIGNATURE_SIZE]) -> Self {
+    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(data)
     }
 
-    pub const fn as_bytes(&self) -> &[u8; MLDSA87_SIGNATURE_SIZE] {
+    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MlKemPublicKey([u8; MLKEM_PUBLIC_KEY_SIZE]);
+pub struct MlKemPublicKey([u8; MlKemPublicKey::SIZE]);
 
 impl MlKemPublicKey {
-    pub const SIZE: usize = MLKEM_PUBLIC_KEY_SIZE;
+    pub const SIZE: usize = mlkem1024::MlKem1024PublicKey::len();
 
-    pub const fn from_data(data: [u8; MLKEM_PUBLIC_KEY_SIZE]) -> Self {
+    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(data)
     }
 
-    pub const fn as_bytes(&self) -> &[u8; MLKEM_PUBLIC_KEY_SIZE] {
+    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
     }
 
@@ -132,16 +124,16 @@ impl MlKemPublicKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MlKemPrivateKey([u8; MLKEM_PRIVATE_KEY_SIZE]);
+pub struct MlKemPrivateKey([u8; MlKemPrivateKey::SIZE]);
 
 impl MlKemPrivateKey {
-    pub const SIZE: usize = MLKEM_PRIVATE_KEY_SIZE;
+    pub const SIZE: usize = mlkem1024::MlKem1024PrivateKey::len();
 
-    pub const fn from_data(data: [u8; MLKEM_PRIVATE_KEY_SIZE]) -> Self {
+    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(data)
     }
 
-    pub const fn as_bytes(&self) -> &[u8; MLKEM_PRIVATE_KEY_SIZE] {
+    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
     }
 
@@ -157,16 +149,16 @@ impl MlKemPrivateKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MlKemCiphertext([u8; MLKEM_CIPHERTEXT_SIZE]);
+pub struct MlKemCiphertext([u8; MlKemCiphertext::SIZE]);
 
 impl MlKemCiphertext {
-    pub const SIZE: usize = MLKEM_CIPHERTEXT_SIZE;
+    pub const SIZE: usize = mlkem1024::MlKem1024Ciphertext::len();
 
-    pub const fn from_data(data: [u8; MLKEM_CIPHERTEXT_SIZE]) -> Self {
+    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(data)
     }
 
-    pub const fn as_bytes(&self) -> &[u8; MLKEM_CIPHERTEXT_SIZE] {
+    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
     }
 }

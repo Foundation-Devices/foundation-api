@@ -49,7 +49,7 @@ pub type ReadyMut<'a> = EncryptedMessageMut<'a>;
 #[repr(C)]
 struct HelloWire {
     meta: ControlMetaWire,
-    nonce: [u8; crate::NONCE_SIZE],
+    nonce: [u8; Nonce::SIZE],
     kem_ct: [u8; MlKemCiphertext::SIZE],
     signature: [u8; MlDsaSignature::SIZE],
 }

@@ -1,7 +1,7 @@
 use super::{verify_signature, Confirm, Hello, HelloReply, Ready, ReadyBody, ReadyMut};
 use crate::{
     pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext, MlKemPublicKey, Nonce,
-    QlCrypto, QlHeader, QlIdentity, SessionKey, WireError, NONCE_SIZE, XID,
+    QlCrypto, QlHeader, QlIdentity, SessionKey, WireError, XID,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,7 +380,7 @@ fn hash_confirm_proof_data(
 }
 
 fn next_nonce(crypto: &impl QlCrypto) -> Nonce {
-    let mut data = [0u8; NONCE_SIZE];
+    let mut data = [0u8; Nonce::SIZE];
     crypto.fill_random_bytes(&mut data);
     Nonce(data)
 }

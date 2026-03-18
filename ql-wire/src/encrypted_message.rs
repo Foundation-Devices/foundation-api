@@ -2,14 +2,14 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 use crate::{
     codec::{parse_mut, parse_ref, push_value},
-    Nonce, QlCrypto, SessionKey, WireError, AUTH_SIZE, NONCE_SIZE,
+    Nonce, QlCrypto, SessionKey, WireError,
 };
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct EncryptedMessageWire {
-    pub nonce: [u8; NONCE_SIZE],
-    pub auth: [u8; AUTH_SIZE],
+    pub nonce: [u8; Nonce::SIZE],
+    pub auth: [u8; EncryptedMessage::AUTH_SIZE],
     pub ciphertext: [u8],
 }
 
@@ -19,7 +19,7 @@ pub type EncryptedMessageMut<'a> = Ref<&'a mut [u8], EncryptedMessageWire>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptedMessage {
     pub nonce: Nonce,
-    pub auth: [u8; AUTH_SIZE],
+    pub auth: [u8; Self::AUTH_SIZE],
     pub ciphertext: Vec<u8>,
 }
 
@@ -55,8 +55,10 @@ impl EncryptedMessageWire {
 }
 
 impl EncryptedMessage {
+    pub const AUTH_SIZE: usize = 16;
+
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(NONCE_SIZE + AUTH_SIZE + self.ciphertext.len());
+        let mut out = Vec::with_capacity(Nonce::SIZE + Self::AUTH_SIZE + self.ciphertext.len());
         self.encode_into(&mut out);
         out
     }
@@ -110,6 +112,6 @@ impl EncryptedMessage {
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
 struct EncryptedMessageHeaderWire {
-    nonce: [u8; NONCE_SIZE],
-    auth: [u8; AUTH_SIZE],
+    nonce: [u8; Nonce::SIZE],
+    auth: [u8; EncryptedMessage::AUTH_SIZE],
 }

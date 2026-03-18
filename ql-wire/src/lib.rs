@@ -31,10 +31,6 @@ pub use pq::{
 pub use record::{QlPayload, QlPayloadMut, QlPayloadRef, QlRecord, QlRecordMut, QlRecordRef};
 pub use xid::XID;
 
-pub const XID_SIZE: usize = 32;
-pub const NONCE_SIZE: usize = 12;
-pub const AUTH_SIZE: usize = 16;
-
 pub trait QlCrypto {
     fn fill_random_bytes(&self, data: &mut [u8]);
 
@@ -46,7 +42,7 @@ pub trait QlCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> Option<[u8; AUTH_SIZE]>;
+    ) -> Option<[u8; EncryptedMessage::AUTH_SIZE]>;
 
     fn decrypt_with_aead(
         &self,
@@ -54,7 +50,7 @@ pub trait QlCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-        auth_tag: &[u8; AUTH_SIZE],
+        auth_tag: &[u8; EncryptedMessage::AUTH_SIZE],
     ) -> bool;
 }
 
