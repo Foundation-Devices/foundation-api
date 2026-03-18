@@ -308,21 +308,36 @@ impl SessionFsm {
         self.state.now = now;
         self.collect_timeouts();
         let ack = self.state.current_ack();
-        if let Some(seq) = self
-            .state
-            .tx_ring
-            .iter()
-            .find_map(|(seq, entry)| matches!(entry.state, TxState::Pending).then_some(seq))
-        {
+        loop {
+            let Some(seq) = self
+                .state
+                .tx_ring
+                .iter()
+                .find_map(|(seq, entry)| matches!(entry.state, TxState::Pending).then_some(seq))
+            else {
+                break;
+            };
+            let Some(body) = self
+                .state
+                .tx_ring
+                .get(&seq)
+                .map(|entry| entry.pending.body.clone())
+            else {
+                return None;
+            };
+            if !self.should_retry_body(&body) {
+                let _ = self.state.tx_ring.remove(&seq);
+                self.state
+                    .tx_ring
+                    .advance_empty_front_until(self.state.next_seq);
+                continue;
+            }
+
             let Some(entry) = self.state.tx_ring.get_mut(&seq) else {
                 return None;
             };
             entry.state = TxState::Issued;
-            return Some(SessionEnvelope {
-                seq,
-                ack,
-                body: entry.pending.body.clone(),
-            });
+            return Some(SessionEnvelope { seq, ack, body });
         }
 
         if !self.state.tx_ring.accepts_seq(self.state.next_seq) {
@@ -477,8 +492,7 @@ impl SessionFsm {
 
     pub fn has_pending_stream_work(&self) -> bool {
         self.state.streams.values().any(|stream| {
-            !stream.retransmit_queue.is_empty()
-                || stream.pending_close.is_some()
+            stream.pending_close.is_some()
                 || !stream.send_buf.is_empty()
                 || matches!(stream.outbound_state, OutboundState::FinQueued)
         })
@@ -516,8 +530,7 @@ impl SessionFsm {
                     .streams
                     .get_index(index)
                     .is_some_and(|(_, stream)| {
-                        !stream.retransmit_queue.is_empty()
-                            || stream.pending_close.is_some()
+                        stream.pending_close.is_some()
                             || !stream.send_buf.is_empty()
                             || matches!(stream.outbound_state, OutboundState::FinQueued)
                     });
@@ -529,9 +542,7 @@ impl SessionFsm {
                     let Some((&stream_id, stream)) = self.state.streams.get_index_mut(index) else {
                         continue;
                     };
-                    if let Some(body) = stream.retransmit_queue.pop_front() {
-                        Some(body)
-                    } else if let Some(close) = stream.pending_close.take() {
+                    if let Some(close) = stream.pending_close.take() {
                         Some(SessionBody::StreamClose(close))
                     } else if !stream.send_buf.is_empty() {
                         let len = stream.send_buf.len().min(self.config.stream_chunk_size);
@@ -650,9 +661,22 @@ impl SessionFsm {
             .collect();
 
         for seq in expired {
-            if let Some(entry) = self.state.tx_ring.remove(&seq) {
-                if entry.pending.retransmit {
-                    self.requeue_pending_front(entry.pending);
+            let Some((retransmit, body)) = self
+                .state
+                .tx_ring
+                .get(&seq)
+                .map(|entry| (entry.pending.retransmit, entry.pending.body.clone()))
+            else {
+                continue;
+            };
+            if retransmit && self.should_retry_body(&body) {
+                if let Some(entry) = self.state.tx_ring.get_mut(&seq) {
+                    entry.state = TxState::Pending;
+                }
+            } else {
+                let _ = self.state.tx_ring.remove(&seq);
+                if matches!(body, SessionBody::Ack) {
+                    self.state.clear_ack_schedule();
                 }
             }
         }
@@ -662,33 +686,25 @@ impl SessionFsm {
             .advance_empty_front_until(self.state.next_seq);
     }
 
-    fn requeue_pending_front(&mut self, pending: PendingSessionBody) {
-        match pending.body {
+    fn should_retry_body(&self, body: &SessionBody) -> bool {
+        match body {
+            SessionBody::Ack => true,
+            SessionBody::Ping(_) | SessionBody::Unpair(_) => {
+                self.state.session_state == SessionState::Open
+            }
+            SessionBody::Close(_) => true,
             SessionBody::Stream(frame) => {
-                if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
-                    if !matches!(stream.outbound_state, OutboundState::Closed) {
-                        stream
-                            .retransmit_queue
-                            .push_front(SessionBody::Stream(frame));
-                    }
-                }
+                self.state.session_state == SessionState::Open
+                    && self
+                        .state
+                        .streams
+                        .get(&frame.stream_id)
+                        .is_some_and(|stream| !matches!(stream.outbound_state, OutboundState::Closed))
             }
             SessionBody::StreamClose(frame) => {
-                if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
-                    if !matches!(stream.outbound_state, OutboundState::Closed) {
-                        stream
-                            .retransmit_queue
-                            .push_front(SessionBody::StreamClose(frame));
-                    }
-                }
+                self.state.session_state == SessionState::Open
+                    && self.state.streams.contains_key(&frame.stream_id)
             }
-            body => match body {
-                SessionBody::Ack => {}
-                SessionBody::Ping(_) => self.state.pending_control.ping = true,
-                SessionBody::Unpair(_) => self.state.pending_control.unpair = true,
-                SessionBody::Close(close) => self.state.pending_control.close = Some(close),
-                SessionBody::Stream(_) | SessionBody::StreamClose(_) => unreachable!(),
-            },
         }
     }
 
@@ -795,7 +811,6 @@ impl SessionFsm {
         {
             stream.outbound_state = OutboundState::Closed;
             stream.send_buf.clear();
-            stream.retransmit_queue.clear();
             stream.pending_close = None;
             self.state
                 .events
@@ -812,7 +827,6 @@ impl SessionFsm {
         if Self::target_affects_outbound(stream.role, target) {
             stream.outbound_state = OutboundState::Closed;
             stream.send_buf.clear();
-            stream.retransmit_queue.clear();
         }
     }
 

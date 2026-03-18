@@ -77,10 +77,13 @@ fn lost_encrypted_record_is_retried_and_acked() {
     let retried = harness.next_outbound_a().unwrap();
     let retried_body = decrypt_envelope(&harness.b.crypto, &retried, &session_key);
 
-    assert_ne!(first_body.seq, retried_body.seq);
+    assert_eq!(first_body.seq, retried_body.seq);
     assert_eq!(first_body.body, retried_body.body);
 
     harness.deliver_to_b(retried);
+    harness.advance(config.session_ack_delay);
+    harness.a.fsm.on_timer(harness.time());
+    harness.b.fsm.on_timer(harness.time());
     harness.pump();
 
     assert_eq!(
@@ -336,7 +339,7 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
     let record = write.record;
     let retried = decrypt_envelope(&harness.b.crypto, &record, &session_key);
 
-    assert_ne!(retried.seq, first.seq);
+    assert_eq!(retried.seq, first.seq);
     assert_eq!(retried.body, first.body);
 }
 

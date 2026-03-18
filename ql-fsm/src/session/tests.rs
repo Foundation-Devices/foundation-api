@@ -132,7 +132,7 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
 }
 
 #[test]
-fn retransmit_requeues_body_with_new_session_seq() {
+fn retransmit_reuses_session_seq() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
@@ -144,7 +144,7 @@ fn retransmit_requeues_body_with_new_session_seq() {
     let retried = fsm.next_outbound(retransmit_at).unwrap();
 
     assert_eq!(first.seq, SessionSeq(1));
-    assert_eq!(retried.seq, SessionSeq(2));
+    assert_eq!(retried.seq, SessionSeq(1));
     assert_eq!(retried.body, first.body);
 }
 
@@ -289,7 +289,13 @@ fn duplicate_committed_data_is_not_redelivered() {
 #[test]
 fn next_outbound_round_robins_across_ready_streams() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(
+        SessionFsmConfig {
+            stream_chunk_size: 3,
+            ..SessionFsmConfig::default()
+        },
+        now,
+    );
     let stream_id_a = fsm.open_stream().unwrap();
     let stream_id_b = fsm.open_stream().unwrap();
 

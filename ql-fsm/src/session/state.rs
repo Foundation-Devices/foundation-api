@@ -66,7 +66,6 @@ pub enum InboundState {
 pub struct StreamState {
     pub role: StreamRole,
     pub send_buf: VecDeque<u8>,
-    pub retransmit_queue: VecDeque<SessionBody>,
     pub pending_close: Option<StreamClose>,
     pub recv_buf: VecDeque<u8>,
     pub pending_recv: BTreeMap<u64, PendingRxChunk>,
@@ -81,7 +80,6 @@ impl StreamState {
         Self {
             role,
             send_buf: VecDeque::new(),
-            retransmit_queue: VecDeque::new(),
             pending_close: None,
             recv_buf: VecDeque::new(),
             pending_recv: BTreeMap::new(),
