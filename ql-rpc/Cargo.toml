@@ -1,0 +1,11 @@
+[package]
+name = "ql-rpc"
+version = "0.1.0"
+edition = "2021"
+description = "Quantum Link RPC protocol traits and framing"
+license = "Proprietary"
+
+[dependencies]
+bytes = { version = "1" }
+ql-wire = { path = "../ql-wire" }
+thiserror = { version = "2" }

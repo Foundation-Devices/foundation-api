@@ -2159,15 +2159,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ql-rpc"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ql-wire",
+ "thiserror",
+]
+
+[[package]]
 name = "ql-runtime"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "bytes",
  "futures-lite",
  "libcrux-aesgcm",
  "oneshot",
  "piper",
  "ql-fsm",
+ "ql-rpc",
  "ql-wire",
  "sha2",
  "thiserror",

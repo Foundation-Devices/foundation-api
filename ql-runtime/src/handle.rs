@@ -1,5 +1,7 @@
+use std::{pin::Pin, task::Poll};
+
 use async_channel::{Receiver, Sender};
-use futures_lite::future::poll_fn;
+use futures_lite::{future::poll_fn, Stream};
 
 use crate::{
     command::RuntimeCommand, CloseCode, CloseTarget, InboundEvent, OpenedStreamDelivery, Peer,
@@ -78,22 +80,36 @@ impl ByteReader {
     }
 
     pub async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, QlError> {
+        poll_fn(|cx| self.poll_next_chunk(cx)).await
+    }
+
+    pub fn poll_next_chunk(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<Option<Vec<u8>>, QlError>> {
         if self.finished {
-            return Ok(None);
+            return Poll::Ready(Ok(None));
         }
-        match self.rx.recv().await {
-            Ok(InboundEvent::Data(bytes)) => Ok(Some(bytes)),
-            Ok(InboundEvent::Finished) => {
+
+        // `async_channel::Receiver` implements `Stream` and stores its listener state
+        // internally, so poll it directly rather than recreating a `recv()` future.
+        // SAFETY: `self.rx` is pinned for the duration of this call and is not moved
+        // before `poll_next` returns.
+        let mut rx = unsafe { Pin::new_unchecked(&mut self.rx) };
+        match Stream::poll_next(rx.as_mut(), cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(InboundEvent::Data(bytes))) => Poll::Ready(Ok(Some(bytes))),
+            Poll::Ready(Some(InboundEvent::Finished)) => {
                 self.finished = true;
-                Ok(None)
+                Poll::Ready(Ok(None))
             }
-            Ok(InboundEvent::Failed(error)) => {
+            Poll::Ready(Some(InboundEvent::Failed(error))) => {
                 self.finished = true;
-                Err(error)
+                Poll::Ready(Err(error))
             }
-            Err(_) => {
+            Poll::Ready(None) => {
                 self.finished = true;
-                Err(QlError::Cancelled)
+                Poll::Ready(Err(QlError::Cancelled))
             }
         }
     }
@@ -269,6 +285,13 @@ impl RuntimeHandle {
             ),
             response: ByteReader::new(stream_id, CloseTarget::Response, response, self.tx.clone()),
         })
+    }
+
+    #[cfg(feature = "rpc")]
+    pub fn rpc(&self) -> crate::rpc::RpcHandle {
+        crate::rpc::RpcHandle {
+            inner: self.clone(),
+        }
     }
 }
 

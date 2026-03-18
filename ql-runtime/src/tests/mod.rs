@@ -24,6 +24,8 @@ use crate::{
 
 mod handshake;
 mod heartbeat;
+#[cfg(feature = "rpc")]
+mod rpc;
 mod stream;
 mod unpair;
 

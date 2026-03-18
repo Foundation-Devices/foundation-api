@@ -5,6 +5,7 @@ members = [
   "backup-shard",
   "btp",
   "ql-fsm",
+  "ql-rpc",
   "ql-runtime",
   "ql-wire",
   "quantum-link-macros",
@@ -34,6 +35,7 @@ foundation-api = { path = "api" }
 quantum-link-macros = { path = "quantum-link-macros" }
 ql-protocol = { path = "ql-protocol" }
 ql-fsm = { path = "ql-fsm" }
+ql-rpc = { path = "ql-rpc" }
 ql-wire = { path = "ql-wire" }
 
 [patch.crates-io]

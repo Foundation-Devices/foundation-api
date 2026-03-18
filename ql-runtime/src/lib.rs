@@ -6,6 +6,8 @@ pub(crate) mod command;
 pub(crate) mod driver;
 pub mod handle;
 pub mod platform;
+#[cfg(feature = "rpc")]
+pub mod rpc;
 
 #[cfg(test)]
 mod tests;
