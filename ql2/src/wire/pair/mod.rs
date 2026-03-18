@@ -3,9 +3,8 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 use super::{
     encrypted_message::EncryptedMessage, AsWireMlDsaPublicKey, AsWireMlDsaSignature,
-    AsWireMlKemCiphertext, AsWireMlKemPublicKey,
+    AsWireMlKemCiphertext, AsWireMlKemPublicKey, ControlMeta,
 };
-use crate::PacketId;
 
 mod crypto;
 pub use crypto::*;
@@ -19,8 +18,7 @@ pub struct PairRequestRecord {
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PairRequestBody {
-    pub packet_id: PacketId,
-    pub valid_until: u64,
+    pub meta: ControlMeta,
     #[rkyv(with = AsWireMlDsaPublicKey)]
     pub signing_pub_key: MLDSAPublicKey,
     #[rkyv(with = AsWireMlKemPublicKey)]

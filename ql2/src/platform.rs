@@ -4,24 +4,38 @@ use bc_components::{
     MLDSAPrivateKey, MLDSAPublicKey, MLKEMPrivateKey, MLKEMPublicKey, SigningPublicKey, XID,
 };
 
-use crate::{
-    runtime::{HandlerEvent, PeerSession},
-    Peer, QlError,
-};
+use crate::{engine::PeerSession, Peer, QlError};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
-pub trait QlCrypto {
-    fn signing_private_key(&self) -> &MLDSAPrivateKey;
-    fn signing_public_key(&self) -> &MLDSAPublicKey;
-    fn encapsulation_private_key(&self) -> &MLKEMPrivateKey;
-    fn encapsulation_public_key(&self) -> &MLKEMPublicKey;
+#[derive(Debug, Clone)]
+pub struct QlIdentity {
+    pub xid: XID,
+    pub signing_private_key: MLDSAPrivateKey,
+    pub signing_public_key: MLDSAPublicKey,
+    pub encapsulation_private_key: MLKEMPrivateKey,
+    pub encapsulation_public_key: MLKEMPublicKey,
+}
 
-    fn fill_random_bytes(&self, data: &mut [u8]);
-
-    fn xid(&self) -> XID {
-        XID::new(SigningPublicKey::MLDSA(self.signing_public_key().clone()))
+impl QlIdentity {
+    pub fn from_keys(
+        signing_private_key: MLDSAPrivateKey,
+        signing_public_key: MLDSAPublicKey,
+        encapsulation_private_key: MLKEMPrivateKey,
+        encapsulation_public_key: MLKEMPublicKey,
+    ) -> Self {
+        Self {
+            xid: XID::new(SigningPublicKey::MLDSA(signing_public_key.clone())),
+            signing_private_key,
+            signing_public_key,
+            encapsulation_private_key,
+            encapsulation_public_key,
+        }
     }
+}
+
+pub trait QlCrypto {
+    fn fill_random_bytes(&self, data: &mut [u8]);
 }
 
 pub trait QlPlatform: QlCrypto {
@@ -33,5 +47,5 @@ pub trait QlPlatform: QlCrypto {
     fn clear_peer(&self);
 
     fn handle_peer_status(&self, peer: XID, session: &PeerSession);
-    fn handle_inbound(&self, event: HandlerEvent);
+    // fn handle_inbound(&self, event: crate::runtime::HandlerEvent);
 }

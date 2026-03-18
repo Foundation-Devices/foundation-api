@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    io::Read,
     task::Poll,
     time::Instant,
 };
@@ -14,9 +13,9 @@ use crate::{
     runtime::{
         command::RuntimeCommand,
         handle::{InboundByteStream, InboundStream, StreamResponder},
-        pipe, AcceptedStreamDelivery, HandlerEvent, Runtime,
+        AcceptedStreamDelivery, HandlerEvent, InboundEvent, Runtime,
     },
-    wire::stream::{Direction, ResetCode},
+    wire::stream::{BodyChunk, Direction, ResetCode},
     QlError, StreamId,
 };
 
@@ -38,127 +37,117 @@ enum DriverEvent {
 }
 
 struct PendingOpen {
-    request_pipe: pipe::PipeReader<QlError>,
+    request_rx: async_channel::Receiver<Vec<u8>>,
     start_tx: oneshot::Sender<Result<StreamId, QlError>>,
     accepted_tx: oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>,
 }
 
 struct PendingAcceptDelivery {
     tx: oneshot::Sender<Result<AcceptedStreamDelivery, QlError>>,
-    response_reader: pipe::PipeReader<QlError>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PendingPull {
-    offset: u64,
-    max_len: usize,
+    response_rx: async_channel::Receiver<InboundEvent>,
 }
 
 enum OutboundIo {
     Open {
         dir: Direction,
-        pipe: pipe::PipeReader<QlError>,
-        pending_pull: Option<PendingPull>,
+        rx: async_channel::Receiver<Vec<u8>>,
+        pending_pull: bool,
         finish_queued: bool,
     },
     Closed,
 }
 
 impl OutboundIo {
-    fn new(dir: Direction, pipe: pipe::PipeReader<QlError>) -> Self {
+    fn new(dir: Direction, rx: async_channel::Receiver<Vec<u8>>) -> Self {
         Self::Open {
             dir,
-            pipe,
-            pending_pull: None,
+            rx,
+            pending_pull: false,
             finish_queued: false,
         }
     }
 
-    fn set_pending_pull(&mut self, offset: u64, max_len: usize) {
+    fn set_pending_pull(&mut self) {
         if let Self::Open { pending_pull, .. } = self {
-            *pending_pull = Some(PendingPull { offset, max_len });
-        }
-    }
-
-    fn release_to(&mut self, recv_offset: u64) {
-        if let Self::Open { pipe, .. } = self {
-            pipe.release_to(recv_offset);
+            *pending_pull = true;
         }
     }
 
     fn close(&mut self) {
-        if let Self::Open { pipe, .. } = self {
-            pipe.close();
-        }
         *self = Self::Closed;
     }
 
     fn poll_pending(&mut self, stream_id: StreamId, pending: &mut VecDeque<EngineInput>) {
         let Self::Open {
             dir,
-            pipe,
+            rx,
             pending_pull,
             finish_queued,
         } = self
         else {
             return;
         };
-        if let Some(pull) = pending_pull.take() {
-            if let Some(mut grant) = pipe.reserve_at(pull.offset, pull.max_len) {
-                let mut bytes = vec![0; grant.len()];
-                let _ = grant.read_exact(&mut bytes);
-                pending.push_back(EngineInput::OutboundData {
-                    stream_id,
-                    dir: *dir,
-                    offset: grant.offset(),
-                    bytes,
-                });
-                return;
+
+        if !*pending_pull {
+            if rx.is_closed() && !*finish_queued {
+                *finish_queued = true;
+                pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
             }
-            if pipe.writer_finished() && pipe.all_sent() {
-                if !*finish_queued {
-                    *finish_queued = true;
-                    pending.push_back(EngineInput::OutboundFinished {
-                        stream_id,
-                        dir: *dir,
-                        final_offset: pipe.sent_offset(),
-                    });
-                }
-                return;
-            }
-            *pending_pull = Some(pull);
             return;
         }
 
-        if pipe.writer_finished() && pipe.all_sent() && !*finish_queued {
-            *finish_queued = true;
-            pending.push_back(EngineInput::OutboundFinished {
-                stream_id,
-                dir: *dir,
-                final_offset: pipe.sent_offset(),
-            });
+        match rx.try_recv() {
+            Ok(bytes) => {
+                if bytes.is_empty() {
+                    return;
+                }
+                *pending_pull = false;
+                pending.push_back(EngineInput::OutboundData {
+                    stream_id,
+                    dir: *dir,
+                    bytes,
+                });
+                if rx.is_closed() && rx.is_empty() && !*finish_queued {
+                    *finish_queued = true;
+                    pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
+                }
+            }
+            Err(async_channel::TryRecvError::Empty) => {
+                if rx.is_closed() && !*finish_queued {
+                    *pending_pull = false;
+                    *finish_queued = true;
+                    pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
+                }
+            }
+            Err(async_channel::TryRecvError::Closed) => {
+                *pending_pull = false;
+                if !*finish_queued {
+                    *finish_queued = true;
+                    pending.push_back(EngineInput::OutboundFinished { stream_id, dir: *dir });
+                }
+            }
         }
     }
 }
 
 enum InboundIo {
-    Open(pipe::PipeWriter<QlError>),
+    Open(async_channel::Sender<InboundEvent>),
     Closed,
 }
 
 impl InboundIo {
-    fn new(pipe: pipe::PipeWriter<QlError>) -> Self {
-        Self::Open(pipe)
+    fn new(tx: async_channel::Sender<InboundEvent>) -> Self {
+        Self::Open(tx)
     }
 
     fn write_or_cancel(
         &mut self,
         stream_id: StreamId,
         dir: Direction,
-        bytes: &[u8],
+        bytes: Vec<u8>,
         pending: &mut VecDeque<EngineInput>,
     ) {
-        let Self::Open(pipe) = self else {
+        let Self::Open(tx) = self else {
             pending.push_back(EngineInput::ResetInbound {
                 stream_id,
                 dir,
@@ -166,39 +155,54 @@ impl InboundIo {
             });
             return;
         };
-        match pipe.try_write(bytes) {
-            Ok(n) if n == bytes.len() => {}
-            Ok(_) | Err(_) => {
-                pipe.close();
-                *self = Self::Closed;
-                pending.push_back(EngineInput::ResetInbound {
-                    stream_id,
-                    dir,
-                    code: ResetCode::Cancelled,
-                });
-            }
+        if tx.try_send(InboundEvent::Data(bytes)).is_err() {
+            tx.close();
+            *self = Self::Closed;
+            pending.push_back(EngineInput::ResetInbound {
+                stream_id,
+                dir,
+                code: ResetCode::Cancelled,
+            });
         }
     }
 
     fn finish(&mut self) {
-        if let Self::Open(pipe) = self {
-            pipe.finish();
+        if let Self::Open(tx) = self {
+            let _ = tx.try_send(InboundEvent::Finished);
+            tx.close();
         }
         *self = Self::Closed;
     }
 
     fn fail(&mut self, error: QlError) {
-        if let Self::Open(pipe) = self {
-            pipe.fail(error);
+        if let Self::Open(tx) = self {
+            let _ = tx.try_send(InboundEvent::Failed(error));
+            tx.close();
         }
         *self = Self::Closed;
     }
 
     fn close(&mut self) {
-        if let Self::Open(pipe) = self {
-            pipe.close();
+        if let Self::Open(tx) = self {
+            let _ = tx.try_send(InboundEvent::Failed(QlError::Cancelled));
+            tx.close();
         }
         *self = Self::Closed;
+    }
+
+    fn apply_prefix(
+        &mut self,
+        stream_id: StreamId,
+        dir: Direction,
+        prefix: &BodyChunk,
+        pending: &mut VecDeque<EngineInput>,
+    ) {
+        if !prefix.bytes.is_empty() {
+            self.write_or_cancel(stream_id, dir, prefix.bytes.clone(), pending);
+        }
+        if prefix.fin {
+            self.finish();
+        }
     }
 }
 
@@ -278,8 +282,12 @@ struct DriverState {
 }
 
 impl DriverState {
-    fn new(config: engine::EngineConfig, peer: Option<crate::Peer>) -> Self {
-        let engine = Engine::new(config, peer);
+    fn new(
+        config: engine::EngineConfig,
+        local_xid: bc_components::XID,
+        peer: Option<crate::Peer>,
+    ) -> Self {
+        let engine = Engine::new(config, local_xid, peer);
         Self {
             engine,
             pending_inputs: VecDeque::new(),
@@ -303,7 +311,7 @@ impl DriverState {
             RuntimeCommand::Incoming(bytes) => self.push_input(EngineInput::Incoming(bytes)),
             RuntimeCommand::OpenStream {
                 request_head,
-                request_pipe,
+                request_rx,
                 accepted,
                 start,
                 config,
@@ -313,7 +321,7 @@ impl DriverState {
                 self.pending_opens.insert(
                     open_id,
                     PendingOpen {
-                        request_pipe,
+                        request_rx,
                         start_tx: start,
                         accepted_tx: accepted,
                     },
@@ -321,25 +329,27 @@ impl DriverState {
                 self.push_input(EngineInput::OpenStream {
                     open_id,
                     request_head,
+                    request_prefix: None,
                     config,
                 });
             }
             RuntimeCommand::AcceptStream {
                 stream_id,
                 response_head,
-                response_pipe,
+                response_rx,
             } => {
                 if let Some(DriverStreamIo::Responder { response, .. }) =
                     self.streams.get_mut(&stream_id)
                 {
                     *response = ResponderResponseIo::Streaming(OutboundIo::new(
                         Direction::Response,
-                        response_pipe,
+                        response_rx,
                     ));
                 }
                 self.push_input(EngineInput::AcceptStream {
                     stream_id,
                     response_head,
+                    response_prefix: None,
                 });
             }
             RuntimeCommand::RejectStream { stream_id, code } => {
@@ -351,15 +361,6 @@ impl DriverState {
                 self.push_input(EngineInput::RejectStream { stream_id, code });
             }
             RuntimeCommand::PollStream { stream_id } => self.poll_stream(stream_id),
-            RuntimeCommand::AdvanceInboundCredit {
-                stream_id,
-                dir,
-                amount,
-            } => self.push_input(EngineInput::InboundConsumed {
-                stream_id,
-                dir,
-                amount,
-            }),
             RuntimeCommand::ResetOutbound {
                 stream_id,
                 dir,
@@ -418,7 +419,12 @@ impl DriverState {
 impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
         let runtime_tx = self.tx.upgrade().expect("runtime tx");
-        let mut state = DriverState::new(self.config.engine, self.platform.load_peer().await);
+        let local_xid = self.platform.xid();
+        let mut state = DriverState::new(
+            self.config.engine,
+            local_xid,
+            self.platform.load_peer().await,
+        );
         let mut in_flight: Option<InFlightWrite<'_>> = None;
 
         loop {
@@ -542,15 +548,15 @@ impl<P: QlPlatform> Runtime<P> {
                     return;
                 };
                 let _ = pending.start_tx.send(Ok(stream_id));
-                let (response_reader, response_writer) = pipe::pipe(self.config.pipe_size_bytes);
+                let (response_tx, response_rx) = async_channel::unbounded();
                 streams.insert(
                     stream_id,
                     DriverStreamIo::Initiator {
-                        request: OutboundIo::new(Direction::Request, pending.request_pipe),
-                        response: InboundIo::new(response_writer),
+                        request: OutboundIo::new(Direction::Request, pending.request_rx),
+                        response: InboundIo::new(response_tx),
                         pending_accept: PendingAcceptState::Waiting(PendingAcceptDelivery {
                             tx: pending.accepted_tx,
-                            response_reader,
+                            response_rx,
                         }),
                     },
                 );
@@ -558,19 +564,26 @@ impl<P: QlPlatform> Runtime<P> {
             EngineOutput::OpenAccepted {
                 stream_id,
                 response_head,
+                response_prefix,
                 ..
             } => {
-                let Some(DriverStreamIo::Initiator { pending_accept, .. }) =
-                    streams.get_mut(&stream_id)
+                let Some(DriverStreamIo::Initiator {
+                    response,
+                    pending_accept,
+                    ..
+                }) = streams.get_mut(&stream_id)
                 else {
                     return;
                 };
+                if let Some(prefix) = response_prefix.as_ref() {
+                    response.apply_prefix(stream_id, Direction::Response, prefix, pending_inputs);
+                }
                 match std::mem::replace(pending_accept, PendingAcceptState::Resolved) {
                     PendingAcceptState::Waiting(delivery) => {
                         let _ = delivery.tx.send(Ok(AcceptedStreamDelivery {
                             stream_id,
                             response_head,
-                            response: delivery.response_reader,
+                            response: delivery.response_rx,
                             tx: runtime_tx.clone(),
                         }));
                     }
@@ -607,12 +620,17 @@ impl<P: QlPlatform> Runtime<P> {
             EngineOutput::InboundStreamOpened {
                 stream_id,
                 request_head,
+                request_prefix,
             } => {
-                let (request_reader, request_writer) = pipe::pipe(self.config.pipe_size_bytes);
+                let (request_tx, request_rx) = async_channel::unbounded();
+                let mut request = InboundIo::new(request_tx);
+                if let Some(prefix) = request_prefix.as_ref() {
+                    request.apply_prefix(stream_id, Direction::Request, prefix, pending_inputs);
+                }
                 streams.insert(
                     stream_id,
                     DriverStreamIo::Responder {
-                        request: InboundIo::new(request_writer),
+                        request,
                         response: ResponderResponseIo::Pending,
                     },
                 );
@@ -623,14 +641,10 @@ impl<P: QlPlatform> Runtime<P> {
                         request: InboundByteStream::new(
                             stream_id,
                             Direction::Request,
-                            request_reader,
+                            request_rx,
                             runtime_tx.clone(),
                         ),
-                        respond_to: StreamResponder::new(
-                            stream_id,
-                            self.config.pipe_size_bytes,
-                            runtime_tx.clone(),
-                        ),
+                        respond_to: StreamResponder::new(stream_id, runtime_tx.clone()),
                     }));
             }
             EngineOutput::InboundData {
@@ -640,7 +654,7 @@ impl<P: QlPlatform> Runtime<P> {
             } => {
                 if let Some(stream) = streams.get_mut(&stream_id) {
                     if let Some(inbound) = stream.inbound_mut(dir) {
-                        inbound.write_or_cancel(stream_id, dir, &bytes, pending_inputs);
+                        inbound.write_or_cancel(stream_id, dir, bytes, pending_inputs);
                     }
                 }
             }
@@ -662,29 +676,13 @@ impl<P: QlPlatform> Runtime<P> {
                     }
                 }
             }
-            EngineOutput::NeedOutboundData {
-                stream_id,
-                dir,
-                offset,
-                max_len,
-            } => {
+            EngineOutput::NeedOutboundData { stream_id, dir } => {
                 if let Some(stream) = streams.get_mut(&stream_id) {
                     if let Some(outbound) = stream.outbound_mut(dir) {
-                        outbound.set_pending_pull(offset, max_len);
+                        outbound.set_pending_pull();
                     }
                 }
                 poll_stream(streams, pending_inputs, stream_id);
-            }
-            EngineOutput::ReleaseOutboundThrough {
-                stream_id,
-                dir,
-                recv_offset,
-            } => {
-                if let Some(stream) = streams.get_mut(&stream_id) {
-                    if let Some(outbound) = stream.outbound_mut(dir) {
-                        outbound.release_to(recv_offset);
-                    }
-                }
             }
             EngineOutput::OutboundClosed { stream_id, dir }
             | EngineOutput::OutboundFailed { stream_id, dir, .. } => {

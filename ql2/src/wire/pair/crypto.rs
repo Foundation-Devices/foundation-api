@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use bc_components::{
     MLDSAPublicKey, MLKEMCiphertext, MLKEMPublicKey, SigningPublicKey, SymmetricKey, XID,
 };
@@ -7,14 +5,14 @@ use rkyv::{Archive, Serialize};
 
 use super::{PairRequestBody, PairRequestRecord};
 use crate::{
-    platform::QlCrypto,
+    platform::{QlCrypto, QlIdentity},
     wire::{
         access_value, deserialize_value, encode_value,
         encrypted_message::{ArchivedEncryptedMessage, EncryptedMessage, NONCE_SIZE},
-        ensure_not_expired, mlkem_ciphertext_from_archived, now_secs, AsWireMlDsaPublicKey,
-        AsWireMlKemCiphertext, AsWireMlKemPublicKey, QlHeader, QlPayload, QlRecord,
+        ensure_not_expired, AsWireMlDsaPublicKey, AsWireMlKemCiphertext, AsWireMlKemPublicKey,
+        ControlMeta, QlHeader, QlPayload, QlRecord,
     },
-    PacketId, QlError,
+    QlError,
 };
 
 #[derive(Archive, Serialize)]
@@ -27,8 +25,7 @@ struct PairingAad {
 #[derive(Archive, Serialize)]
 struct PairingProofData {
     aad: Vec<u8>,
-    packet_id: PacketId,
-    valid_until: u64,
+    meta: ControlMeta,
     #[rkyv(with = AsWireMlDsaPublicKey)]
     signing_pub_key: MLDSAPublicKey,
     #[rkyv(with = AsWireMlKemPublicKey)]
@@ -36,32 +33,29 @@ struct PairingProofData {
 }
 
 pub fn build_pair_request(
-    platform: &impl QlCrypto,
+    identity: &QlIdentity,
+    crypto: &impl QlCrypto,
     recipient: XID,
     recipient_encapsulation_key: &MLKEMPublicKey,
-    packet_id: PacketId,
-    valid_for: Duration,
+    meta: ControlMeta,
 ) -> Result<QlRecord, QlError> {
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
     let header = QlHeader {
-        sender: platform.xid(),
+        sender: identity.xid,
         recipient,
     };
-    let valid_until = now_secs().saturating_add(valid_for.as_secs());
-    let signing_pub_key = platform.signing_public_key().clone();
-    let sender_encapsulation_key = platform.encapsulation_public_key().clone();
+    let signing_pub_key = identity.signing_public_key.clone();
+    let sender_encapsulation_key = identity.encapsulation_public_key.clone();
     let proof_data = pairing_proof_data(
         &header,
         &kem_ct,
-        packet_id,
-        valid_until,
+        &meta,
         &signing_pub_key,
         &sender_encapsulation_key,
     );
-    let proof = platform.signing_private_key().sign(&proof_data);
+    let proof = identity.signing_private_key.sign(&proof_data);
     let body = PairRequestBody {
-        packet_id,
-        valid_until,
+        meta,
         signing_pub_key,
         encapsulation_pub_key: sender_encapsulation_key,
         proof,
@@ -69,7 +63,7 @@ pub fn build_pair_request(
     let body_bytes = encode_value(&body);
     let aad = pairing_aad(&header, &kem_ct);
     let mut nonce = [0u8; NONCE_SIZE];
-    platform.fill_random_bytes(&mut nonce);
+    crypto.fill_random_bytes(&mut nonce);
     let encrypted = EncryptedMessage::encrypt(&session_key, body_bytes, &aad, nonce);
     Ok(QlRecord {
         header,
@@ -78,26 +72,25 @@ pub fn build_pair_request(
 }
 
 pub fn decrypt_pair_request(
-    platform: &impl QlCrypto,
+    identity: &QlIdentity,
     header: &QlHeader,
     request: &mut super::ArchivedPairRequestRecord,
 ) -> Result<PairRequestBody, QlError> {
-    let kem_ct = mlkem_ciphertext_from_archived(&request.kem_ct)?;
+    let kem_ct = MLKEMCiphertext::try_from(&request.kem_ct)?;
     let aad = pairing_aad(header, &kem_ct);
-    let session_key = platform
-        .encapsulation_private_key()
+    let session_key = identity
+        .encapsulation_private_key
         .decapsulate_shared_secret(&kem_ct)
         .map_err(|_| QlError::InvalidPayload)?;
     let decrypted = decrypt_body(&session_key, &mut request.encrypted, &aad)?;
-    ensure_not_expired(decrypted.valid_until)?;
+    ensure_not_expired(decrypted.meta.valid_until)?;
     if XID::new(SigningPublicKey::MLDSA(decrypted.signing_pub_key.clone())) != header.sender {
         return Err(QlError::InvalidPayload);
     }
     let proof_data = pairing_proof_data(
         header,
         &kem_ct,
-        decrypted.packet_id,
-        decrypted.valid_until,
+        &decrypted.meta,
         &decrypted.signing_pub_key,
         &decrypted.encapsulation_pub_key,
     );
@@ -115,15 +108,13 @@ pub fn decrypt_pair_request(
 fn pairing_proof_data(
     header: &QlHeader,
     kem_ct: &MLKEMCiphertext,
-    packet_id: PacketId,
-    valid_until: u64,
+    meta: &ControlMeta,
     signing_pub_key: &MLDSAPublicKey,
     encapsulation_pub_key: &MLKEMPublicKey,
 ) -> Vec<u8> {
     encode_value(&PairingProofData {
         aad: pairing_aad(header, kem_ct),
-        packet_id,
-        valid_until,
+        meta: *meta,
         signing_pub_key: signing_pub_key.clone(),
         encapsulation_pub_key: encapsulation_pub_key.clone(),
     })

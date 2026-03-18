@@ -1,3 +1,10 @@
+//! quantum link protocol wire format
+//!
+//! naming conventions:
+//! - *Record - unencrypted messages
+//! - *Body - message content after decrypting
+//!
+
 use bc_components::XID;
 use rkyv::{
     api::{
@@ -13,8 +20,11 @@ pub mod encrypted_message;
 pub mod handshake;
 pub mod heartbeat;
 pub mod pair;
+pub mod seq;
 pub mod stream;
 pub mod unpair;
+
+pub use seq::StreamSeq;
 
 mod codec;
 
@@ -24,7 +34,7 @@ use self::{
     encrypted_message::EncryptedMessage, handshake::HandshakeRecord, pair::PairRequestRecord,
     unpair::UnpairRecord,
 };
-use crate::QlError;
+use crate::{PacketId, QlError};
 
 pub(crate) type WireArchiveError = rkyv::rancor::Error;
 
@@ -45,6 +55,21 @@ pub struct QlHeader {
 impl QlHeader {
     pub fn aad(&self) -> Vec<u8> {
         encode_value(self)
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlMeta {
+    pub packet_id: PacketId,
+    pub valid_until: u64,
+}
+
+impl From<&ArchivedControlMeta> for ControlMeta {
+    fn from(value: &ArchivedControlMeta) -> Self {
+        Self {
+            packet_id: (&value.packet_id).into(),
+            valid_until: value.valid_until.to_native(),
+        }
     }
 }
 

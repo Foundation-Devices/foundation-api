@@ -9,14 +9,15 @@ use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
 use super::{
     replay_cache::ReplayCache,
-    stream::{AwaitingFrame, AwaitingPacket, QueuedWrite, StreamControl, StreamKey, StreamState},
-    EngineConfig,
+    stream::{QueuedWrite, StreamState},
+    EngineConfig, StreamConfig,
 };
 use crate::{
-    runtime::StreamConfig,
+    platform::QlIdentity,
     wire::{
         handshake::{Hello, HelloReply, ResponderSecrets},
-        stream::{Direction, RejectCode, ResetCode, StreamBody, StreamFrame, StreamFrameData},
+        stream::{BodyChunk, Direction, RejectCode, ResetCode, StreamBody},
+        StreamSeq,
     },
     PacketId, Peer, QlError, StreamId,
 };
@@ -30,7 +31,7 @@ pub struct OpenId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrackedWrite {
     pub stream_id: StreamId,
-    pub packet_id: PacketId,
+    pub tx_seq: StreamSeq,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +55,41 @@ impl Default for KeepAliveState {
 pub enum InitiatorStage {
     WaitingHelloReply,
     SendingConfirm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamNamespace {
+    Low,
+    High,
+}
+
+impl StreamNamespace {
+    const BIT: u64 = 1 << 63;
+
+    pub fn bit(self) -> u64 {
+        match self {
+            Self::Low => 0,
+            Self::High => Self::BIT,
+        }
+    }
+
+    pub fn for_local(local: XID, peer: XID) -> Self {
+        match local.data().cmp(peer.data()) {
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => Self::Low,
+            std::cmp::Ordering::Greater => Self::High,
+        }
+    }
+
+    pub fn matches(self, stream_id: StreamId) -> bool {
+        (stream_id.0 & Self::BIT) == self.bit()
+    }
+
+    pub fn remote(self) -> Self {
+        match self {
+            Self::Low => Self::High,
+            Self::High => Self::Low,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -129,11 +165,13 @@ pub enum EngineInput {
     OpenStream {
         open_id: OpenId,
         request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
         config: StreamConfig,
     },
     AcceptStream {
         stream_id: StreamId,
         response_head: Vec<u8>,
+        response_prefix: Option<BodyChunk>,
     },
     RejectStream {
         stream_id: StreamId,
@@ -143,18 +181,11 @@ pub enum EngineInput {
     OutboundData {
         stream_id: StreamId,
         dir: Direction,
-        offset: u64,
         bytes: Vec<u8>,
     },
     OutboundFinished {
         stream_id: StreamId,
         dir: Direction,
-        final_offset: u64,
-    },
-    InboundConsumed {
-        stream_id: StreamId,
-        dir: Direction,
-        amount: u64,
     },
 
     ResetOutbound {
@@ -207,6 +238,7 @@ pub enum EngineOutput {
         open_id: OpenId,
         stream_id: StreamId,
         response_head: Vec<u8>,
+        response_prefix: Option<BodyChunk>,
     },
     OpenFailed {
         open_id: OpenId,
@@ -217,6 +249,7 @@ pub enum EngineOutput {
     InboundStreamOpened {
         stream_id: StreamId,
         request_head: Vec<u8>,
+        request_prefix: Option<BodyChunk>,
     },
     InboundData {
         stream_id: StreamId,
@@ -236,13 +269,6 @@ pub enum EngineOutput {
     NeedOutboundData {
         stream_id: StreamId,
         dir: Direction,
-        offset: u64,
-        max_len: usize,
-    },
-    ReleaseOutboundThrough {
-        stream_id: StreamId,
-        dir: Direction,
-        recv_offset: u64,
     },
     OutboundClosed {
         stream_id: StreamId,
@@ -281,10 +307,18 @@ pub enum TimeoutKind {
         stream_id: StreamId,
         token: Token,
     },
-    StreamPacket {
+    StreamMessage {
         stream_id: StreamId,
-        packet_id: PacketId,
+        tx_seq: StreamSeq,
         attempt: u8,
+    },
+    StreamAckDelay {
+        stream_id: StreamId,
+        token: Token,
+    },
+    StreamProvisional {
+        stream_id: StreamId,
+        token: Token,
     },
 }
 
@@ -318,6 +352,7 @@ pub enum HelloAction {
 
 pub struct Engine {
     pub config: EngineConfig,
+    pub identity: QlIdentity,
     pub state: EngineState,
     pub streams: HashMap<StreamId, StreamState>,
 }
@@ -365,10 +400,10 @@ impl EngineState {
         PacketId(id)
     }
 
-    pub fn next_stream_id(&self) -> StreamId {
-        let id = self.next_stream_id.get();
-        self.next_stream_id.set(id.wrapping_add(1));
-        StreamId(id)
+    pub fn next_stream_id(&self, namespace: StreamNamespace) -> StreamId {
+        let seq = self.next_stream_id.get();
+        self.next_stream_id.set(seq.wrapping_add(1));
+        StreamId((seq & !StreamNamespace::BIT) | namespace.bit())
     }
 
     pub fn enqueue_handshake_message(
@@ -380,9 +415,6 @@ impl EngineState {
     ) {
         self.outbound.push_back(QueuedWrite {
             token,
-            stream_id: None,
-            packet_id: None,
-            track_ack: false,
             payload: super::stream::QueuedPayload::PreEncoded(bytes),
         });
         self.timeouts.push(Reverse(TimeoutEntry {
@@ -398,19 +430,13 @@ impl EngineState {
     pub fn enqueue_stream_body(
         &mut self,
         config: &EngineConfig,
-        stream_id: Option<StreamId>,
-        packet_id: Option<PacketId>,
-        track_ack: bool,
         priority: bool,
         body: StreamBody,
-    ) {
+    ) -> Token {
         let token = self.next_token();
         let message = QueuedWrite {
             token,
-            stream_id,
-            packet_id,
-            track_ack,
-            payload: super::stream::QueuedPayload::StreamBody(body),
+            payload: super::stream::QueuedPayload::Stream { body },
         };
         if priority {
             self.outbound.push_front(message);
@@ -421,87 +447,6 @@ impl EngineState {
             at: Instant::now() + config.packet_expiration,
             kind: TimeoutKind::Outbound { token },
         }));
+        token
     }
-
-    pub fn enqueue_control_frame(
-        &mut self,
-        config: &EngineConfig,
-        key: StreamKey,
-        control: &mut StreamControl,
-        frame: StreamFrame,
-        attempt: u8,
-    ) {
-        let packet_id = self.next_packet_id();
-        control.awaiting = Some(AwaitingPacket {
-            packet_id,
-            frame: AwaitingFrame::Control(frame.clone()),
-            attempt,
-        });
-        let valid_until =
-            crate::wire::now_secs().saturating_add(config.packet_expiration.as_secs());
-        self.enqueue_stream_body(
-            config,
-            Some(key.stream_id),
-            Some(packet_id),
-            true,
-            false,
-            StreamBody {
-                packet_id,
-                valid_until,
-                packet_ack: None,
-                frame: Some(frame),
-            },
-        );
-    }
-
-    pub fn enqueue_data_frame(
-        &mut self,
-        config: &EngineConfig,
-        key: StreamKey,
-        control: &mut StreamControl,
-        dir: Direction,
-        offset: u64,
-        bytes: Vec<u8>,
-        attempt: u8,
-    ) {
-        let packet_id = self.next_packet_id();
-        control.awaiting = Some(AwaitingPacket {
-            packet_id,
-            frame: AwaitingFrame::Data {
-                dir,
-                offset,
-                len: bytes.len(),
-            },
-            attempt,
-        });
-        let valid_until =
-            crate::wire::now_secs().saturating_add(config.packet_expiration.as_secs());
-        self.enqueue_stream_body(
-            config,
-            Some(key.stream_id),
-            Some(packet_id),
-            true,
-            false,
-            StreamBody {
-                packet_id,
-                valid_until,
-                packet_ack: None,
-                frame: Some(StreamFrame::Data(StreamFrameData {
-                    stream_id: key.stream_id,
-                    dir,
-                    offset,
-                    bytes,
-                })),
-            },
-        );
-    }
-}
-
-pub enum EitherRetransmit {
-    Control(StreamFrame),
-    Data {
-        dir: Direction,
-        offset: u64,
-        len: usize,
-    },
 }

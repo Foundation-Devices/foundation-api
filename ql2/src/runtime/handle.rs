@@ -4,22 +4,17 @@ use std::{
     task::{Context, Poll},
 };
 
-use async_channel::Sender;
+use async_channel::{Receiver, Sender};
 
 use crate::{
-    runtime::{
-        command::RuntimeCommand,
-        pipe::{self, ReadReady},
-        AcceptedStreamDelivery, StreamConfig,
-    },
+    runtime::{command::RuntimeCommand, AcceptedStreamDelivery, InboundEvent, StreamConfig},
     wire::stream::{Direction, RejectCode, ResetCode},
     Peer, QlError, StreamId,
 };
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    pub(crate) tx: async_channel::Sender<RuntimeCommand>,
-    pub(crate) pipe_size_bytes: usize,
+    pub(crate) tx: Sender<RuntimeCommand>,
 }
 
 pub struct PendingStream {
@@ -45,15 +40,14 @@ pub struct InboundStream {
 #[derive(Debug)]
 pub struct StreamResponder {
     stream_id: StreamId,
-    pipe_size_bytes: usize,
-    tx: async_channel::Sender<RuntimeCommand>,
+    tx: Sender<RuntimeCommand>,
     armed: bool,
 }
 
 pub struct InboundByteStream {
     stream_id: StreamId,
     dir: Direction,
-    pipe: pipe::PipeReader<QlError>,
+    rx: Receiver<InboundEvent>,
     tx: Sender<RuntimeCommand>,
     finished: bool,
 }
@@ -71,7 +65,7 @@ impl std::fmt::Debug for InboundByteStream {
 pub struct OutboundByteStream {
     stream_id: StreamId,
     dir: Direction,
-    pipe: Option<pipe::PipeWriter<QlError>>,
+    chunks: Option<Sender<Vec<u8>>>,
     tx: Sender<RuntimeCommand>,
 }
 
@@ -131,13 +125,13 @@ impl InboundByteStream {
     pub(crate) fn new(
         stream_id: StreamId,
         dir: Direction,
-        pipe: pipe::PipeReader<QlError>,
+        rx: Receiver<InboundEvent>,
         tx: Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             stream_id,
             dir,
-            pipe,
+            rx,
             tx,
             finished: false,
         }
@@ -147,30 +141,19 @@ impl InboundByteStream {
         if self.finished {
             return Ok(None);
         }
-        match self.pipe.ready().await {
-            ReadReady::Data => {
-                let chunk = self.pipe.peek_buf().to_vec();
-                let len = chunk.len();
-                self.pipe.consume(len);
-                if len > 0 {
-                    let _ = self
-                        .tx
-                        .send(RuntimeCommand::AdvanceInboundCredit {
-                            stream_id: self.stream_id,
-                            dir: self.dir,
-                            amount: len as u64,
-                        })
-                        .await;
-                }
-                Ok(Some(chunk))
-            }
-            ReadReady::Eof => {
+        match self.rx.recv().await {
+            Ok(InboundEvent::Data(bytes)) => Ok(Some(bytes)),
+            Ok(InboundEvent::Finished) => {
                 self.finished = true;
                 Ok(None)
             }
-            ReadReady::Error(error) => {
+            Ok(InboundEvent::Failed(error)) => {
                 self.finished = true;
                 Err(error)
+            }
+            Err(_) => {
+                self.finished = true;
+                Err(QlError::Cancelled)
             }
         }
     }
@@ -205,26 +188,32 @@ impl OutboundByteStream {
     pub(crate) fn new(
         stream_id: StreamId,
         dir: Direction,
-        pipe: pipe::PipeWriter<QlError>,
+        chunks: Sender<Vec<u8>>,
         tx: Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             stream_id,
             dir,
-            pipe: Some(pipe),
+            chunks: Some(chunks),
             tx,
         }
     }
 
     pub async fn write(&mut self, bytes: &[u8]) -> Result<usize, QlError> {
-        let pipe = self.pipe.as_mut().expect("stream not finished or reset");
-        let written = pipe.write(bytes).await?;
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let sender = self.chunks.as_ref().expect("stream not finished or reset");
+        sender
+            .send(bytes.to_vec())
+            .await
+            .map_err(|_| QlError::Cancelled)?;
         self.tx
             .try_send(RuntimeCommand::PollStream {
                 stream_id: self.stream_id,
             })
             .map_err(|_| QlError::Cancelled)?;
-        Ok(written)
+        Ok(bytes.len())
     }
 
     pub async fn write_all(&mut self, mut bytes: &[u8]) -> Result<(), QlError> {
@@ -239,21 +228,19 @@ impl OutboundByteStream {
     }
 
     pub async fn finish(mut self) -> Result<(), QlError> {
-        let Some(mut pipe) = self.pipe.take() else {
+        if self.chunks.take().is_none() {
             return Ok(());
-        };
-        pipe.finish();
+        }
         self.tx
             .try_send(RuntimeCommand::PollStream {
                 stream_id: self.stream_id,
             })
             .map_err(|_| QlError::Cancelled)?;
-        pipe.closed().await;
         Ok(())
     }
 
     pub async fn reset(mut self, code: ResetCode) -> Result<(), QlError> {
-        self.pipe.take();
+        self.chunks.take();
         self.tx
             .send(RuntimeCommand::ResetOutbound {
                 stream_id: self.stream_id,
@@ -267,7 +254,7 @@ impl OutboundByteStream {
 
 impl Drop for OutboundByteStream {
     fn drop(&mut self) {
-        if self.pipe.take().is_none() {
+        if self.chunks.take().is_none() {
             return;
         }
         let _ = self.tx.try_send(RuntimeCommand::ResetOutbound {
@@ -279,14 +266,9 @@ impl Drop for OutboundByteStream {
 }
 
 impl StreamResponder {
-    pub(crate) fn new(
-        stream_id: StreamId,
-        pipe_size_bytes: usize,
-        tx: async_channel::Sender<RuntimeCommand>,
-    ) -> Self {
+    pub(crate) fn new(stream_id: StreamId, tx: Sender<RuntimeCommand>) -> Self {
         Self {
             stream_id,
-            pipe_size_bytes,
             tx,
             armed: true,
         }
@@ -294,18 +276,18 @@ impl StreamResponder {
 
     pub fn accept(mut self, response_head: Vec<u8>) -> Result<OutboundByteStream, QlError> {
         self.armed = false;
-        let (response_pipe, response_writer) = pipe::pipe(self.pipe_size_bytes);
+        let (response_tx, response_rx) = async_channel::bounded(1);
         self.tx
             .send_blocking(RuntimeCommand::AcceptStream {
                 stream_id: self.stream_id,
                 response_head,
-                response_pipe,
+                response_rx,
             })
             .map_err(|_| QlError::Cancelled)?;
         Ok(OutboundByteStream::new(
             self.stream_id,
             Direction::Response,
-            response_writer,
+            response_tx,
             self.tx.clone(),
         ))
     }
@@ -364,14 +346,14 @@ impl RuntimeHandle {
         request_head: Vec<u8>,
         config: StreamConfig,
     ) -> Result<PendingStream, QlError> {
-        let (request_pipe, request_writer) = pipe::pipe(self.pipe_size_bytes);
+        let (request_tx, request_rx) = async_channel::bounded(1);
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let (start_tx, start_rx) = oneshot::channel();
 
         self.tx
             .send(RuntimeCommand::OpenStream {
                 request_head,
-                request_pipe,
+                request_rx,
                 accepted: accepted_tx,
                 start: start_tx,
                 config,
@@ -385,7 +367,7 @@ impl RuntimeHandle {
             request: OutboundByteStream::new(
                 stream_id,
                 Direction::Request,
-                request_writer,
+                request_tx,
                 self.tx.clone(),
             ),
             accepted: PendingAccept {
