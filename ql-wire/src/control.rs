@@ -23,25 +23,25 @@ impl ControlMeta {
             Ok(())
         }
     }
+
+    pub fn to_wire(&self) -> ControlMetaWire {
+        ControlMetaWire {
+            control_id: U32Le::new(self.control_id.0),
+            valid_until: U64Le::new(self.valid_until),
+        }
+    }
+
+    pub fn from_wire(meta: ControlMetaWire) -> Self {
+        Self {
+            control_id: ControlId(meta.control_id.get()),
+            valid_until: meta.valid_until.get(),
+        }
+    }
 }
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
-pub(crate) struct ControlMetaWire {
-    pub(crate) control_id: U32Le,
-    pub(crate) valid_until: U64Le,
-}
-
-pub(crate) fn control_meta_to_wire(meta: &ControlMeta) -> ControlMetaWire {
-    ControlMetaWire {
-        control_id: U32Le::new(meta.control_id.0),
-        valid_until: U64Le::new(meta.valid_until),
-    }
-}
-
-pub(crate) fn control_meta_from_wire(meta: ControlMetaWire) -> ControlMeta {
-    ControlMeta {
-        control_id: ControlId(meta.control_id.get()),
-        valid_until: meta.valid_until.get(),
-    }
+pub struct ControlMetaWire {
+    pub control_id: U32Le,
+    pub valid_until: U64Le,
 }

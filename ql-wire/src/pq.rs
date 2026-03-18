@@ -77,6 +77,12 @@ impl MlDsaPublicKey {
         let signature = ml_dsa_87::MLDSA87Signature::new(*signature.as_bytes());
         ml_dsa_87::verify(&verification_key, message, b"", &signature).is_ok()
     }
+
+    pub fn verify_bytes(&self, signature: &[u8; MlDsaSignature::SIZE], message: &[u8]) -> bool {
+        let verification_key = ml_dsa_87::MLDSA87VerificationKey::new(*self.as_bytes());
+        let signature = ml_dsa_87::MLDSA87Signature::new(*signature);
+        ml_dsa_87::verify(&verification_key, message, b"", &signature).is_ok()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -141,8 +147,15 @@ impl MlKemPrivateKey {
         &self,
         ciphertext: &MlKemCiphertext,
     ) -> Result<SessionKey, WireError> {
+        self.decapsulate_shared_secret_bytes(ciphertext.as_bytes())
+    }
+
+    pub fn decapsulate_shared_secret_bytes(
+        &self,
+        ciphertext: &[u8; MlKemCiphertext::SIZE],
+    ) -> Result<SessionKey, WireError> {
         let private_key = mlkem1024::MlKem1024PrivateKey::from(self.as_bytes());
-        let ciphertext = mlkem1024::MlKem1024Ciphertext::from(ciphertext.as_bytes());
+        let ciphertext = mlkem1024::MlKem1024Ciphertext::from(ciphertext);
         let shared_secret = mlkem1024::decapsulate(&private_key, &ciphertext);
         Ok(SessionKey::from_data(shared_secret))
     }

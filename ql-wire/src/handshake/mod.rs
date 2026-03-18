@@ -1,10 +1,12 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+use zerocopy::{
+    byte_slice::ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
+};
 
 use crate::{
-    codec::{push_value, read_exact},
-    control::{control_meta_from_wire, control_meta_to_wire, ControlMetaWire},
-    encrypted_message::{EncryptedMessage, EncryptedMessageRef},
-    ControlMeta, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext, Nonce, WireError,
+    codec::{parse, push_value, read_exact},
+    control::ControlMetaWire,
+    encrypted_message::{EncryptedMessage, EncryptedMessageWire},
+    ControlMeta, MlDsaSignature, MlKemCiphertext, Nonce, WireError,
 };
 
 mod crypto;
@@ -18,6 +20,48 @@ pub struct Hello {
     pub signature: MlDsaSignature,
 }
 
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct HelloWire {
+    pub meta: ControlMetaWire,
+    pub nonce: [u8; Nonce::SIZE],
+    pub kem_ct: [u8; MlKemCiphertext::SIZE],
+    pub signature: [u8; MlDsaSignature::SIZE],
+}
+
+impl Hello {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, HelloWire>, WireError> {
+        parse(bytes)
+    }
+
+    pub fn from_wire(wire: &HelloWire) -> Self {
+        Self {
+            meta: ControlMeta::from_wire(wire.meta),
+            nonce: Nonce(wire.nonce),
+            kem_ct: MlKemCiphertext::from_data(wire.kem_ct),
+            signature: MlDsaSignature::from_data(wire.signature),
+        }
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let wire = Self::parse(bytes)?;
+        Ok(Self::from_wire(&wire))
+    }
+
+    pub fn to_wire(&self) -> HelloWire {
+        HelloWire {
+            meta: self.meta.to_wire(),
+            nonce: self.nonce.0,
+            kem_ct: *self.kem_ct.as_bytes(),
+            signature: *self.signature.as_bytes(),
+        }
+    }
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        push_value(out, &self.to_wire());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelloReply {
     pub meta: ControlMeta,
@@ -26,10 +70,88 @@ pub struct HelloReply {
     pub signature: MlDsaSignature,
 }
 
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct HelloReplyWire {
+    pub meta: ControlMetaWire,
+    pub nonce: [u8; Nonce::SIZE],
+    pub kem_ct: [u8; MlKemCiphertext::SIZE],
+    pub signature: [u8; MlDsaSignature::SIZE],
+}
+
+impl HelloReply {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, HelloReplyWire>, WireError> {
+        parse(bytes)
+    }
+
+    pub fn from_wire(wire: &HelloReplyWire) -> Self {
+        Self {
+            meta: ControlMeta::from_wire(wire.meta),
+            nonce: Nonce(wire.nonce),
+            kem_ct: MlKemCiphertext::from_data(wire.kem_ct),
+            signature: MlDsaSignature::from_data(wire.signature),
+        }
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let wire = Self::parse(bytes)?;
+        Ok(Self::from_wire(&wire))
+    }
+
+    pub fn to_wire(&self) -> HelloReplyWire {
+        HelloReplyWire {
+            meta: self.meta.to_wire(),
+            nonce: self.nonce.0,
+            kem_ct: *self.kem_ct.as_bytes(),
+            signature: *self.signature.as_bytes(),
+        }
+    }
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        push_value(out, &self.to_wire());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confirm {
     pub meta: ControlMeta,
     pub signature: MlDsaSignature,
+}
+
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct ConfirmWire {
+    pub meta: ControlMetaWire,
+    pub signature: [u8; MlDsaSignature::SIZE],
+}
+
+impl Confirm {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, ConfirmWire>, WireError> {
+        parse(bytes)
+    }
+
+    pub fn from_wire(wire: &ConfirmWire) -> Self {
+        Self {
+            meta: ControlMeta::from_wire(wire.meta),
+            signature: MlDsaSignature::from_data(wire.signature),
+        }
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let wire = Self::parse(bytes)?;
+        Ok(Self::from_wire(&wire))
+    }
+
+    pub fn to_wire(&self) -> ConfirmWire {
+        ConfirmWire {
+            meta: self.meta.to_wire(),
+            signature: *self.signature.as_bytes(),
+        }
+    }
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        push_value(out, &self.to_wire());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,114 +164,37 @@ pub struct ReadyBody {
     pub meta: ControlMeta,
 }
 
-pub type ReadyRef<B> = EncryptedMessageRef<B>;
-
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-struct HelloWire {
-    meta: ControlMetaWire,
-    nonce: [u8; Nonce::SIZE],
-    kem_ct: [u8; MlKemCiphertext::SIZE],
-    signature: [u8; MlDsaSignature::SIZE],
-}
-
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-struct ConfirmWire {
-    meta: ControlMetaWire,
-    signature: [u8; MlDsaSignature::SIZE],
-}
-
-impl Hello {
-    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
-        let wire = HelloWire {
-            meta: control_meta_to_wire(&self.meta),
-            nonce: self.nonce.0,
-            kem_ct: *self.kem_ct.as_bytes(),
-            signature: *self.signature.as_bytes(),
-        };
-        push_value(out, &wire);
-    }
-
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let wire: HelloWire = read_exact(bytes)?;
-        Ok(Self {
-            meta: control_meta_from_wire(wire.meta),
-            nonce: Nonce(wire.nonce),
-            kem_ct: MlKemCiphertext::from_data(wire.kem_ct),
-            signature: MlDsaSignature::from_data(wire.signature),
-        })
-    }
-}
-
-impl HelloReply {
-    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
-        Hello {
-            meta: self.meta,
-            nonce: self.nonce,
-            kem_ct: self.kem_ct.clone(),
-            signature: self.signature.clone(),
-        }
-        .encode_into(out);
-    }
-
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let hello = Hello::decode(bytes)?;
-        Ok(Self {
-            meta: hello.meta,
-            nonce: hello.nonce,
-            kem_ct: hello.kem_ct,
-            signature: hello.signature,
-        })
-    }
-}
-
-impl Confirm {
-    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
-        let wire = ConfirmWire {
-            meta: control_meta_to_wire(&self.meta),
-            signature: *self.signature.as_bytes(),
-        };
-        push_value(out, &wire);
-    }
-
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let wire: ConfirmWire = read_exact(bytes)?;
-        Ok(Self {
-            meta: control_meta_from_wire(wire.meta),
-            signature: MlDsaSignature::from_data(wire.signature),
-        })
-    }
-}
-
 impl Ready {
-    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, EncryptedMessageWire>, WireError> {
+        EncryptedMessage::parse(bytes)
+    }
+
+    pub fn from_wire(wire: &EncryptedMessageWire) -> Self {
+        Self {
+            encrypted: EncryptedMessage::from_wire(wire),
+        }
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let wire = Self::parse(bytes)?;
+        Ok(Self::from_wire(&wire))
+    }
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.encrypted.encode_into(out);
     }
 }
 
 impl ReadyBody {
-    pub(crate) fn encode(&self) -> Vec<u8> {
-        let wire = control_meta_to_wire(&self.meta);
+    pub fn encode(&self) -> Vec<u8> {
+        let wire = self.meta.to_wire();
         wire.as_bytes().to_vec()
     }
 
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let wire: ControlMetaWire = read_exact(bytes)?;
         Ok(Self {
-            meta: control_meta_from_wire(wire),
+            meta: ControlMeta::from_wire(wire),
         })
-    }
-}
-
-pub fn verify_signature(
-    signing_key: &MlDsaPublicKey,
-    signature: &MlDsaSignature,
-    proof_data: &[u8],
-) -> Result<(), WireError> {
-    if signing_key.verify(signature, proof_data) {
-        Ok(())
-    } else {
-        Err(WireError::InvalidSignature)
     }
 }

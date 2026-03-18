@@ -28,7 +28,7 @@ pub enum CloseTarget {
 }
 
 impl CloseTarget {
-    pub(crate) const fn to_wire(self) -> u8 {
+    pub const fn to_wire(self) -> u8 {
         self as u8
     }
 }
@@ -59,25 +59,21 @@ pub struct StreamCloseWire {
     pub payload: [u8],
 }
 
-pub type StreamCloseRef<B> = Ref<B, StreamCloseWire>;
-
-impl StreamCloseWire {
-    pub fn parse<B: ByteSlice>(bytes: B) -> Result<StreamCloseRef<B>, WireError> {
+impl StreamClose {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, StreamCloseWire>, WireError> {
         parse(bytes)
     }
 
-    pub fn to_stream_close(&self) -> Result<StreamClose, WireError> {
+    pub fn from_wire(wire: &StreamCloseWire) -> Result<Self, WireError> {
         Ok(StreamClose {
-            stream_id: StreamId(self.stream_id.get()),
-            target: crate::codec::read_byte(self.target)?,
-            code: CloseCode(self.code.get()),
-            payload: self.payload.to_vec(),
+            stream_id: StreamId(wire.stream_id.get()),
+            target: crate::codec::read_byte(wire.target)?,
+            code: CloseCode(wire.code.get()),
+            payload: wire.payload.to_vec(),
         })
     }
-}
 
-impl StreamClose {
-    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
         let header = StreamCloseHeaderWire {
             stream_id: U32Le::new(self.stream_id.0),
             target: self.target.to_wire(),
@@ -90,8 +86,8 @@ impl StreamClose {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
-struct StreamCloseHeaderWire {
-    stream_id: U32Le,
-    target: u8,
-    code: U16Le,
+pub struct StreamCloseHeaderWire {
+    pub stream_id: U32Le,
+    pub target: u8,
+    pub code: U16Le,
 }

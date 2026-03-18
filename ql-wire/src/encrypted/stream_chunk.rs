@@ -25,25 +25,21 @@ pub struct StreamChunkWire {
     pub bytes: [u8],
 }
 
-pub type StreamChunkRef<B> = Ref<B, StreamChunkWire>;
-
-impl StreamChunkWire {
-    pub fn parse<B: ByteSlice>(bytes: B) -> Result<StreamChunkRef<B>, WireError> {
+impl StreamChunk {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, StreamChunkWire>, WireError> {
         parse(bytes)
     }
 
-    pub fn to_stream_chunk(&self) -> Result<StreamChunk, WireError> {
+    pub fn from_wire(wire: &StreamChunkWire) -> Result<Self, WireError> {
         Ok(StreamChunk {
-            stream_id: StreamId(self.stream_id.get()),
-            offset: self.offset.get(),
-            bytes: self.bytes.to_vec(),
-            fin: crate::codec::read_byte(self.fin)?,
+            stream_id: StreamId(wire.stream_id.get()),
+            offset: wire.offset.get(),
+            bytes: wire.bytes.to_vec(),
+            fin: crate::codec::read_byte(wire.fin)?,
         })
     }
-}
 
-impl StreamChunk {
-    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
         let header = StreamChunkHeaderWire {
             stream_id: U32Le::new(self.stream_id.0),
             offset: U64Le::new(self.offset),
@@ -56,8 +52,8 @@ impl StreamChunk {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
-struct StreamChunkHeaderWire {
-    stream_id: U32Le,
-    offset: U64Le,
-    fin: u8,
+pub struct StreamChunkHeaderWire {
+    pub stream_id: U32Le,
+    pub offset: U64Le,
+    pub fin: u8,
 }

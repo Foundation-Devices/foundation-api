@@ -1,6 +1,6 @@
-use zerocopy::byte_slice::ByteSliceMut;
+use zerocopy::{byte_slice::ByteSliceMut, Ref};
 
-use super::{PairRequestBody, PairRequestRecordRef};
+use super::{PairRequestBody, PairRequestRecordWire};
 use crate::{
     pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext, MlKemPublicKey, QlCrypto,
     QlHeader, QlIdentity, QlPayload, QlRecord, WireError, XID,
@@ -59,7 +59,7 @@ pub fn decrypt_pair_request<B: ByteSliceMut>(
     crypto: &impl QlCrypto,
     identity: &QlIdentity,
     header: &QlHeader,
-    request: &mut PairRequestRecordRef<B>,
+    request: &mut Ref<B, PairRequestRecordWire>,
     now_seconds: u64,
 ) -> Result<PairRequestBody, WireError> {
     let kem_ct = MlKemCiphertext::from_data(request.kem_ct);
@@ -67,9 +67,13 @@ pub fn decrypt_pair_request<B: ByteSliceMut>(
     let session_key = identity
         .encapsulation_private_key
         .decapsulate_shared_secret(&kem_ct)?;
-    let mut encrypted =
-        crate::encrypted_message::EncryptedMessageWire::parse(&mut request.encrypted)?;
-    let plaintext = encrypted.decrypt(crypto, &session_key, &aad)?;
+    let mut encrypted = crate::encrypted_message::EncryptedMessage::parse(&mut request.encrypted)?;
+    let plaintext = crate::encrypted_message::EncryptedMessage::decrypt_in_place(
+        &mut encrypted,
+        crypto,
+        &session_key,
+        &aad,
+    )?;
     let decrypted = PairRequestBody::decode(plaintext)?;
     decrypted.meta.ensure_not_expired(now_seconds)?;
     if decrypted.xid != header.sender {

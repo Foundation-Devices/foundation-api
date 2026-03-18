@@ -18,10 +18,10 @@ impl QlHeader {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
-pub(crate) struct QlRecordHeaderWire {
-    pub(crate) kind: u8,
-    pub(crate) sender: [u8; XID::SIZE],
-    pub(crate) recipient: [u8; XID::SIZE],
+pub struct QlRecordHeaderWire {
+    pub kind: u8,
+    pub sender: [u8; XID::SIZE],
+    pub recipient: [u8; XID::SIZE],
 }
 
 #[derive(Debug, Clone, Copy)]

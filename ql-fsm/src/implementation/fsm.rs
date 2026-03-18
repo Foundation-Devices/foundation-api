@@ -44,7 +44,7 @@ pub fn receive(
                 return Ok(());
             };
             let envelope = match wire::decrypt_record(crypto, &header, &mut encrypted, &session_key)
-                .and_then(|envelope| envelope.to_session_envelope())
+                .and_then(|envelope| wire::SessionEnvelope::from_wire(&envelope))
             {
                 Ok(envelope) => envelope,
                 Err(_) => return Ok(()),

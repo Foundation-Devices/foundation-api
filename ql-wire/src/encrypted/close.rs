@@ -13,22 +13,29 @@ pub struct SessionCloseBody {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
-struct SessionCloseBodyWire {
-    code: U16Le,
+pub struct SessionCloseBodyWire {
+    pub code: U16Le,
 }
 
 impl SessionCloseBody {
-    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
-        let wire = SessionCloseBodyWire {
-            code: U16Le::new(self.code.0),
-        };
-        push_value(out, &wire);
+    pub fn from_wire(wire: SessionCloseBodyWire) -> Self {
+        Self {
+            code: CloseCode(wire.code.get()),
+        }
     }
 
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+    pub fn to_wire(&self) -> SessionCloseBodyWire {
+        SessionCloseBodyWire {
+            code: U16Le::new(self.code.0),
+        }
+    }
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        push_value(out, &self.to_wire());
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let wire: SessionCloseBodyWire = read_exact(bytes)?;
-        Ok(Self {
-            code: CloseCode(wire.code.get()),
-        })
+        Ok(Self::from_wire(wire))
     }
 }

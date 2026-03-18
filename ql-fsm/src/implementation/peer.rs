@@ -1,4 +1,4 @@
-use ql_wire::{self as wire, PairRequestRecordRef, QlCrypto, QlHeader};
+use ql_wire::{self as wire, PairRequestRecordWire, QlCrypto, QlHeader, RefMut};
 
 use super::{emit_peer_status, handshake, is_replayed_control, next_control_meta, reset_session};
 use crate::{state::PeerRecord, Peer, QlFsm, QlFsmError, QlFsmEvent};
@@ -25,7 +25,7 @@ pub fn handle_pair(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    request: &mut PairRequestRecordRef<&mut [u8]>,
+    request: &mut RefMut<'_, PairRequestRecordWire>,
 ) -> Result<(), QlFsmError> {
     let payload = match wire::decrypt_pair_request(
         crypto,

@@ -4,8 +4,8 @@ use zerocopy::{
 
 use crate::{
     codec::{parse, push_value, read_exact},
-    control::{control_meta_from_wire, control_meta_to_wire, ControlMetaWire},
-    encrypted_message::{EncryptedMessage, EncryptedMessageWire},
+    control::ControlMetaWire,
+    encrypted_message::EncryptedMessage,
     ControlMeta, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext, MlKemPublicKey, WireError, XID,
 };
 
@@ -34,37 +34,33 @@ pub struct PairRequestRecordWire {
     pub encrypted: [u8],
 }
 
-pub type PairRequestRecordRef<B> = Ref<B, PairRequestRecordWire>;
-
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
-struct PairRequestBodyWire {
-    meta: ControlMetaWire,
-    xid: [u8; XID::SIZE],
-    signing_pub_key: [u8; MlDsaPublicKey::SIZE],
-    encapsulation_pub_key: [u8; MlKemPublicKey::SIZE],
-    proof: [u8; MlDsaSignature::SIZE],
-}
-
-impl PairRequestRecordWire {
-    pub fn parse<B: ByteSlice>(bytes: B) -> Result<PairRequestRecordRef<B>, WireError> {
-        let record: PairRequestRecordRef<B> = parse(bytes)?;
-        let _ = EncryptedMessageWire::parse(&record.encrypted)?;
-        Ok(record)
-    }
-
-    pub fn to_pair_request_record(&self) -> PairRequestRecord {
-        PairRequestRecord {
-            kem_ct: MlKemCiphertext::from_data(self.kem_ct),
-            encrypted: EncryptedMessageWire::parse(&self.encrypted)
-                .expect("validated pair request")
-                .to_encrypted_message(),
-        }
-    }
+pub struct PairRequestBodyWire {
+    pub meta: ControlMetaWire,
+    pub xid: [u8; XID::SIZE],
+    pub signing_pub_key: [u8; MlDsaPublicKey::SIZE],
+    pub encapsulation_pub_key: [u8; MlKemPublicKey::SIZE],
+    pub proof: [u8; MlDsaSignature::SIZE],
 }
 
 impl PairRequestRecord {
-    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, PairRequestRecordWire>, WireError> {
+        let record: Ref<B, PairRequestRecordWire> = parse(bytes)?;
+        let _ = EncryptedMessage::parse(&record.encrypted)?;
+        Ok(record)
+    }
+
+    pub fn from_wire(wire: &PairRequestRecordWire) -> Self {
+        let encrypted =
+            EncryptedMessage::parse(&wire.encrypted).expect("validated pair request record");
+        Self {
+            kem_ct: MlKemCiphertext::from_data(wire.kem_ct),
+            encrypted: EncryptedMessage::from_wire(&encrypted),
+        }
+    }
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
         push_value(
             out,
             &PairRequestHeaderWire {
@@ -76,31 +72,39 @@ impl PairRequestRecord {
 }
 
 impl PairRequestBody {
-    pub(crate) fn encode(&self) -> Vec<u8> {
-        let wire = PairRequestBodyWire {
-            meta: control_meta_to_wire(&self.meta),
-            xid: self.xid.0,
-            signing_pub_key: *self.signing_pub_key.as_bytes(),
-            encapsulation_pub_key: *self.encapsulation_pub_key.as_bytes(),
-            proof: *self.proof.as_bytes(),
-        };
-        wire.as_bytes().to_vec()
-    }
-
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let wire: PairRequestBodyWire = read_exact(bytes)?;
-        Ok(Self {
-            meta: control_meta_from_wire(wire.meta),
+    pub fn from_wire(wire: PairRequestBodyWire) -> Self {
+        Self {
+            meta: ControlMeta::from_wire(wire.meta),
             xid: XID(wire.xid),
             signing_pub_key: MlDsaPublicKey::from_data(wire.signing_pub_key),
             encapsulation_pub_key: MlKemPublicKey::from_data(wire.encapsulation_pub_key),
             proof: MlDsaSignature::from_data(wire.proof),
-        })
+        }
+    }
+
+    pub fn to_wire(&self) -> PairRequestBodyWire {
+        PairRequestBodyWire {
+            meta: self.meta.to_wire(),
+            xid: self.xid.0,
+            signing_pub_key: *self.signing_pub_key.as_bytes(),
+            encapsulation_pub_key: *self.encapsulation_pub_key.as_bytes(),
+            proof: *self.proof.as_bytes(),
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let wire = self.to_wire();
+        wire.as_bytes().to_vec()
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let wire: PairRequestBodyWire = read_exact(bytes)?;
+        Ok(Self::from_wire(wire))
     }
 }
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
-struct PairRequestHeaderWire {
-    kem_ct: [u8; MlKemCiphertext::SIZE],
+pub struct PairRequestHeaderWire {
+    pub kem_ct: [u8; MlKemCiphertext::SIZE],
 }

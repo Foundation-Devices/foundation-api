@@ -4,6 +4,9 @@
 
 #![allow(clippy::too_many_arguments)]
 
+pub type Ref<'a, T> = zerocopy::Ref<&'a [u8], T>;
+pub type RefMut<'a, T> = zerocopy::Ref<&'a mut [u8], T>;
+
 mod codec;
 mod control;
 mod encrypted;

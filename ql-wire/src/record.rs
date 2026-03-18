@@ -1,14 +1,15 @@
 use zerocopy::{
     byte_slice::{ByteSlice, SplitByteSlice},
-    Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned,
+    Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes, Unaligned,
 };
 
 use crate::{
     codec,
-    encrypted_message::{EncryptedMessage, EncryptedMessageRef, EncryptedMessageWire},
-    handshake,
+    encrypted_message::{EncryptedMessage, EncryptedMessageWire},
+    handshake::{self, ConfirmWire, HelloReplyWire, HelloWire},
     header::{decode_record_header, encode_record_header, QlHeader},
-    pair, WireError, QL_WIRE_VERSION,
+    pair::{self, PairRequestRecordWire},
+    WireError, QL_WIRE_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,12 +34,12 @@ pub struct QlRecordRef<B> {
 }
 
 pub enum QlPayloadRef<B> {
-    PairRequest(pair::PairRequestRecordRef<B>),
-    Hello(handshake::Hello),
-    HelloReply(handshake::HelloReply),
-    Confirm(handshake::Confirm),
-    Ready(handshake::ReadyRef<B>),
-    Session(EncryptedMessageRef<B>),
+    PairRequest(Ref<B, PairRequestRecordWire>),
+    Hello(Ref<B, HelloWire>),
+    HelloReply(Ref<B, HelloReplyWire>),
+    Confirm(Ref<B, ConfirmWire>),
+    Ready(Ref<B, EncryptedMessageWire>),
+    Session(Ref<B, EncryptedMessageWire>),
 }
 
 #[derive(
@@ -124,29 +125,31 @@ impl<B: ByteSlice> QlRecordRef<B> {
 impl<B: ByteSlice> QlPayloadRef<B> {
     pub fn to_owned(&self) -> QlPayload {
         match self {
-            Self::PairRequest(request) => QlPayload::PairRequest(request.to_pair_request_record()),
-            Self::Hello(hello) => QlPayload::Hello(hello.clone()),
-            Self::HelloReply(reply) => QlPayload::HelloReply(reply.clone()),
-            Self::Confirm(confirm) => QlPayload::Confirm(confirm.clone()),
-            Self::Ready(ready) => QlPayload::Ready(handshake::Ready {
-                encrypted: ready.to_encrypted_message(),
-            }),
-            Self::Session(encrypted) => QlPayload::Session(encrypted.to_encrypted_message()),
+            Self::PairRequest(request) => {
+                QlPayload::PairRequest(pair::PairRequestRecord::from_wire(request))
+            }
+            Self::Hello(hello) => QlPayload::Hello(handshake::Hello::from_wire(hello)),
+            Self::HelloReply(reply) => {
+                QlPayload::HelloReply(handshake::HelloReply::from_wire(reply))
+            }
+            Self::Confirm(confirm) => QlPayload::Confirm(handshake::Confirm::from_wire(confirm)),
+            Self::Ready(ready) => QlPayload::Ready(handshake::Ready::from_wire(ready)),
+            Self::Session(encrypted) => QlPayload::Session(EncryptedMessage::from_wire(encrypted)),
         }
     }
 }
 
 fn parse_payload<B: ByteSlice>(kind: RecordKind, payload: B) -> Result<QlPayloadRef<B>, WireError> {
     match kind {
-        RecordKind::PairRequest => Ok(QlPayloadRef::PairRequest(
-            pair::PairRequestRecordWire::parse(payload)?,
-        )),
-        RecordKind::Hello => Ok(QlPayloadRef::Hello(handshake::Hello::decode(&payload)?)),
-        RecordKind::HelloReply => Ok(QlPayloadRef::HelloReply(handshake::HelloReply::decode(
-            &payload,
+        RecordKind::PairRequest => Ok(QlPayloadRef::PairRequest(pair::PairRequestRecord::parse(
+            payload,
         )?)),
-        RecordKind::Confirm => Ok(QlPayloadRef::Confirm(handshake::Confirm::decode(&payload)?)),
-        RecordKind::Ready => Ok(QlPayloadRef::Ready(EncryptedMessageWire::parse(payload)?)),
-        RecordKind::Session => Ok(QlPayloadRef::Session(EncryptedMessageWire::parse(payload)?)),
+        RecordKind::Hello => Ok(QlPayloadRef::Hello(handshake::Hello::parse(payload)?)),
+        RecordKind::HelloReply => Ok(QlPayloadRef::HelloReply(handshake::HelloReply::parse(
+            payload,
+        )?)),
+        RecordKind::Confirm => Ok(QlPayloadRef::Confirm(handshake::Confirm::parse(payload)?)),
+        RecordKind::Ready => Ok(QlPayloadRef::Ready(handshake::Ready::parse(payload)?)),
+        RecordKind::Session => Ok(QlPayloadRef::Session(EncryptedMessage::parse(payload)?)),
     }
 }

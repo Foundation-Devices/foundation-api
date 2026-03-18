@@ -110,7 +110,7 @@ fn encrypted_session_record_round_trip_and_decrypt() {
     };
     let decrypted =
         encrypted::decrypt_record(&crypto, &header, &mut encrypted, &session_key).unwrap();
-    assert_eq!(decrypted.to_session_envelope().unwrap(), body);
+    assert_eq!(SessionEnvelope::from_wire(&decrypted).unwrap(), body);
 }
 
 #[test]

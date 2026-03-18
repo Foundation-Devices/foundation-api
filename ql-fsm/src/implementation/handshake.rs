@@ -1,8 +1,9 @@
 use std::{cmp::Ordering, time::Instant};
 
 use ql_wire::{
-    self as wire, Confirm, Hello, HelloReply, MlDsaPublicKey, Nonce, QlCrypto, QlHeader, QlPayload,
-    Ready, ReadyRef, SessionKey, XID,
+    self as wire, Confirm, ConfirmWire, EncryptedMessageWire, Hello, HelloReply, HelloReplyWire,
+    HelloWire, MlDsaPublicKey, Nonce, QlCrypto, QlHeader, QlPayload, Ready, RefMut, SessionKey,
+    XID,
 };
 
 use super::{
@@ -48,7 +49,7 @@ pub fn handle_hello(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    hello: &Hello,
+    hello: &RefMut<'_, HelloWire>,
 ) -> Result<(), QlFsmError> {
     let action = {
         let Some(entry) = fsm.peer.as_ref() else {
@@ -71,7 +72,7 @@ pub fn handle_hello(
             ConnectionState::Initiator {
                 hello: local_hello, ..
             } => {
-                if peer_hello_wins(local_hello, fsm.identity.xid, hello, header.sender) {
+                if peer_hello_wins_ref(local_hello, fsm.identity.xid, hello, header.sender) {
                     HelloAction::StartResponder
                 } else {
                     HelloAction::Ignore
@@ -83,7 +84,7 @@ pub fn handle_hello(
                 stage: HandshakeResponder::WaitingConfirm { .. },
                 ..
             } => {
-                if same_hello(stored, hello) {
+                if same_hello_ref(stored, hello) {
                     HelloAction::ResendReply {
                         reply: reply.clone(),
                     }
@@ -103,7 +104,7 @@ pub fn handle_hello(
             enqueue_handshake(fsm, header.sender, QlPayload::HelloReply(reply));
         }
         HelloAction::StartResponder => {
-            if is_replayed_control(fsm, header.sender, hello.meta) {
+            if is_replayed_control(fsm, header.sender, wire::ControlMeta::from_wire(hello.meta)) {
                 return Ok(());
             }
 
@@ -135,7 +136,7 @@ pub fn handle_hello(
             let retry_at = Some(fsm.state.now.instant + fsm.config.handshake_retry_interval);
             if let Some(entry) = fsm.peer.as_mut() {
                 entry.session = ConnectionState::Responder {
-                    hello: hello.clone(),
+                    hello: wire::Hello::from_wire(hello),
                     reply: reply.clone(),
                     deadline,
                     stage: HandshakeResponder::WaitingConfirm {
@@ -157,7 +158,7 @@ pub fn handle_hello_reply(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    reply: &HelloReply,
+    reply: &RefMut<'_, HelloReplyWire>,
 ) -> Result<(), QlFsmError> {
     let action = {
         let Some(entry) = fsm.peer.as_ref() else {
@@ -184,7 +185,7 @@ pub fn handle_hello_reply(
                         ..
                     },
                 ..
-            } if same_reply(stored, reply) => HelloReplyAction::ResendConfirm {
+            } if same_reply_ref(stored, reply) => HelloReplyAction::ResendConfirm {
                 confirm: confirm.clone(),
             },
             _ => return Ok(()),
@@ -216,7 +217,7 @@ pub fn handle_hello_reply(
                 Err(_) => return Ok(()),
             };
 
-            if is_replayed_control(fsm, header.sender, reply.meta) {
+            if is_replayed_control(fsm, header.sender, wire::ControlMeta::from_wire(reply.meta)) {
                 return Ok(());
             }
 
@@ -227,7 +228,7 @@ pub fn handle_hello_reply(
                     hello,
                     deadline,
                     stage: HandshakeInitiator::WaitingReady {
-                        reply: reply.clone(),
+                        reply: wire::HelloReply::from_wire(reply),
                         confirm: confirm.clone(),
                         session_key,
                         retry_count: 0,
@@ -246,7 +247,7 @@ pub fn handle_confirm(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    confirm: &Confirm,
+    confirm: &RefMut<'_, ConfirmWire>,
 ) -> Result<(), QlFsmError> {
     if let Some(ready) = recent_ready_resend(fsm, crypto, header.sender, confirm) {
         enqueue_handshake(fsm, header.sender, QlPayload::Ready(ready));
@@ -286,7 +287,11 @@ pub fn handle_confirm(
         Err(_) => return Ok(()),
     };
 
-    if is_replayed_control(fsm, header.sender, confirm.meta) {
+    if is_replayed_control(
+        fsm,
+        header.sender,
+        wire::ControlMeta::from_wire(confirm.meta),
+    ) {
         return Ok(());
     }
 
@@ -322,7 +327,7 @@ pub fn handle_ready(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    ready: &mut ReadyRef<&mut [u8]>,
+    ready: &mut RefMut<'_, EncryptedMessageWire>,
 ) -> Result<(), QlFsmError> {
     let session_key = {
         let Some(entry) = fsm.peer.as_ref() else {
@@ -521,7 +526,7 @@ fn recent_ready_resend(
     fsm: &QlFsm,
     crypto: &impl QlCrypto,
     peer: XID,
-    confirm: &Confirm,
+    confirm: &RefMut<'_, ConfirmWire>,
 ) -> Option<Ready> {
     let entry = fsm.peer.as_ref()?;
     let ConnectionState::Connected {
@@ -662,21 +667,21 @@ fn responder_retry_at(stage: &HandshakeResponder) -> Option<Instant> {
     }
 }
 
-fn same_hello(stored: &Hello, incoming: &Hello) -> bool {
-    stored.meta.control_id == incoming.meta.control_id && stored.nonce == incoming.nonce
+fn same_hello_ref(stored: &Hello, incoming: &RefMut<'_, HelloWire>) -> bool {
+    stored.meta.control_id.0 == incoming.meta.control_id.get() && stored.nonce.0 == incoming.nonce
 }
 
-fn same_reply(stored: &HelloReply, incoming: &HelloReply) -> bool {
-    stored.meta.control_id == incoming.meta.control_id && stored.nonce == incoming.nonce
+fn same_reply_ref(stored: &HelloReply, incoming: &RefMut<'_, HelloReplyWire>) -> bool {
+    stored.meta.control_id.0 == incoming.meta.control_id.get() && stored.nonce.0 == incoming.nonce
 }
 
-fn peer_hello_wins(
+fn peer_hello_wins_ref(
     local_hello: &Hello,
     local_sender: XID,
-    peer_hello: &Hello,
+    peer_hello: &RefMut<'_, HelloWire>,
     peer_sender: XID,
 ) -> bool {
-    match peer_hello.nonce.0.cmp(&local_hello.nonce.0) {
+    match peer_hello.nonce.cmp(&local_hello.nonce.0) {
         Ordering::Less => true,
         Ordering::Greater => false,
         Ordering::Equal => peer_sender.0.cmp(&local_sender.0) == Ordering::Less,
