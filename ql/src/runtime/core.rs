@@ -11,22 +11,28 @@ use crate::{
     runtime::{
         internal::{
             next_timeout_deadline, now_secs, peer_hello_wins, HelloAction, InFlightWrite,
-            KeepAliveState, LoopStep, OutboundMessage, OutboundPayload, PendingEntry,
-            RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
+            InboundStreamDelivery, InboundStreamItem, InboundTransferOpen, InboundTransferState,
+            KeepAliveState, LoopStep, OutboundAwaiting, OutboundMessage, OutboundPayload,
+            OutboundStreamInput, OutboundTransferStage, OutboundTransferState, PendingEntry,
+            PendingStreamEntry, RuntimeCommand, RuntimeState, TimeoutEntry, TimeoutKind,
         },
         replay_cache::{ReplayKey, ReplayNamespace},
-        HandlerEvent, InboundEvent, InboundRequest, InitiatorStage, KeepAliveConfig, PeerSession,
-        Responder, Runtime, Token,
+        HandlerEvent, InboundByteStream, InboundEvent, InboundRequest, InboundUploadRequest,
+        InitiatorStage, KeepAliveConfig, PeerSession, Responder, Runtime, Token,
     },
     wire::{
         handshake::{self, HandshakeRecord},
         heartbeat::{self, HeartbeatBody},
         message::{self, MessageBody, MessageKind, Nack},
         pair::{self, PairRequestRecord},
+        transfer::{self, TransferBody, TransferFrame},
+        unpair::{self, UnpairRecord},
         QlHeader, QlPayload, QlRecord,
     },
     MessageId, QlError, RouteId,
 };
+
+const TRANSFER_RETRY_LIMIT: u8 = 5;
 
 impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
@@ -38,6 +44,7 @@ impl<P: QlPlatform> Runtime<P> {
         }
         let mut in_flight: Option<InFlightWrite<'_>> = None;
         while !self.rx.is_closed() {
+            self.drive_outbound_transfers(&mut state);
             if in_flight.is_none() {
                 in_flight = self.start_next_write(&mut state);
             }
@@ -54,6 +61,9 @@ impl<P: QlPlatform> Runtime<P> {
                     RuntimeCommand::Connect { peer } => {
                         self.handle_connect(&mut state, peer);
                     }
+                    RuntimeCommand::Unpair { peer } => {
+                        self.handle_send_unpair(&mut state, peer);
+                    }
                     RuntimeCommand::SendRequest {
                         recipient,
                         route_id,
@@ -63,6 +73,31 @@ impl<P: QlPlatform> Runtime<P> {
                     } => {
                         self.handle_send_request(
                             &mut state, recipient, route_id, payload, respond_to, config,
+                        );
+                    }
+                    RuntimeCommand::SendStreamRequest {
+                        recipient,
+                        route_id,
+                        payload,
+                        respond_to,
+                        config,
+                    } => {
+                        self.handle_send_stream_request(
+                            &mut state, recipient, route_id, payload, respond_to, config,
+                        );
+                    }
+                    RuntimeCommand::SendUploadRequest {
+                        recipient,
+                        route_id,
+                        payload,
+                        respond_to,
+                        chunk_rx,
+                        start,
+                        config,
+                    } => {
+                        self.handle_send_upload_request(
+                            &mut state, recipient, route_id, payload, respond_to, chunk_rx, start,
+                            config,
                         );
                     }
                     RuntimeCommand::SendEvent {
@@ -79,6 +114,34 @@ impl<P: QlPlatform> Runtime<P> {
                         kind,
                     } => {
                         self.handle_send_response(&mut state, id, recipient, payload, kind);
+                    }
+                    RuntimeCommand::StartResponseStream {
+                        request_id,
+                        recipient,
+                        meta,
+                        chunk_rx,
+                    } => {
+                        self.handle_start_response_stream(
+                            &mut state, request_id, recipient, meta, chunk_rx,
+                        );
+                    }
+                    RuntimeCommand::PollOutboundTransfer {
+                        recipient,
+                        transfer_id,
+                    } => {
+                        self.drive_outbound_transfer(&mut state, recipient, transfer_id);
+                    }
+                    RuntimeCommand::CancelOutboundTransfer {
+                        recipient,
+                        transfer_id,
+                    } => {
+                        self.handle_cancel_outbound_transfer(&mut state, recipient, transfer_id);
+                    }
+                    RuntimeCommand::CancelInboundTransfer {
+                        sender,
+                        transfer_id,
+                    } => {
+                        self.handle_cancel_inbound_transfer(&mut state, sender, transfer_id);
                     }
                     RuntimeCommand::Incoming(bytes) => {
                         self.handle_incoming(&mut state, bytes);
@@ -113,6 +176,9 @@ impl<P: QlPlatform> Runtime<P> {
                     else {
                         if let Some(id) = message.message_id {
                             if let Some(entry) = state.pending.remove(&id) {
+                                let _ = entry.tx.send(Err(QlError::SendFailed));
+                            }
+                            if let Some(entry) = state.pending_stream.remove(&id) {
                                 let _ = entry.tx.send(Err(QlError::SendFailed));
                             }
                         }
@@ -297,6 +363,126 @@ impl<P: QlPlatform> Runtime<P> {
         );
     }
 
+    fn handle_send_stream_request(
+        &self,
+        state: &mut RuntimeState,
+        recipient: XID,
+        route_id: RouteId,
+        payload: CBOR,
+        respond_to: oneshot::Sender<Result<InboundStreamDelivery, QlError>>,
+        config: super::RequestConfig,
+    ) {
+        let id = state.next_message_id();
+        let timeout = config
+            .timeout
+            .unwrap_or(self.config.default_request_timeout);
+        if timeout.is_zero() {
+            let _ = respond_to.send(Err(QlError::Timeout));
+            return;
+        }
+        let Some(entry) = state.peers.peer(recipient) else {
+            let _ = respond_to.send(Err(QlError::UnknownPeer(recipient)));
+            return;
+        };
+        if !entry.session.is_connected() {
+            let _ = respond_to.send(Err(QlError::MissingSession(recipient)));
+            return;
+        }
+        let valid_until = now_secs().saturating_add(self.config.message_expiration.as_secs());
+        let body = MessageBody {
+            message_id: id,
+            valid_until,
+            kind: MessageKind::Request,
+            route_id,
+            payload,
+        };
+        state.pending_stream.insert(
+            id,
+            PendingStreamEntry {
+                recipient,
+                tx: respond_to,
+            },
+        );
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: Instant::now() + timeout,
+            kind: TimeoutKind::Request { id },
+        }));
+        let outbound_deadline = Instant::now() + self.config.message_expiration;
+        self.enqueue_outbound(
+            state,
+            recipient,
+            OutboundPayload::DeferredMessage(body),
+            outbound_deadline,
+            Some(id),
+        );
+    }
+
+    fn handle_send_upload_request(
+        &self,
+        state: &mut RuntimeState,
+        recipient: XID,
+        route_id: RouteId,
+        payload: CBOR,
+        respond_to: oneshot::Sender<Result<CBOR, QlError>>,
+        chunk_rx: async_channel::Receiver<OutboundStreamInput>,
+        start: oneshot::Sender<Result<MessageId, QlError>>,
+        config: super::RequestConfig,
+    ) {
+        let timeout = config
+            .timeout
+            .unwrap_or(self.config.default_request_timeout);
+        if timeout.is_zero() {
+            let _ = start.send(Err(QlError::Timeout));
+            return;
+        }
+        let Some(entry) = state.peers.peer(recipient) else {
+            let _ = start.send(Err(QlError::UnknownPeer(recipient)));
+            return;
+        };
+        if !entry.session.is_connected() {
+            let _ = start.send(Err(QlError::MissingSession(recipient)));
+            return;
+        }
+
+        let request_id = state.next_message_id();
+        state.pending.insert(
+            request_id,
+            PendingEntry {
+                recipient,
+                tx: respond_to,
+            },
+        );
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: Instant::now() + timeout,
+            kind: TimeoutKind::Request { id: request_id },
+        }));
+
+        let transfer_id = request_id;
+        let key = (recipient, transfer_id);
+        if state.outbound_transfers.contains_key(&key) {
+            let _ = state.pending.remove(&request_id);
+            let _ = start.send(Err(QlError::SendFailed));
+            return;
+        }
+
+        state.outbound_transfers.insert(
+            key,
+            OutboundTransferState {
+                request_id,
+                peer: recipient,
+                transfer_id,
+                stage: OutboundTransferStage::Opening,
+                next_seq: 1,
+                open_route_id: Some(route_id),
+                open_meta: Some(payload),
+                chunk_rx,
+                awaiting: None,
+            },
+        );
+
+        let _ = start.send(Ok(request_id));
+    }
+
     fn handle_send_event(
         &self,
         state: &mut RuntimeState,
@@ -366,6 +552,102 @@ impl<P: QlPlatform> Runtime<P> {
         );
     }
 
+    fn handle_start_response_stream(
+        &self,
+        state: &mut RuntimeState,
+        request_id: MessageId,
+        recipient: XID,
+        meta: CBOR,
+        chunk_rx: async_channel::Receiver<OutboundStreamInput>,
+    ) {
+        if !matches!(
+            state.peers.peer(recipient),
+            Some(entry) if entry.session.is_connected()
+        ) {
+            return;
+        }
+
+        let transfer_id = request_id;
+        let key = (recipient, transfer_id);
+        if state.outbound_transfers.contains_key(&key) {
+            return;
+        }
+
+        state.outbound_transfers.insert(
+            key,
+            OutboundTransferState {
+                request_id,
+                peer: recipient,
+                transfer_id,
+                stage: OutboundTransferStage::Opening,
+                next_seq: 1,
+                open_route_id: None,
+                open_meta: Some(meta),
+                chunk_rx,
+                awaiting: None,
+            },
+        );
+    }
+
+    fn handle_cancel_outbound_transfer(
+        &self,
+        state: &mut RuntimeState,
+        recipient: XID,
+        transfer_id: MessageId,
+    ) {
+        let key = (recipient, transfer_id);
+        let mut found = false;
+        if let Some(transfer) = state.outbound_transfers.get_mut(&key) {
+            found = true;
+            transfer.stage = OutboundTransferStage::Cancelling;
+            transfer.awaiting = None;
+            transfer.chunk_rx.close();
+        }
+        if found {
+            self.drive_outbound_transfer(state, recipient, transfer_id);
+        }
+    }
+
+    fn handle_cancel_inbound_transfer(
+        &self,
+        state: &mut RuntimeState,
+        sender: XID,
+        transfer_id: MessageId,
+    ) {
+        if state
+            .inbound_transfers
+            .remove(&(sender, transfer_id))
+            .is_some()
+        {
+            self.send_transfer_frame(state, sender, transfer_id, TransferFrame::Cancel, false);
+        }
+    }
+
+    fn handle_send_unpair(&self, state: &mut RuntimeState, peer: XID) {
+        if state.peers.peer(peer).is_none() {
+            return;
+        }
+        let message = unpair::build_unpair_record(
+            &self.platform,
+            QlHeader {
+                sender: self.platform.xid(),
+                recipient: peer,
+            },
+            state.next_message_id(),
+            now_secs().saturating_add(self.config.message_expiration.as_secs()),
+        );
+        let bytes = CBOR::from(message).to_cbor_data();
+        self.unpair_peer(state, peer);
+        let deadline = Instant::now() + self.config.message_expiration;
+        self.enqueue_outbound(
+            state,
+            peer,
+            OutboundPayload::PreEncoded(bytes),
+            deadline,
+            None,
+        );
+    }
+
     fn handle_incoming(&self, state: &mut RuntimeState, bytes: Vec<u8>) {
         let Ok(record) = CBOR::try_from_data(&bytes).and_then(QlRecord::try_from) else {
             return;
@@ -381,11 +663,17 @@ impl<P: QlPlatform> Runtime<P> {
             QlPayload::Pair(request) => {
                 self.handle_pairing(state, header, request);
             }
+            QlPayload::Unpair(unpair) => {
+                self.handle_unpair(state, header, unpair);
+            }
             QlPayload::Message(encrypted) => {
                 self.handle_record(state, header, encrypted);
             }
             QlPayload::Heartbeat(encrypted) => {
                 self.handle_heartbeat(state, header, encrypted);
+            }
+            QlPayload::Transfer(encrypted) => {
+                self.handle_transfer(state, header, encrypted);
             }
         }
     }
@@ -425,6 +713,42 @@ impl<P: QlPlatform> Runtime<P> {
             .upsert_peer(peer, payload.signing_pub_key, payload.encapsulation_pub_key);
         self.persist_peers(state);
         self.handle_connect(state, peer);
+    }
+
+    fn handle_unpair(&self, state: &mut RuntimeState, header: QlHeader, record: UnpairRecord) {
+        let peer = header.sender;
+        let Some(signing_key) = state
+            .peers
+            .peer(peer)
+            .map(|entry| entry.signing_key.clone())
+        else {
+            return;
+        };
+        if unpair::verify_unpair_record(&header, &record, &signing_key).is_err() {
+            return;
+        }
+        let replay_key = ReplayKey::new(peer, ReplayNamespace::Peer, record.message_id);
+        if state
+            .replay_cache
+            .check_and_store_valid_until(replay_key, record.valid_until)
+        {
+            return;
+        }
+        self.unpair_peer(state, peer);
+    }
+
+    fn unpair_peer(&self, state: &mut RuntimeState, peer: XID) {
+        if state.peers.remove_peer(peer).is_none() {
+            return;
+        }
+        self.drop_outbound_for_peer(state, peer);
+        self.fail_pending_for_peer(state, peer);
+        self.fail_pending_stream_for_peer(state, peer);
+        self.abort_transfers_for_peer(state, peer, QlError::SendFailed);
+        state.replay_cache.clear_peer(peer);
+        self.platform
+            .handle_peer_status(peer, &PeerSession::Disconnected);
+        self.persist_peers(state);
     }
 
     fn persist_peers(&self, state: &RuntimeState) {
@@ -533,6 +857,707 @@ impl<P: QlPlatform> Runtime<P> {
         }
     }
 
+    fn handle_transfer(
+        &self,
+        state: &mut RuntimeState,
+        header: QlHeader,
+        encrypted: bc_components::EncryptedMessage,
+    ) {
+        let peer = header.sender;
+        let session_key = match state.peers.peer(peer) {
+            Some(entry) => match &entry.session {
+                PeerSession::Connected { session_key, .. } => session_key.clone(),
+                _ => return,
+            },
+            None => return,
+        };
+        let body = match transfer::decrypt_transfer(&header, &encrypted, &session_key) {
+            Ok(body) => body,
+            Err(_) => return,
+        };
+
+        let replay_key = ReplayKey::new(peer, ReplayNamespace::Transfer, body.message_id);
+        if state
+            .replay_cache
+            .check_and_store_valid_until(replay_key, body.valid_until)
+        {
+            return;
+        }
+
+        self.record_activity(state, peer);
+        self.handle_transfer_frame(state, peer, body.transfer_id, body.frame);
+    }
+
+    fn handle_transfer_frame(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        frame: TransferFrame,
+    ) {
+        match frame {
+            TransferFrame::OpenResponse { request_id, meta } => {
+                self.handle_transfer_open_response(state, peer, transfer_id, request_id, meta);
+            }
+            TransferFrame::OpenRequest {
+                request_id,
+                route_id,
+                meta,
+            } => {
+                self.handle_transfer_open_request(
+                    state,
+                    peer,
+                    transfer_id,
+                    request_id,
+                    route_id,
+                    meta,
+                );
+            }
+            TransferFrame::Chunk { seq, data } => {
+                self.handle_transfer_chunk(state, peer, transfer_id, seq, data);
+            }
+            TransferFrame::Finish { seq } => {
+                self.handle_transfer_finish(state, peer, transfer_id, seq);
+            }
+            TransferFrame::Ack { next_seq } => {
+                self.handle_transfer_ack(state, peer, transfer_id, next_seq);
+            }
+            TransferFrame::Cancel => {
+                self.handle_transfer_cancel(state, peer, transfer_id);
+            }
+            TransferFrame::CancelAck => {
+                self.handle_transfer_cancel_ack(state, peer, transfer_id);
+            }
+        }
+    }
+
+    fn handle_transfer_open_response(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        request_id: MessageId,
+        meta: CBOR,
+    ) {
+        let open = InboundTransferOpen::Response {
+            request_id,
+            meta: meta.clone(),
+        };
+        if self.handle_duplicate_transfer_open(state, peer, transfer_id, &open) {
+            return;
+        }
+
+        let Some(pending) = state.pending_stream.remove(&request_id) else {
+            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
+            return;
+        };
+        if pending.recipient != peer {
+            let _ = pending.tx.send(Err(QlError::SendFailed));
+            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
+            return;
+        }
+
+        let Some(tx) = self.tx.upgrade() else {
+            let _ = pending.tx.send(Err(QlError::Cancelled));
+            return;
+        };
+
+        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
+
+        let delivery = InboundStreamDelivery {
+            peer,
+            transfer_id,
+            meta,
+            rx: chunk_rx,
+            tx,
+        };
+        if pending.tx.send(Ok(delivery)).is_err() {
+            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
+            return;
+        }
+
+        state.inbound_transfers.insert(
+            (peer, transfer_id),
+            InboundTransferState {
+                open,
+                expected_seq: 1,
+                chunk_tx,
+            },
+        );
+
+        self.send_transfer_frame(
+            state,
+            peer,
+            transfer_id,
+            TransferFrame::Ack { next_seq: 1 },
+            true,
+        );
+    }
+
+    fn handle_transfer_open_request(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        request_id: MessageId,
+        route_id: RouteId,
+        meta: CBOR,
+    ) {
+        let open = InboundTransferOpen::Request {
+            request_id,
+            route_id,
+            meta: meta.clone(),
+        };
+        if self.handle_duplicate_transfer_open(state, peer, transfer_id, &open) {
+            return;
+        }
+
+        let Some(tx) = self.tx.upgrade() else {
+            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
+            return;
+        };
+
+        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
+        let responder = Responder::new(request_id, peer, tx.clone());
+        let body = InboundByteStream::new(peer, transfer_id, chunk_rx, tx);
+        self.platform
+            .handle_inbound(HandlerEvent::UploadRequest(InboundUploadRequest {
+                sender: peer,
+                recipient: self.platform.xid(),
+                route_id,
+                message_id: request_id,
+                meta,
+                body,
+                respond_to: responder,
+            }));
+
+        state.inbound_transfers.insert(
+            (peer, transfer_id),
+            InboundTransferState {
+                open,
+                expected_seq: 1,
+                chunk_tx,
+            },
+        );
+
+        self.send_transfer_frame(
+            state,
+            peer,
+            transfer_id,
+            TransferFrame::Ack { next_seq: 1 },
+            true,
+        );
+    }
+
+    fn handle_duplicate_transfer_open(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        open: &InboundTransferOpen,
+    ) -> bool {
+        let key = (peer, transfer_id);
+        let Some(existing) = state.inbound_transfers.get(&key) else {
+            return false;
+        };
+
+        let frame = if &existing.open == open {
+            TransferFrame::Ack { next_seq: 1 }
+        } else {
+            TransferFrame::Cancel
+        };
+        self.send_transfer_frame(state, peer, transfer_id, frame, true);
+        true
+    }
+
+    fn handle_transfer_chunk(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        seq: u32,
+        data: Vec<u8>,
+    ) {
+        let key = (peer, transfer_id);
+        let Some(mut transfer_state) = state.inbound_transfers.remove(&key) else {
+            return;
+        };
+
+        if seq < transfer_state.expected_seq {
+            self.send_transfer_frame(
+                state,
+                peer,
+                transfer_id,
+                TransferFrame::Ack {
+                    next_seq: transfer_state.expected_seq,
+                },
+                true,
+            );
+            state.inbound_transfers.insert(key, transfer_state);
+            return;
+        }
+
+        if seq > transfer_state.expected_seq {
+            let _ = transfer_state.chunk_tx.try_send(InboundStreamItem::Error(
+                QlError::TransferProtocol { id: transfer_id },
+            ));
+            transfer_state.chunk_tx.close();
+            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
+            return;
+        }
+
+        match transfer_state
+            .chunk_tx
+            .try_send(InboundStreamItem::Chunk(data))
+        {
+            Ok(()) => {
+                transfer_state.expected_seq = transfer_state.expected_seq.saturating_add(1);
+                self.send_transfer_frame(
+                    state,
+                    peer,
+                    transfer_id,
+                    TransferFrame::Ack {
+                        next_seq: transfer_state.expected_seq,
+                    },
+                    true,
+                );
+                state.inbound_transfers.insert(key, transfer_state);
+            }
+            Err(async_channel::TrySendError::Full(_)) => {
+                state.inbound_transfers.insert(key, transfer_state);
+            }
+            Err(async_channel::TrySendError::Closed(_)) => {
+                self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
+            }
+        }
+    }
+
+    fn handle_transfer_finish(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        seq: u32,
+    ) {
+        let key = (peer, transfer_id);
+        let Some(mut transfer_state) = state.inbound_transfers.remove(&key) else {
+            return;
+        };
+
+        if seq < transfer_state.expected_seq {
+            self.send_transfer_frame(
+                state,
+                peer,
+                transfer_id,
+                TransferFrame::Ack {
+                    next_seq: transfer_state.expected_seq,
+                },
+                true,
+            );
+            state.inbound_transfers.insert(key, transfer_state);
+            return;
+        }
+
+        if seq > transfer_state.expected_seq {
+            let _ = transfer_state.chunk_tx.try_send(InboundStreamItem::Error(
+                QlError::TransferProtocol { id: transfer_id },
+            ));
+            transfer_state.chunk_tx.close();
+            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
+            return;
+        }
+
+        match transfer_state
+            .chunk_tx
+            .try_send(InboundStreamItem::Finished)
+        {
+            Ok(()) => {
+                transfer_state.expected_seq = transfer_state.expected_seq.saturating_add(1);
+                transfer_state.chunk_tx.close();
+                self.send_transfer_frame(
+                    state,
+                    peer,
+                    transfer_id,
+                    TransferFrame::Ack {
+                        next_seq: transfer_state.expected_seq,
+                    },
+                    true,
+                );
+            }
+            Err(async_channel::TrySendError::Full(_)) => {
+                state.inbound_transfers.insert(key, transfer_state);
+            }
+            Err(async_channel::TrySendError::Closed(_)) => {
+                self.send_transfer_frame(state, peer, transfer_id, TransferFrame::Cancel, true);
+            }
+        }
+    }
+
+    fn handle_transfer_ack(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        next_seq: u32,
+    ) {
+        let key = (peer, transfer_id);
+        let Some(mut transfer_state) = state.outbound_transfers.remove(&key) else {
+            return;
+        };
+
+        let matched = match transfer_state.awaiting.as_ref() {
+            Some(OutboundAwaiting::Open { .. }) => next_seq == 1,
+            Some(OutboundAwaiting::Chunk { seq, .. }) => next_seq == seq.saturating_add(1),
+            Some(OutboundAwaiting::Finish { seq }) => next_seq == seq.saturating_add(1),
+            Some(OutboundAwaiting::Cancel) | None => false,
+        };
+        if !matched {
+            state.outbound_transfers.insert(key, transfer_state);
+            return;
+        }
+
+        match transfer_state.awaiting.take() {
+            Some(OutboundAwaiting::Open { .. }) => {
+                transfer_state.stage = OutboundTransferStage::Streaming;
+                state.outbound_transfers.insert(key, transfer_state);
+            }
+            Some(OutboundAwaiting::Chunk { seq, .. }) => {
+                transfer_state.next_seq = seq.saturating_add(1);
+                transfer_state.stage = OutboundTransferStage::Streaming;
+                state.outbound_transfers.insert(key, transfer_state);
+            }
+            Some(OutboundAwaiting::Finish { .. }) => {
+                transfer_state.chunk_rx.close();
+            }
+            Some(OutboundAwaiting::Cancel) | None => {
+                state.outbound_transfers.insert(key, transfer_state);
+            }
+        }
+    }
+
+    fn handle_transfer_cancel(&self, state: &mut RuntimeState, peer: XID, transfer_id: MessageId) {
+        let key = (peer, transfer_id);
+        let mut acknowledged = false;
+
+        if let Some(transfer_state) = state.outbound_transfers.remove(&key) {
+            transfer_state.chunk_rx.close();
+            acknowledged = true;
+        }
+
+        if let Some(transfer_state) = state.inbound_transfers.remove(&key) {
+            let error = QlError::TransferCancelled { id: transfer_id };
+            let _ = transfer_state
+                .chunk_tx
+                .try_send(InboundStreamItem::Error(error));
+            transfer_state.chunk_tx.close();
+            acknowledged = true;
+        }
+
+        if acknowledged {
+            self.send_transfer_frame(state, peer, transfer_id, TransferFrame::CancelAck, true);
+        }
+    }
+
+    fn handle_transfer_cancel_ack(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+    ) {
+        let key = (peer, transfer_id);
+        let Some(transfer_state) = state.outbound_transfers.remove(&key) else {
+            return;
+        };
+        if !matches!(transfer_state.awaiting, Some(OutboundAwaiting::Cancel)) {
+            state.outbound_transfers.insert(key, transfer_state);
+            return;
+        }
+
+        transfer_state.chunk_rx.close();
+    }
+
+    fn drive_outbound_transfers(&self, state: &mut RuntimeState) {
+        let keys: Vec<(XID, MessageId)> = state.outbound_transfers.keys().copied().collect();
+        for (peer, transfer_id) in keys {
+            self.drive_outbound_transfer(state, peer, transfer_id);
+        }
+    }
+
+    fn drive_outbound_transfer(&self, state: &mut RuntimeState, peer: XID, transfer_id: MessageId) {
+        let key = (peer, transfer_id);
+        let Some(mut transfer_state) = state.outbound_transfers.remove(&key) else {
+            return;
+        };
+
+        if transfer_state.awaiting.is_some() {
+            state.outbound_transfers.insert(key, transfer_state);
+            return;
+        }
+
+        match transfer_state.stage {
+            OutboundTransferStage::Opening => {
+                let Some(meta) = transfer_state.open_meta.take() else {
+                    transfer_state.chunk_rx.close();
+                    return;
+                };
+                let awaiting = OutboundAwaiting::Open {
+                    request_id: transfer_state.request_id,
+                    route_id: transfer_state.open_route_id,
+                    meta,
+                };
+                if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
+                    state.outbound_transfers.insert(key, transfer_state);
+                }
+            }
+            OutboundTransferStage::Streaming => match transfer_state.chunk_rx.try_recv() {
+                Ok(OutboundStreamInput::Chunk(data)) => {
+                    let seq = transfer_state.next_seq;
+                    let awaiting = OutboundAwaiting::Chunk { seq, data };
+                    if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
+                        state.outbound_transfers.insert(key, transfer_state);
+                    }
+                }
+                Ok(OutboundStreamInput::Finish) => {
+                    let seq = transfer_state.next_seq;
+                    transfer_state.stage = OutboundTransferStage::Finishing;
+                    let awaiting = OutboundAwaiting::Finish { seq };
+                    if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
+                        state.outbound_transfers.insert(key, transfer_state);
+                    }
+                }
+                Err(async_channel::TryRecvError::Empty) => {
+                    state.outbound_transfers.insert(key, transfer_state);
+                }
+                Err(async_channel::TryRecvError::Closed) => {
+                    transfer_state.stage = OutboundTransferStage::Cancelling;
+                    let awaiting = OutboundAwaiting::Cancel;
+                    if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
+                        state.outbound_transfers.insert(key, transfer_state);
+                    }
+                }
+            },
+            OutboundTransferStage::Finishing => {
+                state.outbound_transfers.insert(key, transfer_state);
+            }
+            OutboundTransferStage::Cancelling => {
+                let awaiting = OutboundAwaiting::Cancel;
+                if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, 0) {
+                    state.outbound_transfers.insert(key, transfer_state);
+                }
+            }
+        }
+    }
+
+    fn send_outbound_awaiting(
+        &self,
+        state: &mut RuntimeState,
+        transfer_state: &mut OutboundTransferState,
+        awaiting: OutboundAwaiting,
+        attempt: u8,
+    ) -> bool {
+        let frame = match &awaiting {
+            OutboundAwaiting::Open {
+                request_id,
+                route_id,
+                meta,
+            } => match route_id {
+                Some(route_id) => TransferFrame::OpenRequest {
+                    request_id: *request_id,
+                    route_id: *route_id,
+                    meta: meta.clone(),
+                },
+                None => TransferFrame::OpenResponse {
+                    request_id: *request_id,
+                    meta: meta.clone(),
+                },
+            },
+            OutboundAwaiting::Chunk { seq, data } => TransferFrame::Chunk {
+                seq: *seq,
+                data: data.clone(),
+            },
+            OutboundAwaiting::Finish { seq } => TransferFrame::Finish { seq: *seq },
+            OutboundAwaiting::Cancel => TransferFrame::Cancel,
+        };
+
+        let priority = matches!(awaiting, OutboundAwaiting::Cancel);
+        if !self.send_transfer_frame(
+            state,
+            transfer_state.peer,
+            transfer_state.transfer_id,
+            frame,
+            priority,
+        ) {
+            transfer_state.chunk_rx.close();
+            return false;
+        }
+
+        transfer_state.awaiting = Some(awaiting);
+        let at = Instant::now() + self.transfer_ack_timeout();
+        match transfer_state.awaiting.as_ref() {
+            Some(OutboundAwaiting::Open { .. }) => state.timeouts.push(Reverse(TimeoutEntry {
+                at,
+                kind: TimeoutKind::TransferAck {
+                    peer: transfer_state.peer,
+                    transfer_id: transfer_state.transfer_id,
+                    next_seq: 1,
+                    attempt,
+                },
+            })),
+            Some(OutboundAwaiting::Chunk { seq, .. }) => {
+                state.timeouts.push(Reverse(TimeoutEntry {
+                    at,
+                    kind: TimeoutKind::TransferAck {
+                        peer: transfer_state.peer,
+                        transfer_id: transfer_state.transfer_id,
+                        next_seq: seq.saturating_add(1),
+                        attempt,
+                    },
+                }))
+            }
+            Some(OutboundAwaiting::Finish { seq }) => state.timeouts.push(Reverse(TimeoutEntry {
+                at,
+                kind: TimeoutKind::TransferAck {
+                    peer: transfer_state.peer,
+                    transfer_id: transfer_state.transfer_id,
+                    next_seq: seq.saturating_add(1),
+                    attempt,
+                },
+            })),
+            Some(OutboundAwaiting::Cancel) => state.timeouts.push(Reverse(TimeoutEntry {
+                at,
+                kind: TimeoutKind::TransferCancelAck {
+                    peer: transfer_state.peer,
+                    transfer_id: transfer_state.transfer_id,
+                    attempt,
+                },
+            })),
+            None => {}
+        }
+
+        true
+    }
+
+    fn send_transfer_frame(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        frame: TransferFrame,
+        priority: bool,
+    ) -> bool {
+        let Some(session_key) = state
+            .peers
+            .peer(peer)
+            .and_then(|entry| entry.session.session_key())
+            .cloned()
+        else {
+            return false;
+        };
+
+        let body = TransferBody {
+            message_id: state.next_message_id(),
+            valid_until: now_secs().saturating_add(self.config.message_expiration.as_secs()),
+            transfer_id,
+            frame,
+        };
+        let record = transfer::encrypt_transfer(
+            QlHeader {
+                sender: self.platform.xid(),
+                recipient: peer,
+            },
+            &session_key,
+            body,
+        );
+        let bytes = CBOR::from(record).to_cbor_data();
+        self.enqueue_outbound_preencoded(
+            state,
+            peer,
+            bytes,
+            Instant::now() + self.config.message_expiration,
+            priority,
+        );
+        true
+    }
+
+    fn transfer_ack_timeout(&self) -> std::time::Duration {
+        if self.config.default_request_timeout.is_zero() {
+            std::time::Duration::from_millis(200)
+        } else {
+            self.config.default_request_timeout
+        }
+    }
+
+    fn handle_transfer_ack_timeout(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        next_seq: u32,
+        attempt: u8,
+    ) {
+        let key = (peer, transfer_id);
+        let Some(mut transfer_state) = state.outbound_transfers.remove(&key) else {
+            return;
+        };
+
+        let expected = match transfer_state.awaiting.as_ref() {
+            Some(OutboundAwaiting::Open { .. }) => Some(1),
+            Some(OutboundAwaiting::Chunk { seq, .. }) => Some(seq.saturating_add(1)),
+            Some(OutboundAwaiting::Finish { seq }) => Some(seq.saturating_add(1)),
+            _ => None,
+        };
+        if expected != Some(next_seq) {
+            state.outbound_transfers.insert(key, transfer_state);
+            return;
+        }
+
+        if attempt >= TRANSFER_RETRY_LIMIT {
+            transfer_state.chunk_rx.close();
+            return;
+        }
+
+        let Some(awaiting) = transfer_state.awaiting.take() else {
+            state.outbound_transfers.insert(key, transfer_state);
+            return;
+        };
+        if self.send_outbound_awaiting(state, &mut transfer_state, awaiting, attempt + 1) {
+            state.outbound_transfers.insert(key, transfer_state);
+        }
+    }
+
+    fn handle_transfer_cancel_ack_timeout(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        transfer_id: MessageId,
+        attempt: u8,
+    ) {
+        let key = (peer, transfer_id);
+        let Some(mut transfer_state) = state.outbound_transfers.remove(&key) else {
+            return;
+        };
+
+        if !matches!(transfer_state.awaiting, Some(OutboundAwaiting::Cancel)) {
+            state.outbound_transfers.insert(key, transfer_state);
+            return;
+        }
+
+        if attempt >= TRANSFER_RETRY_LIMIT {
+            transfer_state.chunk_rx.close();
+            return;
+        }
+
+        transfer_state.awaiting = None;
+        if self.send_outbound_awaiting(
+            state,
+            &mut transfer_state,
+            OutboundAwaiting::Cancel,
+            attempt + 1,
+        ) {
+            state.outbound_transfers.insert(key, transfer_state);
+        }
+    }
+
     fn send_heartbeat_message(
         &self,
         state: &mut RuntimeState,
@@ -597,6 +1622,9 @@ impl<P: QlPlatform> Runtime<P> {
                     if let Some(entry) = state.pending.remove(&id) {
                         let _ = entry.tx.send(Err(QlError::SendFailed));
                     }
+                    if let Some(entry) = state.pending_stream.remove(&id) {
+                        let _ = entry.tx.send(Err(QlError::SendFailed));
+                    }
                 }
                 false
             } else {
@@ -614,6 +1642,34 @@ impl<P: QlPlatform> Runtime<P> {
             });
     }
 
+    fn fail_pending_stream_for_peer(&self, state: &mut RuntimeState, peer: XID) {
+        state
+            .pending_stream
+            .extract_if(|_id, entry| entry.recipient == peer)
+            .for_each(|(_, entry)| {
+                let _ = entry.tx.send(Err(QlError::SendFailed));
+            });
+    }
+
+    fn abort_transfers_for_peer(&self, state: &mut RuntimeState, peer: XID, error: QlError) {
+        state
+            .outbound_transfers
+            .extract_if(|(transfer_peer, _), _| *transfer_peer == peer)
+            .for_each(|(_, transfer_state)| {
+                transfer_state.chunk_rx.close();
+            });
+
+        state
+            .inbound_transfers
+            .extract_if(|(transfer_peer, _), _| *transfer_peer == peer)
+            .for_each(|(_, transfer_state)| {
+                let _ = transfer_state
+                    .chunk_tx
+                    .try_send(InboundStreamItem::Error(error.clone()));
+                transfer_state.chunk_tx.close();
+            });
+    }
+
     fn resolve_pending_ok(
         &self,
         state: &mut RuntimeState,
@@ -624,6 +1680,12 @@ impl<P: QlPlatform> Runtime<P> {
         if let Some(entry) = state.pending.remove(&id) {
             if entry.recipient == sender {
                 let _ = entry.tx.send(Ok(payload));
+            }
+            return;
+        }
+        if let Some(entry) = state.pending_stream.remove(&id) {
+            if entry.recipient == sender {
+                let _ = entry.tx.send(Err(QlError::InvalidPayload));
             }
         }
     }
@@ -636,6 +1698,12 @@ impl<P: QlPlatform> Runtime<P> {
         nack: Nack,
     ) {
         if let Some(entry) = state.pending.remove(&id) {
+            if entry.recipient == sender {
+                let _ = entry.tx.send(Err(QlError::Nack { id, nack }));
+            }
+            return;
+        }
+        if let Some(entry) = state.pending_stream.remove(&id) {
             if entry.recipient == sender {
                 let _ = entry.tx.send(Err(QlError::Nack { id, nack }));
             }
@@ -932,6 +2000,32 @@ impl<P: QlPlatform> Runtime<P> {
         }));
     }
 
+    fn enqueue_outbound_preencoded(
+        &self,
+        state: &mut RuntimeState,
+        peer: XID,
+        bytes: Vec<u8>,
+        deadline: Instant,
+        priority: bool,
+    ) {
+        let token = state.next_token();
+        let message = OutboundMessage {
+            peer,
+            token,
+            message_id: None,
+            payload: OutboundPayload::PreEncoded(bytes),
+        };
+        if priority {
+            state.outbound.push_front(message);
+        } else {
+            state.outbound.push_back(message);
+        }
+        state.timeouts.push(Reverse(TimeoutEntry {
+            at: deadline,
+            kind: TimeoutKind::Outbound { token },
+        }));
+    }
+
     fn handle_timeouts(&self, state: &mut RuntimeState) {
         let now = Instant::now();
         loop {
@@ -952,6 +2046,9 @@ impl<P: QlPlatform> Runtime<P> {
                     });
                     if let Some(id) = message_id {
                         if let Some(entry) = state.pending.remove(&id) {
+                            let _ = entry.tx.send(Err(QlError::SendFailed));
+                        }
+                        if let Some(entry) = state.pending_stream.remove(&id) {
                             let _ = entry.tx.send(Err(QlError::SendFailed));
                         }
                     }
@@ -979,6 +2076,9 @@ impl<P: QlPlatform> Runtime<P> {
                 }
                 TimeoutKind::Request { id } => {
                     if let Some(entry) = state.pending.remove(&id) {
+                        let _ = entry.tx.send(Err(QlError::Timeout));
+                    }
+                    if let Some(entry) = state.pending_stream.remove(&id) {
                         let _ = entry.tx.send(Err(QlError::Timeout));
                     }
                 }
@@ -1035,7 +2135,24 @@ impl<P: QlPlatform> Runtime<P> {
                         }
                         self.drop_outbound_for_peer(state, peer);
                         self.fail_pending_for_peer(state, peer);
+                        self.fail_pending_stream_for_peer(state, peer);
+                        self.abort_transfers_for_peer(state, peer, QlError::SendFailed);
                     }
+                }
+                TimeoutKind::TransferAck {
+                    peer,
+                    transfer_id,
+                    next_seq,
+                    attempt,
+                } => {
+                    self.handle_transfer_ack_timeout(state, peer, transfer_id, next_seq, attempt);
+                }
+                TimeoutKind::TransferCancelAck {
+                    peer,
+                    transfer_id,
+                    attempt,
+                } => {
+                    self.handle_transfer_cancel_ack_timeout(state, peer, transfer_id, attempt);
                 }
             }
         }
@@ -1057,6 +2174,9 @@ impl<P: QlPlatform> Runtime<P> {
             if let Some(entry) = state.pending.remove(&id) {
                 let _ = entry.tx.send(Err(QlError::SendFailed));
             }
+            if let Some(entry) = state.pending_stream.remove(&id) {
+                let _ = entry.tx.send(Err(QlError::SendFailed));
+            }
         }
         let should_disconnect = match state.peers.peer(peer).map(|entry| &entry.session) {
             Some(PeerSession::Initiator {
@@ -1073,6 +2193,9 @@ impl<P: QlPlatform> Runtime<P> {
                 self.platform.handle_peer_status(peer, &entry.session);
             }
             state.outbound.retain(|message| message.peer != peer);
+            self.fail_pending_for_peer(state, peer);
+            self.fail_pending_stream_for_peer(state, peer);
+            self.abort_transfers_for_peer(state, peer, QlError::SendFailed);
         }
     }
 }

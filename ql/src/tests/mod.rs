@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -34,6 +34,8 @@ mod handshake;
 mod heartbeat;
 mod persistence;
 mod requests;
+mod streams;
+mod unpair;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeerStage {
@@ -379,6 +381,13 @@ fn is_heartbeat(bytes: &[u8]) -> bool {
     matches!(record.payload, QlPayload::Heartbeat(_))
 }
 
+fn is_transfer(bytes: &[u8]) -> bool {
+    let Ok(record) = CBOR::try_from_data(bytes).and_then(QlRecord::try_from) else {
+        return false;
+    };
+    matches!(record.payload, QlPayload::Transfer(_))
+}
+
 fn spawn_heartbeat_tap_forwarder(
     outbound: Receiver<Vec<u8>>,
     handle: RuntimeHandle,
@@ -399,6 +408,32 @@ fn spawn_drop_heartbeat_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHa
         while let Ok(bytes) = outbound.recv().await {
             if is_heartbeat(&bytes) {
                 continue;
+            }
+            handle.send_incoming(bytes);
+        }
+    });
+}
+
+fn spawn_drop_first_transfer_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+    tokio::task::spawn_local(async move {
+        let mut dropped = false;
+        while let Ok(bytes) = outbound.recv().await {
+            if !dropped && is_transfer(&bytes) {
+                dropped = true;
+                continue;
+            }
+            handle.send_incoming(bytes);
+        }
+    });
+}
+
+fn spawn_duplicate_first_transfer_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+    tokio::task::spawn_local(async move {
+        let mut duplicated = false;
+        while let Ok(bytes) = outbound.recv().await {
+            if !duplicated && is_transfer(&bytes) {
+                duplicated = true;
+                handle.send_incoming(bytes.clone());
             }
             handle.send_incoming(bytes);
         }

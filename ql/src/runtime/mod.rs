@@ -1,4 +1,7 @@
-pub use handle::{Response, RuntimeHandle};
+pub use handle::{
+    InboundByteStream, InboundStream, OutboundTransfer, Response, RuntimeHandle, StreamResponse,
+    UploadRequest,
+};
 pub use internal::{InitiatorStage, PeerSession, Token};
 
 mod core;
@@ -13,7 +16,7 @@ use dcbor::CBOR;
 
 use crate::{
     wire::message::{DecryptedMessage, MessageKind, Nack},
-    MessageId, QlCodec, QlError,
+    MessageId, QlCodec, QlError, RouteId,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -64,12 +67,24 @@ impl RuntimeConfig {
 #[derive(Debug)]
 pub enum HandlerEvent {
     Request(InboundRequest),
+    UploadRequest(InboundUploadRequest),
     Event(InboundEvent),
 }
 
 #[derive(Debug)]
 pub struct InboundRequest {
     pub message: DecryptedMessage,
+    pub respond_to: Responder,
+}
+
+#[derive(Debug)]
+pub struct InboundUploadRequest {
+    pub sender: XID,
+    pub recipient: XID,
+    pub route_id: RouteId,
+    pub message_id: MessageId,
+    pub meta: CBOR,
+    pub body: InboundByteStream,
     pub respond_to: Responder,
 }
 
@@ -117,6 +132,27 @@ impl Responder {
                 kind: MessageKind::Nack,
             })
             .map_err(|_| QlError::Cancelled)
+    }
+
+    pub fn respond_stream<M>(self, meta: M) -> Result<handle::OutboundTransfer, QlError>
+    where
+        M: QlCodec,
+    {
+        let (chunk_tx, chunk_rx) = async_channel::bounded(1);
+        self.tx
+            .send_blocking(internal::RuntimeCommand::StartResponseStream {
+                request_id: self.id,
+                recipient: self.recipient,
+                meta: meta.into(),
+                chunk_rx,
+            })
+            .map_err(|_| QlError::Cancelled)?;
+        Ok(handle::OutboundTransfer::new(
+            self.recipient,
+            self.id,
+            chunk_tx,
+            self.tx,
+        ))
     }
 }
 

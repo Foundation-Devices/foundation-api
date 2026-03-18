@@ -5,6 +5,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use async_channel::{Receiver, Sender};
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 use dcbor::CBOR;
 
@@ -19,9 +20,11 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// Monotonic token for timeout correlation.
 pub struct Token(u64);
 
 #[derive(Debug, Clone)]
+// Per-peer keepalive timers and ping state.
 pub struct KeepAliveState {
     pub token: Token,
     pub pending: bool,
@@ -45,6 +48,7 @@ impl Default for KeepAliveState {
 }
 
 #[derive(Debug, Clone)]
+// Registered peer identity and current session.
 pub struct PeerRecord {
     pub peer: XID,
     pub signing_key: MLDSAPublicKey,
@@ -64,6 +68,7 @@ impl PeerRecord {
 }
 
 #[derive(Debug, Clone)]
+// In-memory registry of known peers.
 pub struct PeerStore {
     peers: Vec<PeerRecord>,
 }
@@ -108,11 +113,19 @@ impl PeerStore {
             })
             .collect()
     }
+
+    pub fn remove_peer(&mut self, peer: XID) -> Option<PeerRecord> {
+        let index = self.peers.iter().position(|record| record.peer == peer)?;
+        Some(self.peers.remove(index))
+    }
 }
 
 #[derive(Debug, Clone)]
+// Session state machine for a peer.
 pub enum PeerSession {
+    // No active handshake or session.
     Disconnected,
+    // Local side initiated the handshake.
     Initiator {
         handshake_token: Token,
         hello: Hello,
@@ -120,6 +133,7 @@ pub enum PeerSession {
         deadline: Instant,
         stage: InitiatorStage,
     },
+    // Local side is responding to a handshake.
     Responder {
         handshake_token: Token,
         hello: Hello,
@@ -127,6 +141,7 @@ pub enum PeerSession {
         secrets: crate::wire::handshake::ResponderSecrets,
         deadline: Instant,
     },
+    // Encrypted session is established.
     Connected {
         session_key: SymmetricKey,
         keepalive: KeepAliveState,
@@ -149,20 +164,127 @@ impl PeerSession {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Initiator-side handshake progression.
 pub enum InitiatorStage {
+    // Waiting for hello reply.
     WaitingHelloReply,
+    // Waiting for confirm completion.
     WaitingConfirmAck,
 }
 
+// Producer messages for outbound transfer data.
+pub(crate) enum OutboundStreamInput {
+    // Emit one data chunk.
+    Chunk(Vec<u8>),
+    // Mark stream end.
+    Finish,
+}
+
+// Consumer messages for inbound transfer reads.
+pub(crate) enum InboundStreamItem {
+    // Next received data chunk.
+    Chunk(Vec<u8>),
+    // Clean stream completion.
+    Finished,
+    // Terminal stream failure.
+    Error(QlError),
+}
+
+// Identity of an accepted inbound transfer open frame.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InboundTransferOpen {
+    // Streamed response correlated to a prior request.
+    Response {
+        request_id: MessageId,
+        meta: CBOR,
+    },
+    // Streamed upload request with route metadata.
+    Request {
+        request_id: MessageId,
+        route_id: RouteId,
+        meta: CBOR,
+    },
+}
+
+// Runtime-delivered stream metadata and receiver.
+pub(crate) struct InboundStreamDelivery {
+    pub peer: XID,
+    pub transfer_id: MessageId,
+    pub meta: CBOR,
+    pub rx: Receiver<InboundStreamItem>,
+    pub tx: Sender<RuntimeCommand>,
+}
+
+// Last sender frame currently awaiting ack.
+pub enum OutboundAwaiting {
+    // Open frame with request correlation.
+    Open {
+        request_id: MessageId,
+        route_id: Option<RouteId>,
+        meta: CBOR,
+    },
+    // Data frame at a specific sequence.
+    Chunk {
+        seq: u32,
+        data: Vec<u8>,
+    },
+    // Finish frame at a specific sequence.
+    Finish {
+        seq: u32,
+    },
+    // Cancel frame awaiting cancel-ack.
+    Cancel,
+}
+
+// Coarse sender-side transfer lifecycle.
+pub enum OutboundTransferStage {
+    // Opening frame not yet acknowledged.
+    Opening,
+    // Streaming chunks frame-by-frame.
+    Streaming,
+    // Finish frame sent, waiting for ack.
+    Finishing,
+    // Cancellation in progress.
+    Cancelling,
+}
+
+// Runtime state for one outbound transfer.
+pub struct OutboundTransferState {
+    pub request_id: MessageId,
+    pub peer: XID,
+    pub transfer_id: MessageId,
+    pub stage: OutboundTransferStage,
+    pub next_seq: u32,
+    pub open_route_id: Option<RouteId>,
+    pub open_meta: Option<CBOR>,
+    pub chunk_rx: Receiver<OutboundStreamInput>,
+    pub awaiting: Option<OutboundAwaiting>,
+}
+
+// Runtime state for one inbound transfer.
+pub struct InboundTransferState {
+    pub open: InboundTransferOpen,
+    pub expected_seq: u32,
+    pub chunk_tx: Sender<InboundStreamItem>,
+}
+
+// Commands consumed by the runtime loop.
 pub(crate) enum RuntimeCommand {
+    // Upsert a peer record.
     RegisterPeer {
         peer: XID,
         signing_key: MLDSAPublicKey,
         encapsulation_key: MLKEMPublicKey,
     },
+    // Start handshake with a peer.
     Connect {
         peer: XID,
     },
+    // Send unpair and remove peer.
+    Unpair {
+        peer: XID,
+    },
+    // Send unary request and await unary response.
     SendRequest {
         recipient: XID,
         route_id: RouteId,
@@ -170,26 +292,73 @@ pub(crate) enum RuntimeCommand {
         respond_to: oneshot::Sender<Result<CBOR, QlError>>,
         config: RequestConfig,
     },
+    // Send unary request and await streamed response.
+    SendStreamRequest {
+        recipient: XID,
+        route_id: RouteId,
+        payload: CBOR,
+        respond_to: oneshot::Sender<Result<InboundStreamDelivery, QlError>>,
+        config: RequestConfig,
+    },
+    // Send streamed request and await unary response.
+    SendUploadRequest {
+        recipient: XID,
+        route_id: RouteId,
+        payload: CBOR,
+        respond_to: oneshot::Sender<Result<CBOR, QlError>>,
+        chunk_rx: Receiver<OutboundStreamInput>,
+        start: oneshot::Sender<Result<MessageId, QlError>>,
+        config: RequestConfig,
+    },
+    // Send fire-and-forget event.
     SendEvent {
         recipient: XID,
         route_id: RouteId,
         payload: CBOR,
     },
+    // Send unary response or nack.
     SendResponse {
         id: MessageId,
         recipient: XID,
         payload: CBOR,
         kind: MessageKind,
     },
+    // Start sender-side streamed response.
+    StartResponseStream {
+        request_id: MessageId,
+        recipient: XID,
+        meta: CBOR,
+        chunk_rx: Receiver<OutboundStreamInput>,
+    },
+    // Prompt immediate outbound transfer polling.
+    PollOutboundTransfer {
+        recipient: XID,
+        transfer_id: MessageId,
+    },
+    // Cancel sender-side active transfer.
+    CancelOutboundTransfer {
+        recipient: XID,
+        transfer_id: MessageId,
+    },
+    // Cancel receiver-side active transfer.
+    CancelInboundTransfer {
+        sender: XID,
+        transfer_id: MessageId,
+    },
+    // Process raw incoming bytes.
     Incoming(Vec<u8>),
 }
 
+// Mutable state owned by the runtime loop.
 pub struct RuntimeState {
     pub peers: PeerStore,
     pub next_token: Cell<Token>,
     pub outbound: VecDeque<OutboundMessage>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     pub pending: HashMap<MessageId, PendingEntry>,
+    pub pending_stream: HashMap<MessageId, PendingStreamEntry>,
+    pub outbound_transfers: HashMap<(XID, MessageId), OutboundTransferState>,
+    pub inbound_transfers: HashMap<(XID, MessageId), InboundTransferState>,
     pub next_message_id: Cell<MessageId>,
     pub replay_cache: ReplayCache,
 }
@@ -202,6 +371,9 @@ impl RuntimeState {
             outbound: VecDeque::new(),
             timeouts: BinaryHeap::new(),
             pending: HashMap::new(),
+            pending_stream: HashMap::new(),
+            outbound_transfers: HashMap::new(),
+            inbound_transfers: HashMap::new(),
             next_message_id: Cell::new(MessageId(1)),
             replay_cache: ReplayCache::new(),
         }
@@ -220,11 +392,19 @@ impl RuntimeState {
     }
 }
 
+// Pending unary response waiter.
 pub struct PendingEntry {
     pub recipient: XID,
     pub tx: oneshot::Sender<Result<CBOR, QlError>>,
 }
 
+// Pending streamed response opener waiter.
+pub struct PendingStreamEntry {
+    pub recipient: XID,
+    pub tx: oneshot::Sender<Result<InboundStreamDelivery, QlError>>,
+}
+
+// Currently executing platform write.
 pub struct InFlightWrite<'a> {
     pub peer: XID,
     pub token: Token,
@@ -232,11 +412,15 @@ pub struct InFlightWrite<'a> {
     pub future: PlatformFuture<'a, Result<(), QlError>>,
 }
 
+// Queued payload representation.
 pub enum OutboundPayload {
+    // Payload already encoded into bytes.
     PreEncoded(Vec<u8>),
+    // Payload to encrypt at send time.
     DeferredMessage(MessageBody),
 }
 
+// Outbound queue item with timeout token.
 pub struct OutboundMessage {
     pub peer: XID,
     pub token: Token,
@@ -245,15 +429,48 @@ pub struct OutboundMessage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Runtime timeout categories.
 pub enum TimeoutKind {
-    Outbound { token: Token },
-    Handshake { peer: XID, token: Token },
-    Request { id: MessageId },
-    KeepAliveSend { peer: XID, token: Token },
-    KeepAliveTimeout { peer: XID, token: Token },
+    // Outbound queue item expired.
+    Outbound {
+        token: Token,
+    },
+    // Handshake stage expired.
+    Handshake {
+        peer: XID,
+        token: Token,
+    },
+    // Request waiting for reply expired.
+    Request {
+        id: MessageId,
+    },
+    // Send keepalive ping now.
+    KeepAliveSend {
+        peer: XID,
+        token: Token,
+    },
+    // Keepalive pong timeout.
+    KeepAliveTimeout {
+        peer: XID,
+        token: Token,
+    },
+    // Transfer data/open/finish ack timeout.
+    TransferAck {
+        peer: XID,
+        transfer_id: MessageId,
+        next_seq: u32,
+        attempt: u8,
+    },
+    // Transfer cancel-ack timeout.
+    TransferCancelAck {
+        peer: XID,
+        transfer_id: MessageId,
+        attempt: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+// One scheduled timeout entry.
 pub struct TimeoutEntry {
     pub at: Instant,
     pub kind: TimeoutKind,
@@ -271,24 +488,33 @@ impl PartialOrd for TimeoutEntry {
     }
 }
 
+// Outcome of one runtime loop poll cycle.
 pub enum LoopStep {
+    // Received a runtime command.
     Event(RuntimeCommand),
+    // One or more timeouts fired.
     Timeout,
+    // In-flight write completed.
     WriteDone {
         peer: XID,
         token: Token,
         message_id: Option<MessageId>,
         result: Result<(), QlError>,
     },
+    // Runtime should exit loop.
     Quit,
 }
 
+// Decision for inbound hello handling.
 pub enum HelloAction {
+    // Become responder for this hello.
     StartResponder,
+    // Re-send existing hello reply.
     ResendReply {
         reply: HelloReply,
         deadline: Instant,
     },
+    // Ignore this hello.
     Ignore,
 }
 

@@ -11,6 +11,7 @@ use crate::{runtime::internal::now_secs, MessageId};
 pub enum ReplayNamespace {
     Peer,
     Local,
+    Transfer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
