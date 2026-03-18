@@ -1,6 +1,5 @@
 use zerocopy::{
-    byte_slice::{ByteSlice, ByteSliceMut},
-    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
+    byte_slice::ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
 };
 
 use super::StreamId;
@@ -19,38 +18,34 @@ pub struct StreamChunk {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
-struct StreamChunkWire {
+pub struct StreamChunkWire {
     pub stream_id: U32Le,
     pub offset: U64Le,
     pub fin: u8,
     pub bytes: [u8],
 }
 
-pub struct StreamChunkRef<B> {
-    wire: Ref<B, StreamChunkWire>,
-}
+pub type StreamChunkRef<B> = Ref<B, StreamChunkWire>;
 
-impl<B: ByteSlice> StreamChunkRef<B> {
-    pub fn parse(bytes: B) -> Result<Self, WireError> {
-        Ok(Self {
-            wire: parse(bytes)?,
-        })
+impl StreamChunkWire {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<StreamChunkRef<B>, WireError> {
+        parse(bytes)
     }
 
     pub fn stream_id(&self) -> StreamId {
-        StreamId(self.wire.stream_id.get())
+        StreamId(self.stream_id.get())
     }
 
     pub fn fin(&self) -> Result<bool, WireError> {
-        crate::codec::read_byte(self.wire.fin)
+        crate::codec::read_byte(self.fin)
     }
 
     pub fn offset(&self) -> u64 {
-        self.wire.offset.get()
+        self.offset.get()
     }
 
     pub fn bytes(&self) -> &[u8] {
-        &self.wire.bytes
+        &self.bytes
     }
 
     pub fn to_stream_chunk(&self) -> Result<StreamChunk, WireError> {
@@ -61,11 +56,9 @@ impl<B: ByteSlice> StreamChunkRef<B> {
             fin: self.fin()?,
         })
     }
-}
 
-impl<B: ByteSliceMut> StreamChunkRef<B> {
     pub fn bytes_mut(&mut self) -> &mut [u8] {
-        &mut self.wire.bytes
+        &mut self.bytes
     }
 }
 

@@ -1,12 +1,11 @@
 use zerocopy::{
-    byte_slice::{ByteSlice, ByteSliceMut},
-    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
+    byte_slice::ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
 };
 
 use crate::{
     codec::{parse, push_value, read_exact},
     control::{control_meta_from_wire, control_meta_to_wire, ControlMetaWire},
-    encrypted_message::{EncryptedMessage, EncryptedMessageRef},
+    encrypted_message::{EncryptedMessage, EncryptedMessageRef, EncryptedMessageWire},
     ControlMeta, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext, MlKemPublicKey, WireError, XID,
 };
 
@@ -30,14 +29,12 @@ pub struct PairRequestBody {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
-struct PairRequestRecordWire {
+pub struct PairRequestRecordWire {
     pub kem_ct: [u8; MlKemCiphertext::SIZE],
     pub encrypted: [u8],
 }
 
-pub struct PairRequestRecordRef<B> {
-    wire: Ref<B, PairRequestRecordWire>,
-}
+pub type PairRequestRecordRef<B> = Ref<B, PairRequestRecordWire>;
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
@@ -49,21 +46,19 @@ struct PairRequestBodyWire {
     proof: [u8; MlDsaSignature::SIZE],
 }
 
-impl<B: ByteSlice> PairRequestRecordRef<B> {
-    pub fn parse(bytes: B) -> Result<Self, WireError> {
-        let record = Self {
-            wire: parse(bytes)?,
-        };
+impl PairRequestRecordWire {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<PairRequestRecordRef<B>, WireError> {
+        let record: PairRequestRecordRef<B> = parse(bytes)?;
         let _ = record.encrypted()?;
         Ok(record)
     }
 
     pub fn kem_ct(&self) -> MlKemCiphertext {
-        MlKemCiphertext::from_data(self.wire.kem_ct)
+        MlKemCiphertext::from_data(self.kem_ct)
     }
 
     pub fn encrypted(&self) -> Result<EncryptedMessageRef<&[u8]>, WireError> {
-        EncryptedMessageRef::parse(&self.wire.encrypted)
+        EncryptedMessageWire::parse(&self.encrypted)
     }
 
     pub fn to_pair_request_record(&self) -> PairRequestRecord {
@@ -75,11 +70,9 @@ impl<B: ByteSlice> PairRequestRecordRef<B> {
                 .to_encrypted_message(),
         }
     }
-}
 
-impl<B: ByteSliceMut> PairRequestRecordRef<B> {
     pub fn encrypted_mut(&mut self) -> Result<EncryptedMessageRef<&mut [u8]>, WireError> {
-        EncryptedMessageRef::parse(&mut self.wire.encrypted)
+        EncryptedMessageWire::parse(&mut self.encrypted)
     }
 }
 

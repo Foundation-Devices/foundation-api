@@ -5,7 +5,7 @@ use zerocopy::{
 
 use crate::{
     codec,
-    encrypted_message::{EncryptedMessage, EncryptedMessageRef},
+    encrypted_message::{EncryptedMessage, EncryptedMessageRef, EncryptedMessageWire},
     handshake,
     header::{decode_record_header, encode_record_header, QlHeader},
     pair, WireError,
@@ -134,14 +134,14 @@ impl<B: ByteSlice> QlPayloadRef<B> {
 fn parse_payload<B: ByteSlice>(kind: RecordKind, payload: B) -> Result<QlPayloadRef<B>, WireError> {
     match kind {
         RecordKind::PairRequest => Ok(QlPayloadRef::PairRequest(
-            pair::PairRequestRecordRef::parse(payload)?,
+            pair::PairRequestRecordWire::parse(payload)?,
         )),
         RecordKind::Hello => Ok(QlPayloadRef::Hello(handshake::Hello::decode(&payload)?)),
         RecordKind::HelloReply => Ok(QlPayloadRef::HelloReply(handshake::HelloReply::decode(
             &payload,
         )?)),
         RecordKind::Confirm => Ok(QlPayloadRef::Confirm(handshake::Confirm::decode(&payload)?)),
-        RecordKind::Ready => Ok(QlPayloadRef::Ready(EncryptedMessageRef::parse(payload)?)),
-        RecordKind::Session => Ok(QlPayloadRef::Session(EncryptedMessageRef::parse(payload)?)),
+        RecordKind::Ready => Ok(QlPayloadRef::Ready(EncryptedMessageWire::parse(payload)?)),
+        RecordKind::Session => Ok(QlPayloadRef::Session(EncryptedMessageWire::parse(payload)?)),
     }
 }

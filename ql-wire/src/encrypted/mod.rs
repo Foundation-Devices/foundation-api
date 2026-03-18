@@ -15,8 +15,8 @@ pub mod stream_chunk;
 pub mod stream_close;
 pub mod unpair;
 
-pub use stream_chunk::{StreamChunk, StreamChunkRef};
-pub use stream_close::{CloseCode, CloseTarget, StreamClose, StreamCloseRef};
+pub use stream_chunk::{StreamChunk, StreamChunkRef, StreamChunkWire};
+pub use stream_close::{CloseCode, CloseTarget, StreamClose, StreamCloseRef, StreamCloseWire};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -80,7 +80,7 @@ enum SessionBodyKind {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
-struct SessionEnvelopeWire {
+pub struct SessionEnvelopeWire {
     pub seq: U64Le,
     pub ack_base: U64Le,
     pub ack_bitmap: U64Le,
@@ -88,34 +88,30 @@ struct SessionEnvelopeWire {
     pub body: [u8],
 }
 
-pub struct SessionEnvelopeRef<B> {
-    wire: Ref<B, SessionEnvelopeWire>,
-}
+pub type SessionEnvelopeRef<B> = Ref<B, SessionEnvelopeWire>;
 
-impl<B: ByteSlice> SessionEnvelopeRef<B> {
-    pub fn parse(bytes: B) -> Result<Self, WireError> {
-        Ok(Self {
-            wire: parse(bytes)?,
-        })
+impl SessionEnvelopeWire {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<SessionEnvelopeRef<B>, WireError> {
+        parse(bytes)
     }
 
     pub fn seq(&self) -> SessionSeq {
-        SessionSeq(self.wire.seq.get())
+        SessionSeq(self.seq.get())
     }
 
     pub fn ack(&self) -> SessionAck {
         SessionAck {
-            base: SessionSeq(self.wire.ack_base.get()),
-            bitmap: self.wire.ack_bitmap.get(),
+            base: SessionSeq(self.ack_base.get()),
+            bitmap: self.ack_bitmap.get(),
         }
     }
 
     fn body_kind(&self) -> Result<SessionBodyKind, WireError> {
-        crate::codec::read_byte(self.wire.kind)
+        crate::codec::read_byte(self.kind)
     }
 
     pub fn body(&self) -> Result<SessionBodyRef<&[u8]>, WireError> {
-        parse_session_body(self.body_kind()?, &self.wire.body)
+        parse_session_body(self.body_kind()?, &self.body)
     }
 
     pub fn to_session_envelope(&self) -> Result<SessionEnvelope, WireError> {
@@ -135,11 +131,9 @@ impl<B: ByteSlice> SessionEnvelopeRef<B> {
             body,
         })
     }
-}
 
-impl<B: ByteSliceMut> SessionEnvelopeRef<B> {
     pub fn body_mut(&mut self) -> Result<SessionBodyRef<&mut [u8]>, WireError> {
-        parse_session_body(self.body_kind()?, &mut self.wire.body)
+        parse_session_body(self.body_kind()?, &mut self.body)
     }
 }
 
@@ -160,9 +154,9 @@ fn parse_session_body<B: ByteSlice>(
             crate::codec::ensure_empty(&body)?;
             Ok(SessionBodyRef::Unpair)
         }
-        SessionBodyKind::Stream => Ok(SessionBodyRef::Stream(StreamChunkRef::parse(body)?)),
+        SessionBodyKind::Stream => Ok(SessionBodyRef::Stream(StreamChunkWire::parse(body)?)),
         SessionBodyKind::StreamClose => {
-            Ok(SessionBodyRef::StreamClose(StreamCloseRef::parse(body)?))
+            Ok(SessionBodyRef::StreamClose(StreamCloseWire::parse(body)?))
         }
         SessionBodyKind::Close => Ok(SessionBodyRef::Close(close::SessionCloseBody::decode(
             &body,
@@ -198,7 +192,7 @@ impl SessionEnvelope {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        SessionEnvelopeRef::parse(bytes)?.to_session_envelope()
+        SessionEnvelopeWire::parse(bytes)?.to_session_envelope()
     }
 }
 
@@ -226,7 +220,7 @@ pub fn decrypt_record<'a, B: ByteSliceMut>(
 ) -> Result<SessionEnvelopeRef<&'a mut [u8]>, WireError> {
     let aad = header.aad();
     let plaintext = encrypted.decrypt(crypto, session_key, &aad)?;
-    SessionEnvelopeRef::parse(plaintext)
+    SessionEnvelopeWire::parse(plaintext)
 }
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]

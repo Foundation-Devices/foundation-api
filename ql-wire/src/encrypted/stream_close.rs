@@ -1,6 +1,6 @@
 use zerocopy::{
-    byte_slice::{ByteSlice, ByteSliceMut},
-    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes, Unaligned,
+    byte_slice::ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes,
+    Unaligned,
 };
 
 use super::StreamId;
@@ -52,38 +52,34 @@ impl CloseCode {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
-struct StreamCloseWire {
+pub struct StreamCloseWire {
     pub stream_id: U32Le,
     pub target: u8,
     pub code: U16Le,
     pub payload: [u8],
 }
 
-pub struct StreamCloseRef<B> {
-    wire: Ref<B, StreamCloseWire>,
-}
+pub type StreamCloseRef<B> = Ref<B, StreamCloseWire>;
 
-impl<B: ByteSlice> StreamCloseRef<B> {
-    pub fn parse(bytes: B) -> Result<Self, WireError> {
-        Ok(Self {
-            wire: parse(bytes)?,
-        })
+impl StreamCloseWire {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<StreamCloseRef<B>, WireError> {
+        parse(bytes)
     }
 
     pub fn stream_id(&self) -> StreamId {
-        StreamId(self.wire.stream_id.get())
+        StreamId(self.stream_id.get())
     }
 
     pub fn target(&self) -> Result<CloseTarget, WireError> {
-        crate::codec::read_byte(self.wire.target)
+        crate::codec::read_byte(self.target)
     }
 
     pub fn code(&self) -> CloseCode {
-        CloseCode(self.wire.code.get())
+        CloseCode(self.code.get())
     }
 
     pub fn payload(&self) -> &[u8] {
-        &self.wire.payload
+        &self.payload
     }
 
     pub fn to_stream_close(&self) -> Result<StreamClose, WireError> {
@@ -94,11 +90,9 @@ impl<B: ByteSlice> StreamCloseRef<B> {
             payload: self.payload().to_vec(),
         })
     }
-}
 
-impl<B: ByteSliceMut> StreamCloseRef<B> {
     pub fn payload_mut(&mut self) -> &mut [u8] {
-        &mut self.wire.payload
+        &mut self.payload
     }
 }
 
