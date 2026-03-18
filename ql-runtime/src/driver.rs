@@ -475,14 +475,17 @@ impl DriverState {
     }
 
     fn try_reap_stream(&mut self, stream_id: StreamId) {
-        let should_reap = self.streams.get(&stream_id).is_some_and(|stream| match stream {
-            DriverStreamIo::Initiator { request, response } => {
-                matches!(request, OutboundIo::Closed) && matches!(response, InboundIo::Closed)
-            }
-            DriverStreamIo::Responder { request, response } => {
-                matches!(request, InboundIo::Closed) && matches!(response, OutboundIo::Closed)
-            }
-        });
+        let should_reap = self
+            .streams
+            .get(&stream_id)
+            .is_some_and(|stream| match stream {
+                DriverStreamIo::Initiator { request, response } => {
+                    matches!(request, OutboundIo::Closed) && matches!(response, InboundIo::Closed)
+                }
+                DriverStreamIo::Responder { request, response } => {
+                    matches!(request, InboundIo::Closed) && matches!(response, OutboundIo::Closed)
+                }
+            });
         if should_reap {
             self.streams.remove(&stream_id);
         }
@@ -600,10 +603,11 @@ fn unix_now_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use ql_fsm::Peer;
+    use ql_wire::{CloseCode, StreamClose, XID};
+
     use super::*;
     use crate::tests::new_identity;
-    use ql_wire::{CloseCode, StreamClose, XID};
-    use ql_fsm::Peer;
 
     struct NoopPlatform;
 

@@ -40,7 +40,10 @@ fn connected_fsms_deliver_stream_data() {
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Readable(stream_id))
     );
-    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"hello".to_vec());
+    assert_eq!(
+        read_stream_all(&mut harness.b.fsm, stream_id),
+        b"hello".to_vec()
+    );
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Finished(stream_id))
@@ -94,7 +97,10 @@ fn lost_encrypted_record_is_retried_and_acked() {
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Readable(stream_id))
     );
-    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"retry".to_vec());
+    assert_eq!(
+        read_stream_all(&mut harness.b.fsm, stream_id),
+        b"retry".to_vec()
+    );
 
     harness.advance(config.session_retransmit_timeout + Duration::from_millis(1));
     assert!(harness.next_outbound_a().is_none());
@@ -205,7 +211,10 @@ fn queued_stream_work_auto_connects_and_drains_after_handshake() {
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Readable(stream_id))
     );
-    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"queued".to_vec());
+    assert_eq!(
+        read_stream_all(&mut harness.b.fsm, stream_id),
+        b"queued".to_vec()
+    );
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Finished(stream_id))
@@ -297,7 +306,10 @@ fn returned_session_write_is_reissued_with_same_seq() {
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Readable(stream_id))
     );
-    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"retry".to_vec());
+    assert_eq!(
+        read_stream_all(&mut harness.b.fsm, stream_id),
+        b"retry".to_vec()
+    );
 }
 
 #[test]
