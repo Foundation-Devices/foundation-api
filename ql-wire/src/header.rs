@@ -2,6 +2,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::{codec, record::RecordKind, WireError, XID};
 
+pub const QL_WIRE_VERSION: u8 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QlHeader {
     pub sender: XID,
@@ -28,8 +30,6 @@ pub(crate) struct DecodedRecordHeader {
     pub(crate) kind: RecordKind,
     pub(crate) header: QlHeader,
 }
-
-const QL_WIRE_VERSION: u8 = 1;
 
 pub(crate) fn encode_record_header(header: &QlHeader, kind: RecordKind) -> QlRecordHeaderWire {
     QlRecordHeaderWire {
