@@ -50,7 +50,7 @@ fn is_replayed_control(fsm: &mut QlFsm, peer: XID, meta: ControlMeta) -> bool {
 
 fn peer_session(fsm: &QlFsm) -> Option<(XID, SessionKey)> {
     let entry = fsm.peer.as_ref()?;
-    let session_key = entry.session.session_key()?.clone();
+    let session_key = *entry.session.session_key()?;
     Some((entry.peer.xid, session_key))
 }
 

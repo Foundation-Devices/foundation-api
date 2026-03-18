@@ -125,7 +125,7 @@ fn hash_pairing_proof_data(
     ])
 }
 
-pub(crate) fn pairing_aad(header: &QlHeader, kem_ct: &MlKemCiphertext) -> Vec<u8> {
+fn pairing_aad(header: &QlHeader, kem_ct: &MlKemCiphertext) -> Vec<u8> {
     let mut aad = Vec::new();
     crate::codec::append_field(&mut aad, b"domain", b"ql-wire:pair-aad:v1");
     crate::codec::append_field(&mut aad, b"sender", &header.sender.0);

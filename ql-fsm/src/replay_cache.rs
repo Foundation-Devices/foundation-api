@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 
 use ql_wire::{ControlId, ControlMeta, XID};
 
@@ -28,11 +28,12 @@ impl ReplayCache {
             control_id: meta.control_id,
         };
 
-        if self.valid_until_by_key.contains_key(&key) {
-            true
-        } else {
-            self.valid_until_by_key.insert(key, meta.valid_until);
-            false
+        match self.valid_until_by_key.entry(key) {
+            Entry::Occupied(_) => true,
+            Entry::Vacant(entry) => {
+                entry.insert(meta.valid_until);
+                false
+            }
         }
     }
 }

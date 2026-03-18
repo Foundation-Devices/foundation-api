@@ -71,8 +71,8 @@ fn lost_encrypted_record_is_retried_and_acked() {
         .unwrap()
         .session
         .session_key()
-        .unwrap()
-        .clone();
+        .unwrap();
+    let session_key = *session_key;
     let first_body = decrypt_envelope(&harness.b.crypto, &first, &session_key);
 
     harness.advance(config.session_retransmit_timeout + Duration::from_millis(1));
@@ -277,8 +277,8 @@ fn returned_session_write_is_reissued_with_same_seq() {
         .unwrap()
         .session
         .session_key()
-        .unwrap()
-        .clone();
+        .unwrap();
+    let session_key = *session_key;
     let first = decrypt_envelope(&harness.b.crypto, &record, &session_key);
 
     harness.return_write_a(id);
@@ -335,8 +335,8 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
         .unwrap()
         .session
         .session_key()
-        .unwrap()
-        .clone();
+        .unwrap();
+    let session_key = *session_key;
     let first = decrypt_envelope(&harness.b.crypto, &record, &session_key);
 
     harness.advance(config.session_retransmit_timeout + Duration::from_millis(1));

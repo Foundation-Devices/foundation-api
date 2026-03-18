@@ -135,7 +135,7 @@ impl Harness {
         let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
 
         harness.a.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected {
-            session_key: session_key.clone(),
+            session_key,
             recent_ready: None,
         };
         harness.b.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected {
@@ -266,8 +266,8 @@ fn test_identity(seed: u8) -> QlIdentity {
 fn peer_from_identity(identity: &QlIdentity) -> Peer {
     Peer {
         xid: identity.xid,
-        signing_key: identity.signing_public_key.clone(),
-        encapsulation_key: identity.encapsulation_public_key.clone(),
+        signing_key: identity.signing_public_key,
+        encapsulation_key: identity.encapsulation_public_key,
     }
 }
 

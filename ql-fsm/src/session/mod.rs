@@ -332,14 +332,11 @@ impl SessionFsm {
             else {
                 break;
             };
-            let Some(body) = self
+            let body = self
                 .state
                 .tx_ring
                 .get(&seq)
-                .map(|entry| entry.pending.body.clone())
-            else {
-                return None;
-            };
+                .map(|entry| entry.pending.body.clone())?;
             if !self.should_retry_body(&body) {
                 let _ = self.state.tx_ring.remove(&seq);
                 self.state
@@ -348,9 +345,7 @@ impl SessionFsm {
                 continue;
             }
 
-            let Some(entry) = self.state.tx_ring.get_mut(&seq) else {
-                return None;
-            };
+            let entry = self.state.tx_ring.get_mut(&seq)?;
             entry.state = TxState::Issued;
             return Some(SessionEnvelope { seq, ack, body });
         }

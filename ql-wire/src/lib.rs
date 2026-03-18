@@ -1,4 +1,8 @@
+//!
 //! quantum link protocol wire format
+//!
+
+#![allow(clippy::too_many_arguments)]
 
 mod codec;
 mod control;
