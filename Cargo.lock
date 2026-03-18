@@ -1965,7 +1965,16 @@ version = "0.1.0"
 dependencies = [
  "bc-components",
  "chacha20poly1305",
- "dcbor",
+ "rkyv",
+ "thiserror",
+]
+
+[[package]]
+name = "ql-fsm"
+version = "0.1.0"
+dependencies = [
+ "bc-components",
+ "ql-wire",
  "rkyv",
  "thiserror",
 ]
@@ -1981,6 +1990,16 @@ dependencies = [
  "piper",
  "ql-engine",
  "tokio",
+]
+
+[[package]]
+name = "ql-wire"
+version = "0.1.0"
+dependencies = [
+ "bc-components",
+ "chacha20poly1305",
+ "rkyv",
+ "thiserror",
 ]
 
 [[package]]

@@ -20,8 +20,8 @@ use crate::{
     HandlerEvent, KeepAliveConfig, Peer, PeerSession, QlError, RuntimeConfig, RuntimeHandle,
 };
 
-mod heartbeat;
 mod handshake;
+mod heartbeat;
 mod stream;
 mod unpair;
 
@@ -93,13 +93,7 @@ impl TestPlatform {
         seed: u8,
         fail_stream_write_at: usize,
     ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
-        Self::new_inner(
-            seed,
-            None,
-            Some(fail_stream_write_at),
-            Duration::ZERO,
-            None,
-        )
+        Self::new_inner(seed, None, Some(fail_stream_write_at), Duration::ZERO, None)
     }
 
     fn new_with_delayed_writes(

@@ -196,7 +196,6 @@ mod test {
         }
     }
 
-    /*
     #[test]
     fn protocol_record_size_breakdown() {
         use crate::{
@@ -377,7 +376,6 @@ mod test {
             valid_until: now_secs().saturating_add(60),
             frame: stream::StreamFrame::Data(stream::StreamFrameData {
                 stream_id: StreamId(2),
-                dir: stream::Direction::Request,
                 chunk: stream::BodyChunk {
                     bytes: vec![7, 8, 9, 10],
                     fin: false,
@@ -393,7 +391,6 @@ mod test {
             valid_until: now_secs().saturating_add(60),
             frame: stream::StreamFrame::Data(stream::StreamFrameData {
                 stream_id: StreamId(2),
-                dir: stream::Direction::Request,
                 chunk: stream::BodyChunk {
                     bytes: vec![7, 8, 9, 10],
                     fin: false,
@@ -403,34 +400,6 @@ mod test {
 
         let stream_ack_size = stream_record_size(&stream_ack_body, 20);
         let stream_open_size = stream_record_size(&stream_open_body, 21);
-        let stream_accept_size = stream_record_size(
-            &stream::StreamBody::Message(stream::StreamMessage {
-                tx_seq: StreamSeq(22),
-                ack: stream::StreamAck::EMPTY,
-                valid_until: now_secs().saturating_add(60),
-                frame: stream::StreamFrame::Accept(stream::StreamFrameAccept {
-                    stream_id: StreamId(2),
-                    response_head: vec![4, 5, 6],
-                    response_prefix: Some(stream::BodyChunk {
-                        bytes: vec![1, 2],
-                        fin: false,
-                    }),
-                }),
-            }),
-            22,
-        );
-        let stream_reject_size = stream_record_size(
-            &stream::StreamBody::Message(stream::StreamMessage {
-                tx_seq: StreamSeq(23),
-                ack: stream::StreamAck::EMPTY,
-                valid_until: now_secs().saturating_add(60),
-                frame: stream::StreamFrame::Reject(stream::StreamFrameReject {
-                    stream_id: StreamId(2),
-                    code: stream::RejectCode::InvalidHead,
-                }),
-            }),
-            23,
-        );
         let stream_data_no_ack_size = stream_record_size(&stream_message_no_ack, 24);
         let stream_data_with_ack_size = stream_record_size(&stream_message_with_ack, 25);
         let stream_fin_size = stream_record_size(
@@ -440,7 +409,6 @@ mod test {
                 valid_until: now_secs().saturating_add(60),
                 frame: stream::StreamFrame::Data(stream::StreamFrameData {
                     stream_id: StreamId(2),
-                    dir: stream::Direction::Response,
                     chunk: stream::BodyChunk {
                         bytes: Vec::new(),
                         fin: true,
@@ -454,10 +422,11 @@ mod test {
                 tx_seq: StreamSeq(27),
                 ack: stream::StreamAck::EMPTY,
                 valid_until: now_secs().saturating_add(60),
-                frame: stream::StreamFrame::Reset(stream::StreamFrameReset {
+                frame: stream::StreamFrame::Close(stream::StreamFrameClose {
                     stream_id: StreamId(2),
-                    target: stream::ResetTarget::Both,
-                    code: stream::ResetCode::Protocol,
+                    target: stream::CloseTarget::Both,
+                    code: stream::CloseCode::PROTOCOL,
+                    payload: Vec::new(),
                 }),
             }),
             27,
@@ -475,8 +444,6 @@ mod test {
         print_size("ql2 size unpair", unpair_size);
         print_size("ql2 size stream ack-only", stream_ack_size);
         print_size("ql2 size stream open", stream_open_size);
-        print_size("ql2 size stream accept", stream_accept_size);
-        print_size("ql2 size stream reject", stream_reject_size);
         print_size("ql2 size stream data no ack", stream_data_no_ack_size);
         print_size("ql2 size stream data w/ ack", stream_data_with_ack_size);
         print_size("ql2 size stream fin", stream_fin_size);
@@ -502,21 +469,5 @@ mod test {
             stream_data_with_ack_size,
             stream_data_with_ack_size.saturating_sub(stream_data_no_ack_size),
         );
-
-        assert!(hello_size > 0);
-        assert!(reply_size > 0);
-        assert!(confirm_size > 0);
-        assert!(pair_size > 0);
-        assert!(heartbeat_size > 0);
-        assert!(unpair_size > 0);
-        assert!(stream_ack_size > 0);
-        assert!(stream_open_size > 0);
-        assert!(stream_accept_size > 0);
-        assert!(stream_reject_size > 0);
-        assert!(stream_data_no_ack_size > 0);
-        assert!(stream_data_with_ack_size > 0);
-        assert!(stream_fin_size > 0);
-        assert!(stream_reset_size > 0);
     }
-    */
 }

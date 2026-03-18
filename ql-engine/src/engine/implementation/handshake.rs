@@ -29,12 +29,8 @@ enum HelloReplyAction {
     },
 }
 
-pub fn handle_connect(
-    engine: &mut Engine,
-    now: Instant,
-    crypto: &impl QlCrypto,
-    emit: &mut impl OutputFn,
-) {
+pub fn handle_connect(engine: &mut Engine, crypto: &impl QlCrypto) {
+    let now = engine.state.now;
     let Some(_) = engine.peer.as_ref() else {
         return;
     };
@@ -48,18 +44,17 @@ pub fn handle_connect(
         start_initiator_handshake(config, identity, state, peer_record, now, crypto)
     };
     if started {
-        engine.emit_peer_status(emit);
+        engine.emit_peer_status();
     }
 }
 
 pub fn handle_hello(
     engine: &mut Engine,
-    now: Instant,
     peer: XID,
     hello: &wire::handshake::ArchivedHello,
     crypto: &impl QlCrypto,
-    emit: &mut impl OutputFn,
 ) {
+    let now = engine.state.now;
     let action = match engine.peer.as_ref() {
         Some(entry) => {
             if wire::handshake::verify_hello(peer, engine.identity.xid, &entry.signing_key, hello)
@@ -127,7 +122,7 @@ pub fn handle_hello(
                 )
             };
             if changed {
-                engine.emit_peer_status(emit);
+                engine.emit_peer_status();
             }
         }
         HelloAction::ResendReply {
@@ -153,11 +148,10 @@ pub fn handle_hello(
 
 pub fn handle_hello_reply(
     engine: &mut Engine,
-    now: Instant,
     peer: XID,
     reply: &wire::handshake::ArchivedHelloReply,
-    _emit: &mut impl OutputFn,
 ) {
+    let now = engine.state.now;
     let action = {
         let Some(peer_record) = engine.peer.as_ref() else {
             return;
@@ -264,12 +258,11 @@ pub fn handle_hello_reply(
 
 pub fn handle_confirm(
     engine: &mut Engine,
-    now: Instant,
     peer: XID,
     confirm: &wire::handshake::ArchivedConfirm,
     crypto: &impl QlCrypto,
-    _emit: &mut impl OutputFn,
 ) {
+    let now = engine.state.now;
     if let Some((ready, deadline, token)) = current_ready_resend(engine, now, peer, confirm) {
         if engine.handshake_write_pending(token) {
             return;
@@ -358,11 +351,9 @@ pub fn handle_confirm(
 
 pub fn handle_ready(
     engine: &mut Engine,
-    now: Instant,
     peer: XID,
     header: &QlHeader,
     ready: &mut wire::handshake::ArchivedReady,
-    emit: &mut impl OutputFn,
 ) {
     let session_key = {
         let Some(peer_record) = engine.peer.as_ref() else {
@@ -394,8 +385,8 @@ pub fn handle_ready(
             recent_ready: None,
         };
     }
-    engine.record_activity(now);
-    engine.emit_peer_status(emit);
+    engine.record_activity();
+    engine.emit_peer_status();
 }
 
 fn start_initiator_handshake(

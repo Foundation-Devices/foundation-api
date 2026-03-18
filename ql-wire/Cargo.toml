@@ -1,8 +1,8 @@
 [package]
-name = "ql-engine"
+name = "ql-wire"
 version = "0.1.0"
 edition = "2021"
-description = "Quantum Link v2 duplex stream prototype"
+description = "Quantum Link wire format types and crypto helpers"
 license = "Proprietary"
 
 [dependencies]

@@ -1,6 +1,5 @@
 use bc_components::{
-    Digest, MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, MLKEMPublicKey, Nonce, SymmetricKey,
-    XID,
+    Digest, MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, MLKEMPublicKey, SymmetricKey,
 };
 use rkyv::{Archive, Serialize};
 
@@ -9,24 +8,16 @@ use super::{
     Hello, HelloReply, Ready, ReadyBody,
 };
 use crate::{
-    engine::QlCrypto,
-    identity::QlIdentity,
-    wire::{
-        access_value, deserialize_value, encode_value,
-        encrypted_message::{EncryptedMessage, NONCE_SIZE},
-        ensure_not_expired, AsWireMlKemCiphertext, AsWireNonce, AsWireXid, ControlMeta, QlHeader,
-    },
-    QlError,
+    access_value, deserialize_value, encode_value, encrypted_message::EncryptedMessage,
+    ensure_not_expired, AsWireMlKemCiphertext, ControlMeta, Nonce, QlCrypto, QlHeader, QlIdentity,
+    WireError, XID,
 };
 
 #[derive(Archive, Serialize)]
 struct HelloProofData {
-    #[rkyv(with = AsWireXid)]
     initiator: XID,
-    #[rkyv(with = AsWireXid)]
     responder: XID,
     meta: ControlMeta,
-    #[rkyv(with = AsWireNonce)]
     nonce: Nonce,
     #[rkyv(with = AsWireMlKemCiphertext)]
     kem_ct: bc_components::MLKEMCiphertext,
@@ -34,14 +25,10 @@ struct HelloProofData {
 
 #[derive(Archive, Serialize)]
 struct HandshakeTranscript {
-    #[rkyv(with = AsWireXid)]
     initiator: XID,
-    #[rkyv(with = AsWireXid)]
     responder: XID,
     hello_meta: ControlMeta,
-    #[rkyv(with = AsWireNonce)]
     initiator_nonce: Nonce,
-    #[rkyv(with = AsWireNonce)]
     responder_nonce: Nonce,
     reply_meta: ControlMeta,
     #[rkyv(with = AsWireMlKemCiphertext)]
@@ -75,7 +62,7 @@ pub fn build_hello(
     recipient: XID,
     recipient_encapsulation_key: &MLKEMPublicKey,
     meta: ControlMeta,
-) -> Result<(Hello, SymmetricKey), QlError> {
+) -> Result<(Hello, SymmetricKey), WireError> {
     let nonce = next_nonce(crypto);
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret();
     let signature = identity.signing_private_key.sign(hello_proof_data(
@@ -101,11 +88,11 @@ pub fn verify_hello(
     responder: XID,
     initiator_signing_key: &MLDSAPublicKey,
     hello: &ArchivedHello,
-) -> Result<(), QlError> {
+) -> Result<(), WireError> {
     let meta: ControlMeta = (&hello.meta).into();
     ensure_not_expired(meta.valid_until)?;
     let signature = MLDSASignature::try_from(&hello.signature)?;
-    let nonce: Nonce = (&hello.nonce).into();
+    let nonce: Nonce = deserialize_value(&hello.nonce)?;
     let kem_ct = MLKEMCiphertext::try_from(&hello.kem_ct)?;
     let proof_data = hello_proof_data(initiator, responder, &meta, &nonce, &kem_ct);
     verify_signature(initiator_signing_key, &signature, &proof_data)
@@ -119,15 +106,15 @@ pub fn respond_hello(
     initiator_encapsulation_key: &MLKEMPublicKey,
     hello: &ArchivedHello,
     meta: ControlMeta,
-) -> Result<(HelloReply, ResponderSecrets), QlError> {
+) -> Result<(HelloReply, ResponderSecrets), WireError> {
     verify_hello(initiator, identity.xid, initiator_signing_key, hello)?;
     let hello_meta: ControlMeta = (&hello.meta).into();
-    let initiator_nonce: Nonce = (&hello.nonce).into();
+    let initiator_nonce: Nonce = deserialize_value(&hello.nonce)?;
     let initiator_kem_ct = MLKEMCiphertext::try_from(&hello.kem_ct)?;
     let initiator_secret = identity
         .encapsulation_private_key
         .decapsulate_shared_secret(&initiator_kem_ct)
-        .map_err(|_| QlError::InvalidPayload)?;
+        .map_err(|_| WireError::InvalidPayload)?;
     let nonce = next_nonce(crypto);
     let (responder_secret, kem_ct) = initiator_encapsulation_key.encapsulate_new_shared_secret();
     let transcript = handshake_transcript(
@@ -164,10 +151,10 @@ pub fn build_confirm(
     reply: &ArchivedHelloReply,
     initiator_secret: &SymmetricKey,
     meta: ControlMeta,
-) -> Result<(Confirm, SymmetricKey), QlError> {
+) -> Result<(Confirm, SymmetricKey), WireError> {
     let reply_meta: ControlMeta = (&reply.meta).into();
     ensure_not_expired(reply_meta.valid_until)?;
-    let reply_nonce: Nonce = (&reply.nonce).into();
+    let reply_nonce: Nonce = deserialize_value(&reply.nonce)?;
     let reply_kem_ct = MLKEMCiphertext::try_from(&reply.kem_ct)?;
     let reply_signature = MLDSASignature::try_from(&reply.signature)?;
     let transcript = handshake_transcript(
@@ -184,7 +171,7 @@ pub fn build_confirm(
     let responder_secret = identity
         .encapsulation_private_key
         .decapsulate_shared_secret(&reply_kem_ct)
-        .map_err(|_| QlError::InvalidPayload)?;
+        .map_err(|_| WireError::InvalidPayload)?;
     let signature = identity
         .signing_private_key
         .sign(confirm_proof_data(&meta, &transcript));
@@ -201,7 +188,7 @@ pub fn finalize_confirm(
     reply: &HelloReply,
     confirm: &ArchivedConfirm,
     secrets: &ResponderSecrets,
-) -> Result<SymmetricKey, QlError> {
+) -> Result<SymmetricKey, WireError> {
     verify_confirm(
         initiator,
         responder,
@@ -233,7 +220,7 @@ pub fn verify_confirm(
     hello: &Hello,
     reply: &HelloReply,
     confirm: &ArchivedConfirm,
-) -> Result<(), QlError> {
+) -> Result<(), WireError> {
     let confirm_meta: ControlMeta = (&confirm.meta).into();
     ensure_not_expired(confirm_meta.valid_until)?;
     let confirm_signature = MLDSASignature::try_from(&confirm.signature)?;
@@ -256,7 +243,7 @@ pub fn build_ready(
     header: QlHeader,
     session_key: &SymmetricKey,
     meta: ControlMeta,
-    nonce: [u8; NONCE_SIZE],
+    nonce: Nonce,
 ) -> Ready {
     let aad = header.aad();
     let body_bytes = encode_value(&ReadyBody { meta });
@@ -269,7 +256,7 @@ pub fn decrypt_ready(
     header: &QlHeader,
     ready: &mut ArchivedReady,
     session_key: &SymmetricKey,
-) -> Result<ReadyBody, QlError> {
+) -> Result<ReadyBody, WireError> {
     let aad = header.aad();
     let plaintext = ready.encrypted.decrypt(session_key, &aad)?;
     let body = access_value::<super::ArchivedReadyBody>(plaintext)?;
@@ -326,7 +313,7 @@ fn confirm_proof_data(meta: &ControlMeta, transcript: &[u8]) -> Vec<u8> {
 fn next_nonce(platform: &impl QlCrypto) -> Nonce {
     let mut data = [0u8; Nonce::NONCE_SIZE];
     platform.fill_random_bytes(&mut data);
-    Nonce::from_data(data)
+    Nonce(data)
 }
 
 fn derive_session_key(

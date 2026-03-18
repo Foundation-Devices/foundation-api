@@ -1,16 +1,20 @@
 use super::*;
 
-pub fn handle_bind_peer(engine: &mut Engine, peer: Peer, emit: &mut impl OutputFn) {
-    if let Some(existing) = engine.peer.as_ref() {
-        emit(EngineOutput::PeerStatusChanged {
-            peer: existing.peer,
-            session: PeerSession::Disconnected,
-        });
+pub fn handle_bind_peer(engine: &mut Engine, peer: Peer) {
+    if let Some(peer) = engine.peer.as_ref().map(|existing| existing.peer) {
+        engine
+            .state
+            .pending_events
+            .push_back(EngineEvent::PeerStatusChanged {
+                peer,
+                session: PeerSession::Disconnected,
+            });
     }
-    bind_peer_record(engine, peer, emit);
+    bind_peer_record(engine, peer);
 }
 
-pub fn handle_pair_local(engine: &mut Engine, now: Instant, crypto: &impl QlCrypto) {
+pub fn handle_pair_local(engine: &mut Engine, crypto: &impl QlCrypto) {
+    let now = engine.state.now;
     let Some(peer) = engine.peer.as_ref() else {
         return;
     };
@@ -33,7 +37,8 @@ pub fn handle_pair_local(engine: &mut Engine, now: Instant, crypto: &impl QlCryp
     );
 }
 
-pub fn handle_unpair_local(engine: &mut Engine, now: Instant, emit: &mut impl OutputFn) {
+pub fn handle_unpair_local(engine: &mut Engine) {
+    let now = engine.state.now;
     let Some(peer) = engine.peer.as_ref().map(|peer| peer.peer) else {
         return;
     };
@@ -46,7 +51,7 @@ pub fn handle_unpair_local(engine: &mut Engine, now: Instant, emit: &mut impl Ou
         },
         meta,
     );
-    unpair_peer(engine, emit);
+    unpair_peer(engine);
     let token = engine.state.next_token();
     engine.state.enqueue_handshake_message(
         &engine.config,
@@ -58,11 +63,9 @@ pub fn handle_unpair_local(engine: &mut Engine, now: Instant, emit: &mut impl Ou
 
 pub fn handle_pairing(
     engine: &mut Engine,
-    now: Instant,
     header: &QlHeader,
     request: &mut wire::pair::ArchivedPairRequestRecord,
     crypto: &impl QlCrypto,
-    emit: &mut impl OutputFn,
 ) {
     let payload = match wire::pair::decrypt_pair_request(&engine.identity, header, request) {
         Ok(payload) => payload,
@@ -87,10 +90,9 @@ pub fn handle_pairing(
                 signing_key: payload.signing_pub_key,
                 encapsulation_key: payload.encapsulation_pub_key,
             },
-            emit,
         );
     }
-    handshake::handle_connect(engine, now, crypto, emit);
+    handshake::handle_connect(engine, crypto);
 }
 
 pub fn handle_unpair(
@@ -98,7 +100,6 @@ pub fn handle_unpair(
     peer: XID,
     header: &QlHeader,
     record: &wire::unpair::ArchivedUnpairRecord,
-    emit: &mut impl OutputFn,
 ) {
     {
         let Some(peer_record) = engine.peer.as_ref() else {
@@ -112,42 +113,48 @@ pub fn handle_unpair(
     if engine.is_replayed_control(peer, meta) {
         return;
     }
-    unpair_peer(engine, emit);
+    unpair_peer(engine);
 }
 
-fn bind_peer_record(engine: &mut Engine, peer: Peer, emit: &mut impl OutputFn) {
-    reset_runtime(engine, QlError::Cancelled, emit);
+fn bind_peer_record(engine: &mut Engine, peer: Peer) {
+    reset_runtime(engine, QlError::Cancelled);
     engine.peer = Some(PeerRecord::new(
         peer.peer,
         peer.signing_key,
         peer.encapsulation_key,
     ));
-    engine.emit_peer_status(emit);
-    if let Some(peer) = engine.peer.as_ref() {
-        emit(EngineOutput::PersistPeer(peer.snapshot()));
+    engine.emit_peer_status();
+    if let Some(peer) = engine.peer.as_ref().map(PeerRecord::snapshot) {
+        engine
+            .state
+            .pending_events
+            .push_back(EngineEvent::PersistPeer(peer));
     }
 }
 
-fn reset_runtime(engine: &mut Engine, error: QlError, emit: &mut impl OutputFn) {
-    let streams = std::mem::take(&mut engine.streams).into_inner();
-    for (stream_id, stream) in streams {
-        engine.fail_stream(stream_id, stream, error.clone(), emit);
-    }
+fn reset_runtime(engine: &mut Engine, error: QlError) {
+    engine.abort_streams(error);
     engine.state.control_outbound.clear();
     engine.state.active_writes.clear();
     engine.state.timeouts.clear();
 }
 
-fn unpair_peer(engine: &mut Engine, emit: &mut impl OutputFn) {
+fn unpair_peer(engine: &mut Engine) {
     let Some(peer) = engine.peer.as_ref().map(|peer| peer.peer) else {
         return;
     };
     engine.drop_outbound();
-    engine.abort_streams(QlError::SendFailed, emit);
+    engine.abort_streams(QlError::SendFailed);
     engine.peer = None;
-    emit(EngineOutput::PeerStatusChanged {
-        peer,
-        session: PeerSession::Disconnected,
-    });
-    emit(EngineOutput::ClearPeer);
+    engine
+        .state
+        .pending_events
+        .push_back(EngineEvent::PeerStatusChanged {
+            peer,
+            session: PeerSession::Disconnected,
+        });
+    engine
+        .state
+        .pending_events
+        .push_back(EngineEvent::ClearPeer);
 }

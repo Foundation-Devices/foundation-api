@@ -1,11 +1,10 @@
-use bc_components::{MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, Nonce};
+use bc_components::{MLDSAPublicKey, MLDSASignature, MLKEMCiphertext};
 use rkyv::{Archive, Deserialize, Serialize};
 
-use super::{
-    encrypted_message::EncryptedMessage, AsWireMlDsaSignature, AsWireMlKemCiphertext, AsWireNonce,
-    ControlMeta,
+use crate::{
+    encrypted_message::EncryptedMessage, AsWireMlDsaSignature, AsWireMlKemCiphertext, ControlMeta,
+    Nonce, WireError,
 };
-use crate::QlError;
 
 mod crypto;
 pub use crypto::*;
@@ -21,7 +20,6 @@ pub enum HandshakeRecord {
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Hello {
     pub meta: ControlMeta,
-    #[rkyv(with = AsWireNonce)]
     pub nonce: Nonce,
     #[rkyv(with = AsWireMlKemCiphertext)]
     pub kem_ct: MLKEMCiphertext,
@@ -32,7 +30,6 @@ pub struct Hello {
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct HelloReply {
     pub meta: ControlMeta,
-    #[rkyv(with = AsWireNonce)]
     pub nonce: Nonce,
     #[rkyv(with = AsWireMlKemCiphertext)]
     pub kem_ct: MLKEMCiphertext,
@@ -61,9 +58,9 @@ pub fn verify_signature(
     signing_key: &MLDSAPublicKey,
     signature: &MLDSASignature,
     proof_data: &[u8],
-) -> Result<(), QlError> {
+) -> Result<(), WireError> {
     match signing_key.verify(signature, proof_data) {
         Ok(true) => Ok(()),
-        _ => Err(QlError::InvalidSignature),
+        _ => Err(WireError::InvalidSignature),
     }
 }

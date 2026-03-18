@@ -10,110 +10,97 @@ use rkyv::access_mut;
 use crate::{
     engine::{
         replay_cache::ReplayKey,
-        state::{ActiveWrite, ControlWritePayload, OutboundWriteKind, TimeoutKind},
-        stream::{InFlightWriteState, StreamRole, StreamState},
-        Engine, EngineInput, EngineOutput, HandshakeInitiator, HandshakeResponder, KeepAliveConfig,
-        KeepAliveState, OutboundWrite, OutputFn, PeerRecord, PeerSession, QlCrypto, RecentReady,
+        state::{ActiveWrite, OutboundWriteKind, TimeoutKind},
+        Engine, EngineEvent, HandshakeInitiator, HandshakeResponder, KeepAliveConfig,
+        KeepAliveState, OutboundWrite, PeerRecord, PeerSession, QlCrypto, RecentReady,
         StreamConfig, Token, WriteId,
     },
     wire::{
         self,
         encrypted_message::{ArchivedEncryptedMessage, NONCE_SIZE},
-        stream::{
-            encrypt_stream, BodyChunk, CloseCode, CloseTarget, StreamAck, StreamBody, StreamFrame,
-            StreamFrameClose, StreamMessage,
-        },
-        ControlMeta, QlHeader, StreamSeq,
+        stream::{BodyChunk, CloseCode, CloseTarget},
+        ControlMeta, QlHeader,
     },
     Peer, QlError, StreamId,
 };
 
 impl Engine {
-    pub fn open_stream(
+    pub(crate) fn open_stream_inner(
         &mut self,
-        now: Instant,
         request_head: Vec<u8>,
         request_prefix: Option<BodyChunk>,
         config: StreamConfig,
     ) -> Result<StreamId, QlError> {
-        self.state.now = now;
-        stream::open_stream(self, now, request_head, request_prefix, config)
+        stream::open_stream(self, request_head, request_prefix, config)
     }
 
-    pub fn run_tick_inner(
+    pub(crate) fn bind_peer_inner(&mut self, peer: Peer) {
+        peer::handle_bind_peer(self, peer);
+    }
+
+    pub(crate) fn pair_inner(&mut self, crypto: &impl QlCrypto) {
+        peer::handle_pair_local(self, crypto);
+    }
+
+    pub(crate) fn connect_inner(&mut self, crypto: &impl QlCrypto) {
+        handshake::handle_connect(self, crypto);
+    }
+
+    pub(crate) fn unpair_inner(&mut self) {
+        peer::handle_unpair_local(self);
+    }
+
+    pub(crate) fn write_stream_inner(
         &mut self,
-        now: Instant,
-        input: EngineInput,
-        crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
-    ) {
-        self.state.now = now;
-        match input {
-            EngineInput::BindPeer(peer) => peer::handle_bind_peer(self, peer, emit),
-            EngineInput::Pair => peer::handle_pair_local(self, now, crypto),
-            EngineInput::Connect => handshake::handle_connect(self, now, crypto, emit),
-            EngineInput::Unpair => peer::handle_unpair_local(self, now, emit),
-            EngineInput::CloseStream {
-                stream_id,
-                target,
-                code,
-                payload,
-            } => stream::handle_close_stream(self, now, stream_id, target, code, payload),
-            EngineInput::OutboundData { stream_id, bytes } => {
-                stream::handle_outbound_data(self, stream_id, bytes)
-            }
-            EngineInput::OutboundFinished { stream_id } => {
-                stream::handle_outbound_finished(self, stream_id)
-            }
-            EngineInput::Incoming(bytes) => self.handle_incoming(now, bytes, crypto, emit),
-            EngineInput::TimerExpired => self.handle_timeouts(now, crypto, emit),
-        }
-
-        self.handle_ready_retransmits(now, emit);
+        stream_id: StreamId,
+        bytes: Vec<u8>,
+    ) -> Result<(), QlError> {
+        stream::handle_outbound_data(self, stream_id, bytes)
     }
 
-    pub fn take_next_write_inner(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
-        self.take_next_control_write(crypto)
+    pub(crate) fn finish_stream_inner(&mut self, stream_id: StreamId) -> Result<(), QlError> {
+        stream::handle_outbound_finished(self, stream_id)
+    }
+
+    pub(crate) fn close_stream_inner(
+        &mut self,
+        stream_id: StreamId,
+        target: CloseTarget,
+        code: CloseCode,
+        payload: Vec<u8>,
+    ) -> Result<(), QlError> {
+        stream::handle_close_stream(self, stream_id, target, code, payload)
+    }
+
+    pub(crate) fn receive_inner(&mut self, bytes: Vec<u8>, crypto: &impl QlCrypto) {
+        self.handle_incoming(bytes, crypto);
+    }
+
+    pub(crate) fn take_next_write_inner(
+        &mut self,
+        crypto: &impl QlCrypto,
+    ) -> Option<OutboundWrite> {
+        self.take_next_control_write()
             .or_else(|| stream::take_next_stream_write(self, crypto))
     }
 
-    pub fn complete_write_inner(
-        &mut self,
-        write_id: WriteId,
-        result: Result<(), QlError>,
-        emit: &mut impl OutputFn,
-    ) {
-        let now = self.state.now;
-        let Some(active) = self.state.active_writes.remove(&write_id) else {
+    pub(crate) fn complete_write_inner(&mut self, write_id: WriteId, result: Result<(), QlError>) {
+        let Some(active) = self.state.active_writes.remove(write_id.0) else {
             return;
         };
 
-        if let OutboundWriteKind::StreamAck { .. } = active.kind {
-            if let Some(token) = active.token {
-                self.clear_ack_outbound_token(token, result.is_err());
-            }
-        }
-
         if let Err(error) = result {
-            // only fail the stream if this frame is still in flight
-            // ACKs and protocol reset can remove it before write completion arrives
-            if let OutboundWriteKind::StreamFrame { stream_id, tx_seq } = active.kind {
-                if self
-                    .streams
-                    .get(&stream_id)
-                    .is_some_and(|stream| stream.control.in_flight.contains_key(&tx_seq))
-                {
-                    self.fail_stream_by_id(stream_id, error.clone(), emit);
-                }
+            if let OutboundWriteKind::Stream(completion) = active.kind {
+                stream::complete_stream_write(self, completion, Err(error.clone()));
             }
 
             if self.is_handshake_token(active.token) {
                 if let Some(entry) = self.peer.as_mut() {
                     entry.session = PeerSession::Disconnected;
                 }
-                self.emit_peer_status(emit);
+                self.emit_peer_status();
                 self.drop_outbound();
-                self.abort_streams(error, emit);
+                self.abort_streams(error);
             }
 
             return;
@@ -127,27 +114,108 @@ impl Engine {
                     recent_ready,
                 };
             }
-            self.emit_peer_status(emit);
-            self.record_activity(now);
+            self.emit_peer_status();
+            self.record_activity();
         }
 
         if let Some(token) = active.token {
-            self.schedule_handshake_retry_after_write(token, now);
+            self.schedule_handshake_retry_after_write(token);
         }
 
-        if let OutboundWriteKind::StreamFrame { stream_id, tx_seq } = active.kind {
-            if let Some(stream) = self.streams.get_mut(&stream_id) {
-                stream
-                    .control
-                    .complete_write(tx_seq, now + self.config.stream_ack_timeout);
+        if let OutboundWriteKind::Stream(completion) = active.kind {
+            stream::complete_stream_write(self, completion, Ok(()));
+        }
+    }
+
+    pub(crate) fn on_timer_inner(&mut self, crypto: &impl QlCrypto) {
+        let now = self.state.now;
+        loop {
+            let Some(entry) = self
+                .state
+                .timeouts
+                .peek_mut()
+                .filter(|entry| entry.0.at <= now)
+            else {
+                break;
+            };
+            let entry = std::collections::binary_heap::PeekMut::pop(entry).0;
+            match entry.kind {
+                TimeoutKind::Outbound { token } => {
+                    self.state
+                        .control_outbound
+                        .retain(|message| message.token != token);
+                }
+            }
+        }
+
+        stream::handle_stream_timeouts(self);
+
+        if let Some(PeerRecord {
+            session: PeerSession::Connected { recent_ready, .. },
+            ..
+        }) = self.peer.as_mut()
+        {
+            if recent_ready
+                .as_ref()
+                .is_some_and(|ready| ready.expires_at <= now)
+            {
+                *recent_ready = None;
+            }
+        }
+
+        let handshake_due = self
+            .handshake_deadline()
+            .is_some_and(|deadline| deadline <= now);
+        if handshake_due {
+            self.fail_handshake(QlError::Timeout);
+            return;
+        }
+
+        let handshake_retry_due = self
+            .handshake_retry_deadline()
+            .is_some_and(|deadline| deadline <= now);
+        if handshake_retry_due {
+            self.handle_handshake_retry_timeout();
+        }
+
+        let keepalive_due = self
+            .keep_alive_deadline()
+            .is_some_and(|deadline| deadline <= now);
+        if !keepalive_due {
+            return;
+        }
+
+        let Some(entry) = self.peer.as_ref() else {
+            return;
+        };
+        let PeerSession::Connected { keepalive, .. } = &entry.session else {
+            return;
+        };
+
+        if keepalive.pending {
+            if let Some(entry) = self.peer.as_mut() {
+                entry.session = PeerSession::Disconnected;
+            }
+            self.emit_peer_status();
+            self.drop_outbound();
+            self.abort_streams(QlError::SendFailed);
+            return;
+        }
+
+        self.send_heartbeat_message(crypto);
+        if let Some(entry) = self.peer.as_mut() {
+            if let PeerSession::Connected { keepalive, .. } = &mut entry.session {
+                keepalive.pending = true;
+                keepalive.last_activity = Some(now);
             }
         }
     }
 
-    pub fn next_deadline_inner(&self) -> Option<Instant> {
+    pub(crate) fn next_deadline_inner(&self) -> Option<Instant> {
         [
             self.state.next_deadline(),
-            self.streams.stream_retry_deadline(),
+            self.streams.next_deadline(),
+            self.handshake_retry_deadline(),
             self.handshake_deadline(),
             self.keep_alive_deadline(),
         ]
@@ -155,16 +223,257 @@ impl Engine {
         .flatten()
         .min()
     }
+
+    pub(crate) fn abort_inner(&mut self, error: QlError) {
+        self.abort_streams(error);
+    }
 }
 
 impl Engine {
-    fn emit_peer_status(&self, emit: &mut impl OutputFn) {
-        if let Some(peer) = self.peer.as_ref() {
-            emit(EngineOutput::PeerStatusChanged {
+    fn emit_peer_status(&mut self) {
+        let event = self
+            .peer
+            .as_ref()
+            .map(|peer| EngineEvent::PeerStatusChanged {
                 peer: peer.peer,
                 session: peer.session.clone(),
             });
+        if let Some(event) = event {
+            self.state.pending_events.push_back(event);
         }
+    }
+
+    fn handle_incoming(&mut self, mut bytes: Vec<u8>, crypto: &impl QlCrypto) {
+        let Ok(record) = access_mut::<wire::ArchivedQlRecord, rkyv::rancor::Error>(&mut bytes)
+        else {
+            return;
+        };
+        let record = unsafe { record.unseal_unchecked() };
+        let sender: XID = (&record.header.sender).into();
+        let recipient: XID = (&record.header.recipient).into();
+        if recipient != self.identity.xid {
+            return;
+        }
+        if !matches!(&record.payload, wire::ArchivedQlPayload::Pair(_)) {
+            let Some(peer) = self.peer.as_ref().map(|peer| peer.peer) else {
+                return;
+            };
+            if sender != peer {
+                return;
+            }
+        }
+        let Ok(header) = wire::deserialize_value(&record.header) else {
+            return;
+        };
+        match &mut record.payload {
+            wire::ArchivedQlPayload::Handshake(message) => {
+                self.handle_handshake(sender, &header, message, crypto)
+            }
+            wire::ArchivedQlPayload::Stream(encrypted) => {
+                stream::handle_stream(self, sender, &header, encrypted)
+            }
+            wire::ArchivedQlPayload::Heartbeat(encrypted) => {
+                self.handle_heartbeat(&header, encrypted, crypto)
+            }
+            wire::ArchivedQlPayload::Pair(request) => {
+                peer::handle_pairing(self, &header, request, crypto)
+            }
+            wire::ArchivedQlPayload::Unpair(unpair_record) => {
+                peer::handle_unpair(self, sender, &header, unpair_record)
+            }
+        }
+    }
+
+    fn handle_handshake(
+        &mut self,
+        peer: XID,
+        header: &QlHeader,
+        message: &mut wire::handshake::ArchivedHandshakeRecord,
+        crypto: &impl QlCrypto,
+    ) {
+        match message {
+            wire::handshake::ArchivedHandshakeRecord::Hello(hello) => {
+                handshake::handle_hello(self, peer, hello, crypto)
+            }
+            wire::handshake::ArchivedHandshakeRecord::HelloReply(reply) => {
+                handshake::handle_hello_reply(self, peer, reply)
+            }
+            wire::handshake::ArchivedHandshakeRecord::Confirm(confirm) => {
+                handshake::handle_confirm(self, peer, confirm, crypto)
+            }
+            wire::handshake::ArchivedHandshakeRecord::Ready(ready) => {
+                handshake::handle_ready(self, peer, header, ready)
+            }
+        }
+    }
+
+    fn handle_heartbeat(
+        &mut self,
+        header: &QlHeader,
+        encrypted: &mut ArchivedEncryptedMessage,
+        crypto: &impl QlCrypto,
+    ) {
+        let (body, should_reply) = {
+            let Some(peer_record) = self.peer.as_ref() else {
+                return;
+            };
+            let PeerSession::Connected {
+                session_key,
+                keepalive,
+                ..
+            } = &peer_record.session
+            else {
+                return;
+            };
+            let Ok(body) = wire::heartbeat::decrypt_heartbeat(header, encrypted, session_key)
+            else {
+                return;
+            };
+            (body, !keepalive.pending)
+        };
+        if self.is_replayed_control(header.sender, body.meta) {
+            return;
+        }
+        self.record_activity();
+        if should_reply {
+            self.send_heartbeat_message(crypto);
+        }
+        self.emit_peer_status();
+    }
+
+    fn fail_handshake(&mut self, error: QlError) {
+        if let Some(entry) = self.peer.as_mut() {
+            if matches!(
+                entry.session,
+                PeerSession::Initiator { .. } | PeerSession::Responder { .. }
+            ) {
+                entry.session = PeerSession::Disconnected;
+            }
+        }
+        self.emit_peer_status();
+        self.drop_outbound();
+        self.abort_streams(error);
+    }
+
+    fn handle_handshake_retry_timeout(&mut self) {
+        enum RetryAction {
+            Resend {
+                token: Token,
+                peer: XID,
+                deadline: Instant,
+                record: wire::handshake::HandshakeRecord,
+            },
+            Fail,
+            Ignore,
+        }
+
+        let now = self.state.now;
+        let action = {
+            let Some(entry) = self.peer.as_mut() else {
+                return;
+            };
+            let peer = entry.peer;
+            match &mut entry.session {
+                PeerSession::Initiator {
+                    handshake_token,
+                    hello,
+                    deadline,
+                    stage:
+                        HandshakeInitiator::WaitingHelloReply {
+                            retry_count,
+                            retry_at,
+                        },
+                    ..
+                } if retry_at.is_some_and(|at| at <= now) => {
+                    let token = *handshake_token;
+                    *retry_at = None;
+                    if *retry_count >= self.config.max_handshake_retries {
+                        RetryAction::Fail
+                    } else {
+                        *retry_count = retry_count.saturating_add(1);
+                        RetryAction::Resend {
+                            token,
+                            peer,
+                            deadline: *deadline,
+                            record: wire::handshake::HandshakeRecord::Hello(hello.clone()),
+                        }
+                    }
+                }
+                PeerSession::Initiator {
+                    handshake_token,
+                    deadline,
+                    stage:
+                        HandshakeInitiator::WaitingReady {
+                            confirm,
+                            retry_count,
+                            retry_at,
+                            ..
+                        },
+                    ..
+                } if retry_at.is_some_and(|at| at <= now) => {
+                    let token = *handshake_token;
+                    *retry_at = None;
+                    if *retry_count >= self.config.max_handshake_retries {
+                        RetryAction::Fail
+                    } else {
+                        *retry_count = retry_count.saturating_add(1);
+                        RetryAction::Resend {
+                            token,
+                            peer,
+                            deadline: *deadline,
+                            record: wire::handshake::HandshakeRecord::Confirm(confirm.clone()),
+                        }
+                    }
+                }
+                PeerSession::Responder {
+                    handshake_token,
+                    reply,
+                    deadline,
+                    stage:
+                        HandshakeResponder::WaitingConfirm {
+                            retry_count,
+                            retry_at,
+                            ..
+                        },
+                    ..
+                } if retry_at.is_some_and(|at| at <= now) => {
+                    let token = *handshake_token;
+                    *retry_at = None;
+                    if *retry_count >= self.config.max_handshake_retries {
+                        RetryAction::Fail
+                    } else {
+                        *retry_count = retry_count.saturating_add(1);
+                        RetryAction::Resend {
+                            token,
+                            peer,
+                            deadline: *deadline,
+                            record: wire::handshake::HandshakeRecord::HelloReply(reply.clone()),
+                        }
+                    }
+                }
+                _ => RetryAction::Ignore,
+            }
+        };
+
+        match action {
+            RetryAction::Resend {
+                token,
+                peer,
+                deadline,
+                record,
+            } => {
+                if self.handshake_write_pending(token) {
+                    return;
+                }
+                handshake::enqueue_handshake_record(self, token, deadline, peer, record);
+            }
+            RetryAction::Fail => self.fail_handshake(QlError::Timeout),
+            RetryAction::Ignore => {}
+        }
+    }
+
+    fn abort_streams(&mut self, error: QlError) {
+        stream::abort_streams(self, error);
     }
 
     fn next_control_meta(&self, valid_for: Duration) -> ControlMeta {
@@ -200,170 +509,34 @@ impl Engine {
         }
     }
 
+    fn handshake_retry_deadline(&self) -> Option<Instant> {
+        let entry = self.peer.as_ref()?;
+        match &entry.session {
+            PeerSession::Initiator {
+                stage: HandshakeInitiator::WaitingHelloReply { retry_at, .. },
+                ..
+            }
+            | PeerSession::Initiator {
+                stage: HandshakeInitiator::WaitingReady { retry_at, .. },
+                ..
+            }
+            | PeerSession::Responder {
+                stage: HandshakeResponder::WaitingConfirm { retry_at, .. },
+                ..
+            } => *retry_at,
+            PeerSession::Disconnected
+            | PeerSession::Responder {
+                stage: HandshakeResponder::SendingReady { .. },
+                ..
+            }
+            | PeerSession::Connected { .. } => None,
+        }
+    }
+
     fn is_replayed_control(&mut self, peer: XID, meta: ControlMeta) -> bool {
         self.state
             .replay_cache
             .check_and_store_valid_until(ReplayKey::new(peer, meta.packet_id), meta.valid_until)
-    }
-
-    // TODO: why do we pass 'now' if it's in state?
-    fn handle_incoming(
-        &mut self,
-        now: Instant,
-        mut bytes: Vec<u8>,
-        crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
-    ) {
-        let Ok(record) = access_mut::<wire::ArchivedQlRecord, rkyv::rancor::Error>(&mut bytes)
-        else {
-            return;
-        };
-        let record = unsafe { record.unseal_unchecked() };
-        let sender: XID = (&record.header.sender).into();
-        let recipient: XID = (&record.header.recipient).into();
-        if recipient != self.identity.xid {
-            return;
-        }
-        if !matches!(&record.payload, wire::ArchivedQlPayload::Pair(_)) {
-            let Some(peer) = self.peer.as_ref().map(|peer| peer.peer) else {
-                return;
-            };
-            if sender != peer {
-                return;
-            }
-        }
-        let Ok(header) = wire::deserialize_value(&record.header) else {
-            return;
-        };
-        match &mut record.payload {
-            wire::ArchivedQlPayload::Handshake(message) => {
-                self.handle_handshake(now, sender, &header, message, crypto, emit)
-            }
-            wire::ArchivedQlPayload::Stream(encrypted) => {
-                stream::handle_stream(self, now, sender, &header, encrypted, emit)
-            }
-            wire::ArchivedQlPayload::Heartbeat(encrypted) => {
-                self.handle_heartbeat(now, &header, encrypted, crypto, emit)
-            }
-            wire::ArchivedQlPayload::Pair(request) => {
-                peer::handle_pairing(self, now, &header, request, crypto, emit)
-            }
-            wire::ArchivedQlPayload::Unpair(unpair_record) => {
-                peer::handle_unpair(self, sender, &header, unpair_record, emit)
-            }
-        }
-    }
-
-    fn handle_handshake(
-        &mut self,
-        now: Instant,
-        peer: XID,
-        header: &QlHeader,
-        message: &mut wire::handshake::ArchivedHandshakeRecord,
-        crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
-    ) {
-        match message {
-            wire::handshake::ArchivedHandshakeRecord::Hello(hello) => {
-                handshake::handle_hello(self, now, peer, hello, crypto, emit)
-            }
-            wire::handshake::ArchivedHandshakeRecord::HelloReply(reply) => {
-                handshake::handle_hello_reply(self, now, peer, reply, emit)
-            }
-            wire::handshake::ArchivedHandshakeRecord::Confirm(confirm) => {
-                handshake::handle_confirm(self, now, peer, confirm, crypto, emit)
-            }
-            wire::handshake::ArchivedHandshakeRecord::Ready(ready) => {
-                handshake::handle_ready(self, now, peer, header, ready, emit)
-            }
-        }
-    }
-
-    fn handle_heartbeat(
-        &mut self,
-        now: Instant,
-        header: &QlHeader,
-        encrypted: &mut ArchivedEncryptedMessage,
-        crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
-    ) {
-        let (body, should_reply) = {
-            let Some(peer_record) = self.peer.as_ref() else {
-                return;
-            };
-            let PeerSession::Connected {
-                session_key,
-                keepalive,
-                ..
-            } = &peer_record.session
-            else {
-                return;
-            };
-            let Ok(body) = wire::heartbeat::decrypt_heartbeat(header, encrypted, session_key)
-            else {
-                return;
-            };
-            (body, !keepalive.pending)
-        };
-        if self.is_replayed_control(header.sender, body.meta) {
-            return;
-        }
-        self.record_activity(now);
-        if should_reply {
-            self.send_heartbeat_message(now, crypto);
-        }
-        self.emit_peer_status(emit);
-    }
-
-    fn handle_ready_retransmits(&mut self, now: Instant, emit: &mut impl OutputFn) {
-        let mut timed_out = Vec::new();
-        for (stream_id, stream) in self.streams.iter() {
-            let exhausted = stream.control.in_flight.iter().any(|(_, in_flight)| {
-                matches!(
-                    in_flight.write_state,
-                    InFlightWriteState::WaitingRetry { retry_at }
-                        if retry_at <= now && in_flight.attempt >= self.config.stream_retry_limit
-                )
-            });
-            if exhausted {
-                timed_out.push(*stream_id);
-            }
-        }
-
-        for stream_id in timed_out {
-            self.fail_stream_by_id(stream_id, QlError::Timeout, emit);
-        }
-    }
-
-    fn clear_ack_outbound_token(&mut self, token: Token, retry: bool) {
-        for stream in self.streams.values_mut() {
-            let control = &mut stream.control;
-            if control.ack_outbound_token == Some(token) {
-                control.ack_outbound_token = None;
-                if retry {
-                    control.note_ack(true);
-                }
-                break;
-            }
-        }
-    }
-
-    fn clear_active_writes_for_stream(&mut self, stream_id: StreamId) {
-        self.state
-            .active_writes
-            .retain(|_, active| match active.kind {
-                OutboundWriteKind::Control => true,
-                OutboundWriteKind::StreamAck {
-                    stream_id: active_stream_id,
-                }
-                | OutboundWriteKind::StreamClose {
-                    stream_id: active_stream_id,
-                } => active_stream_id != stream_id,
-                OutboundWriteKind::StreamFrame {
-                    stream_id: active_stream_id,
-                    ..
-                } => active_stream_id != stream_id,
-            });
     }
 
     fn is_handshake_token(&self, token: Option<Token>) -> bool {
@@ -437,16 +610,17 @@ impl Engine {
         }
     }
 
-    fn schedule_handshake_retry_after_write(&mut self, token: Token, now: Instant) {
+    fn schedule_handshake_retry_after_write(&mut self, token: Token) {
         if self.config.handshake_retry_interval.is_zero() || self.config.max_handshake_retries == 0
         {
             return;
         }
+        let now = self.state.now;
         let retry_at = now + self.config.handshake_retry_interval;
         let Some(entry) = self.peer.as_mut() else {
             return;
         };
-        let scheduled = match &mut entry.session {
+        match &mut entry.session {
             PeerSession::Initiator {
                 handshake_token,
                 stage:
@@ -457,7 +631,6 @@ impl Engine {
                 ..
             } if *handshake_token == token => {
                 *stage_retry_at = Some(retry_at);
-                true
             }
             PeerSession::Initiator {
                 handshake_token,
@@ -469,7 +642,6 @@ impl Engine {
                 ..
             } if *handshake_token == token => {
                 *stage_retry_at = Some(retry_at);
-                true
             }
             PeerSession::Responder {
                 handshake_token,
@@ -481,21 +653,28 @@ impl Engine {
                 ..
             } if *handshake_token == token => {
                 *stage_retry_at = Some(retry_at);
-                true
             }
-            _ => false,
-        };
-        if scheduled {
-            self.state.schedule_handshake_retry(token, retry_at);
+            _ => {}
         }
     }
 
-    fn stream_write_session(&self) -> Option<(XID, SymmetricKey)> {
+    fn peer_session(&self) -> Option<(XID, SymmetricKey)> {
         self.peer.as_ref().and_then(|peer| {
             peer.session
                 .session_key()
                 .map(|key| (peer.peer, key.clone()))
         })
+    }
+
+    // todo: this is called in too many places
+    fn sync_stream_namespace(&mut self) {
+        use crate::stream::StreamNamespace;
+        let namespace = self
+            .peer
+            .as_ref()
+            .map(|peer| StreamNamespace::for_local(self.identity.xid, peer.peer))
+            .unwrap_or(crate::stream::StreamNamespace::Low);
+        self.streams.set_local_namespace(namespace);
     }
 
     fn issue_write(
@@ -504,64 +683,26 @@ impl Engine {
         token: Option<Token>,
         bytes: Vec<u8>,
     ) -> OutboundWrite {
-        let id = self.state.next_write_id();
-        self.state
-            .active_writes
-            .insert(id, ActiveWrite { token, kind });
+        let id = WriteId(self.state.active_writes.insert(ActiveWrite { token, kind }));
         OutboundWrite { id, bytes }
     }
 
-    fn take_next_control_write(&mut self, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
+    fn take_next_control_write(&mut self) -> Option<OutboundWrite> {
         while let Some(message) = self.state.control_outbound.pop_front() {
-            let bytes = match message.payload {
-                ControlWritePayload::Encoded(bytes) => bytes,
-                ControlWritePayload::StreamClose {
-                    stream_id,
-                    target,
-                    code,
-                    payload,
-                } => {
-                    let Some((recipient, session_key)) = self.stream_write_session() else {
-                        continue;
-                    };
-                    let body = StreamBody::Message(StreamMessage {
-                        tx_seq: StreamSeq::START,
-                        ack: StreamAck::EMPTY,
-                        valid_until: wire::now_secs()
-                            .saturating_add(self.config.packet_expiration.as_secs()),
-                        frame: StreamFrame::Close(StreamFrameClose {
-                            stream_id,
-                            target,
-                            code,
-                            payload,
-                        }),
-                    });
-                    let record = encrypt_stream(
-                        QlHeader {
-                            sender: self.identity.xid,
-                            recipient,
-                        },
-                        &session_key,
-                        &body,
-                        encrypted_message_nonce(crypto),
-                    );
-                    wire::encode_record(&record)
-                }
-            };
-            return Some(self.issue_write(message.kind, Some(message.token), bytes));
+            return Some(self.issue_write(
+                OutboundWriteKind::Control,
+                Some(message.token),
+                message.bytes,
+            ));
         }
         None
     }
 
-    fn send_ephemeral_close(&mut self, stream_id: StreamId, target: CloseTarget, code: CloseCode) {
-        self.state
-            .enqueue_stream_close(&self.config, true, stream_id, target, code, Vec::new());
-    }
-
-    fn send_heartbeat_message(&mut self, now: Instant, crypto: &impl QlCrypto) {
+    fn send_heartbeat_message(&mut self, crypto: &impl QlCrypto) {
         let Some(peer) = self.peer.as_ref().map(|peer| peer.peer) else {
             return;
         };
+        let now = self.state.now;
         let meta = self.next_control_meta(self.config.packet_expiration);
         let token = self.state.next_token();
         let deadline = now + self.config.packet_expiration;
@@ -596,7 +737,8 @@ impl Engine {
             .filter(|config| !config.interval.is_zero() && !config.timeout.is_zero())
     }
 
-    fn record_activity(&mut self, now: Instant) {
+    fn record_activity(&mut self) {
+        let now = self.state.now;
         if let Some(PeerRecord {
             session: PeerSession::Connected { keepalive, .. },
             ..
@@ -610,279 +752,6 @@ impl Engine {
     fn drop_outbound(&mut self) {
         self.state.control_outbound.clear();
         self.state.active_writes.clear();
-    }
-
-    fn fail_handshake(&mut self, error: QlError, emit: &mut impl OutputFn) {
-        if let Some(entry) = self.peer.as_mut() {
-            if matches!(
-                entry.session,
-                PeerSession::Initiator { .. } | PeerSession::Responder { .. }
-            ) {
-                entry.session = PeerSession::Disconnected;
-            }
-        }
-        self.emit_peer_status(emit);
-        self.drop_outbound();
-        self.abort_streams(error, emit);
-    }
-
-    fn handle_handshake_retry_timeout(&mut self, token: Token, emit: &mut impl OutputFn) {
-        enum RetryAction {
-            Resend {
-                peer: XID,
-                deadline: Instant,
-                record: wire::handshake::HandshakeRecord,
-            },
-            Fail,
-            Ignore,
-        }
-
-        let now = self.state.now;
-        let action = {
-            let Some(entry) = self.peer.as_mut() else {
-                return;
-            };
-            let peer = entry.peer;
-            match &mut entry.session {
-                PeerSession::Initiator {
-                    handshake_token,
-                    hello,
-                    deadline,
-                    stage:
-                        HandshakeInitiator::WaitingHelloReply {
-                            retry_count,
-                            retry_at,
-                        },
-                    ..
-                } if *handshake_token == token && retry_at.is_some_and(|at| at <= now) => {
-                    *retry_at = None;
-                    if *retry_count >= self.config.max_handshake_retries {
-                        RetryAction::Fail
-                    } else {
-                        *retry_count = retry_count.saturating_add(1);
-                        RetryAction::Resend {
-                            peer,
-                            deadline: *deadline,
-                            record: wire::handshake::HandshakeRecord::Hello(hello.clone()),
-                        }
-                    }
-                }
-                PeerSession::Initiator {
-                    handshake_token,
-                    deadline,
-                    stage:
-                        HandshakeInitiator::WaitingReady {
-                            confirm,
-                            retry_count,
-                            retry_at,
-                            ..
-                        },
-                    ..
-                } if *handshake_token == token && retry_at.is_some_and(|at| at <= now) => {
-                    *retry_at = None;
-                    if *retry_count >= self.config.max_handshake_retries {
-                        RetryAction::Fail
-                    } else {
-                        *retry_count = retry_count.saturating_add(1);
-                        RetryAction::Resend {
-                            peer,
-                            deadline: *deadline,
-                            record: wire::handshake::HandshakeRecord::Confirm(confirm.clone()),
-                        }
-                    }
-                }
-                PeerSession::Responder {
-                    handshake_token,
-                    reply,
-                    deadline,
-                    stage:
-                        HandshakeResponder::WaitingConfirm {
-                            retry_count,
-                            retry_at,
-                            ..
-                        },
-                    ..
-                } if *handshake_token == token && retry_at.is_some_and(|at| at <= now) => {
-                    *retry_at = None;
-                    if *retry_count >= self.config.max_handshake_retries {
-                        RetryAction::Fail
-                    } else {
-                        *retry_count = retry_count.saturating_add(1);
-                        RetryAction::Resend {
-                            peer,
-                            deadline: *deadline,
-                            record: wire::handshake::HandshakeRecord::HelloReply(reply.clone()),
-                        }
-                    }
-                }
-                _ => RetryAction::Ignore,
-            }
-        };
-
-        match action {
-            RetryAction::Resend {
-                peer,
-                deadline,
-                record,
-            } => {
-                if self.handshake_write_pending(token) {
-                    return;
-                }
-                handshake::enqueue_handshake_record(self, token, deadline, peer, record);
-            }
-            RetryAction::Fail => self.fail_handshake(QlError::Timeout, emit),
-            RetryAction::Ignore => {}
-        }
-    }
-
-    fn abort_streams(&mut self, error: QlError, emit: &mut impl OutputFn) {
-        let streams = std::mem::take(&mut self.streams).into_inner();
-        for (stream_id, stream) in streams {
-            self.fail_stream(stream_id, stream, error.clone(), emit);
-        }
-    }
-
-    fn fail_stream_by_id(&mut self, stream_id: StreamId, error: QlError, emit: &mut impl OutputFn) {
-        let Some(stream) = self.streams.remove(&stream_id) else {
-            return;
-        };
-        self.fail_stream(stream_id, stream, error, emit);
-    }
-
-    pub fn fail_stream(
-        &mut self,
-        stream_id: StreamId,
-        stream: StreamState,
-        error: QlError,
-        emit: &mut impl OutputFn,
-    ) {
-        self.clear_active_writes_for_stream(stream_id);
-        match stream.role {
-            StreamRole::Initiator(_) => {
-                emit(EngineOutput::OutboundFailed {
-                    stream_id,
-                    error: error.clone(),
-                });
-                emit(EngineOutput::InboundFailed { stream_id, error });
-            }
-            StreamRole::Responder(stream) => {
-                emit(EngineOutput::InboundFailed {
-                    stream_id,
-                    error: error.clone(),
-                });
-                if stream.response_started || stream.response.is_closed() {
-                    emit(EngineOutput::OutboundFailed { stream_id, error });
-                }
-            }
-            StreamRole::Provisional(_) => {}
-        }
-        emit(EngineOutput::StreamReaped { stream_id });
-    }
-
-    pub fn handle_timeouts(
-        &mut self,
-        now: Instant,
-        crypto: &impl QlCrypto,
-        emit: &mut impl OutputFn,
-    ) {
-        loop {
-            let Some(entry) = self
-                .state
-                .timeouts
-                .peek_mut()
-                .filter(|entry| entry.0.at <= now)
-            else {
-                break;
-            };
-            let entry = std::collections::binary_heap::PeekMut::pop(entry).0;
-            match entry.kind {
-                TimeoutKind::Outbound { token } => {
-                    self.state
-                        .control_outbound
-                        .retain(|message| message.token != token);
-                }
-                TimeoutKind::HandshakeRetry { token } => {
-                    self.handle_handshake_retry_timeout(token, emit);
-                }
-                TimeoutKind::StreamAckDelay { stream_id, token } => {
-                    if let Some(stream) = self.streams.get_mut(&stream_id) {
-                        let control = &mut stream.control;
-                        if control.ack_delay_token == Some(token) {
-                            control.ack_delay_token = None;
-                            control.ack_immediate = true;
-                        }
-                    }
-                }
-                TimeoutKind::StreamProvisional { stream_id, token } => {
-                    let should_reset = self
-                        .streams
-                        .get(&stream_id)
-                        .and_then(StreamState::provisional_timeout_token)
-                        .is_some_and(|stream_token| stream_token == token);
-                    if should_reset {
-                        self.streams.remove(&stream_id);
-                        self.send_ephemeral_close(
-                            stream_id,
-                            CloseTarget::Both,
-                            CloseCode::PROTOCOL,
-                        );
-                    }
-                }
-            }
-        }
-
-        if let Some(PeerRecord {
-            session: PeerSession::Connected { recent_ready, .. },
-            ..
-        }) = self.peer.as_mut()
-        {
-            if recent_ready
-                .as_ref()
-                .is_some_and(|ready| ready.expires_at <= now)
-            {
-                *recent_ready = None;
-            }
-        }
-
-        let handshake_due = self
-            .handshake_deadline()
-            .is_some_and(|deadline| deadline <= now);
-        if handshake_due {
-            self.fail_handshake(QlError::Timeout, emit);
-            return;
-        }
-
-        let keepalive_due = self
-            .keep_alive_deadline()
-            .is_some_and(|deadline| deadline <= now);
-        if !keepalive_due {
-            return;
-        }
-
-        let Some(entry) = self.peer.as_ref() else {
-            return;
-        };
-        let PeerSession::Connected { keepalive, .. } = &entry.session else {
-            return;
-        };
-
-        if keepalive.pending {
-            if let Some(entry) = self.peer.as_mut() {
-                entry.session = PeerSession::Disconnected;
-            }
-            self.emit_peer_status(emit);
-            self.drop_outbound();
-            self.abort_streams(QlError::SendFailed, emit);
-            return;
-        }
-
-        self.send_heartbeat_message(now, crypto);
-        if let Some(entry) = self.peer.as_mut() {
-            if let PeerSession::Connected { keepalive, .. } = &mut entry.session {
-                keepalive.pending = true;
-                keepalive.last_activity = Some(now);
-            }
-        }
     }
 }
 

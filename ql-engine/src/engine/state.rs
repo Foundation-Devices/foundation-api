@@ -1,42 +1,31 @@
 use std::{
     cell::Cell,
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap, VecDeque},
+    collections::{BinaryHeap, VecDeque},
     time::Instant,
 };
 
 use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 
-use super::{replay_cache::ReplayCache, stream::StreamStore, EngineConfig};
+use super::{replay_cache::ReplayCache, EngineConfig, EngineEvent};
 use crate::{
+    arena::{ArenaKey, GenerationalArena},
     identity::QlIdentity,
-    wire::{
-        handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
-        stream::{CloseCode, CloseTarget},
-        StreamSeq,
-    },
-    PacketId, Peer, StreamId,
+    stream::{self, StreamFsm},
+    wire::handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
+    PacketId, Peer,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Token(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WriteId(pub u64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WriteId(pub(crate) ArenaKey);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboundWriteKind {
     Control,
-    StreamAck {
-        stream_id: StreamId,
-    },
-    StreamFrame {
-        stream_id: StreamId,
-        tx_seq: StreamSeq,
-    },
-    StreamClose {
-        stream_id: StreamId,
-    },
+    Stream(stream::OutboundCompletion),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,19 +37,7 @@ pub struct OutboundWrite {
 #[derive(Debug)]
 pub struct ControlWrite {
     pub token: Token,
-    pub kind: OutboundWriteKind,
-    pub payload: ControlWritePayload,
-}
-
-#[derive(Debug)]
-pub enum ControlWritePayload {
-    Encoded(Vec<u8>),
-    StreamClose {
-        stream_id: StreamId,
-        target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
-    },
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -117,41 +94,6 @@ pub struct RecentReady {
     pub reply: HelloReply,
     pub ready: Ready,
     pub expires_at: Instant,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamNamespace {
-    Low,
-    High,
-}
-
-impl StreamNamespace {
-    const BIT: u32 = 1 << 31;
-
-    pub fn bit(self) -> u32 {
-        match self {
-            Self::Low => 0,
-            Self::High => Self::BIT,
-        }
-    }
-
-    pub fn for_local(local: XID, peer: XID) -> Self {
-        match local.data().cmp(peer.data()) {
-            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => Self::Low,
-            std::cmp::Ordering::Greater => Self::High,
-        }
-    }
-
-    pub fn matches(self, stream_id: StreamId) -> bool {
-        (stream_id.0 & Self::BIT) == self.bit()
-    }
-
-    pub fn remote(self) -> Self {
-        match self {
-            Self::Low => Self::High,
-            Self::High => Self::Low,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -221,9 +163,6 @@ impl PeerRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutKind {
     Outbound { token: Token },
-    HandshakeRetry { token: Token },
-    StreamAckDelay { stream_id: StreamId, token: Token },
-    StreamProvisional { stream_id: StreamId, token: Token },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,18 +188,17 @@ pub struct Engine {
     pub identity: QlIdentity,
     pub peer: Option<PeerRecord>,
     pub state: EngineState,
-    pub streams: StreamStore,
+    pub streams: StreamFsm,
 }
 
 pub struct EngineState {
     pub replay_cache: ReplayCache,
 
     pub next_token: Cell<u64>,
-    pub next_write_id: Cell<u64>,
     pub next_packet_id: Cell<u32>,
-    pub next_stream_id: Cell<u32>,
+    pub pending_events: VecDeque<EngineEvent>,
     pub control_outbound: VecDeque<ControlWrite>,
-    pub active_writes: HashMap<WriteId, ActiveWrite>,
+    pub active_writes: GenerationalArena<ActiveWrite>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     pub now: Instant,
 }
@@ -270,11 +208,10 @@ impl EngineState {
         Self {
             replay_cache: ReplayCache::new(),
             next_token: Cell::new(1),
-            next_write_id: Cell::new(1),
             next_packet_id: Cell::new(1),
-            next_stream_id: Cell::new(1),
+            pending_events: VecDeque::new(),
             control_outbound: VecDeque::new(),
-            active_writes: HashMap::new(),
+            active_writes: GenerationalArena::new(),
             timeouts: BinaryHeap::new(),
             now: Instant::now(),
         }
@@ -290,22 +227,10 @@ impl EngineState {
         Token(token)
     }
 
-    pub fn next_write_id(&self) -> WriteId {
-        let id = self.next_write_id.get();
-        self.next_write_id.set(id.wrapping_add(1));
-        WriteId(id)
-    }
-
     pub fn next_packet_id(&self) -> PacketId {
         let id = self.next_packet_id.get();
         self.next_packet_id.set(id.wrapping_add(1));
         PacketId(id)
-    }
-
-    pub fn next_stream_id(&self, namespace: StreamNamespace) -> StreamId {
-        let seq = self.next_stream_id.get();
-        self.next_stream_id.set(seq.wrapping_add(1));
-        StreamId((seq & !StreamNamespace::BIT) | namespace.bit())
     }
 
     pub fn enqueue_handshake_message(
@@ -315,21 +240,11 @@ impl EngineState {
         deadline: Instant,
         bytes: Vec<u8>,
     ) {
-        self.control_outbound.push_back(ControlWrite {
-            token,
-            kind: OutboundWriteKind::Control,
-            payload: ControlWritePayload::Encoded(bytes),
-        });
+        self.control_outbound
+            .push_back(ControlWrite { token, bytes });
         self.timeouts.push(Reverse(TimeoutEntry {
             at: deadline,
             kind: TimeoutKind::Outbound { token },
-        }));
-    }
-
-    pub fn schedule_handshake_retry(&mut self, token: Token, at: Instant) {
-        self.timeouts.push(Reverse(TimeoutEntry {
-            at,
-            kind: TimeoutKind::HandshakeRetry { token },
         }));
     }
 
@@ -340,43 +255,7 @@ impl EngineState {
         bytes: Vec<u8>,
     ) -> Token {
         let token = self.next_token();
-        let message = ControlWrite {
-            token,
-            kind: OutboundWriteKind::Control,
-            payload: ControlWritePayload::Encoded(bytes),
-        };
-        if priority {
-            self.control_outbound.push_front(message);
-        } else {
-            self.control_outbound.push_back(message);
-        }
-        self.timeouts.push(Reverse(TimeoutEntry {
-            at: self.now + config.packet_expiration,
-            kind: TimeoutKind::Outbound { token },
-        }));
-        token
-    }
-
-    pub fn enqueue_stream_close(
-        &mut self,
-        config: &EngineConfig,
-        priority: bool,
-        stream_id: StreamId,
-        target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
-    ) -> Token {
-        let token = self.next_token();
-        let message = ControlWrite {
-            token,
-            kind: OutboundWriteKind::StreamClose { stream_id },
-            payload: ControlWritePayload::StreamClose {
-                stream_id,
-                target,
-                code,
-                payload,
-            },
-        };
+        let message = ControlWrite { token, bytes };
         if priority {
             self.control_outbound.push_front(message);
         } else {
