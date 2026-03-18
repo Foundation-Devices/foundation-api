@@ -170,6 +170,14 @@ pub fn write_stream(
         .map_err(Into::into)
 }
 
+pub fn read_stream(
+    fsm: &mut QlFsm,
+    stream_id: StreamId,
+    out: &mut [u8],
+) -> Result<usize, QlFsmError> {
+    fsm.session.read_stream(stream_id, out).map_err(Into::into)
+}
+
 pub fn finish_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<(), QlFsmError> {
     ensure_peer_bound(fsm)?;
     fsm.session.finish_stream(stream_id).map_err(Into::into)

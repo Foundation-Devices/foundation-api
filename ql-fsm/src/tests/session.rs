@@ -1,9 +1,22 @@
 use std::time::Duration;
 
-use ql_wire::SessionCloseBody;
+use ql_wire::{SessionCloseBody, StreamId};
 
 use super::*;
 use crate::{session::StreamNamespace, QlFsmEvent, QlSessionEvent};
+
+fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        let read = fsm.read_stream(stream_id, &mut buf).unwrap();
+        if read == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..read]);
+    }
+    out
+}
 
 #[test]
 fn connected_fsms_deliver_stream_data() {
@@ -25,11 +38,9 @@ fn connected_fsms_deliver_stream_data() {
     );
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Data {
-            stream_id,
-            bytes: b"hello".to_vec(),
-        })
+        Some(QlSessionEvent::Readable(stream_id))
     );
+    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"hello".to_vec());
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Finished(stream_id))
@@ -78,11 +89,9 @@ fn lost_encrypted_record_is_retried_and_acked() {
     );
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Data {
-            stream_id,
-            bytes: b"retry".to_vec(),
-        })
+        Some(QlSessionEvent::Readable(stream_id))
     );
+    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"retry".to_vec());
 
     harness.advance(config.session_retransmit_timeout + Duration::from_millis(1));
     assert!(harness.next_outbound_a().is_none());
@@ -143,10 +152,11 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
     );
     assert_eq!(
         harness.a.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Data {
-            stream_id: stream_id_b,
-            bytes: b"from-b".to_vec(),
-        })
+        Some(QlSessionEvent::Readable(stream_id_b))
+    );
+    assert_eq!(
+        read_stream_all(&mut harness.a.fsm, stream_id_b),
+        b"from-b".to_vec()
     );
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
@@ -154,10 +164,11 @@ fn simultaneous_opens_use_disjoint_stream_id_namespaces() {
     );
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Data {
-            stream_id: stream_id_a,
-            bytes: b"from-a".to_vec(),
-        })
+        Some(QlSessionEvent::Readable(stream_id_a))
+    );
+    assert_eq!(
+        read_stream_all(&mut harness.b.fsm, stream_id_a),
+        b"from-a".to_vec()
     );
 }
 
@@ -189,11 +200,9 @@ fn queued_stream_work_auto_connects_and_drains_after_handshake() {
     );
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Data {
-            stream_id,
-            bytes: b"queued".to_vec(),
-        })
+        Some(QlSessionEvent::Readable(stream_id))
     );
+    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"queued".to_vec());
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Finished(stream_id))
@@ -283,11 +292,9 @@ fn returned_session_write_is_reissued_with_same_seq() {
     );
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Data {
-            stream_id,
-            bytes: b"retry".to_vec(),
-        })
+        Some(QlSessionEvent::Readable(stream_id))
     );
+    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"retry".to_vec());
 }
 
 #[test]

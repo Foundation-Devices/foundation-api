@@ -7,6 +7,19 @@ use ql_wire::{
 
 use super::{SessionFsm, SessionFsmConfig, SessionState};
 
+fn read_stream_all(fsm: &mut SessionFsm, stream_id: ql_wire::StreamId) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        let read = fsm.read_stream(stream_id, &mut buf).unwrap();
+        if read == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..read]);
+    }
+    out
+}
+
 fn ack(seq: u64, ack: SessionAck) -> SessionEnvelope {
     SessionEnvelope {
         seq: SessionSeq(seq),
@@ -184,7 +197,7 @@ fn local_inbound_close_ignores_late_remote_bytes() {
     );
 
     assert_eq!(fsm.session_state(), SessionState::Open);
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
     assert!(fsm.take_next_event().is_none());
 }
 
@@ -213,7 +226,7 @@ fn out_of_order_remote_stream_buffers_until_initial_bytes_arrive() {
         fsm.take_next_event(),
         Some(super::SessionEvent::Opened(stream_id))
     );
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
 
     fsm.receive(
         now + Duration::from_millis(1),
@@ -233,14 +246,7 @@ fn out_of_order_remote_stream_buffers_until_initial_bytes_arrive() {
         fsm.take_next_event(),
         Some(super::SessionEvent::Readable(stream_id))
     );
-    assert_eq!(
-        fsm.take_next_inbound(stream_id),
-        Some(super::StreamIncoming::Data(b"a".to_vec()))
-    );
-    assert_eq!(
-        fsm.take_next_inbound(stream_id),
-        Some(super::StreamIncoming::Data(b"b".to_vec()))
-    );
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"ab".to_vec());
 }
 
 #[test]
@@ -265,7 +271,7 @@ fn duplicate_committed_data_is_not_redelivered() {
     );
     let _ = fsm.take_next_event();
     let _ = fsm.take_next_event();
-    let _ = fsm.take_next_inbound(stream_id);
+    let _ = read_stream_all(&mut fsm, stream_id);
 
     fsm.receive(
         now + Duration::from_millis(1),
@@ -277,7 +283,7 @@ fn duplicate_committed_data_is_not_redelivered() {
     );
 
     assert!(fsm.take_next_event().is_none());
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
 }
 
 #[test]
@@ -425,7 +431,7 @@ fn duplicate_old_packet_seq_is_ignored() {
     );
     let _ = fsm.take_next_event();
     let _ = fsm.take_next_event();
-    let _ = fsm.take_next_inbound(stream_id);
+    let _ = read_stream_all(&mut fsm, stream_id);
 
     fsm.receive(
         now + Duration::from_millis(1),
@@ -437,7 +443,7 @@ fn duplicate_old_packet_seq_is_ignored() {
     );
 
     assert!(fsm.take_next_event().is_none());
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
 }
 
 #[test]
@@ -463,12 +469,9 @@ fn retransmitted_stream_close_is_idempotent() {
 
     assert_eq!(
         fsm.take_next_event(),
-        Some(super::SessionEvent::Readable(stream_id))
+        Some(super::SessionEvent::Closed(frame.clone()))
     );
-    assert_eq!(
-        fsm.take_next_inbound(stream_id),
-        Some(super::StreamIncoming::Closed(frame.clone()))
-    );
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
 
     fsm.receive(
         now + Duration::from_millis(1),
@@ -480,5 +483,5 @@ fn retransmitted_stream_close_is_idempotent() {
     );
 
     assert!(fsm.take_next_event().is_none());
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
 }

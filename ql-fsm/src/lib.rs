@@ -51,7 +51,7 @@ pub enum QlFsmEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlSessionEvent {
     Opened(StreamId),
-    Data { stream_id: StreamId, bytes: Vec<u8> },
+    Readable(StreamId),
     Finished(StreamId),
     Closed(StreamClose),
     WritableClosed(StreamId),
@@ -78,6 +78,7 @@ pub struct QlFsmConfig {
     pub session_retransmit_timeout: Duration,
     pub session_keepalive_interval: Duration,
     pub session_peer_timeout: Duration,
+    pub session_stream_chunk_size: usize,
 }
 
 impl Default for QlFsmConfig {
@@ -91,6 +92,7 @@ impl Default for QlFsmConfig {
             session_retransmit_timeout: Duration::from_millis(150),
             session_keepalive_interval: Duration::from_secs(10),
             session_peer_timeout: Duration::from_secs(30),
+            session_stream_chunk_size: 16 * 1024,
         }
     }
 }
@@ -112,6 +114,7 @@ impl QlFsm {
             session: session::SessionFsm::new(
                 session::SessionFsmConfig {
                     local_namespace: session::StreamNamespace::Low,
+                    stream_chunk_size: config.session_stream_chunk_size,
                     ack_delay: config.session_ack_delay,
                     retransmit_timeout: config.session_retransmit_timeout,
                     keepalive_interval: config.session_keepalive_interval,
@@ -210,6 +213,14 @@ impl QlFsm {
 
     pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), QlFsmError> {
         implementation::write_stream(self, stream_id, bytes)
+    }
+
+    pub fn read_stream(
+        &mut self,
+        stream_id: StreamId,
+        out: &mut [u8],
+    ) -> Result<usize, QlFsmError> {
+        implementation::read_stream(self, stream_id, out)
     }
 
     pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), QlFsmError> {

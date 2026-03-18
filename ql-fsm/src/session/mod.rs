@@ -14,8 +14,8 @@ use ql_wire::{
 use self::{
     ring::SeqRingInsertError,
     state::{
-        AckState, PendingChunk, PendingSessionBody, PendingStreamBody, SessionFsmState, StreamRole,
-        StreamState, TxEntry, TxState,
+        AckState, InboundState, OutboundState, PendingRxChunk, PendingSessionBody,
+        SessionFsmState, StreamRole, StreamState, TxEntry, TxState,
     },
 };
 
@@ -57,6 +57,7 @@ impl StreamNamespace {
 #[derive(Debug, Clone, Copy)]
 pub struct SessionFsmConfig {
     pub local_namespace: StreamNamespace,
+    pub stream_chunk_size: usize,
     pub ack_delay: Duration,
     pub retransmit_timeout: Duration,
     pub keepalive_interval: Duration,
@@ -67,6 +68,7 @@ impl Default for SessionFsmConfig {
     fn default() -> Self {
         Self {
             local_namespace: StreamNamespace::Low,
+            stream_chunk_size: 16 * 1024,
             ack_delay: Duration::from_millis(5),
             retransmit_timeout: Duration::from_millis(150),
             keepalive_interval: Duration::from_secs(10),
@@ -79,16 +81,11 @@ impl Default for SessionFsmConfig {
 pub enum SessionEvent {
     Opened(StreamId),
     Readable(StreamId),
+    Finished(StreamId),
+    Closed(StreamClose),
     WritableClosed(StreamId),
     Unpaired,
     SessionClosed(SessionCloseBody),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StreamIncoming {
-    Data(Vec<u8>),
-    Finished,
-    Closed(StreamClose),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +110,8 @@ pub struct SessionFsm {
 }
 
 impl SessionFsm {
-    pub fn new(config: SessionFsmConfig, now: Instant) -> Self {
+    pub fn new(mut config: SessionFsmConfig, now: Instant) -> Self {
+        config.stream_chunk_size = config.stream_chunk_size.max(1);
         Self {
             config,
             state: SessionFsmState {
@@ -160,14 +158,7 @@ impl SessionFsm {
             return Err(StreamError::NotWritable);
         }
 
-        let frame = StreamChunk {
-            stream_id,
-            offset: stream.next_send_offset,
-            bytes,
-            fin: false,
-        };
-        stream.next_send_offset += frame.bytes.len() as u64;
-        stream.send_queue.push_back(PendingStreamBody::Chunk(frame));
+        stream.send_buf.extend(bytes);
         Ok(())
     }
 
@@ -182,15 +173,7 @@ impl SessionFsm {
             return Err(StreamError::NotWritable);
         }
 
-        stream.outbound_finished = true;
-        stream
-            .send_queue
-            .push_back(PendingStreamBody::Chunk(StreamChunk {
-                stream_id,
-                offset: stream.next_send_offset,
-                bytes: Vec::new(),
-                fin: true,
-            }));
+        stream.outbound_state = OutboundState::FinQueued;
         Ok(())
     }
 
@@ -209,15 +192,43 @@ impl SessionFsm {
             .ok_or(StreamError::MissingStream)?;
 
         Self::apply_close_to_stream(stream, target);
-        stream
-            .send_queue
-            .push_back(PendingStreamBody::Close(StreamClose {
-                stream_id,
-                target,
-                code,
-                payload,
-            }));
+        stream.pending_close = Some(StreamClose {
+            stream_id,
+            target,
+            code,
+            payload,
+        });
         Ok(())
+    }
+
+    pub fn read_stream(
+        &mut self,
+        stream_id: StreamId,
+        out: &mut [u8],
+    ) -> Result<usize, StreamError> {
+        let stream = self
+            .state
+            .streams
+            .get_mut(&stream_id)
+            .ok_or(StreamError::MissingStream)?;
+        if out.is_empty() || stream.recv_buf.is_empty() {
+            return Ok(0);
+        }
+
+        let (front, back) = stream.recv_buf.as_slices();
+        let front_len = front.len().min(out.len());
+        out[..front_len].copy_from_slice(&front[..front_len]);
+
+        let mut written = front_len;
+        let remaining = out.len() - front_len;
+        if remaining > 0 {
+            let back_len = back.len().min(remaining);
+            out[written..written + back_len].copy_from_slice(&back[..back_len]);
+            written += back_len;
+        }
+
+        stream.recv_buf.drain(..written);
+        Ok(written)
     }
 
     pub fn queue_ping(&mut self) -> Result<(), StreamError> {
@@ -459,23 +470,18 @@ impl SessionFsm {
         self.state.events.pop_front()
     }
 
-    pub fn take_next_inbound(&mut self, stream_id: StreamId) -> Option<StreamIncoming> {
-        self.state
-            .streams
-            .get_mut(&stream_id)
-            .and_then(|stream| stream.inbound_queue.pop_front())
-    }
-
     #[cfg(test)]
     pub fn session_state(&self) -> SessionState {
         self.state.session_state
     }
 
     pub fn has_pending_stream_work(&self) -> bool {
-        self.state
-            .streams
-            .values()
-            .any(|stream| !stream.send_queue.is_empty())
+        self.state.streams.values().any(|stream| {
+            !stream.retransmit_queue.is_empty()
+                || stream.pending_close.is_some()
+                || !stream.send_buf.is_empty()
+                || matches!(stream.outbound_state, OutboundState::FinQueued)
+        })
     }
 
     fn next_pending_body(&mut self) -> Option<PendingSessionBody> {
@@ -509,23 +515,61 @@ impl SessionFsm {
                     .state
                     .streams
                     .get_index(index)
-                    .is_some_and(|(_, stream)| !stream.send_queue.is_empty());
+                    .is_some_and(|(_, stream)| {
+                        !stream.retransmit_queue.is_empty()
+                            || stream.pending_close.is_some()
+                            || !stream.send_buf.is_empty()
+                            || matches!(stream.outbound_state, OutboundState::FinQueued)
+                    });
                 if !has_pending {
                     continue;
                 }
 
-                let item = {
-                    let Some((_, stream)) = self.state.streams.get_index_mut(index) else {
+                let body = {
+                    let Some((&stream_id, stream)) = self.state.streams.get_index_mut(index) else {
                         continue;
                     };
-                    let Some(item) = stream.send_queue.pop_front() else {
-                        continue;
-                    };
-                    item
+                    if let Some(body) = stream.retransmit_queue.pop_front() {
+                        Some(body)
+                    } else if let Some(close) = stream.pending_close.take() {
+                        Some(SessionBody::StreamClose(close))
+                    } else if !stream.send_buf.is_empty() {
+                        let len = stream.send_buf.len().min(self.config.stream_chunk_size);
+                        let bytes: Vec<_> = stream.send_buf.drain(..len).collect();
+                        let fin = if stream.send_buf.is_empty()
+                            && matches!(stream.outbound_state, OutboundState::FinQueued)
+                        {
+                            stream.outbound_state = OutboundState::Finished;
+                            true
+                        } else {
+                            false
+                        };
+                        let frame = StreamChunk {
+                            stream_id,
+                            offset: stream.next_send_offset,
+                            bytes,
+                            fin,
+                        };
+                        stream.next_send_offset += frame.bytes.len() as u64;
+                        Some(SessionBody::Stream(frame))
+                    } else if matches!(stream.outbound_state, OutboundState::FinQueued) {
+                        stream.outbound_state = OutboundState::Finished;
+                        Some(SessionBody::Stream(StreamChunk {
+                            stream_id,
+                            offset: stream.next_send_offset,
+                            bytes: Vec::new(),
+                            fin: true,
+                        }))
+                    } else {
+                        None
+                    }
+                };
+                let Some(body) = body else {
+                    continue;
                 };
                 self.state.next_stream_index = (index + 1) % len;
                 return Some(PendingSessionBody {
-                    body: item.to_session_body(),
+                    body,
                     retransmit: true,
                 });
             }
@@ -622,16 +666,20 @@ impl SessionFsm {
         match pending.body {
             SessionBody::Stream(frame) => {
                 if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
-                    stream
-                        .send_queue
-                        .push_front(PendingStreamBody::Chunk(frame));
+                    if !matches!(stream.outbound_state, OutboundState::Closed) {
+                        stream
+                            .retransmit_queue
+                            .push_front(SessionBody::Stream(frame));
+                    }
                 }
             }
             SessionBody::StreamClose(frame) => {
                 if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
-                    stream
-                        .send_queue
-                        .push_front(PendingStreamBody::Close(frame));
+                    if !matches!(stream.outbound_state, OutboundState::Closed) {
+                        stream
+                            .retransmit_queue
+                            .push_front(SessionBody::StreamClose(frame));
+                    }
                 }
             }
             body => match body {
@@ -663,10 +711,13 @@ impl SessionFsm {
         let Some(stream) = self.state.streams.get_mut(&stream_id) else {
             return;
         };
-        if stream.inbound_discarding {
+        if matches!(stream.inbound_state, InboundState::Discarding) {
             return;
         }
-        if stream.inbound_closed || stream.inbound_finished {
+        if matches!(
+            stream.inbound_state,
+            InboundState::Closed(_) | InboundState::Finished
+        ) {
             if frame.offset + frame.bytes.len() as u64 <= stream.next_recv_offset {
                 return;
             }
@@ -688,18 +739,26 @@ impl SessionFsm {
         }
 
         if frame.offset == stream.next_recv_offset {
+            let was_readable = !stream.recv_buf.is_empty();
+            let was_finished = matches!(stream.inbound_state, InboundState::Finished);
             Self::commit_inbound_frame(stream, frame);
             Self::drain_pending_recv(stream);
-            self.state
-                .events
-                .push_back(SessionEvent::Readable(stream_id));
+            let became_readable = !was_readable && !stream.recv_buf.is_empty();
+            let became_finished =
+                !was_finished && matches!(stream.inbound_state, InboundState::Finished);
+            if became_readable {
+                self.state.events.push_back(SessionEvent::Readable(stream_id));
+            }
+            if became_finished {
+                self.state.events.push_back(SessionEvent::Finished(stream_id));
+            }
             return;
         }
 
         if Self::insert_pending_chunk(
             stream,
             frame.offset,
-            PendingChunk {
+            PendingRxChunk {
                 bytes: frame.bytes,
                 fin: frame.fin,
             },
@@ -720,20 +779,24 @@ impl SessionFsm {
             return;
         };
 
-        if Self::target_affects_inbound(stream.role, frame.target) && !stream.inbound_closed {
-            stream.inbound_closed = true;
-            stream.inbound_discarding = false;
+        if Self::target_affects_inbound(stream.role, frame.target)
+            && !matches!(
+                stream.inbound_state,
+                InboundState::Closed(_) | InboundState::Discarding
+            )
+        {
+            stream.inbound_state = InboundState::Closed(frame.clone());
+            stream.recv_buf.clear();
             stream.pending_recv.clear();
-            stream
-                .inbound_queue
-                .push_back(StreamIncoming::Closed(frame.clone()));
-            self.state
-                .events
-                .push_back(SessionEvent::Readable(frame.stream_id));
+            self.state.events.push_back(SessionEvent::Closed(frame.clone()));
         }
-        if Self::target_affects_outbound(stream.role, frame.target) && !stream.outbound_closed {
-            stream.outbound_closed = true;
-            stream.send_queue.clear();
+        if Self::target_affects_outbound(stream.role, frame.target)
+            && !matches!(stream.outbound_state, OutboundState::Closed)
+        {
+            stream.outbound_state = OutboundState::Closed;
+            stream.send_buf.clear();
+            stream.retransmit_queue.clear();
+            stream.pending_close = None;
             self.state
                 .events
                 .push_back(SessionEvent::WritableClosed(frame.stream_id));
@@ -742,13 +805,14 @@ impl SessionFsm {
 
     fn apply_close_to_stream(stream: &mut StreamState, target: CloseTarget) {
         if Self::target_affects_inbound(stream.role, target) {
-            stream.inbound_discarding = true;
+            stream.inbound_state = InboundState::Discarding;
+            stream.recv_buf.clear();
             stream.pending_recv.clear();
         }
         if Self::target_affects_outbound(stream.role, target) {
-            stream.outbound_closed = true;
-            stream.outbound_finished = true;
-            stream.send_queue.clear();
+            stream.outbound_state = OutboundState::Closed;
+            stream.send_buf.clear();
+            stream.retransmit_queue.clear();
         }
     }
 
@@ -767,18 +831,17 @@ impl SessionFsm {
     fn commit_inbound_chunk(stream: &mut StreamState, bytes: Vec<u8>, fin: bool) {
         stream.next_recv_offset += bytes.len() as u64;
         if !bytes.is_empty() {
-            stream.inbound_queue.push_back(StreamIncoming::Data(bytes));
+            stream.recv_buf.extend(bytes);
         }
         if fin {
-            stream.inbound_finished = true;
-            stream.inbound_queue.push_back(StreamIncoming::Finished);
+            stream.inbound_state = InboundState::Finished;
         }
     }
 
     fn drain_pending_recv(stream: &mut StreamState) {
         while let Some(chunk) = stream.pending_recv.remove(&stream.next_recv_offset) {
             Self::commit_inbound_chunk(stream, chunk.bytes, chunk.fin);
-            if stream.inbound_finished {
+            if matches!(stream.inbound_state, InboundState::Finished) {
                 break;
             }
         }
@@ -787,7 +850,7 @@ impl SessionFsm {
     fn insert_pending_chunk(
         stream: &mut StreamState,
         offset: u64,
-        chunk: PendingChunk,
+        chunk: PendingRxChunk,
     ) -> Result<(), ()> {
         let end = chunk.end_offset(offset);
 

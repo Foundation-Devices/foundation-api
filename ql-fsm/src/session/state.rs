@@ -5,11 +5,10 @@ use std::{
 
 use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamChunk, StreamClose,
-    StreamId,
+    CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamClose, StreamId,
 };
 
-use super::{ring::SeqRing, SessionEvent, SessionState, StreamIncoming};
+use super::{ring::SeqRing, SessionEvent, SessionState};
 
 pub const SESSION_WINDOW_CAPACITY: usize = 64;
 
@@ -36,66 +35,65 @@ impl StreamRole {
 }
 
 #[derive(Debug, Clone)]
-pub struct PendingChunk {
+pub struct PendingRxChunk {
     pub bytes: Vec<u8>,
     pub fin: bool,
 }
 
-impl PendingChunk {
+impl PendingRxChunk {
     pub fn end_offset(&self, offset: u64) -> u64 {
         offset + self.bytes.len() as u64
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum PendingStreamBody {
-    Chunk(StreamChunk),
-    Close(StreamClose),
+pub enum OutboundState {
+    Open,
+    FinQueued,
+    Finished,
+    Closed,
 }
 
-impl PendingStreamBody {
-    pub fn to_session_body(&self) -> SessionBody {
-        match self {
-            Self::Chunk(frame) => SessionBody::Stream(frame.clone()),
-            Self::Close(frame) => SessionBody::StreamClose(frame.clone()),
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InboundState {
+    Open,
+    Finished,
+    Closed(StreamClose),
+    Discarding,
 }
 
 #[derive(Debug)]
 pub struct StreamState {
     pub role: StreamRole,
-    pub send_queue: VecDeque<PendingStreamBody>,
-    pub inbound_queue: VecDeque<StreamIncoming>,
-    pub pending_recv: BTreeMap<u64, PendingChunk>,
+    pub send_buf: VecDeque<u8>,
+    pub retransmit_queue: VecDeque<SessionBody>,
+    pub pending_close: Option<StreamClose>,
+    pub recv_buf: VecDeque<u8>,
+    pub pending_recv: BTreeMap<u64, PendingRxChunk>,
     pub next_send_offset: u64,
     pub next_recv_offset: u64,
-    pub outbound_finished: bool,
-    pub outbound_closed: bool,
-    pub inbound_finished: bool,
-    pub inbound_closed: bool,
-    pub inbound_discarding: bool,
+    pub outbound_state: OutboundState,
+    pub inbound_state: InboundState,
 }
 
 impl StreamState {
     pub fn new(role: StreamRole) -> Self {
         Self {
             role,
-            send_queue: VecDeque::new(),
-            inbound_queue: VecDeque::new(),
+            send_buf: VecDeque::new(),
+            retransmit_queue: VecDeque::new(),
+            pending_close: None,
+            recv_buf: VecDeque::new(),
             pending_recv: BTreeMap::new(),
             next_send_offset: 0,
             next_recv_offset: 0,
-            outbound_finished: false,
-            outbound_closed: false,
-            inbound_finished: false,
-            inbound_closed: false,
-            inbound_discarding: false,
+            outbound_state: OutboundState::Open,
+            inbound_state: InboundState::Open,
         }
     }
 
     pub fn is_writable(&self) -> bool {
-        !self.outbound_finished && !self.outbound_closed
+        matches!(self.outbound_state, OutboundState::Open)
     }
 }
 
