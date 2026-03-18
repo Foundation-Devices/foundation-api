@@ -8,13 +8,6 @@ license = "Proprietary"
 [dependencies]
 indexmap = "2"
 ql-wire = { path = "../ql-wire" }
-rkyv = { version = "0.8", default-features = false, features = [
-  "std",
-  "bytecheck",
-  "little_endian",
-  "unaligned",
-  "pointer_width_32",
-] }
 thiserror = { version = "2" }
 
 [dev-dependencies]

@@ -5,8 +5,8 @@ use std::{
 
 use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamCloseFrame,
-    StreamFrame, StreamId,
+    CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamChunk, StreamClose,
+    StreamId,
 };
 
 use super::{ring::SeqRing, SessionEvent, SessionState, StreamIncoming};
@@ -49,15 +49,15 @@ impl PendingChunk {
 
 #[derive(Debug, Clone)]
 pub enum PendingStreamBody {
-    Stream(StreamFrame),
-    StreamClose(StreamCloseFrame),
+    Chunk(StreamChunk),
+    Close(StreamClose),
 }
 
 impl PendingStreamBody {
     pub fn to_session_body(&self) -> SessionBody {
         match self {
-            Self::Stream(frame) => SessionBody::Stream(frame.clone()),
-            Self::StreamClose(frame) => SessionBody::StreamClose(frame.clone()),
+            Self::Chunk(frame) => SessionBody::Stream(frame.clone()),
+            Self::Close(frame) => SessionBody::StreamClose(frame.clone()),
         }
     }
 }

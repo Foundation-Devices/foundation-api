@@ -233,10 +233,7 @@ fn initiator_waits_for_ready_before_connecting() {
         .unwrap();
 
     let confirm = harness.next_outbound_a().unwrap();
-    assert!(matches!(
-        confirm.payload,
-        QlPayload::Handshake(ql_wire::handshake::HandshakeRecord::Confirm(_))
-    ));
+    assert!(matches!(confirm.payload, QlPayload::Confirm(_)));
     harness.deliver_to_b(confirm);
     let ready = harness.next_outbound_b().unwrap();
 
@@ -254,7 +251,7 @@ fn initiator_waits_for_ready_before_connecting() {
         Some(ConnectionState::Connected { .. })
     ));
     let record = harness.next_outbound_a().unwrap();
-    assert!(matches!(record.payload, QlPayload::Encrypted(_)));
+    assert!(matches!(record.payload, QlPayload::Session(_)));
 }
 
 #[test]

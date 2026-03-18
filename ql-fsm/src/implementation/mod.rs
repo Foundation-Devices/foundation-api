@@ -7,14 +7,11 @@ use std::time::Duration;
 pub use fsm::*;
 pub use handshake::*;
 pub use peer::*;
-use ql_wire::{
-    self as wire, ControlId, ControlMeta, QlHeader, QlPayload, QlRecord, SessionKey, XID,
-};
-use rkyv::api::low;
+use ql_wire::{ControlId, ControlMeta, QlHeader, QlPayload, QlRecord, SessionKey, XID};
 
 use crate::{
     session::{SessionEvent, SessionFsmConfig, StreamIncoming, StreamNamespace},
-    QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent,
+    QlFsm, QlFsmEvent, QlSessionEvent,
 };
 
 fn emit_peer_status(fsm: &mut QlFsm) {
@@ -35,13 +32,13 @@ fn next_control_meta(fsm: &mut QlFsm, lifetime: Duration) -> ControlMeta {
     }
 }
 
-fn enqueue_handshake(fsm: &mut QlFsm, peer: XID, record: wire::handshake::HandshakeRecord) {
+fn enqueue_handshake(fsm: &mut QlFsm, peer: XID, payload: QlPayload) {
     fsm.state.outbound.push_back(QlRecord {
         header: QlHeader {
             sender: fsm.identity.xid,
             recipient: peer,
         },
-        payload: QlPayload::Handshake(record),
+        payload,
     });
 }
 
@@ -154,10 +151,4 @@ fn duration_to_secs(duration: Duration) -> u64 {
     duration
         .as_secs()
         .saturating_add(u64::from(duration.subsec_nanos() > 0))
-}
-
-fn deserialize_archived<T>(
-    value: &impl rkyv::Deserialize<T, low::LowDeserializer<rkyv::rancor::Error>>,
-) -> Result<T, QlFsmError> {
-    low::deserialize::<T, rkyv::rancor::Error>(value).map_err(|_| QlFsmError::InvalidPayload)
 }

@@ -7,9 +7,8 @@ mod tests;
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    encrypted::{ping::PingBody, unpair::UnpairBody},
-    CloseCode, CloseTarget, SessionBody, SessionCloseBody, SessionEnvelope, SessionSeq,
-    StreamCloseFrame, StreamFrame, StreamId, XID,
+    CloseCode, CloseTarget, PingBody, SessionBody, SessionCloseBody, SessionEnvelope, SessionSeq,
+    StreamChunk, StreamClose, StreamId, UnpairBody, XID,
 };
 
 use self::{
@@ -89,7 +88,7 @@ pub enum SessionEvent {
 pub enum StreamIncoming {
     Data(Vec<u8>),
     Finished,
-    Closed(StreamCloseFrame),
+    Closed(StreamClose),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,16 +160,14 @@ impl SessionFsm {
             return Err(StreamError::NotWritable);
         }
 
-        let frame = StreamFrame {
+        let frame = StreamChunk {
             stream_id,
             offset: stream.next_send_offset,
             bytes,
             fin: false,
         };
         stream.next_send_offset += frame.bytes.len() as u64;
-        stream
-            .send_queue
-            .push_back(PendingStreamBody::Stream(frame));
+        stream.send_queue.push_back(PendingStreamBody::Chunk(frame));
         Ok(())
     }
 
@@ -188,7 +185,7 @@ impl SessionFsm {
         stream.outbound_finished = true;
         stream
             .send_queue
-            .push_back(PendingStreamBody::Stream(StreamFrame {
+            .push_back(PendingStreamBody::Chunk(StreamChunk {
                 stream_id,
                 offset: stream.next_send_offset,
                 bytes: Vec::new(),
@@ -214,7 +211,7 @@ impl SessionFsm {
         Self::apply_close_to_stream(stream, target);
         stream
             .send_queue
-            .push_back(PendingStreamBody::StreamClose(StreamCloseFrame {
+            .push_back(PendingStreamBody::Close(StreamClose {
                 stream_id,
                 target,
                 code,
@@ -627,14 +624,14 @@ impl SessionFsm {
                 if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
                     stream
                         .send_queue
-                        .push_front(PendingStreamBody::Stream(frame));
+                        .push_front(PendingStreamBody::Chunk(frame));
                 }
             }
             SessionBody::StreamClose(frame) => {
                 if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
                     stream
                         .send_queue
-                        .push_front(PendingStreamBody::StreamClose(frame));
+                        .push_front(PendingStreamBody::Close(frame));
                 }
             }
             body => match body {
@@ -647,7 +644,7 @@ impl SessionFsm {
         }
     }
 
-    fn handle_stream_frame(&mut self, frame: StreamFrame) {
+    fn handle_stream_frame(&mut self, frame: StreamChunk) {
         let stream_id = frame.stream_id;
         let remote_namespace = self.config.local_namespace.remote();
         if !self.state.streams.contains_key(&stream_id) {
@@ -715,7 +712,7 @@ impl SessionFsm {
         }
     }
 
-    fn handle_stream_close(&mut self, frame: StreamCloseFrame) {
+    fn handle_stream_close(&mut self, frame: StreamClose) {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
             self.fail_session(SessionCloseBody {
                 code: CloseCode::PROTOCOL,
@@ -763,7 +760,7 @@ impl SessionFsm {
         matches!(target, CloseTarget::Both) || role.outbound_target() == target
     }
 
-    fn commit_inbound_frame(stream: &mut StreamState, frame: StreamFrame) {
+    fn commit_inbound_frame(stream: &mut StreamState, frame: StreamChunk) {
         Self::commit_inbound_chunk(stream, frame.bytes, frame.fin);
     }
 

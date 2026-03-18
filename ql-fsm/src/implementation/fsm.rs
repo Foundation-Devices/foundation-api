@@ -1,9 +1,6 @@
 use std::time::Instant;
 
-use ql_wire::{
-    self as wire, handshake::ArchivedHandshakeRecord, ArchivedQlPayload, CloseCode, CloseTarget,
-    Nonce, QlCrypto, QlHeader, StreamId,
-};
+use ql_wire::{self as wire, CloseCode, CloseTarget, Nonce, QlCrypto, QlPayloadRef, StreamId};
 
 use crate::{OutboundWrite, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId};
 
@@ -12,14 +9,12 @@ pub fn receive(
     mut bytes: Vec<u8>,
     crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
-    let archived = wire::QlRecord::access_mut(&mut bytes)?;
-    let archived = unsafe { archived.unseal_unchecked() };
-    let header: QlHeader = super::deserialize_archived(&archived.header)?;
+    let wire::QlRecordRef { header, payload } = wire::QlRecord::parse_mut(&mut bytes)?;
 
     if header.recipient != fsm.identity.xid {
         return Ok(());
     }
-    if !matches!(&archived.payload, ArchivedQlPayload::Pair(_)) {
+    if !matches!(&payload, QlPayloadRef::PairRequest(_)) {
         let Some(peer) = fsm.peer.as_ref().map(|entry| entry.peer.xid) else {
             return Ok(());
         };
@@ -28,31 +23,32 @@ pub fn receive(
         }
     }
 
-    match &mut archived.payload {
-        ArchivedQlPayload::Pair(request) => {
-            super::handle_pair(fsm, crypto, &header, request)?;
+    match payload {
+        QlPayloadRef::PairRequest(mut request) => {
+            super::handle_pair(fsm, crypto, &header, &mut request)?;
         }
-        ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Hello(archived_hello)) => {
-            super::handle_hello(fsm, crypto, &header, archived_hello)?;
+        QlPayloadRef::Hello(hello) => {
+            super::handle_hello(fsm, crypto, &header, &hello)?;
         }
-        ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::HelloReply(archived_reply)) => {
-            super::handle_hello_reply(fsm, crypto, &header, archived_reply)?;
+        QlPayloadRef::HelloReply(reply) => {
+            super::handle_hello_reply(fsm, crypto, &header, &reply)?;
         }
-        ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Confirm(archived_confirm)) => {
-            super::handle_confirm(fsm, crypto, &header, archived_confirm)?;
+        QlPayloadRef::Confirm(confirm) => {
+            super::handle_confirm(fsm, crypto, &header, &confirm)?;
         }
-        ArchivedQlPayload::Handshake(ArchivedHandshakeRecord::Ready(archived_ready)) => {
-            super::handle_ready(fsm, crypto, &header, archived_ready)?;
+        QlPayloadRef::Ready(mut ready) => {
+            super::handle_ready(fsm, crypto, &header, &mut ready)?;
         }
-        ArchivedQlPayload::Encrypted(encrypted) => {
+        QlPayloadRef::Session(mut encrypted) => {
             let Some((_, session_key)) = super::peer_session(fsm) else {
                 return Ok(());
             };
-            let envelope =
-                match wire::encrypted::decrypt_record(crypto, &header, encrypted, &session_key) {
-                    Ok(envelope) => envelope,
-                    Err(_) => return Ok(()),
-                };
+            let envelope = match wire::decrypt_record(crypto, &header, &mut encrypted, &session_key)
+                .and_then(|envelope| envelope.to_session_envelope())
+            {
+                Ok(envelope) => envelope,
+                Err(_) => return Ok(()),
+            };
             fsm.session.receive(fsm.state.now.instant, envelope);
             super::drain_session_events(fsm);
         }
@@ -103,12 +99,12 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
 
     let (recipient, session_key) = super::peer_session(fsm)?;
     let envelope = fsm.session.take_next_write(fsm.state.now.instant)?;
-    let mut nonce = [0u8; Nonce::NONCE_SIZE];
+    let mut nonce = [0u8; Nonce::SIZE];
     crypto.fill_random_bytes(&mut nonce);
     Some(OutboundWrite {
-        record: wire::encrypted::encrypt_record(
+        record: wire::encrypt_record(
             crypto,
-            QlHeader {
+            wire::QlHeader {
                 sender: fsm.identity.xid,
                 recipient,
             },

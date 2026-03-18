@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 pub use error::QlFsmError;
 use ql_wire::{
     CloseCode, CloseTarget, MlDsaPublicKey, MlKemPublicKey, QlCrypto, QlIdentity, QlRecord,
-    SessionCloseBody, SessionSeq, StreamCloseFrame, StreamId, XID,
+    SessionCloseBody, SessionSeq, StreamClose, StreamId, XID,
 };
 
 use crate::{
@@ -53,7 +53,7 @@ pub enum QlSessionEvent {
     Opened(StreamId),
     Data { stream_id: StreamId, bytes: Vec<u8> },
     Finished(StreamId),
-    Closed(StreamCloseFrame),
+    Closed(StreamClose),
     WritableClosed(StreamId),
     Unpaired,
     SessionClosed(SessionCloseBody),

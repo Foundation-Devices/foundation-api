@@ -1,14 +1,13 @@
 use std::{cmp::Ordering, time::Instant};
 
 use ql_wire::{
-    self as wire,
-    handshake::{Confirm, Hello, HelloReply, Ready},
-    ControlMeta, MlDsaPublicKey, QlCrypto, QlHeader, SessionKey, XID,
+    self as wire, Confirm, Hello, HelloReply, MlDsaPublicKey, Nonce, QlCrypto, QlHeader, QlPayload,
+    Ready, ReadyRef, SessionKey, XID,
 };
 
 use super::{
-    deserialize_archived, emit_peer_status, enqueue_handshake, fail_pending_connect_session,
-    is_replayed_control, next_control_meta,
+    emit_peer_status, enqueue_handshake, fail_pending_connect_session, is_replayed_control,
+    next_control_meta,
 };
 use crate::{
     state::{ConnectionState, HandshakeInitiator, HandshakeResponder, RecentReady},
@@ -49,19 +48,18 @@ pub fn handle_hello(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    archived_hello: &wire::handshake::ArchivedHello,
+    hello: &Hello,
 ) -> Result<(), QlFsmError> {
-    let hello: Hello = deserialize_archived(archived_hello)?;
     let action = {
         let Some(entry) = fsm.peer.as_ref() else {
             return Ok(());
         };
-        if wire::handshake::verify_hello(
+        if wire::verify_hello(
             crypto,
             header.sender,
             fsm.identity.xid,
             &entry.peer.signing_key,
-            archived_hello,
+            hello,
             fsm.state.now.unix_secs,
         )
         .is_err()
@@ -102,11 +100,7 @@ pub fn handle_hello(
     match action {
         HelloAction::Ignore => {}
         HelloAction::ResendReply { reply } => {
-            enqueue_handshake(
-                fsm,
-                header.sender,
-                wire::handshake::HandshakeRecord::HelloReply(reply),
-            );
+            enqueue_handshake(fsm, header.sender, QlPayload::HelloReply(reply));
         }
         HelloAction::StartResponder => {
             if is_replayed_control(fsm, header.sender, hello.meta) {
@@ -115,13 +109,13 @@ pub fn handle_hello(
 
             let peer = fsm.peer.as_ref().map(|entry| entry.peer.clone()).unwrap();
             let reply_meta = next_control_meta(fsm, fsm.config.handshake_timeout);
-            let responder = wire::handshake::respond_hello(
+            let responder = wire::respond_hello(
                 crypto,
                 &fsm.identity,
                 peer.xid,
                 &peer.signing_key,
                 &peer.encapsulation_key,
-                archived_hello,
+                hello,
                 reply_meta,
                 fsm.state.now.unix_secs,
             );
@@ -151,11 +145,7 @@ pub fn handle_hello(
                     },
                 };
             }
-            enqueue_handshake(
-                fsm,
-                header.sender,
-                wire::handshake::HandshakeRecord::HelloReply(reply),
-            );
+            enqueue_handshake(fsm, header.sender, QlPayload::HelloReply(reply));
             emit_peer_status(fsm);
         }
     }
@@ -167,9 +157,8 @@ pub fn handle_hello_reply(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    archived_reply: &wire::handshake::ArchivedHelloReply,
+    reply: &HelloReply,
 ) -> Result<(), QlFsmError> {
-    let reply: HelloReply = deserialize_archived(archived_reply)?;
     let action = {
         let Some(entry) = fsm.peer.as_ref() else {
             return Ok(());
@@ -204,11 +193,7 @@ pub fn handle_hello_reply(
 
     match action {
         HelloReplyAction::ResendConfirm { confirm } => {
-            enqueue_handshake(
-                fsm,
-                header.sender,
-                wire::handshake::HandshakeRecord::Confirm(confirm),
-            );
+            enqueue_handshake(fsm, header.sender, QlPayload::Confirm(confirm));
         }
         HelloReplyAction::Advance {
             hello,
@@ -216,13 +201,13 @@ pub fn handle_hello_reply(
             responder_signing_key,
         } => {
             let confirm_meta = next_control_meta(fsm, fsm.config.handshake_timeout);
-            let (confirm, session_key) = match wire::handshake::build_confirm(
+            let (confirm, session_key) = match wire::build_confirm(
                 crypto,
                 &fsm.identity,
                 header.sender,
                 &responder_signing_key,
                 &hello,
-                archived_reply,
+                reply,
                 &initiator_secret,
                 confirm_meta,
                 fsm.state.now.unix_secs,
@@ -250,11 +235,7 @@ pub fn handle_hello_reply(
                     },
                 };
             }
-            enqueue_handshake(
-                fsm,
-                header.sender,
-                wire::handshake::HandshakeRecord::Confirm(confirm),
-            );
+            enqueue_handshake(fsm, header.sender, QlPayload::Confirm(confirm));
         }
     }
 
@@ -265,14 +246,10 @@ pub fn handle_confirm(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    confirm: &wire::handshake::ArchivedConfirm,
+    confirm: &Confirm,
 ) -> Result<(), QlFsmError> {
     if let Some(ready) = recent_ready_resend(fsm, crypto, header.sender, confirm) {
-        enqueue_handshake(
-            fsm,
-            header.sender,
-            wire::handshake::HandshakeRecord::Ready(ready),
-        );
+        enqueue_handshake(fsm, header.sender, QlPayload::Ready(ready));
         return Ok(());
     }
 
@@ -290,7 +267,7 @@ pub fn handle_confirm(
             return Ok(());
         };
 
-        wire::handshake::finalize_confirm(
+        wire::finalize_confirm(
             crypto,
             header.sender,
             fsm.identity.xid,
@@ -309,12 +286,11 @@ pub fn handle_confirm(
         Err(_) => return Ok(()),
     };
 
-    let meta: ControlMeta = (&confirm.meta).into();
-    if is_replayed_control(fsm, header.sender, meta) {
+    if is_replayed_control(fsm, header.sender, confirm.meta) {
         return Ok(());
     }
 
-    let ready = wire::handshake::build_ready(
+    let ready = wire::build_ready(
         crypto,
         QlHeader {
             sender: fsm.identity.xid,
@@ -337,11 +313,7 @@ pub fn handle_confirm(
         };
     }
 
-    enqueue_handshake(
-        fsm,
-        header.sender,
-        wire::handshake::HandshakeRecord::Ready(ready),
-    );
+    enqueue_handshake(fsm, header.sender, QlPayload::Ready(ready));
     emit_peer_status(fsm);
     Ok(())
 }
@@ -350,7 +322,7 @@ pub fn handle_ready(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    ready: &mut wire::handshake::ArchivedReady,
+    ready: &mut ReadyRef<&mut [u8]>,
 ) -> Result<(), QlFsmError> {
     let session_key = {
         let Some(entry) = fsm.peer.as_ref() else {
@@ -365,16 +337,11 @@ pub fn handle_ready(
         }
     };
 
-    let body = match wire::handshake::decrypt_ready(
-        crypto,
-        header,
-        ready,
-        &session_key,
-        fsm.state.now.unix_secs,
-    ) {
-        Ok(body) => body,
-        Err(_) => return Ok(()),
-    };
+    let body =
+        match wire::decrypt_ready(crypto, header, ready, &session_key, fsm.state.now.unix_secs) {
+            Ok(body) => body,
+            Err(_) => return Ok(()),
+        };
     if is_replayed_control(fsm, header.sender, body.meta) {
         return Ok(());
     }
@@ -469,21 +436,13 @@ pub fn handle_timer(fsm: &mut QlFsm) {
     if let Some(action) = retry_action {
         match action {
             RetryAction::Hello { peer, hello } => {
-                enqueue_handshake(fsm, peer, wire::handshake::HandshakeRecord::Hello(hello));
+                enqueue_handshake(fsm, peer, QlPayload::Hello(hello));
             }
             RetryAction::HelloReply { peer, reply } => {
-                enqueue_handshake(
-                    fsm,
-                    peer,
-                    wire::handshake::HandshakeRecord::HelloReply(reply),
-                );
+                enqueue_handshake(fsm, peer, QlPayload::HelloReply(reply));
             }
             RetryAction::Confirm { peer, confirm } => {
-                enqueue_handshake(
-                    fsm,
-                    peer,
-                    wire::handshake::HandshakeRecord::Confirm(confirm),
-                );
+                enqueue_handshake(fsm, peer, QlPayload::Confirm(confirm));
             }
         }
     }
@@ -531,7 +490,7 @@ fn start_initiator_handshake(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<
 
     let peer = entry.peer.clone();
     let meta = next_control_meta(fsm, fsm.config.handshake_timeout);
-    let (hello, initiator_secret) = wire::handshake::build_hello(
+    let (hello, initiator_secret) = wire::build_hello(
         crypto,
         &fsm.identity,
         peer.xid,
@@ -553,11 +512,7 @@ fn start_initiator_handshake(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<
         };
     }
 
-    enqueue_handshake(
-        fsm,
-        peer.xid,
-        wire::handshake::HandshakeRecord::Hello(hello),
-    );
+    enqueue_handshake(fsm, peer.xid, QlPayload::Hello(hello));
     emit_peer_status(fsm);
     Ok(())
 }
@@ -566,7 +521,7 @@ fn recent_ready_resend(
     fsm: &QlFsm,
     crypto: &impl QlCrypto,
     peer: XID,
-    confirm: &wire::handshake::ArchivedConfirm,
+    confirm: &Confirm,
 ) -> Option<Ready> {
     let entry = fsm.peer.as_ref()?;
     let ConnectionState::Connected {
@@ -579,7 +534,7 @@ fn recent_ready_resend(
     if recent_ready.expires_at <= fsm.state.now.instant {
         return None;
     }
-    wire::handshake::verify_confirm(
+    wire::verify_confirm(
         crypto,
         peer,
         fsm.identity.xid,
@@ -728,10 +683,10 @@ fn peer_hello_wins(
     }
 }
 
-fn next_encrypted_nonce(crypto: &impl QlCrypto) -> wire::Nonce {
-    let mut bytes = [0u8; wire::Nonce::NONCE_SIZE];
+fn next_encrypted_nonce(crypto: &impl QlCrypto) -> Nonce {
+    let mut bytes = [0u8; Nonce::SIZE];
     crypto.fill_random_bytes(&mut bytes);
-    wire::Nonce(bytes)
+    Nonce(bytes)
 }
 
 fn retry_due(retry_at: Option<Instant>, now: Instant) -> bool {

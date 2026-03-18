@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    encrypted::ping::PingBody, CloseCode, CloseTarget, SessionAck, SessionBody, SessionEnvelope,
-    SessionSeq, StreamCloseFrame, StreamFrame,
+    CloseCode, CloseTarget, PingBody, SessionAck, SessionBody, SessionEnvelope, SessionSeq,
+    StreamChunk, StreamClose,
 };
 
 use super::{SessionFsm, SessionFsmConfig, SessionState};
@@ -76,7 +76,7 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
         SessionEnvelope {
             seq: SessionSeq(2),
             ack: SessionAck::EMPTY,
-            body: SessionBody::Stream(StreamFrame {
+            body: SessionBody::Stream(StreamChunk {
                 stream_id: stream_id_a,
                 offset: 0,
                 bytes: b"a".to_vec(),
@@ -99,7 +99,7 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
         SessionEnvelope {
             seq: SessionSeq(1),
             ack: SessionAck::EMPTY,
-            body: SessionBody::Stream(StreamFrame {
+            body: SessionBody::Stream(StreamChunk {
                 stream_id: stream_id_b,
                 offset: 0,
                 bytes: b"b".to_vec(),
@@ -174,7 +174,7 @@ fn local_inbound_close_ignores_late_remote_bytes() {
         SessionEnvelope {
             seq: SessionSeq(1),
             ack: SessionAck::EMPTY,
-            body: SessionBody::Stream(StreamFrame {
+            body: SessionBody::Stream(StreamChunk {
                 stream_id,
                 offset: 0,
                 bytes: b"late".to_vec(),
@@ -199,7 +199,7 @@ fn out_of_order_remote_stream_buffers_until_initial_bytes_arrive() {
         SessionEnvelope {
             seq: SessionSeq(2),
             ack: SessionAck::EMPTY,
-            body: SessionBody::Stream(StreamFrame {
+            body: SessionBody::Stream(StreamChunk {
                 stream_id,
                 offset: 1,
                 bytes: b"b".to_vec(),
@@ -220,7 +220,7 @@ fn out_of_order_remote_stream_buffers_until_initial_bytes_arrive() {
         SessionEnvelope {
             seq: SessionSeq(1),
             ack: SessionAck::EMPTY,
-            body: SessionBody::Stream(StreamFrame {
+            body: SessionBody::Stream(StreamChunk {
                 stream_id,
                 offset: 0,
                 bytes: b"a".to_vec(),
@@ -248,7 +248,7 @@ fn duplicate_committed_data_is_not_redelivered() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 9);
-    let body = SessionBody::Stream(StreamFrame {
+    let body = SessionBody::Stream(StreamChunk {
         stream_id,
         offset: 0,
         bytes: b"dup".to_vec(),
@@ -408,7 +408,7 @@ fn duplicate_old_packet_seq_is_ignored() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 11);
-    let body = SessionBody::Stream(StreamFrame {
+    let body = SessionBody::Stream(StreamChunk {
         stream_id,
         offset: 0,
         bytes: b"x".to_vec(),
@@ -445,7 +445,7 @@ fn retransmitted_stream_close_is_idempotent() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
-    let frame = StreamCloseFrame {
+    let frame = StreamClose {
         stream_id,
         target: CloseTarget::Response,
         code: CloseCode::CANCELLED,

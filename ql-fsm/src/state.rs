@@ -1,9 +1,6 @@
 use std::{collections::VecDeque, time::Instant};
 
-use ql_wire::{
-    handshake::{Confirm, Hello, HelloReply, Ready, ResponderSecrets},
-    QlRecord, SessionKey,
-};
+use ql_wire::{Confirm, Hello, HelloReply, QlRecord, Ready, ResponderSecrets, SessionKey};
 
 use crate::{replay_cache::ReplayCache, FsmTime, Peer, PeerStatus, QlFsmEvent, QlSessionEvent};
 

@@ -2165,7 +2165,6 @@ dependencies = [
  "indexmap",
  "libcrux-aesgcm",
  "ql-wire",
- "rkyv",
  "sha2",
  "thiserror",
 ]

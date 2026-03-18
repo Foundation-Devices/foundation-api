@@ -1,4 +1,4 @@
-use ql_wire::{self as wire, pair::ArchivedPairRequestRecord, QlCrypto, QlHeader};
+use ql_wire::{self as wire, PairRequestRecordRef, QlCrypto, QlHeader};
 
 use super::{emit_peer_status, handshake, is_replayed_control, next_control_meta, reset_session};
 use crate::{state::PeerRecord, Peer, QlFsm, QlFsmError, QlFsmEvent};
@@ -10,7 +10,7 @@ pub fn handle_bind_peer(fsm: &mut QlFsm, peer: Peer) {
 pub fn handle_pair_local(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
     let meta = next_control_meta(fsm, fsm.config.control_expiration);
     let peer = fsm.peer.as_ref().ok_or(QlFsmError::NoPeerBound)?;
-    let record = wire::pair::build_pair_request(
+    let record = wire::build_pair_request(
         crypto,
         &fsm.identity,
         peer.peer.xid,
@@ -25,9 +25,9 @@ pub fn handle_pair(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    request: &mut ArchivedPairRequestRecord,
+    request: &mut PairRequestRecordRef<&mut [u8]>,
 ) -> Result<(), QlFsmError> {
-    let payload = match wire::pair::decrypt_pair_request(
+    let payload = match wire::decrypt_pair_request(
         crypto,
         &fsm.identity,
         header,
