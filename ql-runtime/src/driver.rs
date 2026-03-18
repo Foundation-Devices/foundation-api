@@ -303,9 +303,7 @@ impl DriverState {
             progressed = true;
             match event {
                 QlSessionEvent::Opened(stream_id) => self.handle_opened_stream(platform, stream_id),
-                QlSessionEvent::Data { stream_id, bytes } => {
-                    self.handle_inbound_data(stream_id, bytes)
-                }
+                QlSessionEvent::Readable(stream_id) => self.handle_inbound_readable(stream_id),
                 QlSessionEvent::Finished(stream_id) => self.handle_inbound_finished(stream_id),
                 QlSessionEvent::Closed(frame) => self.handle_closed_stream(frame),
                 QlSessionEvent::WritableClosed(stream_id) => self.handle_writable_closed(stream_id),
@@ -346,17 +344,35 @@ impl DriverState {
         }));
     }
 
-    fn handle_inbound_data(&mut self, stream_id: StreamId, bytes: Vec<u8>) {
-        let Some(stream) = self.streams.get_mut(&stream_id) else {
-            return;
-        };
+    fn handle_inbound_readable(&mut self, stream_id: StreamId) {
+        loop {
+            let max_len = self.fsm.config.session_stream_chunk_size.max(1);
+            let available = match self.fsm.stream_available_bytes(stream_id) {
+                Ok(available) => available,
+                Err(_) => return,
+            };
+            if available == 0 {
+                break;
+            }
 
-        let target = stream.inbound_target();
-        let should_close = stream.inbound_mut().write_or_close(bytes);
-        if should_close {
-            let _ = self
-                .fsm
-                .close_stream(stream_id, target, CloseCode::CANCELLED, Vec::new());
+            let mut bytes = vec![0; available.min(max_len)];
+            let read = match self.fsm.read_stream(stream_id, &mut bytes) {
+                Ok(read) => read,
+                Err(_) => return,
+            };
+            bytes.truncate(read);
+
+            let Some(stream) = self.streams.get_mut(&stream_id) else {
+                return;
+            };
+            let target = stream.inbound_target();
+            let should_close = stream.inbound_mut().write_or_close(bytes);
+            if should_close {
+                let _ =
+                    self.fsm
+                        .close_stream(stream_id, target, CloseCode::CANCELLED, Vec::new());
+                break;
+            }
         }
     }
 

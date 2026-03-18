@@ -223,6 +223,10 @@ impl QlFsm {
         implementation::read_stream(self, stream_id, out)
     }
 
+    pub fn stream_available_bytes(&self, stream_id: StreamId) -> Result<usize, QlFsmError> {
+        implementation::stream_available_bytes(self, stream_id)
+    }
+
     pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), QlFsmError> {
         implementation::finish_stream(self, stream_id)
     }

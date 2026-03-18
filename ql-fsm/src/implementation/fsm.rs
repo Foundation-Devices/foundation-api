@@ -156,7 +156,7 @@ pub fn take_next_session_event(fsm: &mut QlFsm) -> Option<QlSessionEvent> {
 
 pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, QlFsmError> {
     ensure_peer_bound(fsm)?;
-    fsm.session.open_stream().map_err(Into::into)
+    Ok(fsm.session.open_stream()?)
 }
 
 pub fn write_stream(
@@ -165,9 +165,7 @@ pub fn write_stream(
     bytes: Vec<u8>,
 ) -> Result<(), QlFsmError> {
     ensure_peer_bound(fsm)?;
-    fsm.session
-        .write_stream(stream_id, bytes)
-        .map_err(Into::into)
+    Ok(fsm.session.write_stream(stream_id, bytes)?)
 }
 
 pub fn read_stream(
@@ -175,12 +173,16 @@ pub fn read_stream(
     stream_id: StreamId,
     out: &mut [u8],
 ) -> Result<usize, QlFsmError> {
-    fsm.session.read_stream(stream_id, out).map_err(Into::into)
+    Ok(fsm.session.read_stream(stream_id, out)?)
+}
+
+pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Result<usize, QlFsmError> {
+    Ok(fsm.session.stream_available_bytes(stream_id)?)
 }
 
 pub fn finish_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<(), QlFsmError> {
     ensure_peer_bound(fsm)?;
-    fsm.session.finish_stream(stream_id).map_err(Into::into)
+    Ok(fsm.session.finish_stream(stream_id)?)
 }
 
 pub fn close_stream(
@@ -191,21 +193,19 @@ pub fn close_stream(
     payload: Vec<u8>,
 ) -> Result<(), QlFsmError> {
     ensure_peer_bound(fsm)?;
-    fsm.session
-        .close_stream(stream_id, target, code, payload)
-        .map_err(Into::into)
+    Ok(fsm.session.close_stream(stream_id, target, code, payload)?)
 }
 
 pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
     ensure_session_open(fsm)?;
-    fsm.session.queue_ping().map_err(Into::into)
+    Ok(fsm.session.queue_ping()?)
 }
 
 pub fn queue_unpair(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
     ensure_session_open(fsm)?;
     // TODO: keep local peer/session state alive until this queued unpair is acked or times out,
     // then clear it locally. Right now this only requests remote unpair.
-    fsm.session.queue_unpair().map_err(Into::into)
+    Ok(fsm.session.queue_unpair()?)
 }
 
 fn ensure_peer_bound(fsm: &QlFsm) -> Result<(), QlFsmError> {

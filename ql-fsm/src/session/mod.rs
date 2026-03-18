@@ -231,6 +231,15 @@ impl SessionFsm {
         Ok(written)
     }
 
+    pub fn stream_available_bytes(&self, stream_id: StreamId) -> Result<usize, StreamError> {
+        let stream = self
+            .state
+            .streams
+            .get(&stream_id)
+            .ok_or(StreamError::MissingStream)?;
+        Ok(stream.recv_buf.len())
+    }
+
     pub fn queue_ping(&mut self) -> Result<(), StreamError> {
         self.ensure_session_open()?;
         self.state.pending_control.ping = true;
