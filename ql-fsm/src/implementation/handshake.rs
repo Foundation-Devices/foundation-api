@@ -71,7 +71,7 @@ pub fn handle_hello(
             ConnectionState::Initiator {
                 hello: local_hello, ..
             } => {
-                if peer_hello_wins(local_hello, fsm.identity.xid, &hello, header.sender) {
+                if peer_hello_wins(local_hello, fsm.identity.xid, hello, header.sender) {
                     HelloAction::StartResponder
                 } else {
                     HelloAction::Ignore
@@ -83,7 +83,7 @@ pub fn handle_hello(
                 stage: HandshakeResponder::WaitingConfirm { .. },
                 ..
             } => {
-                if same_hello(stored, &hello) {
+                if same_hello(stored, hello) {
                     HelloAction::ResendReply {
                         reply: reply.clone(),
                     }
@@ -173,7 +173,7 @@ pub fn handle_hello_reply(
                 ..
             } => HelloReplyAction::Advance {
                 hello: hello.clone(),
-                initiator_secret: initiator_secret.clone(),
+                initiator_secret: *initiator_secret,
                 responder_signing_key: entry.peer.signing_key.clone(),
             },
             ConnectionState::Initiator {
@@ -184,7 +184,7 @@ pub fn handle_hello_reply(
                         ..
                     },
                 ..
-            } if same_reply(stored, &reply) => HelloReplyAction::ResendConfirm {
+            } if same_reply(stored, reply) => HelloReplyAction::ResendConfirm {
                 confirm: confirm.clone(),
             },
             _ => return Ok(()),
@@ -332,7 +332,7 @@ pub fn handle_ready(
             ConnectionState::Initiator {
                 stage: HandshakeInitiator::WaitingReady { session_key, .. },
                 ..
-            } => session_key.clone(),
+            } => *session_key,
             _ => return Ok(()),
         }
     };

@@ -87,8 +87,8 @@ impl HelloReply {
         Hello {
             meta: self.meta,
             nonce: self.nonce,
-            kem_ct: self.kem_ct,
-            signature: self.signature,
+            kem_ct: self.kem_ct.clone(),
+            signature: self.signature.clone(),
         }
         .encode_into(out);
     }

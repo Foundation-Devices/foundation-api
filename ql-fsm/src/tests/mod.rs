@@ -266,8 +266,8 @@ fn test_identity(seed: u8) -> QlIdentity {
 fn peer_from_identity(identity: &QlIdentity) -> Peer {
     Peer {
         xid: identity.xid,
-        signing_key: identity.signing_public_key,
-        encapsulation_key: identity.encapsulation_public_key,
+        signing_key: identity.signing_public_key.clone(),
+        encapsulation_key: identity.encapsulation_public_key.clone(),
     }
 }
 

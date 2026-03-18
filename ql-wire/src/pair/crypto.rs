@@ -19,8 +19,8 @@ pub fn build_pair_request(
         sender: identity.xid,
         recipient,
     };
-    let signing_pub_key = identity.signing_public_key;
-    let sender_encapsulation_key = identity.encapsulation_public_key;
+    let signing_pub_key = identity.signing_public_key.clone();
+    let sender_encapsulation_key = identity.encapsulation_public_key.clone();
     let proof_data = hash_pairing_proof_data(
         crypto,
         &header,

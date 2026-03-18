@@ -31,17 +31,17 @@ impl AsRef<[u8]> for SessionKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MlDsaPrivateKey([u8; MlDsaPrivateKey::SIZE]);
+pub struct MlDsaPrivateKey(Box<[u8; MlDsaPrivateKey::SIZE]>);
 
 impl MlDsaPrivateKey {
     pub const SIZE: usize = ml_dsa_87::MLDSA87SigningKey::len();
 
-    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(data)
+    pub fn from_data(data: [u8; Self::SIZE]) -> Self {
+        Self(Box::new(data))
     }
 
-    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        &self.0
+    pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
+        self.0.as_ref()
     }
 
     pub fn sign(
@@ -51,61 +51,61 @@ impl MlDsaPrivateKey {
     ) -> Result<MlDsaSignature, WireError> {
         let mut randomness = [0u8; SIGNING_RANDOMNESS_SIZE];
         crypto.fill_random_bytes(&mut randomness);
-        let signing_key = ml_dsa_87::MLDSA87SigningKey::new(self.0);
+        let signing_key = ml_dsa_87::MLDSA87SigningKey::new(*self.as_bytes());
         let signature = ml_dsa_87::sign(&signing_key, message, b"", randomness)
             .map_err(|_| WireError::SigningFailed)?;
         Ok(MlDsaSignature::from_data(*signature.as_ref()))
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MlDsaPublicKey([u8; MlDsaPublicKey::SIZE]);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MlDsaPublicKey(Box<[u8; MlDsaPublicKey::SIZE]>);
 
 impl MlDsaPublicKey {
     pub const SIZE: usize = ml_dsa_87::MLDSA87VerificationKey::len();
 
-    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(data)
+    pub fn from_data(data: [u8; Self::SIZE]) -> Self {
+        Self(Box::new(data))
     }
 
-    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        &self.0
+    pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
+        self.0.as_ref()
     }
 
     pub fn verify(&self, signature: &MlDsaSignature, message: &[u8]) -> bool {
-        let verification_key = ml_dsa_87::MLDSA87VerificationKey::new(self.0);
+        let verification_key = ml_dsa_87::MLDSA87VerificationKey::new(*self.as_bytes());
         let signature = ml_dsa_87::MLDSA87Signature::new(*signature.as_bytes());
         ml_dsa_87::verify(&verification_key, message, b"", &signature).is_ok()
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MlDsaSignature([u8; MlDsaSignature::SIZE]);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MlDsaSignature(Box<[u8; MlDsaSignature::SIZE]>);
 
 impl MlDsaSignature {
     pub const SIZE: usize = ml_dsa_87::MLDSA87Signature::len();
 
-    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(data)
+    pub fn from_data(data: [u8; Self::SIZE]) -> Self {
+        Self(Box::new(data))
     }
 
-    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        &self.0
+    pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
+        self.0.as_ref()
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MlKemPublicKey([u8; MlKemPublicKey::SIZE]);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MlKemPublicKey(Box<[u8; MlKemPublicKey::SIZE]>);
 
 impl MlKemPublicKey {
     pub const SIZE: usize = mlkem1024::MlKem1024PublicKey::len();
 
-    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(data)
+    pub fn from_data(data: [u8; Self::SIZE]) -> Self {
+        Self(Box::new(data))
     }
 
-    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        &self.0
+    pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
+        self.0.as_ref()
     }
 
     pub fn encapsulate_new_shared_secret(
@@ -124,17 +124,17 @@ impl MlKemPublicKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MlKemPrivateKey([u8; MlKemPrivateKey::SIZE]);
+pub struct MlKemPrivateKey(Box<[u8; MlKemPrivateKey::SIZE]>);
 
 impl MlKemPrivateKey {
     pub const SIZE: usize = mlkem1024::MlKem1024PrivateKey::len();
 
-    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(data)
+    pub fn from_data(data: [u8; Self::SIZE]) -> Self {
+        Self(Box::new(data))
     }
 
-    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        &self.0
+    pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
+        self.0.as_ref()
     }
 
     pub fn decapsulate_shared_secret(
@@ -148,18 +148,18 @@ impl MlKemPrivateKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MlKemCiphertext([u8; MlKemCiphertext::SIZE]);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MlKemCiphertext(Box<[u8; MlKemCiphertext::SIZE]>);
 
 impl MlKemCiphertext {
     pub const SIZE: usize = mlkem1024::MlKem1024Ciphertext::len();
 
-    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(data)
+    pub fn from_data(data: [u8; Self::SIZE]) -> Self {
+        Self(Box::new(data))
     }
 
-    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        &self.0
+    pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
+        self.0.as_ref()
     }
 }
 
