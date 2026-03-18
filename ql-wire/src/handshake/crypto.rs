@@ -1,4 +1,6 @@
-use super::{verify_signature, Confirm, Hello, HelloReply, Ready, ReadyBody, ReadyMut};
+use zerocopy::byte_slice::ByteSliceMut;
+
+use super::{verify_signature, Confirm, Hello, HelloReply, Ready, ReadyBody, ReadyRef};
 use crate::{
     pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext, MlKemPublicKey, Nonce,
     QlCrypto, QlHeader, QlIdentity, SessionKey, WireError, XID,
@@ -241,10 +243,10 @@ pub fn build_ready(
     })
 }
 
-pub fn decrypt_ready(
+pub fn decrypt_ready<B: ByteSliceMut>(
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    ready: &mut ReadyMut<'_>,
+    ready: &mut ReadyRef<B>,
     session_key: &SessionKey,
     now_seconds: u64,
 ) -> Result<ReadyBody, WireError> {

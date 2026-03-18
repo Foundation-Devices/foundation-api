@@ -3,7 +3,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 use crate::{
     codec::{push_value, read_exact},
     control::{control_meta_from_wire, control_meta_to_wire, ControlMetaWire},
-    encrypted_message::{EncryptedMessage, EncryptedMessageMut, EncryptedMessageRef},
+    encrypted_message::{EncryptedMessage, EncryptedMessageRef},
     ControlMeta, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext, Nonce, WireError,
 };
 
@@ -42,8 +42,7 @@ pub struct ReadyBody {
     pub meta: ControlMeta,
 }
 
-pub type ReadyRef<'a> = EncryptedMessageRef<'a>;
-pub type ReadyMut<'a> = EncryptedMessageMut<'a>;
+pub type ReadyRef<B> = EncryptedMessageRef<B>;
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]

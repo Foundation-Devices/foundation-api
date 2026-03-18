@@ -19,7 +19,7 @@ pub use encrypted::{
     close::SessionCloseBody, CloseCode, CloseTarget, SessionAck, SessionBody, SessionEnvelope,
     SessionSeq, StreamChunk, StreamClose, StreamId,
 };
-pub use encrypted_message::{EncryptedMessage, EncryptedMessageMut, EncryptedMessageRef};
+pub use encrypted_message::{EncryptedMessage, EncryptedMessageRef};
 pub use error::WireError;
 pub use header::QlHeader;
 pub use identity::QlIdentity;
@@ -28,7 +28,7 @@ pub use pq::{
     generate_ml_dsa_keypair, generate_ml_kem_keypair, MlDsaPrivateKey, MlDsaPublicKey,
     MlDsaSignature, MlKemCiphertext, MlKemPrivateKey, MlKemPublicKey, SessionKey,
 };
-pub use record::{QlPayload, QlPayloadMut, QlPayloadRef, QlRecord, QlRecordMut, QlRecordRef};
+pub use record::{QlPayload, QlPayloadRef, QlRecord, QlRecordRef};
 pub use xid::XID;
 
 pub trait QlCrypto {

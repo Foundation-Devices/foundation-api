@@ -104,8 +104,8 @@ fn encrypted_session_record_round_trip_and_decrypt() {
     assert_eq!(parsed.to_owned(), record);
 
     let mut bytes = bytes;
-    let QlRecordMut { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadMut::Session(mut encrypted) = payload else {
+    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
+    let QlPayloadRef::Session(mut encrypted) = payload else {
         panic!("expected session payload");
     };
     let decrypted =
@@ -149,8 +149,8 @@ fn pair_request_round_trip_and_decrypt() {
     .unwrap();
 
     let mut bytes = record.encode();
-    let QlRecordMut { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadMut::PairRequest(mut request) = payload else {
+    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
+    let QlPayloadRef::PairRequest(mut request) = payload else {
         panic!("expected pair request");
     };
     let body = pair::decrypt_pair_request(&crypto, &recipient, &header, &mut request, 100).unwrap();
@@ -189,8 +189,8 @@ fn ready_round_trip_and_decrypt() {
     let parsed = QlRecord::decode(&bytes).unwrap();
     assert_eq!(parsed, record);
 
-    let QlRecordMut { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadMut::Ready(mut ready) = payload else {
+    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
+    let QlPayloadRef::Ready(mut ready) = payload else {
         panic!("expected ready payload");
     };
     let body = handshake::decrypt_ready(&crypto, &header, &mut ready, &session_key, 100).unwrap();

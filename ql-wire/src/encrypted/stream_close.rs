@@ -1,8 +1,11 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
+use zerocopy::{
+    byte_slice::{ByteSlice, ByteSliceMut},
+    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
+};
 
 use super::StreamId;
 use crate::{
-    codec::{parse_mut, parse_ref, push_value, U16Le, U32Le},
+    codec::{parse, push_value, U16Le, U32Le},
     WireError,
 };
 
@@ -56,36 +59,53 @@ impl CloseCode {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
-pub struct StreamCloseWire {
+struct StreamCloseWire {
     pub stream_id: U32Le,
     pub target: u8,
     pub code: U16Le,
     pub payload: [u8],
 }
 
-pub type StreamCloseRef<'a> = Ref<&'a [u8], StreamCloseWire>;
-pub type StreamCloseMut<'a> = Ref<&'a mut [u8], StreamCloseWire>;
+pub struct StreamCloseRef<B> {
+    wire: Ref<B, StreamCloseWire>,
+}
 
-impl StreamCloseWire {
-    pub fn parse(bytes: &[u8]) -> Result<StreamCloseRef<'_>, WireError> {
-        parse_ref(bytes)
+impl<B: ByteSlice> StreamCloseRef<B> {
+    pub fn parse(bytes: B) -> Result<Self, WireError> {
+        Ok(Self {
+            wire: parse(bytes)?,
+        })
     }
 
-    pub fn parse_mut(bytes: &mut [u8]) -> Result<StreamCloseMut<'_>, WireError> {
-        parse_mut(bytes)
+    pub fn stream_id(&self) -> StreamId {
+        StreamId(self.wire.stream_id.get())
     }
 
     pub fn target(&self) -> Result<CloseTarget, WireError> {
-        CloseTarget::from_wire(self.target)
+        CloseTarget::from_wire(self.wire.target)
+    }
+
+    pub fn code(&self) -> CloseCode {
+        CloseCode(self.wire.code.get())
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.wire.payload
     }
 
     pub fn to_stream_close(&self) -> Result<StreamClose, WireError> {
         Ok(StreamClose {
-            stream_id: StreamId(self.stream_id.get()),
+            stream_id: self.stream_id(),
             target: self.target()?,
-            code: CloseCode(self.code.get()),
-            payload: self.payload.to_vec(),
+            code: self.code(),
+            payload: self.payload().to_vec(),
         })
+    }
+}
+
+impl<B: ByteSliceMut> StreamCloseRef<B> {
+    pub fn payload_mut(&mut self) -> &mut [u8] {
+        &mut self.wire.payload
     }
 }
 

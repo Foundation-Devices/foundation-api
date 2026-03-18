@@ -1,11 +1,12 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
+use zerocopy::{
+    byte_slice::{ByteSlice, ByteSliceMut},
+    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
+};
 
 use crate::{
-    codec::{parse_mut, parse_ref, push_value, read_exact},
+    codec::{parse, push_value, read_exact},
     control::{control_meta_from_wire, control_meta_to_wire, ControlMetaWire},
-    encrypted_message::{
-        EncryptedMessage, EncryptedMessageMut, EncryptedMessageRef, EncryptedMessageWire,
-    },
+    encrypted_message::{EncryptedMessage, EncryptedMessageRef},
     ControlMeta, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext, MlKemPublicKey, WireError, XID,
 };
 
@@ -29,13 +30,14 @@ pub struct PairRequestBody {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
-pub struct PairRequestRecordWire {
+struct PairRequestRecordWire {
     pub kem_ct: [u8; MlKemCiphertext::SIZE],
     pub encrypted: [u8],
 }
 
-pub type PairRequestRecordRef<'a> = Ref<&'a [u8], PairRequestRecordWire>;
-pub type PairRequestRecordMut<'a> = Ref<&'a mut [u8], PairRequestRecordWire>;
+pub struct PairRequestRecordRef<B> {
+    wire: Ref<B, PairRequestRecordWire>,
+}
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
 #[repr(C)]
@@ -47,29 +49,21 @@ struct PairRequestBodyWire {
     proof: [u8; MlDsaSignature::SIZE],
 }
 
-impl PairRequestRecordWire {
-    pub fn parse(bytes: &[u8]) -> Result<PairRequestRecordRef<'_>, WireError> {
-        let record: PairRequestRecordRef<'_> = parse_ref(bytes)?;
+impl<B: ByteSlice> PairRequestRecordRef<B> {
+    pub fn parse(bytes: B) -> Result<Self, WireError> {
+        let record = Self {
+            wire: parse(bytes)?,
+        };
         let _ = record.encrypted()?;
         Ok(record)
     }
 
-    pub fn parse_mut(bytes: &mut [u8]) -> Result<PairRequestRecordMut<'_>, WireError> {
-        let mut record: PairRequestRecordMut<'_> = parse_mut(bytes)?;
-        let _ = record.encrypted_mut()?;
-        Ok(record)
-    }
-
     pub fn kem_ct(&self) -> MlKemCiphertext {
-        MlKemCiphertext::from_data(self.kem_ct)
+        MlKemCiphertext::from_data(self.wire.kem_ct)
     }
 
-    pub fn encrypted(&self) -> Result<EncryptedMessageRef<'_>, WireError> {
-        EncryptedMessageWire::parse(&self.encrypted)
-    }
-
-    pub fn encrypted_mut(&mut self) -> Result<EncryptedMessageMut<'_>, WireError> {
-        EncryptedMessageWire::parse_mut(&mut self.encrypted)
+    pub fn encrypted(&self) -> Result<EncryptedMessageRef<&[u8]>, WireError> {
+        EncryptedMessageRef::parse(&self.wire.encrypted)
     }
 
     pub fn to_pair_request_record(&self) -> PairRequestRecord {
@@ -80,6 +74,12 @@ impl PairRequestRecordWire {
                 .expect("validated pair request")
                 .to_encrypted_message(),
         }
+    }
+}
+
+impl<B: ByteSliceMut> PairRequestRecordRef<B> {
+    pub fn encrypted_mut(&mut self) -> Result<EncryptedMessageRef<&mut [u8]>, WireError> {
+        EncryptedMessageRef::parse(&mut self.wire.encrypted)
     }
 }
 

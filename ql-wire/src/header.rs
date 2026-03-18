@@ -1,4 +1,6 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+use zerocopy::{
+    byte_slice::SplitByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
+};
 
 use crate::{codec, record::RecordKind, WireError, XID};
 
@@ -40,29 +42,10 @@ pub(crate) fn encode_record_header(header: &QlHeader, kind: RecordKind) -> QlRec
     }
 }
 
-pub(crate) fn decode_record_header(
-    bytes: &[u8],
-) -> Result<(DecodedRecordHeader, &[u8]), WireError> {
-    let (wire, payload_bytes) = codec::read_prefix::<QlRecordHeaderWire>(bytes)?;
-    if wire.version != QL_WIRE_VERSION {
-        return Err(WireError::InvalidPayload);
-    }
-    Ok((
-        DecodedRecordHeader {
-            kind: RecordKind::from_byte(wire.kind)?,
-            header: QlHeader {
-                sender: XID(wire.sender),
-                recipient: XID(wire.recipient),
-            },
-        },
-        payload_bytes,
-    ))
-}
-
-pub(crate) fn decode_record_header_mut(
-    bytes: &mut [u8],
-) -> Result<(DecodedRecordHeader, &mut [u8]), WireError> {
-    let (wire, payload_bytes) = codec::read_prefix_mut::<QlRecordHeaderWire>(bytes)?;
+pub(crate) fn decode_record_header<B: SplitByteSlice>(
+    bytes: B,
+) -> Result<(DecodedRecordHeader, B), WireError> {
+    let (wire, payload_bytes) = codec::read_prefix::<QlRecordHeaderWire, B>(bytes)?;
     if wire.version != QL_WIRE_VERSION {
         return Err(WireError::InvalidPayload);
     }

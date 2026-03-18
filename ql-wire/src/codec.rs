@@ -1,4 +1,8 @@
-use zerocopy::{byteorder::little_endian, FromBytes, Immutable, IntoBytes, KnownLayout, Ref};
+use zerocopy::{
+    byte_slice::{ByteSlice, SplitByteSlice},
+    byteorder::little_endian,
+    FromBytes, Immutable, IntoBytes, KnownLayout, Ref,
+};
 
 use crate::{QlHeader, WireError};
 
@@ -20,31 +24,18 @@ where
     T::read_from_bytes(bytes).map_err(|_| WireError::InvalidPayload)
 }
 
-pub fn read_prefix<T>(bytes: &[u8]) -> Result<(T, &[u8]), WireError>
+pub fn read_prefix<T, B>(bytes: B) -> Result<(T, B), WireError>
 where
+    B: SplitByteSlice,
     T: FromBytes + KnownLayout + Immutable + Copy,
 {
     let (value, rest) = Ref::<_, T>::from_prefix(bytes).map_err(|_| WireError::InvalidPayload)?;
     Ok((*value, rest))
 }
 
-pub fn read_prefix_mut<'a, T>(bytes: &'a mut [u8]) -> Result<(T, &'a mut [u8]), WireError>
+pub fn parse<T, B>(bytes: B) -> Result<Ref<B, T>, WireError>
 where
-    T: FromBytes + KnownLayout + Immutable + Copy,
-{
-    let (value, rest) = Ref::<_, T>::from_prefix(bytes).map_err(|_| WireError::InvalidPayload)?;
-    Ok((*value, rest))
-}
-
-pub fn parse_ref<'a, T>(bytes: &'a [u8]) -> Result<Ref<&'a [u8], T>, WireError>
-where
-    T: KnownLayout + Immutable + ?Sized,
-{
-    Ref::<_, T>::from_bytes(bytes).map_err(|_| WireError::InvalidPayload)
-}
-
-pub fn parse_mut<'a, T>(bytes: &'a mut [u8]) -> Result<Ref<&'a mut [u8], T>, WireError>
-where
+    B: ByteSlice,
     T: KnownLayout + Immutable + ?Sized,
 {
     Ref::<_, T>::from_bytes(bytes).map_err(|_| WireError::InvalidPayload)

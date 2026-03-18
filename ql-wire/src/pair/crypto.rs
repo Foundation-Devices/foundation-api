@@ -1,4 +1,6 @@
-use super::{PairRequestBody, PairRequestRecordWire};
+use zerocopy::byte_slice::ByteSliceMut;
+
+use super::{PairRequestBody, PairRequestRecordRef};
 use crate::{
     pq::ML_KEM_SUITE_TAG, ControlMeta, MlDsaPublicKey, MlKemCiphertext, MlKemPublicKey, QlCrypto,
     QlHeader, QlIdentity, QlPayload, QlRecord, WireError, XID,
@@ -53,11 +55,11 @@ pub fn build_pair_request(
     })
 }
 
-pub fn decrypt_pair_request(
+pub fn decrypt_pair_request<B: ByteSliceMut>(
     crypto: &impl QlCrypto,
     identity: &QlIdentity,
     header: &QlHeader,
-    request: &mut PairRequestRecordWire,
+    request: &mut PairRequestRecordRef<B>,
     now_seconds: u64,
 ) -> Result<PairRequestBody, WireError> {
     let kem_ct = request.kem_ct();
