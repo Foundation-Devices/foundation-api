@@ -7,7 +7,8 @@ pub mod pair;
 
 use bc_components::{EncryptedMessage, XID};
 
-use crate::wire::{handshake::HandshakeRecord, pair::PairRequestRecord};
+use self::{handshake::HandshakeRecord, pair::PairRequestRecord};
+use crate::{MessageId, QlError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QlRecord {
@@ -145,7 +146,7 @@ pub(crate) fn take_fields<const N: usize>(
 ) -> Result<[CBOR; N], dcbor::Error> {
     use std::mem::MaybeUninit;
 
-    let mut fields: [MaybeUninit<CBOR>; N] = unsafe { MaybeUninit::uninit().assume_init() };
+    let mut fields: [MaybeUninit<CBOR>; N] = [const { MaybeUninit::uninit() }; N];
     for (index, slot) in fields.iter_mut().enumerate() {
         let Some(value) = iter.next() else {
             for init in &mut fields[..index] {
@@ -160,6 +161,25 @@ pub(crate) fn take_fields<const N: usize>(
         return Err(dcbor::Error::msg("array too long"));
     }
     Ok(result)
+}
+
+pub(crate) fn ensure_not_expired(id: MessageId, valid_until: u64) -> Result<(), QlError> {
+    let now = now_secs();
+    if now > valid_until {
+        Err(QlError::Nack {
+            id,
+            nack: message::Nack::Expired,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 #[test]

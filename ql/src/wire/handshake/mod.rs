@@ -1,8 +1,11 @@
-use bc_components::{EncapsulationCiphertext, Nonce, Signature, SigningPublicKey, Verifier};
+use bc_components::{MLDSAPublicKey, MLDSASignature, MLKEMCiphertext, Nonce};
 use dcbor::CBOR;
 
 use super::take_fields;
 use crate::QlError;
+
+mod crypto;
+pub use crypto::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HandshakeRecord {
@@ -14,19 +17,19 @@ pub enum HandshakeRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hello {
     pub nonce: Nonce,
-    pub kem_ct: EncapsulationCiphertext,
+    pub kem_ct: MLKEMCiphertext,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HelloReply {
     pub nonce: Nonce,
-    pub kem_ct: EncapsulationCiphertext,
-    pub signature: Signature,
+    pub kem_ct: MLKEMCiphertext,
+    pub signature: MLDSASignature,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Confirm {
-    pub signature: Signature,
+    pub signature: MLDSASignature,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,14 +54,13 @@ impl TryFrom<CBOR> for HandshakeKind {
 }
 
 pub fn verify_transcript_signature(
-    signing_key: &SigningPublicKey,
-    signature: &Signature,
+    signing_key: &MLDSAPublicKey,
+    signature: &MLDSASignature,
     transcript: &[u8],
 ) -> Result<(), QlError> {
-    if signing_key.verify(signature, &transcript) {
-        Ok(())
-    } else {
-        Err(QlError::InvalidSignature)
+    match signing_key.verify(signature, transcript) {
+        Ok(true) => Ok(()),
+        _ => Err(QlError::InvalidSignature),
     }
 }
 

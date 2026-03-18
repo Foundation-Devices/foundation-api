@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use bc_components::{EncapsulationPublicKey, SigningPublicKey, XID};
+use bc_components::{MLDSAPublicKey, MLKEMPublicKey, XID};
 use dcbor::CBOR;
 
 use crate::{
@@ -39,7 +39,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         pin!(&mut self.rx).poll(cx).map(|result| {
             let payload = result.unwrap_or(Err(QlError::Cancelled))?;
-            Ok(T::try_from(payload).map_err(|_| QlError::InvalidPayload)?)
+            T::try_from(payload).map_err(|_| QlError::InvalidPayload)
         })
     }
 }
@@ -48,8 +48,8 @@ impl RuntimeHandle {
     pub fn register_peer(
         &self,
         peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
+        signing_key: MLDSAPublicKey,
+        encapsulation_key: MLKEMPublicKey,
     ) {
         self.send(RuntimeCommand::RegisterPeer {
             peer,

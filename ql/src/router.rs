@@ -86,6 +86,12 @@ pub struct RouterBuilder<S> {
     handlers: HashMap<RouteId, RouterHandler<S>>,
 }
 
+impl<S> Default for RouterBuilder<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<S> RouterBuilder<S> {
     pub fn new() -> Self {
         Self {

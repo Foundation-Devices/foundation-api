@@ -1,9 +1,9 @@
 use bc_components::{Nonce, SymmetricKey};
 use dcbor::CBOR;
 
+use super::HeartbeatBody;
 use crate::{
-    crypto::ensure_not_expired,
-    wire::{heartbeat::HeartbeatBody, QlHeader, QlPayload, QlRecord},
+    wire::{ensure_not_expired, QlHeader, QlPayload, QlRecord},
     QlError,
 };
 

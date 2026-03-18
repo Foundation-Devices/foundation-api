@@ -3,33 +3,11 @@ use std::fmt;
 use dcbor::CBOR;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MessageId(u64);
-
-impl MessageId {
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub const fn value(self) -> u64 {
-        self.0
-    }
-}
+pub struct MessageId(pub u64);
 
 impl fmt::Display for MessageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-impl From<u64> for MessageId {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl From<MessageId> for u64 {
-    fn from(value: MessageId) -> Self {
-        value.0
     }
 }
 
@@ -49,33 +27,11 @@ impl TryFrom<CBOR> for MessageId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RouteId(u64);
-
-impl RouteId {
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub const fn value(self) -> u64 {
-        self.0
-    }
-}
+pub struct RouteId(pub u64);
 
 impl fmt::Display for RouteId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-impl From<u64> for RouteId {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl From<RouteId> for u64 {
-    fn from(value: RouteId) -> Self {
-        value.0
     }
 }
 

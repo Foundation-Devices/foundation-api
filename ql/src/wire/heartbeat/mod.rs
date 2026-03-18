@@ -3,6 +3,9 @@ use dcbor::CBOR;
 use super::take_fields;
 use crate::MessageId;
 
+mod crypto;
+pub use crypto::*;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeartbeatBody {
     pub message_id: MessageId,

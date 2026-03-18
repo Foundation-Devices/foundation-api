@@ -4,6 +4,9 @@ use dcbor::CBOR;
 use super::take_fields;
 use crate::{MessageId, RouteId};
 
+mod crypto;
+pub use crypto::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     Request,

@@ -1,11 +1,20 @@
-pub mod crypto;
 mod id;
-pub mod router;
 pub mod platform;
+pub mod router;
 pub mod runtime;
 pub mod wire;
 
 pub use id::*;
+
+#[cfg(test)]
+mod tests;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub peer: bc_components::XID,
+    pub signing_key: bc_components::MLDSAPublicKey,
+    pub encapsulation_key: bc_components::MLKEMPublicKey,
+}
 
 pub trait QlCodec: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}
 impl<T> QlCodec for T where T: Into<dcbor::CBOR> + TryFrom<dcbor::CBOR, Error = dcbor::Error> {}

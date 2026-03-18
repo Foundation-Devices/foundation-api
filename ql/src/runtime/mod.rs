@@ -4,9 +4,7 @@ pub use internal::{InitiatorStage, PeerSession, Token};
 mod core;
 pub mod handle;
 pub(crate) mod internal;
-
-#[cfg(test)]
-mod tests;
+pub mod replay_cache;
 
 use std::time::Duration;
 

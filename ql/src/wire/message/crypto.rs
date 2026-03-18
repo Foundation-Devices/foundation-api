@@ -1,12 +1,9 @@
 use bc_components::{Nonce, SymmetricKey};
 use dcbor::CBOR;
 
+use super::{DecryptedMessage, MessageBody, MessageKind, Nack};
 use crate::{
-    crypto::ensure_not_expired,
-    wire::{
-        message::{DecryptedMessage, MessageBody, MessageKind, Nack},
-        QlHeader, QlPayload, QlRecord,
-    },
+    wire::{ensure_not_expired, QlHeader, QlPayload, QlRecord},
     MessageId, QlError,
 };
 
@@ -50,7 +47,14 @@ pub fn decrypt_message(
         return Err(QlError::InvalidPayload.into());
     }
     let body = decrypt_body(session_key, encrypted)?;
-    ensure_not_expired(body.message_id, body.valid_until)?;
+    ensure_not_expired(body.message_id, body.valid_until).map_err(|err| match err {
+        QlError::Nack { id, nack } => MessageError::Nack {
+            id,
+            nack,
+            kind: body.kind,
+        },
+        other => MessageError::Error(other),
+    })?;
     Ok(DecryptedMessage {
         sender: header.sender,
         recipient: header.recipient,

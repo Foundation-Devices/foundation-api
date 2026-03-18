@@ -5,27 +5,21 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use bc_components::{EncapsulationPublicKey, SigningPublicKey, SymmetricKey, XID};
+use bc_components::{MLDSAPublicKey, MLKEMPublicKey, SymmetricKey, XID};
 use dcbor::CBOR;
 
 use crate::{
     platform::PlatformFuture,
-    runtime::RequestConfig,
+    runtime::{replay_cache::ReplayCache, RequestConfig},
     wire::{
         handshake::{Hello, HelloReply},
-        message::MessageKind,
+        message::{MessageBody, MessageKind},
     },
-    MessageId, QlError, RouteId,
+    MessageId, Peer, QlError, RouteId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Token(u64);
-
-impl Token {
-    pub(crate) fn next(self) -> Self {
-        Self(self.0.wrapping_add(1))
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct KeepAliveState {
@@ -44,20 +38,22 @@ impl KeepAliveState {
     }
 }
 
+impl Default for KeepAliveState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
     pub peer: XID,
-    pub signing_key: SigningPublicKey,
-    pub encapsulation_key: EncapsulationPublicKey,
+    pub signing_key: MLDSAPublicKey,
+    pub encapsulation_key: MLKEMPublicKey,
     pub session: PeerSession,
 }
 
 impl PeerRecord {
-    pub fn new(
-        peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
-    ) -> Self {
+    pub fn new(peer: XID, signing_key: MLDSAPublicKey, encapsulation_key: MLKEMPublicKey) -> Self {
         Self {
             peer,
             signing_key,
@@ -88,8 +84,8 @@ impl PeerStore {
     pub fn upsert_peer(
         &mut self,
         peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
+        signing_key: MLDSAPublicKey,
+        encapsulation_key: MLKEMPublicKey,
     ) -> &mut PeerRecord {
         if let Some(index) = self.peers.iter().position(|record| record.peer == peer) {
             let record = &mut self.peers[index];
@@ -100,6 +96,17 @@ impl PeerStore {
         self.peers
             .push(PeerRecord::new(peer, signing_key, encapsulation_key));
         self.peers.last_mut().expect("peer record just inserted")
+    }
+
+    pub fn all(&self) -> Vec<Peer> {
+        self.peers
+            .iter()
+            .map(|record| Peer {
+                peer: record.peer,
+                signing_key: record.signing_key.clone(),
+                encapsulation_key: record.encapsulation_key.clone(),
+            })
+            .collect()
     }
 }
 
@@ -117,7 +124,7 @@ pub enum PeerSession {
         handshake_token: Token,
         hello: Hello,
         reply: HelloReply,
-        secrets: crate::crypto::handshake::ResponderSecrets,
+        secrets: crate::wire::handshake::ResponderSecrets,
         deadline: Instant,
     },
     Connected {
@@ -129,10 +136,7 @@ pub enum PeerSession {
 impl PeerSession {
     #[inline]
     pub fn is_connected(&self) -> bool {
-        match self {
-            PeerSession::Connected { .. } => true,
-            _ => false,
-        }
+        matches!(self, PeerSession::Connected { .. })
     }
 
     #[inline]
@@ -153,8 +157,8 @@ pub enum InitiatorStage {
 pub(crate) enum RuntimeCommand {
     RegisterPeer {
         peer: XID,
-        signing_key: SigningPublicKey,
-        encapsulation_key: EncapsulationPublicKey,
+        signing_key: MLDSAPublicKey,
+        encapsulation_key: MLKEMPublicKey,
     },
     Connect {
         peer: XID,
@@ -186,31 +190,33 @@ pub struct RuntimeState {
     pub outbound: VecDeque<OutboundMessage>,
     pub timeouts: BinaryHeap<Reverse<TimeoutEntry>>,
     pub pending: HashMap<MessageId, PendingEntry>,
-    pub next_message_id: u64,
+    pub next_message_id: Cell<MessageId>,
+    pub replay_cache: ReplayCache,
 }
 
 impl RuntimeState {
     pub fn new() -> Self {
         Self {
             peers: PeerStore::new(),
-            next_token: Cell::new(Token(0)),
+            next_token: Cell::new(Token(1)),
             outbound: VecDeque::new(),
             timeouts: BinaryHeap::new(),
             pending: HashMap::new(),
-            next_message_id: 1,
+            next_message_id: Cell::new(MessageId(1)),
+            replay_cache: ReplayCache::new(),
         }
     }
 
     pub fn next_token(&self) -> Token {
         let token = self.next_token.get();
-        self.next_token.set(token.next());
+        self.next_token.set(Token(token.0.wrapping_add(1)));
         token
     }
 
-    pub fn next_message_id(&mut self) -> MessageId {
-        let id = self.next_message_id;
-        self.next_message_id = id.wrapping_add(1);
-        MessageId::new(id)
+    pub fn next_message_id(&self) -> MessageId {
+        let id = self.next_message_id.get();
+        self.next_message_id.set(MessageId(id.0.wrapping_add(1)));
+        id
     }
 }
 
@@ -226,11 +232,16 @@ pub struct InFlightWrite<'a> {
     pub future: PlatformFuture<'a, Result<(), QlError>>,
 }
 
+pub enum OutboundPayload {
+    PreEncoded(Vec<u8>),
+    DeferredMessage(MessageBody),
+}
+
 pub struct OutboundMessage {
     pub peer: XID,
     pub token: Token,
     pub message_id: Option<MessageId>,
-    pub bytes: Vec<u8>,
+    pub payload: OutboundPayload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
