@@ -7,6 +7,19 @@ use ql_wire::{
 
 use super::{SessionFsm, SessionFsmConfig, SessionState};
 
+fn read_stream_all(fsm: &mut SessionFsm, stream_id: ql_wire::StreamId) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        let read = fsm.read_stream(stream_id, &mut buf).unwrap();
+        if read == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..read]);
+    }
+    out
+}
+
 fn ack(seq: u64, ack: SessionAck) -> SessionEnvelope {
     SessionEnvelope {
         seq: SessionSeq(seq),
@@ -32,8 +45,19 @@ fn outbound_session_seq_increments_monotonically() {
     fsm.write_stream(stream_id, b"one".to_vec()).unwrap();
     let first = fsm.next_outbound(now).unwrap();
 
+    fsm.receive(
+        now + Duration::from_millis(1),
+        ack(
+            1,
+            SessionAck {
+                base: SessionSeq(1),
+                bitmap: 0,
+            },
+        ),
+    );
+
     fsm.write_stream(stream_id, b"two".to_vec()).unwrap();
-    let second = fsm.next_outbound(now + Duration::from_millis(1)).unwrap();
+    let second = fsm.next_outbound(now + Duration::from_millis(2)).unwrap();
 
     assert_eq!(first.seq, SessionSeq(1));
     assert_eq!(second.seq, SessionSeq(2));
@@ -119,7 +143,7 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
 }
 
 #[test]
-fn retransmit_requeues_body_with_new_session_seq() {
+fn retransmit_reuses_session_seq() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
@@ -131,7 +155,7 @@ fn retransmit_requeues_body_with_new_session_seq() {
     let retried = fsm.next_outbound(retransmit_at).unwrap();
 
     assert_eq!(first.seq, SessionSeq(1));
-    assert_eq!(retried.seq, SessionSeq(2));
+    assert_eq!(retried.seq, SessionSeq(1));
     assert_eq!(retried.body, first.body);
 }
 
@@ -139,14 +163,15 @@ fn retransmit_requeues_body_with_new_session_seq() {
 fn repeated_outbound_messages_keep_reporting_latest_receive_ack() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
-    let stream_id = fsm.open_stream().unwrap();
+    let stream_id_a = fsm.open_stream().unwrap();
+    let stream_id_b = fsm.open_stream().unwrap();
 
     fsm.receive(now, ack(1, SessionAck::EMPTY));
 
-    fsm.write_stream(stream_id, b"one".to_vec()).unwrap();
+    fsm.write_stream(stream_id_a, b"one".to_vec()).unwrap();
     let first = fsm.next_outbound(now).unwrap();
 
-    fsm.write_stream(stream_id, b"two".to_vec()).unwrap();
+    fsm.write_stream(stream_id_b, b"two".to_vec()).unwrap();
     let second = fsm.next_outbound(now + Duration::from_millis(1)).unwrap();
 
     assert_eq!(first.ack.base, SessionSeq(1));
@@ -184,12 +209,12 @@ fn local_inbound_close_ignores_late_remote_bytes() {
     );
 
     assert_eq!(fsm.session_state(), SessionState::Open);
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
     assert!(fsm.take_next_event().is_none());
 }
 
 #[test]
-fn out_of_order_remote_stream_buffers_until_initial_bytes_arrive() {
+fn missing_stream_nonzero_offset_is_ignored_until_offset_zero_arrives() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 7);
@@ -197,7 +222,7 @@ fn out_of_order_remote_stream_buffers_until_initial_bytes_arrive() {
     fsm.receive(
         now,
         SessionEnvelope {
-            seq: SessionSeq(2),
+            seq: SessionSeq(1),
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id,
@@ -209,16 +234,13 @@ fn out_of_order_remote_stream_buffers_until_initial_bytes_arrive() {
     );
 
     assert_eq!(fsm.session_state(), SessionState::Open);
-    assert_eq!(
-        fsm.take_next_event(),
-        Some(super::SessionEvent::Opened(stream_id))
-    );
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert!(fsm.take_next_event().is_none());
+    assert!(!fsm.state.streams.contains_key(&stream_id));
 
     fsm.receive(
         now + Duration::from_millis(1),
         SessionEnvelope {
-            seq: SessionSeq(1),
+            seq: SessionSeq(2),
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id,
@@ -231,16 +253,188 @@ fn out_of_order_remote_stream_buffers_until_initial_bytes_arrive() {
 
     assert_eq!(
         fsm.take_next_event(),
+        Some(super::SessionEvent::Opened(stream_id))
+    );
+    assert_eq!(
+        fsm.take_next_event(),
         Some(super::SessionEvent::Readable(stream_id))
     );
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"a".to_vec());
+}
+
+#[test]
+fn local_stream_waits_for_open_frame_ack_before_sending_follow_up_data() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionFsmConfig {
+            stream_chunk_size: 2,
+            ..SessionFsmConfig::default()
+        },
+        now,
+    );
+    let stream_id = fsm.open_stream().unwrap();
+
+    fsm.write_stream(stream_id, b"hello".to_vec()).unwrap();
+
+    let first = fsm.next_outbound(now).unwrap();
     assert_eq!(
-        fsm.take_next_inbound(stream_id),
-        Some(super::StreamIncoming::Data(b"a".to_vec()))
+        first.body,
+        SessionBody::Stream(StreamChunk {
+            stream_id,
+            offset: 0,
+            bytes: b"he".to_vec(),
+            fin: false,
+        })
+    );
+    assert!(fsm.next_outbound(now + Duration::from_millis(1)).is_none());
+
+    fsm.receive(
+        now + Duration::from_millis(2),
+        ack(
+            1,
+            SessionAck {
+                base: SessionSeq(1),
+                bitmap: 0,
+            },
+        ),
+    );
+
+    let second = fsm.next_outbound(now + Duration::from_millis(3)).unwrap();
+    assert_eq!(
+        second.body,
+        SessionBody::Stream(StreamChunk {
+            stream_id,
+            offset: 2,
+            bytes: b"ll".to_vec(),
+            fin: false,
+        })
+    );
+}
+
+#[test]
+fn stream_is_reaped_after_terminal_state_and_last_stream_ack() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 13);
+
+    fsm.receive(
+        now,
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamChunk {
+                stream_id,
+                offset: 0,
+                bytes: b"hi".to_vec(),
+                fin: true,
+            }),
+        },
+    );
+
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Opened(stream_id))
     );
     assert_eq!(
-        fsm.take_next_inbound(stream_id),
-        Some(super::StreamIncoming::Data(b"b".to_vec()))
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Readable(stream_id))
     );
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"hi".to_vec());
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Finished(stream_id))
+    );
+    assert!(fsm.state.streams.contains_key(&stream_id));
+
+    fsm.finish_stream(stream_id).unwrap();
+    let fin = fsm.next_outbound(now + Duration::from_millis(1)).unwrap();
+    assert_eq!(
+        fin.body,
+        SessionBody::Stream(StreamChunk {
+            stream_id,
+            offset: 0,
+            bytes: Vec::new(),
+            fin: true,
+        })
+    );
+    assert!(fsm.state.streams.contains_key(&stream_id));
+
+    fsm.receive(
+        now + Duration::from_millis(2),
+        ack(
+            2,
+            SessionAck {
+                base: SessionSeq(2),
+                bitmap: 0,
+            },
+        ),
+    );
+
+    assert!(!fsm.state.streams.contains_key(&stream_id));
+}
+
+#[test]
+fn replayed_remote_open_does_not_recreate_reaped_stream() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 17);
+    let opener = SessionEnvelope {
+        seq: SessionSeq(1),
+        ack: SessionAck::EMPTY,
+        body: SessionBody::Stream(StreamChunk {
+            stream_id,
+            offset: 0,
+            bytes: b"hi".to_vec(),
+            fin: true,
+        }),
+    };
+
+    fsm.receive(now, opener.clone());
+
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Opened(stream_id))
+    );
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Readable(stream_id))
+    );
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"hi".to_vec());
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Finished(stream_id))
+    );
+
+    fsm.finish_stream(stream_id).unwrap();
+    let fin = fsm.next_outbound(now + Duration::from_millis(1)).unwrap();
+    assert_eq!(
+        fin.body,
+        SessionBody::Stream(StreamChunk {
+            stream_id,
+            offset: 0,
+            bytes: Vec::new(),
+            fin: true,
+        })
+    );
+
+    fsm.receive(
+        now + Duration::from_millis(2),
+        ack(
+            2,
+            SessionAck {
+                base: SessionSeq(1),
+                bitmap: 0,
+            },
+        ),
+    );
+
+    assert!(!fsm.state.streams.contains_key(&stream_id));
+
+    fsm.receive(now + Duration::from_millis(3), opener);
+
+    assert_eq!(fsm.session_state(), SessionState::Open);
+    assert!(!fsm.state.streams.contains_key(&stream_id));
+    assert!(fsm.take_next_event().is_none());
 }
 
 #[test]
@@ -265,7 +459,7 @@ fn duplicate_committed_data_is_not_redelivered() {
     );
     let _ = fsm.take_next_event();
     let _ = fsm.take_next_event();
-    let _ = fsm.take_next_inbound(stream_id);
+    let _ = read_stream_all(&mut fsm, stream_id);
 
     fsm.receive(
         now + Duration::from_millis(1),
@@ -277,13 +471,19 @@ fn duplicate_committed_data_is_not_redelivered() {
     );
 
     assert!(fsm.take_next_event().is_none());
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
 }
 
 #[test]
 fn next_outbound_round_robins_across_ready_streams() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(
+        SessionFsmConfig {
+            stream_chunk_size: 3,
+            ..SessionFsmConfig::default()
+        },
+        now,
+    );
     let stream_id_a = fsm.open_stream().unwrap();
     let stream_id_b = fsm.open_stream().unwrap();
 
@@ -292,17 +492,39 @@ fn next_outbound_round_robins_across_ready_streams() {
     fsm.write_stream(stream_id_a, b"a-2".to_vec()).unwrap();
     fsm.write_stream(stream_id_b, b"b-2".to_vec()).unwrap();
 
-    let scheduled: Vec<_> = (0..4)
+    let first_round: Vec<_> = (0..2)
         .map(|_| match fsm.next_outbound(now).unwrap().body {
             SessionBody::Stream(frame) => frame.stream_id,
             other => panic!("expected stream frame, got {other:?}"),
         })
         .collect();
 
-    assert_eq!(
-        scheduled,
-        vec![stream_id_a, stream_id_b, stream_id_a, stream_id_b]
+    fsm.receive(
+        now + Duration::from_millis(1),
+        ack(
+            1,
+            SessionAck {
+                base: SessionSeq(2),
+                bitmap: 0,
+            },
+        ),
     );
+
+    let second_round: Vec<_> = (0..2)
+        .map(|_| {
+            match fsm
+                .next_outbound(now + Duration::from_millis(2))
+                .unwrap()
+                .body
+            {
+                SessionBody::Stream(frame) => frame.stream_id,
+                other => panic!("expected stream frame, got {other:?}"),
+            }
+        })
+        .collect();
+
+    assert_eq!(first_round, vec![stream_id_a, stream_id_b]);
+    assert_eq!(second_round, vec![stream_id_a, stream_id_b]);
 }
 
 #[test]
@@ -342,9 +564,9 @@ fn receive_ping_schedules_ack_without_ping_pong() {
 fn tx_selective_ack_keeps_front_gap_pinned() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
-    let stream_id = fsm.open_stream().unwrap();
+    let stream_ids: Vec<_> = (0..64).map(|_| fsm.open_stream().unwrap()).collect();
 
-    for byte in 0..64u8 {
+    for (byte, stream_id) in (0..64u8).zip(stream_ids.iter().copied()) {
         fsm.write_stream(stream_id, vec![byte]).unwrap();
         let _ = fsm
             .next_outbound(now + Duration::from_millis(byte as u64))
@@ -365,7 +587,8 @@ fn tx_selective_ack_keeps_front_gap_pinned() {
     assert!(fsm.state.tx_ring.contains_key(&SessionSeq(1)));
     assert!(!fsm.state.tx_ring.contains_key(&SessionSeq(2)));
 
-    fsm.write_stream(stream_id, b"x".to_vec()).unwrap();
+    let extra_stream = fsm.open_stream().unwrap();
+    fsm.write_stream(extra_stream, b"x".to_vec()).unwrap();
     assert!(fsm
         .next_outbound(now + Duration::from_millis(101))
         .is_none());
@@ -425,7 +648,7 @@ fn duplicate_old_packet_seq_is_ignored() {
     );
     let _ = fsm.take_next_event();
     let _ = fsm.take_next_event();
-    let _ = fsm.take_next_inbound(stream_id);
+    let _ = read_stream_all(&mut fsm, stream_id);
 
     fsm.receive(
         now + Duration::from_millis(1),
@@ -437,7 +660,7 @@ fn duplicate_old_packet_seq_is_ignored() {
     );
 
     assert!(fsm.take_next_event().is_none());
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
 }
 
 #[test]
@@ -463,12 +686,9 @@ fn retransmitted_stream_close_is_idempotent() {
 
     assert_eq!(
         fsm.take_next_event(),
-        Some(super::SessionEvent::Readable(stream_id))
+        Some(super::SessionEvent::Closed(frame.clone()))
     );
-    assert_eq!(
-        fsm.take_next_inbound(stream_id),
-        Some(super::StreamIncoming::Closed(frame.clone()))
-    );
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
 
     fsm.receive(
         now + Duration::from_millis(1),
@@ -480,5 +700,5 @@ fn retransmitted_stream_close_is_idempotent() {
     );
 
     assert!(fsm.take_next_event().is_none());
-    assert!(fsm.take_next_inbound(stream_id).is_none());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
 }

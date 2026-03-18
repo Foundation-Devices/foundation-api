@@ -10,7 +10,7 @@ pub use peer::*;
 use ql_wire::{ControlId, ControlMeta, QlHeader, QlPayload, QlRecord, SessionKey, XID};
 
 use crate::{
-    session::{SessionEvent, SessionFsmConfig, StreamIncoming, StreamNamespace},
+    session::{SessionEvent, SessionFsmConfig, StreamNamespace},
     QlFsm, QlFsmEvent, QlSessionEvent,
 };
 
@@ -63,6 +63,7 @@ fn reset_session(fsm: &mut QlFsm) {
     fsm.session = crate::session::SessionFsm::new(
         SessionFsmConfig {
             local_namespace,
+            stream_chunk_size: fsm.config.session_stream_chunk_size,
             ack_delay: fsm.config.session_ack_delay,
             retransmit_timeout: fsm.config.session_retransmit_timeout,
             keepalive_interval: fsm.config.session_keepalive_interval,
@@ -93,26 +94,18 @@ fn drain_session_events(fsm: &mut QlFsm) {
                     .push_back(QlSessionEvent::Opened(stream_id));
             }
             SessionEvent::Readable(stream_id) => {
-                while let Some(incoming) = fsm.session.take_next_inbound(stream_id) {
-                    match incoming {
-                        StreamIncoming::Data(bytes) => {
-                            fsm.state
-                                .session_events
-                                .push_back(QlSessionEvent::Data { stream_id, bytes });
-                        }
-                        StreamIncoming::Finished => {
-                            fsm.state
-                                .session_events
-                                .push_back(QlSessionEvent::Finished(stream_id));
-                        }
-                        StreamIncoming::Closed(frame) => {
-                            fsm.state
-                                .session_events
-                                .push_back(QlSessionEvent::Closed(frame));
-                        }
-                    }
-                }
+                fsm.state
+                    .session_events
+                    .push_back(QlSessionEvent::Readable(stream_id));
             }
+            SessionEvent::Finished(stream_id) => fsm
+                .state
+                .session_events
+                .push_back(QlSessionEvent::Finished(stream_id)),
+            SessionEvent::Closed(frame) => fsm
+                .state
+                .session_events
+                .push_back(QlSessionEvent::Closed(frame)),
             SessionEvent::WritableClosed(stream_id) => {
                 fsm.state
                     .session_events
