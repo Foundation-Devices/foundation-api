@@ -1,14 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "api",
-    "backup-shard",
-    "btp",
-    "ql-fsm",
-    "ql-engine",
-    "ql-runtime",
-    "ql-wire",
-    "quantum-link-macros",
+  "api",
+  "backup-shard",
+  "btp",
+  "ql-fsm",
+  "ql-runtime",
+  "ql-wire",
+  "quantum-link-macros",
 ]
 
 [workspace.package]
