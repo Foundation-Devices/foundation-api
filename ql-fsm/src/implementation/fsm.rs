@@ -121,8 +121,8 @@ pub fn confirm_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
     fsm.session.confirm_write(fsm.state.now.instant, write_id.0);
 }
 
-pub fn return_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
-    fsm.session.return_write(write_id.0);
+pub fn reject_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
+    fsm.session.reject_write(write_id.0);
 }
 
 pub fn kill_session(fsm: &mut QlFsm, code: CloseCode) {

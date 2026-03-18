@@ -416,7 +416,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn return_write(&mut self, seq: SessionSeq) {
+    pub fn reject_write(&mut self, seq: SessionSeq) {
         debug_assert!(matches!(
             self.state.tx_ring.get(&seq).map(|entry| entry.state),
             Some(TxState::Issued)
@@ -986,19 +986,18 @@ impl SessionFsm {
             return false;
         }
 
+        if !stream.send_buf.is_empty()
+            || !stream.recv_buf.is_empty()
+            || !stream.pending_recv.is_empty()
+        {
+            return false;
+        }
+
         match stream.open_state {
             StreamOpenState::WaitingForAck => false,
-            StreamOpenState::PendingSend => {
-                matches!(stream.outbound_state, OutboundState::Closed)
-                    && stream.send_buf.is_empty()
-                    && stream.recv_buf.is_empty()
-                    && stream.pending_recv.is_empty()
-            }
+            StreamOpenState::PendingSend => matches!(stream.outbound_state, OutboundState::Closed),
             StreamOpenState::Opened => {
                 stream.pending_close.is_none()
-                    && stream.send_buf.is_empty()
-                    && stream.recv_buf.is_empty()
-                    && stream.pending_recv.is_empty()
                     && matches!(
                         stream.inbound_state,
                         InboundState::Finished | InboundState::Closed(_) | InboundState::Discarding

@@ -195,7 +195,7 @@ impl QlFsm {
     /// This must be called at most once for a `SessionWriteId` returned by
     /// [`Self::take_next_write`] whose `session_write_id` was `Some`.
     pub fn reject_session_write(&mut self, write_id: SessionWriteId) {
-        implementation::return_session_write(self, write_id);
+        implementation::reject_session_write(self, write_id);
     }
 
     /// Aborts the current encrypted session locally.
