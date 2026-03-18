@@ -11,8 +11,8 @@ use std::{
 use async_channel::{Receiver, Sender};
 use libcrux_aesgcm::AesGcm256Key;
 use ql_wire::{
-    generate_ml_dsa_keypair, generate_ml_kem_keypair, Nonce, QlCrypto, QlIdentity, QlPayload,
-    QlRecord, SessionKey, AUTH_SIZE, XID,
+    generate_ml_dsa_keypair, generate_ml_kem_keypair, EncryptedMessage, Nonce, QlCrypto,
+    QlIdentity, QlPayload, QlRecord, SessionKey, XID,
 };
 use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
@@ -95,10 +95,10 @@ impl QlCrypto for DeterministicCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> Option<[u8; AUTH_SIZE]> {
+    ) -> Option<[u8; EncryptedMessage::AUTH_SIZE]> {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
-        let mut auth = [0u8; AUTH_SIZE];
+        let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
         key.encrypt(
             buffer,
             (&mut auth).into(),
@@ -116,7 +116,7 @@ impl QlCrypto for DeterministicCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-        auth_tag: &[u8; AUTH_SIZE],
+        auth_tag: &[u8; EncryptedMessage::AUTH_SIZE],
     ) -> bool {
         let key: AesGcm256Key = (*key.data()).into();
         let ciphertext = buffer.to_vec();
@@ -226,10 +226,10 @@ impl QlCrypto for TestPlatform {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> Option<[u8; AUTH_SIZE]> {
+    ) -> Option<[u8; EncryptedMessage::AUTH_SIZE]> {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
-        let mut auth = [0u8; AUTH_SIZE];
+        let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
         key.encrypt(
             buffer,
             (&mut auth).into(),
@@ -247,7 +247,7 @@ impl QlCrypto for TestPlatform {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-        auth_tag: &[u8; AUTH_SIZE],
+        auth_tag: &[u8; EncryptedMessage::AUTH_SIZE],
     ) -> bool {
         let key: AesGcm256Key = (*key.data()).into();
         let ciphertext = buffer.to_vec();
@@ -328,15 +328,15 @@ impl crate::platform::QlPlatform for TestPlatform {
 fn is_encrypted_payload(bytes: &[u8]) -> bool {
     QlRecord::decode(bytes)
         .ok()
-        .is_some_and(|record| matches!(record.payload, QlPayload::Encrypted(_)))
+        .is_some_and(|record| matches!(record.payload, QlPayload::Session(_)))
 }
 
 fn new_identity(seed: u8) -> QlIdentity {
     let crypto = DeterministicCrypto::new(seed);
     let (signing_private, signing_public) = generate_ml_dsa_keypair(&crypto);
     let (encapsulation_private, encapsulation_public) = generate_ml_kem_keypair(&crypto);
-    QlIdentity::from_keys(
-        XID([seed; XID::XID_SIZE]),
+    QlIdentity::new(
+        XID([seed; XID::SIZE]),
         signing_private,
         signing_public,
         encapsulation_private,

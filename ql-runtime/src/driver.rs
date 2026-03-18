@@ -367,7 +367,7 @@ impl DriverState {
         stream.inbound_mut().finish();
     }
 
-    fn handle_closed_stream(&mut self, frame: ql_wire::StreamCloseFrame) {
+    fn handle_closed_stream(&mut self, frame: ql_wire::StreamClose) {
         let Some(stream) = self.streams.get_mut(&frame.stream_id) else {
             return;
         };
