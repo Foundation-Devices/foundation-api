@@ -97,7 +97,7 @@ impl QlCrypto for DeterministicCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> Option<[u8; EncryptedMessage::AUTH_SIZE]> {
+    ) -> [u8; EncryptedMessage::AUTH_SIZE] {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
         let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
@@ -108,8 +108,8 @@ impl QlCrypto for DeterministicCrypto {
             aad,
             &plaintext,
         )
-        .ok()?;
-        Some(auth)
+        .unwrap();
+        auth
     }
 
     fn decrypt_with_aead(
@@ -228,7 +228,7 @@ impl QlCrypto for TestPlatform {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> Option<[u8; EncryptedMessage::AUTH_SIZE]> {
+    ) -> [u8; EncryptedMessage::AUTH_SIZE] {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
         let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
@@ -239,8 +239,8 @@ impl QlCrypto for TestPlatform {
             aad,
             &plaintext,
         )
-        .ok()?;
-        Some(auth)
+        .unwrap();
+        auth
     }
 
     fn decrypt_with_aead(

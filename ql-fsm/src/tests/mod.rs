@@ -55,7 +55,7 @@ impl QlCrypto for TestCrypto {
         nonce: &ql_wire::Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> Option<[u8; EncryptedMessage::AUTH_SIZE]> {
+    ) -> [u8; EncryptedMessage::AUTH_SIZE] {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
         let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
@@ -66,8 +66,8 @@ impl QlCrypto for TestCrypto {
             aad,
             &plaintext,
         )
-        .ok()?;
-        Some(auth)
+        .unwrap();
+        auth
     }
 
     fn decrypt_with_aead(

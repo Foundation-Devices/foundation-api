@@ -47,7 +47,7 @@ pub trait QlCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> Option<[u8; EncryptedMessage::AUTH_SIZE]>;
+    ) -> [u8; EncryptedMessage::AUTH_SIZE];
 
     fn decrypt_with_aead(
         &self,

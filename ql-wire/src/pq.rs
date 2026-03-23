@@ -1,7 +1,7 @@
 use libcrux_ml_dsa::{ml_dsa_87, KEY_GENERATION_RANDOMNESS_SIZE, SIGNING_RANDOMNESS_SIZE};
 use libcrux_ml_kem::{mlkem1024, KEY_GENERATION_SEED_SIZE, SHARED_SECRET_SIZE};
 
-use crate::{QlCrypto, WireError};
+use crate::QlCrypto;
 
 pub(crate) const ML_KEM_SUITE_TAG: &[u8] = b"ml-kem-1024";
 
@@ -44,17 +44,15 @@ impl MlDsaPrivateKey {
         self.0.as_ref()
     }
 
-    pub fn sign(
-        &self,
-        crypto: &impl QlCrypto,
-        message: &[u8],
-    ) -> Result<MlDsaSignature, WireError> {
+    pub fn sign(&self, crypto: &impl QlCrypto, message: &[u8]) -> MlDsaSignature {
         let mut randomness = [0u8; SIGNING_RANDOMNESS_SIZE];
         crypto.fill_random_bytes(&mut randomness);
         let signing_key = ml_dsa_87::MLDSA87SigningKey::new(*self.as_bytes());
+        // Safe: we always sign with the empty context, so the only remaining
+        // error is libcrux's negligible-probability rejection-sampling failure.
         let signature = ml_dsa_87::sign(&signing_key, message, b"", randomness)
-            .map_err(|_| WireError::SigningFailed)?;
-        Ok(MlDsaSignature::from_data(*signature.as_ref()))
+            .expect("ML-DSA signing should not fail");
+        MlDsaSignature::from_data(*signature.as_ref())
     }
 }
 
@@ -117,15 +115,15 @@ impl MlKemPublicKey {
     pub fn encapsulate_new_shared_secret(
         &self,
         crypto: &impl QlCrypto,
-    ) -> Result<(SessionKey, MlKemCiphertext), WireError> {
+    ) -> (SessionKey, MlKemCiphertext) {
         let mut randomness = [0u8; SHARED_SECRET_SIZE];
         crypto.fill_random_bytes(&mut randomness);
         let public_key = mlkem1024::MlKem1024PublicKey::from(self.as_bytes());
         let (ciphertext, shared_secret) = mlkem1024::encapsulate(&public_key, randomness);
-        Ok((
+        (
             SessionKey::from_data(shared_secret),
             MlKemCiphertext::from_data(*ciphertext.as_slice()),
-        ))
+        )
     }
 }
 
@@ -143,21 +141,18 @@ impl MlKemPrivateKey {
         self.0.as_ref()
     }
 
-    pub fn decapsulate_shared_secret(
-        &self,
-        ciphertext: &MlKemCiphertext,
-    ) -> Result<SessionKey, WireError> {
+    pub fn decapsulate_shared_secret(&self, ciphertext: &MlKemCiphertext) -> SessionKey {
         self.decapsulate_shared_secret_bytes(ciphertext.as_bytes())
     }
 
     pub fn decapsulate_shared_secret_bytes(
         &self,
         ciphertext: &[u8; MlKemCiphertext::SIZE],
-    ) -> Result<SessionKey, WireError> {
+    ) -> SessionKey {
         let private_key = mlkem1024::MlKem1024PrivateKey::from(self.as_bytes());
         let ciphertext = mlkem1024::MlKem1024Ciphertext::from(ciphertext);
         let shared_secret = mlkem1024::decapsulate(&private_key, &ciphertext);
-        Ok(SessionKey::from_data(shared_secret))
+        SessionKey::from_data(shared_secret)
     }
 }
 

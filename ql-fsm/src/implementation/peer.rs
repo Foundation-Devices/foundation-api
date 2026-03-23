@@ -16,7 +16,7 @@ pub fn handle_pair_local(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), 
         peer.peer.xid,
         &peer.peer.encapsulation_key,
         meta,
-    )?;
+    );
     fsm.state.outbound.push_back(record);
     Ok(())
 }

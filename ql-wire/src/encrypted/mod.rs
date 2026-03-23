@@ -154,14 +154,14 @@ pub fn encrypt_record(
     session_key: &SessionKey,
     body: &SessionEnvelope,
     nonce: Nonce,
-) -> Result<QlRecord, WireError> {
+) -> QlRecord {
     let aad = header.aad();
     let body_bytes = body.encode();
-    let encrypted = EncryptedMessage::encrypt(crypto, session_key, body_bytes, &aad, nonce)?;
-    Ok(QlRecord {
+    let encrypted = EncryptedMessage::encrypt(crypto, session_key, body_bytes, &aad, nonce);
+    QlRecord {
         header,
         payload: QlPayload::Session(encrypted),
-    })
+    }
 }
 
 pub fn decrypt_record<'a, B: ByteSliceMut>(

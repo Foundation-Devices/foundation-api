@@ -35,7 +35,7 @@ impl QlCrypto for TestCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> Option<[u8; EncryptedMessage::AUTH_SIZE]> {
+    ) -> [u8; EncryptedMessage::AUTH_SIZE] {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
         let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
@@ -46,8 +46,8 @@ impl QlCrypto for TestCrypto {
             aad,
             &plaintext,
         )
-        .ok()?;
-        Some(auth)
+        .unwrap();
+        auth
     }
 
     fn decrypt_with_aead(
@@ -92,8 +92,7 @@ fn encrypted_session_record_round_trip_and_decrypt() {
         &session_key,
         &body,
         Nonce([8; Nonce::SIZE]),
-    )
-    .unwrap();
+    );
 
     let bytes = record.encode();
     let decoded = QlRecord::decode(&bytes).unwrap();
@@ -145,8 +144,7 @@ fn pair_request_round_trip_and_decrypt() {
         recipient.xid,
         &recipient.encapsulation_public_key,
         meta,
-    )
-    .unwrap();
+    );
 
     let mut bytes = record.encode();
     let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
@@ -178,8 +176,7 @@ fn ready_round_trip_and_decrypt() {
         &session_key,
         meta,
         Nonce([12; Nonce::SIZE]),
-    )
-    .unwrap();
+    );
     let record = QlRecord {
         header,
         payload: QlPayload::Ready(ready),

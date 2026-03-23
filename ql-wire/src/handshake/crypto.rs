@@ -22,10 +22,9 @@ pub fn build_hello(
     recipient: XID,
     recipient_encapsulation_key: &MlKemPublicKey,
     meta: ControlMeta,
-) -> Result<(Hello, SessionKey), WireError> {
+) -> (Hello, SessionKey) {
     let nonce = next_nonce(crypto);
-    let (session_key, kem_ct) =
-        recipient_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
+    let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret(crypto);
     let proof_data = hash_hello_proof_data(
         crypto,
         identity.xid,
@@ -34,8 +33,8 @@ pub fn build_hello(
         &nonce.0,
         kem_ct.as_bytes(),
     );
-    let signature = identity.signing_private_key.sign(crypto, &proof_data)?;
-    Ok((
+    let signature = identity.signing_private_key.sign(crypto, &proof_data);
+    (
         Hello {
             meta,
             nonce,
@@ -43,7 +42,7 @@ pub fn build_hello(
             signature,
         },
         session_key,
-    ))
+    )
 }
 
 pub fn verify_hello<B: ByteSlice>(
@@ -87,11 +86,11 @@ pub fn respond_hello<B: ByteSlice>(
     )?;
     let initiator_secret = identity
         .encapsulation_private_key
-        .decapsulate_shared_secret_bytes(&hello.kem_ct)?;
+        .decapsulate_shared_secret_bytes(&hello.kem_ct);
     let hello_meta = ControlMeta::from_wire(hello.meta);
     let nonce = next_nonce(crypto);
     let (responder_secret, kem_ct) =
-        initiator_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
+        initiator_encapsulation_key.encapsulate_new_shared_secret(crypto);
     let transcript = hash_handshake_transcript(
         crypto,
         initiator,
@@ -103,7 +102,7 @@ pub fn respond_hello<B: ByteSlice>(
         &nonce.0,
         kem_ct.as_bytes(),
     );
-    let signature = identity.signing_private_key.sign(crypto, &transcript)?;
+    let signature = identity.signing_private_key.sign(crypto, &transcript);
     Ok((
         HelloReply {
             meta,
@@ -145,7 +144,7 @@ pub fn build_confirm<B: ByteSlice>(
     verify_signature_bytes(responder_signing_key, &reply.signature, &transcript)?;
     let responder_secret = identity
         .encapsulation_private_key
-        .decapsulate_shared_secret_bytes(&reply.kem_ct)?;
+        .decapsulate_shared_secret_bytes(&reply.kem_ct);
     let proof_data = hash_confirm_proof_data(
         crypto,
         &meta,
@@ -158,7 +157,7 @@ pub fn build_confirm<B: ByteSlice>(
         &reply.nonce,
         &reply.kem_ct,
     );
-    let signature = identity.signing_private_key.sign(crypto, &proof_data)?;
+    let signature = identity.signing_private_key.sign(crypto, &proof_data);
     let session_key = derive_session_key(
         crypto,
         initiator_secret,
@@ -244,12 +243,12 @@ pub fn build_ready(
     session_key: &SessionKey,
     meta: ControlMeta,
     nonce: Nonce,
-) -> Result<Ready, WireError> {
+) -> Ready {
     let aad = header.aad();
     let body_bytes = ReadyBody { meta }.encode();
-    Ok(Ready {
-        encrypted: EncryptedMessage::encrypt(crypto, session_key, body_bytes, &aad, nonce)?,
-    })
+    Ready {
+        encrypted: EncryptedMessage::encrypt(crypto, session_key, body_bytes, &aad, nonce),
+    }
 }
 
 pub fn decrypt_ready<B: ByteSliceMut>(

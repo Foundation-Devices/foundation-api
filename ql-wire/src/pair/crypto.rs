@@ -12,9 +12,8 @@ pub fn build_pair_request(
     recipient: XID,
     recipient_encapsulation_key: &MlKemPublicKey,
     meta: ControlMeta,
-) -> Result<QlRecord, WireError> {
-    let (session_key, kem_ct) =
-        recipient_encapsulation_key.encapsulate_new_shared_secret(crypto)?;
+) -> QlRecord {
+    let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret(crypto);
     let header = QlHeader {
         sender: identity.xid,
         recipient,
@@ -30,7 +29,7 @@ pub fn build_pair_request(
         &signing_pub_key,
         &sender_encapsulation_key,
     );
-    let proof = identity.signing_private_key.sign(crypto, &proof_data)?;
+    let proof = identity.signing_private_key.sign(crypto, &proof_data);
     let body = PairRequestBody {
         meta,
         xid: identity.xid,
@@ -48,11 +47,11 @@ pub fn build_pair_request(
         body_bytes,
         &aad,
         crate::Nonce(nonce),
-    )?;
-    Ok(QlRecord {
+    );
+    QlRecord {
         header,
         payload: QlPayload::PairRequest(super::PairRequestRecord { kem_ct, encrypted }),
-    })
+    }
 }
 
 pub fn decrypt_pair_request<B: ByteSliceMut>(
@@ -66,7 +65,7 @@ pub fn decrypt_pair_request<B: ByteSliceMut>(
     let aad = pairing_aad(header, &kem_ct);
     let session_key = identity
         .encapsulation_private_key
-        .decapsulate_shared_secret(&kem_ct)?;
+        .decapsulate_shared_secret(&kem_ct);
     let mut encrypted = crate::encrypted_message::EncryptedMessage::parse(&mut request.encrypted)?;
     let plaintext = crate::encrypted_message::EncryptedMessage::decrypt_in_place(
         &mut encrypted,

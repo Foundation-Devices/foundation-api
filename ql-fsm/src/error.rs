@@ -11,10 +11,6 @@ pub enum QlFsmError {
     InvalidSignature,
     #[error("expired")]
     Expired,
-    #[error("signing failed")]
-    SigningFailed,
-    #[error("encryption failed")]
-    EncryptFailed,
     #[error("decryption failed")]
     DecryptFailed,
     #[error("missing stream")]
@@ -33,8 +29,6 @@ impl From<WireError> for QlFsmError {
             WireError::InvalidPayload => Self::InvalidPayload,
             WireError::InvalidSignature => Self::InvalidSignature,
             WireError::Expired => Self::Expired,
-            WireError::SigningFailed => Self::SigningFailed,
-            WireError::EncryptFailed => Self::EncryptFailed,
             WireError::DecryptFailed => Self::DecryptFailed,
         }
     }

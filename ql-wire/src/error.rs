@@ -8,10 +8,6 @@ pub enum WireError {
     InvalidSignature,
     #[error("expired")]
     Expired,
-    #[error("signing failed")]
-    SigningFailed,
-    #[error("encryption failed")]
-    EncryptFailed,
     #[error("decryption failed")]
     DecryptFailed,
 }

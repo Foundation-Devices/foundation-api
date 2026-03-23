@@ -625,8 +625,8 @@ mod tests {
             _nonce: &ql_wire::Nonce,
             _aad: &[u8],
             _buffer: &mut [u8],
-        ) -> Option<[u8; ql_wire::EncryptedMessage::AUTH_SIZE]> {
-            None
+        ) -> [u8; ql_wire::EncryptedMessage::AUTH_SIZE] {
+            [0; ql_wire::EncryptedMessage::AUTH_SIZE]
         }
 
         fn decrypt_with_aead(

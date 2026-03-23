@@ -65,15 +65,13 @@ impl EncryptedMessage {
         mut plaintext: Vec<u8>,
         aad: &[u8],
         nonce: Nonce,
-    ) -> Result<Self, WireError> {
-        let auth = crypto
-            .encrypt_with_aead(key, &nonce, aad, &mut plaintext)
-            .ok_or(WireError::EncryptFailed)?;
-        Ok(Self {
+    ) -> Self {
+        let auth = crypto.encrypt_with_aead(key, &nonce, aad, &mut plaintext);
+        Self {
             nonce,
             auth,
             ciphertext: plaintext,
-        })
+        }
     }
 
     pub fn decrypt(

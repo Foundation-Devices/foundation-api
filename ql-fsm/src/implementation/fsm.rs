@@ -111,8 +111,7 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
             &session_key,
             &envelope,
             Nonce(nonce),
-        )
-        .ok()?,
+        ),
         session_write_id: Some(SessionWriteId(envelope.seq)),
     })
 }

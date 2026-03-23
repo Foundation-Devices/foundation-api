@@ -304,7 +304,7 @@ pub fn handle_confirm(
         &session_key,
         next_control_meta(fsm, fsm.config.handshake_timeout),
         next_encrypted_nonce(crypto),
-    )?;
+    );
 
     if let Some(entry) = fsm.peer.as_mut() {
         entry.session = ConnectionState::Connected {
@@ -501,7 +501,7 @@ fn start_initiator_handshake(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<
         peer.xid,
         &peer.encapsulation_key,
         meta,
-    )?;
+    );
     let deadline = fsm.state.now.instant + fsm.config.handshake_timeout;
     let retry_at = Some(fsm.state.now.instant + fsm.config.handshake_retry_interval);
 
