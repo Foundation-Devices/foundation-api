@@ -27,16 +27,13 @@ pub fn handle_pair(
     header: &QlHeader,
     request: &mut RefMut<'_, PairRequestRecordWire>,
 ) -> Result<(), QlFsmError> {
-    let payload = match wire::decrypt_pair_request(
+    let payload = wire::decrypt_pair_request(
         crypto,
         &fsm.identity,
         header,
         request,
         fsm.state.now.unix_secs,
-    ) {
-        Ok(payload) => payload,
-        Err(_) => return Ok(()),
-    };
+    )?;
     let peer = Peer {
         xid: payload.xid,
         signing_key: payload.signing_pub_key,
@@ -47,7 +44,7 @@ pub fn handle_pair(
     }
 
     match fsm.peer.as_ref() {
-        Some(existing) if existing.peer != peer => return Ok(()),
+        Some(existing) if existing.peer != peer => return Err(QlFsmError::InvalidXid),
         Some(_) => {}
         None => bind_peer_record(fsm, peer.clone()),
     }

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ql_wire::QlPayload;
+use ql_wire::{QlPayload, XID};
 
 use super::*;
 use crate::state::{ConnectionState, HandshakeInitiator, HandshakeResponder};
@@ -312,4 +312,47 @@ fn simultaneous_connect_converges_to_connected_peers() {
         harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
         Some(ConnectionState::Connected { .. })
     ));
+}
+
+#[test]
+fn receive_surfaces_invalid_xid_for_wrong_recipient() {
+    let mut harness = Harness::paired(QlFsmConfig::default());
+
+    harness
+        .a
+        .fsm
+        .connect(harness.time(), &harness.a.crypto)
+        .unwrap();
+    let mut hello = harness.next_outbound_a().unwrap();
+    hello.header.recipient = XID([0xAA; XID::SIZE]);
+
+    assert_eq!(
+        harness
+            .b
+            .fsm
+            .receive(harness.time(), hello.encode(), &harness.b.crypto),
+        Err(crate::QlFsmError::InvalidXid)
+    );
+}
+
+#[test]
+fn receive_surfaces_invalid_signature_for_tampered_hello() {
+    let mut harness = Harness::paired(QlFsmConfig::default());
+
+    harness
+        .a
+        .fsm
+        .connect(harness.time(), &harness.a.crypto)
+        .unwrap();
+    let hello = harness.next_outbound_a().unwrap();
+    let mut bytes = hello.encode();
+    *bytes.last_mut().unwrap() ^= 0x01;
+
+    assert_eq!(
+        harness
+            .b
+            .fsm
+            .receive(harness.time(), bytes, &harness.b.crypto),
+        Err(crate::QlFsmError::InvalidSignature)
+    );
 }

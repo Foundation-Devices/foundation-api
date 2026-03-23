@@ -13,6 +13,8 @@ pub enum QlFsmError {
     Expired,
     #[error("decryption failed")]
     DecryptFailed,
+    #[error("invalid xid")]
+    InvalidXid,
     #[error("missing stream")]
     MissingStream,
     #[error("stream is not writable")]
@@ -21,6 +23,8 @@ pub enum QlFsmError {
     SessionClosed,
     #[error("no peer bound")]
     NoPeerBound,
+    #[error("no active session")]
+    NoSession,
 }
 
 impl From<WireError> for QlFsmError {

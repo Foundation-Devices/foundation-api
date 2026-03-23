@@ -12,14 +12,14 @@ pub fn receive(
     let wire::QlRecordRef { header, payload } = wire::QlRecord::parse_mut(&mut bytes)?;
 
     if header.recipient != fsm.identity.xid {
-        return Ok(());
+        return Err(QlFsmError::InvalidXid);
     }
     if !matches!(&payload, QlPayloadRef::PairRequest(_)) {
         let Some(peer) = fsm.peer.as_ref().map(|entry| entry.peer.xid) else {
-            return Ok(());
+            return Err(QlFsmError::NoPeerBound);
         };
         if header.sender != peer {
-            return Ok(());
+            return Err(QlFsmError::InvalidXid);
         }
     }
 
@@ -41,14 +41,10 @@ pub fn receive(
         }
         QlPayloadRef::Session(mut encrypted) => {
             let Some((_, session_key)) = super::peer_session(fsm) else {
-                return Ok(());
+                return Err(QlFsmError::NoSession);
             };
-            let envelope = match wire::decrypt_record(crypto, &header, &mut encrypted, &session_key)
-                .and_then(|envelope| wire::SessionEnvelope::from_wire(&envelope))
-            {
-                Ok(envelope) => envelope,
-                Err(_) => return Ok(()),
-            };
+            let envelope = wire::decrypt_record(crypto, &header, &mut encrypted, &session_key)?;
+            let envelope = wire::SessionEnvelope::from_wire(&envelope)?;
             fsm.session.receive(fsm.state.now.instant, envelope);
             super::drain_session_events(fsm);
         }

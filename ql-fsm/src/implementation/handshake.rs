@@ -55,19 +55,6 @@ pub fn handle_hello(
         let Some(entry) = fsm.peer.as_ref() else {
             return Ok(());
         };
-        if wire::verify_hello(
-            crypto,
-            header.sender,
-            fsm.identity.xid,
-            &entry.peer.signing_key,
-            hello,
-            fsm.state.now.unix_secs,
-        )
-        .is_err()
-        {
-            return Ok(());
-        }
-
         match &entry.session {
             ConnectionState::Initiator {
                 hello: local_hello, ..
@@ -97,6 +84,15 @@ pub fn handle_hello(
             }
         }
     };
+    let peer = fsm.peer.as_ref().map(|entry| entry.peer.clone()).unwrap();
+    wire::verify_hello(
+        crypto,
+        header.sender,
+        fsm.identity.xid,
+        &peer.signing_key,
+        hello,
+        fsm.state.now.unix_secs,
+    )?;
 
     match action {
         HelloAction::Ignore => {}
@@ -108,9 +104,8 @@ pub fn handle_hello(
                 return Ok(());
             }
 
-            let peer = fsm.peer.as_ref().map(|entry| entry.peer.clone()).unwrap();
             let reply_meta = next_control_meta(fsm, fsm.config.handshake_timeout);
-            let responder = wire::respond_hello(
+            let (reply, secrets) = wire::respond_hello(
                 crypto,
                 &fsm.identity,
                 peer.xid,
@@ -119,18 +114,7 @@ pub fn handle_hello(
                 hello,
                 reply_meta,
                 fsm.state.now.unix_secs,
-            );
-
-            let (reply, secrets) = match responder {
-                Ok(result) => result,
-                Err(_) => {
-                    if let Some(entry) = fsm.peer.as_mut() {
-                        entry.session = ConnectionState::Disconnected;
-                    }
-                    emit_peer_status(fsm);
-                    return Ok(());
-                }
-            };
+            )?;
 
             let deadline = fsm.state.now.instant + fsm.config.handshake_timeout;
             let retry_at = Some(fsm.state.now.instant + fsm.config.handshake_retry_interval);
@@ -202,7 +186,7 @@ pub fn handle_hello_reply(
             responder_signing_key,
         } => {
             let confirm_meta = next_control_meta(fsm, fsm.config.handshake_timeout);
-            let (confirm, session_key) = match wire::build_confirm(
+            let (confirm, session_key) = wire::build_confirm(
                 crypto,
                 &fsm.identity,
                 header.sender,
@@ -212,10 +196,7 @@ pub fn handle_hello_reply(
                 &initiator_secret,
                 confirm_meta,
                 fsm.state.now.unix_secs,
-            ) {
-                Ok(result) => result,
-                Err(_) => return Ok(()),
-            };
+            )?;
 
             if is_replayed_control(fsm, header.sender, wire::ControlMeta::from_wire(reply.meta)) {
                 return Ok(());
@@ -282,10 +263,7 @@ pub fn handle_confirm(
         .map(|session_key| (hello.clone(), reply.clone(), *deadline, session_key))
     };
 
-    let (hello, reply, deadline, session_key) = match outcome {
-        Ok(result) => result,
-        Err(_) => return Ok(()),
-    };
+    let (hello, reply, deadline, session_key) = outcome?;
 
     if is_replayed_control(
         fsm,
@@ -342,11 +320,7 @@ pub fn handle_ready(
         }
     };
 
-    let body =
-        match wire::decrypt_ready(crypto, header, ready, &session_key, fsm.state.now.unix_secs) {
-            Ok(body) => body,
-            Err(_) => return Ok(()),
-        };
+    let body = wire::decrypt_ready(crypto, header, ready, &session_key, fsm.state.now.unix_secs)?;
     if is_replayed_control(fsm, header.sender, body.meta) {
         return Ok(());
     }

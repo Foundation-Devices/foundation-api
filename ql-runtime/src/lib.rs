@@ -26,6 +26,8 @@ pub enum QlError {
     Expired,
     #[error("decryption failed")]
     DecryptFailed,
+    #[error("invalid xid")]
+    InvalidXid,
     #[error("missing stream")]
     MissingStream,
     #[error("stream is not writable")]
@@ -34,6 +36,8 @@ pub enum QlError {
     SessionClosed,
     #[error("no peer bound")]
     NoPeerBound,
+    #[error("no active session")]
+    NoSession,
     #[error("send failed")]
     SendFailed,
     #[error("stream closed {code:?}")]
@@ -53,10 +57,12 @@ impl From<QlFsmError> for QlError {
             QlFsmError::InvalidSignature => Self::InvalidSignature,
             QlFsmError::Expired => Self::Expired,
             QlFsmError::DecryptFailed => Self::DecryptFailed,
+            QlFsmError::InvalidXid => Self::InvalidXid,
             QlFsmError::MissingStream => Self::MissingStream,
             QlFsmError::NotWritable => Self::NotWritable,
             QlFsmError::SessionClosed => Self::SessionClosed,
             QlFsmError::NoPeerBound => Self::NoPeerBound,
+            QlFsmError::NoSession => Self::NoSession,
         }
     }
 }
