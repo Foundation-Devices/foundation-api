@@ -737,8 +737,15 @@ impl SessionFsm {
     }
 
     fn handle_stream_frame(&mut self, frame: StreamChunk) {
-        let stream_id = frame.stream_id;
+        let StreamChunk {
+            stream_id,
+            offset,
+            bytes,
+            fin,
+        } = frame;
+        let frame_end = offset + bytes.len() as u64;
         let remote_namespace = self.config.local_namespace.remote();
+
         if !self.state.streams.contains_key(&stream_id) {
             if !remote_namespace.matches(stream_id) {
                 self.fail_session(SessionCloseBody {
@@ -746,7 +753,7 @@ impl SessionFsm {
                 });
                 return;
             }
-            if frame.offset != 0 {
+            if offset != 0 {
                 return;
             }
             self.state
@@ -758,24 +765,21 @@ impl SessionFsm {
         let Some(stream) = self.state.streams.get_mut(&stream_id) else {
             return;
         };
-        if matches!(stream.inbound_state, InboundState::Discarding) {
-            return;
-        }
-        if matches!(
-            stream.inbound_state,
-            InboundState::Closed(_) | InboundState::Finished
-        ) {
-            if frame.offset + frame.bytes.len() as u64 <= stream.next_recv_offset {
+        match stream.inbound_state {
+            InboundState::Open => (),
+            InboundState::Finished | InboundState::Closed(_) => {
+                if frame_end <= stream.next_recv_offset {
+                    return;
+                }
+                self.fail_session(SessionCloseBody {
+                    code: CloseCode::PROTOCOL,
+                });
                 return;
             }
-            self.fail_session(SessionCloseBody {
-                code: CloseCode::PROTOCOL,
-            });
-            return;
+            InboundState::Discarding => return,
         }
 
-        if frame.offset < stream.next_recv_offset {
-            let frame_end = frame.offset + frame.bytes.len() as u64;
+        if offset < stream.next_recv_offset {
             if frame_end <= stream.next_recv_offset {
                 return;
             }
@@ -785,20 +789,16 @@ impl SessionFsm {
             return;
         }
 
-        if frame.offset == stream.next_recv_offset {
+        if offset == stream.next_recv_offset {
             let was_readable = !stream.recv_buf.is_empty();
-            let was_finished = matches!(stream.inbound_state, InboundState::Finished);
-            Self::commit_inbound_frame(stream, frame);
+            Self::commit_inbound_chunk(stream, bytes, fin);
             Self::drain_pending_recv(stream);
-            let became_readable = !was_readable && !stream.recv_buf.is_empty();
-            let became_finished =
-                !was_finished && matches!(stream.inbound_state, InboundState::Finished);
-            if became_readable {
+            if !was_readable && !stream.recv_buf.is_empty() {
                 self.state
                     .events
                     .push_back(SessionEvent::Readable(stream_id));
             }
-            if became_finished {
+            if matches!(stream.inbound_state, InboundState::Finished) {
                 self.state
                     .events
                     .push_back(SessionEvent::Finished(stream_id));
@@ -807,16 +807,7 @@ impl SessionFsm {
             return;
         }
 
-        if Self::insert_pending_chunk(
-            stream,
-            frame.offset,
-            PendingRxChunk {
-                bytes: frame.bytes,
-                fin: frame.fin,
-            },
-        )
-        .is_err()
-        {
+        if Self::insert_pending_chunk(stream, offset, PendingRxChunk { bytes, fin }).is_err() {
             self.fail_session(SessionCloseBody {
                 code: CloseCode::PROTOCOL,
             });
@@ -877,15 +868,9 @@ impl SessionFsm {
         matches!(target, CloseTarget::Both) || role.outbound_target() == target
     }
 
-    fn commit_inbound_frame(stream: &mut StreamState, frame: StreamChunk) {
-        Self::commit_inbound_chunk(stream, frame.bytes, frame.fin);
-    }
-
     fn commit_inbound_chunk(stream: &mut StreamState, bytes: Vec<u8>, fin: bool) {
         stream.next_recv_offset += bytes.len() as u64;
-        if !bytes.is_empty() {
-            stream.recv_buf.extend(bytes);
-        }
+        stream.recv_buf.extend(bytes);
         if fin {
             stream.inbound_state = InboundState::Finished;
         }
