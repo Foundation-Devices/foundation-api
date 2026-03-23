@@ -425,13 +425,6 @@ impl SessionFsm {
         entry.state = TxState::Pending;
     }
 
-    #[cfg(test)]
-    pub fn next_outbound(&mut self, now: Instant) -> Option<SessionEnvelope> {
-        let envelope = self.take_next_write(now)?;
-        self.confirm_write(now, envelope.seq);
-        Some(envelope)
-    }
-
     pub fn on_timer(&mut self, now: Instant) {
         self.state.now = now;
         self.collect_timeouts();
@@ -493,11 +486,6 @@ impl SessionFsm {
 
     pub fn take_next_event(&mut self) -> Option<SessionEvent> {
         self.state.events.pop_front()
-    }
-
-    #[cfg(test)]
-    pub fn session_state(&self) -> SessionState {
-        self.state.session_state
     }
 
     pub fn has_pending_stream_work(&self) -> bool {

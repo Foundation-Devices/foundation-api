@@ -36,6 +36,12 @@ fn ping(seq: u64, ack: SessionAck) -> SessionEnvelope {
     }
 }
 
+fn next_outbound(fsm: &mut SessionFsm, now: Instant) -> Option<SessionEnvelope> {
+    let envelope = fsm.take_next_write(now)?;
+    fsm.confirm_write(now, envelope.seq);
+    Some(envelope)
+}
+
 #[test]
 fn outbound_session_seq_increments_monotonically() {
     let now = Instant::now();
@@ -43,7 +49,7 @@ fn outbound_session_seq_increments_monotonically() {
     let stream_id = fsm.open_stream().unwrap();
 
     fsm.write_stream(stream_id, b"one".to_vec()).unwrap();
-    let first = fsm.next_outbound(now).unwrap();
+    let first = next_outbound(&mut fsm, now).unwrap();
 
     fsm.receive(
         now + Duration::from_millis(1),
@@ -57,7 +63,7 @@ fn outbound_session_seq_increments_monotonically() {
     );
 
     fsm.write_stream(stream_id, b"two".to_vec()).unwrap();
-    let second = fsm.next_outbound(now + Duration::from_millis(2)).unwrap();
+    let second = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
 
     assert_eq!(first.seq, SessionSeq(1));
     assert_eq!(second.seq, SessionSeq(2));
@@ -70,7 +76,7 @@ fn inbound_ack_removes_acked_tx_entries() {
     let stream_id = fsm.open_stream().unwrap();
 
     fsm.write_stream(stream_id, b"one".to_vec()).unwrap();
-    let first = fsm.next_outbound(now).unwrap();
+    let first = next_outbound(&mut fsm, now).unwrap();
     assert_eq!(first.seq, SessionSeq(1));
     assert!(fsm.state.tx_ring.contains_key(&SessionSeq(1)));
 
@@ -108,7 +114,7 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
             }),
         },
     );
-    let gap_ack = fsm.next_outbound(now).unwrap();
+    let gap_ack = next_outbound(&mut fsm, now).unwrap();
     assert_eq!(gap_ack.seq, SessionSeq(1));
     assert_eq!(
         gap_ack.ack,
@@ -131,7 +137,7 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
             }),
         },
     );
-    let contiguous_ack = fsm.next_outbound(now + Duration::from_millis(10)).unwrap();
+    let contiguous_ack = next_outbound(&mut fsm, now + Duration::from_millis(10)).unwrap();
     assert_eq!(contiguous_ack.seq, SessionSeq(2));
     assert_eq!(
         contiguous_ack.ack,
@@ -149,10 +155,10 @@ fn retransmit_reuses_session_seq() {
     let stream_id = fsm.open_stream().unwrap();
 
     fsm.write_stream(stream_id, b"retry-me".to_vec()).unwrap();
-    let first = fsm.next_outbound(now).unwrap();
+    let first = next_outbound(&mut fsm, now).unwrap();
 
     let retransmit_at = now + Duration::from_millis(200);
-    let retried = fsm.next_outbound(retransmit_at).unwrap();
+    let retried = next_outbound(&mut fsm, retransmit_at).unwrap();
 
     assert_eq!(first.seq, SessionSeq(1));
     assert_eq!(retried.seq, SessionSeq(1));
@@ -169,10 +175,10 @@ fn repeated_outbound_messages_keep_reporting_latest_receive_ack() {
     fsm.receive(now, ack(1, SessionAck::EMPTY));
 
     fsm.write_stream(stream_id_a, b"one".to_vec()).unwrap();
-    let first = fsm.next_outbound(now).unwrap();
+    let first = next_outbound(&mut fsm, now).unwrap();
 
     fsm.write_stream(stream_id_b, b"two".to_vec()).unwrap();
-    let second = fsm.next_outbound(now + Duration::from_millis(1)).unwrap();
+    let second = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
 
     assert_eq!(first.ack.base, SessionSeq(1));
     assert_eq!(second.ack.base, SessionSeq(1));
@@ -208,7 +214,7 @@ fn local_inbound_close_ignores_late_remote_bytes() {
         },
     );
 
-    assert_eq!(fsm.session_state(), SessionState::Open);
+    assert_eq!(fsm.state.session_state, SessionState::Open);
     assert_eq!(read_stream_all(&mut fsm, stream_id), Vec::<u8>::new());
     assert!(fsm.take_next_event().is_none());
 }
@@ -233,7 +239,7 @@ fn missing_stream_nonzero_offset_is_ignored_until_offset_zero_arrives() {
         },
     );
 
-    assert_eq!(fsm.session_state(), SessionState::Open);
+    assert_eq!(fsm.state.session_state, SessionState::Open);
     assert!(fsm.take_next_event().is_none());
     assert!(!fsm.state.streams.contains_key(&stream_id));
 
@@ -276,7 +282,7 @@ fn local_stream_waits_for_open_frame_ack_before_sending_follow_up_data() {
 
     fsm.write_stream(stream_id, b"hello".to_vec()).unwrap();
 
-    let first = fsm.next_outbound(now).unwrap();
+    let first = next_outbound(&mut fsm, now).unwrap();
     assert_eq!(
         first.body,
         SessionBody::Stream(StreamChunk {
@@ -286,7 +292,7 @@ fn local_stream_waits_for_open_frame_ack_before_sending_follow_up_data() {
             fin: false,
         })
     );
-    assert!(fsm.next_outbound(now + Duration::from_millis(1)).is_none());
+    assert!(next_outbound(&mut fsm, now + Duration::from_millis(1)).is_none());
 
     fsm.receive(
         now + Duration::from_millis(2),
@@ -299,7 +305,7 @@ fn local_stream_waits_for_open_frame_ack_before_sending_follow_up_data() {
         ),
     );
 
-    let second = fsm.next_outbound(now + Duration::from_millis(3)).unwrap();
+    let second = next_outbound(&mut fsm, now + Duration::from_millis(3)).unwrap();
     assert_eq!(
         second.body,
         SessionBody::Stream(StreamChunk {
@@ -347,7 +353,7 @@ fn stream_is_reaped_after_terminal_state_and_last_stream_ack() {
     assert!(fsm.state.streams.contains_key(&stream_id));
 
     fsm.finish_stream(stream_id).unwrap();
-    let fin = fsm.next_outbound(now + Duration::from_millis(1)).unwrap();
+    let fin = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
     assert_eq!(
         fin.body,
         SessionBody::Stream(StreamChunk {
@@ -406,7 +412,7 @@ fn replayed_remote_open_does_not_recreate_reaped_stream() {
     );
 
     fsm.finish_stream(stream_id).unwrap();
-    let fin = fsm.next_outbound(now + Duration::from_millis(1)).unwrap();
+    let fin = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
     assert_eq!(
         fin.body,
         SessionBody::Stream(StreamChunk {
@@ -432,7 +438,7 @@ fn replayed_remote_open_does_not_recreate_reaped_stream() {
 
     fsm.receive(now + Duration::from_millis(3), opener);
 
-    assert_eq!(fsm.session_state(), SessionState::Open);
+    assert_eq!(fsm.state.session_state, SessionState::Open);
     assert!(!fsm.state.streams.contains_key(&stream_id));
     assert!(fsm.take_next_event().is_none());
 }
@@ -493,7 +499,7 @@ fn next_outbound_round_robins_across_ready_streams() {
     fsm.write_stream(stream_id_b, b"b-2".to_vec()).unwrap();
 
     let first_round: Vec<_> = (0..2)
-        .map(|_| match fsm.next_outbound(now).unwrap().body {
+        .map(|_| match next_outbound(&mut fsm, now).unwrap().body {
             SessionBody::Stream(frame) => frame.stream_id,
             other => panic!("expected stream frame, got {other:?}"),
         })
@@ -512,8 +518,7 @@ fn next_outbound_round_robins_across_ready_streams() {
 
     let second_round: Vec<_> = (0..2)
         .map(|_| {
-            match fsm
-                .next_outbound(now + Duration::from_millis(2))
+            match next_outbound(&mut fsm, now + Duration::from_millis(2))
                 .unwrap()
                 .body
             {
@@ -539,10 +544,10 @@ fn idle_session_sends_ping_after_keepalive_interval() {
     );
 
     assert_eq!(fsm.next_deadline(), Some(now + Duration::from_millis(50)));
-    assert!(fsm.next_outbound(now + Duration::from_millis(49)).is_none());
+    assert!(next_outbound(&mut fsm, now + Duration::from_millis(49)).is_none());
     fsm.on_timer(now + Duration::from_millis(50));
 
-    let envelope = fsm.next_outbound(now + Duration::from_millis(50)).unwrap();
+    let envelope = next_outbound(&mut fsm, now + Duration::from_millis(50)).unwrap();
     assert!(matches!(envelope.body, SessionBody::Ping(PingBody)));
 }
 
@@ -553,11 +558,11 @@ fn receive_ping_schedules_ack_without_ping_pong() {
 
     fsm.receive(now, ping(1, SessionAck::EMPTY));
 
-    let ack_envelope = fsm.next_outbound(now + Duration::from_millis(10)).unwrap();
+    let ack_envelope = next_outbound(&mut fsm, now + Duration::from_millis(10)).unwrap();
     assert_eq!(ack_envelope.body, SessionBody::Ack);
 
     fsm.receive(now + Duration::from_millis(20), ack(2, SessionAck::EMPTY));
-    assert!(fsm.next_outbound(now + Duration::from_millis(30)).is_none());
+    assert!(next_outbound(&mut fsm, now + Duration::from_millis(30)).is_none());
 }
 
 #[test]
@@ -568,8 +573,7 @@ fn tx_selective_ack_keeps_front_gap_pinned() {
 
     for (byte, stream_id) in (0..64u8).zip(stream_ids.iter().copied()) {
         fsm.write_stream(stream_id, vec![byte]).unwrap();
-        let _ = fsm
-            .next_outbound(now + Duration::from_millis(byte as u64))
+        let _ = next_outbound(&mut fsm, now + Duration::from_millis(byte as u64))
             .unwrap();
     }
 
@@ -589,9 +593,7 @@ fn tx_selective_ack_keeps_front_gap_pinned() {
 
     let extra_stream = fsm.open_stream().unwrap();
     fsm.write_stream(extra_stream, b"x".to_vec()).unwrap();
-    assert!(fsm
-        .next_outbound(now + Duration::from_millis(101))
-        .is_none());
+    assert!(next_outbound(&mut fsm, now + Duration::from_millis(101)).is_none());
 
     fsm.receive(
         now + Duration::from_millis(102),
@@ -605,7 +607,7 @@ fn tx_selective_ack_keeps_front_gap_pinned() {
     );
 
     assert_eq!(
-        fsm.next_outbound(now + Duration::from_millis(103))
+        next_outbound(&mut fsm, now + Duration::from_millis(103))
             .unwrap()
             .seq,
         SessionSeq(65)
@@ -619,7 +621,7 @@ fn rx_seq_past_window_closes_protocol() {
 
     fsm.receive(now, ping(65, SessionAck::EMPTY));
 
-    assert_eq!(fsm.session_state(), SessionState::Closed);
+    assert_eq!(fsm.state.session_state, SessionState::Closed);
     assert!(matches!(
         fsm.take_next_event(),
         Some(super::SessionEvent::SessionClosed(close)) if close.code == CloseCode::PROTOCOL
