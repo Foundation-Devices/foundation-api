@@ -3,5 +3,5 @@
 pub struct XID(pub [u8; Self::SIZE]);
 
 impl XID {
-    pub const SIZE: usize = 32;
+    pub const SIZE: usize = 16;
 }
