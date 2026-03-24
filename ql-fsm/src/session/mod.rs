@@ -1,23 +1,27 @@
 pub(crate) mod ring;
 pub(crate) mod state;
+pub(crate) mod stream_window;
 
 #[cfg(test)]
 mod tests;
 
 use std::time::{Duration, Instant};
 
+use indexmap::map::Entry;
 use ql_wire::{
     CloseCode, CloseTarget, PingBody, SessionBody, SessionCloseBody, SessionEnvelope, SessionSeq,
     StreamChunk, StreamClose, StreamId, UnpairBody, XID,
 };
 
 use self::{
-    ring::SeqRingInsertError,
     state::{
-        AckState, InboundState, OutboundState, PendingRxChunk, PendingSessionBody, SessionFsmState,
+        AckState, InboundState, OutboundState, PendingSessionBody, SessionFsmState,
         StreamOpenState, StreamRole, StreamState, TxEntry, TxState,
     },
+    stream_window::{RecvInsertOutcome, RxChunk},
 };
+
+struct RejectNoAck;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamNamespace {
@@ -278,35 +282,22 @@ impl SessionFsm {
             }
             return;
         }
-        match self.state.rx_ring.insert(seq, ()) {
-            Ok(()) => {
-                let out_of_order = seq != self.state.rx_ring.base_seq();
-                self.state.rx_ring.advance_occupied_front();
-                if !matches!(envelope.body, SessionBody::Ack) {
-                    self.schedule_ack(out_of_order);
-                }
-            }
-            Err(SeqRingInsertError::OutOfWindow) => {
-                self.fail_session(SessionCloseBody {
-                    code: CloseCode::PROTOCOL,
-                });
-                return;
-            }
-            Err(SeqRingInsertError::Occupied) => {
-                if !matches!(envelope.body, SessionBody::Ack) {
-                    self.schedule_ack(true);
-                }
-                return;
-            }
+        if !self.state.rx_ring.accepts_seq(seq) {
+            self.fail_session(SessionCloseBody {
+                code: CloseCode::PROTOCOL,
+            });
+            return;
         }
 
-        match envelope.body {
-            SessionBody::Ack => {}
-            SessionBody::Ping(_) => {}
+        let out_of_order = seq != self.state.rx_ring.base_seq();
+        let body_kind_is_ack = matches!(envelope.body, SessionBody::Ack);
+        let apply_inbound_body = match envelope.body {
+            SessionBody::Ack | SessionBody::Ping(_) => Ok(()),
             SessionBody::Unpair(_) => {
                 self.state.session_state = SessionState::Closed;
                 self.clear_streams();
                 self.state.events.push_back(SessionEvent::Unpaired);
+                Ok(())
             }
             SessionBody::Close(close) => {
                 self.state.session_state = SessionState::Closed;
@@ -314,9 +305,28 @@ impl SessionFsm {
                 self.state
                     .events
                     .push_back(SessionEvent::SessionClosed(close));
+                Ok(())
             }
             SessionBody::Stream(frame) => self.handle_stream_frame(frame),
-            SessionBody::StreamClose(frame) => self.handle_stream_close(frame),
+            SessionBody::StreamClose(frame) => {
+                self.handle_stream_close(frame);
+                Ok(())
+            }
+        };
+        if apply_inbound_body.is_err() {
+            return;
+        }
+
+        match self.state.rx_ring.insert(seq, ()) {
+            Ok(()) => {
+                self.state.rx_ring.advance_occupied_front();
+                if !body_kind_is_ack {
+                    self.schedule_ack(out_of_order);
+                }
+            }
+            Err(e) => {
+                unreachable!("seq window was pre-validated before body handling {e:?}");
+            }
         }
     }
 
@@ -607,7 +617,7 @@ impl SessionFsm {
                     }
 
                     let (stream_id, opens_stream) = match &entry.pending.body {
-                        SessionBody::Stream(frame) => (Some(frame.stream_id), frame.offset == 0),
+                        SessionBody::Stream(frame) => (Some(frame.stream_id), frame.chunk_seq == 0),
                         SessionBody::StreamClose(frame) => (Some(frame.stream_id), false),
                         _ => (None, false),
                     };
@@ -714,7 +724,7 @@ impl SessionFsm {
                         .is_some_and(|stream| {
                             !matches!(stream.outbound_state, OutboundState::Closed)
                                 || (matches!(stream.open_state, StreamOpenState::WaitingForAck)
-                                    && frame.offset == 0)
+                                    && frame.chunk_seq == 0)
                         })
             }
             SessionBody::StreamClose(frame) => {
@@ -724,81 +734,71 @@ impl SessionFsm {
         }
     }
 
-    fn handle_stream_frame(&mut self, frame: StreamChunk) {
+    fn handle_stream_frame(&mut self, frame: StreamChunk) -> Result<(), RejectNoAck> {
         let StreamChunk {
             stream_id,
-            offset,
+            chunk_seq,
             bytes,
             fin,
         } = frame;
-        let frame_end = offset + bytes.len() as u64;
         let remote_namespace = self.config.local_namespace.remote();
-
-        if !self.state.streams.contains_key(&stream_id) {
-            if !remote_namespace.matches(stream_id) {
-                self.fail_session(SessionCloseBody {
-                    code: CloseCode::PROTOCOL,
-                });
-                return;
+        let stream = match self.state.streams.entry(stream_id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                if !remote_namespace.matches(stream_id) {
+                    self.fail_session(SessionCloseBody {
+                        code: CloseCode::PROTOCOL,
+                    });
+                    return Ok(());
+                }
+                if chunk_seq != 0 {
+                    return Err(RejectNoAck);
+                }
+                self.state.events.push_back(SessionEvent::Opened(stream_id));
+                entry.insert(StreamState::new(StreamRole::Responder))
             }
-            if offset != 0 {
-                return;
-            }
-            self.state
-                .streams
-                .insert(stream_id, StreamState::new(StreamRole::Responder));
-            self.state.events.push_back(SessionEvent::Opened(stream_id));
-        }
-
-        let Some(stream) = self.state.streams.get_mut(&stream_id) else {
-            return;
         };
         match stream.inbound_state {
             InboundState::Open => (),
             InboundState::Finished | InboundState::Closed(_) => {
-                if frame_end <= stream.next_recv_offset {
-                    return;
+                if chunk_seq < stream.recv_window.next_chunk_seq() {
+                    return Ok(());
                 }
                 self.fail_session(SessionCloseBody {
                     code: CloseCode::PROTOCOL,
                 });
-                return;
+                return Ok(());
             }
-            InboundState::Discarding => return,
+            InboundState::Discarding => return Ok(()),
         }
 
-        if offset < stream.next_recv_offset {
-            if frame_end <= stream.next_recv_offset {
-                return;
-            }
-            self.fail_session(SessionCloseBody {
-                code: CloseCode::PROTOCOL,
-            });
-            return;
-        }
+        let was_readable = !stream.recv_buf.is_empty();
+        let outcome = stream.recv_window.insert(chunk_seq, RxChunk { bytes, fin });
 
-        if offset == stream.next_recv_offset {
-            let was_readable = !stream.recv_buf.is_empty();
-            Self::commit_inbound_chunk(stream, bytes, fin);
-            Self::drain_pending_recv(stream);
-            if !was_readable && !stream.recv_buf.is_empty() {
-                self.state
-                    .events
-                    .push_back(SessionEvent::Readable(stream_id));
+        match outcome {
+            RecvInsertOutcome::Inserted => {
+                Self::drain_recv_window(stream);
+                if !was_readable && !stream.recv_buf.is_empty() {
+                    self.state
+                        .events
+                        .push_back(SessionEvent::Readable(stream_id));
+                }
+                if matches!(stream.inbound_state, InboundState::Finished) {
+                    self.state
+                        .events
+                        .push_back(SessionEvent::Finished(stream_id));
+                }
+                self.try_reap_stream(stream_id);
+                Ok(())
             }
-            if matches!(stream.inbound_state, InboundState::Finished) {
-                self.state
-                    .events
-                    .push_back(SessionEvent::Finished(stream_id));
+            RecvInsertOutcome::Duplicate => Ok(()),
+            RecvInsertOutcome::RejectNoAck => Err(RejectNoAck),
+            RecvInsertOutcome::Conflict => {
+                self.fail_session(SessionCloseBody {
+                    code: CloseCode::PROTOCOL,
+                });
+                Ok(())
             }
-            self.try_reap_stream(stream_id);
-            return;
-        }
-
-        if Self::insert_pending_chunk(stream, offset, PendingRxChunk { bytes, fin }).is_err() {
-            self.fail_session(SessionCloseBody {
-                code: CloseCode::PROTOCOL,
-            });
         }
     }
 
@@ -818,7 +818,7 @@ impl SessionFsm {
         {
             stream.inbound_state = InboundState::Closed(frame.clone());
             stream.recv_buf.clear();
-            stream.pending_recv.clear();
+            stream.recv_window.clear();
             self.state
                 .events
                 .push_back(SessionEvent::Closed(frame.clone()));
@@ -840,7 +840,7 @@ impl SessionFsm {
         if Self::target_affects_inbound(stream.role, target) {
             stream.inbound_state = InboundState::Discarding;
             stream.recv_buf.clear();
-            stream.pending_recv.clear();
+            stream.recv_window.clear();
         }
         if Self::target_affects_outbound(stream.role, target) {
             stream.outbound_state = OutboundState::Closed;
@@ -856,48 +856,15 @@ impl SessionFsm {
         matches!(target, CloseTarget::Both) || role.outbound_target() == target
     }
 
-    fn commit_inbound_chunk(stream: &mut StreamState, bytes: Vec<u8>, fin: bool) {
-        stream.next_recv_offset += bytes.len() as u64;
-        stream.recv_buf.extend(bytes);
-        if fin {
-            stream.inbound_state = InboundState::Finished;
-        }
-    }
-
-    fn drain_pending_recv(stream: &mut StreamState) {
-        while let Some(chunk) = stream.pending_recv.remove(&stream.next_recv_offset) {
-            Self::commit_inbound_chunk(stream, chunk.bytes, chunk.fin);
-            if matches!(stream.inbound_state, InboundState::Finished) {
+    fn drain_recv_window(stream: &mut StreamState) {
+        while let Some(chunk) = stream.recv_window.pop_contiguous() {
+            let RxChunk { bytes, fin } = chunk;
+            stream.recv_buf.extend(bytes);
+            if fin {
+                stream.inbound_state = InboundState::Finished;
                 break;
             }
         }
-    }
-
-    fn insert_pending_chunk(
-        stream: &mut StreamState,
-        offset: u64,
-        chunk: PendingRxChunk,
-    ) -> Result<(), ()> {
-        let end = chunk.end_offset(offset);
-
-        if let Some((&prev_offset, prev)) = stream.pending_recv.range(..=offset).next_back() {
-            let prev_end = prev.end_offset(prev_offset);
-            if prev_end > offset {
-                if prev_offset == offset && prev.bytes == chunk.bytes && prev.fin == chunk.fin {
-                    return Ok(());
-                }
-                return Err(());
-            }
-        }
-
-        if let Some((&next_offset, _)) = stream.pending_recv.range(offset..).next() {
-            if end > next_offset {
-                return Err(());
-            }
-        }
-
-        stream.pending_recv.insert(offset, chunk);
-        Ok(())
     }
 
     fn take_stream_frame(
@@ -918,11 +885,11 @@ impl SessionFsm {
             };
             let frame = StreamChunk {
                 stream_id,
-                offset: stream.next_send_offset,
+                chunk_seq: stream.next_send_chunk_seq,
                 bytes,
                 fin,
             };
-            stream.next_send_offset += frame.bytes.len() as u64;
+            stream.next_send_chunk_seq += 1;
             return Some(frame);
         }
 
@@ -930,7 +897,7 @@ impl SessionFsm {
             stream.outbound_state = OutboundState::Finished;
             return Some(StreamChunk {
                 stream_id,
-                offset: stream.next_send_offset,
+                chunk_seq: stream.next_send_chunk_seq,
                 bytes: Vec::new(),
                 fin: true,
             });
@@ -956,7 +923,7 @@ impl SessionFsm {
 
         if !stream.send_buf.is_empty()
             || !stream.recv_buf.is_empty()
-            || !stream.pending_recv.is_empty()
+            || !stream.recv_window.is_empty()
         {
             return false;
         }

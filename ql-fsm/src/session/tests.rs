@@ -108,7 +108,7 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id: stream_id_a,
-                offset: 0,
+                chunk_seq: 0,
                 bytes: b"a".to_vec(),
                 fin: false,
             }),
@@ -131,7 +131,7 @@ fn out_of_order_receive_produces_bitmap_ack_then_advances_base() {
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id: stream_id_b,
-                offset: 0,
+                chunk_seq: 0,
                 bytes: b"b".to_vec(),
                 fin: false,
             }),
@@ -207,7 +207,7 @@ fn local_inbound_close_ignores_late_remote_bytes() {
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id,
-                offset: 0,
+                chunk_seq: 0,
                 bytes: b"late".to_vec(),
                 fin: false,
             }),
@@ -220,7 +220,7 @@ fn local_inbound_close_ignores_late_remote_bytes() {
 }
 
 #[test]
-fn missing_stream_nonzero_offset_is_ignored_until_offset_zero_arrives() {
+fn missing_stream_nonzero_chunk_is_ignored_until_chunk_zero_arrives() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 7);
@@ -232,7 +232,7 @@ fn missing_stream_nonzero_offset_is_ignored_until_offset_zero_arrives() {
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id,
-                offset: 1,
+                chunk_seq: 1,
                 bytes: b"b".to_vec(),
                 fin: false,
             }),
@@ -250,7 +250,7 @@ fn missing_stream_nonzero_offset_is_ignored_until_offset_zero_arrives() {
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id,
-                offset: 0,
+                chunk_seq: 0,
                 bytes: b"a".to_vec(),
                 fin: false,
             }),
@@ -266,6 +266,125 @@ fn missing_stream_nonzero_offset_is_ignored_until_offset_zero_arrives() {
         Some(super::SessionEvent::Readable(stream_id))
     );
     assert_eq!(read_stream_all(&mut fsm, stream_id), b"a".to_vec());
+}
+
+#[test]
+fn out_of_order_chunks_within_recv_window_are_buffered_and_drained() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 8);
+
+    fsm.receive(
+        now,
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamChunk {
+                stream_id,
+                chunk_seq: 0,
+                bytes: b"a".to_vec(),
+                fin: false,
+            }),
+        },
+    );
+    fsm.receive(
+        now + Duration::from_millis(1),
+        SessionEnvelope {
+            seq: SessionSeq(2),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamChunk {
+                stream_id,
+                chunk_seq: 2,
+                bytes: b"c".to_vec(),
+                fin: false,
+            }),
+        },
+    );
+    fsm.receive(
+        now + Duration::from_millis(2),
+        SessionEnvelope {
+            seq: SessionSeq(3),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamChunk {
+                stream_id,
+                chunk_seq: 1,
+                bytes: b"b".to_vec(),
+                fin: false,
+            }),
+        },
+    );
+
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Opened(stream_id))
+    );
+    assert_eq!(
+        fsm.take_next_event(),
+        Some(super::SessionEvent::Readable(stream_id))
+    );
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"abc".to_vec());
+    assert!(fsm.take_next_event().is_none());
+}
+
+#[test]
+fn chunk_past_recv_window_is_dropped_without_session_ack() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionFsmConfig {
+            ack_delay: Duration::ZERO,
+            ..SessionFsmConfig::default()
+        },
+        now,
+    );
+    let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 10);
+
+    fsm.receive(
+        now,
+        SessionEnvelope {
+            seq: SessionSeq(1),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamChunk {
+                stream_id,
+                chunk_seq: 0,
+                bytes: b"a".to_vec(),
+                fin: false,
+            }),
+        },
+    );
+
+    let ack = next_outbound(&mut fsm, now).unwrap();
+    assert_eq!(
+        ack.ack,
+        SessionAck {
+            base: SessionSeq(1),
+            bitmap: 0,
+        }
+    );
+
+    fsm.receive(
+        now + Duration::from_millis(1),
+        SessionEnvelope {
+            seq: SessionSeq(2),
+            ack: SessionAck::EMPTY,
+            body: SessionBody::Stream(StreamChunk {
+                stream_id,
+                chunk_seq: 9,
+                bytes: b"z".to_vec(),
+                fin: false,
+            }),
+        },
+    );
+
+    assert_eq!(fsm.state.rx_ring.base_seq(), SessionSeq(2));
+    assert!(!fsm.state.rx_ring.contains_key(&SessionSeq(2)));
+    assert_eq!(
+        fsm.state.current_ack(),
+        SessionAck {
+            base: SessionSeq(1),
+            bitmap: 0,
+        }
+    );
+    assert!(next_outbound(&mut fsm, now + Duration::from_millis(2)).is_none());
 }
 
 #[test]
@@ -287,7 +406,7 @@ fn local_stream_waits_for_open_frame_ack_before_sending_follow_up_data() {
         first.body,
         SessionBody::Stream(StreamChunk {
             stream_id,
-            offset: 0,
+            chunk_seq: 0,
             bytes: b"he".to_vec(),
             fin: false,
         })
@@ -310,7 +429,7 @@ fn local_stream_waits_for_open_frame_ack_before_sending_follow_up_data() {
         second.body,
         SessionBody::Stream(StreamChunk {
             stream_id,
-            offset: 2,
+            chunk_seq: 1,
             bytes: b"ll".to_vec(),
             fin: false,
         })
@@ -330,7 +449,7 @@ fn stream_is_reaped_after_terminal_state_and_last_stream_ack() {
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id,
-                offset: 0,
+                chunk_seq: 0,
                 bytes: b"hi".to_vec(),
                 fin: true,
             }),
@@ -358,7 +477,7 @@ fn stream_is_reaped_after_terminal_state_and_last_stream_ack() {
         fin.body,
         SessionBody::Stream(StreamChunk {
             stream_id,
-            offset: 0,
+            chunk_seq: 0,
             bytes: Vec::new(),
             fin: true,
         })
@@ -389,7 +508,7 @@ fn replayed_remote_open_does_not_recreate_reaped_stream() {
         ack: SessionAck::EMPTY,
         body: SessionBody::Stream(StreamChunk {
             stream_id,
-            offset: 0,
+            chunk_seq: 0,
             bytes: b"hi".to_vec(),
             fin: true,
         }),
@@ -417,7 +536,7 @@ fn replayed_remote_open_does_not_recreate_reaped_stream() {
         fin.body,
         SessionBody::Stream(StreamChunk {
             stream_id,
-            offset: 0,
+            chunk_seq: 0,
             bytes: Vec::new(),
             fin: true,
         })
@@ -450,7 +569,7 @@ fn duplicate_committed_data_is_not_redelivered() {
     let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 9);
     let body = SessionBody::Stream(StreamChunk {
         stream_id,
-        offset: 0,
+        chunk_seq: 0,
         bytes: b"dup".to_vec(),
         fin: false,
     });
@@ -635,7 +754,7 @@ fn duplicate_old_packet_seq_is_ignored() {
     let stream_id = ql_wire::StreamId(super::StreamNamespace::High.bit() | 11);
     let body = SessionBody::Stream(StreamChunk {
         stream_id,
-        offset: 0,
+        chunk_seq: 0,
         bytes: b"x".to_vec(),
         fin: false,
     });

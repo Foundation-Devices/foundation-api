@@ -80,7 +80,7 @@ fn encrypted_session_record_round_trip_and_decrypt() {
         },
         body: SessionBody::Stream(StreamChunk {
             stream_id: StreamId(9),
-            offset: 11,
+            chunk_seq: 11,
             bytes: b"hello".to_vec(),
             fin: true,
         }),
@@ -301,7 +301,7 @@ fn protocol_record_size_breakdown() {
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id: StreamId(1),
-                offset: 0,
+                chunk_seq: 0,
                 fin: false,
                 bytes: Vec::new(),
             }),
@@ -315,7 +315,7 @@ fn protocol_record_size_breakdown() {
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id: StreamId(1),
-                offset: 0,
+                chunk_seq: 0,
                 fin: true,
                 bytes: Vec::new(),
             }),

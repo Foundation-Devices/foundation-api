@@ -11,7 +11,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamChunk {
     pub stream_id: StreamId,
-    pub offset: u64,
+    pub chunk_seq: u64,
     pub fin: bool,
     pub bytes: Vec<u8>,
 }
@@ -20,7 +20,7 @@ pub struct StreamChunk {
 #[repr(C, packed)]
 pub struct StreamChunkWire {
     pub stream_id: U32Le,
-    pub offset: U64Le,
+    pub chunk_seq: U64Le,
     pub fin: u8,
     pub bytes: [u8],
 }
@@ -33,7 +33,7 @@ impl StreamChunk {
     pub fn from_wire(wire: &StreamChunkWire) -> Result<Self, WireError> {
         Ok(StreamChunk {
             stream_id: StreamId(wire.stream_id.get()),
-            offset: wire.offset.get(),
+            chunk_seq: wire.chunk_seq.get(),
             bytes: wire.bytes.to_vec(),
             fin: crate::codec::read_byte(wire.fin)?,
         })
@@ -42,7 +42,7 @@ impl StreamChunk {
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         let header = StreamChunkHeaderWire {
             stream_id: U32Le::new(self.stream_id.0),
-            offset: U64Le::new(self.offset),
+            chunk_seq: U64Le::new(self.chunk_seq),
             fin: u8::from(self.fin),
         };
         push_value(out, &header);
@@ -54,6 +54,6 @@ impl StreamChunk {
 #[repr(C)]
 pub struct StreamChunkHeaderWire {
     pub stream_id: U32Le,
-    pub offset: U64Le,
+    pub chunk_seq: U64Le,
     pub fin: u8,
 }

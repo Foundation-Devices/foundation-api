@@ -1,14 +1,16 @@
-use std::{
-    collections::{BTreeMap, VecDeque},
-    time::Instant,
-};
+use std::{collections::VecDeque, time::Instant};
 
 use indexmap::IndexMap;
 use ql_wire::{
     CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamClose, StreamId,
 };
 
-use super::{ring::SeqRing, SessionEvent, SessionState};
+use super::{
+    ring::SeqRing,
+    stream_window::StreamRecvWindow,
+    SessionEvent,
+    SessionState,
+};
 
 pub const SESSION_WINDOW_CAPACITY: usize = 64;
 
@@ -31,18 +33,6 @@ impl StreamRole {
             Self::Initiator => CloseTarget::Response,
             Self::Responder => CloseTarget::Request,
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingRxChunk {
-    pub bytes: Vec<u8>,
-    pub fin: bool,
-}
-
-impl PendingRxChunk {
-    pub fn end_offset(&self, offset: u64) -> u64 {
-        offset + self.bytes.len() as u64
     }
 }
 
@@ -76,9 +66,8 @@ pub struct StreamState {
     pub send_buf: VecDeque<u8>,
     pub pending_close: Option<StreamClose>,
     pub recv_buf: VecDeque<u8>,
-    pub pending_recv: BTreeMap<u64, PendingRxChunk>,
-    pub next_send_offset: u64,
-    pub next_recv_offset: u64,
+    pub recv_window: StreamRecvWindow,
+    pub next_send_chunk_seq: u64,
     pub outbound_state: OutboundState,
     pub inbound_state: InboundState,
 }
@@ -94,9 +83,8 @@ impl StreamState {
             send_buf: VecDeque::new(),
             pending_close: None,
             recv_buf: VecDeque::new(),
-            pending_recv: BTreeMap::new(),
-            next_send_offset: 0,
-            next_recv_offset: 0,
+            recv_window: StreamRecvWindow::new(),
+            next_send_chunk_seq: 0,
             outbound_state: OutboundState::Open,
             inbound_state: InboundState::Open,
         }
