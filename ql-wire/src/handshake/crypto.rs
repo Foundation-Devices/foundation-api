@@ -1,11 +1,6 @@
-use zerocopy::{
-    byte_slice::ByteSliceMut,
-    Ref,
-};
+use zerocopy::{byte_slice::ByteSliceMut, Ref};
 
-use super::{
-    Confirm, ConfirmView, Hello, HelloReply, HelloReplyView, HelloView, Ready, ReadyBody,
-};
+use super::{Confirm, ConfirmView, Hello, HelloReply, HelloReplyView, HelloView, Ready, ReadyBody};
 use crate::{
     pq::ML_KEM_SUITE_TAG, ControlMeta, EncryptedMessage, EncryptedMessageWire, MlDsaPublicKey,
     MlDsaSignature, MlKemCiphertext, MlKemPublicKey, Nonce, QlCrypto, QlHeader, QlIdentity,

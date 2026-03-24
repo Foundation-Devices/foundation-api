@@ -325,6 +325,7 @@ mod tests {
         let message = EnvoyMessage {
             message: QuantumLinkMessage::ExchangeRate(fx_rate),
             timestamp: 123456,
+            protocol_version: None,
         };
 
         let envelope = QuantumLink::seal(
@@ -346,6 +347,7 @@ mod tests {
         let message = EnvoyMessage {
             message: QuantumLinkMessage::Heartbeat(Heartbeat {}),
             timestamp: 123456,
+            protocol_version: None,
         };
 
         let envelope = QuantumLink::seal(

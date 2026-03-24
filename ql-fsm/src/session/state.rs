@@ -5,12 +5,7 @@ use ql_wire::{
     CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamClose, StreamId,
 };
 
-use super::{
-    ring::SeqRing,
-    stream_window::StreamRecvWindow,
-    SessionEvent,
-    SessionState,
-};
+use super::{ring::SeqRing, stream_window::StreamRecvWindow, SessionEvent, SessionState};
 
 pub const SESSION_WINDOW_CAPACITY: usize = 64;
 

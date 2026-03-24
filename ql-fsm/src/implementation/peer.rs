@@ -27,12 +27,7 @@ pub fn handle_pair_local(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), 
 pub fn handle_unpair_local(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<wire::QlRecord> {
     let peer = fsm.peer.as_ref()?.peer.clone();
     let meta = next_control_meta(fsm, fsm.config.control_expiration);
-    let record = wire::build_unpair(
-        crypto,
-        &fsm.identity,
-        peer.xid,
-        meta,
-    );
+    let record = wire::build_unpair(crypto, &fsm.identity, peer.xid, meta);
     clear_bound_peer(fsm);
     Some(record)
 }
@@ -85,7 +80,11 @@ pub fn handle_unpair(
         unpair,
         fsm.state.now.unix_secs,
     )?;
-    if is_replayed_control(fsm, header.sender, wire::ControlMeta::from_wire(unpair.meta)) {
+    if is_replayed_control(
+        fsm,
+        header.sender,
+        wire::ControlMeta::from_wire(unpair.meta),
+    ) {
         return Ok(());
     }
 

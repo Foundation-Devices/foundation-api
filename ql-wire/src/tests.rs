@@ -221,14 +221,7 @@ fn unpair_round_trip_and_verify() {
     let QlPayloadRef::Unpair(unpair) = payload else {
         panic!("expected unpair payload");
     };
-    unpair::verify_unpair(
-        &crypto,
-        &header,
-        &sender_signing_public,
-        &unpair,
-        100,
-    )
-    .unwrap();
+    unpair::verify_unpair(&crypto, &header, &sender_signing_public, &unpair, 100).unwrap();
 }
 
 #[test]

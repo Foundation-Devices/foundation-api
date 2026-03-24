@@ -692,8 +692,7 @@ fn tx_selective_ack_keeps_front_gap_pinned() {
 
     for (byte, stream_id) in (0..64u8).zip(stream_ids.iter().copied()) {
         fsm.write_stream(stream_id, vec![byte]).unwrap();
-        let _ = next_outbound(&mut fsm, now + Duration::from_millis(byte as u64))
-            .unwrap();
+        let _ = next_outbound(&mut fsm, now + Duration::from_millis(byte as u64)).unwrap();
     }
 
     fsm.receive(
