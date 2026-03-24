@@ -13,13 +13,11 @@ mod close;
 mod ping;
 mod stream_chunk;
 mod stream_close;
-mod unpair;
 
 pub use close::*;
 pub use ping::*;
 pub use stream_chunk::*;
 pub use stream_close::*;
-pub use unpair::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -53,7 +51,6 @@ impl SessionAck {
 pub enum SessionBody {
     Ack,
     Ping(ping::PingBody),
-    Unpair(unpair::UnpairBody),
     Stream(StreamChunk),
     StreamClose(StreamClose),
     Close(close::SessionCloseBody),
@@ -62,7 +59,6 @@ pub enum SessionBody {
 pub enum SessionBodyRef<B> {
     Ack,
     Ping,
-    Unpair,
     Stream(Ref<B, StreamChunkWire>),
     StreamClose(Ref<B, StreamCloseWire>),
     Close(close::SessionCloseBody),
@@ -75,7 +71,6 @@ pub enum SessionBodyRef<B> {
 enum SessionBodyKind {
     Ack = 1,
     Ping = 2,
-    Unpair = 3,
     Stream = 4,
     StreamClose = 5,
     Close = 6,
@@ -100,7 +95,6 @@ impl SessionEnvelope {
         let body = match parse_session_body(session_body_kind(wire)?, &wire.body)? {
             SessionBodyRef::Ack => SessionBody::Ack,
             SessionBodyRef::Ping => SessionBody::Ping(ping::PingBody),
-            SessionBodyRef::Unpair => SessionBody::Unpair(unpair::UnpairBody),
             SessionBodyRef::Stream(frame) => SessionBody::Stream(StreamChunk::from_wire(&frame)?),
             SessionBodyRef::StreamClose(frame) => {
                 SessionBody::StreamClose(StreamClose::from_wire(&frame)?)
@@ -122,7 +116,6 @@ impl SessionEnvelope {
         let kind = match &self.body {
             SessionBody::Ack => SessionBodyKind::Ack,
             SessionBody::Ping(_) => SessionBodyKind::Ping,
-            SessionBody::Unpair(_) => SessionBodyKind::Unpair,
             SessionBody::Stream(_) => SessionBodyKind::Stream,
             SessionBody::StreamClose(_) => SessionBodyKind::StreamClose,
             SessionBody::Close(_) => SessionBodyKind::Close,
@@ -135,7 +128,7 @@ impl SessionEnvelope {
         };
         push_value(&mut out, &header);
         match &self.body {
-            SessionBody::Ack | SessionBody::Ping(_) | SessionBody::Unpair(_) => {}
+            SessionBody::Ack | SessionBody::Ping(_) => {}
             SessionBody::Stream(frame) => frame.encode_into(&mut out),
             SessionBody::StreamClose(frame) => frame.encode_into(&mut out),
             SessionBody::Close(body) => body.encode_into(&mut out),
@@ -200,10 +193,6 @@ fn parse_session_body<B: ByteSlice>(
         SessionBodyKind::Ping => {
             crate::codec::ensure_empty(&body)?;
             Ok(SessionBodyRef::Ping)
-        }
-        SessionBodyKind::Unpair => {
-            crate::codec::ensure_empty(&body)?;
-            Ok(SessionBodyRef::Unpair)
         }
         SessionBodyKind::Stream => Ok(SessionBodyRef::Stream(StreamChunk::parse(body)?)),
         SessionBodyKind::StreamClose => Ok(SessionBodyRef::StreamClose(StreamClose::parse(body)?)),

@@ -21,7 +21,7 @@ impl ReplayCache {
         now_secs: u64,
     ) -> bool {
         self.valid_until_by_key
-            .retain(|_, valid_until| *valid_until > now_secs);
+            .retain(|_, stored_valid_until| *stored_valid_until > now_secs);
 
         let key = ReplayKey {
             peer,

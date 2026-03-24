@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use indexmap::map::Entry;
 use ql_wire::{
     CloseCode, CloseTarget, PingBody, SessionBody, SessionCloseBody, SessionEnvelope, SessionSeq,
-    StreamChunk, StreamClose, StreamId, UnpairBody, XID,
+    StreamChunk, StreamClose, StreamId, XID,
 };
 
 use self::{
@@ -88,7 +88,6 @@ pub enum SessionEvent {
     Finished(StreamId),
     Closed(StreamClose),
     WritableClosed(StreamId),
-    Unpaired,
     SessionClosed(SessionCloseBody),
 }
 
@@ -257,12 +256,6 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn queue_unpair(&mut self) -> Result<(), StreamError> {
-        self.ensure_session_open()?;
-        self.state.pending_control.unpair = true;
-        Ok(())
-    }
-
     pub fn receive(&mut self, now: Instant, envelope: SessionEnvelope) {
         self.state.now = now;
         self.collect_timeouts();
@@ -293,12 +286,6 @@ impl SessionFsm {
         let body_kind_is_ack = matches!(envelope.body, SessionBody::Ack);
         let apply_inbound_body = match envelope.body {
             SessionBody::Ack | SessionBody::Ping(_) => Ok(()),
-            SessionBody::Unpair(_) => {
-                self.state.session_state = SessionState::Closed;
-                self.clear_streams();
-                self.state.events.push_back(SessionEvent::Unpaired);
-                Ok(())
-            }
             SessionBody::Close(close) => {
                 self.state.session_state = SessionState::Closed;
                 self.clear_streams();
@@ -513,13 +500,6 @@ impl SessionFsm {
                 retransmit: true,
             });
         }
-        if self.state.pending_control.unpair {
-            self.state.pending_control.unpair = false;
-            return Some(PendingSessionBody {
-                body: SessionBody::Unpair(UnpairBody),
-                retransmit: true,
-            });
-        }
         if self.state.pending_control.ping {
             self.state.pending_control.ping = false;
             return Some(PendingSessionBody {
@@ -711,9 +691,7 @@ impl SessionFsm {
     fn should_retry_body(&self, body: &SessionBody) -> bool {
         match body {
             SessionBody::Ack => true,
-            SessionBody::Ping(_) | SessionBody::Unpair(_) => {
-                self.state.session_state == SessionState::Open
-            }
+            SessionBody::Ping(_) => self.state.session_state == SessionState::Open,
             SessionBody::Close(_) => true,
             SessionBody::Stream(frame) => {
                 self.state.session_state == SessionState::Open

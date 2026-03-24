@@ -36,6 +36,10 @@ async fn unpair_clears_remote_peer_and_aborts_active_stream() {
         stream.request.write_all(&[1, 2, 3, 4]).await.unwrap();
 
         handle_a.unpair().unwrap();
+        assert!(matches!(
+            handle_a.open_stream().await,
+            Err(QlError::NoPeerBound)
+        ));
 
         tokio::time::timeout(std::time::Duration::from_secs(2), responder)
             .await

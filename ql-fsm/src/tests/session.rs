@@ -110,8 +110,23 @@ fn lost_encrypted_record_is_retried_and_acked() {
 fn remote_unpair_clears_peer() {
     let mut harness = Harness::connected(QlFsmConfig::default());
 
-    harness.a.fsm.queue_unpair().unwrap();
-    harness.pump();
+    let record = harness
+        .a
+        .fsm
+        .unpair(harness.time(), &harness.a.crypto)
+        .unwrap();
+
+    assert_eq!(
+        harness.a.fsm.take_next_session_event(),
+        Some(QlSessionEvent::Unpaired)
+    );
+    assert!(harness.a.fsm.peer.is_none());
+    assert!(matches!(
+        harness.a.fsm.take_next_event(),
+        Some(QlFsmEvent::ClearPeer)
+    ));
+
+    harness.deliver_to_b(record);
 
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
@@ -122,7 +137,28 @@ fn remote_unpair_clears_peer() {
         harness.b.fsm.take_next_event(),
         Some(QlFsmEvent::ClearPeer)
     ));
-    assert!(harness.a.fsm.peer.is_some());
+}
+
+#[test]
+fn unpair_returns_record_without_active_session() {
+    let mut harness = Harness::paired(QlFsmConfig::default());
+
+    let record = harness
+        .a
+        .fsm
+        .unpair(harness.time(), &harness.a.crypto)
+        .unwrap();
+
+    assert!(matches!(record.payload, QlPayload::Unpair(_)));
+    assert!(harness.a.fsm.peer.is_none());
+    assert_eq!(
+        harness.a.fsm.take_next_session_event(),
+        Some(QlSessionEvent::Unpaired)
+    );
+    assert!(matches!(
+        harness.a.fsm.take_next_event(),
+        Some(QlFsmEvent::ClearPeer)
+    ));
 }
 
 #[test]

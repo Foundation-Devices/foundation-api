@@ -9,6 +9,7 @@ use crate::{
     handshake::{self, ConfirmWire, HelloReplyWire, HelloWire},
     header::{decode_record_header, encode_record_header, QlHeader},
     pair::{self, PairRequestRecordWire},
+    unpair::{self, UnpairWire},
     WireError, QL_WIRE_VERSION,
 };
 
@@ -21,6 +22,7 @@ pub struct QlRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlPayload {
     PairRequest(pair::PairRequestRecord),
+    Unpair(unpair::Unpair),
     Hello(handshake::Hello),
     HelloReply(handshake::HelloReply),
     Confirm(handshake::Confirm),
@@ -35,6 +37,7 @@ pub struct QlRecordRef<B> {
 
 pub enum QlPayloadRef<B> {
     PairRequest(Ref<B, PairRequestRecordWire>),
+    Unpair(Ref<B, UnpairWire>),
     Hello(Ref<B, HelloWire>),
     HelloReply(Ref<B, HelloReplyWire>),
     Confirm(Ref<B, ConfirmWire>),
@@ -53,12 +56,14 @@ pub(crate) enum RecordKind {
     Confirm = 4,
     Ready = 5,
     Session = 6,
+    Unpair = 7,
 }
 
 impl RecordKind {
     fn for_payload(payload: &QlPayload) -> Self {
         match payload {
             QlPayload::PairRequest(_) => Self::PairRequest,
+            QlPayload::Unpair(_) => Self::Unpair,
             QlPayload::Hello(_) => Self::Hello,
             QlPayload::HelloReply(_) => Self::HelloReply,
             QlPayload::Confirm(_) => Self::Confirm,
@@ -76,6 +81,7 @@ impl QlRecord {
         codec::push_value(&mut out, &header);
         match &self.payload {
             QlPayload::PairRequest(request) => request.encode_into(&mut out),
+            QlPayload::Unpair(unpair) => unpair.encode_into(&mut out),
             QlPayload::Hello(hello) => hello.encode_into(&mut out),
             QlPayload::HelloReply(reply) => reply.encode_into(&mut out),
             QlPayload::Confirm(confirm) => confirm.encode_into(&mut out),
@@ -128,6 +134,7 @@ impl<B: ByteSlice> QlPayloadRef<B> {
             Self::PairRequest(request) => {
                 QlPayload::PairRequest(pair::PairRequestRecord::from_wire(request))
             }
+            Self::Unpair(unpair) => QlPayload::Unpair(unpair::Unpair::from_wire(unpair)),
             Self::Hello(hello) => QlPayload::Hello(handshake::Hello::from_wire(hello)),
             Self::HelloReply(reply) => {
                 QlPayload::HelloReply(handshake::HelloReply::from_wire(reply))
@@ -144,6 +151,7 @@ fn parse_payload<B: ByteSlice>(kind: RecordKind, payload: B) -> Result<QlPayload
         RecordKind::PairRequest => Ok(QlPayloadRef::PairRequest(pair::PairRequestRecord::parse(
             payload,
         )?)),
+        RecordKind::Unpair => Ok(QlPayloadRef::Unpair(unpair::Unpair::parse(payload)?)),
         RecordKind::Hello => Ok(QlPayloadRef::Hello(handshake::Hello::parse(payload)?)),
         RecordKind::HelloReply => Ok(QlPayloadRef::HelloReply(handshake::HelloReply::parse(
             payload,

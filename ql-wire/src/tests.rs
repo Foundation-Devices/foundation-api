@@ -195,6 +195,43 @@ fn ready_round_trip_and_decrypt() {
 }
 
 #[test]
+fn unpair_round_trip_and_verify() {
+    let crypto = TestCrypto::new(40);
+    let (sender_signing_private, sender_signing_public) = generate_ml_dsa_keypair(&crypto);
+    let sender_kem = generate_ml_kem_keypair(&crypto);
+    let identity = QlIdentity::new(
+        XID([7; XID::SIZE]),
+        sender_signing_private,
+        sender_signing_public.clone(),
+        sender_kem.0,
+        sender_kem.1,
+    );
+    let recipient = XID([8; XID::SIZE]);
+    let meta = ControlMeta {
+        control_id: ControlId(88),
+        valid_until: 600,
+    };
+    let record = unpair::build_unpair(&crypto, &identity, recipient, meta);
+
+    let mut bytes = record.encode();
+    let parsed = QlRecord::decode(&bytes).unwrap();
+    assert_eq!(parsed, record);
+
+    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
+    let QlPayloadRef::Unpair(unpair) = payload else {
+        panic!("expected unpair payload");
+    };
+    unpair::verify_unpair(
+        &crypto,
+        &header,
+        &sender_signing_public,
+        &unpair,
+        100,
+    )
+    .unwrap();
+}
+
+#[test]
 fn protocol_record_size_breakdown() {
     fn meta(id: u32) -> ControlMeta {
         ControlMeta {
@@ -259,16 +296,23 @@ fn protocol_record_size_breakdown() {
             encrypted: encrypted(11, 0),
         }),
     };
+    let unpair = QlRecord {
+        header,
+        payload: QlPayload::Unpair(unpair::Unpair {
+            meta: meta(4),
+            signature: MlDsaSignature::from_data([12; MlDsaSignature::SIZE]),
+        }),
+    };
     let ready = QlRecord {
         header,
         payload: QlPayload::Ready(handshake::Ready {
-            encrypted: encrypted(12, 0),
+            encrypted: encrypted(13, 0),
         }),
     };
 
     let session_ack = session_record(
         header,
-        13,
+        14,
         SessionEnvelope {
             seq: SessionSeq(1),
             ack: SessionAck::EMPTY,
@@ -277,27 +321,18 @@ fn protocol_record_size_breakdown() {
     );
     let session_ping = session_record(
         header,
-        14,
+        15,
         SessionEnvelope {
             seq: SessionSeq(2),
             ack: SessionAck::EMPTY,
             body: SessionBody::Ping(PingBody),
         },
     );
-    let session_unpair = session_record(
-        header,
-        15,
-        SessionEnvelope {
-            seq: SessionSeq(3),
-            ack: SessionAck::EMPTY,
-            body: SessionBody::Unpair(UnpairBody),
-        },
-    );
     let session_stream_empty = session_record(
         header,
         16,
         SessionEnvelope {
-            seq: SessionSeq(4),
+            seq: SessionSeq(3),
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id: StreamId(1),
@@ -311,7 +346,7 @@ fn protocol_record_size_breakdown() {
         header,
         17,
         SessionEnvelope {
-            seq: SessionSeq(5),
+            seq: SessionSeq(4),
             ack: SessionAck::EMPTY,
             body: SessionBody::Stream(StreamChunk {
                 stream_id: StreamId(1),
@@ -325,7 +360,7 @@ fn protocol_record_size_breakdown() {
         header,
         18,
         SessionEnvelope {
-            seq: SessionSeq(6),
+            seq: SessionSeq(5),
             ack: SessionAck::EMPTY,
             body: SessionBody::StreamClose(StreamClose {
                 stream_id: StreamId(1),
@@ -339,7 +374,7 @@ fn protocol_record_size_breakdown() {
         header,
         19,
         SessionEnvelope {
-            seq: SessionSeq(7),
+            seq: SessionSeq(6),
             ack: SessionAck::EMPTY,
             body: SessionBody::Close(SessionCloseBody {
                 code: CloseCode::PROTOCOL,
@@ -355,10 +390,10 @@ fn protocol_record_size_breakdown() {
     print_size("ql-wire hello_reply", hello_reply.encode().len());
     print_size("ql-wire confirm", confirm.encode().len());
     print_size("ql-wire pair_request empty", pair_request.encode().len());
+    print_size("ql-wire unpair", unpair.encode().len());
     print_size("ql-wire ready empty", ready.encode().len());
     print_size("ql-wire session ack", session_ack.encode().len());
     print_size("ql-wire session ping", session_ping.encode().len());
-    print_size("ql-wire session unpair", session_unpair.encode().len());
     print_size(
         "ql-wire session stream empty",
         session_stream_empty.encode().len(),

@@ -211,7 +211,12 @@ impl DriverState {
                 self.finish_step(platform, in_flight);
             }
             RuntimeCommand::Unpair => {
-                let _ = self.fsm.queue_unpair();
+                if let Some(record) = self.fsm.unpair(now(), platform) {
+                    in_flight.push(InFlightWrite {
+                        session_write_id: None,
+                        future: platform.write_message(record.encode()),
+                    });
+                }
                 self.finish_step(platform, in_flight);
             }
             RuntimeCommand::Incoming(bytes) => {

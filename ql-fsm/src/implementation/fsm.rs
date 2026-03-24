@@ -14,18 +14,32 @@ pub fn receive(
     if header.recipient != fsm.identity.xid {
         return Err(QlFsmError::InvalidXid);
     }
-    if !matches!(&payload, QlPayloadRef::PairRequest(_)) {
-        let Some(peer) = fsm.peer.as_ref().map(|entry| entry.peer.xid) else {
-            return Err(QlFsmError::NoPeerBound);
-        };
-        if header.sender != peer {
-            return Err(QlFsmError::InvalidXid);
+    match &payload {
+        QlPayloadRef::PairRequest(_) => {}
+        QlPayloadRef::Unpair(_) => {
+            let Some(peer) = fsm.peer.as_ref().map(|entry| entry.peer.xid) else {
+                return Ok(());
+            };
+            if header.sender != peer {
+                return Err(QlFsmError::InvalidXid);
+            }
+        }
+        _ => {
+            let Some(peer) = fsm.peer.as_ref().map(|entry| entry.peer.xid) else {
+                return Err(QlFsmError::NoPeerBound);
+            };
+            if header.sender != peer {
+                return Err(QlFsmError::InvalidXid);
+            }
         }
     }
 
     match payload {
         QlPayloadRef::PairRequest(mut request) => {
             super::handle_pair(fsm, crypto, &header, &mut request)?;
+        }
+        QlPayloadRef::Unpair(unpair) => {
+            super::handle_unpair(fsm, crypto, &header, &unpair)?;
         }
         QlPayloadRef::Hello(hello) => {
             super::handle_hello(fsm, crypto, &header, &hello)?;
@@ -197,11 +211,8 @@ pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
     Ok(fsm.session.queue_ping()?)
 }
 
-pub fn queue_unpair(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
-    ensure_session_open(fsm)?;
-    // TODO: keep local peer/session state alive until this queued unpair is acked or times out,
-    // then clear it locally. Right now this only requests remote unpair.
-    Ok(fsm.session.queue_unpair()?)
+pub fn unpair(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<wire::QlRecord> {
+    super::handle_unpair_local(fsm, crypto)
 }
 
 fn ensure_peer_bound(fsm: &QlFsm) -> Result<(), QlFsmError> {

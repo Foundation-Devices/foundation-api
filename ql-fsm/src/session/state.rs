@@ -105,7 +105,6 @@ pub struct PendingSessionBody {
 #[derive(Debug, Clone, Default)]
 pub struct PendingSessionControl {
     pub ping: bool,
-    pub unpair: bool,
     pub close: Option<SessionCloseBody>,
 }
 

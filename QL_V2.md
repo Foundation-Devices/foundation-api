@@ -62,10 +62,10 @@ The record sizes shows the protocol's intended split between setup and steady-st
 | `hello_reply` | 6253 bytes |
 | `confirm` | 4673 bytes |
 | `pair_request empty` | 1630 bytes |
+| `unpair` | 4673 bytes |
 | `ready empty` | 62 bytes |
 | `session ack` | 87 bytes |
 | `session ping` | 87 bytes |
-| `session unpair` | 87 bytes |
 | `session stream empty` | 100 bytes |
 | `session stream fin` | 100 bytes |
 | `session stream close` | 94 bytes |
@@ -101,6 +101,8 @@ QLv2 has four layers of state:
 - `Handshake` establish a fresh encrypted session between paired peers
 - `Session` carries authenticated encrypted traffic with QL-level acknowledgment and retransmission
 - `Stream` multiplex many concurrent duplex byte streams inside one session
+
+`Unpair` is a peer-level signed control record outside the session. It tears down the pairing relationship on a best-effort basis and does not depend on session ordering or session establishment.
 
 This structure gives QLv2 a few important properties:
 

@@ -19,6 +19,7 @@ mod nonce;
 mod pair;
 mod pq;
 mod record;
+mod unpair;
 mod xid;
 
 pub use control::*;
@@ -32,6 +33,7 @@ pub use nonce::*;
 pub use pair::*;
 pub use pq::*;
 pub use record::*;
+pub use unpair::*;
 pub use xid::*;
 
 pub const QL_WIRE_VERSION: u8 = 1;

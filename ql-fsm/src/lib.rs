@@ -3,13 +3,14 @@
 //! a caller drives `QlFsm` inside its own event loop
 //!
 //! inputs to that loop usually include
-//! - app actions like `bind_peer`, `pair`, `connect`, `open_stream`, or `write_stream`
+//! - app actions like `bind_peer`, `pair`, `connect`, `unpair`, `open_stream`, or `write_stream`
 //! - inbound transport bytes passed to `receive`
 //! - a deadline expiring, handled by calling `on_timer`
 //! - transport write results passed to `confirm_session_write` or `reject_session_write`
 //!
 //! outputs from `QlFsm` are
-//! - outbound records from `take_next_write`
+//! - outbound session and handshake records from `take_next_write`
+//! - a best-effort peer unpair record returned directly from `unpair`
 //! - peer events from `take_next_event`
 //! - session events from `take_next_session_event`
 //!
@@ -326,9 +327,10 @@ impl QlFsm {
         implementation::queue_ping(self)
     }
 
-    /// queues an unpair request on the active session
-    pub fn queue_unpair(&mut self) -> Result<(), QlFsmError> {
-        implementation::queue_unpair(self)
+    /// clears the bound peer locally and returns a best-effort unpair record
+    pub fn unpair(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Option<QlRecord> {
+        self.state.now = now;
+        implementation::unpair(self, crypto)
     }
 
     /// returns the next session or stream event

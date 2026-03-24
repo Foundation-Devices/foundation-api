@@ -73,6 +73,16 @@ fn reset_session(fsm: &mut QlFsm) {
     );
 }
 
+fn clear_bound_peer(fsm: &mut QlFsm) {
+    if fsm.peer.take().is_none() {
+        return;
+    }
+    fsm.state.outbound.clear();
+    reset_session(fsm);
+    fsm.state.session_events.push_back(QlSessionEvent::Unpaired);
+    fsm.state.events.push_back(QlFsmEvent::ClearPeer);
+}
+
 fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::CloseCode) {
     if !fsm.session.has_pending_stream_work() {
         return;
@@ -110,12 +120,6 @@ fn drain_session_events(fsm: &mut QlFsm) {
                 fsm.state
                     .session_events
                     .push_back(QlSessionEvent::WritableClosed(stream_id));
-            }
-            SessionEvent::Unpaired => {
-                fsm.state.session_events.push_back(QlSessionEvent::Unpaired);
-                fsm.peer = None;
-                reset_session(fsm);
-                fsm.state.events.push_back(QlFsmEvent::ClearPeer);
             }
             SessionEvent::SessionClosed(close) => {
                 fsm.state
