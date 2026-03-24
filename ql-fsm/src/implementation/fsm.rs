@@ -44,6 +44,7 @@ pub fn receive(
                 return Err(QlFsmError::NoSession);
             };
             let envelope = wire::decrypt_record(crypto, &header, &mut encrypted, &session_key)?;
+            // TODO: this seems unnecessary to me?
             let envelope = wire::SessionEnvelope::from_wire(&envelope)?;
             fsm.session.receive(fsm.state.now.instant, envelope);
             super::drain_session_events(fsm);

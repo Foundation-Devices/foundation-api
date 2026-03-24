@@ -215,6 +215,7 @@ impl DriverState {
                 self.finish_step(platform, in_flight);
             }
             RuntimeCommand::Incoming(bytes) => {
+                // TODO: surface these errors somehow?
                 let _ = self.fsm.receive(now(), bytes, platform);
                 self.finish_step(platform, in_flight);
             }
