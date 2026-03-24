@@ -30,71 +30,99 @@ impl AsRef<[u8]> for SessionKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MlDsaPrivateKey(Box<[u8; MlDsaPrivateKey::SIZE]>);
+macro_rules! impl_byte_traits {
+    ($name:ident) => {
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_tuple(stringify!($name))
+                    .field(&self.as_bytes())
+                    .finish()
+            }
+        }
+
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                self.as_bytes() == other.as_bytes()
+            }
+        }
+
+        impl Eq for $name {}
+
+        impl std::hash::Hash for $name {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.as_bytes().hash(state);
+            }
+        }
+    };
+}
+
+#[derive(Clone)]
+pub struct MlDsaPrivateKey(Box<ml_dsa_87::MLDSA87SigningKey>);
+
+impl_byte_traits!(MlDsaPrivateKey);
 
 impl MlDsaPrivateKey {
     pub const SIZE: usize = ml_dsa_87::MLDSA87SigningKey::len();
 
     pub fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(Box::new(data))
+        Self(Box::new(ml_dsa_87::MLDSA87SigningKey::new(data)))
     }
 
     pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        self.0.as_ref()
+        self.0.as_ref().as_ref()
     }
 
     pub fn sign(&self, crypto: &impl QlCrypto, message: &[u8]) -> MlDsaSignature {
         let mut randomness = [0u8; SIGNING_RANDOMNESS_SIZE];
         crypto.fill_random_bytes(&mut randomness);
-        let signing_key = ml_dsa_87::MLDSA87SigningKey::new(*self.as_bytes());
         // Safe: we always sign with the empty context, so the only remaining
         // error is libcrux's negligible-probability rejection-sampling failure.
-        let signature = ml_dsa_87::sign(&signing_key, message, b"", randomness)
+        let signature = ml_dsa_87::sign(self.0.as_ref(), message, b"", randomness)
             .expect("ML-DSA signing should not fail");
-        MlDsaSignature::from_data(*signature.as_ref())
+        MlDsaSignature(Box::new(signature))
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MlDsaPublicKey(Box<[u8; MlDsaPublicKey::SIZE]>);
+#[derive(Clone)]
+pub struct MlDsaPublicKey(Box<ml_dsa_87::MLDSA87VerificationKey>);
+
+impl_byte_traits!(MlDsaPublicKey);
 
 impl MlDsaPublicKey {
     pub const SIZE: usize = ml_dsa_87::MLDSA87VerificationKey::len();
 
     pub fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(Box::new(data))
+        Self(Box::new(ml_dsa_87::MLDSA87VerificationKey::new(data)))
     }
 
     pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        self.0.as_ref()
+        self.0.as_ref().as_ref()
     }
 
     pub fn verify(&self, signature: &MlDsaSignature, message: &[u8]) -> bool {
-        let verification_key = ml_dsa_87::MLDSA87VerificationKey::new(*self.as_bytes());
-        let signature = ml_dsa_87::MLDSA87Signature::new(*signature.as_bytes());
-        ml_dsa_87::verify(&verification_key, message, b"", &signature).is_ok()
+        ml_dsa_87::verify(self.0.as_ref(), message, b"", signature.0.as_ref()).is_ok()
     }
 
     pub fn verify_bytes(&self, signature: &[u8; MlDsaSignature::SIZE], message: &[u8]) -> bool {
-        let verification_key = ml_dsa_87::MLDSA87VerificationKey::new(*self.as_bytes());
         let signature = ml_dsa_87::MLDSA87Signature::new(*signature);
-        ml_dsa_87::verify(&verification_key, message, b"", &signature).is_ok()
+        ml_dsa_87::verify(self.0.as_ref(), message, b"", &signature).is_ok()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MlDsaSignature(Box<[u8; MlDsaSignature::SIZE]>);
+#[derive(Clone)]
+pub struct MlDsaSignature(Box<ml_dsa_87::MLDSA87Signature>);
+
+impl_byte_traits!(MlDsaSignature);
 
 impl MlDsaSignature {
     pub const SIZE: usize = ml_dsa_87::MLDSA87Signature::len();
 
     pub fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(Box::new(data))
+        Self(Box::new(ml_dsa_87::MLDSA87Signature::new(data)))
     }
 
     pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        self.0.as_ref()
+        ml_dsa_87::MLDSA87Signature::as_ref(self.0.as_ref())
     }
 }
 
@@ -176,8 +204,8 @@ pub fn generate_ml_dsa_keypair(crypto: &impl QlCrypto) -> (MlDsaPrivateKey, MlDs
     crypto.fill_random_bytes(&mut randomness);
     let key_pair = ml_dsa_87::generate_key_pair(randomness);
     (
-        MlDsaPrivateKey::from_data(*key_pair.signing_key.as_ref()),
-        MlDsaPublicKey::from_data(*key_pair.verification_key.as_ref()),
+        MlDsaPrivateKey(Box::new(key_pair.signing_key)),
+        MlDsaPublicKey(Box::new(key_pair.verification_key)),
     )
 }
 
