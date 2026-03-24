@@ -1,9 +1,11 @@
 use zerocopy::{
-    byte_slice::{ByteSlice, ByteSliceMut},
+    byte_slice::ByteSliceMut,
     Ref,
 };
 
-use super::{Confirm, ConfirmWire, Hello, HelloReply, HelloReplyWire, HelloWire, Ready, ReadyBody};
+use super::{
+    Confirm, ConfirmView, Hello, HelloReply, HelloReplyView, HelloView, Ready, ReadyBody,
+};
 use crate::{
     pq::ML_KEM_SUITE_TAG, ControlMeta, EncryptedMessage, EncryptedMessageWire, MlDsaPublicKey,
     MlDsaSignature, MlKemCiphertext, MlKemPublicKey, Nonce, QlCrypto, QlHeader, QlIdentity,
@@ -45,34 +47,34 @@ pub fn build_hello(
     )
 }
 
-pub fn verify_hello<B: ByteSlice>(
+pub fn verify_hello(
     crypto: &impl QlCrypto,
     initiator: XID,
     responder: XID,
     initiator_signing_key: &MlDsaPublicKey,
-    hello: &Ref<B, HelloWire>,
+    hello: &impl HelloView,
     now_seconds: u64,
 ) -> Result<(), WireError> {
-    let meta = ControlMeta::from_wire(hello.meta);
+    let meta = hello.meta();
     meta.ensure_not_expired(now_seconds)?;
     let proof_data = hash_hello_proof_data(
         crypto,
         initiator,
         responder,
         &meta,
-        &hello.nonce,
-        &hello.kem_ct,
+        hello.nonce(),
+        hello.kem_ct(),
     );
-    verify_signature_bytes(initiator_signing_key, &hello.signature, &proof_data)
+    verify_signature_bytes(initiator_signing_key, hello.signature(), &proof_data)
 }
 
-pub fn respond_hello<B: ByteSlice>(
+pub fn respond_hello(
     crypto: &impl QlCrypto,
     identity: &QlIdentity,
     initiator: XID,
     initiator_signing_key: &MlDsaPublicKey,
     initiator_encapsulation_key: &MlKemPublicKey,
-    hello: &Ref<B, HelloWire>,
+    hello: &impl HelloView,
     meta: ControlMeta,
     now_seconds: u64,
 ) -> Result<(HelloReply, ResponderSecrets), WireError> {
@@ -86,8 +88,8 @@ pub fn respond_hello<B: ByteSlice>(
     )?;
     let initiator_secret = identity
         .encapsulation_private_key
-        .decapsulate_shared_secret_bytes(&hello.kem_ct);
-    let hello_meta = ControlMeta::from_wire(hello.meta);
+        .decapsulate_shared_secret_bytes(hello.kem_ct());
+    let hello_meta = hello.meta();
     let nonce = next_nonce(crypto);
     let (responder_secret, kem_ct) =
         initiator_encapsulation_key.encapsulate_new_shared_secret(crypto);
@@ -96,8 +98,8 @@ pub fn respond_hello<B: ByteSlice>(
         initiator,
         identity.xid,
         &hello_meta,
-        &hello.nonce,
-        &hello.kem_ct,
+        hello.nonce(),
+        hello.kem_ct(),
         &meta,
         &nonce.0,
         kem_ct.as_bytes(),
@@ -117,45 +119,46 @@ pub fn respond_hello<B: ByteSlice>(
     ))
 }
 
-pub fn build_confirm<B: ByteSlice>(
+pub fn build_confirm(
     crypto: &impl QlCrypto,
     identity: &QlIdentity,
     responder: XID,
     responder_signing_key: &MlDsaPublicKey,
-    hello: &Hello,
-    reply: &Ref<B, HelloReplyWire>,
+    hello: &impl HelloView,
+    reply: &impl HelloReplyView,
     initiator_secret: &SessionKey,
     meta: ControlMeta,
     now_seconds: u64,
 ) -> Result<(Confirm, SessionKey), WireError> {
-    let reply_meta = ControlMeta::from_wire(reply.meta);
+    let hello_meta = hello.meta();
+    let reply_meta = reply.meta();
     reply_meta.ensure_not_expired(now_seconds)?;
     let transcript = hash_handshake_transcript(
         crypto,
         identity.xid,
         responder,
-        &hello.meta,
-        &hello.nonce.0,
-        hello.kem_ct.as_bytes(),
+        &hello_meta,
+        hello.nonce(),
+        hello.kem_ct(),
         &reply_meta,
-        &reply.nonce,
-        &reply.kem_ct,
+        reply.nonce(),
+        reply.kem_ct(),
     );
-    verify_signature_bytes(responder_signing_key, &reply.signature, &transcript)?;
+    verify_signature_bytes(responder_signing_key, reply.signature(), &transcript)?;
     let responder_secret = identity
         .encapsulation_private_key
-        .decapsulate_shared_secret_bytes(&reply.kem_ct);
+        .decapsulate_shared_secret_bytes(reply.kem_ct());
     let proof_data = hash_confirm_proof_data(
         crypto,
         &meta,
         identity.xid,
         responder,
-        &hello.meta,
-        &hello.nonce.0,
-        hello.kem_ct.as_bytes(),
+        &hello_meta,
+        hello.nonce(),
+        hello.kem_ct(),
         &reply_meta,
-        &reply.nonce,
-        &reply.kem_ct,
+        reply.nonce(),
+        reply.kem_ct(),
     );
     let signature = identity.signing_private_key.sign(crypto, &proof_data);
     let session_key = derive_session_key(
@@ -164,27 +167,29 @@ pub fn build_confirm<B: ByteSlice>(
         &responder_secret,
         identity.xid,
         responder,
-        &hello.meta,
-        &hello.nonce.0,
-        hello.kem_ct.as_bytes(),
+        &hello_meta,
+        hello.nonce(),
+        hello.kem_ct(),
         &reply_meta,
-        &reply.nonce,
-        &reply.kem_ct,
+        reply.nonce(),
+        reply.kem_ct(),
     );
     Ok((Confirm { meta, signature }, session_key))
 }
 
-pub fn finalize_confirm<B: ByteSlice>(
+pub fn finalize_confirm(
     crypto: &impl QlCrypto,
     initiator: XID,
     responder: XID,
     initiator_signing_key: &MlDsaPublicKey,
-    hello: &Hello,
-    reply: &HelloReply,
-    confirm: &Ref<B, ConfirmWire>,
+    hello: &impl HelloView,
+    reply: &impl HelloReplyView,
+    confirm: &impl ConfirmView,
     secrets: &ResponderSecrets,
     now_seconds: u64,
 ) -> Result<SessionKey, WireError> {
+    let hello_meta = hello.meta();
+    let reply_meta = reply.meta();
     verify_confirm(
         crypto,
         initiator,
@@ -201,40 +206,42 @@ pub fn finalize_confirm<B: ByteSlice>(
         &secrets.responder_secret,
         initiator,
         responder,
-        &hello.meta,
-        &hello.nonce.0,
-        hello.kem_ct.as_bytes(),
-        &reply.meta,
-        &reply.nonce.0,
-        reply.kem_ct.as_bytes(),
+        &hello_meta,
+        hello.nonce(),
+        hello.kem_ct(),
+        &reply_meta,
+        reply.nonce(),
+        reply.kem_ct(),
     ))
 }
 
-pub fn verify_confirm<B: ByteSlice>(
+pub fn verify_confirm(
     crypto: &impl QlCrypto,
     initiator: XID,
     responder: XID,
     initiator_signing_key: &MlDsaPublicKey,
-    hello: &Hello,
-    reply: &HelloReply,
-    confirm: &Ref<B, ConfirmWire>,
+    hello: &impl HelloView,
+    reply: &impl HelloReplyView,
+    confirm: &impl ConfirmView,
     now_seconds: u64,
 ) -> Result<(), WireError> {
-    let confirm_meta = ControlMeta::from_wire(confirm.meta);
+    let hello_meta = hello.meta();
+    let reply_meta = reply.meta();
+    let confirm_meta = confirm.meta();
     confirm_meta.ensure_not_expired(now_seconds)?;
     let proof_data = hash_confirm_proof_data(
         crypto,
         &confirm_meta,
         initiator,
         responder,
-        &hello.meta,
-        &hello.nonce.0,
-        hello.kem_ct.as_bytes(),
-        &reply.meta,
-        &reply.nonce.0,
-        reply.kem_ct.as_bytes(),
+        &hello_meta,
+        hello.nonce(),
+        hello.kem_ct(),
+        &reply_meta,
+        reply.nonce(),
+        reply.kem_ct(),
     );
-    verify_signature_bytes(initiator_signing_key, &confirm.signature, &proof_data)
+    verify_signature_bytes(initiator_signing_key, confirm.signature(), &proof_data)
 }
 
 pub fn build_ready(

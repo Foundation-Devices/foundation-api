@@ -29,6 +29,49 @@ pub struct HelloWire {
     pub signature: [u8; MlDsaSignature::SIZE],
 }
 
+pub trait HelloView {
+    fn meta(&self) -> ControlMeta;
+    fn nonce(&self) -> &[u8; Nonce::SIZE];
+    fn kem_ct(&self) -> &[u8; MlKemCiphertext::SIZE];
+    fn signature(&self) -> &[u8; MlDsaSignature::SIZE];
+}
+
+impl HelloView for Hello {
+    fn meta(&self) -> ControlMeta {
+        self.meta
+    }
+
+    fn nonce(&self) -> &[u8; Nonce::SIZE] {
+        &self.nonce.0
+    }
+
+    fn kem_ct(&self) -> &[u8; MlKemCiphertext::SIZE] {
+        self.kem_ct.as_bytes()
+    }
+
+    fn signature(&self) -> &[u8; MlDsaSignature::SIZE] {
+        self.signature.as_bytes()
+    }
+}
+
+impl<B: ByteSlice> HelloView for Ref<B, HelloWire> {
+    fn meta(&self) -> ControlMeta {
+        ControlMeta::from_wire(self.meta)
+    }
+
+    fn nonce(&self) -> &[u8; Nonce::SIZE] {
+        &self.nonce
+    }
+
+    fn kem_ct(&self) -> &[u8; MlKemCiphertext::SIZE] {
+        &self.kem_ct
+    }
+
+    fn signature(&self) -> &[u8; MlDsaSignature::SIZE] {
+        &self.signature
+    }
+}
+
 impl Hello {
     pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, HelloWire>, WireError> {
         parse(bytes)
@@ -43,22 +86,16 @@ impl Hello {
         }
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let wire = Self::parse(bytes)?;
-        Ok(Self::from_wire(&wire))
-    }
-
-    pub fn to_wire(&self) -> HelloWire {
-        HelloWire {
-            meta: self.meta.to_wire(),
-            nonce: self.nonce.0,
-            kem_ct: *self.kem_ct.as_bytes(),
-            signature: *self.signature.as_bytes(),
-        }
-    }
-
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        push_value(out, &self.to_wire());
+        push_value(
+            out,
+            &HelloWire {
+                meta: self.meta.to_wire(),
+                nonce: self.nonce.0,
+                kem_ct: *self.kem_ct.as_bytes(),
+                signature: *self.signature.as_bytes(),
+            },
+        );
     }
 }
 
@@ -79,6 +116,49 @@ pub struct HelloReplyWire {
     pub signature: [u8; MlDsaSignature::SIZE],
 }
 
+pub trait HelloReplyView {
+    fn meta(&self) -> ControlMeta;
+    fn nonce(&self) -> &[u8; Nonce::SIZE];
+    fn kem_ct(&self) -> &[u8; MlKemCiphertext::SIZE];
+    fn signature(&self) -> &[u8; MlDsaSignature::SIZE];
+}
+
+impl HelloReplyView for HelloReply {
+    fn meta(&self) -> ControlMeta {
+        self.meta
+    }
+
+    fn nonce(&self) -> &[u8; Nonce::SIZE] {
+        &self.nonce.0
+    }
+
+    fn kem_ct(&self) -> &[u8; MlKemCiphertext::SIZE] {
+        self.kem_ct.as_bytes()
+    }
+
+    fn signature(&self) -> &[u8; MlDsaSignature::SIZE] {
+        self.signature.as_bytes()
+    }
+}
+
+impl<B: ByteSlice> HelloReplyView for Ref<B, HelloReplyWire> {
+    fn meta(&self) -> ControlMeta {
+        ControlMeta::from_wire(self.meta)
+    }
+
+    fn nonce(&self) -> &[u8; Nonce::SIZE] {
+        &self.nonce
+    }
+
+    fn kem_ct(&self) -> &[u8; MlKemCiphertext::SIZE] {
+        &self.kem_ct
+    }
+
+    fn signature(&self) -> &[u8; MlDsaSignature::SIZE] {
+        &self.signature
+    }
+}
+
 impl HelloReply {
     pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, HelloReplyWire>, WireError> {
         parse(bytes)
@@ -93,22 +173,16 @@ impl HelloReply {
         }
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let wire = Self::parse(bytes)?;
-        Ok(Self::from_wire(&wire))
-    }
-
-    pub fn to_wire(&self) -> HelloReplyWire {
-        HelloReplyWire {
-            meta: self.meta.to_wire(),
-            nonce: self.nonce.0,
-            kem_ct: *self.kem_ct.as_bytes(),
-            signature: *self.signature.as_bytes(),
-        }
-    }
-
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        push_value(out, &self.to_wire());
+        push_value(
+            out,
+            &HelloReplyWire {
+                meta: self.meta.to_wire(),
+                nonce: self.nonce.0,
+                kem_ct: *self.kem_ct.as_bytes(),
+                signature: *self.signature.as_bytes(),
+            },
+        );
     }
 }
 
@@ -125,6 +199,31 @@ pub struct ConfirmWire {
     pub signature: [u8; MlDsaSignature::SIZE],
 }
 
+pub trait ConfirmView {
+    fn meta(&self) -> ControlMeta;
+    fn signature(&self) -> &[u8; MlDsaSignature::SIZE];
+}
+
+impl ConfirmView for Confirm {
+    fn meta(&self) -> ControlMeta {
+        self.meta
+    }
+
+    fn signature(&self) -> &[u8; MlDsaSignature::SIZE] {
+        self.signature.as_bytes()
+    }
+}
+
+impl<B: ByteSlice> ConfirmView for Ref<B, ConfirmWire> {
+    fn meta(&self) -> ControlMeta {
+        ControlMeta::from_wire(self.meta)
+    }
+
+    fn signature(&self) -> &[u8; MlDsaSignature::SIZE] {
+        &self.signature
+    }
+}
+
 impl Confirm {
     pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, ConfirmWire>, WireError> {
         parse(bytes)
@@ -137,20 +236,14 @@ impl Confirm {
         }
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let wire = Self::parse(bytes)?;
-        Ok(Self::from_wire(&wire))
-    }
-
-    pub fn to_wire(&self) -> ConfirmWire {
-        ConfirmWire {
-            meta: self.meta.to_wire(),
-            signature: *self.signature.as_bytes(),
-        }
-    }
-
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        push_value(out, &self.to_wire());
+        push_value(
+            out,
+            &ConfirmWire {
+                meta: self.meta.to_wire(),
+                signature: *self.signature.as_bytes(),
+            },
+        );
     }
 }
 
@@ -173,11 +266,6 @@ impl Ready {
         Self {
             encrypted: EncryptedMessage::from_wire(wire),
         }
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let wire = Self::parse(bytes)?;
-        Ok(Self::from_wire(&wire))
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
