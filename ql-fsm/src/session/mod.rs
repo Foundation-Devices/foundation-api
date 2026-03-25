@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use indexmap::map::Entry;
 use ql_wire::{
-    CloseCode, CloseTarget, PingBody, SessionBody, SessionCloseBody, SessionEnvelope, SessionSeq,
-    StreamChunk, StreamClose, StreamId, XID,
+    CloseCode, CloseTarget, PingBody, SessionAck, SessionBody, SessionCloseBody, SessionEnvelope,
+    SessionSeq, StreamChunk, StreamClose, StreamId, XID,
 };
 
 use self::{
@@ -326,52 +326,9 @@ impl SessionFsm {
         self.state.now = now;
         self.collect_timeouts();
         let ack = self.state.current_ack();
-        loop {
-            let Some(seq) =
-                self.state.tx_ring.iter().find_map(|(seq, entry)| {
-                    matches!(entry.state, TxState::Pending).then_some(seq)
-                })
-            else {
-                break;
-            };
-            let body = self
-                .state
-                .tx_ring
-                .get(&seq)
-                .map(|entry| entry.pending.body.clone())?;
-            if !self.should_retry_body(&body) {
-                let _ = self.state.tx_ring.remove(&seq);
-                self.state
-                    .tx_ring
-                    .advance_empty_front_until(self.state.next_seq);
-                continue;
-            }
 
-            let entry = self.state.tx_ring.get_mut(&seq)?;
-            entry.state = TxState::Issued;
-            return Some(SessionEnvelope { seq, ack, body });
-        }
-
-        if !self.state.tx_ring.accepts_seq(self.state.next_seq) {
-            return None;
-        }
-
-        let pending = self.next_pending_body()?;
-        let seq = self.state.next_seq;
-        self.state.next_seq = SessionSeq(seq.0 + 1);
-        let body = pending.body.clone();
-        self.state
-            .tx_ring
-            .insert(
-                seq,
-                TxEntry {
-                    pending,
-                    state: TxState::Issued,
-                },
-            )
-            .unwrap();
-
-        Some(SessionEnvelope { seq, ack, body })
+        self.take_pending_retransmit(ack)
+            .or_else(|| self.take_fresh_write(ack))
     }
 
     pub fn confirm_write(&mut self, now: Instant, seq: SessionSeq) {
@@ -495,6 +452,65 @@ impl SessionFsm {
                 || !stream.send_buf.is_empty()
                 || matches!(stream.outbound_state, OutboundState::FinQueued)
         })
+    }
+
+    fn take_pending_retransmit(&mut self, ack: SessionAck) -> Option<SessionEnvelope> {
+        let base_seq = self.state.tx_ring.base_seq().0;
+        let next_seq = self.state.next_seq.0;
+
+        for seq in (base_seq..next_seq).map(SessionSeq) {
+            let should_retry = match self.state.tx_ring.get(&seq) {
+                Some(entry) if matches!(entry.state, TxState::Pending) => {
+                    self.should_retry_body(&entry.pending.body)
+                }
+                _ => continue,
+            };
+
+            if !should_retry {
+                let _ = self.state.tx_ring.remove(&seq);
+                continue;
+            }
+
+            self.state
+                .tx_ring
+                .advance_empty_front_until(self.state.next_seq);
+            let entry = self.state.tx_ring.get_mut(&seq).unwrap();
+            entry.state = TxState::Issued;
+            return Some(SessionEnvelope {
+                seq,
+                ack,
+                body: entry.pending.body.clone(),
+            });
+        }
+
+        self.state
+            .tx_ring
+            .advance_empty_front_until(self.state.next_seq);
+
+        None
+    }
+
+    fn take_fresh_write(&mut self, ack: SessionAck) -> Option<SessionEnvelope> {
+        if !self.state.tx_ring.accepts_seq(self.state.next_seq) {
+            return None;
+        }
+
+        let pending = self.next_pending_body()?;
+        let seq = self.state.next_seq;
+        self.state.next_seq = SessionSeq(seq.0 + 1);
+        let body = pending.body.clone();
+        self.state
+            .tx_ring
+            .insert(
+                seq,
+                TxEntry {
+                    pending,
+                    state: TxState::Issued,
+                },
+            )
+            .unwrap();
+
+        Some(SessionEnvelope { seq, ack, body })
     }
 
     fn next_pending_body(&mut self) -> Option<PendingSessionBody> {
