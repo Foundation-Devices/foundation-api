@@ -60,8 +60,16 @@ pub fn receive(
             let envelope = wire::decrypt_record(crypto, &header, &mut encrypted, &session_key)?;
             // TODO: this seems unnecessary to me?
             let envelope = wire::SessionEnvelope::from_wire(&envelope)?;
-            fsm.session.receive(fsm.state.now.instant, envelope);
-            super::drain_session_events(fsm);
+            let mut session_closed = false;
+            fsm.session.receive(fsm.state.now.instant, envelope, {
+                let session_events = &mut fsm.state.session_events;
+                |event| {
+                    session_closed |= super::forward_session_event(session_events, event);
+                }
+            });
+            if session_closed {
+                super::apply_session_closed(fsm);
+            }
         }
     }
 
@@ -71,8 +79,16 @@ pub fn receive(
 pub fn on_timer(fsm: &mut QlFsm) {
     super::handle_timer(fsm);
     if super::peer_session(fsm).is_some() {
-        fsm.session.on_timer(fsm.state.now.instant);
-        super::drain_session_events(fsm);
+        let mut session_closed = false;
+        fsm.session.on_timer(fsm.state.now.instant, {
+            let session_events = &mut fsm.state.session_events;
+            |event| {
+                session_closed |= super::forward_session_event(session_events, event);
+            }
+        });
+        if session_closed {
+            super::apply_session_closed(fsm);
+        }
     }
 }
 

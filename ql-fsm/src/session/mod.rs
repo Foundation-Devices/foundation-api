@@ -130,7 +130,6 @@ impl SessionFsm {
                 pending_control: Default::default(),
                 streams: Default::default(),
                 next_stream_index: 0,
-                events: Default::default(),
             },
         }
     }
@@ -256,7 +255,12 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn receive(&mut self, now: Instant, envelope: SessionEnvelope) {
+    pub fn receive(
+        &mut self,
+        now: Instant,
+        envelope: SessionEnvelope,
+        mut emit: impl FnMut(SessionEvent),
+    ) {
         self.state.now = now;
         self.collect_timeouts();
         self.process_ack(envelope.ack);
@@ -276,9 +280,12 @@ impl SessionFsm {
             return;
         }
         if !self.state.rx_ring.accepts_seq(seq) {
-            self.fail_session(SessionCloseBody {
-                code: CloseCode::PROTOCOL,
-            });
+            self.fail_session(
+                SessionCloseBody {
+                    code: CloseCode::PROTOCOL,
+                },
+                &mut emit,
+            );
             return;
         }
 
@@ -289,14 +296,12 @@ impl SessionFsm {
             SessionBody::Close(close) => {
                 self.state.session_state = SessionState::Closed;
                 self.clear_streams();
-                self.state
-                    .events
-                    .push_back(SessionEvent::SessionClosed(close));
+                emit(SessionEvent::SessionClosed(close));
                 Ok(())
             }
-            SessionBody::Stream(frame) => self.handle_stream_frame(frame),
+            SessionBody::Stream(frame) => self.handle_stream_frame(frame, &mut emit),
             SessionBody::StreamClose(frame) => {
-                self.handle_stream_close(frame);
+                self.handle_stream_close(frame, &mut emit);
                 Ok(())
             }
         };
@@ -422,7 +427,7 @@ impl SessionFsm {
         entry.state = TxState::Pending;
     }
 
-    pub fn on_timer(&mut self, now: Instant) {
+    pub fn on_timer(&mut self, now: Instant, mut emit: impl FnMut(SessionEvent)) {
         self.state.now = now;
         self.collect_timeouts();
         if self.state.session_state == SessionState::Closed {
@@ -436,9 +441,12 @@ impl SessionFsm {
         if !self.config.peer_timeout.is_zero()
             && self.state.last_inbound_at + self.config.peer_timeout <= self.state.now
         {
-            self.fail_session(SessionCloseBody {
-                code: CloseCode::TIMEOUT,
-            });
+            self.fail_session(
+                SessionCloseBody {
+                    code: CloseCode::TIMEOUT,
+                },
+                &mut emit,
+            );
             return;
         }
         if !self.config.keepalive_interval.is_zero()
@@ -479,10 +487,6 @@ impl SessionFsm {
         .into_iter()
         .flatten()
         .min()
-    }
-
-    pub fn take_next_event(&mut self) -> Option<SessionEvent> {
-        self.state.events.pop_front()
     }
 
     pub fn has_pending_stream_work(&self) -> bool {
@@ -712,7 +716,11 @@ impl SessionFsm {
         }
     }
 
-    fn handle_stream_frame(&mut self, frame: StreamChunk) -> Result<(), RejectNoAck> {
+    fn handle_stream_frame(
+        &mut self,
+        frame: StreamChunk,
+        emit: &mut impl FnMut(SessionEvent),
+    ) -> Result<(), RejectNoAck> {
         let StreamChunk {
             stream_id,
             chunk_seq,
@@ -724,15 +732,18 @@ impl SessionFsm {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 if !remote_namespace.matches(stream_id) {
-                    self.fail_session(SessionCloseBody {
-                        code: CloseCode::PROTOCOL,
-                    });
+                    self.fail_session(
+                        SessionCloseBody {
+                            code: CloseCode::PROTOCOL,
+                        },
+                        emit,
+                    );
                     return Ok(());
                 }
                 if chunk_seq != 0 {
                     return Err(RejectNoAck);
                 }
-                self.state.events.push_back(SessionEvent::Opened(stream_id));
+                emit(SessionEvent::Opened(stream_id));
                 entry.insert(StreamState::new(StreamRole::Responder))
             }
         };
@@ -742,9 +753,12 @@ impl SessionFsm {
                 if chunk_seq < stream.recv_window.next_chunk_seq() {
                     return Ok(());
                 }
-                self.fail_session(SessionCloseBody {
-                    code: CloseCode::PROTOCOL,
-                });
+                self.fail_session(
+                    SessionCloseBody {
+                        code: CloseCode::PROTOCOL,
+                    },
+                    emit,
+                );
                 return Ok(());
             }
             InboundState::Discarding => return Ok(()),
@@ -757,14 +771,10 @@ impl SessionFsm {
             RecvInsertOutcome::Inserted => {
                 Self::drain_recv_window(stream);
                 if !was_readable && !stream.recv_buf.is_empty() {
-                    self.state
-                        .events
-                        .push_back(SessionEvent::Readable(stream_id));
+                    emit(SessionEvent::Readable(stream_id));
                 }
                 if matches!(stream.inbound_state, InboundState::Finished) {
-                    self.state
-                        .events
-                        .push_back(SessionEvent::Finished(stream_id));
+                    emit(SessionEvent::Finished(stream_id));
                 }
                 self.try_reap_stream(stream_id);
                 Ok(())
@@ -772,19 +782,25 @@ impl SessionFsm {
             RecvInsertOutcome::Duplicate => Ok(()),
             RecvInsertOutcome::RejectNoAck => Err(RejectNoAck),
             RecvInsertOutcome::Conflict => {
-                self.fail_session(SessionCloseBody {
-                    code: CloseCode::PROTOCOL,
-                });
+                self.fail_session(
+                    SessionCloseBody {
+                        code: CloseCode::PROTOCOL,
+                    },
+                    emit,
+                );
                 Ok(())
             }
         }
     }
 
-    fn handle_stream_close(&mut self, frame: StreamClose) {
+    fn handle_stream_close(&mut self, frame: StreamClose, emit: &mut impl FnMut(SessionEvent)) {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
-            self.fail_session(SessionCloseBody {
-                code: CloseCode::PROTOCOL,
-            });
+            self.fail_session(
+                SessionCloseBody {
+                    code: CloseCode::PROTOCOL,
+                },
+                emit,
+            );
             return;
         };
 
@@ -797,9 +813,7 @@ impl SessionFsm {
             stream.inbound_state = InboundState::Closed(frame.clone());
             stream.recv_buf.clear();
             stream.recv_window.clear();
-            self.state
-                .events
-                .push_back(SessionEvent::Closed(frame.clone()));
+            emit(SessionEvent::Closed(frame.clone()));
         }
         if Self::target_affects_outbound(stream.role, frame.target)
             && !matches!(stream.outbound_state, OutboundState::Closed)
@@ -807,9 +821,7 @@ impl SessionFsm {
             stream.outbound_state = OutboundState::Closed;
             stream.send_buf.clear();
             stream.pending_close = None;
-            self.state
-                .events
-                .push_back(SessionEvent::WritableClosed(frame.stream_id));
+            emit(SessionEvent::WritableClosed(frame.stream_id));
         }
         self.try_reap_stream(frame.stream_id);
     }
@@ -950,7 +962,7 @@ impl SessionFsm {
         }
     }
 
-    fn fail_session(&mut self, close: SessionCloseBody) {
+    fn fail_session(&mut self, close: SessionCloseBody, emit: &mut impl FnMut(SessionEvent)) {
         if self.state.session_state == SessionState::Closed {
             return;
         }
@@ -959,9 +971,7 @@ impl SessionFsm {
         self.clear_streams();
         self.state.pending_control = Default::default();
         self.state.pending_control.close = Some(close.clone());
-        self.state
-            .events
-            .push_back(SessionEvent::SessionClosed(close));
+        emit(SessionEvent::SessionClosed(close));
     }
 
     fn clear_streams(&mut self) {

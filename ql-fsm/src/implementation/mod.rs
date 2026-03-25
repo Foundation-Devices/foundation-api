@@ -2,7 +2,7 @@ mod fsm;
 mod handshake;
 mod peer;
 
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 pub use fsm::*;
 pub use handshake::*;
@@ -95,49 +95,49 @@ fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::CloseCode) {
         }));
 }
 
-fn drain_session_events(fsm: &mut QlFsm) {
-    while let Some(event) = fsm.session.take_next_event() {
-        match event {
-            SessionEvent::Opened(stream_id) => {
-                fsm.state
-                    .session_events
-                    .push_back(QlSessionEvent::Opened(stream_id));
-            }
-            SessionEvent::Readable(stream_id) => {
-                fsm.state
-                    .session_events
-                    .push_back(QlSessionEvent::Readable(stream_id));
-            }
-            SessionEvent::Finished(stream_id) => fsm
-                .state
-                .session_events
-                .push_back(QlSessionEvent::Finished(stream_id)),
-            SessionEvent::Closed(frame) => fsm
-                .state
-                .session_events
-                .push_back(QlSessionEvent::Closed(frame)),
-            SessionEvent::WritableClosed(stream_id) => {
-                fsm.state
-                    .session_events
-                    .push_back(QlSessionEvent::WritableClosed(stream_id));
-            }
-            SessionEvent::SessionClosed(close) => {
-                fsm.state
-                    .session_events
-                    .push_back(QlSessionEvent::SessionClosed(close.clone()));
-                if let Some(entry) = fsm.peer.as_mut() {
-                    if matches!(
-                        entry.session,
-                        crate::state::ConnectionState::Connected { .. }
-                    ) {
-                        entry.session = crate::state::ConnectionState::Disconnected;
-                        emit_peer_status(fsm);
-                    }
-                }
-                reset_session(fsm);
-            }
+fn forward_session_event(
+    session_events: &mut VecDeque<QlSessionEvent>,
+    event: SessionEvent,
+) -> bool {
+    match event {
+        SessionEvent::Opened(stream_id) => {
+            session_events.push_back(QlSessionEvent::Opened(stream_id));
+            false
+        }
+        SessionEvent::Readable(stream_id) => {
+            session_events.push_back(QlSessionEvent::Readable(stream_id));
+            false
+        }
+        SessionEvent::Finished(stream_id) => {
+            session_events.push_back(QlSessionEvent::Finished(stream_id));
+            false
+        }
+        SessionEvent::Closed(frame) => {
+            session_events.push_back(QlSessionEvent::Closed(frame));
+            false
+        }
+        SessionEvent::WritableClosed(stream_id) => {
+            session_events.push_back(QlSessionEvent::WritableClosed(stream_id));
+            false
+        }
+        SessionEvent::SessionClosed(close) => {
+            session_events.push_back(QlSessionEvent::SessionClosed(close));
+            true
         }
     }
+}
+
+fn apply_session_closed(fsm: &mut QlFsm) {
+    if let Some(entry) = fsm.peer.as_mut() {
+        if matches!(
+            entry.session,
+            crate::state::ConnectionState::Connected { .. }
+        ) {
+            entry.session = crate::state::ConnectionState::Disconnected;
+            emit_peer_status(fsm);
+        }
+    }
+    reset_session(fsm);
 }
 
 fn deadline_after_secs(now_secs: u64, duration: Duration) -> u64 {

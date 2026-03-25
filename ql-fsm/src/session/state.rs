@@ -5,7 +5,7 @@ use ql_wire::{
     CloseTarget, SessionAck, SessionBody, SessionCloseBody, SessionSeq, StreamClose, StreamId,
 };
 
-use super::{ring::SeqRing, stream_window::StreamRecvWindow, SessionEvent, SessionState};
+use super::{ring::SeqRing, stream_window::StreamRecvWindow, SessionState};
 
 pub const SESSION_WINDOW_CAPACITY: usize = 64;
 
@@ -138,7 +138,6 @@ pub struct SessionFsmState {
     /// scheduling, so we do not need a separate ready queue
     pub streams: IndexMap<StreamId, StreamState>,
     pub next_stream_index: usize,
-    pub events: VecDeque<SessionEvent>,
 }
 
 impl SessionFsmState {
