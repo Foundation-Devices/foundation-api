@@ -124,22 +124,22 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
         }
     }
 
+    let sender = fsm.identity.xid;
     let (recipient, session_key) = super::peer_session(fsm)?;
-    let envelope = fsm.session.take_next_write(fsm.state.now.instant)?;
+    let (seq, ack, body) = fsm.session.take_next_write(fsm.state.now.instant)?;
     let mut nonce = [0u8; Nonce::SIZE];
     crypto.fill_random_bytes(&mut nonce);
     Some(OutboundWrite {
-        record: wire::encrypt_record(
+        record: wire::encrypt_record_parts(
             crypto,
-            wire::QlHeader {
-                sender: fsm.identity.xid,
-                recipient,
-            },
+            wire::QlHeader { sender, recipient },
             &session_key,
-            &envelope,
+            seq,
+            ack,
+            body,
             Nonce(nonce),
         ),
-        session_write_id: Some(SessionWriteId(envelope.seq)),
+        session_write_id: Some(SessionWriteId(seq)),
     })
 }
 

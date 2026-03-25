@@ -1,3 +1,5 @@
+use std::mem::size_of;
+
 use zerocopy::{
     byte_slice::{ByteSlice, ByteSliceMut},
     FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes, Unaligned,
@@ -27,13 +29,6 @@ pub struct SessionSeq(pub u64);
 #[repr(transparent)]
 pub struct StreamId(pub u32);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionEnvelope {
-    pub seq: SessionSeq,
-    pub ack: SessionAck,
-    pub body: SessionBody,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionAck {
     pub base: SessionSeq,
@@ -45,6 +40,13 @@ impl SessionAck {
         base: SessionSeq(0),
         bitmap: 0,
     };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionEnvelope {
+    pub seq: SessionSeq,
+    pub ack: SessionAck,
+    pub body: SessionBody,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,28 +114,7 @@ impl SessionEnvelope {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        let kind = match &self.body {
-            SessionBody::Ack => SessionBodyKind::Ack,
-            SessionBody::Ping(_) => SessionBodyKind::Ping,
-            SessionBody::Stream(_) => SessionBodyKind::Stream,
-            SessionBody::StreamClose(_) => SessionBodyKind::StreamClose,
-            SessionBody::Close(_) => SessionBodyKind::Close,
-        };
-        let header = SessionEnvelopeHeaderWire {
-            seq: U64Le::new(self.seq.0),
-            ack_base: U64Le::new(self.ack.base.0),
-            ack_bitmap: U64Le::new(self.ack.bitmap),
-            kind: kind as u8,
-        };
-        push_value(&mut out, &header);
-        match &self.body {
-            SessionBody::Ack | SessionBody::Ping(_) => {}
-            SessionBody::Stream(frame) => frame.encode_into(&mut out),
-            SessionBody::StreamClose(frame) => frame.encode_into(&mut out),
-            SessionBody::Close(body) => body.encode_into(&mut out),
-        }
-        out
+        encode_session_envelope(self.seq, self.ack, &self.body)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -148,9 +129,29 @@ pub fn encrypt_record(
     body: &SessionEnvelope,
     nonce: Nonce,
 ) -> QlRecord {
+    encrypt_record_parts(
+        crypto,
+        header,
+        session_key,
+        body.seq,
+        body.ack,
+        &body.body,
+        nonce,
+    )
+}
+
+pub fn encrypt_record_parts(
+    crypto: &impl QlCrypto,
+    header: QlHeader,
+    session_key: &SessionKey,
+    seq: SessionSeq,
+    ack: SessionAck,
+    body: &SessionBody,
+    nonce: Nonce,
+) -> QlRecord {
     let aad = header.aad();
-    let body_bytes = body.encode();
-    let encrypted = EncryptedMessage::encrypt(crypto, session_key, body_bytes, &aad, nonce);
+    let body = encode_session_envelope(seq, ack, body);
+    let encrypted = EncryptedMessage::encrypt(crypto, session_key, body, &aad, nonce);
     QlRecord {
         header,
         payload: QlPayload::Session(encrypted),
@@ -175,6 +176,60 @@ pub struct SessionEnvelopeHeaderWire {
     pub ack_base: U64Le,
     pub ack_bitmap: U64Le,
     pub kind: u8,
+}
+
+fn encode_session_envelope(seq: SessionSeq, ack: SessionAck, body: &SessionBody) -> Vec<u8> {
+    let expected_len = size_of::<SessionEnvelopeHeaderWire>() + session_body_encoded_len(body);
+    let mut out = Vec::with_capacity(expected_len);
+    let initial_capacity = out.capacity();
+    encode_session_envelope_into(seq, ack, body, &mut out);
+    debug_assert_eq!(out.len(), expected_len);
+    debug_assert_eq!(out.capacity(), initial_capacity);
+    out
+}
+
+fn encode_session_envelope_into(
+    seq: SessionSeq,
+    ack: SessionAck,
+    body: &SessionBody,
+    out: &mut Vec<u8>,
+) {
+    let header = SessionEnvelopeHeaderWire {
+        seq: U64Le::new(seq.0),
+        ack_base: U64Le::new(ack.base.0),
+        ack_bitmap: U64Le::new(ack.bitmap),
+        kind: session_body_kind_for(body) as u8,
+    };
+    push_value(out, &header);
+    encode_session_body_into(body, out);
+}
+
+fn session_body_kind_for(body: &SessionBody) -> SessionBodyKind {
+    match body {
+        SessionBody::Ack => SessionBodyKind::Ack,
+        SessionBody::Ping(_) => SessionBodyKind::Ping,
+        SessionBody::Stream(_) => SessionBodyKind::Stream,
+        SessionBody::StreamClose(_) => SessionBodyKind::StreamClose,
+        SessionBody::Close(_) => SessionBodyKind::Close,
+    }
+}
+
+fn session_body_encoded_len(body: &SessionBody) -> usize {
+    match body {
+        SessionBody::Ack | SessionBody::Ping(_) => 0,
+        SessionBody::Stream(frame) => size_of::<StreamChunkHeaderWire>() + frame.bytes.len(),
+        SessionBody::StreamClose(frame) => size_of::<StreamCloseHeaderWire>() + frame.payload.len(),
+        SessionBody::Close(_) => size_of::<SessionCloseBodyWire>(),
+    }
+}
+
+fn encode_session_body_into(body: &SessionBody, out: &mut Vec<u8>) {
+    match body {
+        SessionBody::Ack | SessionBody::Ping(_) => {}
+        SessionBody::Stream(frame) => frame.encode_into(out),
+        SessionBody::StreamClose(frame) => frame.encode_into(out),
+        SessionBody::Close(body) => body.encode_into(out),
+    }
 }
 
 fn session_body_kind(wire: &SessionEnvelopeWire) -> Result<SessionBodyKind, WireError> {

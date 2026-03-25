@@ -18,6 +18,7 @@ pub struct SeqRing<const N: usize, T> {
 
 impl<const N: usize, T> SeqRing<N, T> {
     pub fn new(base_seq: SessionSeq) -> Self {
+        debug_assert!(N <= 64);
         Self {
             base_seq,
             head: 0,
@@ -91,7 +92,6 @@ impl<const N: usize, T> SeqRing<N, T> {
     }
 
     pub fn bitmap(&self) -> u64 {
-        debug_assert!(N <= 64);
         let mut bitmap = 0u64;
         for offset in 0..N {
             let index = self.index_for_offset(offset);

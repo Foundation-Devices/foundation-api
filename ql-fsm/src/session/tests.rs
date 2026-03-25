@@ -37,8 +37,18 @@ fn ping(seq: u64, ack: SessionAck) -> SessionEnvelope {
 }
 
 fn next_outbound(fsm: &mut SessionFsm, now: Instant) -> Option<SessionEnvelope> {
-    let envelope = fsm.take_next_write(now)?;
-    fsm.confirm_write(now, envelope.seq);
+    let (seq, envelope) = {
+        let (seq, ack, body) = fsm.take_next_write(now)?;
+        (
+            seq,
+            SessionEnvelope {
+                seq,
+                ack,
+                body: body.clone(),
+            },
+        )
+    };
+    fsm.confirm_write(now, seq);
     Some(envelope)
 }
 

@@ -322,15 +322,6 @@ impl SessionFsm {
         }
     }
 
-    pub fn take_next_write(&mut self, now: Instant) -> Option<SessionEnvelope> {
-        self.state.now = now;
-        self.collect_timeouts();
-        let ack = self.state.current_ack();
-
-        self.take_pending_retransmit(ack)
-            .or_else(|| self.take_fresh_write(ack))
-    }
-
     pub fn confirm_write(&mut self, now: Instant, seq: SessionSeq) {
         self.state.now = now;
         let Some((retransmit, should_clear_ack)) = self.state.tx_ring.get(&seq).map(|entry| {
@@ -454,7 +445,21 @@ impl SessionFsm {
         })
     }
 
-    fn take_pending_retransmit(&mut self, ack: SessionAck) -> Option<SessionEnvelope> {
+    pub fn take_next_write(
+        &mut self,
+        now: Instant,
+    ) -> Option<(SessionSeq, SessionAck, &SessionBody)> {
+        self.state.now = now;
+        self.collect_timeouts();
+        let ack = self.state.current_ack();
+        let seq = self
+            .take_pending_retransmit()
+            .or_else(|| self.take_fresh_write())?;
+        let entry = self.state.tx_ring.get(&seq).unwrap();
+        Some((seq, ack, &entry.pending.body))
+    }
+
+    fn take_pending_retransmit(&mut self) -> Option<SessionSeq> {
         let base_seq = self.state.tx_ring.base_seq().0;
         let next_seq = self.state.next_seq.0;
 
@@ -476,11 +481,7 @@ impl SessionFsm {
                 .advance_empty_front_until(self.state.next_seq);
             let entry = self.state.tx_ring.get_mut(&seq).unwrap();
             entry.state = TxState::Issued;
-            return Some(SessionEnvelope {
-                seq,
-                ack,
-                body: entry.pending.body.clone(),
-            });
+            return Some(seq);
         }
 
         self.state
@@ -490,7 +491,7 @@ impl SessionFsm {
         None
     }
 
-    fn take_fresh_write(&mut self, ack: SessionAck) -> Option<SessionEnvelope> {
+    fn take_fresh_write(&mut self) -> Option<SessionSeq> {
         if !self.state.tx_ring.accepts_seq(self.state.next_seq) {
             return None;
         }
@@ -498,7 +499,6 @@ impl SessionFsm {
         let pending = self.next_pending_body()?;
         let seq = self.state.next_seq;
         self.state.next_seq = SessionSeq(seq.0 + 1);
-        let body = pending.body.clone();
         self.state
             .tx_ring
             .insert(
@@ -509,8 +509,7 @@ impl SessionFsm {
                 },
             )
             .unwrap();
-
-        Some(SessionEnvelope { seq, ack, body })
+        Some(seq)
     }
 
     fn next_pending_body(&mut self) -> Option<PendingSessionBody> {
