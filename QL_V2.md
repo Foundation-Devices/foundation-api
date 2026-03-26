@@ -71,6 +71,29 @@ The record sizes shows the protocol's intended split between setup and steady-st
 | `session stream close` | 94 bytes |
 | `session close` | 89 bytes |
 
+Any encrypted record has the same outer wire shape:
+
+| Component | Size |
+| --- | ---: |
+| protocol version | 1 byte |
+| record kind | 1 byte |
+| sender XID | 16 bytes |
+| recipient XID | 16 bytes |
+| AEAD nonce | 12 bytes |
+| AEAD auth tag | 16 bytes |
+| ciphertext | N bytes |
+
+That gives a 62-byte minimum for any encrypted record before counting the encrypted plaintext. The AEAD keeps the ciphertext the same length as the plaintext, so after that fixed 62-byte overhead, each additional plaintext byte becomes one additional ciphertext byte.
+
+For session records, the encrypted plaintext always starts with a 25-byte session envelope:
+
+| Session envelope field | Size |
+| --- | ---: |
+| `seq` | 8 bytes |
+| `ack.base` | 8 bytes |
+| `ack.bitmap` | 8 bytes |
+| session body kind discriminator | 1 byte |
+
 ### 7. Shared core state machine
 QLv2 should have one core implementation of pairing, handshake, session, retransmission, and stream behavior. Platforms should integrate that shared state machine instead of rebuilding subtle protocol logic independently.
 
