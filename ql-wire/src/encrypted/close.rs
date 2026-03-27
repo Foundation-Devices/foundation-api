@@ -1,11 +1,16 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+use std::mem::size_of;
+
+use zerocopy::{
+    byte_slice::ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
+};
 
 use super::CloseCode;
 use crate::{
-    codec::{push_value, read_exact, U16Le},
+    codec::{parse, push_value, read_exact, U16Le},
     WireError,
 };
 
+/// closes the whole session immediately with a close code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionCloseBody {
     pub code: CloseCode,
@@ -18,7 +23,16 @@ pub struct SessionCloseBodyWire {
 }
 
 impl SessionCloseBody {
-    pub fn from_wire(wire: SessionCloseBodyWire) -> Self {
+    pub const WIRE_SIZE: usize = size_of::<SessionCloseBodyWire>();
+
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, SessionCloseBodyWire>, WireError> {
+        if bytes.len() != Self::WIRE_SIZE {
+            return Err(WireError::InvalidPayload);
+        }
+        parse(bytes)
+    }
+
+    pub fn from_wire(wire: &SessionCloseBodyWire) -> Self {
         Self {
             code: CloseCode(wire.code.get()),
         }
@@ -36,6 +50,6 @@ impl SessionCloseBody {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let wire: SessionCloseBodyWire = read_exact(bytes)?;
-        Ok(Self::from_wire(wire))
+        Ok(Self::from_wire(&wire))
     }
 }

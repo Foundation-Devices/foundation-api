@@ -6,115 +6,97 @@ use zerocopy::{
 };
 
 use crate::{
-    codec::{parse, push_value, U64Le},
+    codec::{parse, read_byte},
     encrypted_message::{EncryptedMessage, EncryptedMessageWire},
     Nonce, QlCrypto, QlHeader, QlPayload, QlRecord, SessionKey, WireError,
 };
 
 mod close;
-mod ping;
-mod stream_chunk;
+mod stream_ack;
 mod stream_close;
+mod stream_data;
+mod stream_window;
 
 pub use close::*;
-pub use ping::*;
-pub use stream_chunk::*;
+pub use stream_ack::*;
 pub use stream_close::*;
+pub use stream_data::*;
+pub use stream_window::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct SessionSeq(pub u64);
-
+// todo: should use even/odd based on xid ordering
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct StreamId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SessionAck {
-    pub base: SessionSeq,
-    pub bitmap: u64,
-}
-
-impl SessionAck {
-    pub const EMPTY: Self = Self {
-        base: SessionSeq(0),
-        bitmap: 0,
-    };
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRecord {
+    pub frames: Vec<SessionFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionEnvelope {
-    pub seq: SessionSeq,
-    pub ack: SessionAck,
-    pub body: SessionBody,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionBody {
-    Ack,
-    Ping(ping::PingBody),
-    Stream(StreamChunk),
-    StreamClose(StreamClose),
-    Close(close::SessionCloseBody),
-}
-
-pub enum SessionBodyRef<B> {
-    Ack,
+pub enum SessionFrame {
     Ping,
-    Stream(Ref<B, StreamChunkWire>),
-    StreamClose(Ref<B, StreamCloseWire>),
-    Close(close::SessionCloseBody),
+    Pong,
+    StreamData(StreamData),
+    StreamAck(StreamAck),
+    StreamWindow(StreamWindow),
+    StreamClose(StreamClose),
+    Close(SessionCloseBody),
+}
+
+pub enum SessionFrameRef<'a> {
+    Ping,
+    Pong,
+    StreamData(Ref<&'a [u8], StreamDataWire>),
+    StreamAck(Ref<&'a [u8], StreamAckWire>),
+    StreamWindow(Ref<&'a [u8], StreamWindowWire>),
+    StreamClose(Ref<&'a [u8], StreamCloseWire>),
+    Close(Ref<&'a [u8], SessionCloseBodyWire>),
 }
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, TryFromBytes, KnownLayout, Immutable, IntoBytes, Unaligned,
 )]
 #[repr(u8)]
-enum SessionBodyKind {
-    Ack = 1,
-    Ping = 2,
-    Stream = 4,
-    StreamClose = 5,
-    Close = 6,
+pub(crate) enum SessionFrameKind {
+    Ping = 1,
+    Pong = 2,
+    StreamData = 3,
+    StreamAck = 4,
+    StreamWindow = 5,
+    StreamClose = 6,
+    Close = 7,
 }
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
-pub struct SessionEnvelopeWire {
-    pub seq: U64Le,
-    pub ack_base: U64Le,
-    pub ack_bitmap: U64Le,
-    pub kind: u8,
-    pub body: [u8],
+pub struct SessionRecordWire {
+    pub frames: [u8],
 }
 
-impl SessionEnvelope {
-    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, SessionEnvelopeWire>, WireError> {
+pub struct SessionFrameIter<'a> {
+    remaining: &'a [u8],
+}
+
+impl SessionRecord {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, SessionRecordWire>, WireError> {
         parse(bytes)
     }
 
-    pub fn from_wire(wire: &SessionEnvelopeWire) -> Result<Self, WireError> {
-        let body = match parse_session_body(session_body_kind(wire)?, &wire.body)? {
-            SessionBodyRef::Ack => SessionBody::Ack,
-            SessionBodyRef::Ping => SessionBody::Ping(ping::PingBody),
-            SessionBodyRef::Stream(frame) => SessionBody::Stream(StreamChunk::from_wire(&frame)?),
-            SessionBodyRef::StreamClose(frame) => {
-                SessionBody::StreamClose(StreamClose::from_wire(&frame)?)
-            }
-            SessionBodyRef::Close(body) => SessionBody::Close(body),
-        };
-        Ok(Self {
-            seq: SessionSeq(wire.seq.get()),
-            ack: SessionAck {
-                base: SessionSeq(wire.ack_base.get()),
-                bitmap: wire.ack_bitmap.get(),
-            },
-            body,
-        })
+    pub fn from_wire(wire: &SessionRecordWire) -> Result<Self, WireError> {
+        let frames = wire
+            .frames()
+            .map(|frame| frame?.to_owned())
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { frames })
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        encode_session_envelope(self.seq, self.ack, &self.body)
+        let mut out = Vec::new();
+        for frame in &self.frames {
+            frame.encode_into(&mut out);
+        }
+        out
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -122,35 +104,91 @@ impl SessionEnvelope {
     }
 }
 
+impl SessionRecordWire {
+    pub fn frames(&self) -> SessionFrameIter<'_> {
+        SessionFrameIter {
+            remaining: &self.frames,
+        }
+    }
+}
+
+impl SessionFrame {
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Ping => out.push(SessionFrameKind::Ping as u8),
+            Self::Pong => out.push(SessionFrameKind::Pong as u8),
+            Self::StreamData(frame) => {
+                out.push(SessionFrameKind::StreamData as u8);
+                push_variable_len(out, frame.encoded_len());
+                frame.encode_into(out);
+            }
+            Self::StreamAck(frame) => {
+                out.push(SessionFrameKind::StreamAck as u8);
+                push_variable_len(out, frame.encoded_len());
+                frame.encode_into(out);
+            }
+            Self::StreamWindow(frame) => {
+                out.push(SessionFrameKind::StreamWindow as u8);
+                frame.encode_into(out);
+            }
+            Self::StreamClose(frame) => {
+                out.push(SessionFrameKind::StreamClose as u8);
+                push_variable_len(out, frame.encoded_len());
+                frame.encode_into(out);
+            }
+            Self::Close(body) => {
+                out.push(SessionFrameKind::Close as u8);
+                body.encode_into(out);
+            }
+        }
+    }
+}
+
+impl SessionFrameRef<'_> {
+    pub fn to_owned(&self) -> Result<SessionFrame, WireError> {
+        Ok(match self {
+            Self::Ping => SessionFrame::Ping,
+            Self::Pong => SessionFrame::Pong,
+            Self::StreamData(frame) => SessionFrame::StreamData(StreamData::from_wire(frame)?),
+            Self::StreamAck(frame) => SessionFrame::StreamAck(StreamAck::from_wire(frame)?),
+            Self::StreamWindow(frame) => SessionFrame::StreamWindow(StreamWindow::from_wire(frame)),
+            Self::StreamClose(frame) => SessionFrame::StreamClose(StreamClose::from_wire(frame)?),
+            Self::Close(frame) => SessionFrame::Close(SessionCloseBody::from_wire(frame)),
+        })
+    }
+}
+
+impl<'a> Iterator for SessionFrameIter<'a> {
+    type Item = Result<SessionFrameRef<'a>, WireError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining.is_empty() {
+            return None;
+        }
+
+        let parsed = parse_next_frame(self.remaining);
+        match parsed {
+            Ok((frame, rest)) => {
+                self.remaining = rest;
+                Some(Ok(frame))
+            }
+            Err(error) => {
+                self.remaining = &[];
+                Some(Err(error))
+            }
+        }
+    }
+}
+
 pub fn encrypt_record(
     crypto: &impl QlCrypto,
     header: QlHeader,
     session_key: &SessionKey,
-    body: &SessionEnvelope,
-    nonce: Nonce,
-) -> QlRecord {
-    encrypt_record_parts(
-        crypto,
-        header,
-        session_key,
-        body.seq,
-        body.ack,
-        &body.body,
-        nonce,
-    )
-}
-
-pub fn encrypt_record_parts(
-    crypto: &impl QlCrypto,
-    header: QlHeader,
-    session_key: &SessionKey,
-    seq: SessionSeq,
-    ack: SessionAck,
-    body: &SessionBody,
+    body: &SessionRecord,
     nonce: Nonce,
 ) -> QlRecord {
     let aad = header.aad();
-    let body = encode_session_envelope(seq, ack, body);
+    let body = body.encode();
     let encrypted = EncryptedMessage::encrypt(crypto, session_key, body, &aad, nonce);
     QlRecord {
         header,
@@ -163,96 +201,68 @@ pub fn decrypt_record<'a, B: ByteSliceMut>(
     header: &QlHeader,
     encrypted: &'a mut Ref<B, EncryptedMessageWire>,
     session_key: &SessionKey,
-) -> Result<Ref<&'a mut [u8], SessionEnvelopeWire>, WireError> {
+) -> Result<Ref<&'a mut [u8], SessionRecordWire>, WireError> {
     let aad = header.aad();
     let plaintext = EncryptedMessage::decrypt_in_place(encrypted, crypto, session_key, &aad)?;
-    SessionEnvelope::parse(plaintext)
+    SessionRecord::parse(plaintext)
 }
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct SessionEnvelopeHeaderWire {
-    pub seq: U64Le,
-    pub ack_base: U64Le,
-    pub ack_bitmap: U64Le,
-    pub kind: u8,
-}
-
-fn encode_session_envelope(seq: SessionSeq, ack: SessionAck, body: &SessionBody) -> Vec<u8> {
-    let expected_len = size_of::<SessionEnvelopeHeaderWire>() + session_body_encoded_len(body);
-    let mut out = Vec::with_capacity(expected_len);
-    let initial_capacity = out.capacity();
-    encode_session_envelope_into(seq, ack, body, &mut out);
-    debug_assert_eq!(out.len(), expected_len);
-    debug_assert_eq!(out.capacity(), initial_capacity);
-    out
-}
-
-fn encode_session_envelope_into(
-    seq: SessionSeq,
-    ack: SessionAck,
-    body: &SessionBody,
-    out: &mut Vec<u8>,
-) {
-    let header = SessionEnvelopeHeaderWire {
-        seq: U64Le::new(seq.0),
-        ack_base: U64Le::new(ack.base.0),
-        ack_bitmap: U64Le::new(ack.bitmap),
-        kind: session_body_kind_for(body) as u8,
-    };
-    push_value(out, &header);
-    encode_session_body_into(body, out);
-}
-
-fn session_body_kind_for(body: &SessionBody) -> SessionBodyKind {
-    match body {
-        SessionBody::Ack => SessionBodyKind::Ack,
-        SessionBody::Ping(_) => SessionBodyKind::Ping,
-        SessionBody::Stream(_) => SessionBodyKind::Stream,
-        SessionBody::StreamClose(_) => SessionBodyKind::StreamClose,
-        SessionBody::Close(_) => SessionBodyKind::Close,
-    }
-}
-
-fn session_body_encoded_len(body: &SessionBody) -> usize {
-    match body {
-        SessionBody::Ack | SessionBody::Ping(_) => 0,
-        SessionBody::Stream(frame) => size_of::<StreamChunkHeaderWire>() + frame.bytes.len(),
-        SessionBody::StreamClose(frame) => size_of::<StreamCloseHeaderWire>() + frame.payload.len(),
-        SessionBody::Close(_) => size_of::<SessionCloseBodyWire>(),
-    }
-}
-
-fn encode_session_body_into(body: &SessionBody, out: &mut Vec<u8>) {
-    match body {
-        SessionBody::Ack | SessionBody::Ping(_) => {}
-        SessionBody::Stream(frame) => frame.encode_into(out),
-        SessionBody::StreamClose(frame) => frame.encode_into(out),
-        SessionBody::Close(body) => body.encode_into(out),
-    }
-}
-
-fn session_body_kind(wire: &SessionEnvelopeWire) -> Result<SessionBodyKind, WireError> {
-    crate::codec::read_byte(wire.kind)
-}
-
-fn parse_session_body<B: ByteSlice>(
-    kind: SessionBodyKind,
-    body: B,
-) -> Result<SessionBodyRef<B>, WireError> {
+fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrameRef<'_>, &[u8]), WireError> {
+    let (&kind, rest) = bytes.split_first().ok_or(WireError::InvalidPayload)?;
+    let kind: SessionFrameKind = read_byte(kind)?;
     match kind {
-        SessionBodyKind::Ack => {
-            crate::codec::ensure_empty(&body)?;
-            Ok(SessionBodyRef::Ack)
+        SessionFrameKind::Ping => Ok((SessionFrameRef::Ping, rest)),
+        SessionFrameKind::Pong => Ok((SessionFrameRef::Pong, rest)),
+        SessionFrameKind::StreamData => {
+            let (frame, rest) = split_variable_frame(rest)?;
+            Ok((SessionFrameRef::StreamData(StreamData::parse(frame)?), rest))
         }
-        SessionBodyKind::Ping => {
-            crate::codec::ensure_empty(&body)?;
-            Ok(SessionBodyRef::Ping)
+        SessionFrameKind::StreamAck => {
+            let (frame, rest) = split_variable_frame(rest)?;
+            Ok((SessionFrameRef::StreamAck(StreamAck::parse(frame)?), rest))
         }
-        SessionBodyKind::Stream => Ok(SessionBodyRef::Stream(StreamChunk::parse(body)?)),
-        SessionBodyKind::StreamClose => Ok(SessionBodyRef::StreamClose(StreamClose::parse(body)?)),
-        SessionBodyKind::Close => Ok(SessionBodyRef::Close(close::SessionCloseBody::decode(
-            &body,
-        )?)),
+        SessionFrameKind::StreamWindow => {
+            let wire_size = StreamWindow::WIRE_SIZE;
+            if rest.len() < wire_size {
+                return Err(WireError::InvalidPayload);
+            }
+            let (frame, rest) = rest.split_at(wire_size);
+            Ok((
+                SessionFrameRef::StreamWindow(StreamWindow::parse(frame)?),
+                rest,
+            ))
+        }
+        SessionFrameKind::StreamClose => {
+            let (frame, rest) = split_variable_frame(rest)?;
+            Ok((
+                SessionFrameRef::StreamClose(StreamClose::parse(frame)?),
+                rest,
+            ))
+        }
+        SessionFrameKind::Close => {
+            let wire_size = SessionCloseBody::WIRE_SIZE;
+            if rest.len() < wire_size {
+                return Err(WireError::InvalidPayload);
+            }
+            let (frame, rest) = rest.split_at(wire_size);
+            let frame = SessionCloseBody::parse(frame)?;
+            Ok((SessionFrameRef::Close(frame), rest))
+        }
     }
+}
+
+fn push_variable_len(out: &mut Vec<u8>, len: usize) {
+    let len = u16::try_from(len).expect("session frame exceeds u16");
+    out.extend_from_slice(&len.to_le_bytes());
+}
+
+fn split_variable_frame(bytes: &[u8]) -> Result<(&[u8], &[u8]), WireError> {
+    const LEN_SIZE: usize = size_of::<u16>();
+
+    if bytes.len() < LEN_SIZE {
+        return Err(WireError::InvalidPayload);
+    }
+    let len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+    let bytes = &bytes[LEN_SIZE..];
+    bytes.split_at_checked(len).ok_or(WireError::InvalidPayload)
 }

@@ -1,14 +1,14 @@
+use std::mem::size_of;
+
 use zerocopy::{
     byte_slice::ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes,
     Unaligned,
 };
 
 use super::StreamId;
-use crate::{
-    codec::{parse, push_value, U16Le, U32Le},
-    WireError,
-};
+use crate::{codec::{parse, read_byte, U16Le, U32Le}, WireError};
 
+/// aborts one or both directions of a stream with a close code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamClose {
     pub stream_id: StreamId,
@@ -50,7 +50,7 @@ impl CloseCode {
     pub const UNHANDLED: Self = Self(20);
 }
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct StreamCloseWire {
     pub stream_id: U32Le,
@@ -60,34 +60,35 @@ pub struct StreamCloseWire {
 }
 
 impl StreamClose {
+    pub const MIN_WIRE_SIZE: usize =
+        size_of::<U32Le>() + size_of::<u8>() + size_of::<U16Le>();
+
     pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, StreamCloseWire>, WireError> {
-        parse(bytes)
+        if bytes.len() < Self::MIN_WIRE_SIZE {
+            return Err(WireError::InvalidPayload);
+        }
+        let wire: Ref<B, StreamCloseWire> = parse(bytes)?;
+        let _ = read_byte::<CloseTarget>(wire.target)?;
+        Ok(wire)
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        Self::MIN_WIRE_SIZE + self.payload.len()
     }
 
     pub fn from_wire(wire: &StreamCloseWire) -> Result<Self, WireError> {
-        Ok(StreamClose {
+        Ok(Self {
             stream_id: StreamId(wire.stream_id.get()),
-            target: crate::codec::read_byte(wire.target)?,
+            target: read_byte(wire.target)?,
             code: CloseCode(wire.code.get()),
             payload: wire.payload.to_vec(),
         })
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        let header = StreamCloseHeaderWire {
-            stream_id: U32Le::new(self.stream_id.0),
-            target: self.target.to_wire(),
-            code: U16Le::new(self.code.0),
-        };
-        push_value(out, &header);
+        out.extend_from_slice(&self.stream_id.0.to_le_bytes());
+        out.push(self.target.to_wire());
+        out.extend_from_slice(&self.code.0.to_le_bytes());
         out.extend_from_slice(&self.payload);
     }
-}
-
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct StreamCloseHeaderWire {
-    pub stream_id: U32Le,
-    pub target: u8,
-    pub code: U16Le,
 }

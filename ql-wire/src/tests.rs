@@ -72,18 +72,44 @@ fn encrypted_session_record_round_trip_and_decrypt() {
         sender: XID([1; XID::SIZE]),
         recipient: XID([2; XID::SIZE]),
     };
-    let body = SessionEnvelope {
-        seq: SessionSeq(7),
-        ack: SessionAck {
-            base: SessionSeq(3),
-            bitmap: 0b101,
-        },
-        body: SessionBody::Stream(StreamChunk {
-            stream_id: StreamId(9),
-            chunk_seq: 11,
-            bytes: b"hello".to_vec(),
-            fin: true,
-        }),
+    let body = SessionRecord {
+        frames: vec![
+            SessionFrame::Ping,
+            SessionFrame::Pong,
+            SessionFrame::StreamAck(StreamAck {
+                stream_id: StreamId(7),
+                acked_prefix: 12,
+                ranges: vec![
+                    StreamAckRange {
+                        start_offset: 20,
+                        end_offset: 24,
+                    },
+                    StreamAckRange {
+                        start_offset: 30,
+                        end_offset: 33,
+                    },
+                ],
+            }),
+            SessionFrame::StreamWindow(StreamWindow {
+                stream_id: StreamId(9),
+                maximum_offset: 65_536,
+            }),
+            SessionFrame::StreamData(StreamData {
+                stream_id: StreamId(9),
+                offset: 1024,
+                bytes: b"hello".to_vec(),
+                fin: true,
+            }),
+            SessionFrame::StreamClose(StreamClose {
+                stream_id: StreamId(9),
+                target: CloseTarget::Both,
+                code: CloseCode::PROTOCOL,
+                payload: b"bye".to_vec(),
+            }),
+            SessionFrame::Close(SessionCloseBody {
+                code: CloseCode::TIMEOUT,
+            }),
+        ],
     };
     let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
     let record = encrypted::encrypt_record(
@@ -109,7 +135,92 @@ fn encrypted_session_record_round_trip_and_decrypt() {
     };
     let decrypted =
         encrypted::decrypt_record(&crypto, &header, &mut encrypted, &session_key).unwrap();
-    assert_eq!(SessionEnvelope::from_wire(&decrypted).unwrap(), body);
+    assert_eq!(SessionRecord::from_wire(&decrypted).unwrap(), body);
+}
+
+#[test]
+fn decrypted_session_record_iterates_zero_copy_frames() {
+    let crypto = TestCrypto::new(2);
+    let header = QlHeader {
+        sender: XID([9; XID::SIZE]),
+        recipient: XID([10; XID::SIZE]),
+    };
+    let body = SessionRecord {
+        frames: vec![
+            SessionFrame::StreamData(StreamData {
+                stream_id: StreamId(1),
+                offset: 5,
+                fin: false,
+                bytes: b"abc".to_vec(),
+            }),
+            SessionFrame::StreamAck(StreamAck {
+                stream_id: StreamId(1),
+                acked_prefix: 3,
+                ranges: vec![StreamAckRange {
+                    start_offset: 5,
+                    end_offset: 8,
+                }],
+            }),
+            SessionFrame::StreamClose(StreamClose {
+                stream_id: StreamId(1),
+                target: CloseTarget::Response,
+                code: CloseCode::CANCELLED,
+                payload: b"later".to_vec(),
+            }),
+        ],
+    };
+    let session_key = SessionKey::from_data([3; SessionKey::SIZE]);
+    let record = encrypted::encrypt_record(
+        &crypto,
+        header,
+        &session_key,
+        &body,
+        Nonce([4; Nonce::SIZE]),
+    );
+
+    let mut bytes = record.encode();
+    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
+    let QlPayloadRef::Session(mut encrypted) = payload else {
+        panic!("expected session payload");
+    };
+    let decrypted =
+        encrypted::decrypt_record(&crypto, &header, &mut encrypted, &session_key).unwrap();
+
+    let mut frames = decrypted.frames();
+    match frames.next().unwrap().unwrap() {
+        SessionFrameRef::StreamData(frame) => {
+            assert_eq!(frame.stream_id(), StreamId(1));
+            assert_eq!(frame.offset(), 5);
+            assert!(!frame.fin().unwrap());
+            assert_eq!(frame.bytes(), b"abc");
+        }
+        other => panic!("expected stream data, got {}", frame_name(&other)),
+    }
+    match frames.next().unwrap().unwrap() {
+        SessionFrameRef::StreamAck(frame) => {
+            assert_eq!(frame.stream_id(), StreamId(1));
+            assert_eq!(frame.acked_prefix(), 3);
+            let ranges: Vec<_> = frame.ranges().collect();
+            assert_eq!(
+                ranges,
+                vec![StreamAckRange {
+                    start_offset: 5,
+                    end_offset: 8,
+                }]
+            );
+        }
+        other => panic!("expected stream ack, got {}", frame_name(&other)),
+    }
+    match frames.next().unwrap().unwrap() {
+        SessionFrameRef::StreamClose(frame) => {
+            let owned = StreamClose::from_wire(&frame).unwrap();
+            assert_eq!(owned.stream_id, StreamId(1));
+            assert_eq!(owned.target, CloseTarget::Response);
+            assert_eq!(owned.payload, b"later".to_vec());
+        }
+        other => panic!("expected stream close, got {}", frame_name(&other)),
+    }
+    assert!(frames.next().is_none());
 }
 
 #[test]
@@ -225,6 +336,85 @@ fn unpair_round_trip_and_verify() {
 }
 
 #[test]
+fn session_record_rejects_malformed_frames() {
+    let invalid_cases = [
+        vec![0xff],
+        {
+            let mut bytes = vec![SessionFrameKind::StreamData as u8];
+            bytes.push(1);
+            bytes
+        },
+        {
+            let mut bytes = vec![SessionFrameKind::StreamData as u8];
+            bytes.extend_from_slice(&13u16.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&4u64.to_le_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(b"abc");
+            bytes
+        },
+        {
+            let mut bytes = vec![SessionFrameKind::StreamAck as u8];
+            bytes.extend_from_slice(&20u16.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&3u64.to_le_bytes());
+            bytes.extend_from_slice(&5u64.to_le_bytes());
+            bytes
+        },
+        {
+            let mut bytes = vec![SessionFrameKind::StreamAck as u8];
+            bytes.extend_from_slice(&28u16.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&6u64.to_le_bytes());
+            bytes.extend_from_slice(&4u64.to_le_bytes());
+            bytes.extend_from_slice(&8u64.to_le_bytes());
+            bytes
+        },
+        {
+            let mut bytes = vec![SessionFrameKind::StreamClose as u8];
+            bytes.extend_from_slice(&9u16.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.push(CloseTarget::Both as u8);
+            bytes.extend_from_slice(&CloseCode::PROTOCOL.0.to_le_bytes());
+            bytes.extend_from_slice(b"abc");
+            bytes
+        },
+        {
+            let mut bytes = vec![SessionFrameKind::Close as u8];
+            bytes.push(0);
+            bytes
+        },
+    ];
+
+    for bytes in invalid_cases {
+        assert_eq!(SessionRecord::decode(&bytes), Err(WireError::InvalidPayload));
+    }
+}
+
+#[test]
+fn session_record_supports_empty_fin_stream_data_and_empty_ping_pong() {
+    let record = SessionRecord {
+        frames: vec![
+            SessionFrame::Ping,
+            SessionFrame::Pong,
+            SessionFrame::StreamData(StreamData {
+                stream_id: StreamId(42),
+                offset: 999,
+                fin: true,
+                bytes: Vec::new(),
+            }),
+        ],
+    };
+
+    let encoded = record.encode();
+    assert_eq!(encoded[0], SessionFrameKind::Ping as u8);
+    assert_eq!(encoded[1], SessionFrameKind::Pong as u8);
+
+    let decoded = SessionRecord::decode(&encoded).unwrap();
+    assert_eq!(decoded, record);
+}
+
+#[test]
 fn protocol_record_size_breakdown() {
     fn meta(id: u32) -> ControlMeta {
         ControlMeta {
@@ -248,7 +438,7 @@ fn protocol_record_size_breakdown() {
         }
     }
 
-    fn session_record(header: QlHeader, tag: u8, body: SessionEnvelope) -> QlRecord {
+    fn session_record(header: QlHeader, tag: u8, body: SessionRecord) -> QlRecord {
         let ciphertext_len = body.encode().len();
         QlRecord {
             header,
@@ -303,75 +493,87 @@ fn protocol_record_size_breakdown() {
         }),
     };
 
-    let session_ack = session_record(
-        header,
-        14,
-        SessionEnvelope {
-            seq: SessionSeq(1),
-            ack: SessionAck::EMPTY,
-            body: SessionBody::Ack,
-        },
-    );
     let session_ping = session_record(
         header,
+        14,
+        SessionRecord {
+            frames: vec![SessionFrame::Ping],
+        },
+    );
+    let session_pong = session_record(
+        header,
         15,
-        SessionEnvelope {
-            seq: SessionSeq(2),
-            ack: SessionAck::EMPTY,
-            body: SessionBody::Ping(PingBody),
+        SessionRecord {
+            frames: vec![SessionFrame::Pong],
+        },
+    );
+    let session_stream_window = session_record(
+        header,
+        16,
+        SessionRecord {
+            frames: vec![SessionFrame::StreamWindow(StreamWindow {
+                stream_id: StreamId(1),
+                maximum_offset: 65_536,
+            })],
+        },
+    );
+    let session_stream_ack = session_record(
+        header,
+        17,
+        SessionRecord {
+            frames: vec![SessionFrame::StreamAck(StreamAck {
+                stream_id: StreamId(1),
+                acked_prefix: 4,
+                ranges: vec![StreamAckRange {
+                    start_offset: 8,
+                    end_offset: 12,
+                }],
+            })],
         },
     );
     let session_stream_empty = session_record(
         header,
-        16,
-        SessionEnvelope {
-            seq: SessionSeq(3),
-            ack: SessionAck::EMPTY,
-            body: SessionBody::Stream(StreamChunk {
+        18,
+        SessionRecord {
+            frames: vec![SessionFrame::StreamData(StreamData {
                 stream_id: StreamId(1),
-                chunk_seq: 0,
+                offset: 0,
                 fin: false,
                 bytes: Vec::new(),
-            }),
+            })],
         },
     );
     let session_stream_fin = session_record(
         header,
-        17,
-        SessionEnvelope {
-            seq: SessionSeq(4),
-            ack: SessionAck::EMPTY,
-            body: SessionBody::Stream(StreamChunk {
+        19,
+        SessionRecord {
+            frames: vec![SessionFrame::StreamData(StreamData {
                 stream_id: StreamId(1),
-                chunk_seq: 0,
+                offset: 0,
                 fin: true,
                 bytes: Vec::new(),
-            }),
+            })],
         },
     );
     let session_stream_close = session_record(
         header,
-        18,
-        SessionEnvelope {
-            seq: SessionSeq(5),
-            ack: SessionAck::EMPTY,
-            body: SessionBody::StreamClose(StreamClose {
+        20,
+        SessionRecord {
+            frames: vec![SessionFrame::StreamClose(StreamClose {
                 stream_id: StreamId(1),
                 target: CloseTarget::Both,
                 code: CloseCode::PROTOCOL,
                 payload: Vec::new(),
-            }),
+            })],
         },
     );
     let session_close = session_record(
         header,
-        19,
-        SessionEnvelope {
-            seq: SessionSeq(6),
-            ack: SessionAck::EMPTY,
-            body: SessionBody::Close(SessionCloseBody {
+        21,
+        SessionRecord {
+            frames: vec![SessionFrame::Close(SessionCloseBody {
                 code: CloseCode::PROTOCOL,
-            }),
+            })],
         },
     );
 
@@ -385,8 +587,10 @@ fn protocol_record_size_breakdown() {
     print_size("ql-wire pair_request empty", pair_request.encode().len());
     print_size("ql-wire unpair", unpair.encode().len());
     print_size("ql-wire ready empty", ready.encode().len());
-    print_size("ql-wire session ack", session_ack.encode().len());
     print_size("ql-wire session ping", session_ping.encode().len());
+    print_size("ql-wire session pong", session_pong.encode().len());
+    print_size("ql-wire session stream window", session_stream_window.encode().len());
+    print_size("ql-wire session stream ack", session_stream_ack.encode().len());
     print_size(
         "ql-wire session stream empty",
         session_stream_empty.encode().len(),
@@ -400,4 +604,16 @@ fn protocol_record_size_breakdown() {
         session_stream_close.encode().len(),
     );
     print_size("ql-wire session close", session_close.encode().len());
+}
+
+fn frame_name(frame: &SessionFrameRef<'_>) -> &'static str {
+    match frame {
+        SessionFrameRef::Ping => "ping",
+        SessionFrameRef::Pong => "pong",
+        SessionFrameRef::StreamData(_) => "stream_data",
+        SessionFrameRef::StreamAck(_) => "stream_ack",
+        SessionFrameRef::StreamWindow(_) => "stream_window",
+        SessionFrameRef::StreamClose(_) => "stream_close",
+        SessionFrameRef::Close(_) => "close",
+    }
 }

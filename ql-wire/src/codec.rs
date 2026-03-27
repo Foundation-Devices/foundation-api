@@ -48,14 +48,6 @@ where
     Ref::<_, T>::from_bytes(bytes).map_err(|_| WireError::InvalidPayload)
 }
 
-pub fn ensure_empty(bytes: &[u8]) -> Result<(), WireError> {
-    if bytes.is_empty() {
-        Ok(())
-    } else {
-        Err(WireError::InvalidPayload)
-    }
-}
-
 pub fn append_field(out: &mut Vec<u8>, label: &[u8], value: &[u8]) {
     append_framed_bytes(out, label);
     append_framed_bytes(out, value);
