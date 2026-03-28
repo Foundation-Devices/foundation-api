@@ -1,7 +1,8 @@
 use std::mem::size_of;
 
 use crate::{
-    codec, encrypted_message::EncryptedMessage, QlCrypto, QlHeader, QlRecord, SessionKey, WireError,
+    codec, encrypted_message::EncryptedMessage, ByteSlice, QlCrypto, QlHeader, QlRecord,
+    SessionKey, WireError,
 };
 
 mod ack;
@@ -161,7 +162,9 @@ impl<B: AsRef<[u8]>> SessionFrame<B> {
             }
         }
     }
+}
 
+impl<B: ByteSlice> SessionFrame<B> {
     pub fn into_owned(self) -> SessionFrameVec {
         match self {
             Self::Ping => SessionFrame::Ping,

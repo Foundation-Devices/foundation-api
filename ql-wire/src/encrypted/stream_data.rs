@@ -31,13 +31,13 @@ impl<B: ByteSlice> StreamData<B> {
 impl<B> StreamData<B> {
     pub fn into_owned(self) -> StreamData<Vec<u8>>
     where
-        B: AsRef<[u8]>,
+        B: ByteSlice,
     {
         StreamData {
             stream_id: self.stream_id,
             offset: self.offset,
             fin: self.fin,
-            bytes: self.bytes.as_ref().to_vec(),
+            bytes: self.bytes.to_vec(),
         }
     }
 }

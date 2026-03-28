@@ -75,13 +75,13 @@ impl<B: ByteSlice> StreamClose<B> {
 impl<B> StreamClose<B> {
     pub fn into_owned(self) -> StreamClose<Vec<u8>>
     where
-        B: AsRef<[u8]>,
+        B: ByteSlice,
     {
         StreamClose {
             stream_id: self.stream_id,
             target: self.target,
             code: self.code,
-            payload: self.payload.as_ref().to_vec(),
+            payload: self.payload.to_vec(),
         }
     }
 }

@@ -116,7 +116,7 @@ impl<B: ByteSlice> Ready<B> {
 impl<B> Ready<B> {
     pub fn into_owned(self) -> Ready<Vec<u8>>
     where
-        B: AsRef<[u8]>,
+        B: ByteSlice,
     {
         Ready {
             encrypted: self.encrypted.into_owned(),

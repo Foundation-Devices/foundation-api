@@ -34,7 +34,7 @@ impl<B: ByteSlice> PairRequestRecord<B> {
 impl<B> PairRequestRecord<B> {
     pub fn into_owned(self) -> PairRequestRecord<Vec<u8>>
     where
-        B: AsRef<[u8]>,
+        B: ByteSlice,
     {
         PairRequestRecord {
             kem_ct: self.kem_ct,

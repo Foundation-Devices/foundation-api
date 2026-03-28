@@ -15,12 +15,12 @@ impl<B> EncryptedMessage<B> {
 
     pub fn into_owned(self) -> EncryptedMessage<Vec<u8>>
     where
-        B: AsRef<[u8]>,
+        B: ByteSlice,
     {
         EncryptedMessage {
             nonce: self.nonce,
             auth: self.auth,
-            ciphertext: self.ciphertext.as_ref().to_vec(),
+            ciphertext: self.ciphertext.to_vec(),
         }
     }
 }
