@@ -11,12 +11,14 @@ use crate::{
     Nonce, QlCrypto, QlHeader, QlPayload, QlRecord, SessionKey, WireError,
 };
 
+mod byte_reassembly;
 mod close;
 mod stream_ack;
 mod stream_close;
 mod stream_data;
 mod stream_window;
 
+pub use byte_reassembly::*;
 pub use close::*;
 pub use stream_ack::*;
 pub use stream_close::*;
