@@ -182,18 +182,13 @@ pub enum ReliableFrame {
 }
 
 #[derive(Debug, Clone)]
-pub struct PendingRecord {
+pub struct OutboundRecord {
     pub seq: RecordSeq,
     pub reliable: Vec<ReliableFrame>,
     pub ack_included: bool,
     pub ping_included: bool,
     pub window_updates: Vec<(StreamId, u64)>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SentRecord {
-    pub pending: PendingRecord,
-    pub sent_at: Instant,
+    pub sent_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -286,8 +281,7 @@ pub struct SessionFsmState {
     pub next_stream_ordinal: u32,
     pub next_record_seq: RecordSeq,
     pub next_write_id: u64,
-    pub issued_records: IndexMap<u64, PendingRecord>,
-    pub sent_records: IndexMap<u64, SentRecord>,
+    pub outbound_records: IndexMap<u64, OutboundRecord>,
     pub received_records: ReceivedRecords,
     pub ack_state: AckState,
     pub pending_control: PendingSessionControl,

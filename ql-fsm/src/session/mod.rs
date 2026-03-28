@@ -15,9 +15,8 @@ use ql_wire::{
 use self::{
     reassembly::{StreamAssemblerError, StreamReadIter},
     state::{
-        AckState, InboundState, OutboundState, PendingRecord, ReceiveInsertOutcome,
-        ReceivedRecords, ReliableFrame, SentRecord, SessionFsmState, StreamParity, StreamRole,
-        StreamState,
+        AckState, InboundState, OutboundRecord, OutboundState, ReceiveInsertOutcome,
+        ReceivedRecords, ReliableFrame, SessionFsmState, StreamParity, StreamRole, StreamState,
     },
 };
 
@@ -99,8 +98,7 @@ impl SessionFsm {
                 next_stream_ordinal: 0,
                 next_record_seq: RecordSeq(0),
                 next_write_id: 0,
-                issued_records: Default::default(),
-                sent_records: Default::default(),
+                outbound_records: Default::default(),
                 received_records: ReceivedRecords::default(),
                 ack_state: AckState::Idle,
                 pending_control: Default::default(),
@@ -301,24 +299,29 @@ impl SessionFsm {
 
     pub fn confirm_write(&mut self, now: Instant, write_id: u64) {
         self.state.now = now;
-        let Some(pending) = self.state.issued_records.shift_remove(&write_id) else {
+        let Some(record) = self.state.outbound_records.get_mut(&write_id) else {
             return;
         };
+        if record.sent_at.is_some() {
+            return;
+        }
         self.state.last_activity_at = now;
-        self.state.sent_records.insert(
-            pending.seq.0,
-            SentRecord {
-                pending,
-                sent_at: now,
-            },
-        );
+        record.sent_at = Some(now);
     }
 
     pub fn reject_write(&mut self, write_id: u64) {
-        let Some(pending) = self.state.issued_records.shift_remove(&write_id) else {
+        if self
+            .state
+            .outbound_records
+            .get(&write_id)
+            .is_some_and(|record| record.sent_at.is_some())
+        {
+            return;
+        }
+        let Some(record) = self.state.outbound_records.shift_remove(&write_id) else {
             return;
         };
-        self.restore_pending_record(pending);
+        self.restore_outbound_record(record);
     }
 
     pub fn on_timer(&mut self, now: Instant, mut emit: impl FnMut(SessionEvent)) {
@@ -356,9 +359,13 @@ impl SessionFsm {
         };
         let retransmit_deadline = self
             .state
-            .sent_records
+            .outbound_records
             .values()
-            .map(|record| record.sent_at + self.config.retransmit_timeout)
+            .filter_map(|record| {
+                record
+                    .sent_at
+                    .map(|sent_at| sent_at + self.config.retransmit_timeout)
+            })
             .min();
         let keepalive_deadline = (self.state.session_state == SessionState::Open
             && !self.config.keepalive_interval.is_zero()
@@ -395,7 +402,7 @@ impl SessionFsm {
         let built = self.build_next_record()?;
         let write_id = self.state.next_write_id;
         self.state.next_write_id = self.state.next_write_id.wrapping_add(1);
-        self.state.issued_records.insert(write_id, built.pending);
+        self.state.outbound_records.insert(write_id, built.outbound);
         Some((write_id, built.record))
     }
 
@@ -405,12 +412,13 @@ impl SessionFsm {
             seq,
             frames: Vec::new(),
         };
-        let mut pending = PendingRecord {
+        let mut outbound = OutboundRecord {
             seq,
             reliable: Vec::new(),
             ack_included: false,
             ping_included: false,
             window_updates: Vec::new(),
+            sent_at: None,
         };
         let mut remaining = self.config.record_size.saturating_sub(8);
 
@@ -418,7 +426,7 @@ impl SessionFsm {
             if let Some(ack) = self.state.received_records.ack() {
                 let frame = SessionFrame::Ack(ack);
                 if self.push_frame(&mut record, &mut remaining, frame, true) {
-                    pending.ack_included = true;
+                    outbound.ack_included = true;
                     self.state.ack_state = AckState::Idle;
                 }
             }
@@ -431,7 +439,7 @@ impl SessionFsm {
                 self.state.pending_control.close = Some(close);
                 break;
             }
-            pending.reliable.push(ReliableFrame::Close(close));
+            outbound.reliable.push(ReliableFrame::Close(close));
         }
 
         while let Some(close) =
@@ -442,12 +450,12 @@ impl SessionFsm {
                 self.restore_stream_close(close);
                 break;
             }
-            pending.reliable.push(ReliableFrame::StreamClose(close));
+            outbound.reliable.push(ReliableFrame::StreamClose(close));
         }
 
         if let Some(ping) = self.take_pending_ping(remaining, record.frames.is_empty()) {
             if self.push_frame(&mut record, &mut remaining, ping, true) {
-                pending.ping_included = true;
+                outbound.ping_included = true;
             } else {
                 self.state.pending_control.ping = true;
             }
@@ -469,7 +477,7 @@ impl SessionFsm {
                 }
                 break;
             }
-            pending.window_updates.push((stream_id, maximum_offset));
+            outbound.window_updates.push((stream_id, maximum_offset));
         }
 
         while let Some(frame) =
@@ -484,7 +492,7 @@ impl SessionFsm {
                 self.restore_stream_data(frame);
                 break;
             }
-            pending.reliable.push(ReliableFrame::StreamData(frame));
+            outbound.reliable.push(ReliableFrame::StreamData(frame));
         }
 
         while let Some(frame) =
@@ -499,7 +507,7 @@ impl SessionFsm {
                 self.restore_stream_data(frame);
                 break;
             }
-            pending.reliable.push(ReliableFrame::StreamData(frame));
+            outbound.reliable.push(ReliableFrame::StreamData(frame));
         }
 
         if record.frames.is_empty() {
@@ -507,7 +515,7 @@ impl SessionFsm {
         }
 
         self.state.next_record_seq = RecordSeq(self.state.next_record_seq.0.saturating_add(1));
-        Some(BuiltRecord { record, pending })
+        Some(BuiltRecord { record, outbound })
     }
 
     fn take_pending_session_close(
@@ -723,17 +731,21 @@ impl SessionFsm {
     fn process_record_ack(&mut self, ack: RecordAck, emit: &mut impl FnMut(SessionEvent)) {
         let acked: Vec<u64> = self
             .state
-            .sent_records
-            .keys()
-            .copied()
-            .filter(|seq| Self::ack_covers(&ack, RecordSeq(*seq)))
+            .outbound_records
+            .iter()
+            .filter_map(|(write_id, record)| {
+                record
+                    .sent_at
+                    .filter(|_| Self::ack_covers(&ack, record.seq))
+                    .map(|_| *write_id)
+            })
             .collect();
 
-        for seq in acked {
-            let Some(sent) = self.state.sent_records.shift_remove(&seq) else {
+        for write_id in acked {
+            let Some(record) = self.state.outbound_records.shift_remove(&write_id) else {
                 continue;
             };
-            for frame in sent.pending.reliable {
+            for frame in record.reliable {
                 self.acknowledge_reliable_frame(frame, emit);
             }
         }
@@ -770,36 +782,39 @@ impl SessionFsm {
     fn collect_timeouts(&mut self) {
         let expired: Vec<u64> = self
             .state
-            .sent_records
+            .outbound_records
             .iter()
-            .filter_map(|(seq, record)| {
-                (record.sent_at + self.config.retransmit_timeout <= self.state.now).then_some(*seq)
+            .filter_map(|(write_id, record)| {
+                record
+                    .sent_at
+                    .filter(|sent_at| *sent_at + self.config.retransmit_timeout <= self.state.now)
+                    .map(|_| *write_id)
             })
             .collect();
 
-        for seq in expired {
-            let Some(sent) = self.state.sent_records.shift_remove(&seq) else {
+        for write_id in expired {
+            let Some(record) = self.state.outbound_records.shift_remove(&write_id) else {
                 continue;
             };
-            self.restore_pending_record(sent.pending);
+            self.restore_outbound_record(record);
         }
     }
 
-    fn restore_pending_record(&mut self, pending: PendingRecord) {
-        if pending.ack_included {
+    fn restore_outbound_record(&mut self, record: OutboundRecord) {
+        if record.ack_included {
             self.schedule_ack(true);
         }
-        if pending.ping_included {
+        if record.ping_included {
             self.state.pending_control.ping = true;
         }
-        for (stream_id, maximum_offset) in pending.window_updates {
+        for (stream_id, maximum_offset) in record.window_updates {
             if let Some(stream) = self.state.streams.get_mut(&stream_id) {
                 if stream.recv_limit() >= maximum_offset {
                     stream.pending_window = true;
                 }
             }
         }
-        for frame in pending.reliable {
+        for frame in record.reliable {
             self.requeue_reliable_frame(frame);
         }
     }
@@ -1005,8 +1020,7 @@ impl SessionFsm {
         }
 
         self.state.session_state = SessionState::Closed;
-        self.state.issued_records.clear();
-        self.state.sent_records.clear();
+        self.state.outbound_records.clear();
         self.clear_streams();
         self.state.pending_control = Default::default();
         emit(SessionEvent::SessionClosed(close));
@@ -1121,7 +1135,7 @@ impl SessionFsm {
     }
 
     fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
-        let issued_refs_stream = self.state.issued_records.values().any(|record| {
+        let outbound_refs_stream = self.state.outbound_records.values().any(|record| {
             record.window_updates.iter().any(|(id, _)| *id == stream_id)
                 || record.reliable.iter().any(|frame| match frame {
                     ReliableFrame::StreamData(frame) => frame.stream_id == stream_id,
@@ -1129,23 +1143,7 @@ impl SessionFsm {
                     ReliableFrame::Close(_) => false,
                 })
         });
-        if issued_refs_stream {
-            return false;
-        }
-
-        let sent_refs_stream = self.state.sent_records.values().any(|record| {
-            record
-                .pending
-                .window_updates
-                .iter()
-                .any(|(id, _)| *id == stream_id)
-                || record.pending.reliable.iter().any(|frame| match frame {
-                    ReliableFrame::StreamData(frame) => frame.stream_id == stream_id,
-                    ReliableFrame::StreamClose(frame) => frame.stream_id == stream_id,
-                    ReliableFrame::Close(_) => false,
-                })
-        });
-        if sent_refs_stream {
+        if outbound_refs_stream {
             return false;
         }
 
@@ -1201,8 +1199,7 @@ impl SessionFsm {
         }
 
         self.state.session_state = SessionState::Closed;
-        self.state.issued_records.clear();
-        self.state.sent_records.clear();
+        self.state.outbound_records.clear();
         self.state.pending_control = Default::default();
         self.state.pending_control.close = Some(close.clone());
         self.clear_streams();
@@ -1217,5 +1214,5 @@ impl SessionFsm {
 
 struct BuiltRecord {
     record: SessionRecord,
-    pending: PendingRecord,
+    outbound: OutboundRecord,
 }
