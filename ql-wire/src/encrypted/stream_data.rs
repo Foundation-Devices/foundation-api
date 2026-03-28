@@ -1,11 +1,12 @@
 use std::mem::size_of;
 
-use zerocopy::{
-    byte_slice::ByteSlice, FromBytes, Immutable, KnownLayout, Ref, Unaligned,
-};
+use zerocopy::{byte_slice::ByteSlice, FromBytes, Immutable, KnownLayout, Ref, Unaligned};
 
 use super::StreamId;
-use crate::{codec::{parse, U32Le, U64Le}, WireError};
+use crate::{
+    codec::{parse, U32Le, U64Le},
+    WireError,
+};
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,8 +27,7 @@ pub struct StreamDataWire {
 }
 
 impl StreamData {
-    pub const MIN_WIRE_SIZE: usize =
-        size_of::<U32Le>() + size_of::<U64Le>() + size_of::<u8>();
+    pub const MIN_WIRE_SIZE: usize = size_of::<U32Le>() + size_of::<U64Le>() + size_of::<u8>();
 
     pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, StreamDataWire>, WireError> {
         if bytes.len() < Self::MIN_WIRE_SIZE {

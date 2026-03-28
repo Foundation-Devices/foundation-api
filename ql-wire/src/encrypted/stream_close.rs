@@ -6,7 +6,10 @@ use zerocopy::{
 };
 
 use super::StreamId;
-use crate::{codec::{parse, read_byte, U16Le, U32Le}, WireError};
+use crate::{
+    codec::{parse, read_byte, U16Le, U32Le},
+    WireError,
+};
 
 /// aborts one or both directions of a stream with a close code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,8 +63,7 @@ pub struct StreamCloseWire {
 }
 
 impl StreamClose {
-    pub const MIN_WIRE_SIZE: usize =
-        size_of::<U32Le>() + size_of::<u8>() + size_of::<U16Le>();
+    pub const MIN_WIRE_SIZE: usize = size_of::<U32Le>() + size_of::<u8>() + size_of::<U16Le>();
 
     pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, StreamCloseWire>, WireError> {
         if bytes.len() < Self::MIN_WIRE_SIZE {

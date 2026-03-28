@@ -9,14 +9,16 @@ use super::{state::StreamParity, SessionEvent, SessionFsm, SessionFsmConfig};
 
 fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();
-    let mut buf = [0u8; 64];
     loop {
-        let read = fsm.peek_stream(stream_id, &mut buf).unwrap();
+        let mut read = 0;
+        for chunk in fsm.stream_read(stream_id).unwrap() {
+            out.extend_from_slice(chunk);
+            read += chunk.len();
+        }
         if read == 0 {
             break;
         }
-        out.extend_from_slice(&buf[..read]);
-        fsm.commit_stream_read(stream_id, read).unwrap();
+        fsm.stream_read_commit(stream_id, read).unwrap();
     }
     out
 }
@@ -155,18 +157,25 @@ fn commit_stream_read_is_what_advances_stream_window() {
     let events = receive_events(&mut fsm, now, data);
     assert_eq!(
         events,
-        vec![SessionEvent::Opened(stream_id), SessionEvent::Readable(stream_id)]
+        vec![
+            SessionEvent::Opened(stream_id),
+            SessionEvent::Readable(stream_id)
+        ]
     );
 
     let first = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
     assert!(matches!(first.frames.as_slice(), [SessionFrame::Ack(_)]));
 
-    let mut buf = [0u8; 8];
-    assert_eq!(fsm.peek_stream(stream_id, &mut buf).unwrap(), 2);
+    let read = fsm
+        .stream_read(stream_id)
+        .unwrap()
+        .map(|chunk| chunk.len())
+        .sum::<usize>();
+    assert_eq!(read, 2);
 
     assert!(next_outbound(&mut fsm, now + Duration::from_millis(2)).is_none());
 
-    fsm.commit_stream_read(stream_id, 2).unwrap();
+    fsm.stream_read_commit(stream_id, 2).unwrap();
     let second = next_outbound(&mut fsm, now + Duration::from_millis(3)).unwrap();
     assert!(matches!(
         second.frames.as_slice(),

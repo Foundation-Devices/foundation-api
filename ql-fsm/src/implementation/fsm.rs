@@ -2,7 +2,9 @@ use std::time::Instant;
 
 use ql_wire::{self as wire, CloseCode, CloseTarget, Nonce, QlCrypto, QlPayloadRef, StreamId};
 
-use crate::{OutboundWrite, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId};
+use crate::{
+    BytesIter, OutboundWrite, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId,
+};
 
 pub fn receive(
     fsm: &mut QlFsm,
@@ -191,20 +193,16 @@ pub fn write_stream(
     Ok(fsm.session.write_stream(stream_id, bytes)?)
 }
 
-pub fn peek_stream(
-    fsm: &mut QlFsm,
-    stream_id: StreamId,
-    out: &mut [u8],
-) -> Result<usize, QlFsmError> {
-    Ok(fsm.session.peek_stream(stream_id, out)?)
+pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Result<BytesIter<'_>, QlFsmError> {
+    Ok(fsm.session.stream_read(stream_id)?)
 }
 
-pub fn commit_stream_read(
+pub fn stream_read_commit(
     fsm: &mut QlFsm,
     stream_id: StreamId,
     len: usize,
 ) -> Result<(), QlFsmError> {
-    Ok(fsm.session.commit_stream_read(stream_id, len)?)
+    Ok(fsm.session.stream_read_commit(stream_id, len)?)
 }
 
 pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Result<usize, QlFsmError> {

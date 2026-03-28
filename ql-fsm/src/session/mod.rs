@@ -1,3 +1,4 @@
+pub(crate) mod reassembly;
 pub(crate) mod state;
 
 #[cfg(test)]
@@ -7,13 +8,17 @@ use std::time::{Duration, Instant};
 
 use indexmap::map::Entry;
 use ql_wire::{
-    ByteReassemblyError, CloseCode, CloseTarget, RecordAck, RecordSeq, SessionCloseBody,
-    SessionFrame, SessionRecord, StreamClose, StreamData, StreamId, StreamWindow,
+    CloseCode, CloseTarget, RecordAck, RecordSeq, SessionCloseBody, SessionFrame, SessionRecord,
+    StreamClose, StreamData, StreamId, StreamWindow,
 };
 
-use self::state::{
-    AckState, InboundState, OutboundState, PendingRecord, ReceivedRecords, ReceiveInsertOutcome,
-    ReliableFrame, SentRecord, SessionFsmState, StreamParity, StreamRole, StreamState,
+use self::{
+    reassembly::{ByteReassemblyError, BytesIter},
+    state::{
+        AckState, InboundState, OutboundState, PendingRecord, ReceiveInsertOutcome,
+        ReceivedRecords, ReliableFrame, SentRecord, SessionFsmState, StreamParity, StreamRole,
+        StreamState,
+    },
 };
 
 pub(crate) const SESSION_RECORD_TRACKED_WINDOW: u64 = 256;
@@ -185,38 +190,16 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn peek_stream(
-        &mut self,
-        stream_id: StreamId,
-        out: &mut [u8],
-    ) -> Result<usize, StreamError> {
+    pub fn stream_read(&self, stream_id: StreamId) -> Result<BytesIter<'_>, StreamError> {
         let stream = self
             .state
             .streams
             .get(&stream_id)
             .ok_or(StreamError::MissingStream)?;
-        if out.is_empty() {
-            return Ok(0);
-        }
-
-        let mut written = 0;
-        for chunk in stream.recv.bytes() {
-            let remaining = out.len().saturating_sub(written);
-            if remaining == 0 {
-                break;
-            }
-            let len = remaining.min(chunk.len());
-            out[written..written + len].copy_from_slice(&chunk[..len]);
-            written += len;
-            if len < chunk.len() {
-                break;
-            }
-        }
-
-        Ok(written)
+        Ok(stream.recv.bytes())
     }
 
-    pub fn commit_stream_read(
+    pub fn stream_read_commit(
         &mut self,
         stream_id: StreamId,
         len: usize,
@@ -229,7 +212,10 @@ impl SessionFsm {
         if len > stream.readable_bytes() {
             return Err(StreamError::InvalidRead);
         }
-        stream.recv.consume(len).map_err(|_| StreamError::InvalidRead)?;
+        stream
+            .recv
+            .consume(len)
+            .map_err(|_| StreamError::InvalidRead)?;
         if stream.recv_limit() > stream.advertised_max_offset {
             stream.pending_window = true;
         }
@@ -438,7 +424,8 @@ impl SessionFsm {
             }
         }
 
-        while let Some(close) = self.take_pending_session_close(remaining, record.frames.is_empty()) {
+        while let Some(close) = self.take_pending_session_close(remaining, record.frames.is_empty())
+        {
             let frame = SessionFrame::Close(close.clone());
             if !self.push_frame(&mut record, &mut remaining, frame, true) {
                 self.state.pending_control.close = Some(close);
@@ -447,7 +434,9 @@ impl SessionFsm {
             pending.reliable.push(ReliableFrame::Close(close));
         }
 
-        while let Some(close) = self.take_next_pending_stream_close(remaining, record.frames.is_empty()) {
+        while let Some(close) =
+            self.take_next_pending_stream_close(remaining, record.frames.is_empty())
+        {
             let frame = SessionFrame::StreamClose(close.clone());
             if !self.push_frame(&mut record, &mut remaining, frame, true) {
                 self.restore_stream_close(close);
@@ -498,7 +487,9 @@ impl SessionFsm {
             pending.reliable.push(ReliableFrame::StreamData(frame));
         }
 
-        while let Some(frame) = self.take_next_fresh_stream_data(remaining, record.frames.is_empty()) {
+        while let Some(frame) =
+            self.take_next_fresh_stream_data(remaining, record.frames.is_empty())
+        {
             if !self.push_frame(
                 &mut record,
                 &mut remaining,
@@ -532,11 +523,7 @@ impl SessionFsm {
         self.state.pending_control.close.take()
     }
 
-    fn take_pending_ping(
-        &mut self,
-        remaining: usize,
-        record_empty: bool,
-    ) -> Option<SessionFrame> {
+    fn take_pending_ping(&mut self, remaining: usize, record_empty: bool) -> Option<SessionFrame> {
         if !self.state.pending_control.ping {
             return None;
         }
@@ -686,7 +673,8 @@ impl SessionFsm {
 
             let credit_remaining = stream
                 .peer_max_offset
-                .saturating_sub(stream.next_send_offset) as usize;
+                .saturating_sub(stream.next_send_offset)
+                as usize;
             let has_empty_fin = matches!(stream.outbound_state, OutboundState::FinQueued)
                 && stream.send_buf.is_empty()
                 && stream.next_send_offset <= stream.peer_max_offset;
@@ -699,11 +687,7 @@ impl SessionFsm {
             }
 
             let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
-            let payload_len = stream
-                .send_buf
-                .len()
-                .min(max_payload)
-                .min(credit_remaining);
+            let payload_len = stream.send_buf.len().min(max_payload).min(credit_remaining);
             let bytes: Vec<u8> = stream.send_buf.drain(..payload_len).collect();
             let fin = matches!(stream.outbound_state, OutboundState::FinQueued)
                 && stream.send_buf.is_empty()
@@ -1064,7 +1048,10 @@ impl SessionFsm {
         }
     }
 
-    fn split_stream_data(frame: StreamData, max_payload: usize) -> (StreamData, Option<StreamData>) {
+    fn split_stream_data(
+        frame: StreamData,
+        max_payload: usize,
+    ) -> (StreamData, Option<StreamData>) {
         if frame.bytes.len() <= max_payload || frame.bytes.is_empty() {
             return (frame, None);
         }

@@ -33,6 +33,7 @@ use ql_wire::{
     CloseCode, CloseTarget, MlDsaPublicKey, MlKemPublicKey, QlCrypto, QlIdentity, QlRecord,
     SessionCloseBody, StreamClose, StreamId, XID,
 };
+pub use session::reassembly::BytesIter;
 
 use crate::{
     replay_cache::ReplayCache,
@@ -295,30 +296,22 @@ impl QlFsm {
     }
 
     /// queues bytes for an open stream and returns the accepted count
-    pub fn write_stream(
-        &mut self,
-        stream_id: StreamId,
-        bytes: &[u8],
-    ) -> Result<usize, QlFsmError> {
+    pub fn write_stream(&mut self, stream_id: StreamId, bytes: &[u8]) -> Result<usize, QlFsmError> {
         implementation::write_stream(self, stream_id, bytes)
     }
 
-    /// copies readable bytes from a stream into `out` without consuming them
-    pub fn peek_stream(
-        &mut self,
-        stream_id: StreamId,
-        out: &mut [u8],
-    ) -> Result<usize, QlFsmError> {
-        implementation::peek_stream(self, stream_id, out)
+    /// returns the readable stream bytes as borrowed chunks without consuming them
+    pub fn stream_read(&self, stream_id: StreamId) -> Result<BytesIter<'_>, QlFsmError> {
+        implementation::stream_read(self, stream_id)
     }
 
-    /// marks previously peeked bytes as consumed
-    pub fn commit_stream_read(
+    /// marks previously read bytes as consumed
+    pub fn stream_read_commit(
         &mut self,
         stream_id: StreamId,
         len: usize,
     ) -> Result<(), QlFsmError> {
-        implementation::commit_stream_read(self, stream_id, len)
+        implementation::stream_read_commit(self, stream_id, len)
     }
 
     /// returns how many bytes can be read from a stream

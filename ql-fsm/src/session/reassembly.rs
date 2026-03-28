@@ -63,6 +63,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         self.start_offset + self.bytes.len() as u64
     }
 
+    #[cfg(test)]
     pub fn final_offset(&self) -> Option<u64> {
         self.final_offset
     }
@@ -71,6 +72,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         self.max_buffered
     }
 
+    #[cfg(test)]
     pub fn missing_ranges(&self) -> &[MissingRange] {
         self.missing.as_slice()
     }
@@ -111,6 +113,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         }
     }
 
+    #[cfg(test)]
     pub fn copy_readable(&self) -> Vec<u8> {
         let readable = self.readable_len();
         let mut out = Vec::with_capacity(readable);
@@ -229,10 +232,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         })
     }
 
-    fn push_missing_range(
-        &mut self,
-        range: MissingRange,
-    ) -> Result<(), ByteReassemblyError> {
+    fn push_missing_range(&mut self, range: MissingRange) -> Result<(), ByteReassemblyError> {
         if range.start >= range.end {
             return Ok(());
         }
@@ -247,11 +247,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         self.missing.push(range)
     }
 
-    fn validate_overlap(
-        &self,
-        offset: u64,
-        bytes: &[u8],
-    ) -> Result<(), ByteReassemblyError> {
+    fn validate_overlap(&self, offset: u64, bytes: &[u8]) -> Result<(), ByteReassemblyError> {
         let mut gap_index = self.first_gap_index_after(offset);
 
         for (index, byte) in bytes.iter().copied().enumerate() {
@@ -284,11 +280,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         }
     }
 
-    fn subtract_missing_range(
-        &mut self,
-        start: u64,
-        end: u64,
-    ) -> Result<(), ByteReassemblyError> {
+    fn subtract_missing_range(&mut self, start: u64, end: u64) -> Result<(), ByteReassemblyError> {
         let first = self.first_gap_index_after(start);
         if first == self.missing.len() || self.missing[first].start >= end {
             return Ok(());
@@ -352,7 +344,9 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
     }
 
     fn first_gap_index_after(&self, offset: u64) -> usize {
-        self.missing.as_slice().partition_point(|range| range.end <= offset)
+        self.missing
+            .as_slice()
+            .partition_point(|range| range.end <= offset)
     }
 
     fn byte_at(&self, offset: u64) -> u8 {

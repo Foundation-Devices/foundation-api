@@ -12,14 +12,12 @@ use crate::{
 };
 
 mod ack;
-mod byte_reassembly;
 mod close;
 mod stream_close;
 mod stream_data;
 mod stream_window;
 
 pub use ack::*;
-pub use byte_reassembly::*;
 pub use close::*;
 pub use stream_close::*;
 pub use stream_data::*;

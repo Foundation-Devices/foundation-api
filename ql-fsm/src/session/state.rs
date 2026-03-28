@@ -5,11 +5,11 @@ use std::{
 
 use indexmap::IndexMap;
 use ql_wire::{
-    ByteReassembly, CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionCloseBody,
-    StreamClose, StreamData, StreamId, XID,
+    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionCloseBody, StreamClose, StreamData,
+    StreamId, XID,
 };
 
-use super::{SessionState, SESSION_RECORD_TRACKED_WINDOW};
+use super::{reassembly::ByteReassembly, SessionState, SESSION_RECORD_TRACKED_WINDOW};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamParity {
@@ -129,11 +129,7 @@ pub struct StreamState {
 }
 
 impl StreamState {
-    pub fn new(
-        role: StreamRole,
-        _send_buffer_size: usize,
-        receive_buffer_size: usize,
-    ) -> Self {
+    pub fn new(role: StreamRole, _send_buffer_size: usize, receive_buffer_size: usize) -> Self {
         Self {
             role,
             send_buf: VecDeque::new(),
@@ -173,7 +169,8 @@ impl StreamState {
     }
 
     pub fn reset_recv(&mut self) {
-        self.recv = ByteReassembly::with_start_offset(self.recv.start_offset(), self.recv.max_buffered());
+        self.recv =
+            ByteReassembly::with_start_offset(self.recv.start_offset(), self.recv.max_buffered());
     }
 }
 

@@ -5,7 +5,10 @@ use zerocopy::{
 };
 
 use super::StreamId;
-use crate::{codec::{parse, push_value, U32Le, U64Le}, WireError};
+use crate::{
+    codec::{parse, push_value, U32Le, U64Le},
+    WireError,
+};
 
 /// advertises the highest byte offset the peer may send on a stream.
 #[derive(Debug, Clone, PartialEq, Eq)]

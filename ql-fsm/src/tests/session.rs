@@ -7,14 +7,16 @@ use crate::{session::state::StreamParity, QlFsmEvent, QlSessionEvent};
 
 fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();
-    let mut buf = [0u8; 64];
     loop {
-        let read = fsm.peek_stream(stream_id, &mut buf).unwrap();
+        let mut read = 0;
+        for chunk in fsm.stream_read(stream_id).unwrap() {
+            out.extend_from_slice(chunk);
+            read += chunk.len();
+        }
         if read == 0 {
             break;
         }
-        out.extend_from_slice(&buf[..read]);
-        fsm.commit_stream_read(stream_id, read).unwrap();
+        fsm.stream_read_commit(stream_id, read).unwrap();
     }
     out
 }
@@ -108,13 +110,23 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
     let stream_id_b = harness.b.fsm.open_stream().unwrap();
 
     assert_ne!(stream_id_a, stream_id_b);
-    assert!(StreamParity::for_local(harness.a.fsm.identity.xid, harness.b.fsm.identity.xid)
-        .matches(stream_id_a));
-    assert!(StreamParity::for_local(harness.b.fsm.identity.xid, harness.a.fsm.identity.xid)
-        .matches(stream_id_b));
+    assert!(
+        StreamParity::for_local(harness.a.fsm.identity.xid, harness.b.fsm.identity.xid)
+            .matches(stream_id_a)
+    );
+    assert!(
+        StreamParity::for_local(harness.b.fsm.identity.xid, harness.a.fsm.identity.xid)
+            .matches(stream_id_b)
+    );
 
-    assert_eq!(harness.a.fsm.write_stream(stream_id_a, b"from-a").unwrap(), 6);
-    assert_eq!(harness.b.fsm.write_stream(stream_id_b, b"from-b").unwrap(), 6);
+    assert_eq!(
+        harness.a.fsm.write_stream(stream_id_a, b"from-a").unwrap(),
+        6
+    );
+    assert_eq!(
+        harness.b.fsm.write_stream(stream_id_b, b"from-b").unwrap(),
+        6
+    );
 
     harness.pump();
 
@@ -369,5 +381,8 @@ fn session_records_contain_ack_frames_after_delivery() {
         .session_key()
         .unwrap();
     let ack_record = decrypt_record(&harness.a.crypto, &ack, &session_key);
-    assert!(matches!(ack_record.frames.as_slice(), [SessionFrame::Ack(_)]));
+    assert!(matches!(
+        ack_record.frames.as_slice(),
+        [SessionFrame::Ack(_)]
+    ));
 }
