@@ -12,7 +12,6 @@ pub struct StreamWindow {
 
 impl StreamWindow {
     pub const WIRE_SIZE: usize = size_of::<u32>() + size_of::<u64>();
-    pub const FRAME_ENCODED_LEN: usize = std::mem::size_of::<u8>() + Self::WIRE_SIZE;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         codec::push_u32(out, self.stream_id.0);

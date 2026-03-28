@@ -47,6 +47,8 @@ pub type SessionFrameVec = SessionFrame<Vec<u8>>;
 pub type StreamDataVec = StreamData<Vec<u8>>;
 pub type StreamCloseVec = StreamClose<Vec<u8>>;
 
+pub(crate) const SIZE_LEN: usize = size_of::<u16>();
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum SessionFrameKind {
@@ -121,13 +123,13 @@ impl SessionRecord {
 
 impl<B: AsRef<[u8]>> SessionFrame<B> {
     pub fn encoded_len(&self) -> usize {
-        match self {
-            Self::Ping => SessionRecordBuilder::PING_ENCODED_LEN,
-            Self::Ack(frame) => frame.frame_encoded_len(),
-            Self::StreamData(frame) => frame.frame_encoded_len(),
-            Self::StreamWindow(_) => StreamWindow::FRAME_ENCODED_LEN,
-            Self::StreamClose(frame) => frame.frame_encoded_len(),
-            Self::Close(_) => SessionCloseBody::FRAME_ENCODED_LEN,
+        1 + match self {
+            Self::Ping => 0,
+            Self::Ack(frame) => SIZE_LEN + frame.encoded_len(),
+            Self::StreamData(frame) => SIZE_LEN + frame.encoded_len(),
+            Self::StreamWindow(_) => StreamWindow::WIRE_SIZE,
+            Self::StreamClose(frame) => SIZE_LEN + frame.encoded_len(),
+            Self::Close(_) => SessionCloseBody::WIRE_SIZE,
         }
     }
 
@@ -261,12 +263,10 @@ fn push_variable_len(out: &mut Vec<u8>, len: usize) {
 }
 
 fn split_variable_frame(bytes: &[u8]) -> Result<(&[u8], &[u8]), WireError> {
-    const LEN_SIZE: usize = size_of::<u16>();
-
-    if bytes.len() < LEN_SIZE {
+    if bytes.len() < SIZE_LEN {
         return Err(WireError::InvalidPayload);
     }
     let len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
-    let bytes = &bytes[LEN_SIZE..];
+    let bytes = &bytes[SIZE_LEN..];
     bytes.split_at_checked(len).ok_or(WireError::InvalidPayload)
 }

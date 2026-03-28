@@ -1,6 +1,6 @@
 use super::{
     push_variable_len, RecordAck, RecordSeq, SessionCloseBody, SessionFrame, SessionFrameKind,
-    StreamClose, StreamData, StreamWindow,
+    StreamClose, StreamData, StreamWindow, SIZE_LEN,
 };
 use crate::{
     codec, encrypted_message::EncryptedMessage, Nonce, QlCrypto, QlHeader, QlPayload, QlRecord,
@@ -15,7 +15,6 @@ pub struct SessionRecordBuilder {
 
 impl SessionRecordBuilder {
     pub const HEADER_LEN: usize = std::mem::size_of::<u64>();
-    pub const PING_ENCODED_LEN: usize = std::mem::size_of::<u8>();
 
     pub fn new(seq: RecordSeq, max_capacity: usize) -> Self {
         let max_capacity = max_capacity.max(Self::HEADER_LEN);
@@ -56,7 +55,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_ping(&mut self) -> bool {
-        if !self.can_push_len(Self::PING_ENCODED_LEN) {
+        if !self.can_push_len(1) {
             return false;
         }
         self.bytes.push(SessionFrameKind::Ping as u8);
@@ -64,7 +63,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_ack(&mut self, ack: &RecordAck) -> bool {
-        if !self.can_push_len(ack.frame_encoded_len()) {
+        if !self.can_push_len(1 + SIZE_LEN + ack.encoded_len()) {
             return false;
         }
         self.bytes.push(SessionFrameKind::Ack as u8);
@@ -74,7 +73,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_stream_data<B: AsRef<[u8]>>(&mut self, frame: &StreamData<B>) -> bool {
-        if !self.can_push_len(frame.frame_encoded_len()) {
+        if !self.can_push_len(1 + SIZE_LEN + frame.encoded_len()) {
             return false;
         }
         self.bytes.push(SessionFrameKind::StreamData as u8);
@@ -84,7 +83,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_stream_window(&mut self, frame: &StreamWindow) -> bool {
-        if !self.can_push_len(StreamWindow::FRAME_ENCODED_LEN) {
+        if !self.can_push_len(1 + StreamWindow::WIRE_SIZE) {
             return false;
         }
         self.bytes.push(SessionFrameKind::StreamWindow as u8);
@@ -93,7 +92,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_stream_close<B: AsRef<[u8]>>(&mut self, frame: &StreamClose<B>) -> bool {
-        if !self.can_push_len(frame.frame_encoded_len()) {
+        if !self.can_push_len(1 + SIZE_LEN + frame.encoded_len()) {
             return false;
         }
         self.bytes.push(SessionFrameKind::StreamClose as u8);
@@ -103,7 +102,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_close(&mut self, close: &SessionCloseBody) -> bool {
-        if !self.can_push_len(SessionCloseBody::FRAME_ENCODED_LEN) {
+        if !self.can_push_len(1 + SessionCloseBody::WIRE_SIZE) {
             return false;
         }
         self.bytes.push(SessionFrameKind::Close as u8);
