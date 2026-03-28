@@ -1,5 +1,5 @@
 use crate::{
-    codec, ByteSlice, ENCRYPTED_MESSAGE_AUTH_SIZE, Nonce, QlCrypto, SessionKey, WireError,
+    codec, ByteSlice, Nonce, QlCrypto, SessionKey, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -89,7 +89,11 @@ impl QlRecord {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         codec::push_u8(&mut out, QL_WIRE_VERSION);
-        encode_record_header(&mut out, &self.header, RecordKind::for_payload(&self.payload));
+        encode_record_header(
+            &mut out,
+            &self.header,
+            RecordKind::for_payload(&self.payload),
+        );
         match &self.payload {
             QlPayload::PairRequest(request) => request.encode_into(&mut out),
             QlPayload::Unpair(unpair) => unpair.encode_into(&mut out),
@@ -175,7 +179,9 @@ fn parse_payload<B: crate::ByteSlice>(
     payload: B,
 ) -> Result<QlPayloadRef<B>, WireError> {
     match kind {
-        RecordKind::PairRequest => Ok(QlPayloadRef::PairRequest(PairRequestRecord::parse(payload)?)),
+        RecordKind::PairRequest => Ok(QlPayloadRef::PairRequest(PairRequestRecord::parse(
+            payload,
+        )?)),
         RecordKind::Unpair => Ok(QlPayloadRef::Unpair(Unpair::decode(&payload[..])?)),
         RecordKind::Hello => Ok(QlPayloadRef::Hello(handshake::Hello::decode(&payload[..])?)),
         RecordKind::HelloReply => Ok(QlPayloadRef::HelloReply(HelloReply::decode(&payload[..])?)),

@@ -1,8 +1,8 @@
 use super::{Confirm, Hello, HelloReply, Ready, ReadyBody};
 use crate::{
     pq::ML_KEM_SUITE_TAG, ControlMeta, EncryptedMessage, MlDsaPublicKey, MlDsaSignature,
-    MlKemCiphertext, MlKemPublicKey, Nonce, QlCrypto, QlHeader, QlIdentity, SessionKey,
-    WireError, XID,
+    MlKemCiphertext, MlKemPublicKey, Nonce, QlCrypto, QlHeader, QlIdentity, SessionKey, WireError,
+    XID,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +57,11 @@ pub fn verify_hello(
         &hello.nonce.0,
         hello.kem_ct.as_bytes(),
     );
-    verify_signature_bytes(initiator_signing_key, hello.signature.as_bytes(), &proof_data)
+    verify_signature_bytes(
+        initiator_signing_key,
+        hello.signature.as_bytes(),
+        &proof_data,
+    )
 }
 
 pub fn respond_hello(
@@ -133,7 +137,11 @@ pub fn build_confirm(
         &reply.nonce.0,
         reply.kem_ct.as_bytes(),
     );
-    verify_signature_bytes(responder_signing_key, reply.signature.as_bytes(), &transcript)?;
+    verify_signature_bytes(
+        responder_signing_key,
+        reply.signature.as_bytes(),
+        &transcript,
+    )?;
     let responder_secret = identity
         .encapsulation_private_key
         .decapsulate_shared_secret_bytes(reply.kem_ct.as_bytes());
@@ -225,7 +233,11 @@ pub fn verify_confirm(
         &reply.nonce.0,
         reply.kem_ct.as_bytes(),
     );
-    verify_signature_bytes(initiator_signing_key, confirm.signature.as_bytes(), &proof_data)
+    verify_signature_bytes(
+        initiator_signing_key,
+        confirm.signature.as_bytes(),
+        &proof_data,
+    )
 }
 
 pub fn build_ready(
@@ -250,7 +262,9 @@ pub fn decrypt_ready<B: AsMut<[u8]>>(
     now_seconds: u64,
 ) -> Result<ReadyBody, WireError> {
     let aad = header.aad();
-    let mut plaintext = ready.encrypted.decrypt_in_place(crypto, session_key, &aad)?;
+    let mut plaintext = ready
+        .encrypted
+        .decrypt_in_place(crypto, session_key, &aad)?;
     let body = ReadyBody::decode(plaintext.as_mut())?;
     body.meta.ensure_not_expired(now_seconds)?;
     Ok(body)

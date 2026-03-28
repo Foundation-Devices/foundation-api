@@ -14,6 +14,7 @@ pub struct SessionCloseBody {
 
 impl SessionCloseBody {
     pub const WIRE_SIZE: usize = size_of::<u16>();
+    pub const FRAME_ENCODED_LEN: usize = std::mem::size_of::<u8>() + Self::WIRE_SIZE;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         codec::push_u16(out, self.code.0);

@@ -14,6 +14,8 @@ pub struct StreamData<B> {
 
 impl<B> StreamData<B> {
     pub const MIN_WIRE_SIZE: usize = size_of::<u32>() + size_of::<u64>() + size_of::<u8>();
+    pub const FRAME_OVERHEAD: usize =
+        std::mem::size_of::<u8>() + size_of::<u16>() + Self::MIN_WIRE_SIZE;
 }
 
 impl<B: ByteSlice> StreamData<B> {
@@ -45,6 +47,10 @@ impl<B> StreamData<B> {
 impl<B: AsRef<[u8]>> StreamData<B> {
     pub fn encoded_len(&self) -> usize {
         Self::MIN_WIRE_SIZE + self.bytes.as_ref().len()
+    }
+
+    pub fn frame_encoded_len(&self) -> usize {
+        Self::FRAME_OVERHEAD + self.bytes.as_ref().len()
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {

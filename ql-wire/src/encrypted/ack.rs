@@ -14,6 +14,7 @@ pub struct RecordAckRange {
 }
 
 impl RecordAck {
+    pub const FRAME_OVERHEAD: usize = std::mem::size_of::<u8>() + size_of::<u16>();
     pub const RANGE_ENCODED_LEN: usize = size_of::<u64>() + size_of::<u64>();
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -47,6 +48,10 @@ impl RecordAck {
 
     pub fn encoded_len(&self) -> usize {
         self.ranges.len() * Self::RANGE_ENCODED_LEN
+    }
+
+    pub fn frame_encoded_len(&self) -> usize {
+        Self::FRAME_OVERHEAD + self.encoded_len()
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {

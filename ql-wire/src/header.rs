@@ -34,10 +34,7 @@ pub(crate) fn decode_record_header<B: ByteSlice>(
     Ok((
         DecodedRecordHeader {
             kind,
-            header: QlHeader {
-                sender,
-                recipient,
-            },
+            header: QlHeader { sender, recipient },
         },
         reader.take_rest(),
     ))

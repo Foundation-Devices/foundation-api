@@ -414,6 +414,40 @@ fn session_record_supports_empty_fin_stream_data_and_empty_ping() {
 }
 
 #[test]
+fn session_record_builder_writes_frames_without_temp_record_allocation() {
+    let mut builder = SessionRecordBuilder::new(RecordSeq(55), 12);
+    let stream = StreamData {
+        stream_id: StreamId(3),
+        offset: 7,
+        fin: true,
+        bytes: b"hello",
+    };
+    assert!(builder.push_stream_data(&stream));
+    assert_eq!(builder.remaining_capacity(), 0);
+    assert!(!builder.push_ping());
+
+    let close = SessionCloseBody {
+        code: CloseCode::PROTOCOL,
+    };
+    assert!(!builder.push_close(&close));
+
+    let encoded = builder.into_plaintext();
+    let decoded = SessionRecord::decode(&encoded).unwrap();
+    assert_eq!(
+        decoded,
+        SessionRecord {
+            seq: RecordSeq(55),
+            frames: vec![SessionFrame::StreamData(StreamData {
+                stream_id: StreamId(3),
+                offset: 7,
+                fin: true,
+                bytes: b"hello".to_vec(),
+            })],
+        }
+    );
+}
+
+#[test]
 fn protocol_record_size_breakdown() {
     fn meta(id: u32) -> ControlMeta {
         ControlMeta {

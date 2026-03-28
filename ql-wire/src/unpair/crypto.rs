@@ -1,9 +1,8 @@
+use super::Unpair;
 use crate::{
     ControlMeta, MlDsaPublicKey, QlCrypto, QlHeader, QlIdentity, QlPayload, QlRecord, WireError,
     XID,
 };
-
-use super::Unpair;
 
 pub fn build_unpair(
     crypto: &impl QlCrypto,

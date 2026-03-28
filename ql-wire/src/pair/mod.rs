@@ -1,6 +1,6 @@
 use crate::{
-    codec, encrypted_message::EncryptedMessage, ControlMeta, MlDsaPublicKey, MlDsaSignature,
-    ByteSlice, MlKemCiphertext, MlKemPublicKey, WireError, XID,
+    codec, encrypted_message::EncryptedMessage, ByteSlice, ControlMeta, MlDsaPublicKey,
+    MlDsaSignature, MlKemCiphertext, MlKemPublicKey, WireError, XID,
 };
 
 mod crypto;

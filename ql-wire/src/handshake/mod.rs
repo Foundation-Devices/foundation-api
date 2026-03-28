@@ -1,6 +1,6 @@
 use crate::{
-    codec, encrypted_message::EncryptedMessage, ControlMeta, MlDsaSignature, MlKemCiphertext,
-    ByteSlice, Nonce, WireError,
+    codec, encrypted_message::EncryptedMessage, ByteSlice, ControlMeta, MlDsaSignature,
+    MlKemCiphertext, Nonce, WireError,
 };
 
 mod crypto;
@@ -15,10 +15,8 @@ pub struct Hello {
 }
 
 impl Hello {
-    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN
-        + Nonce::SIZE
-        + MlKemCiphertext::SIZE
-        + MlDsaSignature::SIZE;
+    pub const ENCODED_LEN: usize =
+        ControlMeta::ENCODED_LEN + Nonce::SIZE + MlKemCiphertext::SIZE + MlDsaSignature::SIZE;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -49,10 +47,8 @@ pub struct HelloReply {
 }
 
 impl HelloReply {
-    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN
-        + Nonce::SIZE
-        + MlKemCiphertext::SIZE
-        + MlDsaSignature::SIZE;
+    pub const ENCODED_LEN: usize =
+        ControlMeta::ENCODED_LEN + Nonce::SIZE + MlKemCiphertext::SIZE + MlDsaSignature::SIZE;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -136,10 +132,9 @@ impl<B: AsRef<[u8]>> Ready<B> {
 
 impl Ready<Vec<u8>> {
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        EncryptedMessage::parse(bytes)
-            .map(|encrypted| Self {
-                encrypted: encrypted.into_owned(),
-            })
+        EncryptedMessage::parse(bytes).map(|encrypted| Self {
+            encrypted: encrypted.into_owned(),
+        })
     }
 }
 

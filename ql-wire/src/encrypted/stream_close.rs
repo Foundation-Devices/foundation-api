@@ -58,6 +58,8 @@ pub struct StreamClose<B> {
 
 impl<B> StreamClose<B> {
     pub const MIN_WIRE_SIZE: usize = size_of::<u32>() + size_of::<u8>() + size_of::<u16>();
+    pub const FRAME_OVERHEAD: usize =
+        std::mem::size_of::<u8>() + size_of::<u16>() + Self::MIN_WIRE_SIZE;
 }
 
 impl<B: ByteSlice> StreamClose<B> {
@@ -89,6 +91,10 @@ impl<B> StreamClose<B> {
 impl<B: AsRef<[u8]>> StreamClose<B> {
     pub fn encoded_len(&self) -> usize {
         Self::MIN_WIRE_SIZE + self.payload.as_ref().len()
+    }
+
+    pub fn frame_encoded_len(&self) -> usize {
+        Self::FRAME_OVERHEAD + self.payload.as_ref().len()
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
