@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 pub use error::QlFsmError;
 use ql_wire::{
     CloseCode, CloseTarget, MlDsaPublicKey, MlKemPublicKey, QlCrypto, QlIdentity, QlRecord,
-    SessionCloseBody, SessionSeq, StreamClose, StreamId, XID,
+    SessionCloseBody, StreamClose, StreamId, XID,
 };
 
 use crate::{
@@ -96,6 +96,8 @@ pub enum QlSessionEvent {
     Opened(StreamId),
     /// a stream has bytes ready to read
     Readable(StreamId),
+    /// a stream has room for more local writes
+    Writable(StreamId),
     /// the peer finished writing this stream
     Finished(StreamId),
     /// a stream was closed
@@ -110,10 +112,7 @@ pub enum QlSessionEvent {
 
 /// handle for a session write returned by `QlFsm::take_next_write`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SessionWriteId(
-    /// session sequence number for this write
-    pub SessionSeq,
-);
+pub struct SessionWriteId(pub(crate) u64);
 
 /// outbound record produced by `QlFsm`
 #[derive(Debug, Clone, PartialEq)]
@@ -135,16 +134,20 @@ pub struct QlFsmConfig {
     pub max_handshake_retries: u8,
     /// how far into the future control messages remain valid
     pub control_expiration: Duration,
-    /// delay before sending a pure ack
-    pub session_ack_delay: Duration,
-    /// how long to wait before resending unacked session data
-    pub session_retransmit_timeout: Duration,
+    /// delay before sending a pure record ack
+    pub session_record_ack_delay: Duration,
+    /// how long to wait before resending unacked session records
+    pub session_record_retransmit_timeout: Duration,
     /// idle delay before sending a keepalive ping
     pub session_keepalive_interval: Duration,
     /// how long to wait before declaring the peer dead
     pub session_peer_timeout: Duration,
-    /// maximum bytes per outbound stream chunk
-    pub session_stream_chunk_size: usize,
+    /// target plaintext size for one session record
+    pub session_record_size: usize,
+    /// maximum bytes buffered locally for one stream send side
+    pub session_stream_send_buffer_size: usize,
+    /// maximum bytes buffered locally for one stream receive side
+    pub session_stream_receive_buffer_size: usize,
 }
 
 impl Default for QlFsmConfig {
@@ -154,11 +157,13 @@ impl Default for QlFsmConfig {
             handshake_retry_interval: Duration::from_millis(750),
             max_handshake_retries: 3,
             control_expiration: Duration::from_secs(30),
-            session_ack_delay: Duration::from_millis(5),
-            session_retransmit_timeout: Duration::from_millis(150),
+            session_record_ack_delay: Duration::from_millis(5),
+            session_record_retransmit_timeout: Duration::from_millis(150),
             session_keepalive_interval: Duration::from_secs(10),
             session_peer_timeout: Duration::from_secs(30),
-            session_stream_chunk_size: 16 * 1024,
+            session_record_size: 16 * 1024,
+            session_stream_send_buffer_size: 64 * 1024,
+            session_stream_receive_buffer_size: 64 * 1024,
         }
     }
 }
@@ -183,12 +188,14 @@ impl QlFsm {
             peer: None,
             session: session::SessionFsm::new(
                 session::SessionFsmConfig {
-                    local_namespace: session::StreamNamespace::Low,
-                    stream_chunk_size: config.session_stream_chunk_size,
-                    ack_delay: config.session_ack_delay,
-                    retransmit_timeout: config.session_retransmit_timeout,
+                    local_parity: session::state::StreamParity::Even,
+                    record_size: config.session_record_size,
+                    ack_delay: config.session_record_ack_delay,
+                    retransmit_timeout: config.session_record_retransmit_timeout,
                     keepalive_interval: config.session_keepalive_interval,
                     peer_timeout: config.session_peer_timeout,
+                    stream_send_buffer_size: config.session_stream_send_buffer_size,
+                    stream_receive_buffer_size: config.session_stream_receive_buffer_size,
                 },
                 now.instant,
             ),
@@ -287,18 +294,31 @@ impl QlFsm {
         implementation::open_stream(self)
     }
 
-    /// queues bytes for an open stream
-    pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), QlFsmError> {
+    /// queues bytes for an open stream and returns the accepted count
+    pub fn write_stream(
+        &mut self,
+        stream_id: StreamId,
+        bytes: &[u8],
+    ) -> Result<usize, QlFsmError> {
         implementation::write_stream(self, stream_id, bytes)
     }
 
-    /// reads queued bytes from a stream into `out`
-    pub fn read_stream(
+    /// copies readable bytes from a stream into `out` without consuming them
+    pub fn peek_stream(
         &mut self,
         stream_id: StreamId,
         out: &mut [u8],
     ) -> Result<usize, QlFsmError> {
-        implementation::read_stream(self, stream_id, out)
+        implementation::peek_stream(self, stream_id, out)
+    }
+
+    /// marks previously peeked bytes as consumed
+    pub fn commit_stream_read(
+        &mut self,
+        stream_id: StreamId,
+        len: usize,
+    ) -> Result<(), QlFsmError> {
+        implementation::commit_stream_read(self, stream_id, len)
     }
 
     /// returns how many bytes can be read from a stream

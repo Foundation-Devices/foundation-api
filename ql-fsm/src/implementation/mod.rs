@@ -10,7 +10,7 @@ pub use peer::*;
 use ql_wire::{ControlId, ControlMeta, QlHeader, QlPayload, QlRecord, SessionKey, XID};
 
 use crate::{
-    session::{SessionEvent, SessionFsmConfig, StreamNamespace},
+    session::{state::StreamParity, SessionEvent, SessionFsmConfig},
     QlFsm, QlFsmEvent, QlSessionEvent,
 };
 
@@ -55,19 +55,21 @@ fn peer_session(fsm: &QlFsm) -> Option<(XID, SessionKey)> {
 }
 
 fn reset_session(fsm: &mut QlFsm) {
-    let local_namespace = fsm
+    let local_parity = fsm
         .peer
         .as_ref()
-        .map(|peer| StreamNamespace::for_local(fsm.identity.xid, peer.peer.xid))
-        .unwrap_or(StreamNamespace::Low);
+        .map(|peer| StreamParity::for_local(fsm.identity.xid, peer.peer.xid))
+        .unwrap_or(StreamParity::Even);
     fsm.session = crate::session::SessionFsm::new(
         SessionFsmConfig {
-            local_namespace,
-            stream_chunk_size: fsm.config.session_stream_chunk_size,
-            ack_delay: fsm.config.session_ack_delay,
-            retransmit_timeout: fsm.config.session_retransmit_timeout,
+            local_parity,
+            record_size: fsm.config.session_record_size,
+            ack_delay: fsm.config.session_record_ack_delay,
+            retransmit_timeout: fsm.config.session_record_retransmit_timeout,
             keepalive_interval: fsm.config.session_keepalive_interval,
             peer_timeout: fsm.config.session_peer_timeout,
+            stream_send_buffer_size: fsm.config.session_stream_send_buffer_size,
+            stream_receive_buffer_size: fsm.config.session_stream_receive_buffer_size,
         },
         fsm.state.now.instant,
     );
@@ -106,6 +108,10 @@ fn forward_session_event(
         }
         SessionEvent::Readable(stream_id) => {
             session_events.push_back(QlSessionEvent::Readable(stream_id));
+            false
+        }
+        SessionEvent::Writable(stream_id) => {
+            session_events.push_back(QlSessionEvent::Writable(stream_id));
             false
         }
         SessionEvent::Finished(stream_id) => {

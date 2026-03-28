@@ -1,6 +1,4 @@
-pub(crate) mod ring;
 pub(crate) mod state;
-pub(crate) mod stream_window;
 
 #[cfg(test)]
 mod tests;
@@ -9,74 +7,40 @@ use std::time::{Duration, Instant};
 
 use indexmap::map::Entry;
 use ql_wire::{
-    CloseCode, CloseTarget, PingBody, SessionAck, SessionBody, SessionCloseBody, SessionEnvelope,
-    SessionSeq, StreamChunk, StreamClose, StreamId, XID,
+    ByteReassemblyError, CloseCode, CloseTarget, RecordAck, RecordSeq, SessionCloseBody,
+    SessionFrame, SessionRecord, StreamClose, StreamData, StreamId, StreamWindow,
 };
 
-use self::{
-    state::{
-        AckState, InboundState, OutboundState, PendingSessionBody, SessionFsmState,
-        StreamOpenState, StreamRole, StreamState, TxEntry, TxState,
-    },
-    stream_window::{RecvInsertOutcome, RxChunk},
+use self::state::{
+    AckState, InboundState, OutboundState, PendingRecord, ReceivedRecords, ReceiveInsertOutcome,
+    ReliableFrame, SentRecord, SessionFsmState, StreamParity, StreamRole, StreamState,
 };
 
-struct RejectNoAck;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamNamespace {
-    Low,
-    High,
-}
-
-impl StreamNamespace {
-    const BIT: u32 = 1 << 31;
-
-    pub fn for_local(local: XID, peer: XID) -> Self {
-        match local.0.cmp(&peer.0) {
-            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => Self::Low,
-            std::cmp::Ordering::Greater => Self::High,
-        }
-    }
-
-    pub fn bit(self) -> u32 {
-        match self {
-            Self::Low => 0,
-            Self::High => Self::BIT,
-        }
-    }
-
-    pub fn matches(self, stream_id: StreamId) -> bool {
-        (stream_id.0 & Self::BIT) == self.bit()
-    }
-
-    pub fn remote(self) -> Self {
-        match self {
-            Self::Low => Self::High,
-            Self::High => Self::Low,
-        }
-    }
-}
+pub(crate) const SESSION_RECORD_TRACKED_WINDOW: u64 = 256;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionFsmConfig {
-    pub local_namespace: StreamNamespace,
-    pub stream_chunk_size: usize,
+    pub local_parity: StreamParity,
+    pub record_size: usize,
     pub ack_delay: Duration,
     pub retransmit_timeout: Duration,
     pub keepalive_interval: Duration,
     pub peer_timeout: Duration,
+    pub stream_send_buffer_size: usize,
+    pub stream_receive_buffer_size: usize,
 }
 
 impl Default for SessionFsmConfig {
     fn default() -> Self {
         Self {
-            local_namespace: StreamNamespace::Low,
-            stream_chunk_size: 16 * 1024,
+            local_parity: StreamParity::Even,
+            record_size: 16 * 1024,
             ack_delay: Duration::from_millis(5),
             retransmit_timeout: Duration::from_millis(150),
             keepalive_interval: Duration::from_secs(10),
             peer_timeout: Duration::from_secs(30),
+            stream_send_buffer_size: 64 * 1024,
+            stream_receive_buffer_size: 64 * 1024,
         }
     }
 }
@@ -85,6 +49,7 @@ impl Default for SessionFsmConfig {
 pub enum SessionEvent {
     Opened(StreamId),
     Readable(StreamId),
+    Writable(StreamId),
     Finished(StreamId),
     Closed(StreamClose),
     WritableClosed(StreamId),
@@ -103,6 +68,8 @@ pub enum StreamError {
     MissingStream,
     #[error("stream is not writable")]
     NotWritable,
+    #[error("invalid read commit")]
+    InvalidRead,
     #[error("session is closed")]
     SessionClosed,
 }
@@ -114,7 +81,9 @@ pub struct SessionFsm {
 
 impl SessionFsm {
     pub fn new(mut config: SessionFsmConfig, now: Instant) -> Self {
-        config.stream_chunk_size = config.stream_chunk_size.max(1);
+        config.record_size = config.record_size.max(64);
+        config.stream_send_buffer_size = config.stream_send_buffer_size.max(1);
+        config.stream_receive_buffer_size = config.stream_receive_buffer_size.max(1);
         Self {
             config,
             state: SessionFsmState {
@@ -122,10 +91,12 @@ impl SessionFsm {
                 last_activity_at: now,
                 last_inbound_at: now,
                 session_state: SessionState::Open,
-                next_stream_ordinal: 1,
-                next_seq: SessionSeq(1),
-                tx_ring: ring::SeqRing::new(SessionSeq(1)),
-                rx_ring: ring::SeqRing::new(SessionSeq(1)),
+                next_stream_ordinal: 0,
+                next_record_seq: RecordSeq(0),
+                next_write_id: 0,
+                issued_records: Default::default(),
+                sent_records: Default::default(),
+                received_records: ReceivedRecords::default(),
                 ack_state: AckState::Idle,
                 pending_control: Default::default(),
                 streams: Default::default(),
@@ -136,21 +107,28 @@ impl SessionFsm {
 
     pub fn open_stream(&mut self) -> Result<StreamId, StreamError> {
         self.ensure_session_open()?;
-        let stream_id =
-            StreamId(self.config.local_namespace.bit() | self.state.next_stream_ordinal);
+        let stream_id = self
+            .config
+            .local_parity
+            .make_stream_id(self.state.next_stream_ordinal);
         self.state.next_stream_ordinal = self.state.next_stream_ordinal.saturating_add(1);
-        self.state
-            .streams
-            .insert(stream_id, StreamState::new(StreamRole::Initiator));
+        self.state.streams.insert(
+            stream_id,
+            StreamState::new(
+                StreamRole::Initiator,
+                self.config.stream_send_buffer_size,
+                self.config.stream_receive_buffer_size,
+            ),
+        );
         Ok(stream_id)
     }
 
-    pub fn write_stream(&mut self, stream_id: StreamId, bytes: Vec<u8>) -> Result<(), StreamError> {
+    pub fn write_stream(
+        &mut self,
+        stream_id: StreamId,
+        bytes: &[u8],
+    ) -> Result<usize, StreamError> {
         self.ensure_session_open()?;
-        if bytes.is_empty() {
-            return Ok(());
-        }
-
         let stream = self
             .state
             .streams
@@ -160,8 +138,11 @@ impl SessionFsm {
             return Err(StreamError::NotWritable);
         }
 
-        stream.send_buf.extend(bytes);
-        Ok(())
+        let accepted = bytes
+            .len()
+            .min(stream.send_capacity(self.config.stream_send_buffer_size));
+        stream.send_buf.extend(bytes[..accepted].iter().copied());
+        Ok(accepted)
     }
 
     pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), StreamError> {
@@ -174,7 +155,6 @@ impl SessionFsm {
         if !stream.is_writable() {
             return Err(StreamError::NotWritable);
         }
-
         stream.outbound_state = OutboundState::FinQueued;
         Ok(())
     }
@@ -193,8 +173,7 @@ impl SessionFsm {
                 .streams
                 .get_mut(&stream_id)
                 .ok_or(StreamError::MissingStream)?;
-
-            Self::apply_close_to_stream(stream, target);
+            Self::apply_local_close_to_stream(stream, target);
             stream.pending_close = Some(StreamClose {
                 stream_id,
                 target,
@@ -206,38 +185,56 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn read_stream(
+    pub fn peek_stream(
         &mut self,
         stream_id: StreamId,
         out: &mut [u8],
     ) -> Result<usize, StreamError> {
-        let written = {
-            let stream = self
-                .state
-                .streams
-                .get_mut(&stream_id)
-                .ok_or(StreamError::MissingStream)?;
-            if out.is_empty() || stream.recv_buf.is_empty() {
-                return Ok(0);
+        let stream = self
+            .state
+            .streams
+            .get(&stream_id)
+            .ok_or(StreamError::MissingStream)?;
+        if out.is_empty() {
+            return Ok(0);
+        }
+
+        let mut written = 0;
+        for chunk in stream.recv.bytes() {
+            let remaining = out.len().saturating_sub(written);
+            if remaining == 0 {
+                break;
             }
-
-            let (front, back) = stream.recv_buf.as_slices();
-            let front_len = front.len().min(out.len());
-            out[..front_len].copy_from_slice(&front[..front_len]);
-
-            let mut written = front_len;
-            let remaining = out.len() - front_len;
-            if remaining > 0 {
-                let back_len = back.len().min(remaining);
-                out[written..written + back_len].copy_from_slice(&back[..back_len]);
-                written += back_len;
+            let len = remaining.min(chunk.len());
+            out[written..written + len].copy_from_slice(&chunk[..len]);
+            written += len;
+            if len < chunk.len() {
+                break;
             }
+        }
 
-            stream.recv_buf.drain(..written);
-            written
-        };
-        self.try_reap_stream(stream_id);
         Ok(written)
+    }
+
+    pub fn commit_stream_read(
+        &mut self,
+        stream_id: StreamId,
+        len: usize,
+    ) -> Result<(), StreamError> {
+        let stream = self
+            .state
+            .streams
+            .get_mut(&stream_id)
+            .ok_or(StreamError::MissingStream)?;
+        if len > stream.readable_bytes() {
+            return Err(StreamError::InvalidRead);
+        }
+        stream.recv.consume(len).map_err(|_| StreamError::InvalidRead)?;
+        if stream.recv_limit() > stream.advertised_max_offset {
+            stream.pending_window = true;
+        }
+        self.try_reap_stream(stream_id);
+        Ok(())
     }
 
     pub fn stream_available_bytes(&self, stream_id: StreamId) -> Result<usize, StreamError> {
@@ -246,7 +243,7 @@ impl SessionFsm {
             .streams
             .get(&stream_id)
             .ok_or(StreamError::MissingStream)?;
-        Ok(stream.recv_buf.len())
+        Ok(stream.readable_bytes())
     }
 
     pub fn queue_ping(&mut self) -> Result<(), StreamError> {
@@ -258,129 +255,89 @@ impl SessionFsm {
     pub fn receive(
         &mut self,
         now: Instant,
-        envelope: SessionEnvelope,
+        record: SessionRecord,
         mut emit: impl FnMut(SessionEvent),
     ) {
         self.state.now = now;
         self.collect_timeouts();
-        self.process_ack(envelope.ack);
 
-        if self.state.session_state == SessionState::Closed {
-            return;
-        }
-
+        let ack_eliciting = Self::record_is_ack_eliciting(&record);
         self.state.last_activity_at = self.state.now;
         self.state.last_inbound_at = self.state.now;
 
-        let seq = envelope.seq;
-        if seq.0 < self.state.rx_ring.base_seq().0 || self.state.rx_ring.contains_key(&seq) {
-            if !matches!(envelope.body, SessionBody::Ack) {
+        let out_of_order = match self.state.received_records.insert(record.seq) {
+            ReceiveInsertOutcome::Duplicate => {
+                if ack_eliciting {
+                    self.schedule_ack(true);
+                }
+                return;
+            }
+            ReceiveInsertOutcome::New { out_of_order } => out_of_order,
+        };
+
+        if self.state.session_state == SessionState::Closed {
+            if ack_eliciting {
                 self.schedule_ack(true);
             }
             return;
         }
-        if !self.state.rx_ring.accepts_seq(seq) {
-            self.fail_session(
-                SessionCloseBody {
-                    code: CloseCode::PROTOCOL,
-                },
-                &mut emit,
-            );
-            return;
-        }
 
-        let out_of_order = seq != self.state.rx_ring.base_seq();
-        let body_kind_is_ack = matches!(envelope.body, SessionBody::Ack);
-        let apply_inbound_body = match envelope.body {
-            SessionBody::Ack | SessionBody::Ping(_) => Ok(()),
-            SessionBody::Close(close) => {
-                self.state.session_state = SessionState::Closed;
-                self.clear_streams();
-                emit(SessionEvent::SessionClosed(close));
-                Ok(())
-            }
-            SessionBody::Stream(frame) => self.handle_stream_frame(frame, &mut emit),
-            SessionBody::StreamClose(frame) => {
-                self.handle_stream_close(frame, &mut emit);
-                Ok(())
-            }
-        };
-        if apply_inbound_body.is_err() {
-            return;
-        }
-
-        match self.state.rx_ring.insert(seq, ()) {
-            Ok(()) => {
-                self.state.rx_ring.advance_occupied_front();
-                if !body_kind_is_ack {
-                    self.schedule_ack(out_of_order);
+        for frame in record.frames {
+            match frame {
+                SessionFrame::Ping => {}
+                SessionFrame::Ack(ack) => self.process_record_ack(ack, &mut emit),
+                SessionFrame::StreamData(frame) => {
+                    if self.handle_stream_data(frame, &mut emit).is_err() {
+                        return;
+                    }
+                }
+                SessionFrame::StreamWindow(frame) => {
+                    if self.handle_stream_window(frame, &mut emit).is_err() {
+                        return;
+                    }
+                }
+                SessionFrame::StreamClose(frame) => {
+                    if self.handle_stream_close(frame, &mut emit).is_err() {
+                        return;
+                    }
+                }
+                SessionFrame::Close(close) => {
+                    self.handle_session_close(close, &mut emit);
+                    return;
                 }
             }
-            Err(e) => {
-                unreachable!("seq window was pre-validated before body handling {e:?}");
-            }
+        }
+
+        if ack_eliciting {
+            self.schedule_ack(out_of_order);
         }
     }
 
-    pub fn confirm_write(&mut self, now: Instant, seq: SessionSeq) {
+    pub fn confirm_write(&mut self, now: Instant, write_id: u64) {
         self.state.now = now;
-        let Some((retransmit, should_clear_ack)) = self.state.tx_ring.get(&seq).map(|entry| {
-            (
-                entry.pending.retransmit,
-                matches!(entry.pending.body, SessionBody::Ack),
-            )
-        }) else {
+        let Some(pending) = self.state.issued_records.shift_remove(&write_id) else {
             return;
         };
-        debug_assert!(matches!(
-            self.state.tx_ring.get(&seq).map(|entry| entry.state),
-            Some(TxState::Issued)
-        ));
-        if !matches!(
-            self.state.tx_ring.get(&seq).map(|entry| entry.state),
-            Some(TxState::Issued)
-        ) {
-            return;
-        }
-
-        self.state.last_activity_at = self.state.now;
-        if retransmit {
-            if let Some(entry) = self.state.tx_ring.get_mut(&seq) {
-                entry.state = TxState::Sent {
-                    sent_at: self.state.now,
-                };
-            }
-        } else {
-            let _ = self.state.tx_ring.remove(&seq);
-            self.state
-                .tx_ring
-                .advance_empty_front_until(self.state.next_seq);
-            if should_clear_ack {
-                self.state.clear_ack_schedule();
-            }
-        }
+        self.state.last_activity_at = now;
+        self.state.sent_records.insert(
+            pending.seq.0,
+            SentRecord {
+                pending,
+                sent_at: now,
+            },
+        );
     }
 
-    pub fn reject_write(&mut self, seq: SessionSeq) {
-        debug_assert!(matches!(
-            self.state.tx_ring.get(&seq).map(|entry| entry.state),
-            Some(TxState::Issued)
-        ));
-        let Some(entry) = self.state.tx_ring.get_mut(&seq) else {
+    pub fn reject_write(&mut self, write_id: u64) {
+        let Some(pending) = self.state.issued_records.shift_remove(&write_id) else {
             return;
         };
-        if !matches!(entry.state, TxState::Issued) {
-            return;
-        }
-        entry.state = TxState::Pending;
+        self.restore_pending_record(pending);
     }
 
     pub fn on_timer(&mut self, now: Instant, mut emit: impl FnMut(SessionEvent)) {
         self.state.now = now;
         self.collect_timeouts();
-        if self.state.session_state == SessionState::Closed {
-            return;
-        }
         if let AckState::Delayed { due_at } = self.state.ack_state {
             if due_at <= self.state.now {
                 self.state.ack_state = AckState::Immediate;
@@ -397,7 +354,8 @@ impl SessionFsm {
             );
             return;
         }
-        if !self.config.keepalive_interval.is_zero()
+        if self.state.session_state == SessionState::Open
+            && !self.config.keepalive_interval.is_zero()
             && self.state.last_activity_at + self.config.keepalive_interval <= self.state.now
         {
             self.state.pending_control.ping = true;
@@ -412,12 +370,9 @@ impl SessionFsm {
         };
         let retransmit_deadline = self
             .state
-            .tx_ring
-            .iter()
-            .filter_map(|(_, entry)| match entry.state {
-                TxState::Sent { sent_at } => Some(sent_at + self.config.retransmit_timeout),
-                TxState::Pending | TxState::Issued => None,
-            })
+            .sent_records
+            .values()
+            .map(|record| record.sent_at + self.config.retransmit_timeout)
             .min();
         let keepalive_deadline = (self.state.session_state == SessionState::Open
             && !self.config.keepalive_interval.is_zero()
@@ -440,163 +395,337 @@ impl SessionFsm {
     pub fn has_pending_stream_work(&self) -> bool {
         self.state.streams.values().any(|stream| {
             stream.pending_close.is_some()
+                || !stream.retransmit.is_empty()
                 || !stream.send_buf.is_empty()
+                || stream.pending_window
                 || matches!(stream.outbound_state, OutboundState::FinQueued)
         })
     }
 
-    pub fn take_next_write(
-        &mut self,
-        now: Instant,
-    ) -> Option<(SessionSeq, SessionAck, &SessionBody)> {
+    pub fn take_next_write(&mut self, now: Instant) -> Option<(u64, SessionRecord)> {
         self.state.now = now;
         self.collect_timeouts();
-        let ack = self.state.current_ack();
-        let seq = self
-            .take_pending_retransmit()
-            .or_else(|| self.take_fresh_write())?;
-        let entry = self.state.tx_ring.get(&seq).unwrap();
-        Some((seq, ack, &entry.pending.body))
+
+        let built = self.build_next_record()?;
+        let write_id = self.state.next_write_id;
+        self.state.next_write_id = self.state.next_write_id.wrapping_add(1);
+        self.state.issued_records.insert(write_id, built.pending);
+        Some((write_id, built.record))
     }
 
-    fn take_pending_retransmit(&mut self) -> Option<SessionSeq> {
-        let base_seq = self.state.tx_ring.base_seq().0;
-        let next_seq = self.state.next_seq.0;
+    fn build_next_record(&mut self) -> Option<BuiltRecord> {
+        let seq = self.state.next_record_seq;
+        let mut record = SessionRecord {
+            seq,
+            frames: Vec::new(),
+        };
+        let mut pending = PendingRecord {
+            seq,
+            reliable: Vec::new(),
+            ack_included: false,
+            ping_included: false,
+            window_updates: Vec::new(),
+        };
+        let mut remaining = self.config.record_size.saturating_sub(8);
 
-        for seq in (base_seq..next_seq).map(SessionSeq) {
-            let should_retry = match self.state.tx_ring.get(&seq) {
-                Some(entry) if matches!(entry.state, TxState::Pending) => {
-                    self.should_retry_body(&entry.pending.body)
+        if self.should_send_ack() {
+            if let Some(ack) = self.state.received_records.ack() {
+                let frame = SessionFrame::Ack(ack);
+                if self.push_frame(&mut record, &mut remaining, frame, true) {
+                    pending.ack_included = true;
+                    self.state.ack_state = AckState::Idle;
                 }
-                _ => continue,
-            };
+            }
+        }
 
-            if !should_retry {
-                let _ = self.state.tx_ring.remove(&seq);
+        while let Some(close) = self.take_pending_session_close(remaining, record.frames.is_empty()) {
+            let frame = SessionFrame::Close(close.clone());
+            if !self.push_frame(&mut record, &mut remaining, frame, true) {
+                self.state.pending_control.close = Some(close);
+                break;
+            }
+            pending.reliable.push(ReliableFrame::Close(close));
+        }
+
+        while let Some(close) = self.take_next_pending_stream_close(remaining, record.frames.is_empty()) {
+            let frame = SessionFrame::StreamClose(close.clone());
+            if !self.push_frame(&mut record, &mut remaining, frame, true) {
+                self.restore_stream_close(close);
+                break;
+            }
+            pending.reliable.push(ReliableFrame::StreamClose(close));
+        }
+
+        if let Some(ping) = self.take_pending_ping(remaining, record.frames.is_empty()) {
+            if self.push_frame(&mut record, &mut remaining, ping, true) {
+                pending.ping_included = true;
+            } else {
+                self.state.pending_control.ping = true;
+            }
+        }
+
+        while let Some(window) =
+            self.take_next_pending_stream_window(remaining, record.frames.is_empty())
+        {
+            let maximum_offset = window.maximum_offset;
+            let stream_id = window.stream_id;
+            if !self.push_frame(
+                &mut record,
+                &mut remaining,
+                SessionFrame::StreamWindow(window),
+                true,
+            ) {
+                if let Some(stream) = self.state.streams.get_mut(&stream_id) {
+                    stream.pending_window = true;
+                }
+                break;
+            }
+            pending.window_updates.push((stream_id, maximum_offset));
+        }
+
+        while let Some(frame) =
+            self.take_next_retransmit_stream_data(remaining, record.frames.is_empty())
+        {
+            if !self.push_frame(
+                &mut record,
+                &mut remaining,
+                SessionFrame::StreamData(frame.clone()),
+                true,
+            ) {
+                self.restore_stream_data(frame);
+                break;
+            }
+            pending.reliable.push(ReliableFrame::StreamData(frame));
+        }
+
+        while let Some(frame) = self.take_next_fresh_stream_data(remaining, record.frames.is_empty()) {
+            if !self.push_frame(
+                &mut record,
+                &mut remaining,
+                SessionFrame::StreamData(frame.clone()),
+                true,
+            ) {
+                self.restore_stream_data(frame);
+                break;
+            }
+            pending.reliable.push(ReliableFrame::StreamData(frame));
+        }
+
+        if record.frames.is_empty() {
+            return None;
+        }
+
+        self.state.next_record_seq = RecordSeq(self.state.next_record_seq.0.saturating_add(1));
+        Some(BuiltRecord { record, pending })
+    }
+
+    fn take_pending_session_close(
+        &mut self,
+        remaining: usize,
+        record_empty: bool,
+    ) -> Option<SessionCloseBody> {
+        let close = self.state.pending_control.close.clone()?;
+        let frame = SessionFrame::Close(close.clone());
+        if !self.frame_fits(remaining, record_empty, &frame) {
+            return None;
+        }
+        self.state.pending_control.close.take()
+    }
+
+    fn take_pending_ping(
+        &mut self,
+        remaining: usize,
+        record_empty: bool,
+    ) -> Option<SessionFrame> {
+        if !self.state.pending_control.ping {
+            return None;
+        }
+        let frame = SessionFrame::Ping;
+        if !self.frame_fits(remaining, record_empty, &frame) {
+            return None;
+        }
+        self.state.pending_control.ping = false;
+        Some(frame)
+    }
+
+    fn take_next_pending_stream_close(
+        &mut self,
+        remaining: usize,
+        record_empty: bool,
+    ) -> Option<StreamClose> {
+        let len = self.state.streams.len();
+        if len == 0 {
+            return None;
+        }
+
+        let start = self.state.next_stream_index % len;
+        for offset in 0..len {
+            let index = (start + offset) % len;
+            let Some((_, stream)) = self.state.streams.get_index(index) else {
+                continue;
+            };
+            let Some(close) = stream.pending_close.clone() else {
+                continue;
+            };
+            let frame = SessionFrame::StreamClose(close.clone());
+            if !self.frame_fits(remaining, record_empty, &frame) {
                 continue;
             }
 
-            self.state
-                .tx_ring
-                .advance_empty_front_until(self.state.next_seq);
-            let entry = self.state.tx_ring.get_mut(&seq).unwrap();
-            entry.state = TxState::Issued;
-            return Some(seq);
+            let stream = self.state.streams.get_index_mut(index).unwrap().1;
+            self.state.next_stream_index = (index + 1) % len;
+            return stream.pending_close.take().or(Some(close));
         }
-
-        self.state
-            .tx_ring
-            .advance_empty_front_until(self.state.next_seq);
 
         None
     }
 
-    fn take_fresh_write(&mut self) -> Option<SessionSeq> {
-        if !self.state.tx_ring.accepts_seq(self.state.next_seq) {
+    fn take_next_pending_stream_window(
+        &mut self,
+        remaining: usize,
+        record_empty: bool,
+    ) -> Option<StreamWindow> {
+        let len = self.state.streams.len();
+        if len == 0 {
             return None;
         }
 
-        let pending = self.next_pending_body()?;
-        let seq = self.state.next_seq;
-        self.state.next_seq = SessionSeq(seq.0 + 1);
-        self.state
-            .tx_ring
-            .insert(
-                seq,
-                TxEntry {
-                    pending,
-                    state: TxState::Issued,
-                },
-            )
-            .unwrap();
-        Some(seq)
+        let start = self.state.next_stream_index % len;
+        for offset in 0..len {
+            let index = (start + offset) % len;
+            let Some((&stream_id, stream)) = self.state.streams.get_index(index) else {
+                continue;
+            };
+            if !stream.pending_window {
+                continue;
+            }
+            let frame = StreamWindow {
+                stream_id,
+                maximum_offset: stream.recv_limit(),
+            };
+            if !self.frame_fits(
+                remaining,
+                record_empty,
+                &SessionFrame::StreamWindow(frame.clone()),
+            ) {
+                continue;
+            }
+
+            let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
+            stream.pending_window = false;
+            stream.advertised_max_offset = frame.maximum_offset;
+            self.state.next_stream_index = (index + 1) % len;
+            return Some(frame);
+        }
+
+        None
     }
 
-    fn next_pending_body(&mut self) -> Option<PendingSessionBody> {
-        if let Some(close) = self.state.pending_control.close.take() {
-            return Some(PendingSessionBody {
-                body: SessionBody::Close(close),
-                retransmit: true,
-            });
-        }
-        if self.state.pending_control.ping {
-            self.state.pending_control.ping = false;
-            return Some(PendingSessionBody {
-                body: SessionBody::Ping(PingBody),
-                retransmit: false,
-            });
-        }
-
+    fn take_next_retransmit_stream_data(
+        &mut self,
+        remaining: usize,
+        record_empty: bool,
+    ) -> Option<StreamData> {
+        let max_payload = self.max_stream_data_payload(remaining, record_empty)?;
         let len = self.state.streams.len();
-        if len > 0 {
-            let start = self.state.next_stream_index % len;
-            for offset in 0..len {
-                let index = (start + offset) % len;
-                let has_pending = self
-                    .state
-                    .streams
-                    .get_index(index)
-                    .is_some_and(|(_, stream)| {
-                        stream.pending_close.is_some()
-                            || !stream.send_buf.is_empty()
-                            || matches!(stream.outbound_state, OutboundState::FinQueued)
-                    });
-                if !has_pending {
-                    continue;
-                }
-
-                let body = {
-                    let Some((&stream_id, stream)) = self.state.streams.get_index_mut(index) else {
-                        continue;
-                    };
-                    match stream.open_state {
-                        StreamOpenState::PendingSend => {
-                            let body = Self::take_stream_frame(
-                                stream,
-                                stream_id,
-                                self.config.stream_chunk_size,
-                            )
-                            .map(SessionBody::Stream);
-                            if body.is_some() {
-                                stream.open_state = StreamOpenState::WaitingForAck;
-                            }
-                            body
-                        }
-                        StreamOpenState::WaitingForAck => None,
-                        StreamOpenState::Opened => {
-                            if let Some(close) = stream.pending_close.take() {
-                                Some(SessionBody::StreamClose(close))
-                            } else {
-                                Self::take_stream_frame(
-                                    stream,
-                                    stream_id,
-                                    self.config.stream_chunk_size,
-                                )
-                                .map(SessionBody::Stream)
-                            }
-                        }
-                    }
-                };
-                let Some(body) = body else {
-                    continue;
-                };
-                self.state.next_stream_index = (index + 1) % len;
-                return Some(PendingSessionBody {
-                    body,
-                    retransmit: true,
-                });
-            }
+        if len == 0 {
+            return None;
         }
 
-        let ack_due = match self.state.ack_state {
-            AckState::Immediate => true,
-            AckState::Delayed { due_at } => due_at <= self.state.now,
-            AckState::Idle => false,
-        };
-        ack_due.then_some(PendingSessionBody {
-            body: SessionBody::Ack,
-            retransmit: false,
-        })
+        let start = self.state.next_stream_index % len;
+        for offset in 0..len {
+            let index = (start + offset) % len;
+            let Some((_, stream)) = self.state.streams.get_index(index) else {
+                continue;
+            };
+
+            if matches!(stream.outbound_state, OutboundState::Closed) {
+                let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
+                while let Some(frame) = stream.retransmit.pop_front() {
+                    stream.inflight_bytes = stream.inflight_bytes.saturating_sub(frame.bytes.len());
+                }
+                continue;
+            }
+
+            let Some(_) = stream.retransmit.front() else {
+                continue;
+            };
+            let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
+            let frame = stream.retransmit.pop_front().unwrap();
+            let (head, tail) = Self::split_stream_data(frame, max_payload);
+            if let Some(tail) = tail {
+                stream.retransmit.push_front(tail);
+            }
+            self.state.next_stream_index = (index + 1) % len;
+            return Some(head);
+        }
+
+        None
+    }
+
+    fn take_next_fresh_stream_data(
+        &mut self,
+        remaining: usize,
+        record_empty: bool,
+    ) -> Option<StreamData> {
+        let max_payload = self.max_stream_data_payload(remaining, record_empty)?;
+        let len = self.state.streams.len();
+        if len == 0 {
+            return None;
+        }
+
+        let start = self.state.next_stream_index % len;
+        for offset in 0..len {
+            let index = (start + offset) % len;
+            let Some((&stream_id, stream)) = self.state.streams.get_index(index) else {
+                continue;
+            };
+            if matches!(stream.outbound_state, OutboundState::Closed) {
+                continue;
+            }
+
+            let credit_remaining = stream
+                .peer_max_offset
+                .saturating_sub(stream.next_send_offset) as usize;
+            let has_empty_fin = matches!(stream.outbound_state, OutboundState::FinQueued)
+                && stream.send_buf.is_empty()
+                && stream.next_send_offset <= stream.peer_max_offset;
+            if stream.send_buf.is_empty() && !has_empty_fin {
+                continue;
+            }
+
+            if credit_remaining == 0 && !has_empty_fin {
+                continue;
+            }
+
+            let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
+            let payload_len = stream
+                .send_buf
+                .len()
+                .min(max_payload)
+                .min(credit_remaining);
+            let bytes: Vec<u8> = stream.send_buf.drain(..payload_len).collect();
+            let fin = matches!(stream.outbound_state, OutboundState::FinQueued)
+                && stream.send_buf.is_empty()
+                && stream.next_send_offset + bytes.len() as u64 <= stream.peer_max_offset;
+            let frame = StreamData {
+                stream_id,
+                offset: stream.next_send_offset,
+                fin,
+                bytes,
+            };
+            stream.next_send_offset = stream
+                .next_send_offset
+                .saturating_add(frame.bytes.len() as u64);
+            stream.inflight_bytes = stream.inflight_bytes.saturating_add(frame.bytes.len());
+            if fin {
+                stream.outbound_state = OutboundState::Finished;
+            }
+            self.state.next_stream_index = (index + 1) % len;
+            return Some(frame);
+        }
+
+        None
     }
 
     fn ensure_session_open(&self) -> Result<(), StreamError> {
@@ -607,52 +736,29 @@ impl SessionFsm {
         }
     }
 
-    fn process_ack(&mut self, ack: ql_wire::SessionAck) {
-        loop {
-            let Some((seq, stream_id, opens_stream)) =
-                self.state.tx_ring.iter().find_map(|(seq, entry)| {
-                    if !matches!(entry.state, TxState::Sent { .. }) || !Self::ack_covers(ack, seq) {
-                        return None;
-                    }
+    fn process_record_ack(&mut self, ack: RecordAck, emit: &mut impl FnMut(SessionEvent)) {
+        let acked: Vec<u64> = self
+            .state
+            .sent_records
+            .keys()
+            .copied()
+            .filter(|seq| Self::ack_covers(&ack, RecordSeq(*seq)))
+            .collect();
 
-                    let (stream_id, opens_stream) = match &entry.pending.body {
-                        SessionBody::Stream(frame) => (Some(frame.stream_id), frame.chunk_seq == 0),
-                        SessionBody::StreamClose(frame) => (Some(frame.stream_id), false),
-                        _ => (None, false),
-                    };
-
-                    Some((seq, stream_id, opens_stream))
-                })
-            else {
-                break;
+        for seq in acked {
+            let Some(sent) = self.state.sent_records.shift_remove(&seq) else {
+                continue;
             };
-
-            let _ = self.state.tx_ring.remove(&seq);
-            if let Some(stream_id) = stream_id {
-                if opens_stream {
-                    if let Some(stream) = self.state.streams.get_mut(&stream_id) {
-                        if matches!(stream.open_state, StreamOpenState::WaitingForAck) {
-                            stream.open_state = StreamOpenState::Opened;
-                        }
-                    }
-                }
-                self.try_reap_stream(stream_id);
+            for frame in sent.pending.reliable {
+                self.acknowledge_reliable_frame(frame, emit);
             }
         }
-        self.state
-            .tx_ring
-            .advance_empty_front_until(self.state.next_seq);
     }
 
-    fn ack_covers(ack: ql_wire::SessionAck, seq: SessionSeq) -> bool {
-        if seq.0 <= ack.base.0 {
-            return true;
-        }
-        let delta = seq.0 - ack.base.0;
-        if delta == 0 || delta > 64 {
-            return false;
-        }
-        (ack.bitmap & (1u64 << (delta - 1))) != 0
+    fn ack_covers(ack: &RecordAck, seq: RecordSeq) -> bool {
+        ack.ranges
+            .iter()
+            .any(|range| range.start <= seq.0 && seq.0 < range.end)
     }
 
     fn schedule_ack(&mut self, immediate: bool) {
@@ -666,106 +772,120 @@ impl SessionFsm {
         };
     }
 
+    fn should_send_ack(&self) -> bool {
+        if self.state.received_records.ack().is_none() {
+            return false;
+        }
+        match self.state.ack_state {
+            AckState::Immediate => true,
+            AckState::Delayed { due_at } => due_at <= self.state.now,
+            AckState::Idle => false,
+        }
+    }
+
     fn collect_timeouts(&mut self) {
-        let expired: Vec<_> = self
+        let expired: Vec<u64> = self
             .state
-            .tx_ring
+            .sent_records
             .iter()
-            .filter_map(|(seq, entry)| match entry.state {
-                TxState::Sent { sent_at }
-                    if sent_at + self.config.retransmit_timeout <= self.state.now =>
-                {
-                    Some(seq)
-                }
-                TxState::Pending | TxState::Issued | TxState::Sent { .. } => None,
+            .filter_map(|(seq, record)| {
+                (record.sent_at + self.config.retransmit_timeout <= self.state.now).then_some(*seq)
             })
             .collect();
 
         for seq in expired {
-            let Some((retransmit, body)) = self
-                .state
-                .tx_ring
-                .get(&seq)
-                .map(|entry| (entry.pending.retransmit, entry.pending.body.clone()))
-            else {
+            let Some(sent) = self.state.sent_records.shift_remove(&seq) else {
                 continue;
             };
-            if retransmit && self.should_retry_body(&body) {
-                if let Some(entry) = self.state.tx_ring.get_mut(&seq) {
-                    entry.state = TxState::Pending;
-                }
-            } else {
-                let _ = self.state.tx_ring.remove(&seq);
-                if matches!(body, SessionBody::Ack) {
-                    self.state.clear_ack_schedule();
-                }
-            }
-        }
-
-        self.state
-            .tx_ring
-            .advance_empty_front_until(self.state.next_seq);
-    }
-
-    fn should_retry_body(&self, body: &SessionBody) -> bool {
-        match body {
-            SessionBody::Ack => true,
-            SessionBody::Ping(_) => self.state.session_state == SessionState::Open,
-            SessionBody::Close(_) => true,
-            SessionBody::Stream(frame) => {
-                self.state.session_state == SessionState::Open
-                    && self
-                        .state
-                        .streams
-                        .get(&frame.stream_id)
-                        .is_some_and(|stream| {
-                            !matches!(stream.outbound_state, OutboundState::Closed)
-                                || (matches!(stream.open_state, StreamOpenState::WaitingForAck)
-                                    && frame.chunk_seq == 0)
-                        })
-            }
-            SessionBody::StreamClose(frame) => {
-                self.state.session_state == SessionState::Open
-                    && self.state.streams.contains_key(&frame.stream_id)
-            }
+            self.restore_pending_record(sent.pending);
         }
     }
 
-    fn handle_stream_frame(
+    fn restore_pending_record(&mut self, pending: PendingRecord) {
+        if pending.ack_included {
+            self.schedule_ack(true);
+        }
+        if pending.ping_included {
+            self.state.pending_control.ping = true;
+        }
+        for (stream_id, maximum_offset) in pending.window_updates {
+            if let Some(stream) = self.state.streams.get_mut(&stream_id) {
+                if stream.recv_limit() >= maximum_offset {
+                    stream.pending_window = true;
+                }
+            }
+        }
+        for frame in pending.reliable {
+            self.requeue_reliable_frame(frame);
+        }
+    }
+
+    fn requeue_reliable_frame(&mut self, frame: ReliableFrame) {
+        match frame {
+            ReliableFrame::Close(close) => {
+                self.state.pending_control.close = Some(close);
+            }
+            ReliableFrame::StreamClose(close) => self.restore_stream_close(close),
+            ReliableFrame::StreamData(frame) => self.restore_stream_data(frame),
+        }
+    }
+
+    fn acknowledge_reliable_frame(
         &mut self,
-        frame: StreamChunk,
+        frame: ReliableFrame,
         emit: &mut impl FnMut(SessionEvent),
-    ) -> Result<(), RejectNoAck> {
-        let StreamChunk {
-            stream_id,
-            chunk_seq,
-            bytes,
-            fin,
-        } = frame;
-        let remote_namespace = self.config.local_namespace.remote();
+    ) {
+        match frame {
+            ReliableFrame::Close(_) => {}
+            ReliableFrame::StreamClose(frame) => {
+                self.try_reap_stream(frame.stream_id);
+            }
+            ReliableFrame::StreamData(frame) => {
+                let stream_id = frame.stream_id;
+                if let Some(stream) = self.state.streams.get_mut(&stream_id) {
+                    let was_full = stream.send_capacity(self.config.stream_send_buffer_size) == 0;
+                    stream.inflight_bytes = stream.inflight_bytes.saturating_sub(frame.bytes.len());
+                    if was_full && stream.send_capacity(self.config.stream_send_buffer_size) > 0 {
+                        emit(SessionEvent::Writable(stream_id));
+                    }
+                }
+                self.try_reap_stream(stream_id);
+            }
+        }
+    }
+
+    fn handle_stream_data(
+        &mut self,
+        frame: StreamData,
+        emit: &mut impl FnMut(SessionEvent),
+    ) -> Result<(), ()> {
+        let stream_id = frame.stream_id;
         let stream = match self.state.streams.entry(stream_id) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                if !remote_namespace.matches(stream_id) {
+                if !self.config.local_parity.remote().matches(stream_id) {
                     self.fail_session(
                         SessionCloseBody {
                             code: CloseCode::PROTOCOL,
                         },
                         emit,
                     );
-                    return Ok(());
-                }
-                if chunk_seq != 0 {
-                    return Err(RejectNoAck);
+                    return Err(());
                 }
                 emit(SessionEvent::Opened(stream_id));
-                entry.insert(StreamState::new(StreamRole::Responder))
+                entry.insert(StreamState::new(
+                    StreamRole::Responder,
+                    self.config.stream_send_buffer_size,
+                    self.config.stream_receive_buffer_size,
+                ))
             }
         };
+
         match stream.inbound_state {
-            InboundState::Open => (),
+            InboundState::Open => {}
+            InboundState::Discarding => return Ok(()),
             InboundState::Finished | InboundState::Closed(_) => {
-                if chunk_seq < stream.recv_window.next_chunk_seq() {
+                if frame.offset + frame.bytes.len() as u64 <= stream.recv.start_offset() {
                     return Ok(());
                 }
                 self.fail_session(
@@ -774,41 +894,48 @@ impl SessionFsm {
                     },
                     emit,
                 );
-                return Ok(());
+                return Err(());
             }
-            InboundState::Discarding => return Ok(()),
         }
 
-        let was_readable = !stream.recv_buf.is_empty();
-        let outcome = stream.recv_window.insert(chunk_seq, RxChunk { bytes, fin });
-
-        match outcome {
-            RecvInsertOutcome::Inserted => {
-                Self::drain_recv_window(stream);
-                if !was_readable && !stream.recv_buf.is_empty() {
+        let was_readable = stream.readable_bytes() > 0;
+        let insert = stream.recv.insert(frame.offset, frame.fin, &frame.bytes);
+        match insert {
+            Ok(outcome) => {
+                if !was_readable && outcome.newly_readable_bytes > 0 {
                     emit(SessionEvent::Readable(stream_id));
                 }
-                if matches!(stream.inbound_state, InboundState::Finished) {
+                if outcome.became_complete {
+                    stream.inbound_state = InboundState::Finished;
                     emit(SessionEvent::Finished(stream_id));
                 }
                 self.try_reap_stream(stream_id);
                 Ok(())
             }
-            RecvInsertOutcome::Duplicate => Ok(()),
-            RecvInsertOutcome::RejectNoAck => Err(RejectNoAck),
-            RecvInsertOutcome::Conflict => {
+            Err(ByteReassemblyError::ConflictingOverlap)
+            | Err(ByteReassemblyError::OutOfWindow)
+            | Err(ByteReassemblyError::InconsistentFinalOffset)
+            | Err(ByteReassemblyError::FinalOffsetBeforeBufferedData)
+            | Err(ByteReassemblyError::BeyondFinalOffset)
+            | Err(ByteReassemblyError::TooManyMissingRanges)
+            | Err(ByteReassemblyError::OffsetOverflow) => {
                 self.fail_session(
                     SessionCloseBody {
                         code: CloseCode::PROTOCOL,
                     },
                     emit,
                 );
-                Ok(())
+                Err(())
             }
+            Err(ByteReassemblyError::ConsumeBeyondReadable) => unreachable!(),
         }
     }
 
-    fn handle_stream_close(&mut self, frame: StreamClose, emit: &mut impl FnMut(SessionEvent)) {
+    fn handle_stream_window(
+        &mut self,
+        frame: StreamWindow,
+        emit: &mut impl FnMut(SessionEvent),
+    ) -> Result<(), ()> {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
             self.fail_session(
                 SessionCloseBody {
@@ -816,8 +943,49 @@ impl SessionFsm {
                 },
                 emit,
             );
-            return;
+            return Err(());
         };
+
+        let was_full = stream.send_capacity(self.config.stream_send_buffer_size) == 0;
+        if frame.maximum_offset > stream.peer_max_offset {
+            stream.peer_max_offset = frame.maximum_offset;
+        }
+        if was_full && stream.send_capacity(self.config.stream_send_buffer_size) > 0 {
+            emit(SessionEvent::Writable(frame.stream_id));
+        }
+        Ok(())
+    }
+
+    fn handle_stream_close(
+        &mut self,
+        frame: StreamClose,
+        emit: &mut impl FnMut(SessionEvent),
+    ) -> Result<(), ()> {
+        let created = match self.state.streams.entry(frame.stream_id) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(entry) => {
+                if !self.config.local_parity.remote().matches(frame.stream_id) {
+                    self.fail_session(
+                        SessionCloseBody {
+                            code: CloseCode::PROTOCOL,
+                        },
+                        emit,
+                    );
+                    return Err(());
+                }
+                entry.insert(StreamState::new(
+                    StreamRole::Responder,
+                    self.config.stream_send_buffer_size,
+                    self.config.stream_receive_buffer_size,
+                ));
+                true
+            }
+        };
+
+        let stream = self.state.streams.get_mut(&frame.stream_id).unwrap();
+        if created {
+            emit(SessionEvent::Opened(frame.stream_id));
+        }
 
         if Self::target_affects_inbound(stream.role, frame.target)
             && !matches!(
@@ -826,8 +994,7 @@ impl SessionFsm {
             )
         {
             stream.inbound_state = InboundState::Closed(frame.clone());
-            stream.recv_buf.clear();
-            stream.recv_window.clear();
+            stream.reset_recv();
             emit(SessionEvent::Closed(frame.clone()));
         }
         if Self::target_affects_outbound(stream.role, frame.target)
@@ -835,21 +1002,41 @@ impl SessionFsm {
         {
             stream.outbound_state = OutboundState::Closed;
             stream.send_buf.clear();
+            stream.retransmit.clear();
             stream.pending_close = None;
+            stream.inflight_bytes = 0;
             emit(SessionEvent::WritableClosed(frame.stream_id));
         }
         self.try_reap_stream(frame.stream_id);
+        Ok(())
     }
 
-    fn apply_close_to_stream(stream: &mut StreamState, target: CloseTarget) {
+    fn handle_session_close(
+        &mut self,
+        close: SessionCloseBody,
+        emit: &mut impl FnMut(SessionEvent),
+    ) {
+        if self.state.session_state == SessionState::Closed {
+            return;
+        }
+
+        self.state.session_state = SessionState::Closed;
+        self.state.issued_records.clear();
+        self.state.sent_records.clear();
+        self.clear_streams();
+        self.state.pending_control = Default::default();
+        emit(SessionEvent::SessionClosed(close));
+    }
+
+    fn apply_local_close_to_stream(stream: &mut StreamState, target: CloseTarget) {
         if Self::target_affects_inbound(stream.role, target) {
             stream.inbound_state = InboundState::Discarding;
-            stream.recv_buf.clear();
-            stream.recv_window.clear();
+            stream.reset_recv();
         }
         if Self::target_affects_outbound(stream.role, target) {
             stream.outbound_state = OutboundState::Closed;
             stream.send_buf.clear();
+            stream.retransmit.clear();
         }
     }
 
@@ -861,93 +1048,137 @@ impl SessionFsm {
         matches!(target, CloseTarget::Both) || role.outbound_target() == target
     }
 
-    fn drain_recv_window(stream: &mut StreamState) {
-        while let Some(chunk) = stream.recv_window.pop_contiguous() {
-            let RxChunk { bytes, fin } = chunk;
-            stream.recv_buf.extend(bytes);
-            if fin {
-                stream.inbound_state = InboundState::Finished;
-                break;
-            }
+    fn restore_stream_close(&mut self, close: StreamClose) {
+        if let Some(stream) = self.state.streams.get_mut(&close.stream_id) {
+            stream.pending_close = Some(close);
         }
     }
 
-    fn take_stream_frame(
-        stream: &mut StreamState,
-        stream_id: StreamId,
-        chunk_size: usize,
-    ) -> Option<StreamChunk> {
-        if !stream.send_buf.is_empty() {
-            let len = stream.send_buf.len().min(chunk_size);
-            let bytes: Vec<_> = stream.send_buf.drain(..len).collect();
-            let fin = if stream.send_buf.is_empty()
-                && matches!(stream.outbound_state, OutboundState::FinQueued)
-            {
-                stream.outbound_state = OutboundState::Finished;
-                true
-            } else {
-                false
-            };
-            let frame = StreamChunk {
-                stream_id,
-                chunk_seq: stream.next_send_chunk_seq,
-                bytes,
-                fin,
-            };
-            stream.next_send_chunk_seq += 1;
-            return Some(frame);
+    fn restore_stream_data(&mut self, frame: StreamData) {
+        if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
+            if matches!(stream.outbound_state, OutboundState::Closed) {
+                stream.inflight_bytes = stream.inflight_bytes.saturating_sub(frame.bytes.len());
+                return;
+            }
+            stream.retransmit.push_front(frame);
+        }
+    }
+
+    fn split_stream_data(frame: StreamData, max_payload: usize) -> (StreamData, Option<StreamData>) {
+        if frame.bytes.len() <= max_payload || frame.bytes.is_empty() {
+            return (frame, None);
         }
 
-        if matches!(stream.outbound_state, OutboundState::FinQueued) {
-            stream.outbound_state = OutboundState::Finished;
-            return Some(StreamChunk {
-                stream_id,
-                chunk_seq: stream.next_send_chunk_seq,
-                bytes: Vec::new(),
-                fin: true,
-            });
-        }
+        let split = max_payload.max(1).min(frame.bytes.len());
+        let mut head = frame.clone();
+        head.bytes.truncate(split);
+        head.fin = false;
 
-        None
+        let tail = StreamData {
+            stream_id: frame.stream_id,
+            offset: frame.offset + split as u64,
+            fin: frame.fin,
+            bytes: frame.bytes[split..].to_vec(),
+        };
+        (head, Some(tail))
+    }
+
+    fn max_stream_data_payload(&self, remaining: usize, record_empty: bool) -> Option<usize> {
+        let overhead = self.frame_len(&SessionFrame::StreamData(StreamData {
+            stream_id: StreamId(0),
+            offset: 0,
+            fin: false,
+            bytes: Vec::new(),
+        }));
+        if remaining > overhead {
+            Some(remaining - overhead)
+        } else if record_empty {
+            Some(self.config.record_size)
+        } else {
+            None
+        }
+    }
+
+    fn frame_fits(&self, remaining: usize, record_empty: bool, frame: &SessionFrame) -> bool {
+        let len = self.frame_len(frame);
+        len <= remaining || record_empty
+    }
+
+    fn push_frame(
+        &self,
+        record: &mut SessionRecord,
+        remaining: &mut usize,
+        frame: SessionFrame,
+        force_if_empty: bool,
+    ) -> bool {
+        let len = self.frame_len(&frame);
+        if len > *remaining && !(force_if_empty && record.frames.is_empty()) {
+            return false;
+        }
+        record.frames.push(frame);
+        *remaining = remaining.saturating_sub(len);
+        true
+    }
+
+    fn frame_len(&self, frame: &SessionFrame) -> usize {
+        let mut bytes = Vec::new();
+        frame.encode_into(&mut bytes);
+        bytes.len()
+    }
+
+    fn record_is_ack_eliciting(record: &SessionRecord) -> bool {
+        record
+            .frames
+            .iter()
+            .any(|frame| !matches!(frame, SessionFrame::Ack(_)))
     }
 
     fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
-        let tx_ring_references_stream =
-            self.state
-                .tx_ring
-                .iter()
-                .any(|(_, entry)| match &entry.pending.body {
-                    SessionBody::Stream(frame) => frame.stream_id == stream_id,
-                    SessionBody::StreamClose(frame) => frame.stream_id == stream_id,
-                    _ => false,
-                });
+        let issued_refs_stream = self.state.issued_records.values().any(|record| {
+            record.window_updates.iter().any(|(id, _)| *id == stream_id)
+                || record.reliable.iter().any(|frame| match frame {
+                    ReliableFrame::StreamData(frame) => frame.stream_id == stream_id,
+                    ReliableFrame::StreamClose(frame) => frame.stream_id == stream_id,
+                    ReliableFrame::Close(_) => false,
+                })
+        });
+        if issued_refs_stream {
+            return false;
+        }
 
-        if tx_ring_references_stream {
+        let sent_refs_stream = self.state.sent_records.values().any(|record| {
+            record
+                .pending
+                .window_updates
+                .iter()
+                .any(|(id, _)| *id == stream_id)
+                || record.pending.reliable.iter().any(|frame| match frame {
+                    ReliableFrame::StreamData(frame) => frame.stream_id == stream_id,
+                    ReliableFrame::StreamClose(frame) => frame.stream_id == stream_id,
+                    ReliableFrame::Close(_) => false,
+                })
+        });
+        if sent_refs_stream {
             return false;
         }
 
         if !stream.send_buf.is_empty()
-            || !stream.recv_buf.is_empty()
-            || !stream.recv_window.is_empty()
+            || !stream.retransmit.is_empty()
+            || stream.pending_close.is_some()
+            || stream.inflight_bytes > 0
+            || stream.readable_bytes() > 0
+            || stream.recv.buffered_end_offset() > stream.recv.start_offset()
         {
             return false;
         }
 
-        match stream.open_state {
-            StreamOpenState::WaitingForAck => false,
-            StreamOpenState::PendingSend => matches!(stream.outbound_state, OutboundState::Closed),
-            StreamOpenState::Opened => {
-                stream.pending_close.is_none()
-                    && matches!(
-                        stream.inbound_state,
-                        InboundState::Finished | InboundState::Closed(_) | InboundState::Discarding
-                    )
-                    && matches!(
-                        stream.outbound_state,
-                        OutboundState::Finished | OutboundState::Closed
-                    )
-            }
-        }
+        matches!(
+            stream.inbound_state,
+            InboundState::Finished | InboundState::Closed(_) | InboundState::Discarding
+        ) && matches!(
+            stream.outbound_state,
+            OutboundState::Finished | OutboundState::Closed
+        )
     }
 
     fn try_reap_stream(&mut self, stream_id: StreamId) {
@@ -983,9 +1214,11 @@ impl SessionFsm {
         }
 
         self.state.session_state = SessionState::Closed;
-        self.clear_streams();
+        self.state.issued_records.clear();
+        self.state.sent_records.clear();
         self.state.pending_control = Default::default();
         self.state.pending_control.close = Some(close.clone());
+        self.clear_streams();
         emit(SessionEvent::SessionClosed(close));
     }
 
@@ -993,4 +1226,9 @@ impl SessionFsm {
         self.state.next_stream_index = 0;
         self.state.streams.clear();
     }
+}
+
+struct BuiltRecord {
+    record: SessionRecord,
+    pending: PendingRecord,
 }

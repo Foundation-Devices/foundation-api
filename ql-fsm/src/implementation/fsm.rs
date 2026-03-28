@@ -57,11 +57,10 @@ pub fn receive(
             let Some((_, session_key)) = super::peer_session(fsm) else {
                 return Err(QlFsmError::NoSession);
             };
-            let envelope = wire::decrypt_record(crypto, &header, &mut encrypted, &session_key)?;
-            // TODO: this seems unnecessary to me?
-            let envelope = wire::SessionEnvelope::from_wire(&envelope)?;
+            let record = wire::decrypt_record(crypto, &header, &mut encrypted, &session_key)?;
+            let record = wire::SessionRecord::from_wire(&record)?;
             let mut session_closed = false;
-            fsm.session.receive(fsm.state.now.instant, envelope, {
+            fsm.session.receive(fsm.state.now.instant, record, {
                 let session_events = &mut fsm.state.session_events;
                 |event| {
                     session_closed |= super::forward_session_event(session_events, event);
@@ -126,20 +125,18 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
 
     let sender = fsm.identity.xid;
     let (recipient, session_key) = super::peer_session(fsm)?;
-    let (seq, ack, body) = fsm.session.take_next_write(fsm.state.now.instant)?;
+    let (write_id, record) = fsm.session.take_next_write(fsm.state.now.instant)?;
     let mut nonce = [0u8; Nonce::SIZE];
     crypto.fill_random_bytes(&mut nonce);
     Some(OutboundWrite {
-        record: wire::encrypt_record_parts(
+        record: wire::encrypt_record(
             crypto,
             wire::QlHeader { sender, recipient },
             &session_key,
-            seq,
-            ack,
-            body,
+            &record,
             Nonce(nonce),
         ),
-        session_write_id: Some(SessionWriteId(seq)),
+        session_write_id: Some(SessionWriteId(write_id)),
     })
 }
 
@@ -188,18 +185,26 @@ pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, QlFsmError> {
 pub fn write_stream(
     fsm: &mut QlFsm,
     stream_id: StreamId,
-    bytes: Vec<u8>,
-) -> Result<(), QlFsmError> {
+    bytes: &[u8],
+) -> Result<usize, QlFsmError> {
     ensure_peer_bound(fsm)?;
     Ok(fsm.session.write_stream(stream_id, bytes)?)
 }
 
-pub fn read_stream(
+pub fn peek_stream(
     fsm: &mut QlFsm,
     stream_id: StreamId,
     out: &mut [u8],
 ) -> Result<usize, QlFsmError> {
-    Ok(fsm.session.read_stream(stream_id, out)?)
+    Ok(fsm.session.peek_stream(stream_id, out)?)
+}
+
+pub fn commit_stream_read(
+    fsm: &mut QlFsm,
+    stream_id: StreamId,
+    len: usize,
+) -> Result<(), QlFsmError> {
+    Ok(fsm.session.commit_stream_read(stream_id, len)?)
 }
 
 pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Result<usize, QlFsmError> {

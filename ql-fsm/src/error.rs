@@ -19,6 +19,8 @@ pub enum QlFsmError {
     MissingStream,
     #[error("stream is not writable")]
     NotWritable,
+    #[error("invalid read commit")]
+    InvalidRead,
     #[error("session is closed")]
     SessionClosed,
     #[error("no peer bound")]
@@ -43,6 +45,7 @@ impl From<StreamError> for QlFsmError {
         match value {
             StreamError::MissingStream => Self::MissingStream,
             StreamError::NotWritable => Self::NotWritable,
+            StreamError::InvalidRead => Self::InvalidRead,
             StreamError::SessionClosed => Self::SessionClosed,
         }
     }

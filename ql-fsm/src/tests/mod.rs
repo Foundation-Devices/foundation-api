@@ -9,12 +9,12 @@ use std::{
 use libcrux_aesgcm::AesGcm256Key;
 use ql_wire::{
     self, generate_ml_dsa_keypair, generate_ml_kem_keypair, EncryptedMessage, QlCrypto, QlIdentity,
-    QlPayload, QlRecord, SessionEnvelope, SessionKey, XID,
+    QlPayload, QlRecord, SessionKey, XID,
 };
 use sha2::{Digest, Sha256};
 
 use crate::{
-    session::{SessionFsm, SessionFsmConfig, StreamNamespace},
+    session::{state::StreamParity, SessionFsm, SessionFsmConfig},
     state::ConnectionState,
     FsmTime, OutboundWrite, Peer, QlFsm, QlFsmConfig, SessionWriteId,
 };
@@ -144,29 +144,33 @@ impl Harness {
         };
         harness.a.fsm.session = SessionFsm::new(
             SessionFsmConfig {
-                local_namespace: StreamNamespace::for_local(
+                local_parity: StreamParity::for_local(
                     harness.a.fsm.identity.xid,
                     harness.a.fsm.peer.as_ref().unwrap().peer.xid,
                 ),
-                stream_chunk_size: config.session_stream_chunk_size,
-                ack_delay: config.session_ack_delay,
-                retransmit_timeout: config.session_retransmit_timeout,
+                record_size: config.session_record_size,
+                ack_delay: config.session_record_ack_delay,
+                retransmit_timeout: config.session_record_retransmit_timeout,
                 keepalive_interval: config.session_keepalive_interval,
                 peer_timeout: config.session_peer_timeout,
+                stream_send_buffer_size: config.session_stream_send_buffer_size,
+                stream_receive_buffer_size: config.session_stream_receive_buffer_size,
             },
             harness.now,
         );
         harness.b.fsm.session = SessionFsm::new(
             SessionFsmConfig {
-                local_namespace: StreamNamespace::for_local(
+                local_parity: StreamParity::for_local(
                     harness.b.fsm.identity.xid,
                     harness.b.fsm.peer.as_ref().unwrap().peer.xid,
                 ),
-                stream_chunk_size: config.session_stream_chunk_size,
-                ack_delay: config.session_ack_delay,
-                retransmit_timeout: config.session_retransmit_timeout,
+                record_size: config.session_record_size,
+                ack_delay: config.session_record_ack_delay,
+                retransmit_timeout: config.session_record_retransmit_timeout,
                 keepalive_interval: config.session_keepalive_interval,
                 peer_timeout: config.session_peer_timeout,
+                stream_send_buffer_size: config.session_stream_send_buffer_size,
+                stream_receive_buffer_size: config.session_stream_receive_buffer_size,
             },
             harness.now,
         );
@@ -271,15 +275,15 @@ fn peer_from_identity(identity: &QlIdentity) -> Peer {
     }
 }
 
-fn decrypt_envelope(
+fn decrypt_record(
     crypto: &impl QlCrypto,
     record: &QlRecord,
     session_key: &SessionKey,
-) -> ql_wire::SessionEnvelope {
+) -> ql_wire::SessionRecord {
     let aad = record.header.aad();
     let QlPayload::Session(encrypted) = &record.payload else {
         panic!("expected encrypted payload");
     };
     let plaintext = encrypted.decrypt(crypto, session_key, &aad).unwrap();
-    SessionEnvelope::decode(&plaintext).unwrap()
+    ql_wire::SessionRecord::decode(&plaintext).unwrap()
 }

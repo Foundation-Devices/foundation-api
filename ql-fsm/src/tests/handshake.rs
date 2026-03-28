@@ -229,7 +229,7 @@ fn initiator_waits_for_ready_before_connecting() {
     harness
         .a
         .fsm
-        .write_stream(stream_id, b"queued".to_vec())
+        .write_stream(stream_id, b"queued")
         .unwrap();
 
     let confirm = harness.next_outbound_a().unwrap();
