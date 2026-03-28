@@ -3,7 +3,7 @@ use std::time::Instant;
 use ql_wire::{self as wire, CloseCode, CloseTarget, Nonce, QlCrypto, QlPayloadRef, StreamId};
 
 use crate::{
-    BytesIter, OutboundWrite, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId,
+    OutboundWrite, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId, StreamReadIter,
 };
 
 pub fn receive(
@@ -193,7 +193,7 @@ pub fn write_stream(
     Ok(fsm.session.write_stream(stream_id, bytes)?)
 }
 
-pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Result<BytesIter<'_>, QlFsmError> {
+pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Result<StreamReadIter<'_>, QlFsmError> {
     Ok(fsm.session.stream_read(stream_id)?)
 }
 

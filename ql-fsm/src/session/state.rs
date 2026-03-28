@@ -9,7 +9,7 @@ use ql_wire::{
     StreamId, XID,
 };
 
-use super::{reassembly::ByteReassembly, SessionState, SESSION_RECORD_TRACKED_WINDOW};
+use super::{reassembly::StreamAssembler, SessionState, SESSION_RECORD_TRACKED_WINDOW};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamParity {
@@ -123,7 +123,7 @@ pub struct StreamState {
     pub peer_max_offset: u64,
     pub outbound_state: OutboundState,
     pub inbound_state: InboundState,
-    pub recv: ByteReassembly,
+    pub recv: StreamAssembler,
     pub advertised_max_offset: u64,
     pub pending_window: bool,
 }
@@ -140,7 +140,7 @@ impl StreamState {
             peer_max_offset: receive_buffer_size as u64,
             outbound_state: OutboundState::Open,
             inbound_state: InboundState::Open,
-            recv: ByteReassembly::new(receive_buffer_size),
+            recv: StreamAssembler::new(receive_buffer_size),
             advertised_max_offset: receive_buffer_size as u64,
             pending_window: false,
         }
@@ -170,7 +170,7 @@ impl StreamState {
 
     pub fn reset_recv(&mut self) {
         self.recv =
-            ByteReassembly::with_start_offset(self.recv.start_offset(), self.recv.max_buffered());
+            StreamAssembler::with_start_offset(self.recv.start_offset(), self.recv.max_buffered());
     }
 }
 

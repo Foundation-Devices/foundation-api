@@ -13,7 +13,7 @@ use ql_wire::{
 };
 
 use self::{
-    reassembly::{ByteReassemblyError, BytesIter},
+    reassembly::{StreamAssemblerError, StreamReadIter},
     state::{
         AckState, InboundState, OutboundState, PendingRecord, ReceiveInsertOutcome,
         ReceivedRecords, ReliableFrame, SentRecord, SessionFsmState, StreamParity, StreamRole,
@@ -190,7 +190,7 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn stream_read(&self, stream_id: StreamId) -> Result<BytesIter<'_>, StreamError> {
+    pub fn stream_read(&self, stream_id: StreamId) -> Result<StreamReadIter<'_>, StreamError> {
         let stream = self
             .state
             .streams
@@ -896,13 +896,13 @@ impl SessionFsm {
                 self.try_reap_stream(stream_id);
                 Ok(())
             }
-            Err(ByteReassemblyError::ConflictingOverlap)
-            | Err(ByteReassemblyError::OutOfWindow)
-            | Err(ByteReassemblyError::InconsistentFinalOffset)
-            | Err(ByteReassemblyError::FinalOffsetBeforeBufferedData)
-            | Err(ByteReassemblyError::BeyondFinalOffset)
-            | Err(ByteReassemblyError::TooManyMissingRanges)
-            | Err(ByteReassemblyError::OffsetOverflow) => {
+            Err(StreamAssemblerError::ConflictingOverlap)
+            | Err(StreamAssemblerError::OutOfWindow)
+            | Err(StreamAssemblerError::InconsistentFinalOffset)
+            | Err(StreamAssemblerError::FinalOffsetBeforeBufferedData)
+            | Err(StreamAssemblerError::BeyondFinalOffset)
+            | Err(StreamAssemblerError::TooManyMissingRanges)
+            | Err(StreamAssemblerError::OffsetOverflow) => {
                 self.fail_session(
                     SessionCloseBody {
                         code: CloseCode::PROTOCOL,
@@ -911,7 +911,7 @@ impl SessionFsm {
                 );
                 Err(())
             }
-            Err(ByteReassemblyError::ConsumeBeyondReadable) => unreachable!(),
+            Err(StreamAssemblerError::ConsumeBeyondReadable) => unreachable!(),
         }
     }
 

@@ -33,7 +33,7 @@ use ql_wire::{
     CloseCode, CloseTarget, MlDsaPublicKey, MlKemPublicKey, QlCrypto, QlIdentity, QlRecord,
     SessionCloseBody, StreamClose, StreamId, XID,
 };
-pub use session::reassembly::BytesIter;
+pub use session::reassembly::StreamReadIter;
 
 use crate::{
     replay_cache::ReplayCache,
@@ -301,7 +301,7 @@ impl QlFsm {
     }
 
     /// returns the readable stream bytes as borrowed chunks without consuming them
-    pub fn stream_read(&self, stream_id: StreamId) -> Result<BytesIter<'_>, QlFsmError> {
+    pub fn stream_read(&self, stream_id: StreamId) -> Result<StreamReadIter<'_>, QlFsmError> {
         implementation::stream_read(self, stream_id)
     }
 

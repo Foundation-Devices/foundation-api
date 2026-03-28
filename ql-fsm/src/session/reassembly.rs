@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 /// reassembles one stream direction from out-of-order byte ranges.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ByteReassembly<const MAX_MISSING_RANGES: usize = 8> {
+pub struct StreamAssembler<const MAX_MISSING_RANGES: usize = 8> {
     start_offset: u64,
     bytes: VecDeque<u8>,
     missing: MissingRanges<MAX_MISSING_RANGES>,
@@ -23,7 +23,7 @@ pub struct InsertOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ByteReassemblyError {
+pub enum StreamAssemblerError {
     OffsetOverflow,
     OutOfWindow,
     InconsistentFinalOffset,
@@ -35,12 +35,12 @@ pub enum ByteReassemblyError {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct BytesIter<'a> {
+pub struct StreamReadIter<'a> {
     front: Option<&'a [u8]>,
     back: Option<&'a [u8]>,
 }
 
-impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
+impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
     pub fn new(max_buffered: usize) -> Self {
         Self::with_start_offset(0, max_buffered)
     }
@@ -90,10 +90,10 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         }
     }
 
-    pub fn bytes(&self) -> BytesIter<'_> {
+    pub fn bytes(&self) -> StreamReadIter<'_> {
         let readable = self.readable_len();
         if readable == 0 {
-            return BytesIter {
+            return StreamReadIter {
                 front: None,
                 back: None,
             };
@@ -101,12 +101,12 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
 
         let (front, back) = self.bytes.as_slices();
         if readable <= front.len() {
-            BytesIter {
+            StreamReadIter {
                 front: Some(&front[..readable]),
                 back: None,
             }
         } else {
-            BytesIter {
+            StreamReadIter {
                 front: Some(front),
                 back: Some(&back[..readable - front.len()]),
             }
@@ -133,10 +133,10 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         offset: u64,
         fin: bool,
         bytes: &[u8],
-    ) -> Result<InsertOutcome, ByteReassemblyError> {
+    ) -> Result<InsertOutcome, StreamAssemblerError> {
         let end = offset
             .checked_add(bytes.len() as u64)
-            .ok_or(ByteReassemblyError::OffsetOverflow)?;
+            .ok_or(StreamAssemblerError::OffsetOverflow)?;
 
         let was_complete = self.is_complete();
         let old_readable = self.readable_len();
@@ -146,7 +146,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         }
         if let Some(final_offset) = self.final_offset {
             if end > final_offset {
-                return Err(ByteReassemblyError::BeyondFinalOffset);
+                return Err(StreamAssemblerError::BeyondFinalOffset);
             }
         }
 
@@ -171,10 +171,10 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         Ok(self.insert_outcome(was_complete, old_readable))
     }
 
-    pub fn consume(&mut self, len: usize) -> Result<(), ByteReassemblyError> {
+    pub fn consume(&mut self, len: usize) -> Result<(), StreamAssemblerError> {
         let readable = self.readable_len();
         if len > readable {
-            return Err(ByteReassemblyError::ConsumeBeyondReadable);
+            return Err(StreamAssemblerError::ConsumeBeyondReadable);
         }
 
         self.bytes.drain(..len);
@@ -192,33 +192,33 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
     fn set_or_validate_final_offset(
         &mut self,
         final_offset: u64,
-    ) -> Result<(), ByteReassemblyError> {
+    ) -> Result<(), StreamAssemblerError> {
         if let Some(existing) = self.final_offset {
             return if existing == final_offset {
                 Ok(())
             } else {
-                Err(ByteReassemblyError::InconsistentFinalOffset)
+                Err(StreamAssemblerError::InconsistentFinalOffset)
             };
         }
 
         let buffered_end = self.buffered_end_offset();
         if final_offset < buffered_end {
-            return Err(ByteReassemblyError::FinalOffsetBeforeBufferedData);
+            return Err(StreamAssemblerError::FinalOffsetBeforeBufferedData);
         }
 
         self.final_offset = Some(final_offset);
         Ok(())
     }
 
-    fn ensure_within_window(&self, end: u64) -> Result<(), ByteReassemblyError> {
+    fn ensure_within_window(&self, end: u64) -> Result<(), StreamAssemblerError> {
         let attempted = end.saturating_sub(self.start_offset);
         if attempted > self.max_buffered as u64 {
-            return Err(ByteReassemblyError::OutOfWindow);
+            return Err(StreamAssemblerError::OutOfWindow);
         }
         Ok(())
     }
 
-    fn ensure_buffered(&mut self, end: u64) -> Result<(), ByteReassemblyError> {
+    fn ensure_buffered(&mut self, end: u64) -> Result<(), StreamAssemblerError> {
         let buffered_end = self.buffered_end_offset();
         if end <= buffered_end {
             return Ok(());
@@ -232,7 +232,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         })
     }
 
-    fn push_missing_range(&mut self, range: MissingRange) -> Result<(), ByteReassemblyError> {
+    fn push_missing_range(&mut self, range: MissingRange) -> Result<(), StreamAssemblerError> {
         if range.start >= range.end {
             return Ok(());
         }
@@ -247,7 +247,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         self.missing.push(range)
     }
 
-    fn validate_overlap(&self, offset: u64, bytes: &[u8]) -> Result<(), ByteReassemblyError> {
+    fn validate_overlap(&self, offset: u64, bytes: &[u8]) -> Result<(), StreamAssemblerError> {
         let mut gap_index = self.first_gap_index_after(offset);
 
         for (index, byte) in bytes.iter().copied().enumerate() {
@@ -265,7 +265,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
             }
 
             if self.byte_at(absolute) != byte {
-                return Err(ByteReassemblyError::ConflictingOverlap);
+                return Err(StreamAssemblerError::ConflictingOverlap);
             }
         }
 
@@ -280,7 +280,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
         }
     }
 
-    fn subtract_missing_range(&mut self, start: u64, end: u64) -> Result<(), ByteReassemblyError> {
+    fn subtract_missing_range(&mut self, start: u64, end: u64) -> Result<(), StreamAssemblerError> {
         let first = self.first_gap_index_after(start);
         if first == self.missing.len() || self.missing[first].start >= end {
             return Ok(());
@@ -355,7 +355,7 @@ impl<const MAX_MISSING_RANGES: usize> ByteReassembly<MAX_MISSING_RANGES> {
     }
 }
 
-impl<'a> Iterator for BytesIter<'a> {
+impl<'a> Iterator for StreamReadIter<'a> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -413,18 +413,18 @@ impl<const N: usize> MissingRanges<N> {
         }
     }
 
-    fn push(&mut self, range: MissingRange) -> Result<(), ByteReassemblyError> {
+    fn push(&mut self, range: MissingRange) -> Result<(), StreamAssemblerError> {
         if self.len == N {
-            return Err(ByteReassemblyError::TooManyMissingRanges);
+            return Err(StreamAssemblerError::TooManyMissingRanges);
         }
         self.ranges[self.len] = range;
         self.len += 1;
         Ok(())
     }
 
-    fn insert(&mut self, index: usize, range: MissingRange) -> Result<(), ByteReassemblyError> {
+    fn insert(&mut self, index: usize, range: MissingRange) -> Result<(), StreamAssemblerError> {
         if self.len == N {
-            return Err(ByteReassemblyError::TooManyMissingRanges);
+            return Err(StreamAssemblerError::TooManyMissingRanges);
         }
         for i in (index..self.len).rev() {
             self.ranges[i + 1] = self.ranges[i];
@@ -476,11 +476,11 @@ impl<const N: usize> std::ops::IndexMut<usize> for MissingRanges<N> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ByteReassembly, ByteReassemblyError, InsertOutcome, MissingRange};
+    use super::{InsertOutcome, MissingRange, StreamAssembler, StreamAssemblerError};
 
     #[test]
     fn contiguous_insert_becomes_readable_and_complete() {
-        let mut assembler = ByteReassembly::<8>::new(64);
+        let mut assembler = StreamAssembler::<8>::new(64);
 
         let outcome = assembler.insert(0, true, b"hello").unwrap();
 
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn out_of_order_insert_tracks_missing_ranges_until_gap_is_filled() {
-        let mut assembler = ByteReassembly::<8>::new(64);
+        let mut assembler = StreamAssembler::<8>::new(64);
 
         let first = assembler.insert(5, true, b" world").unwrap();
         assert_eq!(
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn duplicate_insert_is_ignored_if_bytes_match() {
-        let mut assembler = ByteReassembly::<8>::new(64);
+        let mut assembler = StreamAssembler::<8>::new(64);
 
         assembler.insert(0, false, b"hello").unwrap();
         let duplicate = assembler.insert(0, false, b"hello").unwrap();
@@ -548,17 +548,17 @@ mod tests {
 
     #[test]
     fn conflicting_overlap_is_rejected() {
-        let mut assembler = ByteReassembly::<8>::new(64);
+        let mut assembler = StreamAssembler::<8>::new(64);
 
         assembler.insert(0, false, b"abcdef").unwrap();
         let error = assembler.insert(3, false, b"xyz").unwrap_err();
 
-        assert_eq!(error, ByteReassemblyError::ConflictingOverlap);
+        assert_eq!(error, StreamAssemblerError::ConflictingOverlap);
     }
 
     #[test]
     fn consume_advances_start_offset_and_trims_old_prefix() {
-        let mut assembler = ByteReassembly::<8>::new(64);
+        let mut assembler = StreamAssembler::<8>::new(64);
 
         assembler.insert(0, false, b"abcd").unwrap();
         assembler.consume(2).unwrap();
@@ -580,18 +580,18 @@ mod tests {
 
     #[test]
     fn insert_rejects_when_missing_range_budget_is_exhausted() {
-        let mut assembler = ByteReassembly::<2>::new(64);
+        let mut assembler = StreamAssembler::<2>::new(64);
 
         assembler.insert(1, false, b"a").unwrap();
         assembler.insert(3, false, b"b").unwrap();
         let error = assembler.insert(5, false, b"c").unwrap_err();
 
-        assert_eq!(error, ByteReassemblyError::TooManyMissingRanges);
+        assert_eq!(error, StreamAssemblerError::TooManyMissingRanges);
     }
 
     #[test]
     fn insert_can_fill_multiple_gaps_without_rebuilding_state() {
-        let mut assembler = ByteReassembly::<8>::new(64);
+        let mut assembler = StreamAssembler::<8>::new(64);
 
         assembler.insert(0, false, b"ab").unwrap();
         assembler.insert(4, false, b"ef").unwrap();
