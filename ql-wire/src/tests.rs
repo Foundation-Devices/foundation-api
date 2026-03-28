@@ -35,10 +35,10 @@ impl QlCrypto for TestCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; EncryptedMessage::AUTH_SIZE] {
+    ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE] {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
-        let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
+        let mut auth = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
         key.encrypt(
             buffer,
             (&mut auth).into(),
@@ -56,7 +56,7 @@ impl QlCrypto for TestCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-        auth_tag: &[u8; EncryptedMessage::AUTH_SIZE],
+        auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
     ) -> bool {
         let key: AesGcm256Key = (*key.data()).into();
         let ciphertext = buffer.to_vec();
@@ -122,12 +122,11 @@ fn encrypted_session_record_round_trip_and_decrypt() {
 
     let mut bytes = bytes;
     let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadRef::Session(mut encrypted) = payload else {
+    let QlPayloadRef::Session(encrypted) = payload else {
         panic!("expected session payload");
     };
-    let decrypted =
-        encrypted::decrypt_record(&crypto, &header, &mut encrypted, &session_key).unwrap();
-    assert_eq!(SessionRecord::from_wire(&decrypted).unwrap(), body);
+    let decrypted = encrypted::decrypt_record(&crypto, &header, encrypted, &session_key).unwrap();
+    assert_eq!(SessionRecord::decode(decrypted).unwrap(), body);
 }
 
 #[test]
@@ -168,33 +167,30 @@ fn decrypted_session_record_iterates_zero_copy_frames() {
 
     let mut bytes = record.encode();
     let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadRef::Session(mut encrypted) = payload else {
+    let QlPayloadRef::Session(encrypted) = payload else {
         panic!("expected session payload");
     };
-    let decrypted =
-        encrypted::decrypt_record(&crypto, &header, &mut encrypted, &session_key).unwrap();
-
-    assert_eq!(decrypted.seq(), RecordSeq(7));
-    let mut frames = decrypted.frames();
+    let decrypted = encrypted::decrypt_record(&crypto, &header, encrypted, &session_key).unwrap();
+    let (seq, mut frames) = SessionRecord::parse(decrypted).unwrap();
+    assert_eq!(seq, RecordSeq(7));
     match frames.next().unwrap().unwrap() {
-        SessionFrameRef::StreamData(frame) => {
-            assert_eq!(frame.stream_id(), StreamId(1));
-            assert_eq!(frame.offset(), 5);
-            assert!(!frame.fin().unwrap());
-            assert_eq!(frame.bytes(), b"abc");
+        SessionFrame::StreamData(frame) => {
+            assert_eq!(frame.stream_id, StreamId(1));
+            assert_eq!(frame.offset, 5);
+            assert!(!frame.fin);
+            assert_eq!(frame.bytes, b"abc");
         }
         other => panic!("expected stream data, got {}", frame_name(&other)),
     }
     match frames.next().unwrap().unwrap() {
-        SessionFrameRef::Ack(frame) => {
-            let ranges: Vec<_> = frame.ranges().collect();
-            assert_eq!(ranges, vec![RecordAckRange { start: 3, end: 8 }]);
+        SessionFrame::Ack(frame) => {
+            assert_eq!(frame.ranges, vec![RecordAckRange { start: 3, end: 8 }]);
         }
         other => panic!("expected ack, got {}", frame_name(&other)),
     }
     match frames.next().unwrap().unwrap() {
-        SessionFrameRef::StreamClose(frame) => {
-            let owned = StreamClose::from_wire(&frame).unwrap();
+        SessionFrame::StreamClose(frame) => {
+            let owned = frame.into_owned();
             assert_eq!(owned.stream_id, StreamId(1));
             assert_eq!(owned.target, CloseTarget::Response);
             assert_eq!(owned.payload, b"later".to_vec());
@@ -240,10 +236,10 @@ fn pair_request_round_trip_and_decrypt() {
 
     let mut bytes = record.encode();
     let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadRef::PairRequest(mut request) = payload else {
+    let QlPayloadRef::PairRequest(request) = payload else {
         panic!("expected pair request");
     };
-    let body = pair::decrypt_pair_request(&crypto, &recipient, &header, &mut request, 100).unwrap();
+    let body = pair::decrypt_pair_request(&crypto, &recipient, &header, request, 100).unwrap();
     assert_eq!(body.meta, meta);
     assert_eq!(body.xid, sender.xid);
     assert_eq!(body.signing_pub_key, sender.signing_public_key);
@@ -279,10 +275,10 @@ fn ready_round_trip_and_decrypt() {
     assert_eq!(parsed, record);
 
     let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadRef::Ready(mut ready) = payload else {
+    let QlPayloadRef::Ready(ready) = payload else {
         panic!("expected ready payload");
     };
-    let body = handshake::decrypt_ready(&crypto, &header, &mut ready, &session_key, 100).unwrap();
+    let body = handshake::decrypt_ready(&crypto, &header, ready, &session_key, 100).unwrap();
     assert_eq!(body.meta, meta);
 }
 
@@ -433,10 +429,10 @@ fn protocol_record_size_breakdown() {
         }
     }
 
-    fn encrypted(tag: u8, ciphertext_len: usize) -> EncryptedMessage {
+    fn encrypted(tag: u8, ciphertext_len: usize) -> EncryptedMessage<Vec<u8>> {
         EncryptedMessage {
             nonce: Nonce([tag; Nonce::SIZE]),
-            auth: [tag; EncryptedMessage::AUTH_SIZE],
+            auth: [tag; ENCRYPTED_MESSAGE_AUTH_SIZE],
             ciphertext: vec![tag; ciphertext_len],
         }
     }
@@ -606,13 +602,13 @@ fn protocol_record_size_breakdown() {
     print_size("ql-wire session close", session_close.encode().len());
 }
 
-fn frame_name(frame: &SessionFrameRef<'_>) -> &'static str {
+fn frame_name(frame: &SessionFrame<&[u8]>) -> &'static str {
     match frame {
-        SessionFrameRef::Ping => "ping",
-        SessionFrameRef::Ack(_) => "ack",
-        SessionFrameRef::StreamData(_) => "stream_data",
-        SessionFrameRef::StreamWindow(_) => "stream_window",
-        SessionFrameRef::StreamClose(_) => "stream_close",
-        SessionFrameRef::Close(_) => "close",
+        SessionFrame::Ping => "ping",
+        SessionFrame::Ack(_) => "ack",
+        SessionFrame::StreamData(_) => "stream_data",
+        SessionFrame::StreamWindow(_) => "stream_window",
+        SessionFrame::StreamClose(_) => "stream_close",
+        SessionFrame::Close(_) => "close",
     }
 }

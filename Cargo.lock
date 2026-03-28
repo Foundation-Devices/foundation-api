@@ -2194,7 +2194,6 @@ dependencies = [
  "libcrux-ml-kem",
  "sha2",
  "thiserror",
- "zerocopy",
 ]
 
 [[package]]

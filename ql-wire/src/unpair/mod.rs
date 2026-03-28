@@ -1,12 +1,4 @@
-use zerocopy::{
-    byte_slice::ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
-};
-
-use crate::{
-    codec::{parse, push_value},
-    control::ControlMetaWire,
-    ControlMeta, MlDsaSignature, WireError,
-};
+use crate::{codec, ControlMeta, MlDsaSignature, WireError};
 
 mod crypto;
 pub use crypto::*;
@@ -17,32 +9,21 @@ pub struct Unpair {
     pub signature: MlDsaSignature,
 }
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct UnpairWire {
-    pub meta: ControlMetaWire,
-    pub signature: [u8; MlDsaSignature::SIZE],
-}
-
 impl Unpair {
-    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, UnpairWire>, WireError> {
-        parse(bytes)
-    }
+    pub const WIRE_SIZE: usize = ControlMeta::ENCODED_LEN + MlDsaSignature::SIZE;
 
-    pub fn from_wire(wire: &UnpairWire) -> Self {
-        Self {
-            meta: ControlMeta::from_wire(wire.meta),
-            signature: MlDsaSignature::from_data(wire.signature),
-        }
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        let unpair = Self {
+            meta: ControlMeta::decode_from(&mut reader)?,
+            signature: MlDsaSignature::from_data(reader.take_array()?),
+        };
+        reader.finish()?;
+        Ok(unpair)
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        push_value(
-            out,
-            &UnpairWire {
-                meta: self.meta.to_wire(),
-                signature: *self.signature.as_bytes(),
-            },
-        );
+        self.meta.encode_into(out);
+        codec::push_bytes(out, self.signature.as_bytes());
     }
 }

@@ -1,10 +1,9 @@
-use zerocopy::{byte_slice::ByteSlice, Ref};
-
-use super::UnpairWire;
 use crate::{
     ControlMeta, MlDsaPublicKey, QlCrypto, QlHeader, QlIdentity, QlPayload, QlRecord, WireError,
     XID,
 };
+
+use super::Unpair;
 
 pub fn build_unpair(
     crypto: &impl QlCrypto,
@@ -21,22 +20,21 @@ pub fn build_unpair(
         .sign(crypto, &hash_unpair_signature_data(crypto, &header, &meta));
     QlRecord {
         header,
-        payload: QlPayload::Unpair(super::Unpair { meta, signature }),
+        payload: QlPayload::Unpair(Unpair { meta, signature }),
     }
 }
 
-pub fn verify_unpair<B: ByteSlice>(
+pub fn verify_unpair(
     crypto: &impl QlCrypto,
     header: &QlHeader,
     signer: &MlDsaPublicKey,
-    unpair: &Ref<B, UnpairWire>,
+    unpair: &Unpair,
     now_seconds: u64,
 ) -> Result<(), WireError> {
-    let meta = ControlMeta::from_wire(unpair.meta);
-    meta.ensure_not_expired(now_seconds)?;
+    unpair.meta.ensure_not_expired(now_seconds)?;
     if signer.verify_bytes(
-        &unpair.signature,
-        &hash_unpair_signature_data(crypto, header, &meta),
+        unpair.signature.as_bytes(),
+        &hash_unpair_signature_data(crypto, header, &unpair.meta),
     ) {
         Ok(())
     } else {

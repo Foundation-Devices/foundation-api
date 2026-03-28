@@ -1,51 +1,100 @@
-use zerocopy::{
-    byte_slice::{ByteSlice, SplitByteSlice},
-    byteorder::little_endian,
-    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, TryFromBytes,
-};
+use crate::{ByteSlice, QlHeader, WireError};
 
-use crate::{QlHeader, WireError};
-
-pub type U16Le = little_endian::U16;
-pub type U32Le = little_endian::U32;
-pub type U64Le = little_endian::U64;
-
-pub fn push_value<T>(out: &mut Vec<u8>, value: &T)
-where
-    T: IntoBytes + Immutable + ?Sized,
-{
-    out.extend_from_slice(value.as_bytes());
+pub fn push_u8(out: &mut Vec<u8>, value: u8) {
+    out.push(value);
 }
 
-pub fn read_exact<T>(bytes: &[u8]) -> Result<T, WireError>
-where
-    T: FromBytes + Copy,
-{
-    T::read_from_bytes(bytes).map_err(|_| WireError::InvalidPayload)
+pub fn push_u16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_le_bytes());
 }
 
-pub fn read_byte<T>(byte: u8) -> Result<T, WireError>
-where
-    T: TryFromBytes + Copy,
-{
-    T::try_read_from_bytes(core::slice::from_ref(&byte)).map_err(|_| WireError::InvalidPayload)
+pub fn push_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
 }
 
-pub fn read_prefix<T, B>(bytes: B) -> Result<(T, B), WireError>
-where
-    B: SplitByteSlice,
-    T: FromBytes + KnownLayout + Immutable + Copy,
-{
-    let (value, rest) = Ref::<_, T>::from_prefix(bytes).map_err(|_| WireError::InvalidPayload)?;
-    Ok((*value, rest))
+pub fn push_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
 }
 
-pub fn parse<T, B>(bytes: B) -> Result<Ref<B, T>, WireError>
-where
-    B: ByteSlice,
-    T: KnownLayout + Immutable + ?Sized,
-{
-    Ref::<_, T>::from_bytes(bytes).map_err(|_| WireError::InvalidPayload)
+pub fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(bytes);
+}
+
+pub struct Reader<B> {
+    remaining: Option<B>,
+}
+
+impl<B: ByteSlice> Reader<B> {
+    pub fn new(bytes: B) -> Self {
+        Self {
+            remaining: Some(bytes),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.remaining.as_ref().unwrap().is_empty()
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.remaining.as_ref().unwrap().len()
+    }
+
+    pub fn take_bytes(&mut self, len: usize) -> Result<B, WireError> {
+        let remaining = self.remaining.take().unwrap();
+        match remaining.split_at(len) {
+            Ok((head, tail)) => {
+                self.remaining = Some(tail);
+                Ok(head)
+            }
+            Err(remaining) => {
+                self.remaining = Some(remaining);
+                Err(WireError::InvalidPayload)
+            }
+        }
+    }
+
+    pub fn take_rest(mut self) -> B {
+        self.remaining.take().unwrap()
+    }
+
+    pub fn take_array<const N: usize>(&mut self) -> Result<[u8; N], WireError> {
+        let bytes = self.take_bytes(N)?;
+        let mut out = [0u8; N];
+        out.copy_from_slice(&bytes);
+        Ok(out)
+    }
+
+    pub fn take_u8(&mut self) -> Result<u8, WireError> {
+        Ok(self.take_bytes(1)?[0])
+    }
+
+    pub fn take_u16(&mut self) -> Result<u16, WireError> {
+        Ok(u16::from_le_bytes(self.take_array()?))
+    }
+
+    pub fn take_u32(&mut self) -> Result<u32, WireError> {
+        Ok(u32::from_le_bytes(self.take_array()?))
+    }
+
+    pub fn take_u64(&mut self) -> Result<u64, WireError> {
+        Ok(u64::from_le_bytes(self.take_array()?))
+    }
+
+    pub fn take_bool(&mut self) -> Result<bool, WireError> {
+        match self.take_u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(WireError::InvalidPayload),
+        }
+    }
+
+    pub fn finish(self) -> Result<(), WireError> {
+        if self.is_empty() {
+            Ok(())
+        } else {
+            Err(WireError::InvalidPayload)
+        }
+    }
 }
 
 pub fn append_field(out: &mut Vec<u8>, label: &[u8], value: &[u8]) {

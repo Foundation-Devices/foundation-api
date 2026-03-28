@@ -1,21 +1,15 @@
-use zerocopy::{
-    byte_slice::ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
-};
-
 use crate::{
-    codec::{parse, push_value, read_exact},
-    control::ControlMetaWire,
-    encrypted_message::EncryptedMessage,
-    ControlMeta, MlDsaPublicKey, MlDsaSignature, MlKemCiphertext, MlKemPublicKey, WireError, XID,
+    codec, encrypted_message::EncryptedMessage, ControlMeta, MlDsaPublicKey, MlDsaSignature,
+    ByteSlice, MlKemCiphertext, MlKemPublicKey, WireError, XID,
 };
 
 mod crypto;
 pub use crypto::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PairRequestRecord {
+pub struct PairRequestRecord<B> {
     pub kem_ct: MlKemCiphertext,
-    pub encrypted: EncryptedMessage,
+    pub encrypted: EncryptedMessage<B>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,84 +21,66 @@ pub struct PairRequestBody {
     pub proof: MlDsaSignature,
 }
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
-#[repr(C, packed)]
-pub struct PairRequestRecordWire {
-    pub kem_ct: [u8; MlKemCiphertext::SIZE],
-    pub encrypted: [u8],
-}
-
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct PairRequestBodyWire {
-    pub meta: ControlMetaWire,
-    pub xid: [u8; XID::SIZE],
-    pub signing_pub_key: [u8; MlDsaPublicKey::SIZE],
-    pub encapsulation_pub_key: [u8; MlKemPublicKey::SIZE],
-    pub proof: [u8; MlDsaSignature::SIZE],
-}
-
-impl PairRequestRecord {
-    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, PairRequestRecordWire>, WireError> {
-        let record: Ref<B, PairRequestRecordWire> = parse(bytes)?;
-        let _ = EncryptedMessage::parse(&record.encrypted)?;
-        Ok(record)
+impl<B: ByteSlice> PairRequestRecord<B> {
+    pub fn parse(bytes: B) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        Ok(Self {
+            kem_ct: MlKemCiphertext::from_data(reader.take_array()?),
+            encrypted: EncryptedMessage::parse(reader.take_rest())?,
+        })
     }
+}
 
-    pub fn from_wire(wire: &PairRequestRecordWire) -> Self {
-        let encrypted =
-            EncryptedMessage::parse(&wire.encrypted).expect("validated pair request record");
-        Self {
-            kem_ct: MlKemCiphertext::from_data(wire.kem_ct),
-            encrypted: EncryptedMessage::from_wire(&encrypted),
+impl<B> PairRequestRecord<B> {
+    pub fn into_owned(self) -> PairRequestRecord<Vec<u8>>
+    where
+        B: AsRef<[u8]>,
+    {
+        PairRequestRecord {
+            kem_ct: self.kem_ct,
+            encrypted: self.encrypted.into_owned(),
         }
     }
+}
 
+impl<B: AsRef<[u8]>> PairRequestRecord<B> {
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        push_value(
-            out,
-            &PairRequestHeaderWire {
-                kem_ct: *self.kem_ct.as_bytes(),
-            },
-        );
-        out.extend_from_slice(&self.encrypted.encode());
+        codec::push_bytes(out, self.kem_ct.as_bytes());
+        self.encrypted.encode_into(out);
     }
 }
 
 impl PairRequestBody {
-    pub fn from_wire(wire: PairRequestBodyWire) -> Self {
-        Self {
-            meta: ControlMeta::from_wire(wire.meta),
-            xid: XID(wire.xid),
-            signing_pub_key: MlDsaPublicKey::from_data(wire.signing_pub_key),
-            encapsulation_pub_key: MlKemPublicKey::from_data(wire.encapsulation_pub_key),
-            proof: MlDsaSignature::from_data(wire.proof),
-        }
-    }
+    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN
+        + XID::SIZE
+        + MlDsaPublicKey::SIZE
+        + MlKemPublicKey::SIZE
+        + MlDsaSignature::SIZE;
 
-    pub fn to_wire(&self) -> PairRequestBodyWire {
-        PairRequestBodyWire {
-            meta: self.meta.to_wire(),
-            xid: self.xid.0,
-            signing_pub_key: *self.signing_pub_key.as_bytes(),
-            encapsulation_pub_key: *self.encapsulation_pub_key.as_bytes(),
-            proof: *self.proof.as_bytes(),
-        }
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        self.meta.encode_into(out);
+        codec::push_bytes(out, &self.xid.0);
+        codec::push_bytes(out, self.signing_pub_key.as_bytes());
+        codec::push_bytes(out, self.encapsulation_pub_key.as_bytes());
+        codec::push_bytes(out, self.proof.as_bytes());
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let wire = self.to_wire();
-        wire.as_bytes().to_vec()
+        let mut out = Vec::with_capacity(Self::ENCODED_LEN);
+        self.encode_into(&mut out);
+        out
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let wire: PairRequestBodyWire = read_exact(bytes)?;
-        Ok(Self::from_wire(wire))
+        let mut reader = codec::Reader::new(bytes);
+        let body = Self {
+            meta: ControlMeta::decode_from(&mut reader)?,
+            xid: XID(reader.take_array()?),
+            signing_pub_key: MlDsaPublicKey::from_data(reader.take_array()?),
+            encapsulation_pub_key: MlKemPublicKey::from_data(reader.take_array()?),
+            proof: MlDsaSignature::from_data(reader.take_array()?),
+        };
+        reader.finish()?;
+        Ok(body)
     }
-}
-
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct PairRequestHeaderWire {
-    pub kem_ct: [u8; MlKemCiphertext::SIZE],
 }

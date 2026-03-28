@@ -1,9 +1,4 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
-
-use crate::{
-    codec::{U32Le, U64Le},
-    WireError,
-};
+use crate::{codec, WireError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -16,6 +11,8 @@ pub struct ControlMeta {
 }
 
 impl ControlMeta {
+    pub const ENCODED_LEN: usize = core::mem::size_of::<u32>() + core::mem::size_of::<u64>();
+
     pub fn ensure_not_expired(&self, now_seconds: u64) -> Result<(), WireError> {
         if now_seconds > self.valid_until {
             Err(WireError::Expired)
@@ -24,24 +21,33 @@ impl ControlMeta {
         }
     }
 
-    pub fn to_wire(&self) -> ControlMetaWire {
-        ControlMetaWire {
-            control_id: U32Le::new(self.control_id.0),
-            valid_until: U64Le::new(self.valid_until),
-        }
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        codec::push_u32(out, self.control_id.0);
+        codec::push_u64(out, self.valid_until);
     }
 
-    pub fn from_wire(meta: ControlMetaWire) -> Self {
-        Self {
-            control_id: ControlId(meta.control_id.get()),
-            valid_until: meta.valid_until.get(),
-        }
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::ENCODED_LEN);
+        self.encode_into(&mut out);
+        out
     }
-}
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct ControlMetaWire {
-    pub control_id: U32Le,
-    pub valid_until: U64Le,
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        let meta = Self {
+            control_id: ControlId(reader.take_u32()?),
+            valid_until: reader.take_u64()?,
+        };
+        reader.finish()?;
+        Ok(meta)
+    }
+
+    pub fn decode_from<B: crate::ByteSlice>(
+        reader: &mut codec::Reader<B>,
+    ) -> Result<Self, WireError> {
+        Ok(Self {
+            control_id: ControlId(reader.take_u32()?),
+            valid_until: reader.take_u64()?,
+        })
+    }
 }

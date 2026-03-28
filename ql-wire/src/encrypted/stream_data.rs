@@ -1,82 +1,56 @@
 use std::mem::size_of;
 
-use zerocopy::{byte_slice::ByteSlice, FromBytes, Immutable, KnownLayout, Ref, Unaligned};
-
 use super::StreamId;
-use crate::{
-    codec::{parse, U32Le, U64Le},
-    WireError,
-};
+use crate::{codec, ByteSlice, WireError};
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamData {
+pub struct StreamData<B> {
     pub stream_id: StreamId,
     pub offset: u64,
     pub fin: bool,
-    pub bytes: Vec<u8>,
+    pub bytes: B,
 }
 
-#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
-#[repr(C, packed)]
-pub struct StreamDataWire {
-    pub stream_id: U32Le,
-    pub offset: U64Le,
-    pub fin: u8,
-    pub bytes: [u8],
+impl<B> StreamData<B> {
+    pub const MIN_WIRE_SIZE: usize = size_of::<u32>() + size_of::<u64>() + size_of::<u8>();
 }
 
-impl StreamData {
-    pub const MIN_WIRE_SIZE: usize = size_of::<U32Le>() + size_of::<U64Le>() + size_of::<u8>();
-
-    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, StreamDataWire>, WireError> {
-        if bytes.len() < Self::MIN_WIRE_SIZE {
-            return Err(WireError::InvalidPayload);
-        }
-        let wire: Ref<B, StreamDataWire> = parse(bytes)?;
-        let _ = wire.fin()?;
-        Ok(wire)
-    }
-
-    pub fn encoded_len(&self) -> usize {
-        Self::MIN_WIRE_SIZE + self.bytes.len()
-    }
-
-    pub fn from_wire(wire: &StreamDataWire) -> Result<Self, WireError> {
+impl<B: ByteSlice> StreamData<B> {
+    pub fn parse(bytes: B) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
         Ok(Self {
-            stream_id: wire.stream_id(),
-            offset: wire.offset(),
-            fin: wire.fin()?,
-            bytes: wire.bytes().to_vec(),
+            stream_id: StreamId(reader.take_u32()?),
+            offset: reader.take_u64()?,
+            fin: reader.take_bool()?,
+            bytes: reader.take_rest(),
         })
+    }
+}
+
+impl<B> StreamData<B> {
+    pub fn into_owned(self) -> StreamData<Vec<u8>>
+    where
+        B: AsRef<[u8]>,
+    {
+        StreamData {
+            stream_id: self.stream_id,
+            offset: self.offset,
+            fin: self.fin,
+            bytes: self.bytes.as_ref().to_vec(),
+        }
+    }
+}
+
+impl<B: AsRef<[u8]>> StreamData<B> {
+    pub fn encoded_len(&self) -> usize {
+        Self::MIN_WIRE_SIZE + self.bytes.as_ref().len()
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.stream_id.0.to_le_bytes());
-        out.extend_from_slice(&self.offset.to_le_bytes());
-        out.push(u8::from(self.fin));
-        out.extend_from_slice(&self.bytes);
-    }
-}
-
-impl StreamDataWire {
-    pub fn stream_id(&self) -> StreamId {
-        StreamId(self.stream_id.get())
-    }
-
-    pub fn offset(&self) -> u64 {
-        self.offset.get()
-    }
-
-    pub fn fin(&self) -> Result<bool, WireError> {
-        match self.fin {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(WireError::InvalidPayload),
-        }
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        codec::push_u32(out, self.stream_id.0);
+        codec::push_u64(out, self.offset);
+        codec::push_u8(out, u8::from(self.fin));
+        codec::push_bytes(out, self.bytes.as_ref());
     }
 }

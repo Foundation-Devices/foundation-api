@@ -1,64 +1,84 @@
-use zerocopy::{
-    byte_slice::{ByteSlice, ByteSliceMut},
-    FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned,
-};
-
 use crate::{
-    codec::{parse, push_value},
-    Nonce, QlCrypto, SessionKey, WireError,
+    codec, ByteSlice, ENCRYPTED_MESSAGE_AUTH_SIZE, Nonce, QlCrypto, SessionKey, WireError,
 };
-
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
-#[repr(C, packed)]
-pub struct EncryptedMessageWire {
-    pub nonce: [u8; Nonce::SIZE],
-    pub auth: [u8; EncryptedMessage::AUTH_SIZE],
-    pub ciphertext: [u8],
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncryptedMessage {
+pub struct EncryptedMessage<B> {
     pub nonce: Nonce,
-    pub auth: [u8; Self::AUTH_SIZE],
-    pub ciphertext: Vec<u8>,
+    pub auth: [u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
+    pub ciphertext: B,
 }
 
-impl EncryptedMessage {
-    pub const AUTH_SIZE: usize = 16;
+impl<B> EncryptedMessage<B> {
+    pub const AUTH_SIZE: usize = ENCRYPTED_MESSAGE_AUTH_SIZE;
+    pub const HEADER_LEN: usize = Nonce::SIZE + Self::AUTH_SIZE;
 
-    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Ref<B, EncryptedMessageWire>, WireError> {
-        parse(bytes)
-    }
-
-    pub fn from_wire(wire: &EncryptedMessageWire) -> Self {
-        Self {
-            nonce: Nonce(wire.nonce),
-            auth: wire.auth,
-            ciphertext: wire.ciphertext.to_vec(),
+    pub fn into_owned(self) -> EncryptedMessage<Vec<u8>>
+    where
+        B: AsRef<[u8]>,
+    {
+        EncryptedMessage {
+            nonce: self.nonce,
+            auth: self.auth,
+            ciphertext: self.ciphertext.as_ref().to_vec(),
         }
+    }
+}
+
+impl<B: ByteSlice> EncryptedMessage<B> {
+    pub fn parse(bytes: B) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        Ok(Self {
+            nonce: Nonce(reader.take_array()?),
+            auth: reader.take_array()?,
+            ciphertext: reader.take_rest(),
+        })
+    }
+}
+
+impl<B: AsRef<[u8]>> EncryptedMessage<B> {
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        codec::push_bytes(out, &self.nonce.0);
+        codec::push_bytes(out, &self.auth);
+        codec::push_bytes(out, self.ciphertext.as_ref());
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(Nonce::SIZE + Self::AUTH_SIZE + self.ciphertext.len());
+        let mut out = Vec::with_capacity(Self::HEADER_LEN + self.ciphertext.as_ref().len());
         self.encode_into(&mut out);
         out
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        Ok(Self::from_wire(&Self::parse(bytes)?))
+    pub fn decrypt(
+        &self,
+        crypto: &impl QlCrypto,
+        key: &SessionKey,
+        aad: &[u8],
+    ) -> Result<Vec<u8>, WireError> {
+        let mut plaintext = self.ciphertext.as_ref().to_vec();
+        if !crypto.decrypt_with_aead(key, &self.nonce, aad, &mut plaintext, &self.auth) {
+            return Err(WireError::DecryptFailed);
+        }
+        Ok(plaintext)
     }
+}
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        push_value(
-            out,
-            &EncryptedMessageHeaderWire {
-                nonce: self.nonce.0,
-                auth: self.auth,
-            },
-        );
-        out.extend_from_slice(&self.ciphertext);
+impl<B: AsMut<[u8]>> EncryptedMessage<B> {
+    pub fn decrypt_in_place(
+        mut self,
+        crypto: &impl QlCrypto,
+        key: &SessionKey,
+        aad: &[u8],
+    ) -> Result<B, WireError> {
+        let ciphertext = self.ciphertext.as_mut();
+        if !crypto.decrypt_with_aead(key, &self.nonce, aad, ciphertext, &self.auth) {
+            return Err(WireError::DecryptFailed);
+        }
+        Ok(self.ciphertext)
     }
+}
 
+impl EncryptedMessage<Vec<u8>> {
     pub fn encrypt(
         crypto: &impl QlCrypto,
         key: &SessionKey,
@@ -74,37 +94,7 @@ impl EncryptedMessage {
         }
     }
 
-    pub fn decrypt(
-        &self,
-        crypto: &impl QlCrypto,
-        key: &SessionKey,
-        aad: &[u8],
-    ) -> Result<Vec<u8>, WireError> {
-        let mut plaintext = self.ciphertext.clone();
-        if !crypto.decrypt_with_aead(key, &self.nonce, aad, &mut plaintext, &self.auth) {
-            return Err(WireError::DecryptFailed);
-        }
-        Ok(plaintext)
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        Ok(EncryptedMessage::parse(bytes)?.into_owned())
     }
-
-    pub fn decrypt_in_place<'a, B: ByteSliceMut>(
-        wire: &'a mut Ref<B, EncryptedMessageWire>,
-        crypto: &impl QlCrypto,
-        key: &SessionKey,
-        aad: &[u8],
-    ) -> Result<&'a mut [u8], WireError> {
-        let nonce = Nonce(wire.nonce);
-        let auth = wire.auth;
-        if !crypto.decrypt_with_aead(key, &nonce, aad, &mut wire.ciphertext, &auth) {
-            return Err(WireError::DecryptFailed);
-        }
-        Ok(&mut wire.ciphertext)
-    }
-}
-
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct EncryptedMessageHeaderWire {
-    pub nonce: [u8; Nonce::SIZE],
-    pub auth: [u8; EncryptedMessage::AUTH_SIZE],
 }

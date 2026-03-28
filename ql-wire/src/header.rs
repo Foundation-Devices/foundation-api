@@ -1,8 +1,4 @@
-use zerocopy::{
-    byte_slice::SplitByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
-};
-
-use crate::{codec, record::RecordKind, WireError, XID};
+use crate::{codec, record::RecordKind, ByteSlice, WireError, XID};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QlHeader {
@@ -16,40 +12,33 @@ impl QlHeader {
     }
 }
 
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct QlRecordHeaderWire {
-    pub kind: u8,
-    pub sender: [u8; XID::SIZE],
-    pub recipient: [u8; XID::SIZE],
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DecodedRecordHeader {
     pub(crate) kind: RecordKind,
     pub(crate) header: QlHeader,
 }
 
-pub(crate) fn encode_record_header(header: &QlHeader, kind: RecordKind) -> QlRecordHeaderWire {
-    QlRecordHeaderWire {
-        kind: kind as u8,
-        sender: header.sender.0,
-        recipient: header.recipient.0,
-    }
+pub(crate) fn encode_record_header(out: &mut Vec<u8>, header: &QlHeader, kind: RecordKind) {
+    codec::push_u8(out, kind as u8);
+    codec::push_bytes(out, &header.sender.0);
+    codec::push_bytes(out, &header.recipient.0);
 }
 
-pub(crate) fn decode_record_header<B: SplitByteSlice>(
+pub(crate) fn decode_record_header<B: ByteSlice>(
     bytes: B,
 ) -> Result<(DecodedRecordHeader, B), WireError> {
-    let (wire, payload_bytes) = codec::read_prefix::<QlRecordHeaderWire, B>(bytes)?;
+    let mut reader = codec::Reader::new(bytes);
+    let kind = RecordKind::try_from(reader.take_u8()?)?;
+    let sender = XID(reader.take_array()?);
+    let recipient = XID(reader.take_array()?);
     Ok((
         DecodedRecordHeader {
-            kind: codec::read_byte(wire.kind)?,
+            kind,
             header: QlHeader {
-                sender: XID(wire.sender),
-                recipient: XID(wire.recipient),
+                sender,
+                recipient,
             },
         },
-        payload_bytes,
+        reader.take_rest(),
     ))
 }

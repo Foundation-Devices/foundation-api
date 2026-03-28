@@ -4,9 +4,6 @@
 
 #![allow(clippy::too_many_arguments)]
 
-pub type Ref<'a, T> = zerocopy::Ref<&'a [u8], T>;
-pub type RefMut<'a, T> = zerocopy::Ref<&'a mut [u8], T>;
-
 mod bytes;
 mod codec;
 mod control;
@@ -39,6 +36,7 @@ pub use unpair::*;
 pub use xid::*;
 
 pub const QL_WIRE_VERSION: u8 = 1;
+pub const ENCRYPTED_MESSAGE_AUTH_SIZE: usize = 16;
 
 pub trait QlCrypto {
     fn fill_random_bytes(&self, data: &mut [u8]);
@@ -51,7 +49,7 @@ pub trait QlCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; EncryptedMessage::AUTH_SIZE];
+    ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
 
     fn decrypt_with_aead(
         &self,
@@ -59,7 +57,7 @@ pub trait QlCrypto {
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-        auth_tag: &[u8; EncryptedMessage::AUTH_SIZE],
+        auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
     ) -> bool;
 }
 
