@@ -7,6 +7,7 @@
 pub type Ref<'a, T> = zerocopy::Ref<&'a [u8], T>;
 pub type RefMut<'a, T> = zerocopy::Ref<&'a mut [u8], T>;
 
+mod bytes;
 mod codec;
 mod control;
 mod encrypted;
@@ -22,6 +23,7 @@ mod record;
 mod unpair;
 mod xid;
 
+pub use bytes::*;
 pub use control::*;
 pub use encrypted::*;
 pub use encrypted_message::*;
