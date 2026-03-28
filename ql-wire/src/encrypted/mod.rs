@@ -11,16 +11,16 @@ use crate::{
     Nonce, QlCrypto, QlHeader, QlPayload, QlRecord, SessionKey, WireError,
 };
 
+mod ack;
 mod byte_reassembly;
 mod close;
-mod stream_ack;
 mod stream_close;
 mod stream_data;
 mod stream_window;
 
+pub use ack::*;
 pub use byte_reassembly::*;
 pub use close::*;
-pub use stream_ack::*;
 pub use stream_close::*;
 pub use stream_data::*;
 pub use stream_window::*;
@@ -30,17 +30,21 @@ pub use stream_window::*;
 #[repr(transparent)]
 pub struct StreamId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct RecordSeq(pub u64);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
+    pub seq: RecordSeq,
     pub frames: Vec<SessionFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionFrame {
     Ping,
-    Pong,
+    Ack(RecordAck),
     StreamData(StreamData),
-    StreamAck(StreamAck),
     StreamWindow(StreamWindow),
     StreamClose(StreamClose),
     Close(SessionCloseBody),
@@ -48,9 +52,8 @@ pub enum SessionFrame {
 
 pub enum SessionFrameRef<'a> {
     Ping,
-    Pong,
+    Ack(Ref<&'a [u8], RecordAckQire>),
     StreamData(Ref<&'a [u8], StreamDataWire>),
-    StreamAck(Ref<&'a [u8], StreamAckWire>),
     StreamWindow(Ref<&'a [u8], StreamWindowWire>),
     StreamClose(Ref<&'a [u8], StreamCloseWire>),
     Close(Ref<&'a [u8], SessionCloseBodyWire>),
@@ -62,17 +65,17 @@ pub enum SessionFrameRef<'a> {
 #[repr(u8)]
 pub(crate) enum SessionFrameKind {
     Ping = 1,
-    Pong = 2,
+    Ack = 2,
     StreamData = 3,
-    StreamAck = 4,
-    StreamWindow = 5,
-    StreamClose = 6,
-    Close = 7,
+    StreamWindow = 4,
+    StreamClose = 5,
+    Close = 6,
 }
 
 #[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct SessionRecordWire {
+    pub seq: crate::codec::U64Le,
     pub frames: [u8],
 }
 
@@ -90,11 +93,15 @@ impl SessionRecord {
             .frames()
             .map(|frame| frame?.to_owned())
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { frames })
+        Ok(Self {
+            seq: wire.seq(),
+            frames,
+        })
     }
 
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        out.extend_from_slice(&self.seq.0.to_le_bytes());
         for frame in &self.frames {
             frame.encode_into(&mut out);
         }
@@ -107,6 +114,10 @@ impl SessionRecord {
 }
 
 impl SessionRecordWire {
+    pub fn seq(&self) -> RecordSeq {
+        RecordSeq(self.seq.get())
+    }
+
     pub fn frames(&self) -> SessionFrameIter<'_> {
         SessionFrameIter {
             remaining: &self.frames,
@@ -118,14 +129,13 @@ impl SessionFrame {
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         match self {
             Self::Ping => out.push(SessionFrameKind::Ping as u8),
-            Self::Pong => out.push(SessionFrameKind::Pong as u8),
-            Self::StreamData(frame) => {
-                out.push(SessionFrameKind::StreamData as u8);
+            Self::Ack(frame) => {
+                out.push(SessionFrameKind::Ack as u8);
                 push_variable_len(out, frame.encoded_len());
                 frame.encode_into(out);
             }
-            Self::StreamAck(frame) => {
-                out.push(SessionFrameKind::StreamAck as u8);
+            Self::StreamData(frame) => {
+                out.push(SessionFrameKind::StreamData as u8);
                 push_variable_len(out, frame.encoded_len());
                 frame.encode_into(out);
             }
@@ -150,9 +160,8 @@ impl SessionFrameRef<'_> {
     pub fn to_owned(&self) -> Result<SessionFrame, WireError> {
         Ok(match self {
             Self::Ping => SessionFrame::Ping,
-            Self::Pong => SessionFrame::Pong,
+            Self::Ack(frame) => SessionFrame::Ack(RecordAck::from_wire(frame)?),
             Self::StreamData(frame) => SessionFrame::StreamData(StreamData::from_wire(frame)?),
-            Self::StreamAck(frame) => SessionFrame::StreamAck(StreamAck::from_wire(frame)?),
             Self::StreamWindow(frame) => SessionFrame::StreamWindow(StreamWindow::from_wire(frame)),
             Self::StreamClose(frame) => SessionFrame::StreamClose(StreamClose::from_wire(frame)?),
             Self::Close(frame) => SessionFrame::Close(SessionCloseBody::from_wire(frame)),
@@ -214,14 +223,13 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrameRef<'_>, &[u8]), WireEr
     let kind: SessionFrameKind = read_byte(kind)?;
     match kind {
         SessionFrameKind::Ping => Ok((SessionFrameRef::Ping, rest)),
-        SessionFrameKind::Pong => Ok((SessionFrameRef::Pong, rest)),
+        SessionFrameKind::Ack => {
+            let (frame, rest) = split_variable_frame(rest)?;
+            Ok((SessionFrameRef::Ack(RecordAck::parse(frame)?), rest))
+        }
         SessionFrameKind::StreamData => {
             let (frame, rest) = split_variable_frame(rest)?;
             Ok((SessionFrameRef::StreamData(StreamData::parse(frame)?), rest))
-        }
-        SessionFrameKind::StreamAck => {
-            let (frame, rest) = split_variable_frame(rest)?;
-            Ok((SessionFrameRef::StreamAck(StreamAck::parse(frame)?), rest))
         }
         SessionFrameKind::StreamWindow => {
             let wire_size = StreamWindow::WIRE_SIZE;

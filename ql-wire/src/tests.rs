@@ -73,21 +73,13 @@ fn encrypted_session_record_round_trip_and_decrypt() {
         recipient: XID([2; XID::SIZE]),
     };
     let body = SessionRecord {
+        seq: RecordSeq(11),
         frames: vec![
             SessionFrame::Ping,
-            SessionFrame::Pong,
-            SessionFrame::StreamAck(StreamAck {
-                stream_id: StreamId(7),
-                acked_prefix: 12,
+            SessionFrame::Ack(RecordAck {
                 ranges: vec![
-                    StreamAckRange {
-                        start_offset: 20,
-                        end_offset: 24,
-                    },
-                    StreamAckRange {
-                        start_offset: 30,
-                        end_offset: 33,
-                    },
+                    RecordAckRange { start: 12, end: 14 },
+                    RecordAckRange { start: 20, end: 24 },
                 ],
             }),
             SessionFrame::StreamWindow(StreamWindow {
@@ -146,6 +138,7 @@ fn decrypted_session_record_iterates_zero_copy_frames() {
         recipient: XID([10; XID::SIZE]),
     };
     let body = SessionRecord {
+        seq: RecordSeq(7),
         frames: vec![
             SessionFrame::StreamData(StreamData {
                 stream_id: StreamId(1),
@@ -153,13 +146,8 @@ fn decrypted_session_record_iterates_zero_copy_frames() {
                 fin: false,
                 bytes: b"abc".to_vec(),
             }),
-            SessionFrame::StreamAck(StreamAck {
-                stream_id: StreamId(1),
-                acked_prefix: 3,
-                ranges: vec![StreamAckRange {
-                    start_offset: 5,
-                    end_offset: 8,
-                }],
+            SessionFrame::Ack(RecordAck {
+                ranges: vec![RecordAckRange { start: 3, end: 8 }],
             }),
             SessionFrame::StreamClose(StreamClose {
                 stream_id: StreamId(1),
@@ -186,6 +174,7 @@ fn decrypted_session_record_iterates_zero_copy_frames() {
     let decrypted =
         encrypted::decrypt_record(&crypto, &header, &mut encrypted, &session_key).unwrap();
 
+    assert_eq!(decrypted.seq(), RecordSeq(7));
     let mut frames = decrypted.frames();
     match frames.next().unwrap().unwrap() {
         SessionFrameRef::StreamData(frame) => {
@@ -197,19 +186,11 @@ fn decrypted_session_record_iterates_zero_copy_frames() {
         other => panic!("expected stream data, got {}", frame_name(&other)),
     }
     match frames.next().unwrap().unwrap() {
-        SessionFrameRef::StreamAck(frame) => {
-            assert_eq!(frame.stream_id(), StreamId(1));
-            assert_eq!(frame.acked_prefix(), 3);
+        SessionFrameRef::Ack(frame) => {
             let ranges: Vec<_> = frame.ranges().collect();
-            assert_eq!(
-                ranges,
-                vec![StreamAckRange {
-                    start_offset: 5,
-                    end_offset: 8,
-                }]
-            );
+            assert_eq!(ranges, vec![RecordAckRange { start: 3, end: 8 }]);
         }
-        other => panic!("expected stream ack, got {}", frame_name(&other)),
+        other => panic!("expected ack, got {}", frame_name(&other)),
     }
     match frames.next().unwrap().unwrap() {
         SessionFrameRef::StreamClose(frame) => {
@@ -338,14 +319,25 @@ fn unpair_round_trip_and_verify() {
 #[test]
 fn session_record_rejects_malformed_frames() {
     let invalid_cases = [
-        vec![0xff],
         {
-            let mut bytes = vec![SessionFrameKind::StreamData as u8];
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes
+        },
+        {
+            let mut bytes = 1u64.to_le_bytes().to_vec();
+            bytes.push(0xff);
+            bytes
+        },
+        {
+            let mut bytes = 1u64.to_le_bytes().to_vec();
+            bytes.push(SessionFrameKind::StreamData as u8);
             bytes.push(1);
             bytes
         },
         {
-            let mut bytes = vec![SessionFrameKind::StreamData as u8];
+            let mut bytes = 1u64.to_le_bytes().to_vec();
+            bytes.push(SessionFrameKind::StreamData as u8);
             bytes.extend_from_slice(&13u16.to_le_bytes());
             bytes.extend_from_slice(&1u32.to_le_bytes());
             bytes.extend_from_slice(&4u64.to_le_bytes());
@@ -354,24 +346,31 @@ fn session_record_rejects_malformed_frames() {
             bytes
         },
         {
-            let mut bytes = vec![SessionFrameKind::StreamAck as u8];
-            bytes.extend_from_slice(&20u16.to_le_bytes());
-            bytes.extend_from_slice(&1u32.to_le_bytes());
-            bytes.extend_from_slice(&3u64.to_le_bytes());
+            let mut bytes = 1u64.to_le_bytes().to_vec();
+            bytes.push(SessionFrameKind::Ack as u8);
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes
+        },
+        {
+            let mut bytes = 1u64.to_le_bytes().to_vec();
+            bytes.push(SessionFrameKind::Ack as u8);
+            bytes.extend_from_slice(&8u16.to_le_bytes());
             bytes.extend_from_slice(&5u64.to_le_bytes());
             bytes
         },
         {
-            let mut bytes = vec![SessionFrameKind::StreamAck as u8];
-            bytes.extend_from_slice(&28u16.to_le_bytes());
-            bytes.extend_from_slice(&1u32.to_le_bytes());
+            let mut bytes = 1u64.to_le_bytes().to_vec();
+            bytes.push(SessionFrameKind::Ack as u8);
+            bytes.extend_from_slice(&32u16.to_le_bytes());
             bytes.extend_from_slice(&6u64.to_le_bytes());
-            bytes.extend_from_slice(&4u64.to_le_bytes());
             bytes.extend_from_slice(&8u64.to_le_bytes());
+            bytes.extend_from_slice(&7u64.to_le_bytes());
+            bytes.extend_from_slice(&9u64.to_le_bytes());
             bytes
         },
         {
-            let mut bytes = vec![SessionFrameKind::StreamClose as u8];
+            let mut bytes = 1u64.to_le_bytes().to_vec();
+            bytes.push(SessionFrameKind::StreamClose as u8);
             bytes.extend_from_slice(&9u16.to_le_bytes());
             bytes.extend_from_slice(&1u32.to_le_bytes());
             bytes.push(CloseTarget::Both as u8);
@@ -380,23 +379,27 @@ fn session_record_rejects_malformed_frames() {
             bytes
         },
         {
-            let mut bytes = vec![SessionFrameKind::Close as u8];
+            let mut bytes = 1u64.to_le_bytes().to_vec();
+            bytes.push(SessionFrameKind::Close as u8);
             bytes.push(0);
             bytes
         },
     ];
 
     for bytes in invalid_cases {
-        assert_eq!(SessionRecord::decode(&bytes), Err(WireError::InvalidPayload));
+        assert_eq!(
+            SessionRecord::decode(bytes.as_slice()),
+            Err(WireError::InvalidPayload)
+        );
     }
 }
 
 #[test]
-fn session_record_supports_empty_fin_stream_data_and_empty_ping_pong() {
+fn session_record_supports_empty_fin_stream_data_and_empty_ping() {
     let record = SessionRecord {
+        seq: RecordSeq(99),
         frames: vec![
             SessionFrame::Ping,
-            SessionFrame::Pong,
             SessionFrame::StreamData(StreamData {
                 stream_id: StreamId(42),
                 offset: 999,
@@ -407,8 +410,8 @@ fn session_record_supports_empty_fin_stream_data_and_empty_ping_pong() {
     };
 
     let encoded = record.encode();
-    assert_eq!(encoded[0], SessionFrameKind::Ping as u8);
-    assert_eq!(encoded[1], SessionFrameKind::Pong as u8);
+    assert_eq!(&encoded[..8], &99u64.to_le_bytes());
+    assert_eq!(encoded[8], SessionFrameKind::Ping as u8);
 
     let decoded = SessionRecord::decode(&encoded).unwrap();
     assert_eq!(decoded, record);
@@ -497,37 +500,28 @@ fn protocol_record_size_breakdown() {
         header,
         14,
         SessionRecord {
+            seq: RecordSeq(1),
             frames: vec![SessionFrame::Ping],
         },
     );
-    let session_pong = session_record(
+    let session_ack = session_record(
         header,
         15,
         SessionRecord {
-            frames: vec![SessionFrame::Pong],
+            seq: RecordSeq(2),
+            frames: vec![SessionFrame::Ack(RecordAck {
+                ranges: vec![RecordAckRange { start: 1, end: 3 }],
+            })],
         },
     );
     let session_stream_window = session_record(
         header,
         16,
         SessionRecord {
+            seq: RecordSeq(3),
             frames: vec![SessionFrame::StreamWindow(StreamWindow {
                 stream_id: StreamId(1),
                 maximum_offset: 65_536,
-            })],
-        },
-    );
-    let session_stream_ack = session_record(
-        header,
-        17,
-        SessionRecord {
-            frames: vec![SessionFrame::StreamAck(StreamAck {
-                stream_id: StreamId(1),
-                acked_prefix: 4,
-                ranges: vec![StreamAckRange {
-                    start_offset: 8,
-                    end_offset: 12,
-                }],
             })],
         },
     );
@@ -535,6 +529,7 @@ fn protocol_record_size_breakdown() {
         header,
         18,
         SessionRecord {
+            seq: RecordSeq(4),
             frames: vec![SessionFrame::StreamData(StreamData {
                 stream_id: StreamId(1),
                 offset: 0,
@@ -547,6 +542,7 @@ fn protocol_record_size_breakdown() {
         header,
         19,
         SessionRecord {
+            seq: RecordSeq(5),
             frames: vec![SessionFrame::StreamData(StreamData {
                 stream_id: StreamId(1),
                 offset: 0,
@@ -559,6 +555,7 @@ fn protocol_record_size_breakdown() {
         header,
         20,
         SessionRecord {
+            seq: RecordSeq(6),
             frames: vec![SessionFrame::StreamClose(StreamClose {
                 stream_id: StreamId(1),
                 target: CloseTarget::Both,
@@ -571,6 +568,7 @@ fn protocol_record_size_breakdown() {
         header,
         21,
         SessionRecord {
+            seq: RecordSeq(7),
             frames: vec![SessionFrame::Close(SessionCloseBody {
                 code: CloseCode::PROTOCOL,
             })],
@@ -588,9 +586,11 @@ fn protocol_record_size_breakdown() {
     print_size("ql-wire unpair", unpair.encode().len());
     print_size("ql-wire ready empty", ready.encode().len());
     print_size("ql-wire session ping", session_ping.encode().len());
-    print_size("ql-wire session pong", session_pong.encode().len());
-    print_size("ql-wire session stream window", session_stream_window.encode().len());
-    print_size("ql-wire session stream ack", session_stream_ack.encode().len());
+    print_size("ql-wire session ack", session_ack.encode().len());
+    print_size(
+        "ql-wire session stream window",
+        session_stream_window.encode().len(),
+    );
     print_size(
         "ql-wire session stream empty",
         session_stream_empty.encode().len(),
@@ -609,9 +609,8 @@ fn protocol_record_size_breakdown() {
 fn frame_name(frame: &SessionFrameRef<'_>) -> &'static str {
     match frame {
         SessionFrameRef::Ping => "ping",
-        SessionFrameRef::Pong => "pong",
+        SessionFrameRef::Ack(_) => "ack",
         SessionFrameRef::StreamData(_) => "stream_data",
-        SessionFrameRef::StreamAck(_) => "stream_ack",
         SessionFrameRef::StreamWindow(_) => "stream_window",
         SessionFrameRef::StreamClose(_) => "stream_close",
         SessionFrameRef::Close(_) => "close",
