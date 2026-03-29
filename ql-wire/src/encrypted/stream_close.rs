@@ -1,7 +1,7 @@
 use std::mem::size_of;
 
 use super::StreamId;
-use crate::{codec, ByteSlice, WireError};
+use crate::{codec, ByteChunks, ByteSlice, WireError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -86,15 +86,17 @@ impl<B> StreamClose<B> {
     }
 }
 
-impl<B: AsRef<[u8]>> StreamClose<B> {
+impl<B: ByteChunks> StreamClose<B> {
     pub fn encoded_len(&self) -> usize {
-        Self::MIN_WIRE_SIZE + self.payload.as_ref().len()
+        Self::MIN_WIRE_SIZE + self.payload.len()
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         codec::push_u32(out, self.stream_id.0);
         codec::push_u8(out, self.target.to_wire());
         codec::push_u16(out, self.code.0);
-        codec::push_bytes(out, self.payload.as_ref());
+        for chunk in self.payload.chunks() {
+            codec::push_bytes(out, chunk);
+        }
     }
 }

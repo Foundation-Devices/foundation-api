@@ -1,4 +1,8 @@
-use core::ops::{Deref, DerefMut};
+use core::{
+    iter::{once, Chain, Once},
+    ops::{Deref, DerefMut},
+};
+use std::collections::VecDeque;
 
 /// A mutable or immutable byte slice owner used by the wire parser.
 pub trait ByteSlice: Deref<Target = [u8]> + Sized {
@@ -11,7 +15,109 @@ pub trait ByteSlice: Deref<Target = [u8]> + Sized {
 /// A mutable reference to bytes.
 pub trait ByteSliceMut: ByteSlice + DerefMut<Target = [u8]> {}
 
+/// A byte container that can be encoded from one or more chunks.
+pub trait ByteChunks {
+    type Chunks<'a>: Iterator<Item = &'a [u8]>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize;
+
+    fn chunks(&self) -> Self::Chunks<'_>;
+}
+
 impl<B> ByteSliceMut for B where B: ByteSlice + DerefMut<Target = [u8]> {}
+
+impl<T: ByteChunks + ?Sized> ByteChunks for &T {
+    type Chunks<'a>
+        = T::Chunks<'a>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        (*self).len()
+    }
+
+    fn chunks(&self) -> Self::Chunks<'_> {
+        (*self).chunks()
+    }
+}
+
+impl<T: ByteChunks + ?Sized> ByteChunks for &mut T {
+    type Chunks<'a>
+        = T::Chunks<'a>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+
+    fn chunks(&self) -> Self::Chunks<'_> {
+        (**self).chunks()
+    }
+}
+
+impl ByteChunks for [u8] {
+    type Chunks<'a>
+        = Once<&'a [u8]>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        <[u8]>::len(self)
+    }
+
+    fn chunks(&self) -> Self::Chunks<'_> {
+        once(self)
+    }
+}
+
+impl<const N: usize> ByteChunks for [u8; N] {
+    type Chunks<'a>
+        = Once<&'a [u8]>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        N
+    }
+
+    fn chunks(&self) -> Self::Chunks<'_> {
+        once(self.as_slice())
+    }
+}
+
+impl ByteChunks for Vec<u8> {
+    type Chunks<'a>
+        = Once<&'a [u8]>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+
+    fn chunks(&self) -> Self::Chunks<'_> {
+        once(self.as_slice())
+    }
+}
+
+impl ByteChunks for VecDeque<u8> {
+    type Chunks<'a>
+        = Chain<Once<&'a [u8]>, Once<&'a [u8]>>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        VecDeque::len(self)
+    }
+
+    fn chunks(&self) -> Self::Chunks<'_> {
+        let (first, second) = self.as_slices();
+        once(first).chain(once(second))
+    }
+}
 
 impl ByteSlice for &[u8] {
     #[inline]
@@ -37,7 +143,9 @@ impl ByteSlice for &mut [u8] {
 
 #[cfg(test)]
 mod tests {
-    use super::{ByteSlice, ByteSliceMut};
+    use std::collections::VecDeque;
+
+    use super::{ByteChunks, ByteSlice, ByteSliceMut};
 
     #[test]
     fn shared_slice_split_at() {
@@ -67,5 +175,26 @@ mod tests {
     fn split_at_rejects_out_of_bounds_index() {
         let bytes: &[u8] = b"abcdef";
         assert!(ByteSlice::split_at(bytes, 7).is_err());
+    }
+
+    #[test]
+    fn slice_byte_chunks_are_contiguous() {
+        let bytes: &[u8] = b"abcdef";
+        let chunks = ByteChunks::chunks(&bytes).collect::<Vec<_>>();
+        assert_eq!(bytes.len(), 6);
+        assert_eq!(chunks, vec![b"abcdef".as_slice()]);
+    }
+
+    #[test]
+    fn vec_deque_byte_chunks_preserve_split_storage() {
+        let mut bytes = VecDeque::with_capacity(8);
+        bytes.extend(b"abcd".iter().copied());
+        bytes.drain(..2);
+        bytes.extend(b"efgh".iter().copied());
+
+        let chunks = ByteChunks::chunks(&bytes).collect::<Vec<_>>();
+        assert_eq!(bytes.len(), 6);
+        assert_eq!(chunks.concat(), b"cdefgh");
+        assert!(chunks.len() >= 1);
     }
 }

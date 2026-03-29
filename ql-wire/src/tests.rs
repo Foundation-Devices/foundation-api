@@ -448,6 +448,43 @@ fn session_record_builder_writes_frames_without_temp_record_allocation() {
 }
 
 #[test]
+fn session_record_builder_encodes_borrowed_vec_deque_stream_data() {
+    use std::collections::VecDeque;
+
+    let mut payload = VecDeque::with_capacity(8);
+    payload.extend(b"abcd".iter().copied());
+    payload.drain(..2);
+    payload.extend(b"efgh".iter().copied());
+
+    let mut builder = SessionRecordBuilder::new(
+        RecordSeq(56),
+        1 + std::mem::size_of::<u16>() + StreamData::<&VecDeque<u8>>::MIN_WIRE_SIZE + payload.len(),
+    );
+    let stream = StreamData {
+        stream_id: StreamId(4),
+        offset: 9,
+        fin: false,
+        bytes: &payload,
+    };
+    assert!(builder.push_stream_data(&stream));
+
+    let encoded = builder.into_plaintext();
+    let decoded = SessionRecord::decode(&encoded).unwrap();
+    assert_eq!(
+        decoded,
+        SessionRecord {
+            seq: RecordSeq(56),
+            frames: vec![SessionFrame::StreamData(StreamData {
+                stream_id: StreamId(4),
+                offset: 9,
+                fin: false,
+                bytes: b"cdefgh".to_vec(),
+            })],
+        }
+    );
+}
+
+#[test]
 fn protocol_record_size_breakdown() {
     fn meta(id: u32) -> ControlMeta {
         ControlMeta {

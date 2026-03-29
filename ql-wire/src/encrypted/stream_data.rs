@@ -1,7 +1,7 @@
 use std::mem::size_of;
 
 use super::StreamId;
-use crate::{codec, ByteSlice, WireError};
+use crate::{codec, ByteChunks, ByteSlice, WireError};
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,15 +42,17 @@ impl<B> StreamData<B> {
     }
 }
 
-impl<B: AsRef<[u8]>> StreamData<B> {
+impl<B: ByteChunks> StreamData<B> {
     pub fn encoded_len(&self) -> usize {
-        Self::MIN_WIRE_SIZE + self.bytes.as_ref().len()
+        Self::MIN_WIRE_SIZE + self.bytes.len()
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         codec::push_u32(out, self.stream_id.0);
         codec::push_u64(out, self.offset);
         codec::push_u8(out, u8::from(self.fin));
-        codec::push_bytes(out, self.bytes.as_ref());
+        for chunk in self.bytes.chunks() {
+            codec::push_bytes(out, chunk);
+        }
     }
 }

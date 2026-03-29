@@ -1,8 +1,8 @@
 use std::mem::size_of;
 
 use crate::{
-    codec, encrypted_message::EncryptedMessage, ByteSlice, QlCrypto, QlHeader, QlRecord,
-    SessionKey, WireError,
+    codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, QlCrypto, QlHeader,
+    QlRecord, SessionKey, WireError,
 };
 
 mod ack;
@@ -122,7 +122,7 @@ impl SessionRecord {
     }
 }
 
-impl<B: AsRef<[u8]>> SessionFrame<B> {
+impl<B: ByteChunks> SessionFrame<B> {
     pub fn encoded_len(&self) -> usize {
         1 + match self {
             Self::Ping => 0,

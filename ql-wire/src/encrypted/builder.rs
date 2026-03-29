@@ -3,8 +3,8 @@ use super::{
     StreamClose, StreamData, StreamWindow, SIZE_LEN,
 };
 use crate::{
-    codec, encrypted_message::EncryptedMessage, Nonce, QlCrypto, QlHeader, QlPayload, QlRecord,
-    SessionKey,
+    codec, encrypted_message::EncryptedMessage, ByteChunks, Nonce, QlCrypto, QlHeader, QlPayload,
+    QlRecord, SessionKey,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +72,7 @@ impl SessionRecordBuilder {
         true
     }
 
-    pub fn push_stream_data<B: AsRef<[u8]>>(&mut self, frame: &StreamData<B>) -> bool {
+    pub fn push_stream_data<B: ByteChunks>(&mut self, frame: &StreamData<B>) -> bool {
         if !self.can_push_len(1 + SIZE_LEN + frame.encoded_len()) {
             return false;
         }
@@ -91,7 +91,7 @@ impl SessionRecordBuilder {
         true
     }
 
-    pub fn push_stream_close<B: AsRef<[u8]>>(&mut self, frame: &StreamClose<B>) -> bool {
+    pub fn push_stream_close<B: ByteChunks>(&mut self, frame: &StreamClose<B>) -> bool {
         if !self.can_push_len(1 + SIZE_LEN + frame.encoded_len()) {
             return false;
         }
@@ -110,7 +110,7 @@ impl SessionRecordBuilder {
         true
     }
 
-    pub fn push_frame<B: AsRef<[u8]>>(&mut self, frame: &SessionFrame<B>) -> bool {
+    pub fn push_frame<B: ByteChunks>(&mut self, frame: &SessionFrame<B>) -> bool {
         match frame {
             SessionFrame::Ping => self.push_ping(),
             SessionFrame::Ack(frame) => self.push_ack(frame),
