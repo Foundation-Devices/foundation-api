@@ -1,7 +1,7 @@
 use super::{
     decrypt_mlkem_ciphertext, encrypt_mlkem_ciphertext, finalize_handshake,
     generate_ephemeral_keypair, init_kk_symmetric, mix_hash_ephemeral, EncryptedMlKemCiphertext,
-    FinalizedHandshake, HybridEphemeralKeyPair, HybridEphemeralPublic, Role, SymmetricState,
+    EphemeralKeyPair, EphemeralPublicKey, FinalizedHandshake, Role, SymmetricState,
     ENCRYPTED_MLKEM_CIPHERTEXT_LEN,
 };
 use crate::{codec, ControlMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity, WireError};
@@ -10,12 +10,12 @@ use crate::{codec, ControlMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentit
 pub struct Kk1 {
     pub meta: ControlMeta,
     pub skem_ciphertext: MlKemCiphertext,
-    pub ephemeral: HybridEphemeralPublic,
+    pub ephemeral: EphemeralPublicKey,
 }
 
 impl Kk1 {
     pub const ENCODED_LEN: usize =
-        ControlMeta::ENCODED_LEN + MlKemCiphertext::SIZE + HybridEphemeralPublic::ENCODED_LEN;
+        ControlMeta::ENCODED_LEN + MlKemCiphertext::SIZE + EphemeralPublicKey::ENCODED_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -28,7 +28,7 @@ impl Kk1 {
         let meta = ControlMeta::decode_from(&mut reader)?;
         let skem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
         let ephemeral =
-            HybridEphemeralPublic::decode(&reader.take_bytes(HybridEphemeralPublic::ENCODED_LEN)?)?;
+            EphemeralPublicKey::decode(&reader.take_bytes(EphemeralPublicKey::ENCODED_LEN)?)?;
         reader.finish()?;
         Ok(Self {
             meta,
@@ -43,20 +43,16 @@ pub struct Kk2 {
     pub meta: ControlMeta,
     pub ekem_ciphertext: MlKemCiphertext,
     pub skem_ciphertext: EncryptedMlKemCiphertext,
-    pub ephemeral: HybridEphemeralPublic,
 }
 
 impl Kk2 {
-    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN
-        + MlKemCiphertext::SIZE
-        + ENCRYPTED_MLKEM_CIPHERTEXT_LEN
-        + HybridEphemeralPublic::ENCODED_LEN;
+    pub const ENCODED_LEN: usize =
+        ControlMeta::ENCODED_LEN + MlKemCiphertext::SIZE + ENCRYPTED_MLKEM_CIPHERTEXT_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
         codec::push_bytes(out, self.ekem_ciphertext.as_bytes());
         codec::push_bytes(out, self.skem_ciphertext.as_bytes());
-        self.ephemeral.encode_into(out);
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -64,14 +60,11 @@ impl Kk2 {
         let meta = ControlMeta::decode_from(&mut reader)?;
         let ekem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
         let skem_ciphertext = EncryptedMlKemCiphertext::from_data(reader.take_array()?);
-        let ephemeral =
-            HybridEphemeralPublic::decode(&reader.take_bytes(HybridEphemeralPublic::ENCODED_LEN)?)?;
         reader.finish()?;
         Ok(Self {
             meta,
             ekem_ciphertext,
             skem_ciphertext,
-            ephemeral,
         })
     }
 }
@@ -98,8 +91,8 @@ pub struct KkHandshake {
     symmetric: SymmetricState,
     local: QlIdentity,
     remote_bundle: PeerBundle,
-    local_ephemeral: Option<HybridEphemeralKeyPair>,
-    remote_ephemeral: Option<HybridEphemeralPublic>,
+    local_ephemeral: Option<EphemeralKeyPair>,
+    remote_ephemeral: Option<EphemeralPublicKey>,
 }
 
 impl KkHandshake {
@@ -159,18 +152,6 @@ impl KkHandshake {
                 let public = local_ephemeral.public();
                 mix_hash_ephemeral(&mut self.symmetric, crypto, &public);
 
-                let es = crypto.x25519_agree(
-                    &local_ephemeral.x25519.private,
-                    &self.remote_bundle.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, es.as_bytes());
-
-                let ss = crypto.x25519_agree(
-                    &self.local.x25519_private_key,
-                    &self.remote_bundle.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, ss.as_bytes());
-
                 self.local_ephemeral = Some(local_ephemeral);
                 self.step = KkStep::Recv2;
                 Ok(KkMessage::Message1(Kk1 {
@@ -196,29 +177,11 @@ impl KkHandshake {
                 self.symmetric
                     .mix_key_and_hash(crypto, skem_secret.as_bytes());
 
-                let local_ephemeral = generate_ephemeral_keypair(crypto);
-                let public = local_ephemeral.public();
-                mix_hash_ephemeral(&mut self.symmetric, crypto, &public);
-
-                let ee = crypto.x25519_agree(
-                    &local_ephemeral.x25519.private,
-                    &remote_ephemeral.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, ee.as_bytes());
-
-                let se = crypto.x25519_agree(
-                    &local_ephemeral.x25519.private,
-                    &self.remote_bundle.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, se.as_bytes());
-
-                self.local_ephemeral = Some(local_ephemeral);
                 self.step = KkStep::Done;
                 Ok(KkMessage::Message2(Kk2 {
                     meta,
                     ekem_ciphertext,
                     skem_ciphertext,
-                    ephemeral: public,
                 }))
             }
             _ => Err(WireError::InvalidState),
@@ -241,18 +204,6 @@ impl KkHandshake {
 
                 mix_hash_ephemeral(&mut self.symmetric, crypto, &message.ephemeral);
                 self.remote_ephemeral = Some(message.ephemeral.clone());
-
-                let es = crypto.x25519_agree(
-                    &self.local.x25519_private_key,
-                    &message.ephemeral.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, es.as_bytes());
-
-                let ss = crypto.x25519_agree(
-                    &self.local.x25519_private_key,
-                    &self.remote_bundle.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, ss.as_bytes());
                 self.step = KkStep::Send2;
                 Ok(())
             }
@@ -277,20 +228,6 @@ impl KkHandshake {
                 self.symmetric
                     .mix_key_and_hash(crypto, skem_secret.as_bytes());
 
-                mix_hash_ephemeral(&mut self.symmetric, crypto, &message.ephemeral);
-                self.remote_ephemeral = Some(message.ephemeral.clone());
-
-                let ee = crypto.x25519_agree(
-                    &local_ephemeral.x25519.private,
-                    &message.ephemeral.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, ee.as_bytes());
-
-                let se = crypto.x25519_agree(
-                    &self.local.x25519_private_key,
-                    &message.ephemeral.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, se.as_bytes());
                 self.step = KkStep::Done;
                 Ok(())
             }

@@ -1,6 +1,6 @@
 use crate::{
     MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce, SessionKey,
-    X25519KeyPair, X25519PrivateKey, X25519PublicKey, ENCRYPTED_MESSAGE_AUTH_SIZE,
+    ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 pub trait QlRandom {
@@ -30,16 +30,6 @@ pub trait QlAead {
     ) -> bool;
 }
 
-pub trait QlDh {
-    fn x25519_generate_keypair(&self) -> X25519KeyPair;
-
-    fn x25519_agree(
-        &self,
-        private_key: &X25519PrivateKey,
-        public_key: &X25519PublicKey,
-    ) -> SessionKey;
-}
-
 pub trait QlKem {
     fn mlkem_generate_keypair(&self) -> MlKemKeyPair;
 
@@ -52,6 +42,6 @@ pub trait QlKem {
     ) -> SessionKey;
 }
 
-pub trait QlCrypto: QlRandom + QlHash + QlAead + QlDh + QlKem {}
+pub trait QlCrypto: QlRandom + QlHash + QlAead + QlKem {}
 
-impl<T> QlCrypto for T where T: QlRandom + QlHash + QlAead + QlDh + QlKem {}
+impl<T> QlCrypto for T where T: QlRandom + QlHash + QlAead + QlKem {}

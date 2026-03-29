@@ -1,6 +1,6 @@
 use crate::{
     codec, ConnectionId, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey, Nonce, PeerBundle,
-    QlCrypto, SessionKey, WireError, X25519KeyPair, X25519PublicKey, ENCRYPTED_MESSAGE_AUTH_SIZE,
+    QlCrypto, SessionKey, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 mod kk;
@@ -10,8 +10,8 @@ pub use kk::{Kk1, Kk2, KkHandshake, KkMessage};
 pub use xx::{Xx1, Xx2, Xx3, Xx4, XxHandshake, XxMessage};
 
 const SHA256_BLOCK_LEN: usize = 64;
-const PROTOCOL_XX: &[u8] = b"ql-wire:hybrid-xx:v1";
-const PROTOCOL_KK: &[u8] = b"ql-wire:hybrid-kk:v1";
+const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
+const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const CONNECTION_ID_DOMAIN: &[u8] = b"ql-wire:conn-id:v1";
 
 pub const ENCRYPTED_MLKEM_CIPHERTEXT_LEN: usize =
@@ -19,23 +19,20 @@ pub const ENCRYPTED_MLKEM_CIPHERTEXT_LEN: usize =
 pub const ENCRYPTED_PEER_BUNDLE_LEN: usize = PeerBundle::ENCODED_LEN + ENCRYPTED_MESSAGE_AUTH_SIZE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HybridEphemeralPublic {
-    pub x25519_public_key: X25519PublicKey,
+pub struct EphemeralPublicKey {
     pub mlkem_public_key: MlKemPublicKey,
 }
 
-impl HybridEphemeralPublic {
-    pub const ENCODED_LEN: usize = X25519PublicKey::SIZE + MlKemPublicKey::SIZE;
+impl EphemeralPublicKey {
+    pub const ENCODED_LEN: usize = MlKemPublicKey::SIZE;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_bytes(out, self.x25519_public_key.as_bytes());
         codec::push_bytes(out, self.mlkem_public_key.as_bytes());
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
         let value = Self {
-            x25519_public_key: X25519PublicKey::from_data(reader.take_array()?),
             mlkem_public_key: MlKemPublicKey::from_data(reader.take_array()?),
         };
         reader.finish()?;
@@ -86,15 +83,13 @@ enum Role {
 }
 
 #[derive(Debug, Clone)]
-struct HybridEphemeralKeyPair {
-    x25519: X25519KeyPair,
+struct EphemeralKeyPair {
     mlkem: MlKemKeyPair,
 }
 
-impl HybridEphemeralKeyPair {
-    fn public(&self) -> HybridEphemeralPublic {
-        HybridEphemeralPublic {
-            x25519_public_key: self.x25519.public,
+impl EphemeralKeyPair {
+    fn public(&self) -> EphemeralPublicKey {
+        EphemeralPublicKey {
             mlkem_public_key: self.mlkem.public.clone(),
         }
     }
@@ -231,11 +226,7 @@ impl SymmetricState {
         }
     }
 
-    fn split_for_role(
-        &self,
-        crypto: &impl QlCrypto,
-        role: Role,
-    ) -> (SessionKey, SessionKey) {
+    fn split_for_role(&self, crypto: &impl QlCrypto, role: Role) -> (SessionKey, SessionKey) {
         let temp_key = hmac_sha256(crypto, &self.chaining_key, &[&[]]);
         let k1 = SessionKey::from_data(hmac_sha256(crypto, &temp_key, &[&[1]]));
         let k2 = SessionKey::from_data(hmac_sha256(crypto, &temp_key, &[k1.as_bytes(), &[2]]));
@@ -257,9 +248,8 @@ fn init_kk_symmetric(
     symmetric
 }
 
-fn generate_ephemeral_keypair(crypto: &impl QlCrypto) -> HybridEphemeralKeyPair {
-    HybridEphemeralKeyPair {
-        x25519: crypto.x25519_generate_keypair(),
+fn generate_ephemeral_keypair(crypto: &impl QlCrypto) -> EphemeralKeyPair {
+    EphemeralKeyPair {
         mlkem: crypto.mlkem_generate_keypair(),
     }
 }
@@ -267,9 +257,8 @@ fn generate_ephemeral_keypair(crypto: &impl QlCrypto) -> HybridEphemeralKeyPair 
 fn mix_hash_ephemeral(
     symmetric: &mut SymmetricState,
     crypto: &impl QlCrypto,
-    public: &HybridEphemeralPublic,
+    public: &EphemeralPublicKey,
 ) {
-    symmetric.mix_hash(crypto, public.x25519_public_key.as_bytes());
     symmetric.mix_hash(crypto, public.mlkem_public_key.as_bytes());
 }
 

@@ -1,7 +1,7 @@
 use super::{
     decrypt_mlkem_ciphertext, decrypt_peer_bundle, encrypt_mlkem_ciphertext, encrypt_peer_bundle,
     finalize_handshake, generate_ephemeral_keypair, mix_hash_ephemeral, EncryptedMlKemCiphertext,
-    EncryptedPeerBundle, FinalizedHandshake, HybridEphemeralKeyPair, HybridEphemeralPublic, Role,
+    EncryptedPeerBundle, EphemeralKeyPair, EphemeralPublicKey, FinalizedHandshake, Role,
     SymmetricState, ENCRYPTED_MLKEM_CIPHERTEXT_LEN, ENCRYPTED_PEER_BUNDLE_LEN, PROTOCOL_XX,
 };
 use crate::{codec, ControlMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity, WireError};
@@ -9,11 +9,11 @@ use crate::{codec, ControlMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentit
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xx1 {
     pub meta: ControlMeta,
-    pub ephemeral: HybridEphemeralPublic,
+    pub ephemeral: EphemeralPublicKey,
 }
 
 impl Xx1 {
-    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN + HybridEphemeralPublic::ENCODED_LEN;
+    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN + EphemeralPublicKey::ENCODED_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -24,7 +24,7 @@ impl Xx1 {
         let mut reader = codec::Reader::new(bytes);
         let meta = ControlMeta::decode_from(&mut reader)?;
         let ephemeral =
-            HybridEphemeralPublic::decode(&reader.take_bytes(HybridEphemeralPublic::ENCODED_LEN)?)?;
+            EphemeralPublicKey::decode(&reader.take_bytes(EphemeralPublicKey::ENCODED_LEN)?)?;
         reader.finish()?;
         Ok(Self { meta, ephemeral })
     }
@@ -34,20 +34,16 @@ impl Xx1 {
 pub struct Xx2 {
     pub meta: ControlMeta,
     pub ekem_ciphertext: MlKemCiphertext,
-    pub ephemeral: HybridEphemeralPublic,
     pub static_bundle: EncryptedPeerBundle,
 }
 
 impl Xx2 {
-    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN
-        + MlKemCiphertext::SIZE
-        + HybridEphemeralPublic::ENCODED_LEN
-        + ENCRYPTED_PEER_BUNDLE_LEN;
+    pub const ENCODED_LEN: usize =
+        ControlMeta::ENCODED_LEN + MlKemCiphertext::SIZE + ENCRYPTED_PEER_BUNDLE_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
         codec::push_bytes(out, self.ekem_ciphertext.as_bytes());
-        self.ephemeral.encode_into(out);
         codec::push_bytes(out, self.static_bundle.as_bytes());
     }
 
@@ -55,14 +51,11 @@ impl Xx2 {
         let mut reader = codec::Reader::new(bytes);
         let meta = ControlMeta::decode_from(&mut reader)?;
         let ekem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
-        let ephemeral =
-            HybridEphemeralPublic::decode(&reader.take_bytes(HybridEphemeralPublic::ENCODED_LEN)?)?;
         let static_bundle = EncryptedPeerBundle::from_data(reader.take_array()?);
         reader.finish()?;
         Ok(Self {
             meta,
             ekem_ciphertext,
-            ephemeral,
             static_bundle,
         })
     }
@@ -152,8 +145,8 @@ pub struct XxHandshake {
     step: XxStep,
     symmetric: SymmetricState,
     local: QlIdentity,
-    local_ephemeral: Option<HybridEphemeralKeyPair>,
-    remote_ephemeral: Option<HybridEphemeralPublic>,
+    local_ephemeral: Option<EphemeralKeyPair>,
+    remote_ephemeral: Option<EphemeralPublicKey>,
     remote_bundle: Option<PeerBundle>,
 }
 
@@ -213,41 +206,18 @@ impl XxHandshake {
                 self.symmetric.mix_hash(crypto, ekem_ciphertext.as_bytes());
                 self.symmetric.mix_key(crypto, ekem_secret.as_bytes());
 
-                let local_ephemeral = generate_ephemeral_keypair(crypto);
-                let public = local_ephemeral.public();
-                mix_hash_ephemeral(&mut self.symmetric, crypto, &public);
-                let ee = crypto.x25519_agree(
-                    &local_ephemeral.x25519.private,
-                    &remote_ephemeral.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, ee.as_bytes());
-
                 let static_bundle =
                     encrypt_peer_bundle(crypto, &mut self.symmetric, &self.local.bundle())?;
 
-                let es = crypto.x25519_agree(
-                    &self.local.x25519_private_key,
-                    &remote_ephemeral.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, es.as_bytes());
-
-                self.local_ephemeral = Some(local_ephemeral);
                 self.step = XxStep::Recv3;
-
                 Ok(XxMessage::Message2(Xx2 {
                     meta,
                     ekem_ciphertext,
-                    ephemeral: public,
                     static_bundle,
                 }))
             }
             XxStep::Send3 => {
                 let remote_bundle = self.remote_bundle.clone().ok_or(WireError::InvalidState)?;
-                let remote_ephemeral = self
-                    .remote_ephemeral
-                    .as_ref()
-                    .ok_or(WireError::InvalidState)?;
-
                 let (skem_ciphertext, skem_secret) =
                     crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
                 let skem_ciphertext =
@@ -258,13 +228,7 @@ impl XxHandshake {
                 let static_bundle =
                     encrypt_peer_bundle(crypto, &mut self.symmetric, &self.local.bundle())?;
 
-                let se = crypto.x25519_agree(
-                    &self.local.x25519_private_key,
-                    &remote_ephemeral.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, se.as_bytes());
                 self.step = XxStep::Recv4;
-
                 Ok(XxMessage::Message3(Xx3 {
                     meta,
                     skem_ciphertext,
@@ -313,22 +277,8 @@ impl XxHandshake {
                     .mlkem_decapsulate(&local_ephemeral.mlkem.private, &message.ekem_ciphertext);
                 self.symmetric.mix_key(crypto, ekem_secret.as_bytes());
 
-                mix_hash_ephemeral(&mut self.symmetric, crypto, &message.ephemeral);
-                self.remote_ephemeral = Some(message.ephemeral.clone());
-
-                let ee = crypto.x25519_agree(
-                    &local_ephemeral.x25519.private,
-                    &message.ephemeral.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, ee.as_bytes());
-
                 let remote_bundle =
                     decrypt_peer_bundle(crypto, &mut self.symmetric, &message.static_bundle)?;
-                let es = crypto.x25519_agree(
-                    &local_ephemeral.x25519.private,
-                    &remote_bundle.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, es.as_bytes());
                 self.remote_bundle = Some(remote_bundle);
                 self.step = XxStep::Send3;
                 Ok(())
@@ -346,15 +296,6 @@ impl XxHandshake {
 
                 let remote_bundle =
                     decrypt_peer_bundle(crypto, &mut self.symmetric, &message.static_bundle)?;
-                let local_ephemeral = self
-                    .local_ephemeral
-                    .as_ref()
-                    .ok_or(WireError::InvalidState)?;
-                let se = crypto.x25519_agree(
-                    &local_ephemeral.x25519.private,
-                    &remote_bundle.x25519_public_key,
-                );
-                self.symmetric.mix_key(crypto, se.as_bytes());
                 self.remote_bundle = Some(remote_bundle);
                 self.step = XxStep::Send4;
                 Ok(())

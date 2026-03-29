@@ -17,7 +17,6 @@ mod identity;
 mod nonce;
 mod pq;
 mod record;
-mod x25519;
 mod xid;
 
 pub use bytes::*;
@@ -32,7 +31,6 @@ pub use identity::*;
 pub use nonce::*;
 pub use pq::*;
 pub use record::*;
-pub use x25519::*;
 pub use xid::*;
 
 pub const QL_WIRE_VERSION: u8 = 1;

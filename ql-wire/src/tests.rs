@@ -71,31 +71,6 @@ impl QlAead for TestCrypto {
     }
 }
 
-impl QlDh for TestCrypto {
-    fn x25519_generate_keypair(&self) -> X25519KeyPair {
-        let private = self.next_block();
-        X25519KeyPair {
-            private: X25519PrivateKey::from_data(private),
-            public: X25519PublicKey::from_data(private),
-        }
-    }
-
-    fn x25519_agree(
-        &self,
-        private_key: &X25519PrivateKey,
-        public_key: &X25519PublicKey,
-    ) -> SessionKey {
-        let left = *private_key.as_bytes();
-        let right = *public_key.as_bytes();
-        let (first, second) = if left <= right {
-            (left, right)
-        } else {
-            (right, left)
-        };
-        SessionKey::from_data(self.sha256(&[b"ql-wire:test-x25519:v1", &first, &second]))
-    }
-}
-
 impl QlKem for TestCrypto {
     fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
         let seed = self.next_block();
@@ -208,8 +183,7 @@ fn peer_bundle_round_trip() {
 fn handshake_record_round_trip_uses_handshake_header() {
     let message = Xx1 {
         meta: control_meta(1),
-        ephemeral: HybridEphemeralPublic {
-            x25519_public_key: X25519PublicKey::from_data([3; X25519PublicKey::SIZE]),
+        ephemeral: EphemeralPublicKey {
             mlkem_public_key: MlKemPublicKey::from_data([9; MlKemPublicKey::SIZE]),
         },
     };
