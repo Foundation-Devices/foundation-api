@@ -1,4 +1,4 @@
-use ql_wire::{self as wire, PairRequestRecordWire, QlCrypto, QlHeader, RefMut, UnpairWire};
+use ql_wire::{self as wire, PairRequestRecord, QlCrypto, QlHeader, Unpair};
 
 use super::{
     clear_bound_peer, emit_peer_status, handshake, is_replayed_control, next_control_meta,
@@ -36,7 +36,7 @@ pub fn handle_pair(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    request: &mut RefMut<'_, PairRequestRecordWire>,
+    request: PairRequestRecord<&mut [u8]>,
 ) -> Result<(), QlFsmError> {
     let payload = wire::decrypt_pair_request(
         crypto,
@@ -67,7 +67,7 @@ pub fn handle_unpair(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     header: &QlHeader,
-    unpair: &RefMut<'_, UnpairWire>,
+    unpair: &Unpair,
 ) -> Result<(), QlFsmError> {
     let Some(entry) = fsm.peer.as_ref() else {
         return Ok(());
@@ -80,11 +80,7 @@ pub fn handle_unpair(
         unpair,
         fsm.state.now.unix_secs,
     )?;
-    if is_replayed_control(
-        fsm,
-        header.sender,
-        wire::ControlMeta::from_wire(unpair.meta),
-    ) {
+    if is_replayed_control(fsm, header.sender, unpair.meta) {
         return Ok(());
     }
 

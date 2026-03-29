@@ -1,5 +1,6 @@
-pub(crate) mod reassembly;
 pub(crate) mod state;
+pub(crate) mod stream_rx;
+pub(crate) mod stream_tx;
 
 #[cfg(test)]
 mod tests;
@@ -8,16 +9,19 @@ use std::time::{Duration, Instant};
 
 use indexmap::map::Entry;
 use ql_wire::{
-    CloseCode, CloseTarget, RecordAck, RecordSeq, SessionCloseBody, SessionFrame, SessionRecord,
-    StreamClose, StreamData, StreamId, StreamWindow,
+    CloseCode, CloseTarget, RecordAck, RecordSeq, SessionCloseBody, SessionFrame,
+    SessionRecordBuilder, StreamClose, StreamCloseVec, StreamData, StreamId, StreamWindow,
+    WireError,
 };
 
 use self::{
-    reassembly::{StreamAssemblerError, StreamReadIter},
     state::{
         AckState, InboundState, OutboundRecord, OutboundState, ReceiveInsertOutcome,
-        ReceivedRecords, ReliableFrame, SessionFsmState, StreamParity, StreamRole, StreamState,
+        ReceivedRecords, ReliableFrame, SessionFsmState, StreamDataManifest, StreamParity,
+        StreamRole, StreamState,
     },
+    stream_rx::{StreamReadIter, StreamRxError},
+    stream_tx::StreamTxRange,
 };
 
 pub(crate) const SESSION_RECORD_TRACKED_WINDOW: u64 = 256;
@@ -55,7 +59,7 @@ pub enum SessionEvent {
     Readable(StreamId),
     Writable(StreamId),
     Finished(StreamId),
-    Closed(StreamClose),
+    Closed(StreamCloseVec),
     WritableClosed(StreamId),
     SessionClosed(SessionCloseBody),
 }
@@ -119,7 +123,6 @@ impl SessionFsm {
             stream_id,
             StreamState::new(
                 StreamRole::Initiator,
-                self.config.stream_send_buffer_size,
                 self.config.stream_receive_buffer_size,
             ),
         );
@@ -144,7 +147,7 @@ impl SessionFsm {
         let accepted = bytes
             .len()
             .min(stream.send_capacity(self.config.stream_send_buffer_size));
-        stream.send_buf.extend(bytes[..accepted].iter().copied());
+        stream.tx.append(&bytes[..accepted]);
         Ok(accepted)
     }
 
@@ -158,6 +161,7 @@ impl SessionFsm {
         if !stream.is_writable() {
             return Err(StreamError::NotWritable);
         }
+        stream.tx.queue_fin();
         stream.outbound_state = OutboundState::FinQueued;
         Ok(())
     }
@@ -194,7 +198,7 @@ impl SessionFsm {
             .streams
             .get(&stream_id)
             .ok_or(StreamError::MissingStream)?;
-        Ok(stream.recv.bytes())
+        Ok(stream.rx.bytes())
     }
 
     pub fn stream_read_commit(
@@ -211,7 +215,7 @@ impl SessionFsm {
             return Err(StreamError::InvalidRead);
         }
         stream
-            .recv
+            .rx
             .consume(len)
             .map_err(|_| StreamError::InvalidRead)?;
         if stream.recv_limit() > stream.advertised_max_offset {
@@ -236,37 +240,45 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn receive(
+    pub fn receive<'a, I>(
         &mut self,
         now: Instant,
-        record: SessionRecord,
+        seq: RecordSeq,
+        frames: I,
         mut emit: impl FnMut(SessionEvent),
-    ) {
+    ) where
+        I: IntoIterator<Item = Result<SessionFrame<&'a [u8]>, WireError>>,
+    {
         self.state.now = now;
         self.collect_timeouts();
-
-        let ack_eliciting = Self::record_is_ack_eliciting(&record);
         self.state.last_activity_at = self.state.now;
         self.state.last_inbound_at = self.state.now;
 
-        let out_of_order = match self.state.received_records.insert(record.seq) {
-            ReceiveInsertOutcome::Duplicate => {
-                if ack_eliciting {
-                    self.schedule_ack(true);
-                }
-                return;
-            }
-            ReceiveInsertOutcome::New { out_of_order } => out_of_order,
+        let (duplicate, out_of_order) = match self.state.received_records.insert(seq) {
+            ReceiveInsertOutcome::Duplicate => (true, false),
+            ReceiveInsertOutcome::New { out_of_order } => (false, out_of_order),
         };
 
-        if self.state.session_state == SessionState::Closed {
-            if ack_eliciting {
-                self.schedule_ack(true);
+        let closed = self.state.session_state == SessionState::Closed;
+        let mut ack_eliciting = false;
+        for frame in frames {
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(_) => {
+                    self.fail_session(
+                        SessionCloseBody {
+                            code: CloseCode::PROTOCOL,
+                        },
+                        &mut emit,
+                    );
+                    return;
+                }
+            };
+            ack_eliciting |= !matches!(frame, SessionFrame::Ack(_));
+            if duplicate || closed {
+                continue;
             }
-            return;
-        }
 
-        for frame in record.frames {
             match frame {
                 SessionFrame::Ping => {}
                 SessionFrame::Ack(ack) => self.process_record_ack(ack, &mut emit),
@@ -281,7 +293,10 @@ impl SessionFsm {
                     }
                 }
                 SessionFrame::StreamClose(frame) => {
-                    if self.handle_stream_close(frame, &mut emit).is_err() {
+                    if self
+                        .handle_stream_close(frame.into_owned(), &mut emit)
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -293,7 +308,7 @@ impl SessionFsm {
         }
 
         if ack_eliciting {
-            self.schedule_ack(out_of_order);
+            self.schedule_ack(duplicate || closed || out_of_order);
         }
     }
 
@@ -387,31 +402,24 @@ impl SessionFsm {
 
     pub fn has_pending_stream_work(&self) -> bool {
         self.state.streams.values().any(|stream| {
-            stream.pending_close.is_some()
-                || !stream.retransmit.is_empty()
-                || !stream.send_buf.is_empty()
-                || stream.pending_window
-                || matches!(stream.outbound_state, OutboundState::FinQueued)
+            stream.pending_close.is_some() || stream.pending_window || stream.tx.has_pending()
         })
     }
 
-    pub fn take_next_write(&mut self, now: Instant) -> Option<(u64, SessionRecord)> {
+    pub fn take_next_write(&mut self, now: Instant) -> Option<(u64, SessionRecordBuilder)> {
         self.state.now = now;
         self.collect_timeouts();
 
-        let built = self.build_next_record()?;
+        let (builder, outbound) = self.build_next_record()?;
         let write_id = self.state.next_write_id;
         self.state.next_write_id = self.state.next_write_id.wrapping_add(1);
-        self.state.outbound_records.insert(write_id, built.outbound);
-        Some((write_id, built.record))
+        self.state.outbound_records.insert(write_id, outbound);
+        Some((write_id, builder))
     }
 
-    fn build_next_record(&mut self) -> Option<BuiltRecord> {
+    fn build_next_record(&mut self) -> Option<(SessionRecordBuilder, OutboundRecord)> {
         let seq = self.state.next_record_seq;
-        let mut record = SessionRecord {
-            seq,
-            frames: Vec::new(),
-        };
+        let mut builder = SessionRecordBuilder::new(seq, self.config.record_size);
         let mut outbound = OutboundRecord {
             seq,
             reliable: Vec::new(),
@@ -420,137 +428,50 @@ impl SessionFsm {
             window_updates: Vec::new(),
             sent_at: None,
         };
-        let mut remaining = self.config.record_size.saturating_sub(8);
 
         if self.should_send_ack() {
             if let Some(ack) = self.state.received_records.ack() {
-                let frame = SessionFrame::Ack(ack);
-                if self.push_frame(&mut record, &mut remaining, frame, true) {
+                if builder.push_ack(&ack) {
                     outbound.ack_included = true;
                     self.state.ack_state = AckState::Idle;
                 }
             }
         }
 
-        while let Some(close) = self.take_pending_session_close(remaining, record.frames.is_empty())
-        {
-            let frame = SessionFrame::Close(close.clone());
-            if !self.push_frame(&mut record, &mut remaining, frame, true) {
-                self.state.pending_control.close = Some(close);
-                break;
-            }
-            outbound.reliable.push(ReliableFrame::Close(close));
-        }
-
-        while let Some(close) =
-            self.take_next_pending_stream_close(remaining, record.frames.is_empty())
-        {
-            let frame = SessionFrame::StreamClose(close.clone());
-            if !self.push_frame(&mut record, &mut remaining, frame, true) {
-                self.restore_stream_close(close);
-                break;
-            }
-            outbound.reliable.push(ReliableFrame::StreamClose(close));
-        }
-
-        if let Some(ping) = self.take_pending_ping(remaining, record.frames.is_empty()) {
-            if self.push_frame(&mut record, &mut remaining, ping, true) {
-                outbound.ping_included = true;
-            } else {
-                self.state.pending_control.ping = true;
+        if let Some(close) = self.state.pending_control.close.clone() {
+            if builder.push_close(&close) {
+                self.state.pending_control.close = None;
+                outbound.reliable.push(ReliableFrame::Close(close));
             }
         }
 
-        while let Some(window) =
-            self.take_next_pending_stream_window(remaining, record.frames.is_empty())
-        {
-            let maximum_offset = window.maximum_offset;
-            let stream_id = window.stream_id;
-            if !self.push_frame(
-                &mut record,
-                &mut remaining,
-                SessionFrame::StreamWindow(window),
-                true,
-            ) {
-                if let Some(stream) = self.state.streams.get_mut(&stream_id) {
-                    stream.pending_window = true;
-                }
-                break;
-            }
-            outbound.window_updates.push((stream_id, maximum_offset));
+        while self.push_next_pending_stream_close(&mut builder, &mut outbound) {}
+
+        if self.state.pending_control.ping && builder.push_ping() {
+            self.state.pending_control.ping = false;
+            outbound.ping_included = true;
         }
 
-        while let Some(frame) =
-            self.take_next_retransmit_stream_data(remaining, record.frames.is_empty())
-        {
-            if !self.push_frame(
-                &mut record,
-                &mut remaining,
-                SessionFrame::StreamData(frame.clone()),
-                true,
-            ) {
-                self.restore_stream_data(frame);
-                break;
-            }
-            outbound.reliable.push(ReliableFrame::StreamData(frame));
-        }
+        while self.push_next_pending_stream_window(&mut builder, &mut outbound) {}
 
-        while let Some(frame) =
-            self.take_next_fresh_stream_data(remaining, record.frames.is_empty())
-        {
-            if !self.push_frame(
-                &mut record,
-                &mut remaining,
-                SessionFrame::StreamData(frame.clone()),
-                true,
-            ) {
-                self.restore_stream_data(frame);
-                break;
-            }
-            outbound.reliable.push(ReliableFrame::StreamData(frame));
-        }
+        while self.push_next_stream_data(&mut builder, &mut outbound) {}
 
-        if record.frames.is_empty() {
+        if builder.is_empty() {
             return None;
         }
 
         self.state.next_record_seq = RecordSeq(self.state.next_record_seq.0.saturating_add(1));
-        Some(BuiltRecord { record, outbound })
+        Some((builder, outbound))
     }
 
-    fn take_pending_session_close(
+    fn push_next_pending_stream_close(
         &mut self,
-        remaining: usize,
-        record_empty: bool,
-    ) -> Option<SessionCloseBody> {
-        let close = self.state.pending_control.close.clone()?;
-        let frame = SessionFrame::Close(close.clone());
-        if !self.frame_fits(remaining, record_empty, &frame) {
-            return None;
-        }
-        self.state.pending_control.close.take()
-    }
-
-    fn take_pending_ping(&mut self, remaining: usize, record_empty: bool) -> Option<SessionFrame> {
-        if !self.state.pending_control.ping {
-            return None;
-        }
-        let frame = SessionFrame::Ping;
-        if !self.frame_fits(remaining, record_empty, &frame) {
-            return None;
-        }
-        self.state.pending_control.ping = false;
-        Some(frame)
-    }
-
-    fn take_next_pending_stream_close(
-        &mut self,
-        remaining: usize,
-        record_empty: bool,
-    ) -> Option<StreamClose> {
+        builder: &mut SessionRecordBuilder,
+        outbound: &mut OutboundRecord,
+    ) -> bool {
         let len = self.state.streams.len();
         if len == 0 {
-            return None;
+            return false;
         }
 
         let start = self.state.next_stream_index % len;
@@ -559,30 +480,32 @@ impl SessionFsm {
             let Some((_, stream)) = self.state.streams.get_index(index) else {
                 continue;
             };
-            let Some(close) = stream.pending_close.clone() else {
+            let Some(close) = stream.pending_close.as_ref() else {
                 continue;
             };
-            let frame = SessionFrame::StreamClose(close.clone());
-            if !self.frame_fits(remaining, record_empty, &frame) {
+            if !builder.push_stream_close(close) {
                 continue;
             }
 
             let stream = self.state.streams.get_index_mut(index).unwrap().1;
             self.state.next_stream_index = (index + 1) % len;
-            return stream.pending_close.take().or(Some(close));
+            outbound.reliable.push(ReliableFrame::StreamClose(
+                stream.pending_close.take().unwrap(),
+            ));
+            return true;
         }
 
-        None
+        false
     }
 
-    fn take_next_pending_stream_window(
+    fn push_next_pending_stream_window(
         &mut self,
-        remaining: usize,
-        record_empty: bool,
-    ) -> Option<StreamWindow> {
+        builder: &mut SessionRecordBuilder,
+        outbound: &mut OutboundRecord,
+    ) -> bool {
         let len = self.state.streams.len();
         if len == 0 {
-            return None;
+            return false;
         }
 
         let start = self.state.next_stream_index % len;
@@ -598,11 +521,7 @@ impl SessionFsm {
                 stream_id,
                 maximum_offset: stream.recv_limit(),
             };
-            if !self.frame_fits(
-                remaining,
-                record_empty,
-                &SessionFrame::StreamWindow(frame.clone()),
-            ) {
+            if !builder.push_stream_window(&frame) {
                 continue;
             }
 
@@ -610,63 +529,26 @@ impl SessionFsm {
             stream.pending_window = false;
             stream.advertised_max_offset = frame.maximum_offset;
             self.state.next_stream_index = (index + 1) % len;
-            return Some(frame);
+            outbound
+                .window_updates
+                .push((stream_id, frame.maximum_offset));
+            return true;
         }
 
-        None
+        false
     }
 
-    fn take_next_retransmit_stream_data(
+    fn push_next_stream_data(
         &mut self,
-        remaining: usize,
-        record_empty: bool,
-    ) -> Option<StreamData> {
-        let max_payload = self.max_stream_data_payload(remaining, record_empty)?;
+        builder: &mut SessionRecordBuilder,
+        outbound: &mut OutboundRecord,
+    ) -> bool {
+        let Some(max_payload) = self.max_stream_data_payload(builder) else {
+            return false;
+        };
         let len = self.state.streams.len();
         if len == 0 {
-            return None;
-        }
-
-        let start = self.state.next_stream_index % len;
-        for offset in 0..len {
-            let index = (start + offset) % len;
-            let Some((_, stream)) = self.state.streams.get_index(index) else {
-                continue;
-            };
-
-            if matches!(stream.outbound_state, OutboundState::Closed) {
-                let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
-                while let Some(frame) = stream.retransmit.pop_front() {
-                    stream.inflight_bytes = stream.inflight_bytes.saturating_sub(frame.bytes.len());
-                }
-                continue;
-            }
-
-            let Some(_) = stream.retransmit.front() else {
-                continue;
-            };
-            let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
-            let frame = stream.retransmit.pop_front().unwrap();
-            let (head, tail) = Self::split_stream_data(frame, max_payload);
-            if let Some(tail) = tail {
-                stream.retransmit.push_front(tail);
-            }
-            self.state.next_stream_index = (index + 1) % len;
-            return Some(head);
-        }
-
-        None
-    }
-
-    fn take_next_fresh_stream_data(
-        &mut self,
-        remaining: usize,
-        record_empty: bool,
-    ) -> Option<StreamData> {
-        let max_payload = self.max_stream_data_payload(remaining, record_empty)?;
-        let len = self.state.streams.len();
-        if len == 0 {
-            return None;
+            return false;
         }
 
         let start = self.state.next_stream_index % len;
@@ -679,45 +561,51 @@ impl SessionFsm {
                 continue;
             }
 
-            let credit_remaining = stream
-                .peer_max_offset
-                .saturating_sub(stream.next_send_offset)
-                as usize;
-            let has_empty_fin = matches!(stream.outbound_state, OutboundState::FinQueued)
-                && stream.send_buf.is_empty()
-                && stream.next_send_offset <= stream.peer_max_offset;
-            if stream.send_buf.is_empty() && !has_empty_fin {
+            let Some(candidate) = stream.tx.next_range(max_payload, stream.peer_max_offset) else {
                 continue;
-            }
-
-            if credit_remaining == 0 && !has_empty_fin {
-                continue;
+            };
+            {
+                let frame = StreamData {
+                    stream_id,
+                    offset: candidate.offset,
+                    fin: candidate.fin,
+                    bytes: stream.tx.ranged_bytes(candidate),
+                };
+                if !builder.push_stream_data(&frame) {
+                    continue;
+                }
             }
 
             let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
-            let payload_len = stream.send_buf.len().min(max_payload).min(credit_remaining);
-            let bytes: Vec<u8> = stream.send_buf.drain(..payload_len).collect();
-            let fin = matches!(stream.outbound_state, OutboundState::FinQueued)
-                && stream.send_buf.is_empty()
-                && stream.next_send_offset + bytes.len() as u64 <= stream.peer_max_offset;
-            let frame = StreamData {
-                stream_id,
-                offset: stream.next_send_offset,
-                fin,
-                bytes,
-            };
-            stream.next_send_offset = stream
-                .next_send_offset
-                .saturating_add(frame.bytes.len() as u64);
-            stream.inflight_bytes = stream.inflight_bytes.saturating_add(frame.bytes.len());
-            if fin {
+            stream.tx.mark_in_flight(candidate);
+            if candidate.fin {
                 stream.outbound_state = OutboundState::Finished;
             }
             self.state.next_stream_index = (index + 1) % len;
-            return Some(frame);
+            outbound
+                .reliable
+                .push(ReliableFrame::StreamData(StreamDataManifest {
+                    stream_id,
+                    offset: candidate.offset,
+                    len: candidate.len,
+                    fin: candidate.fin,
+                }));
+            return true;
         }
 
-        None
+        false
+    }
+
+    fn max_stream_data_payload(&self, builder: &SessionRecordBuilder) -> Option<usize> {
+        let overhead = 1 + std::mem::size_of::<u16>() + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
+        let remaining = builder.remaining_capacity();
+        if remaining > overhead {
+            Some(remaining - overhead)
+        } else if builder.is_empty() {
+            Some(self.config.record_size)
+        } else {
+            None
+        }
     }
 
     fn ensure_session_open(&self) -> Result<(), StreamError> {
@@ -843,7 +731,11 @@ impl SessionFsm {
                 let stream_id = frame.stream_id;
                 if let Some(stream) = self.state.streams.get_mut(&stream_id) {
                     let was_full = stream.send_capacity(self.config.stream_send_buffer_size) == 0;
-                    stream.inflight_bytes = stream.inflight_bytes.saturating_sub(frame.bytes.len());
+                    stream.tx.mark_acked(StreamTxRange {
+                        offset: frame.offset,
+                        len: frame.len,
+                        fin: frame.fin,
+                    });
                     if was_full && stream.send_capacity(self.config.stream_send_buffer_size) > 0 {
                         emit(SessionEvent::Writable(stream_id));
                     }
@@ -855,7 +747,7 @@ impl SessionFsm {
 
     fn handle_stream_data(
         &mut self,
-        frame: StreamData,
+        frame: StreamData<&[u8]>,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
         let stream_id = frame.stream_id;
@@ -874,7 +766,6 @@ impl SessionFsm {
                 emit(SessionEvent::Opened(stream_id));
                 entry.insert(StreamState::new(
                     StreamRole::Responder,
-                    self.config.stream_send_buffer_size,
                     self.config.stream_receive_buffer_size,
                 ))
             }
@@ -884,7 +775,7 @@ impl SessionFsm {
             InboundState::Open => {}
             InboundState::Discarding => return Ok(()),
             InboundState::Finished | InboundState::Closed(_) => {
-                if frame.offset + frame.bytes.len() as u64 <= stream.recv.start_offset() {
+                if frame.offset + frame.bytes.len() as u64 <= stream.rx.start_offset() {
                     return Ok(());
                 }
                 self.fail_session(
@@ -898,7 +789,7 @@ impl SessionFsm {
         }
 
         let was_readable = stream.readable_bytes() > 0;
-        let insert = stream.recv.insert(frame.offset, frame.fin, &frame.bytes);
+        let insert = stream.rx.insert(frame.offset, frame.fin, frame.bytes);
         match insert {
             Ok(outcome) => {
                 if !was_readable && outcome.newly_readable_bytes > 0 {
@@ -911,13 +802,13 @@ impl SessionFsm {
                 self.try_reap_stream(stream_id);
                 Ok(())
             }
-            Err(StreamAssemblerError::ConflictingOverlap)
-            | Err(StreamAssemblerError::OutOfWindow)
-            | Err(StreamAssemblerError::InconsistentFinalOffset)
-            | Err(StreamAssemblerError::FinalOffsetBeforeBufferedData)
-            | Err(StreamAssemblerError::BeyondFinalOffset)
-            | Err(StreamAssemblerError::TooManyMissingRanges)
-            | Err(StreamAssemblerError::OffsetOverflow) => {
+            Err(StreamRxError::ConflictingOverlap)
+            | Err(StreamRxError::OutOfWindow)
+            | Err(StreamRxError::InconsistentFinalOffset)
+            | Err(StreamRxError::FinalOffsetBeforeBufferedData)
+            | Err(StreamRxError::BeyondFinalOffset)
+            | Err(StreamRxError::TooManyMissingRanges)
+            | Err(StreamRxError::OffsetOverflow) => {
                 self.fail_session(
                     SessionCloseBody {
                         code: CloseCode::PROTOCOL,
@@ -926,7 +817,7 @@ impl SessionFsm {
                 );
                 Err(())
             }
-            Err(StreamAssemblerError::ConsumeBeyondReadable) => unreachable!(),
+            Err(StreamRxError::ConsumeBeyondReadable) => unreachable!(),
         }
     }
 
@@ -957,7 +848,7 @@ impl SessionFsm {
 
     fn handle_stream_close(
         &mut self,
-        frame: StreamClose,
+        frame: StreamCloseVec,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
         let created = match self.state.streams.entry(frame.stream_id) {
@@ -974,7 +865,6 @@ impl SessionFsm {
                 }
                 entry.insert(StreamState::new(
                     StreamRole::Responder,
-                    self.config.stream_send_buffer_size,
                     self.config.stream_receive_buffer_size,
                 ));
                 true
@@ -1000,10 +890,8 @@ impl SessionFsm {
             && !matches!(stream.outbound_state, OutboundState::Closed)
         {
             stream.outbound_state = OutboundState::Closed;
-            stream.send_buf.clear();
-            stream.retransmit.clear();
+            stream.tx.clear();
             stream.pending_close = None;
-            stream.inflight_bytes = 0;
             emit(SessionEvent::WritableClosed(frame.stream_id));
         }
         self.try_reap_stream(frame.stream_id);
@@ -1033,8 +921,7 @@ impl SessionFsm {
         }
         if Self::target_affects_outbound(stream.role, target) {
             stream.outbound_state = OutboundState::Closed;
-            stream.send_buf.clear();
-            stream.retransmit.clear();
+            stream.tx.clear();
         }
     }
 
@@ -1046,92 +933,28 @@ impl SessionFsm {
         matches!(target, CloseTarget::Both) || role.outbound_target() == target
     }
 
-    fn restore_stream_close(&mut self, close: StreamClose) {
+    fn restore_stream_close(&mut self, close: StreamCloseVec) {
         if let Some(stream) = self.state.streams.get_mut(&close.stream_id) {
             stream.pending_close = Some(close);
         }
     }
 
-    fn restore_stream_data(&mut self, frame: StreamData) {
+    fn restore_stream_data(&mut self, frame: StreamDataManifest) {
         if let Some(stream) = self.state.streams.get_mut(&frame.stream_id) {
             if matches!(stream.outbound_state, OutboundState::Closed) {
-                stream.inflight_bytes = stream.inflight_bytes.saturating_sub(frame.bytes.len());
                 return;
             }
-            stream.retransmit.push_front(frame);
+            stream.tx.mark_lost(StreamTxRange {
+                offset: frame.offset,
+                len: frame.len,
+                fin: frame.fin,
+            });
+            if frame.fin {
+                if matches!(stream.outbound_state, OutboundState::Finished) {
+                    stream.outbound_state = OutboundState::FinQueued;
+                }
+            }
         }
-    }
-
-    fn split_stream_data(
-        frame: StreamData,
-        max_payload: usize,
-    ) -> (StreamData, Option<StreamData>) {
-        if frame.bytes.len() <= max_payload || frame.bytes.is_empty() {
-            return (frame, None);
-        }
-
-        let split = max_payload.max(1).min(frame.bytes.len());
-        let mut head = frame.clone();
-        head.bytes.truncate(split);
-        head.fin = false;
-
-        let tail = StreamData {
-            stream_id: frame.stream_id,
-            offset: frame.offset + split as u64,
-            fin: frame.fin,
-            bytes: frame.bytes[split..].to_vec(),
-        };
-        (head, Some(tail))
-    }
-
-    fn max_stream_data_payload(&self, remaining: usize, record_empty: bool) -> Option<usize> {
-        let overhead = self.frame_len(&SessionFrame::StreamData(StreamData {
-            stream_id: StreamId(0),
-            offset: 0,
-            fin: false,
-            bytes: Vec::new(),
-        }));
-        if remaining > overhead {
-            Some(remaining - overhead)
-        } else if record_empty {
-            Some(self.config.record_size)
-        } else {
-            None
-        }
-    }
-
-    fn frame_fits(&self, remaining: usize, record_empty: bool, frame: &SessionFrame) -> bool {
-        let len = self.frame_len(frame);
-        len <= remaining || record_empty
-    }
-
-    fn push_frame(
-        &self,
-        record: &mut SessionRecord,
-        remaining: &mut usize,
-        frame: SessionFrame,
-        force_if_empty: bool,
-    ) -> bool {
-        let len = self.frame_len(&frame);
-        if len > *remaining && !(force_if_empty && record.frames.is_empty()) {
-            return false;
-        }
-        record.frames.push(frame);
-        *remaining = remaining.saturating_sub(len);
-        true
-    }
-
-    fn frame_len(&self, frame: &SessionFrame) -> usize {
-        let mut bytes = Vec::new();
-        frame.encode_into(&mut bytes);
-        bytes.len()
-    }
-
-    fn record_is_ack_eliciting(record: &SessionRecord) -> bool {
-        record
-            .frames
-            .iter()
-            .any(|frame| !matches!(frame, SessionFrame::Ack(_)))
     }
 
     fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
@@ -1147,12 +970,10 @@ impl SessionFsm {
             return false;
         }
 
-        if !stream.send_buf.is_empty()
-            || !stream.retransmit.is_empty()
+        if !stream.tx.is_empty()
             || stream.pending_close.is_some()
-            || stream.inflight_bytes > 0
             || stream.readable_bytes() > 0
-            || stream.recv.buffered_end_offset() > stream.recv.start_offset()
+            || stream.rx.buffered_end_offset() > stream.rx.start_offset()
         {
             return false;
         }
@@ -1210,9 +1031,4 @@ impl SessionFsm {
         self.state.next_stream_index = 0;
         self.state.streams.clear();
     }
-}
-
-struct BuiltRecord {
-    record: SessionRecord,
-    outbound: OutboundRecord,
 }

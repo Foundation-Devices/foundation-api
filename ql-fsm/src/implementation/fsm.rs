@@ -37,8 +37,8 @@ pub fn receive(
     }
 
     match payload {
-        QlPayloadRef::PairRequest(mut request) => {
-            super::handle_pair(fsm, crypto, &header, &mut request)?;
+        QlPayloadRef::PairRequest(request) => {
+            super::handle_pair(fsm, crypto, &header, request)?;
         }
         QlPayloadRef::Unpair(unpair) => {
             super::handle_unpair(fsm, crypto, &header, &unpair)?;
@@ -52,17 +52,17 @@ pub fn receive(
         QlPayloadRef::Confirm(confirm) => {
             super::handle_confirm(fsm, crypto, &header, &confirm)?;
         }
-        QlPayloadRef::Ready(mut ready) => {
-            super::handle_ready(fsm, crypto, &header, &mut ready)?;
+        QlPayloadRef::Ready(ready) => {
+            super::handle_ready(fsm, crypto, &header, ready)?;
         }
-        QlPayloadRef::Session(mut encrypted) => {
+        QlPayloadRef::Session(encrypted) => {
             let Some((_, session_key)) = super::peer_session(fsm) else {
                 return Err(QlFsmError::NoSession);
             };
-            let record = wire::decrypt_record(crypto, &header, &mut encrypted, &session_key)?;
-            let record = wire::SessionRecord::from_wire(&record)?;
+            let plaintext = wire::decrypt_record(crypto, &header, encrypted, &session_key)?;
+            let (seq, frames) = wire::SessionRecord::parse(plaintext.as_ref())?;
             let mut session_closed = false;
-            fsm.session.receive(fsm.state.now.instant, record, {
+            fsm.session.receive(fsm.state.now.instant, seq, frames, {
                 let session_events = &mut fsm.state.session_events;
                 |event| {
                     session_closed |= super::forward_session_event(session_events, event);
@@ -127,15 +127,14 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
 
     let sender = fsm.identity.xid;
     let (recipient, session_key) = super::peer_session(fsm)?;
-    let (write_id, record) = fsm.session.take_next_write(fsm.state.now.instant)?;
+    let (write_id, builder) = fsm.session.take_next_write(fsm.state.now.instant)?;
     let mut nonce = [0u8; Nonce::SIZE];
     crypto.fill_random_bytes(&mut nonce);
     Some(OutboundWrite {
-        record: wire::encrypt_record(
+        record: builder.encrypt(
             crypto,
             wire::QlHeader { sender, recipient },
             &session_key,
-            &record,
             Nonce(nonce),
         ),
         session_write_id: Some(SessionWriteId(write_id)),

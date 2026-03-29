@@ -8,8 +8,8 @@ use std::{
 
 use libcrux_aesgcm::AesGcm256Key;
 use ql_wire::{
-    self, generate_ml_dsa_keypair, generate_ml_kem_keypair, EncryptedMessage, QlCrypto, QlIdentity,
-    QlPayload, QlRecord, SessionKey, XID,
+    self, generate_ml_dsa_keypair, generate_ml_kem_keypair, QlCrypto, QlIdentity, QlPayload,
+    QlRecord, SessionKey, XID, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 use sha2::{Digest, Sha256};
 
@@ -55,10 +55,10 @@ impl QlCrypto for TestCrypto {
         nonce: &ql_wire::Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; EncryptedMessage::AUTH_SIZE] {
+    ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE] {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
-        let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
+        let mut auth = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
         key.encrypt(
             buffer,
             (&mut auth).into(),
@@ -76,7 +76,7 @@ impl QlCrypto for TestCrypto {
         nonce: &ql_wire::Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-        auth_tag: &[u8; EncryptedMessage::AUTH_SIZE],
+        auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
     ) -> bool {
         let key: AesGcm256Key = (*key.data()).into();
         let ciphertext = buffer.to_vec();

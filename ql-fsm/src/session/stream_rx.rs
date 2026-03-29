@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 /// reassembles one stream direction from out-of-order byte ranges.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamAssembler<const MAX_MISSING_RANGES: usize = 8> {
+pub struct StreamRx<const MAX_MISSING_RANGES: usize = 8> {
     start_offset: u64,
     bytes: VecDeque<u8>,
     missing: MissingRanges<MAX_MISSING_RANGES>,
@@ -23,7 +23,7 @@ pub struct InsertOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamAssemblerError {
+pub enum StreamRxError {
     OffsetOverflow,
     OutOfWindow,
     InconsistentFinalOffset,
@@ -40,7 +40,7 @@ pub struct StreamReadIter<'a> {
     back: Option<&'a [u8]>,
 }
 
-impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
+impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
     pub fn new(max_buffered: usize) -> Self {
         Self::with_start_offset(0, max_buffered)
     }
@@ -63,18 +63,8 @@ impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
         self.start_offset + self.bytes.len() as u64
     }
 
-    #[cfg(test)]
-    pub fn final_offset(&self) -> Option<u64> {
-        self.final_offset
-    }
-
     pub fn max_buffered(&self) -> usize {
         self.max_buffered
-    }
-
-    #[cfg(test)]
-    pub fn missing_ranges(&self) -> &[MissingRange] {
-        self.missing.as_slice()
     }
 
     pub fn readable_len(&self) -> usize {
@@ -133,10 +123,10 @@ impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
         offset: u64,
         fin: bool,
         bytes: &[u8],
-    ) -> Result<InsertOutcome, StreamAssemblerError> {
+    ) -> Result<InsertOutcome, StreamRxError> {
         let end = offset
             .checked_add(bytes.len() as u64)
-            .ok_or(StreamAssemblerError::OffsetOverflow)?;
+            .ok_or(StreamRxError::OffsetOverflow)?;
 
         let was_complete = self.is_complete();
         let old_readable = self.readable_len();
@@ -146,7 +136,7 @@ impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
         }
         if let Some(final_offset) = self.final_offset {
             if end > final_offset {
-                return Err(StreamAssemblerError::BeyondFinalOffset);
+                return Err(StreamRxError::BeyondFinalOffset);
             }
         }
 
@@ -171,10 +161,10 @@ impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
         Ok(self.insert_outcome(was_complete, old_readable))
     }
 
-    pub fn consume(&mut self, len: usize) -> Result<(), StreamAssemblerError> {
+    pub fn consume(&mut self, len: usize) -> Result<(), StreamRxError> {
         let readable = self.readable_len();
         if len > readable {
-            return Err(StreamAssemblerError::ConsumeBeyondReadable);
+            return Err(StreamRxError::ConsumeBeyondReadable);
         }
 
         self.bytes.drain(..len);
@@ -189,36 +179,33 @@ impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
         }
     }
 
-    fn set_or_validate_final_offset(
-        &mut self,
-        final_offset: u64,
-    ) -> Result<(), StreamAssemblerError> {
+    fn set_or_validate_final_offset(&mut self, final_offset: u64) -> Result<(), StreamRxError> {
         if let Some(existing) = self.final_offset {
             return if existing == final_offset {
                 Ok(())
             } else {
-                Err(StreamAssemblerError::InconsistentFinalOffset)
+                Err(StreamRxError::InconsistentFinalOffset)
             };
         }
 
         let buffered_end = self.buffered_end_offset();
         if final_offset < buffered_end {
-            return Err(StreamAssemblerError::FinalOffsetBeforeBufferedData);
+            return Err(StreamRxError::FinalOffsetBeforeBufferedData);
         }
 
         self.final_offset = Some(final_offset);
         Ok(())
     }
 
-    fn ensure_within_window(&self, end: u64) -> Result<(), StreamAssemblerError> {
+    fn ensure_within_window(&self, end: u64) -> Result<(), StreamRxError> {
         let attempted = end.saturating_sub(self.start_offset);
         if attempted > self.max_buffered as u64 {
-            return Err(StreamAssemblerError::OutOfWindow);
+            return Err(StreamRxError::OutOfWindow);
         }
         Ok(())
     }
 
-    fn ensure_buffered(&mut self, end: u64) -> Result<(), StreamAssemblerError> {
+    fn ensure_buffered(&mut self, end: u64) -> Result<(), StreamRxError> {
         let buffered_end = self.buffered_end_offset();
         if end <= buffered_end {
             return Ok(());
@@ -232,7 +219,7 @@ impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
         })
     }
 
-    fn push_missing_range(&mut self, range: MissingRange) -> Result<(), StreamAssemblerError> {
+    fn push_missing_range(&mut self, range: MissingRange) -> Result<(), StreamRxError> {
         if range.start >= range.end {
             return Ok(());
         }
@@ -247,7 +234,7 @@ impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
         self.missing.push(range)
     }
 
-    fn validate_overlap(&self, offset: u64, bytes: &[u8]) -> Result<(), StreamAssemblerError> {
+    fn validate_overlap(&self, offset: u64, bytes: &[u8]) -> Result<(), StreamRxError> {
         let mut gap_index = self.first_gap_index_after(offset);
 
         for (index, byte) in bytes.iter().copied().enumerate() {
@@ -265,7 +252,7 @@ impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
             }
 
             if self.byte_at(absolute) != byte {
-                return Err(StreamAssemblerError::ConflictingOverlap);
+                return Err(StreamRxError::ConflictingOverlap);
             }
         }
 
@@ -280,7 +267,7 @@ impl<const MAX_MISSING_RANGES: usize> StreamAssembler<MAX_MISSING_RANGES> {
         }
     }
 
-    fn subtract_missing_range(&mut self, start: u64, end: u64) -> Result<(), StreamAssemblerError> {
+    fn subtract_missing_range(&mut self, start: u64, end: u64) -> Result<(), StreamRxError> {
         let first = self.first_gap_index_after(start);
         if first == self.missing.len() || self.missing[first].start >= end {
             return Ok(());
@@ -413,18 +400,18 @@ impl<const N: usize> MissingRanges<N> {
         }
     }
 
-    fn push(&mut self, range: MissingRange) -> Result<(), StreamAssemblerError> {
+    fn push(&mut self, range: MissingRange) -> Result<(), StreamRxError> {
         if self.len == N {
-            return Err(StreamAssemblerError::TooManyMissingRanges);
+            return Err(StreamRxError::TooManyMissingRanges);
         }
         self.ranges[self.len] = range;
         self.len += 1;
         Ok(())
     }
 
-    fn insert(&mut self, index: usize, range: MissingRange) -> Result<(), StreamAssemblerError> {
+    fn insert(&mut self, index: usize, range: MissingRange) -> Result<(), StreamRxError> {
         if self.len == N {
-            return Err(StreamAssemblerError::TooManyMissingRanges);
+            return Err(StreamRxError::TooManyMissingRanges);
         }
         for i in (index..self.len).rev() {
             self.ranges[i + 1] = self.ranges[i];
@@ -476,13 +463,13 @@ impl<const N: usize> std::ops::IndexMut<usize> for MissingRanges<N> {
 
 #[cfg(test)]
 mod tests {
-    use super::{InsertOutcome, MissingRange, StreamAssembler, StreamAssemblerError};
+    use super::{InsertOutcome, MissingRange, StreamRx, StreamRxError};
 
     #[test]
     fn contiguous_insert_becomes_readable_and_complete() {
-        let mut assembler = StreamAssembler::<8>::new(64);
+        let mut rx = StreamRx::<8>::new(64);
 
-        let outcome = assembler.insert(0, true, b"hello").unwrap();
+        let outcome = rx.insert(0, true, b"hello").unwrap();
 
         assert_eq!(
             outcome,
@@ -491,18 +478,18 @@ mod tests {
                 became_complete: true,
             }
         );
-        assert_eq!(assembler.readable_len(), 5);
-        assert_eq!(assembler.copy_readable(), b"hello");
-        assert_eq!(assembler.final_offset(), Some(5));
-        assert!(assembler.is_complete());
-        assert!(assembler.missing_ranges().is_empty());
+        assert_eq!(rx.readable_len(), 5);
+        assert_eq!(rx.copy_readable(), b"hello");
+        assert_eq!(rx.final_offset, Some(5));
+        assert!(rx.is_complete());
+        assert!(rx.missing.is_empty());
     }
 
     #[test]
     fn out_of_order_insert_tracks_missing_ranges_until_gap_is_filled() {
-        let mut assembler = StreamAssembler::<8>::new(64);
+        let mut rx = StreamRx::<8>::new(64);
 
-        let first = assembler.insert(5, true, b" world").unwrap();
+        let first = rx.insert(5, true, b" world").unwrap();
         assert_eq!(
             first,
             InsertOutcome {
@@ -510,13 +497,10 @@ mod tests {
                 became_complete: false,
             }
         );
-        assert_eq!(
-            assembler.missing_ranges(),
-            &[MissingRange { start: 0, end: 5 }]
-        );
-        assert_eq!(assembler.readable_len(), 0);
+        assert_eq!(rx.missing.as_slice(), &[MissingRange { start: 0, end: 5 }]);
+        assert_eq!(rx.readable_len(), 0);
 
-        let second = assembler.insert(0, false, b"hello").unwrap();
+        let second = rx.insert(0, false, b"hello").unwrap();
         assert_eq!(
             second,
             InsertOutcome {
@@ -524,17 +508,17 @@ mod tests {
                 became_complete: true,
             }
         );
-        assert_eq!(assembler.copy_readable(), b"hello world");
-        assert!(assembler.missing_ranges().is_empty());
-        assert!(assembler.is_complete());
+        assert_eq!(rx.copy_readable(), b"hello world");
+        assert!(rx.missing.is_empty());
+        assert!(rx.is_complete());
     }
 
     #[test]
     fn duplicate_insert_is_ignored_if_bytes_match() {
-        let mut assembler = StreamAssembler::<8>::new(64);
+        let mut rx = StreamRx::<8>::new(64);
 
-        assembler.insert(0, false, b"hello").unwrap();
-        let duplicate = assembler.insert(0, false, b"hello").unwrap();
+        rx.insert(0, false, b"hello").unwrap();
+        let duplicate = rx.insert(0, false, b"hello").unwrap();
 
         assert_eq!(
             duplicate,
@@ -543,29 +527,29 @@ mod tests {
                 became_complete: false,
             }
         );
-        assert_eq!(assembler.copy_readable(), b"hello");
+        assert_eq!(rx.copy_readable(), b"hello");
     }
 
     #[test]
     fn conflicting_overlap_is_rejected() {
-        let mut assembler = StreamAssembler::<8>::new(64);
+        let mut rx = StreamRx::<8>::new(64);
 
-        assembler.insert(0, false, b"abcdef").unwrap();
-        let error = assembler.insert(3, false, b"xyz").unwrap_err();
+        rx.insert(0, false, b"abcdef").unwrap();
+        let error = rx.insert(3, false, b"xyz").unwrap_err();
 
-        assert_eq!(error, StreamAssemblerError::ConflictingOverlap);
+        assert_eq!(error, StreamRxError::ConflictingOverlap);
     }
 
     #[test]
     fn consume_advances_start_offset_and_trims_old_prefix() {
-        let mut assembler = StreamAssembler::<8>::new(64);
+        let mut rx = StreamRx::<8>::new(64);
 
-        assembler.insert(0, false, b"abcd").unwrap();
-        assembler.consume(2).unwrap();
-        assert_eq!(assembler.start_offset(), 2);
-        assert_eq!(assembler.copy_readable(), b"cd");
+        rx.insert(0, false, b"abcd").unwrap();
+        rx.consume(2).unwrap();
+        assert_eq!(rx.start_offset(), 2);
+        assert_eq!(rx.copy_readable(), b"cd");
 
-        let outcome = assembler.insert(1, true, b"bcde").unwrap();
+        let outcome = rx.insert(1, true, b"bcde").unwrap();
         assert_eq!(
             outcome,
             InsertOutcome {
@@ -573,39 +557,39 @@ mod tests {
                 became_complete: true,
             }
         );
-        assert_eq!(assembler.copy_readable(), b"cde");
-        assert_eq!(assembler.final_offset(), Some(5));
-        assert!(assembler.is_complete());
+        assert_eq!(rx.copy_readable(), b"cde");
+        assert_eq!(rx.final_offset, Some(5));
+        assert!(rx.is_complete());
     }
 
     #[test]
     fn insert_rejects_when_missing_range_budget_is_exhausted() {
-        let mut assembler = StreamAssembler::<2>::new(64);
+        let mut rx = StreamRx::<2>::new(64);
 
-        assembler.insert(1, false, b"a").unwrap();
-        assembler.insert(3, false, b"b").unwrap();
-        let error = assembler.insert(5, false, b"c").unwrap_err();
+        rx.insert(1, false, b"a").unwrap();
+        rx.insert(3, false, b"b").unwrap();
+        let error = rx.insert(5, false, b"c").unwrap_err();
 
-        assert_eq!(error, StreamAssemblerError::TooManyMissingRanges);
+        assert_eq!(error, StreamRxError::TooManyMissingRanges);
     }
 
     #[test]
     fn insert_can_fill_multiple_gaps_without_rebuilding_state() {
-        let mut assembler = StreamAssembler::<8>::new(64);
+        let mut rx = StreamRx::<8>::new(64);
 
-        assembler.insert(0, false, b"ab").unwrap();
-        assembler.insert(4, false, b"ef").unwrap();
-        assembler.insert(8, true, b"ij").unwrap();
+        rx.insert(0, false, b"ab").unwrap();
+        rx.insert(4, false, b"ef").unwrap();
+        rx.insert(8, true, b"ij").unwrap();
 
         assert_eq!(
-            assembler.missing_ranges(),
+            rx.missing.as_slice(),
             &[
                 MissingRange { start: 2, end: 4 },
                 MissingRange { start: 6, end: 8 },
             ]
         );
 
-        let outcome = assembler.insert(2, false, b"cdefgh").unwrap();
+        let outcome = rx.insert(2, false, b"cdefgh").unwrap();
 
         assert_eq!(
             outcome,
@@ -614,8 +598,8 @@ mod tests {
                 became_complete: true,
             }
         );
-        assert!(assembler.missing_ranges().is_empty());
-        assert_eq!(assembler.copy_readable(), b"abcdefghij");
-        assert!(assembler.is_complete());
+        assert!(rx.missing.is_empty());
+        assert_eq!(rx.copy_readable(), b"abcdefghij");
+        assert!(rx.is_complete());
     }
 }

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use ql_wire::{
     CloseCode, CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionFrame, SessionRecord,
-    StreamClose, StreamData, StreamId, XID,
+    StreamCloseVec, StreamData, StreamId, XID,
 };
 
 use super::{state::StreamParity, SessionEvent, SessionFsm, SessionFsmConfig};
@@ -24,14 +24,16 @@ fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {
 }
 
 fn next_outbound(fsm: &mut SessionFsm, now: Instant) -> Option<SessionRecord> {
-    let (write_id, record) = fsm.take_next_write(now)?;
+    let (write_id, builder) = fsm.take_next_write(now)?;
     fsm.confirm_write(now, write_id);
-    Some(record)
+    Some(SessionRecord::decode(builder.bytes()).unwrap())
 }
 
 fn receive_events(fsm: &mut SessionFsm, now: Instant, record: SessionRecord) -> Vec<SessionEvent> {
+    let bytes = record.encode();
+    let (seq, frames) = SessionRecord::parse(&bytes).unwrap();
     let mut events = Vec::new();
-    fsm.receive(now, record, |event| events.push(event));
+    fsm.receive(now, seq, frames, |event| events.push(event));
     events
 }
 
@@ -197,11 +199,12 @@ fn remote_stream_close_is_reliable_and_retried() {
     )
     .unwrap();
 
-    let (write_id, first) = fsm.take_next_write(now).unwrap();
+    let (write_id, builder) = fsm.take_next_write(now).unwrap();
     fsm.confirm_write(now, write_id);
+    let first = SessionRecord::decode(builder.bytes()).unwrap();
     assert!(matches!(
         first.frames.as_slice(),
-        [SessionFrame::StreamClose(StreamClose { stream_id: id, .. })] if *id == stream_id
+        [SessionFrame::StreamClose(StreamCloseVec { stream_id: id, .. })] if *id == stream_id
     ));
 
     fsm.on_timer(now + Duration::from_millis(200), |_| {});

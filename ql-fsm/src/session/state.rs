@@ -1,15 +1,14 @@
-use std::{
-    collections::{BTreeSet, VecDeque},
-    time::Instant,
-};
+use std::{collections::BTreeSet, time::Instant};
 
 use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionCloseBody, StreamClose, StreamData,
-    StreamId, XID,
+    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionCloseBody, StreamCloseVec, StreamId,
+    XID,
 };
 
-use super::{reassembly::StreamAssembler, SessionState, SESSION_RECORD_TRACKED_WINDOW};
+use super::{
+    stream_rx::StreamRx, stream_tx::StreamTx, SessionState, SESSION_RECORD_TRACKED_WINDOW,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamParity {
@@ -88,59 +87,33 @@ pub enum OutboundState {
 pub enum InboundState {
     Open,
     Finished,
-    Closed(StreamClose),
+    Closed(StreamCloseVec),
     Discarding,
 }
 
 #[derive(Debug)]
 pub struct StreamState {
     pub role: StreamRole,
-    pub send_buf: VecDeque<u8>,
-    // TODO: this is a stopgap shape and should be replaced.
-    //
-    // right now we keep sent-but-not-yet-acked stream bytes here as `ql_wire::StreamData`
-    // segments so the session scheduler can re-pack them into later records after loss.
-    // that works mechanically, but it is the wrong abstraction boundary: the fsm is caching
-    // wire-shaped frames instead of owning transport-neutral outbound stream state.
-    //
-    // the cleaner model is:
-    // - keep one authoritative outbound byte buffer per stream
-    // - track offsets/cursors into that buffer:
-    //   - oldest buffered offset
-    //   - next unsent offset
-    //   - final offset, if known
-    // - keep lightweight sent-range/manifests that reference byte ranges in that buffer
-    //   instead of cloning/storing `StreamData`
-    // - build `ql_wire::StreamData` only at pack time
-    // - free buffered prefix bytes only once no in-flight record manifest still references them
-    //
-    // that would let `send_buf` remain the source of truth while record manifests explain
-    // which accepted byte ranges were carried by which record.
-    pub retransmit: VecDeque<StreamData>,
-    pub pending_close: Option<StreamClose>,
-    pub inflight_bytes: usize,
-    pub next_send_offset: u64,
+    pub rx: StreamRx,
+    pub tx: StreamTx,
+    pub pending_close: Option<StreamCloseVec>,
     pub peer_max_offset: u64,
     pub outbound_state: OutboundState,
     pub inbound_state: InboundState,
-    pub recv: StreamAssembler,
     pub advertised_max_offset: u64,
     pub pending_window: bool,
 }
 
 impl StreamState {
-    pub fn new(role: StreamRole, _send_buffer_size: usize, receive_buffer_size: usize) -> Self {
+    pub fn new(role: StreamRole, receive_buffer_size: usize) -> Self {
         Self {
             role,
-            send_buf: VecDeque::new(),
-            retransmit: VecDeque::new(),
+            tx: StreamTx::new(),
             pending_close: None,
-            inflight_bytes: 0,
-            next_send_offset: 0,
             peer_max_offset: receive_buffer_size as u64,
             outbound_state: OutboundState::Open,
             inbound_state: InboundState::Open,
-            recv: StreamAssembler::new(receive_buffer_size),
+            rx: StreamRx::new(receive_buffer_size),
             advertised_max_offset: receive_buffer_size as u64,
             pending_window: false,
         }
@@ -151,7 +124,7 @@ impl StreamState {
     }
 
     pub fn buffered_send_bytes(&self) -> usize {
-        self.send_buf.len().saturating_add(self.inflight_bytes)
+        self.tx.buffered_len()
     }
 
     pub fn send_capacity(&self, send_buffer_size: usize) -> usize {
@@ -159,26 +132,33 @@ impl StreamState {
     }
 
     pub fn readable_bytes(&self) -> usize {
-        self.recv.readable_len()
+        self.rx.readable_len()
     }
 
     pub fn recv_limit(&self) -> u64 {
-        self.recv
+        self.rx
             .start_offset()
-            .saturating_add(self.recv.max_buffered() as u64)
+            .saturating_add(self.rx.max_buffered() as u64)
     }
 
     pub fn reset_recv(&mut self) {
-        self.recv =
-            StreamAssembler::with_start_offset(self.recv.start_offset(), self.recv.max_buffered());
+        self.rx = StreamRx::with_start_offset(self.rx.start_offset(), self.rx.max_buffered());
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum ReliableFrame {
-    StreamData(StreamData),
-    StreamClose(StreamClose),
+    StreamData(StreamDataManifest),
+    StreamClose(StreamCloseVec),
     Close(SessionCloseBody),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamDataManifest {
+    pub stream_id: StreamId,
+    pub offset: u64,
+    pub len: usize,
+    pub fin: bool,
 }
 
 #[derive(Debug, Clone)]

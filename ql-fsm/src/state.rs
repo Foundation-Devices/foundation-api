@@ -33,7 +33,7 @@ pub enum HandshakeResponder {
 pub struct RecentReady {
     pub hello: Hello,
     pub reply: HelloReply,
-    pub ready: Ready,
+    pub ready: Ready<Vec<u8>>,
     pub expires_at: Instant,
 }
 

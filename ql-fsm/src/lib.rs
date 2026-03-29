@@ -31,9 +31,9 @@ use std::time::{Duration, Instant};
 pub use error::QlFsmError;
 use ql_wire::{
     CloseCode, CloseTarget, MlDsaPublicKey, MlKemPublicKey, QlCrypto, QlIdentity, QlRecord,
-    SessionCloseBody, StreamClose, StreamId, XID,
+    SessionCloseBody, StreamCloseVec, StreamId, XID,
 };
-pub use session::reassembly::StreamReadIter;
+pub use session::stream_rx::StreamReadIter;
 
 use crate::{
     replay_cache::ReplayCache,
@@ -102,7 +102,7 @@ pub enum QlSessionEvent {
     /// the peer finished writing this stream
     Finished(StreamId),
     /// a stream was closed
-    Closed(StreamClose),
+    Closed(StreamCloseVec),
     /// local writes on this stream are closed
     WritableClosed(StreamId),
     /// the peer requested unpairing
