@@ -167,6 +167,24 @@ fn make_identity(crypto: &impl QlCrypto, byte: u8) -> QlIdentity {
     generate_identity(crypto, xid(byte))
 }
 
+fn xx_record(header: HandshakeHeader, message: XxMessage) -> QlHandshakeRecord {
+    let payload = match message {
+        XxMessage::Message1(message) => HandshakePayload::Xx1(message),
+        XxMessage::Message2(message) => HandshakePayload::Xx2(message),
+        XxMessage::Message3(message) => HandshakePayload::Xx3(message),
+        XxMessage::Message4(message) => HandshakePayload::Xx4(message),
+    };
+    QlHandshakeRecord { header, payload }
+}
+
+fn kk_record(header: HandshakeHeader, message: KkMessage) -> QlHandshakeRecord {
+    let payload = match message {
+        KkMessage::Message1(message) => HandshakePayload::Kk1(message),
+        KkMessage::Message2(message) => HandshakePayload::Kk2(message),
+    };
+    QlHandshakeRecord { header, payload }
+}
+
 #[test]
 fn peer_bundle_round_trip() {
     let crypto = TestCrypto::new(1);
@@ -363,4 +381,129 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         encrypted::decrypt_record(&crypto, &wrong_header, encrypted, &session_key),
         Err(WireError::DecryptFailed)
     );
+}
+
+#[test]
+fn protocol_record_size_breakdown() {
+    fn handshake_header(sender: u8, recipient: u8) -> HandshakeHeader {
+        HandshakeHeader {
+            sender: xid(sender),
+            recipient: xid(recipient),
+        }
+    }
+
+    fn print_size(label: &str, size: usize) {
+        println!("{label:<32}: {size} bytes");
+    }
+
+    let crypto = TestCrypto::new(40);
+    let initiator = make_identity(&crypto, 1);
+    let responder = make_identity(&crypto, 2);
+
+    let mut xx_initiator = XxHandshake::new_initiator(&crypto, initiator.clone());
+    let mut xx_responder = XxHandshake::new_responder(&crypto, responder.clone());
+
+    let xx1 = xx_initiator
+        .write_message(&crypto, control_meta(101))
+        .unwrap();
+    xx_responder.read_message(&crypto, &xx1).unwrap();
+
+    let xx2 = xx_responder
+        .write_message(&crypto, control_meta(102))
+        .unwrap();
+    xx_initiator.read_message(&crypto, &xx2).unwrap();
+
+    let xx3 = xx_initiator
+        .write_message(&crypto, control_meta(103))
+        .unwrap();
+    xx_responder.read_message(&crypto, &xx3).unwrap();
+
+    let xx4 = xx_responder
+        .write_message(&crypto, control_meta(104))
+        .unwrap();
+    xx_initiator.read_message(&crypto, &xx4).unwrap();
+
+    let xx1 = xx_record(handshake_header(1, 2), xx1);
+    let xx2 = xx_record(handshake_header(2, 1), xx2);
+    let xx3 = xx_record(handshake_header(1, 2), xx3);
+    let xx4 = xx_record(handshake_header(2, 1), xx4);
+
+    let mut kk_initiator =
+        KkHandshake::new_initiator(&crypto, initiator.clone(), responder.bundle());
+    let mut kk_responder =
+        KkHandshake::new_responder(&crypto, responder.clone(), initiator.bundle());
+
+    let kk1 = kk_initiator
+        .write_message(&crypto, control_meta(201))
+        .unwrap();
+    kk_responder.read_message(&crypto, &kk1).unwrap();
+
+    let kk2 = kk_responder
+        .write_message(&crypto, control_meta(202))
+        .unwrap();
+    kk_initiator.read_message(&crypto, &kk2).unwrap();
+
+    let kk1 = kk_record(handshake_header(1, 2), kk1);
+    let kk2 = kk_record(handshake_header(2, 1), kk2);
+
+    let session = xx_initiator.finalize(&crypto).unwrap();
+    let session_ping = encrypted::encrypt_record(
+        &crypto,
+        SessionHeader {
+            connection_id: session.tx_connection_id,
+        },
+        &session.tx_key,
+        &SessionRecord {
+            seq: RecordSeq(1),
+            frames: vec![SessionFrame::Ping],
+        },
+        Nonce([0x41; Nonce::SIZE]),
+    );
+    let session_stream_empty = encrypted::encrypt_record(
+        &crypto,
+        SessionHeader {
+            connection_id: session.tx_connection_id,
+        },
+        &session.tx_key,
+        &SessionRecord {
+            seq: RecordSeq(2),
+            frames: vec![SessionFrame::StreamData(StreamData {
+                stream_id: StreamId(1),
+                offset: 0,
+                fin: false,
+                bytes: Vec::new(),
+            })],
+        },
+        Nonce([0x42; Nonce::SIZE]),
+    );
+    let session_close = encrypted::encrypt_record(
+        &crypto,
+        SessionHeader {
+            connection_id: session.tx_connection_id,
+        },
+        &session.tx_key,
+        &SessionRecord {
+            seq: RecordSeq(3),
+            frames: vec![SessionFrame::Close(SessionCloseBody {
+                code: CloseCode::PROTOCOL,
+            })],
+        },
+        Nonce([0x43; Nonce::SIZE]),
+    );
+
+    print_size("ql-wire peer bundle", initiator.bundle().encode().len());
+    print_size("ql-wire mlkem public key", MlKemPublicKey::SIZE);
+    print_size("ql-wire mlkem ciphertext", MlKemCiphertext::SIZE);
+    print_size("ql-wire pq xx1", xx1.encode().len());
+    print_size("ql-wire pq xx2", xx2.encode().len());
+    print_size("ql-wire pq xx3", xx3.encode().len());
+    print_size("ql-wire pq xx4", xx4.encode().len());
+    print_size("ql-wire pq kk1", kk1.encode().len());
+    print_size("ql-wire pq kk2", kk2.encode().len());
+    print_size("ql-wire session ping", session_ping.encode().len());
+    print_size(
+        "ql-wire session stream empty",
+        session_stream_empty.encode().len(),
+    );
+    print_size("ql-wire session close", session_close.encode().len());
 }
