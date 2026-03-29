@@ -93,7 +93,7 @@ impl PeerRecord {
 pub struct QlFsmState {
     pub replay_cache: ReplayCache,
     pub next_control_id: u32,
-    pub outbound: VecDeque<QlRecord>,
+    pub outbound: VecDeque<QlRecord<Vec<u8>>>,
     pub events: VecDeque<QlFsmEvent>,
     pub session_events: VecDeque<QlSessionEvent>,
     pub now: FsmTime,

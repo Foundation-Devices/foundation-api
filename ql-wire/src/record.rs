@@ -5,34 +5,17 @@ use crate::{
     header::{decode_record_header, encode_record_header, QlHeader},
     pair::PairRequestRecord,
     unpair::Unpair,
-    WireError, QL_WIRE_VERSION,
+    ByteSlice, WireError, QL_WIRE_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QlRecord {
+pub struct QlRecord<B> {
     pub header: QlHeader,
-    pub payload: QlPayload,
+    pub payload: QlPayload<B>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QlPayload {
-    PairRequest(PairRequestRecord<Vec<u8>>),
-    Unpair(Unpair),
-    Hello(Hello),
-    HelloReply(HelloReply),
-    Confirm(Confirm),
-    Ready(Ready<Vec<u8>>),
-    Session(EncryptedMessage<Vec<u8>>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QlRecordRef<B> {
-    pub header: QlHeader,
-    pub payload: QlPayloadRef<B>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QlPayloadRef<B> {
+pub enum QlPayload<B> {
     PairRequest(PairRequestRecord<B>),
     Unpair(Unpair),
     Hello(Hello),
@@ -72,7 +55,7 @@ impl TryFrom<u8> for RecordKind {
 }
 
 impl RecordKind {
-    fn for_payload(payload: &QlPayload) -> Self {
+    fn for_payload<B>(payload: &QlPayload<B>) -> Self {
         match payload {
             QlPayload::PairRequest(_) => Self::PairRequest,
             QlPayload::Unpair(_) => Self::Unpair,
@@ -85,7 +68,7 @@ impl RecordKind {
     }
 }
 
-impl QlRecord {
+impl<B: AsRef<[u8]>> QlRecord<B> {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         codec::push_u8(&mut out, QL_WIRE_VERSION);
@@ -105,21 +88,15 @@ impl QlRecord {
         }
         out
     }
+}
 
+impl QlRecord<Vec<u8>> {
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        Ok(Self::parse(bytes)?.to_owned())
-    }
-
-    pub fn parse(bytes: &[u8]) -> Result<QlRecordRef<&[u8]>, WireError> {
-        QlRecordRef::parse(bytes)
-    }
-
-    pub fn parse_mut(bytes: &mut [u8]) -> Result<QlRecordRef<&mut [u8]>, WireError> {
-        QlRecordRef::parse(bytes)
+        Ok(QlRecord::parse(bytes)?.into_owned())
     }
 }
 
-impl<B: crate::ByteSlice> QlRecordRef<B> {
+impl<B: ByteSlice> QlRecord<B> {
     pub fn parse(bytes: B) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
         if reader.take_u8()? != QL_WIRE_VERSION {
@@ -132,61 +109,37 @@ impl<B: crate::ByteSlice> QlRecordRef<B> {
             payload,
         })
     }
-}
 
-impl<B: AsRef<[u8]>> QlRecordRef<B> {
-    pub fn to_owned(&self) -> QlRecord {
+    pub fn into_owned(self) -> QlRecord<Vec<u8>> {
         QlRecord {
             header: self.header,
-            payload: self.payload.to_owned(),
+            payload: self.payload.into_owned(),
         }
     }
 }
 
-impl<B: AsRef<[u8]>> QlPayloadRef<B> {
-    pub fn to_owned(&self) -> QlPayload {
+impl<B: ByteSlice> QlPayload<B> {
+    pub fn into_owned(self) -> QlPayload<Vec<u8>> {
         match self {
-            Self::PairRequest(request) => QlPayload::PairRequest(PairRequestRecord {
-                kem_ct: request.kem_ct.clone(),
-                encrypted: EncryptedMessage {
-                    nonce: request.encrypted.nonce,
-                    auth: request.encrypted.auth,
-                    ciphertext: request.encrypted.ciphertext.as_ref().to_vec(),
-                },
-            }),
-            Self::Unpair(unpair) => QlPayload::Unpair(unpair.clone()),
-            Self::Hello(hello) => QlPayload::Hello(hello.clone()),
-            Self::HelloReply(reply) => QlPayload::HelloReply(reply.clone()),
-            Self::Confirm(confirm) => QlPayload::Confirm(confirm.clone()),
-            Self::Ready(ready) => QlPayload::Ready(Ready {
-                encrypted: EncryptedMessage {
-                    nonce: ready.encrypted.nonce,
-                    auth: ready.encrypted.auth,
-                    ciphertext: ready.encrypted.ciphertext.as_ref().to_vec(),
-                },
-            }),
-            Self::Session(encrypted) => QlPayload::Session(EncryptedMessage {
-                nonce: encrypted.nonce,
-                auth: encrypted.auth,
-                ciphertext: encrypted.ciphertext.as_ref().to_vec(),
-            }),
+            Self::PairRequest(request) => QlPayload::PairRequest(request.into_owned()),
+            Self::Unpair(unpair) => QlPayload::Unpair(unpair),
+            Self::Hello(hello) => QlPayload::Hello(hello),
+            Self::HelloReply(reply) => QlPayload::HelloReply(reply),
+            Self::Confirm(confirm) => QlPayload::Confirm(confirm),
+            Self::Ready(ready) => QlPayload::Ready(ready.into_owned()),
+            Self::Session(encrypted) => QlPayload::Session(encrypted.into_owned()),
         }
     }
 }
 
-fn parse_payload<B: crate::ByteSlice>(
-    kind: RecordKind,
-    payload: B,
-) -> Result<QlPayloadRef<B>, WireError> {
+fn parse_payload<B: ByteSlice>(kind: RecordKind, payload: B) -> Result<QlPayload<B>, WireError> {
     match kind {
-        RecordKind::PairRequest => Ok(QlPayloadRef::PairRequest(PairRequestRecord::parse(
-            payload,
-        )?)),
-        RecordKind::Unpair => Ok(QlPayloadRef::Unpair(Unpair::decode(&payload[..])?)),
-        RecordKind::Hello => Ok(QlPayloadRef::Hello(handshake::Hello::decode(&payload[..])?)),
-        RecordKind::HelloReply => Ok(QlPayloadRef::HelloReply(HelloReply::decode(&payload[..])?)),
-        RecordKind::Confirm => Ok(QlPayloadRef::Confirm(Confirm::decode(&payload[..])?)),
-        RecordKind::Ready => Ok(QlPayloadRef::Ready(Ready::parse(payload)?)),
-        RecordKind::Session => Ok(QlPayloadRef::Session(EncryptedMessage::parse(payload)?)),
+        RecordKind::PairRequest => Ok(QlPayload::PairRequest(PairRequestRecord::parse(payload)?)),
+        RecordKind::Unpair => Ok(QlPayload::Unpair(Unpair::decode(&payload[..])?)),
+        RecordKind::Hello => Ok(QlPayload::Hello(handshake::Hello::decode(&payload[..])?)),
+        RecordKind::HelloReply => Ok(QlPayload::HelloReply(HelloReply::decode(&payload[..])?)),
+        RecordKind::Confirm => Ok(QlPayload::Confirm(Confirm::decode(&payload[..])?)),
+        RecordKind::Ready => Ok(QlPayload::Ready(Ready::parse(payload)?)),
+        RecordKind::Session => Ok(QlPayload::Session(EncryptedMessage::parse(payload)?)),
     }
 }

@@ -116,12 +116,12 @@ fn encrypted_session_record_round_trip_and_decrypt() {
     assert_eq!(decoded.header, header);
     assert!(matches!(decoded.payload, QlPayload::Session(_)));
 
-    let parsed = QlRecord::parse(&bytes).unwrap();
-    assert_eq!(parsed.to_owned(), record);
+    let parsed = QlRecord::parse(bytes.as_slice()).unwrap();
+    assert_eq!(parsed.into_owned(), record);
 
     let mut bytes = bytes;
-    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadRef::Session(encrypted) = payload else {
+    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
+    let QlPayload::Session(encrypted) = payload else {
         panic!("expected session payload");
     };
     let decrypted = encrypted::decrypt_record(&crypto, &header, encrypted, &session_key).unwrap();
@@ -164,8 +164,8 @@ fn decrypted_session_record_iterates_zero_copy_frames() {
     );
 
     let mut bytes = record.encode();
-    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadRef::Session(encrypted) = payload else {
+    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
+    let QlPayload::Session(encrypted) = payload else {
         panic!("expected session payload");
     };
     let decrypted = encrypted::decrypt_record(&crypto, &header, encrypted, &session_key).unwrap();
@@ -232,8 +232,8 @@ fn pair_request_round_trip_and_decrypt() {
     );
 
     let mut bytes = record.encode();
-    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadRef::PairRequest(request) = payload else {
+    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
+    let QlPayload::PairRequest(request) = payload else {
         panic!("expected pair request");
     };
     let body = pair::decrypt_pair_request(&crypto, &recipient, &header, request, 100).unwrap();
@@ -262,7 +262,7 @@ fn ready_round_trip_and_decrypt() {
         meta,
         Nonce([12; Nonce::SIZE]),
     );
-    let record = QlRecord {
+    let record: QlRecord<Vec<u8>> = QlRecord {
         header,
         payload: QlPayload::Ready(ready),
     };
@@ -271,8 +271,8 @@ fn ready_round_trip_and_decrypt() {
     let parsed = QlRecord::decode(&bytes).unwrap();
     assert_eq!(parsed, record);
 
-    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadRef::Ready(ready) = payload else {
+    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
+    let QlPayload::Ready(ready) = payload else {
         panic!("expected ready payload");
     };
     let body = handshake::decrypt_ready(&crypto, &header, ready, &session_key, 100).unwrap();
@@ -302,8 +302,8 @@ fn unpair_round_trip_and_verify() {
     let parsed = QlRecord::decode(&bytes).unwrap();
     assert_eq!(parsed, record);
 
-    let QlRecordRef { header, payload } = QlRecord::parse_mut(&mut bytes).unwrap();
-    let QlPayloadRef::Unpair(unpair) = payload else {
+    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
+    let QlPayload::Unpair(unpair) = payload else {
         panic!("expected unpair payload");
     };
     unpair::verify_unpair(&crypto, &header, &sender_signing_public, &unpair, 100).unwrap();
@@ -505,7 +505,7 @@ fn protocol_record_size_breakdown() {
         }
     }
 
-    fn session_record(header: QlHeader, tag: u8, body: SessionRecord) -> QlRecord {
+    fn session_record(header: QlHeader, tag: u8, body: SessionRecord) -> QlRecord<Vec<u8>> {
         let ciphertext_len = body.encode().len();
         QlRecord {
             header,
@@ -514,7 +514,7 @@ fn protocol_record_size_breakdown() {
     }
 
     let header = header();
-    let hello = QlRecord {
+    let hello: QlRecord<Vec<u8>> = QlRecord {
         header,
         payload: QlPayload::Hello(handshake::Hello {
             meta: meta(1),
@@ -523,7 +523,7 @@ fn protocol_record_size_breakdown() {
             signature: MlDsaSignature::from_data([5; MlDsaSignature::SIZE]),
         }),
     };
-    let hello_reply = QlRecord {
+    let hello_reply: QlRecord<Vec<u8>> = QlRecord {
         header,
         payload: QlPayload::HelloReply(handshake::HelloReply {
             meta: meta(2),
@@ -532,28 +532,28 @@ fn protocol_record_size_breakdown() {
             signature: MlDsaSignature::from_data([8; MlDsaSignature::SIZE]),
         }),
     };
-    let confirm = QlRecord {
+    let confirm: QlRecord<Vec<u8>> = QlRecord {
         header,
         payload: QlPayload::Confirm(handshake::Confirm {
             meta: meta(3),
             signature: MlDsaSignature::from_data([9; MlDsaSignature::SIZE]),
         }),
     };
-    let pair_request = QlRecord {
+    let pair_request: QlRecord<Vec<u8>> = QlRecord {
         header,
         payload: QlPayload::PairRequest(pair::PairRequestRecord {
             kem_ct: MlKemCiphertext::from_data([10; MlKemCiphertext::SIZE]),
             encrypted: encrypted(11, 0),
         }),
     };
-    let unpair = QlRecord {
+    let unpair: QlRecord<Vec<u8>> = QlRecord {
         header,
         payload: QlPayload::Unpair(unpair::Unpair {
             meta: meta(4),
             signature: MlDsaSignature::from_data([12; MlDsaSignature::SIZE]),
         }),
     };
-    let ready = QlRecord {
+    let ready: QlRecord<Vec<u8>> = QlRecord {
         header,
         payload: QlPayload::Ready(handshake::Ready {
             encrypted: encrypted(13, 0),

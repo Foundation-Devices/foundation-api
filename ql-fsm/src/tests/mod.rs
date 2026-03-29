@@ -189,7 +189,7 @@ impl Harness {
         self.unix_secs = self.unix_secs.saturating_add(duration.as_secs());
     }
 
-    fn next_outbound_a(&mut self) -> Option<QlRecord> {
+    fn next_outbound_a(&mut self) -> Option<QlRecord<Vec<u8>>> {
         let write = self.a.fsm.take_next_write(self.time(), &self.a.crypto)?;
         if let Some(id) = write.session_write_id {
             self.a.fsm.confirm_session_write(self.time(), id);
@@ -197,7 +197,7 @@ impl Harness {
         Some(write.record)
     }
 
-    fn next_outbound_b(&mut self) -> Option<QlRecord> {
+    fn next_outbound_b(&mut self) -> Option<QlRecord<Vec<u8>>> {
         let write = self.b.fsm.take_next_write(self.time(), &self.b.crypto)?;
         if let Some(id) = write.session_write_id {
             self.b.fsm.confirm_session_write(self.time(), id);
@@ -209,14 +209,14 @@ impl Harness {
         self.a.fsm.take_next_write(self.time(), &self.a.crypto)
     }
 
-    fn deliver_to_a(&mut self, record: QlRecord) {
+    fn deliver_to_a(&mut self, record: QlRecord<Vec<u8>>) {
         self.a
             .fsm
             .receive(self.time(), record.encode(), &self.a.crypto)
             .unwrap();
     }
 
-    fn deliver_to_b(&mut self, record: QlRecord) {
+    fn deliver_to_b(&mut self, record: QlRecord<Vec<u8>>) {
         self.b
             .fsm
             .receive(self.time(), record.encode(), &self.b.crypto)
@@ -277,7 +277,7 @@ fn peer_from_identity(identity: &QlIdentity) -> Peer {
 
 fn decrypt_record(
     crypto: &impl QlCrypto,
-    record: &QlRecord,
+    record: &QlRecord<Vec<u8>>,
     session_key: &SessionKey,
 ) -> ql_wire::SessionRecord {
     let aad = record.header.aad();

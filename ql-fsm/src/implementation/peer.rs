@@ -24,7 +24,10 @@ pub fn handle_pair_local(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), 
     Ok(())
 }
 
-pub fn handle_unpair_local(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<wire::QlRecord> {
+pub fn handle_unpair_local(
+    fsm: &mut QlFsm,
+    crypto: &impl QlCrypto,
+) -> Option<wire::QlRecord<Vec<u8>>> {
     let peer = fsm.peer.as_ref()?.peer.clone();
     let meta = next_control_meta(fsm, fsm.config.control_expiration);
     let record = wire::build_unpair(crypto, &fsm.identity, peer.xid, meta);

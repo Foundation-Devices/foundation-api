@@ -9,7 +9,7 @@ pub fn build_unpair(
     identity: &QlIdentity,
     recipient: XID,
     meta: ControlMeta,
-) -> QlRecord {
+) -> QlRecord<Vec<u8>> {
     let header = QlHeader {
         sender: identity.xid,
         recipient,

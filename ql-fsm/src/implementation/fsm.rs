@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use ql_wire::{self as wire, CloseCode, CloseTarget, Nonce, QlCrypto, QlPayloadRef, StreamId};
+use ql_wire::{self as wire, CloseCode, CloseTarget, Nonce, QlCrypto, QlPayload, StreamId};
 
 use crate::{
     OutboundWrite, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId, StreamReadIter,
@@ -11,14 +11,14 @@ pub fn receive(
     mut bytes: Vec<u8>,
     crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
-    let wire::QlRecordRef { header, payload } = wire::QlRecord::parse_mut(&mut bytes)?;
+    let wire::QlRecord { header, payload } = wire::QlRecord::parse(&mut bytes[..])?;
 
     if header.recipient != fsm.identity.xid {
         return Err(QlFsmError::InvalidXid);
     }
     match &payload {
-        QlPayloadRef::PairRequest(_) => {}
-        QlPayloadRef::Unpair(_) => {
+        QlPayload::PairRequest(_) => {}
+        QlPayload::Unpair(_) => {
             let Some(peer) = fsm.peer.as_ref().map(|entry| entry.peer.xid) else {
                 return Ok(());
             };
@@ -37,25 +37,25 @@ pub fn receive(
     }
 
     match payload {
-        QlPayloadRef::PairRequest(request) => {
+        QlPayload::PairRequest(request) => {
             super::handle_pair(fsm, crypto, &header, request)?;
         }
-        QlPayloadRef::Unpair(unpair) => {
+        QlPayload::Unpair(unpair) => {
             super::handle_unpair(fsm, crypto, &header, &unpair)?;
         }
-        QlPayloadRef::Hello(hello) => {
+        QlPayload::Hello(hello) => {
             super::handle_hello(fsm, crypto, &header, &hello)?;
         }
-        QlPayloadRef::HelloReply(reply) => {
+        QlPayload::HelloReply(reply) => {
             super::handle_hello_reply(fsm, crypto, &header, &reply)?;
         }
-        QlPayloadRef::Confirm(confirm) => {
+        QlPayload::Confirm(confirm) => {
             super::handle_confirm(fsm, crypto, &header, &confirm)?;
         }
-        QlPayloadRef::Ready(ready) => {
+        QlPayload::Ready(ready) => {
             super::handle_ready(fsm, crypto, &header, ready)?;
         }
-        QlPayloadRef::Session(encrypted) => {
+        QlPayload::Session(encrypted) => {
             let Some((_, session_key)) = super::peer_session(fsm) else {
                 return Err(QlFsmError::NoSession);
             };
@@ -228,7 +228,7 @@ pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
     Ok(fsm.session.queue_ping()?)
 }
 
-pub fn unpair(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<wire::QlRecord> {
+pub fn unpair(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<wire::QlRecord<Vec<u8>>> {
     super::handle_unpair_local(fsm, crypto)
 }
 

@@ -127,7 +127,7 @@ impl SessionRecordBuilder {
         header: QlHeader,
         session_key: &SessionKey,
         nonce: Nonce,
-    ) -> QlRecord {
+    ) -> QlRecord<Vec<u8>> {
         let aad = header.aad();
         let encrypted = EncryptedMessage::encrypt(crypto, session_key, self.bytes, &aad, nonce);
         QlRecord {

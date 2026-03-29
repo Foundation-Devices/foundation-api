@@ -119,7 +119,7 @@ pub struct SessionWriteId(pub(crate) u64);
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutboundWrite {
     /// record to hand to the transport
-    pub record: QlRecord,
+    pub record: QlRecord<Vec<u8>>,
     /// write handle that must be confirmed or rejected
     pub session_write_id: Option<SessionWriteId>,
 }
@@ -340,7 +340,7 @@ impl QlFsm {
     }
 
     /// clears the bound peer locally and returns a best-effort unpair record
-    pub fn unpair(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Option<QlRecord> {
+    pub fn unpair(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Option<QlRecord<Vec<u8>>> {
         self.state.now = now;
         implementation::unpair(self, crypto)
     }

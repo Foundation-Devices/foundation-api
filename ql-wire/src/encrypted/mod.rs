@@ -204,7 +204,7 @@ pub fn encrypt_record(
     session_key: &SessionKey,
     body: &SessionRecord,
     nonce: crate::Nonce,
-) -> QlRecord {
+) -> QlRecord<Vec<u8>> {
     let mut builder = SessionRecordBuilder::new(body.seq, body.encoded_len());
     for frame in &body.frames {
         let pushed = builder.push_frame(frame);

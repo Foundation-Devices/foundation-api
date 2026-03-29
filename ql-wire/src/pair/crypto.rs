@@ -10,7 +10,7 @@ pub fn build_pair_request(
     recipient: XID,
     recipient_encapsulation_key: &MlKemPublicKey,
     meta: ControlMeta,
-) -> QlRecord {
+) -> QlRecord<Vec<u8>> {
     let (session_key, kem_ct) = recipient_encapsulation_key.encapsulate_new_shared_secret(crypto);
     let header = QlHeader {
         sender: identity.xid,

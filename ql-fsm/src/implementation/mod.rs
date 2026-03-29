@@ -32,7 +32,7 @@ fn next_control_meta(fsm: &mut QlFsm, lifetime: Duration) -> ControlMeta {
     }
 }
 
-fn enqueue_handshake(fsm: &mut QlFsm, peer: XID, payload: QlPayload) {
+fn enqueue_handshake(fsm: &mut QlFsm, peer: XID, payload: QlPayload<Vec<u8>>) {
     fsm.state.outbound.push_back(QlRecord {
         header: QlHeader {
             sender: fsm.identity.xid,
