@@ -6,15 +6,10 @@ description = "Quantum Link wire format types and crypto helpers"
 license = "Proprietary"
 
 [dependencies]
-libcrux-ml-dsa = { version = "0.0.7", default-features = false, features = [
-  "std",
-  "mldsa87",
-] }
 libcrux-ml-kem = { version = "0.0.7", default-features = false, features = [
   "std",
   "mlkem1024",
 ] }
-thiserror = { version = "2" }
 
 [dev-dependencies]
 libcrux-aesgcm = "0.0.7"

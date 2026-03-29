@@ -1,8 +1,8 @@
 use std::mem::size_of;
 
 use crate::{
-    codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, QlCrypto, QlHeader,
-    QlRecord, SessionKey, WireError,
+    codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, QlCrypto, QlSessionRecord,
+    SessionHeader, SessionKey, WireError,
 };
 
 mod ack;
@@ -200,11 +200,11 @@ impl<'a> Iterator for SessionFrameIter<'a> {
 
 pub fn encrypt_record(
     crypto: &impl QlCrypto,
-    header: QlHeader,
+    header: SessionHeader,
     session_key: &SessionKey,
     body: &SessionRecord,
     nonce: crate::Nonce,
-) -> QlRecord<Vec<u8>> {
+) -> QlSessionRecord<Vec<u8>> {
     let mut builder = SessionRecordBuilder::new(body.seq, body.encoded_len());
     for frame in &body.frames {
         let pushed = builder.push_frame(frame);
@@ -215,7 +215,7 @@ pub fn encrypt_record(
 
 pub fn decrypt_record<B: AsMut<[u8]>>(
     crypto: &impl QlCrypto,
-    header: &QlHeader,
+    header: &SessionHeader,
     encrypted: EncryptedMessage<B>,
     session_key: &SessionKey,
 ) -> Result<B, WireError> {

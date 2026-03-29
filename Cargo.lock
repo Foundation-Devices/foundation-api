@@ -1500,30 +1500,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libcrux-macros"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffd6aa2dcd5be681662001b81d493f1569c6d49a32361f470b0c955465cd0338"
-dependencies = [
- "quote",
- "syn 2.0.106",
-]
-
-[[package]]
-name = "libcrux-ml-dsa"
-version = "0.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b34d977eb95b8fe93e6eb87197b55ee21e50e725bc3f206a7cb3a0d7d719c4b"
-dependencies = [
- "core-models",
- "hax-lib",
- "libcrux-intrinsics",
- "libcrux-macros",
- "libcrux-platform",
- "libcrux-sha3",
-]
-
-[[package]]
 name = "libcrux-ml-kem"
 version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2190,10 +2166,8 @@ name = "ql-wire"
 version = "0.1.0"
 dependencies = [
  "libcrux-aesgcm",
- "libcrux-ml-dsa",
  "libcrux-ml-kem",
  "sha2",
- "thiserror",
 ]
 
 [[package]]

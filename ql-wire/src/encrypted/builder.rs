@@ -3,8 +3,8 @@ use super::{
     StreamClose, StreamData, StreamWindow, SIZE_LEN,
 };
 use crate::{
-    codec, encrypted_message::EncryptedMessage, ByteChunks, Nonce, QlCrypto, QlHeader, QlPayload,
-    QlRecord, SessionKey,
+    codec, encrypted_message::EncryptedMessage, ByteChunks, Nonce, QlCrypto, QlSessionRecord,
+    SessionHeader, SessionKey,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,15 +124,15 @@ impl SessionRecordBuilder {
     pub fn encrypt(
         self,
         crypto: &impl QlCrypto,
-        header: QlHeader,
+        header: SessionHeader,
         session_key: &SessionKey,
         nonce: Nonce,
-    ) -> QlRecord<Vec<u8>> {
+    ) -> QlSessionRecord<Vec<u8>> {
         let aad = header.aad();
         let encrypted = EncryptedMessage::encrypt(crypto, session_key, self.bytes, &aad, nonce);
-        QlRecord {
+        QlSessionRecord {
             header,
-            payload: QlPayload::Session(encrypted),
+            payload: encrypted,
         }
     }
 }

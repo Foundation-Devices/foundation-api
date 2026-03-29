@@ -1,41 +1,85 @@
-use crate::{codec, record::RecordKind, ByteSlice, WireError, XID};
+use crate::{codec, QL_WIRE_VERSION, XID};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct ConnectionId(pub [u8; Self::SIZE]);
+
+impl ConnectionId {
+    pub const SIZE: usize = 16;
+
+    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
+        Self(data)
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QlHeader {
+pub struct HandshakeHeader {
     pub sender: XID,
     pub recipient: XID,
 }
 
-impl QlHeader {
-    pub fn aad(&self) -> Vec<u8> {
-        codec::header_aad(self)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionHeader {
+    pub connection_id: ConnectionId,
+}
+
+impl HandshakeHeader {
+    pub const ENCODED_LEN: usize = XID::SIZE * 2;
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        codec::push_bytes(out, &self.sender.0);
+        codec::push_bytes(out, &self.recipient.0);
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, crate::WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        let header = Self::decode_from(&mut reader)?;
+        reader.finish()?;
+        Ok(header)
+    }
+
+    pub fn decode_from<B: crate::ByteSlice>(
+        reader: &mut codec::Reader<B>,
+    ) -> Result<Self, crate::WireError> {
+        Ok(Self {
+            sender: XID(reader.take_array()?),
+            recipient: XID(reader.take_array()?),
+        })
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DecodedRecordHeader {
-    pub(crate) kind: RecordKind,
-    pub(crate) header: QlHeader,
-}
+impl SessionHeader {
+    pub const ENCODED_LEN: usize = ConnectionId::SIZE;
 
-pub(crate) fn encode_record_header(out: &mut Vec<u8>, header: &QlHeader, kind: RecordKind) {
-    codec::push_u8(out, kind as u8);
-    codec::push_bytes(out, &header.sender.0);
-    codec::push_bytes(out, &header.recipient.0);
-}
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        codec::push_bytes(out, self.connection_id.as_bytes());
+    }
 
-pub(crate) fn decode_record_header<B: ByteSlice>(
-    bytes: B,
-) -> Result<(DecodedRecordHeader, B), WireError> {
-    let mut reader = codec::Reader::new(bytes);
-    let kind = RecordKind::try_from(reader.take_u8()?)?;
-    let sender = XID(reader.take_array()?);
-    let recipient = XID(reader.take_array()?);
-    Ok((
-        DecodedRecordHeader {
-            kind,
-            header: QlHeader { sender, recipient },
-        },
-        reader.take_rest(),
-    ))
+    pub fn decode(bytes: &[u8]) -> Result<Self, crate::WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        let header = Self::decode_from(&mut reader)?;
+        reader.finish()?;
+        Ok(header)
+    }
+
+    pub fn decode_from<B: crate::ByteSlice>(
+        reader: &mut codec::Reader<B>,
+    ) -> Result<Self, crate::WireError> {
+        Ok(Self {
+            connection_id: ConnectionId::from_data(reader.take_array()?),
+        })
+    }
+
+    pub fn aad(&self) -> Vec<u8> {
+        let mut aad = Vec::new();
+        codec::append_field(&mut aad, b"domain", b"ql-wire:session-aad:v1");
+        codec::append_field(&mut aad, b"wire-version", &[QL_WIRE_VERSION]);
+        codec::append_field(&mut aad, b"record-kind", b"session");
+        codec::append_field(&mut aad, b"connection-id", self.connection_id.as_bytes());
+        aad
+    }
 }

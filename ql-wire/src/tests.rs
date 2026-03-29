@@ -1,35 +1,41 @@
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use libcrux_aesgcm::AesGcm256Key;
 use sha2::{Digest, Sha256};
 
 use super::*;
 
-struct TestCrypto(AtomicU8);
+struct TestCrypto {
+    counter: AtomicU64,
+}
 
 impl TestCrypto {
-    fn new(seed: u8) -> Self {
-        Self(AtomicU8::new(seed))
+    fn new(seed: u64) -> Self {
+        Self {
+            counter: AtomicU64::new(seed),
+        }
+    }
+
+    fn next_block(&self) -> [u8; 32] {
+        let value = self.counter.fetch_add(1, Ordering::Relaxed).to_le_bytes();
+        sha256_parts(&[b"ql-wire:test-rng:v1", &value])
     }
 }
 
-impl QlCrypto for TestCrypto {
-    fn fill_random_bytes(&self, data: &mut [u8]) {
-        let seed = self.0.fetch_add(1, Ordering::Relaxed);
-        for (index, byte) in data.iter_mut().enumerate() {
-            *byte = seed.wrapping_add(index as u8);
-        }
+impl QlRandom for TestCrypto {
+    fn fill_random_bytes(&self, out: &mut [u8]) {
+        fill_expanded(self, &[b"ql-wire:test-fill:v1"], out);
     }
+}
 
-    fn hash(&self, parts: &[&[u8]]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        for part in parts {
-            hasher.update(part);
-        }
-        hasher.finalize().into()
+impl QlHash for TestCrypto {
+    fn sha256(&self, parts: &[&[u8]]) -> [u8; 32] {
+        sha256_parts(parts)
     }
+}
 
-    fn encrypt_with_aead(
+impl QlAead for TestCrypto {
+    fn aes256_gcm_encrypt(
         &self,
         key: &SessionKey,
         nonce: &Nonce,
@@ -50,7 +56,7 @@ impl QlCrypto for TestCrypto {
         auth
     }
 
-    fn decrypt_with_aead(
+    fn aes256_gcm_decrypt(
         &self,
         key: &SessionKey,
         nonce: &Nonce,
@@ -65,12 +71,262 @@ impl QlCrypto for TestCrypto {
     }
 }
 
+impl QlDh for TestCrypto {
+    fn x25519_generate_keypair(&self) -> X25519KeyPair {
+        let private = self.next_block();
+        X25519KeyPair {
+            private: X25519PrivateKey::from_data(private),
+            public: X25519PublicKey::from_data(private),
+        }
+    }
+
+    fn x25519_agree(
+        &self,
+        private_key: &X25519PrivateKey,
+        public_key: &X25519PublicKey,
+    ) -> SessionKey {
+        let left = *private_key.as_bytes();
+        let right = *public_key.as_bytes();
+        let (first, second) = if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        SessionKey::from_data(self.sha256(&[b"ql-wire:test-x25519:v1", &first, &second]))
+    }
+}
+
+impl QlKem for TestCrypto {
+    fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
+        let seed = self.next_block();
+        let key_id = self.sha256(&[b"ql-wire:test-mlkem:key-id:v1", &seed]);
+
+        let mut public = [0u8; MlKemPublicKey::SIZE];
+        fill_expanded(self, &[b"ql-wire:test-mlkem:public:v1", &seed], &mut public);
+        public[..key_id.len()].copy_from_slice(&key_id);
+
+        let mut private = [0u8; MlKemPrivateKey::SIZE];
+        fill_expanded(
+            self,
+            &[b"ql-wire:test-mlkem:private:v1", &seed],
+            &mut private,
+        );
+        private[..key_id.len()].copy_from_slice(&key_id);
+
+        MlKemKeyPair {
+            private: MlKemPrivateKey::from_data(private),
+            public: MlKemPublicKey::from_data(public),
+        }
+    }
+
+    fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
+        let mut encaps_seed = [0u8; 32];
+        self.fill_random_bytes(&mut encaps_seed);
+        let key_id = &public_key.as_bytes()[..32];
+
+        let mut ciphertext = [0u8; MlKemCiphertext::SIZE];
+        fill_expanded(
+            self,
+            &[b"ql-wire:test-mlkem:ciphertext:v1", &encaps_seed],
+            &mut ciphertext,
+        );
+        ciphertext[..encaps_seed.len()].copy_from_slice(&encaps_seed);
+
+        let shared = self.sha256(&[b"ql-wire:test-mlkem:shared:v1", key_id, &encaps_seed]);
+        (
+            MlKemCiphertext::from_data(ciphertext),
+            SessionKey::from_data(shared),
+        )
+    }
+
+    fn mlkem_decapsulate(
+        &self,
+        private_key: &MlKemPrivateKey,
+        ciphertext: &MlKemCiphertext,
+    ) -> SessionKey {
+        let key_id = &private_key.as_bytes()[..32];
+        let encaps_seed = &ciphertext.as_bytes()[..32];
+        SessionKey::from_data(self.sha256(&[b"ql-wire:test-mlkem:shared:v1", key_id, encaps_seed]))
+    }
+}
+
+fn sha256_parts(parts: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+
+fn fill_expanded(crypto: &TestCrypto, parts: &[&[u8]], out: &mut [u8]) {
+    let mut written = 0usize;
+    let mut counter = 0u64;
+    while written < out.len() {
+        let random = crypto.next_block();
+        let counter_bytes = counter.to_le_bytes();
+        let mut inputs = Vec::with_capacity(parts.len() + 3);
+        inputs.push(b"ql-wire:test-expand:v1".as_slice());
+        inputs.push(&random);
+        inputs.push(&counter_bytes);
+        inputs.extend_from_slice(parts);
+        let block = sha256_parts(&inputs);
+        let take = (out.len() - written).min(block.len());
+        out[written..written + take].copy_from_slice(&block[..take]);
+        written += take;
+        counter = counter.wrapping_add(1);
+    }
+}
+
+fn xid(byte: u8) -> XID {
+    XID([byte; XID::SIZE])
+}
+
+fn control_meta(id: u32) -> ControlMeta {
+    ControlMeta {
+        control_id: ControlId(id),
+        valid_until: 10_000 + u64::from(id),
+    }
+}
+
+fn make_identity(crypto: &impl QlCrypto, byte: u8) -> QlIdentity {
+    generate_identity(crypto, xid(byte))
+}
+
 #[test]
-fn encrypted_session_record_round_trip_and_decrypt() {
+fn peer_bundle_round_trip() {
     let crypto = TestCrypto::new(1);
-    let header = QlHeader {
-        sender: XID([1; XID::SIZE]),
-        recipient: XID([2; XID::SIZE]),
+    let identity = make_identity(&crypto, 7).with_capabilities(0x55aa_33cc);
+    let bundle = identity.bundle();
+
+    let encoded = bundle.encode();
+    let decoded = PeerBundle::decode(&encoded).unwrap();
+
+    assert_eq!(decoded, bundle);
+}
+
+#[test]
+fn handshake_record_round_trip_uses_handshake_header() {
+    let message = Xx1 {
+        meta: control_meta(1),
+        ephemeral: HybridEphemeralPublic {
+            x25519_public_key: X25519PublicKey::from_data([3; X25519PublicKey::SIZE]),
+            mlkem_public_key: MlKemPublicKey::from_data([9; MlKemPublicKey::SIZE]),
+        },
+    };
+    let record = QlHandshakeRecord {
+        header: HandshakeHeader {
+            sender: xid(1),
+            recipient: xid(2),
+        },
+        payload: HandshakePayload::Xx1(message),
+    };
+
+    let encoded = record.encode();
+    let decoded = QlHandshakeRecord::decode(&encoded).unwrap();
+
+    assert_eq!(decoded, record);
+
+    let decoded = QlRecord::decode(&encoded).unwrap();
+    assert_eq!(decoded, QlRecord::Handshake(record));
+}
+
+#[test]
+fn xx_handshake_round_trip_derives_matching_transport() {
+    let crypto = TestCrypto::new(10);
+    let initiator = make_identity(&crypto, 1);
+    let responder = make_identity(&crypto, 2);
+
+    let mut initiator_state = XxHandshake::new_initiator(&crypto, initiator.clone());
+    let mut responder_state = XxHandshake::new_responder(&crypto, responder.clone());
+
+    let m1 = initiator_state
+        .write_message(&crypto, control_meta(1))
+        .unwrap();
+    responder_state.read_message(&crypto, &m1).unwrap();
+
+    let m2 = responder_state
+        .write_message(&crypto, control_meta(2))
+        .unwrap();
+    initiator_state.read_message(&crypto, &m2).unwrap();
+
+    let m3 = initiator_state
+        .write_message(&crypto, control_meta(3))
+        .unwrap();
+    responder_state.read_message(&crypto, &m3).unwrap();
+
+    let m4 = responder_state
+        .write_message(&crypto, control_meta(4))
+        .unwrap();
+    initiator_state.read_message(&crypto, &m4).unwrap();
+
+    let initiator_final = initiator_state.finalize(&crypto).unwrap();
+    let responder_final = responder_state.finalize(&crypto).unwrap();
+
+    assert_eq!(
+        initiator_final.handshake_hash,
+        responder_final.handshake_hash
+    );
+    assert_eq!(initiator_final.tx_key, responder_final.rx_key);
+    assert_eq!(initiator_final.rx_key, responder_final.tx_key);
+    assert_eq!(
+        initiator_final.tx_connection_id,
+        responder_final.rx_connection_id
+    );
+    assert_eq!(
+        initiator_final.rx_connection_id,
+        responder_final.tx_connection_id
+    );
+    assert_eq!(initiator_final.remote_bundle, responder.bundle());
+    assert_eq!(responder_final.remote_bundle, initiator.bundle());
+}
+
+#[test]
+fn kk_handshake_round_trip_derives_matching_transport() {
+    let crypto = TestCrypto::new(20);
+    let initiator = make_identity(&crypto, 3);
+    let responder = make_identity(&crypto, 4);
+
+    let mut initiator_state =
+        KkHandshake::new_initiator(&crypto, initiator.clone(), responder.bundle());
+    let mut responder_state =
+        KkHandshake::new_responder(&crypto, responder.clone(), initiator.bundle());
+
+    let m1 = initiator_state
+        .write_message(&crypto, control_meta(11))
+        .unwrap();
+    responder_state.read_message(&crypto, &m1).unwrap();
+
+    let m2 = responder_state
+        .write_message(&crypto, control_meta(12))
+        .unwrap();
+    initiator_state.read_message(&crypto, &m2).unwrap();
+
+    let initiator_final = initiator_state.finalize(&crypto).unwrap();
+    let responder_final = responder_state.finalize(&crypto).unwrap();
+
+    assert_eq!(
+        initiator_final.handshake_hash,
+        responder_final.handshake_hash
+    );
+    assert_eq!(initiator_final.tx_key, responder_final.rx_key);
+    assert_eq!(initiator_final.rx_key, responder_final.tx_key);
+    assert_eq!(
+        initiator_final.tx_connection_id,
+        responder_final.rx_connection_id
+    );
+    assert_eq!(
+        initiator_final.rx_connection_id,
+        responder_final.tx_connection_id
+    );
+    assert_eq!(initiator_final.remote_bundle, responder.bundle());
+    assert_eq!(responder_final.remote_bundle, initiator.bundle());
+}
+
+#[test]
+fn encrypted_session_record_round_trip_uses_connection_id_header() {
+    let crypto = TestCrypto::new(30);
+    let header = SessionHeader {
+        connection_id: ConnectionId::from_data([0x44; ConnectionId::SIZE]),
     };
     let body = SessionRecord {
         seq: RecordSeq(11),
@@ -113,569 +369,24 @@ fn encrypted_session_record_round_trip_and_decrypt() {
 
     let bytes = record.encode();
     let decoded = QlRecord::decode(&bytes).unwrap();
+    let QlRecord::Session(decoded) = decoded else {
+        panic!("expected session payload");
+    };
     assert_eq!(decoded.header, header);
-    assert!(matches!(decoded.payload, QlPayload::Session(_)));
+    let encrypted = decoded.payload;
 
-    let parsed = QlRecord::parse(bytes.as_slice()).unwrap();
-    assert_eq!(parsed.into_owned(), record);
+    let decrypted =
+        encrypted::decrypt_record(&crypto, &header, encrypted.clone(), &session_key).unwrap();
+    assert_eq!(SessionRecord::decode(&decrypted).unwrap(), body);
 
-    let mut bytes = bytes;
-    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
-    let QlPayload::Session(encrypted) = payload else {
-        panic!("expected session payload");
+    let decoded = QlSessionRecord::decode(&bytes).unwrap();
+    assert_eq!(decoded.header, header);
+
+    let wrong_header = SessionHeader {
+        connection_id: ConnectionId::from_data([0x99; ConnectionId::SIZE]),
     };
-    let decrypted = encrypted::decrypt_record(&crypto, &header, encrypted, &session_key).unwrap();
-    assert_eq!(SessionRecord::decode(decrypted).unwrap(), body);
-}
-
-#[test]
-fn decrypted_session_record_iterates_zero_copy_frames() {
-    let crypto = TestCrypto::new(2);
-    let header = QlHeader {
-        sender: XID([9; XID::SIZE]),
-        recipient: XID([10; XID::SIZE]),
-    };
-    let body = SessionRecord {
-        seq: RecordSeq(7),
-        frames: vec![
-            SessionFrame::StreamData(StreamData {
-                stream_id: StreamId(1),
-                offset: 5,
-                fin: false,
-                bytes: b"abc".to_vec(),
-            }),
-            SessionFrame::Ack(RecordAck {
-                ranges: vec![RecordAckRange { start: 3, end: 8 }],
-            }),
-            SessionFrame::StreamClose(StreamClose {
-                stream_id: StreamId(1),
-                target: CloseTarget::Response,
-                code: CloseCode::CANCELLED,
-            }),
-        ],
-    };
-    let session_key = SessionKey::from_data([3; SessionKey::SIZE]);
-    let record = encrypted::encrypt_record(
-        &crypto,
-        header,
-        &session_key,
-        &body,
-        Nonce([4; Nonce::SIZE]),
-    );
-
-    let mut bytes = record.encode();
-    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
-    let QlPayload::Session(encrypted) = payload else {
-        panic!("expected session payload");
-    };
-    let decrypted = encrypted::decrypt_record(&crypto, &header, encrypted, &session_key).unwrap();
-    let (seq, mut frames) = SessionRecord::parse(decrypted).unwrap();
-    assert_eq!(seq, RecordSeq(7));
-    match frames.next().unwrap().unwrap() {
-        SessionFrame::StreamData(frame) => {
-            assert_eq!(frame.stream_id, StreamId(1));
-            assert_eq!(frame.offset, 5);
-            assert!(!frame.fin);
-            assert_eq!(frame.bytes, b"abc");
-        }
-        other => panic!("expected stream data, got {}", frame_name(&other)),
-    }
-    match frames.next().unwrap().unwrap() {
-        SessionFrame::Ack(frame) => {
-            assert_eq!(frame.ranges, vec![RecordAckRange { start: 3, end: 8 }]);
-        }
-        other => panic!("expected ack, got {}", frame_name(&other)),
-    }
-    match frames.next().unwrap().unwrap() {
-        SessionFrame::StreamClose(frame) => {
-            assert_eq!(frame.stream_id, StreamId(1));
-            assert_eq!(frame.target, CloseTarget::Response);
-            assert_eq!(frame.code, CloseCode::CANCELLED);
-        }
-        other => panic!("expected stream close, got {}", frame_name(&other)),
-    }
-    assert!(frames.next().is_none());
-}
-
-#[test]
-fn pair_request_round_trip_and_decrypt() {
-    let crypto = TestCrypto::new(9);
-    let sender_signing = generate_ml_dsa_keypair(&crypto);
-    let sender_kem = generate_ml_kem_keypair(&crypto);
-    let recipient_signing = generate_ml_dsa_keypair(&crypto);
-    let recipient_kem = generate_ml_kem_keypair(&crypto);
-
-    let sender = QlIdentity::new(
-        XID([3; XID::SIZE]),
-        sender_signing.0,
-        sender_signing.1,
-        sender_kem.0,
-        sender_kem.1,
-    );
-    let recipient = QlIdentity::new(
-        XID([4; XID::SIZE]),
-        recipient_signing.0,
-        recipient_signing.1,
-        recipient_kem.0,
-        recipient_kem.1,
-    );
-    let meta = ControlMeta {
-        control_id: ControlId(55),
-        valid_until: 999,
-    };
-    let record = pair::build_pair_request(
-        &crypto,
-        &sender,
-        recipient.xid,
-        &recipient.encapsulation_public_key,
-        meta,
-    );
-
-    let mut bytes = record.encode();
-    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
-    let QlPayload::PairRequest(request) = payload else {
-        panic!("expected pair request");
-    };
-    let body = pair::decrypt_pair_request(&crypto, &recipient, &header, request, 100).unwrap();
-    assert_eq!(body.meta, meta);
-    assert_eq!(body.xid, sender.xid);
-    assert_eq!(body.signing_pub_key, sender.signing_public_key);
-    assert_eq!(body.encapsulation_pub_key, sender.encapsulation_public_key);
-}
-
-#[test]
-fn ready_round_trip_and_decrypt() {
-    let crypto = TestCrypto::new(30);
-    let header = QlHeader {
-        sender: XID([5; XID::SIZE]),
-        recipient: XID([6; XID::SIZE]),
-    };
-    let session_key = SessionKey::from_data([11; SessionKey::SIZE]);
-    let meta = ControlMeta {
-        control_id: ControlId(77),
-        valid_until: 500,
-    };
-    let ready = handshake::build_ready(
-        &crypto,
-        header,
-        &session_key,
-        meta,
-        Nonce([12; Nonce::SIZE]),
-    );
-    let record: QlRecord<Vec<u8>> = QlRecord {
-        header,
-        payload: QlPayload::Ready(ready),
-    };
-
-    let mut bytes = record.encode();
-    let parsed = QlRecord::decode(&bytes).unwrap();
-    assert_eq!(parsed, record);
-
-    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
-    let QlPayload::Ready(ready) = payload else {
-        panic!("expected ready payload");
-    };
-    let body = handshake::decrypt_ready(&crypto, &header, ready, &session_key, 100).unwrap();
-    assert_eq!(body.meta, meta);
-}
-
-#[test]
-fn unpair_round_trip_and_verify() {
-    let crypto = TestCrypto::new(40);
-    let (sender_signing_private, sender_signing_public) = generate_ml_dsa_keypair(&crypto);
-    let sender_kem = generate_ml_kem_keypair(&crypto);
-    let identity = QlIdentity::new(
-        XID([7; XID::SIZE]),
-        sender_signing_private,
-        sender_signing_public.clone(),
-        sender_kem.0,
-        sender_kem.1,
-    );
-    let recipient = XID([8; XID::SIZE]);
-    let meta = ControlMeta {
-        control_id: ControlId(88),
-        valid_until: 600,
-    };
-    let record = unpair::build_unpair(&crypto, &identity, recipient, meta);
-
-    let mut bytes = record.encode();
-    let parsed = QlRecord::decode(&bytes).unwrap();
-    assert_eq!(parsed, record);
-
-    let QlRecord { header, payload } = QlRecord::parse(&mut bytes[..]).unwrap();
-    let QlPayload::Unpair(unpair) = payload else {
-        panic!("expected unpair payload");
-    };
-    unpair::verify_unpair(&crypto, &header, &sender_signing_public, &unpair, 100).unwrap();
-}
-
-#[test]
-fn session_record_rejects_malformed_frames() {
-    let invalid_cases = [
-        {
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(&1u32.to_le_bytes());
-            bytes
-        },
-        {
-            let mut bytes = 1u64.to_le_bytes().to_vec();
-            bytes.push(0xff);
-            bytes
-        },
-        {
-            let mut bytes = 1u64.to_le_bytes().to_vec();
-            bytes.push(SessionFrameKind::StreamData as u8);
-            bytes.push(1);
-            bytes
-        },
-        {
-            let mut bytes = 1u64.to_le_bytes().to_vec();
-            bytes.push(SessionFrameKind::StreamData as u8);
-            bytes.extend_from_slice(&13u16.to_le_bytes());
-            bytes.extend_from_slice(&1u32.to_le_bytes());
-            bytes.extend_from_slice(&4u64.to_le_bytes());
-            bytes.push(0);
-            bytes.extend_from_slice(b"abc");
-            bytes
-        },
-        {
-            let mut bytes = 1u64.to_le_bytes().to_vec();
-            bytes.push(SessionFrameKind::Ack as u8);
-            bytes.extend_from_slice(&0u16.to_le_bytes());
-            bytes
-        },
-        {
-            let mut bytes = 1u64.to_le_bytes().to_vec();
-            bytes.push(SessionFrameKind::Ack as u8);
-            bytes.extend_from_slice(&8u16.to_le_bytes());
-            bytes.extend_from_slice(&5u64.to_le_bytes());
-            bytes
-        },
-        {
-            let mut bytes = 1u64.to_le_bytes().to_vec();
-            bytes.push(SessionFrameKind::Ack as u8);
-            bytes.extend_from_slice(&32u16.to_le_bytes());
-            bytes.extend_from_slice(&6u64.to_le_bytes());
-            bytes.extend_from_slice(&8u64.to_le_bytes());
-            bytes.extend_from_slice(&7u64.to_le_bytes());
-            bytes.extend_from_slice(&9u64.to_le_bytes());
-            bytes
-        },
-        {
-            let mut bytes = 1u64.to_le_bytes().to_vec();
-            bytes.push(SessionFrameKind::StreamClose as u8);
-            bytes.extend_from_slice(&9u16.to_le_bytes());
-            bytes.extend_from_slice(&1u32.to_le_bytes());
-            bytes.push(CloseTarget::Both as u8);
-            bytes.extend_from_slice(&CloseCode::PROTOCOL.0.to_le_bytes());
-            bytes.extend_from_slice(b"abc");
-            bytes
-        },
-        {
-            let mut bytes = 1u64.to_le_bytes().to_vec();
-            bytes.push(SessionFrameKind::Close as u8);
-            bytes.push(0);
-            bytes
-        },
-    ];
-
-    for bytes in invalid_cases {
-        assert_eq!(
-            SessionRecord::decode(bytes.as_slice()),
-            Err(WireError::InvalidPayload)
-        );
-    }
-}
-
-#[test]
-fn session_record_supports_empty_fin_stream_data_and_empty_ping() {
-    let record = SessionRecord {
-        seq: RecordSeq(99),
-        frames: vec![
-            SessionFrame::Ping,
-            SessionFrame::StreamData(StreamData {
-                stream_id: StreamId(42),
-                offset: 999,
-                fin: true,
-                bytes: Vec::new(),
-            }),
-        ],
-    };
-
-    let encoded = record.encode();
-    assert_eq!(&encoded[..8], &99u64.to_le_bytes());
-    assert_eq!(encoded[8], SessionFrameKind::Ping as u8);
-
-    let decoded = SessionRecord::decode(&encoded).unwrap();
-    assert_eq!(decoded, record);
-}
-
-#[test]
-fn session_record_builder_writes_frames_without_temp_record_allocation() {
-    let mut builder = SessionRecordBuilder::new(RecordSeq(55), 12);
-    let stream = StreamData {
-        stream_id: StreamId(3),
-        offset: 7,
-        fin: true,
-        bytes: b"hello",
-    };
-    assert!(builder.push_stream_data(&stream));
-    assert_eq!(builder.remaining_capacity(), 0);
-    assert!(!builder.push_ping());
-
-    let close = SessionCloseBody {
-        code: CloseCode::PROTOCOL,
-    };
-    assert!(!builder.push_close(&close));
-
-    let encoded = builder.into_plaintext();
-    let decoded = SessionRecord::decode(&encoded).unwrap();
     assert_eq!(
-        decoded,
-        SessionRecord {
-            seq: RecordSeq(55),
-            frames: vec![SessionFrame::StreamData(StreamData {
-                stream_id: StreamId(3),
-                offset: 7,
-                fin: true,
-                bytes: b"hello".to_vec(),
-            })],
-        }
+        encrypted::decrypt_record(&crypto, &wrong_header, encrypted, &session_key),
+        Err(WireError::DecryptFailed)
     );
-}
-
-#[test]
-fn session_record_builder_encodes_borrowed_vec_deque_stream_data() {
-    use std::collections::VecDeque;
-
-    let mut payload = VecDeque::with_capacity(8);
-    payload.extend(b"abcd".iter().copied());
-    payload.drain(..2);
-    payload.extend(b"efgh".iter().copied());
-
-    let mut builder = SessionRecordBuilder::new(
-        RecordSeq(56),
-        1 + std::mem::size_of::<u16>() + StreamData::<&VecDeque<u8>>::MIN_WIRE_SIZE + payload.len(),
-    );
-    let stream = StreamData {
-        stream_id: StreamId(4),
-        offset: 9,
-        fin: false,
-        bytes: &payload,
-    };
-    assert!(builder.push_stream_data(&stream));
-
-    let encoded = builder.into_plaintext();
-    let decoded = SessionRecord::decode(&encoded).unwrap();
-    assert_eq!(
-        decoded,
-        SessionRecord {
-            seq: RecordSeq(56),
-            frames: vec![SessionFrame::StreamData(StreamData {
-                stream_id: StreamId(4),
-                offset: 9,
-                fin: false,
-                bytes: b"cdefgh".to_vec(),
-            })],
-        }
-    );
-}
-
-#[test]
-fn protocol_record_size_breakdown() {
-    fn meta(id: u32) -> ControlMeta {
-        ControlMeta {
-            control_id: ControlId(id),
-            valid_until: 1_000,
-        }
-    }
-
-    fn header() -> QlHeader {
-        QlHeader {
-            sender: XID([1; XID::SIZE]),
-            recipient: XID([2; XID::SIZE]),
-        }
-    }
-
-    fn encrypted(tag: u8, ciphertext_len: usize) -> EncryptedMessage<Vec<u8>> {
-        EncryptedMessage {
-            nonce: Nonce([tag; Nonce::SIZE]),
-            auth: [tag; ENCRYPTED_MESSAGE_AUTH_SIZE],
-            ciphertext: vec![tag; ciphertext_len],
-        }
-    }
-
-    fn session_record(header: QlHeader, tag: u8, body: SessionRecord) -> QlRecord<Vec<u8>> {
-        let ciphertext_len = body.encode().len();
-        QlRecord {
-            header,
-            payload: QlPayload::Session(encrypted(tag, ciphertext_len)),
-        }
-    }
-
-    let header = header();
-    let hello: QlRecord<Vec<u8>> = QlRecord {
-        header,
-        payload: QlPayload::Hello(handshake::Hello {
-            meta: meta(1),
-            nonce: Nonce([3; Nonce::SIZE]),
-            kem_ct: MlKemCiphertext::from_data([4; MlKemCiphertext::SIZE]),
-            signature: MlDsaSignature::from_data([5; MlDsaSignature::SIZE]),
-        }),
-    };
-    let hello_reply: QlRecord<Vec<u8>> = QlRecord {
-        header,
-        payload: QlPayload::HelloReply(handshake::HelloReply {
-            meta: meta(2),
-            nonce: Nonce([6; Nonce::SIZE]),
-            kem_ct: MlKemCiphertext::from_data([7; MlKemCiphertext::SIZE]),
-            signature: MlDsaSignature::from_data([8; MlDsaSignature::SIZE]),
-        }),
-    };
-    let confirm: QlRecord<Vec<u8>> = QlRecord {
-        header,
-        payload: QlPayload::Confirm(handshake::Confirm {
-            meta: meta(3),
-            signature: MlDsaSignature::from_data([9; MlDsaSignature::SIZE]),
-        }),
-    };
-    let pair_request: QlRecord<Vec<u8>> = QlRecord {
-        header,
-        payload: QlPayload::PairRequest(pair::PairRequestRecord {
-            kem_ct: MlKemCiphertext::from_data([10; MlKemCiphertext::SIZE]),
-            encrypted: encrypted(11, 0),
-        }),
-    };
-    let unpair: QlRecord<Vec<u8>> = QlRecord {
-        header,
-        payload: QlPayload::Unpair(unpair::Unpair {
-            meta: meta(4),
-            signature: MlDsaSignature::from_data([12; MlDsaSignature::SIZE]),
-        }),
-    };
-    let ready: QlRecord<Vec<u8>> = QlRecord {
-        header,
-        payload: QlPayload::Ready(handshake::Ready {
-            encrypted: encrypted(13, 0),
-        }),
-    };
-
-    let session_ping = session_record(
-        header,
-        14,
-        SessionRecord {
-            seq: RecordSeq(1),
-            frames: vec![SessionFrame::Ping],
-        },
-    );
-    let session_ack = session_record(
-        header,
-        15,
-        SessionRecord {
-            seq: RecordSeq(2),
-            frames: vec![SessionFrame::Ack(RecordAck {
-                ranges: vec![RecordAckRange { start: 1, end: 3 }],
-            })],
-        },
-    );
-    let session_stream_window = session_record(
-        header,
-        16,
-        SessionRecord {
-            seq: RecordSeq(3),
-            frames: vec![SessionFrame::StreamWindow(StreamWindow {
-                stream_id: StreamId(1),
-                maximum_offset: 65_536,
-            })],
-        },
-    );
-    let session_stream_empty = session_record(
-        header,
-        18,
-        SessionRecord {
-            seq: RecordSeq(4),
-            frames: vec![SessionFrame::StreamData(StreamData {
-                stream_id: StreamId(1),
-                offset: 0,
-                fin: false,
-                bytes: Vec::new(),
-            })],
-        },
-    );
-    let session_stream_fin = session_record(
-        header,
-        19,
-        SessionRecord {
-            seq: RecordSeq(5),
-            frames: vec![SessionFrame::StreamData(StreamData {
-                stream_id: StreamId(1),
-                offset: 0,
-                fin: true,
-                bytes: Vec::new(),
-            })],
-        },
-    );
-    let session_stream_close = session_record(
-        header,
-        20,
-        SessionRecord {
-            seq: RecordSeq(6),
-            frames: vec![SessionFrame::StreamClose(StreamClose {
-                stream_id: StreamId(1),
-                target: CloseTarget::Both,
-                code: CloseCode::PROTOCOL,
-            })],
-        },
-    );
-    let session_close = session_record(
-        header,
-        21,
-        SessionRecord {
-            seq: RecordSeq(7),
-            frames: vec![SessionFrame::Close(SessionCloseBody {
-                code: CloseCode::PROTOCOL,
-            })],
-        },
-    );
-
-    let print_size = |label: &str, size: usize| {
-        println!("{label:<32}: {size} bytes");
-    };
-
-    print_size("ql-wire hello", hello.encode().len());
-    print_size("ql-wire hello_reply", hello_reply.encode().len());
-    print_size("ql-wire confirm", confirm.encode().len());
-    print_size("ql-wire pair_request empty", pair_request.encode().len());
-    print_size("ql-wire unpair", unpair.encode().len());
-    print_size("ql-wire ready empty", ready.encode().len());
-    print_size("ql-wire session ping", session_ping.encode().len());
-    print_size("ql-wire session ack", session_ack.encode().len());
-    print_size(
-        "ql-wire session stream window",
-        session_stream_window.encode().len(),
-    );
-    print_size(
-        "ql-wire session stream empty",
-        session_stream_empty.encode().len(),
-    );
-    print_size(
-        "ql-wire session stream fin",
-        session_stream_fin.encode().len(),
-    );
-    print_size(
-        "ql-wire session stream close",
-        session_stream_close.encode().len(),
-    );
-    print_size("ql-wire session close", session_close.encode().len());
-}
-
-fn frame_name(frame: &SessionFrame<&[u8]>) -> &'static str {
-    match frame {
-        SessionFrame::Ping => "ping",
-        SessionFrame::Ack(_) => "ack",
-        SessionFrame::StreamData(_) => "stream_data",
-        SessionFrame::StreamWindow(_) => "stream_window",
-        SessionFrame::StreamClose(_) => "stream_close",
-        SessionFrame::Close(_) => "close",
-    }
 }

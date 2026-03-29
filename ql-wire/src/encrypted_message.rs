@@ -56,7 +56,7 @@ impl<B: AsRef<[u8]>> EncryptedMessage<B> {
         aad: &[u8],
     ) -> Result<Vec<u8>, WireError> {
         let mut plaintext = self.ciphertext.as_ref().to_vec();
-        if !crypto.decrypt_with_aead(key, &self.nonce, aad, &mut plaintext, &self.auth) {
+        if !crypto.aes256_gcm_decrypt(key, &self.nonce, aad, &mut plaintext, &self.auth) {
             return Err(WireError::DecryptFailed);
         }
         Ok(plaintext)
@@ -71,7 +71,7 @@ impl<B: AsMut<[u8]>> EncryptedMessage<B> {
         aad: &[u8],
     ) -> Result<B, WireError> {
         let ciphertext = self.ciphertext.as_mut();
-        if !crypto.decrypt_with_aead(key, &self.nonce, aad, ciphertext, &self.auth) {
+        if !crypto.aes256_gcm_decrypt(key, &self.nonce, aad, ciphertext, &self.auth) {
             return Err(WireError::DecryptFailed);
         }
         Ok(self.ciphertext)
@@ -86,7 +86,7 @@ impl EncryptedMessage<Vec<u8>> {
         aad: &[u8],
         nonce: Nonce,
     ) -> Self {
-        let auth = crypto.encrypt_with_aead(key, &nonce, aad, &mut plaintext);
+        let auth = crypto.aes256_gcm_encrypt(key, &nonce, aad, &mut plaintext);
         Self {
             nonce,
             auth,

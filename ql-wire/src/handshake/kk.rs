@@ -1,0 +1,312 @@
+use super::{
+    decrypt_mlkem_ciphertext, encrypt_mlkem_ciphertext, finalize_handshake,
+    generate_ephemeral_keypair, init_kk_symmetric, mix_hash_ephemeral, EncryptedMlKemCiphertext,
+    FinalizedHandshake, HybridEphemeralKeyPair, HybridEphemeralPublic, Role, SymmetricState,
+    ENCRYPTED_MLKEM_CIPHERTEXT_LEN,
+};
+use crate::{codec, ControlMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity, WireError};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kk1 {
+    pub meta: ControlMeta,
+    pub skem_ciphertext: MlKemCiphertext,
+    pub ephemeral: HybridEphemeralPublic,
+}
+
+impl Kk1 {
+    pub const ENCODED_LEN: usize =
+        ControlMeta::ENCODED_LEN + MlKemCiphertext::SIZE + HybridEphemeralPublic::ENCODED_LEN;
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        self.meta.encode_into(out);
+        codec::push_bytes(out, self.skem_ciphertext.as_bytes());
+        self.ephemeral.encode_into(out);
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        let meta = ControlMeta::decode_from(&mut reader)?;
+        let skem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
+        let ephemeral =
+            HybridEphemeralPublic::decode(&reader.take_bytes(HybridEphemeralPublic::ENCODED_LEN)?)?;
+        reader.finish()?;
+        Ok(Self {
+            meta,
+            skem_ciphertext,
+            ephemeral,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kk2 {
+    pub meta: ControlMeta,
+    pub ekem_ciphertext: MlKemCiphertext,
+    pub skem_ciphertext: EncryptedMlKemCiphertext,
+    pub ephemeral: HybridEphemeralPublic,
+}
+
+impl Kk2 {
+    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN
+        + MlKemCiphertext::SIZE
+        + ENCRYPTED_MLKEM_CIPHERTEXT_LEN
+        + HybridEphemeralPublic::ENCODED_LEN;
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        self.meta.encode_into(out);
+        codec::push_bytes(out, self.ekem_ciphertext.as_bytes());
+        codec::push_bytes(out, self.skem_ciphertext.as_bytes());
+        self.ephemeral.encode_into(out);
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        let meta = ControlMeta::decode_from(&mut reader)?;
+        let ekem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
+        let skem_ciphertext = EncryptedMlKemCiphertext::from_data(reader.take_array()?);
+        let ephemeral =
+            HybridEphemeralPublic::decode(&reader.take_bytes(HybridEphemeralPublic::ENCODED_LEN)?)?;
+        reader.finish()?;
+        Ok(Self {
+            meta,
+            ekem_ciphertext,
+            skem_ciphertext,
+            ephemeral,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KkMessage {
+    Message1(Kk1),
+    Message2(Kk2),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KkStep {
+    Send1,
+    Recv1,
+    Send2,
+    Recv2,
+    Done,
+}
+
+#[derive(Debug, Clone)]
+pub struct KkHandshake {
+    role: Role,
+    step: KkStep,
+    symmetric: SymmetricState,
+    local: QlIdentity,
+    remote_bundle: PeerBundle,
+    local_ephemeral: Option<HybridEphemeralKeyPair>,
+    remote_ephemeral: Option<HybridEphemeralPublic>,
+}
+
+impl KkHandshake {
+    pub fn new_initiator(
+        crypto: &impl QlCrypto,
+        local: QlIdentity,
+        remote_bundle: PeerBundle,
+    ) -> Self {
+        let symmetric = init_kk_symmetric(crypto, &local.bundle(), &remote_bundle);
+        Self {
+            role: Role::Initiator,
+            step: KkStep::Send1,
+            symmetric,
+            local,
+            remote_bundle,
+            local_ephemeral: None,
+            remote_ephemeral: None,
+        }
+    }
+
+    pub fn new_responder(
+        crypto: &impl QlCrypto,
+        local: QlIdentity,
+        remote_bundle: PeerBundle,
+    ) -> Self {
+        let symmetric = init_kk_symmetric(crypto, &remote_bundle, &local.bundle());
+        Self {
+            role: Role::Responder,
+            step: KkStep::Recv1,
+            symmetric,
+            local,
+            remote_bundle,
+            local_ephemeral: None,
+            remote_ephemeral: None,
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.step == KkStep::Done
+    }
+
+    pub fn write_message(
+        &mut self,
+        crypto: &impl QlCrypto,
+        meta: ControlMeta,
+    ) -> Result<KkMessage, WireError> {
+        match self.step {
+            KkStep::Send1 => {
+                let (skem_ciphertext, skem_secret) =
+                    crypto.mlkem_encapsulate(&self.remote_bundle.mlkem_public_key);
+                self.symmetric
+                    .encrypt_and_hash(crypto, skem_ciphertext.as_bytes())?;
+                self.symmetric
+                    .mix_key_and_hash(crypto, skem_secret.as_bytes());
+
+                let local_ephemeral = generate_ephemeral_keypair(crypto);
+                let public = local_ephemeral.public();
+                mix_hash_ephemeral(&mut self.symmetric, crypto, &public);
+
+                let es = crypto.x25519_agree(
+                    &local_ephemeral.x25519.private,
+                    &self.remote_bundle.x25519_public_key,
+                );
+                self.symmetric.mix_key(crypto, es.as_bytes());
+
+                let ss = crypto.x25519_agree(
+                    &self.local.x25519_private_key,
+                    &self.remote_bundle.x25519_public_key,
+                );
+                self.symmetric.mix_key(crypto, ss.as_bytes());
+
+                self.local_ephemeral = Some(local_ephemeral);
+                self.step = KkStep::Recv2;
+                Ok(KkMessage::Message1(Kk1 {
+                    meta,
+                    skem_ciphertext,
+                    ephemeral: public,
+                }))
+            }
+            KkStep::Send2 => {
+                let remote_ephemeral = self
+                    .remote_ephemeral
+                    .clone()
+                    .ok_or(WireError::InvalidState)?;
+                let (ekem_ciphertext, ekem_secret) =
+                    crypto.mlkem_encapsulate(&remote_ephemeral.mlkem_public_key);
+                self.symmetric.mix_hash(crypto, ekem_ciphertext.as_bytes());
+                self.symmetric.mix_key(crypto, ekem_secret.as_bytes());
+
+                let (skem_ciphertext, skem_secret) =
+                    crypto.mlkem_encapsulate(&self.remote_bundle.mlkem_public_key);
+                let skem_ciphertext =
+                    encrypt_mlkem_ciphertext(crypto, &mut self.symmetric, &skem_ciphertext)?;
+                self.symmetric
+                    .mix_key_and_hash(crypto, skem_secret.as_bytes());
+
+                let local_ephemeral = generate_ephemeral_keypair(crypto);
+                let public = local_ephemeral.public();
+                mix_hash_ephemeral(&mut self.symmetric, crypto, &public);
+
+                let ee = crypto.x25519_agree(
+                    &local_ephemeral.x25519.private,
+                    &remote_ephemeral.x25519_public_key,
+                );
+                self.symmetric.mix_key(crypto, ee.as_bytes());
+
+                let se = crypto.x25519_agree(
+                    &local_ephemeral.x25519.private,
+                    &self.remote_bundle.x25519_public_key,
+                );
+                self.symmetric.mix_key(crypto, se.as_bytes());
+
+                self.local_ephemeral = Some(local_ephemeral);
+                self.step = KkStep::Done;
+                Ok(KkMessage::Message2(Kk2 {
+                    meta,
+                    ekem_ciphertext,
+                    skem_ciphertext,
+                    ephemeral: public,
+                }))
+            }
+            _ => Err(WireError::InvalidState),
+        }
+    }
+
+    pub fn read_message(
+        &mut self,
+        crypto: &impl QlCrypto,
+        message: &KkMessage,
+    ) -> Result<(), WireError> {
+        match (&self.step, message) {
+            (KkStep::Recv1, KkMessage::Message1(message)) => {
+                self.symmetric
+                    .decrypt_and_hash(crypto, message.skem_ciphertext.as_bytes())?;
+                let skem_secret = crypto
+                    .mlkem_decapsulate(&self.local.mlkem_private_key, &message.skem_ciphertext);
+                self.symmetric
+                    .mix_key_and_hash(crypto, skem_secret.as_bytes());
+
+                mix_hash_ephemeral(&mut self.symmetric, crypto, &message.ephemeral);
+                self.remote_ephemeral = Some(message.ephemeral.clone());
+
+                let es = crypto.x25519_agree(
+                    &self.local.x25519_private_key,
+                    &message.ephemeral.x25519_public_key,
+                );
+                self.symmetric.mix_key(crypto, es.as_bytes());
+
+                let ss = crypto.x25519_agree(
+                    &self.local.x25519_private_key,
+                    &self.remote_bundle.x25519_public_key,
+                );
+                self.symmetric.mix_key(crypto, ss.as_bytes());
+                self.step = KkStep::Send2;
+                Ok(())
+            }
+            (KkStep::Recv2, KkMessage::Message2(message)) => {
+                let local_ephemeral = self
+                    .local_ephemeral
+                    .as_ref()
+                    .ok_or(WireError::InvalidState)?;
+                self.symmetric
+                    .mix_hash(crypto, message.ekem_ciphertext.as_bytes());
+                let ekem_secret = crypto
+                    .mlkem_decapsulate(&local_ephemeral.mlkem.private, &message.ekem_ciphertext);
+                self.symmetric.mix_key(crypto, ekem_secret.as_bytes());
+
+                let skem_ciphertext = decrypt_mlkem_ciphertext(
+                    crypto,
+                    &mut self.symmetric,
+                    &message.skem_ciphertext,
+                )?;
+                let skem_secret =
+                    crypto.mlkem_decapsulate(&self.local.mlkem_private_key, &skem_ciphertext);
+                self.symmetric
+                    .mix_key_and_hash(crypto, skem_secret.as_bytes());
+
+                mix_hash_ephemeral(&mut self.symmetric, crypto, &message.ephemeral);
+                self.remote_ephemeral = Some(message.ephemeral.clone());
+
+                let ee = crypto.x25519_agree(
+                    &local_ephemeral.x25519.private,
+                    &message.ephemeral.x25519_public_key,
+                );
+                self.symmetric.mix_key(crypto, ee.as_bytes());
+
+                let se = crypto.x25519_agree(
+                    &self.local.x25519_private_key,
+                    &message.ephemeral.x25519_public_key,
+                );
+                self.symmetric.mix_key(crypto, se.as_bytes());
+                self.step = KkStep::Done;
+                Ok(())
+            }
+            _ => Err(WireError::InvalidState),
+        }
+    }
+
+    pub fn finalize(self, crypto: &impl QlCrypto) -> Result<FinalizedHandshake, WireError> {
+        if !self.is_finished() {
+            return Err(WireError::InvalidState);
+        }
+        Ok(finalize_handshake(
+            crypto,
+            self.symmetric,
+            self.role,
+            self.remote_bundle,
+        ))
+    }
+}

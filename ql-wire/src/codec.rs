@@ -1,4 +1,4 @@
-use crate::{ByteSlice, QlHeader, WireError};
+use crate::{ByteSlice, WireError};
 
 pub fn push_u8(out: &mut Vec<u8>, value: u8) {
     out.push(value);
@@ -105,12 +105,4 @@ pub fn append_field(out: &mut Vec<u8>, label: &[u8], value: &[u8]) {
 pub fn append_framed_bytes(out: &mut Vec<u8>, value: &[u8]) {
     out.extend_from_slice(&u64::try_from(value.len()).unwrap().to_le_bytes());
     out.extend_from_slice(value);
-}
-
-pub fn header_aad(header: &QlHeader) -> Vec<u8> {
-    let mut aad = Vec::new();
-    append_field(&mut aad, b"domain", b"ql-wire:header-aad:v1");
-    append_field(&mut aad, b"sender", &header.sender.0);
-    append_field(&mut aad, b"recipient", &header.recipient.0);
-    aad
 }

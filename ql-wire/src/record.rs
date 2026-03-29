@@ -1,92 +1,189 @@
 use crate::{
     codec,
     encrypted_message::EncryptedMessage,
-    handshake::{self, Confirm, Hello, HelloReply, Ready},
-    header::{decode_record_header, encode_record_header, QlHeader},
-    pair::PairRequestRecord,
-    unpair::Unpair,
-    ByteSlice, WireError, QL_WIRE_VERSION,
+    handshake::{Kk1, Kk2, Xx1, Xx2, Xx3, Xx4},
+    ByteSlice, HandshakeHeader, SessionHeader, WireError, QL_WIRE_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QlRecord<B> {
-    pub header: QlHeader,
-    pub payload: QlPayload<B>,
+pub struct QlHandshakeRecord {
+    pub header: HandshakeHeader,
+    pub payload: HandshakePayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QlPayload<B> {
-    PairRequest(PairRequestRecord<B>),
-    Unpair(Unpair),
-    Hello(Hello),
-    HelloReply(HelloReply),
-    Confirm(Confirm),
-    Ready(Ready<B>),
-    Session(EncryptedMessage<B>),
+pub struct QlSessionRecord<B> {
+    pub header: SessionHeader,
+    pub payload: EncryptedMessage<B>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QlRecord<B> {
+    Handshake(QlHandshakeRecord),
+    Session(QlSessionRecord<B>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandshakePayload {
+    Xx1(Xx1),
+    Xx2(Xx2),
+    Xx3(Xx3),
+    Xx4(Xx4),
+    Kk1(Kk1),
+    Kk2(Kk2),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum RecordKind {
-    PairRequest = 1,
-    Hello = 2,
-    HelloReply = 3,
-    Confirm = 4,
-    Ready = 5,
-    Session = 6,
-    Unpair = 7,
+pub enum RecordType {
+    Handshake = 1,
+    Session = 2,
 }
 
-impl TryFrom<u8> for RecordKind {
+impl TryFrom<u8> for RecordType {
     type Error = WireError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            1 => Ok(Self::PairRequest),
-            2 => Ok(Self::Hello),
-            3 => Ok(Self::HelloReply),
-            4 => Ok(Self::Confirm),
-            5 => Ok(Self::Ready),
-            6 => Ok(Self::Session),
-            7 => Ok(Self::Unpair),
+            1 => Ok(Self::Handshake),
+            2 => Ok(Self::Session),
             _ => Err(WireError::InvalidPayload),
         }
     }
 }
 
-impl RecordKind {
-    fn for_payload<B>(payload: &QlPayload<B>) -> Self {
-        match payload {
-            QlPayload::PairRequest(_) => Self::PairRequest,
-            QlPayload::Unpair(_) => Self::Unpair,
-            QlPayload::Hello(_) => Self::Hello,
-            QlPayload::HelloReply(_) => Self::HelloReply,
-            QlPayload::Confirm(_) => Self::Confirm,
-            QlPayload::Ready(_) => Self::Ready,
-            QlPayload::Session(_) => Self::Session,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum HandshakeKind {
+    Xx1 = 1,
+    Xx2 = 2,
+    Xx3 = 3,
+    Xx4 = 4,
+    Kk1 = 5,
+    Kk2 = 6,
+}
+
+impl TryFrom<u8> for HandshakeKind {
+    type Error = WireError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Xx1),
+            2 => Ok(Self::Xx2),
+            3 => Ok(Self::Xx3),
+            4 => Ok(Self::Xx4),
+            5 => Ok(Self::Kk1),
+            6 => Ok(Self::Kk2),
+            _ => Err(WireError::InvalidPayload),
+        }
+    }
+}
+
+impl HandshakePayload {
+    pub fn kind(&self) -> HandshakeKind {
+        match self {
+            Self::Xx1(_) => HandshakeKind::Xx1,
+            Self::Xx2(_) => HandshakeKind::Xx2,
+            Self::Xx3(_) => HandshakeKind::Xx3,
+            Self::Xx4(_) => HandshakeKind::Xx4,
+            Self::Kk1(_) => HandshakeKind::Kk1,
+            Self::Kk2(_) => HandshakeKind::Kk2,
+        }
+    }
+
+    fn encode_into(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Xx1(message) => message.encode_into(out),
+            Self::Xx2(message) => message.encode_into(out),
+            Self::Xx3(message) => message.encode_into(out),
+            Self::Xx4(message) => message.encode_into(out),
+            Self::Kk1(message) => message.encode_into(out),
+            Self::Kk2(message) => message.encode_into(out),
+        }
+    }
+
+    fn decode(kind: HandshakeKind, bytes: &[u8]) -> Result<Self, WireError> {
+        match kind {
+            HandshakeKind::Xx1 => Ok(Self::Xx1(Xx1::decode(bytes)?)),
+            HandshakeKind::Xx2 => Ok(Self::Xx2(Xx2::decode(bytes)?)),
+            HandshakeKind::Xx3 => Ok(Self::Xx3(Xx3::decode(bytes)?)),
+            HandshakeKind::Xx4 => Ok(Self::Xx4(Xx4::decode(bytes)?)),
+            HandshakeKind::Kk1 => Ok(Self::Kk1(Kk1::decode(bytes)?)),
+            HandshakeKind::Kk2 => Ok(Self::Kk2(Kk2::decode(bytes)?)),
+        }
+    }
+}
+
+impl QlHandshakeRecord {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        codec::push_u8(&mut out, QL_WIRE_VERSION);
+        codec::push_u8(&mut out, RecordType::Handshake as u8);
+        self.header.encode_into(&mut out);
+        codec::push_u8(&mut out, self.payload.kind() as u8);
+        self.payload.encode_into(&mut out);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        Ok(Self::parse(bytes)?)
+    }
+
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        if reader.take_u8()? != QL_WIRE_VERSION {
+            return Err(WireError::InvalidPayload);
+        }
+        if RecordType::try_from(reader.take_u8()?)? != RecordType::Handshake {
+            return Err(WireError::InvalidPayload);
+        }
+        parse_handshake_record(reader.take_rest())
+    }
+}
+
+impl<B: AsRef<[u8]>> QlSessionRecord<B> {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        codec::push_u8(&mut out, QL_WIRE_VERSION);
+        codec::push_u8(&mut out, RecordType::Session as u8);
+        self.header.encode_into(&mut out);
+        self.payload.encode_into(&mut out);
+        out
+    }
+}
+
+impl QlSessionRecord<Vec<u8>> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        Ok(QlSessionRecord::parse(bytes)?.into_owned())
+    }
+}
+
+impl<B: ByteSlice> QlSessionRecord<B> {
+    pub fn parse(bytes: B) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        if reader.take_u8()? != QL_WIRE_VERSION {
+            return Err(WireError::InvalidPayload);
+        }
+        if RecordType::try_from(reader.take_u8()?)? != RecordType::Session {
+            return Err(WireError::InvalidPayload);
+        }
+        parse_session_record(reader.take_rest())
+    }
+
+    pub fn into_owned(self) -> QlSessionRecord<Vec<u8>> {
+        QlSessionRecord {
+            header: self.header,
+            payload: self.payload.into_owned(),
         }
     }
 }
 
 impl<B: AsRef<[u8]>> QlRecord<B> {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        codec::push_u8(&mut out, QL_WIRE_VERSION);
-        encode_record_header(
-            &mut out,
-            &self.header,
-            RecordKind::for_payload(&self.payload),
-        );
-        match &self.payload {
-            QlPayload::PairRequest(request) => request.encode_into(&mut out),
-            QlPayload::Unpair(unpair) => unpair.encode_into(&mut out),
-            QlPayload::Hello(hello) => hello.encode_into(&mut out),
-            QlPayload::HelloReply(reply) => reply.encode_into(&mut out),
-            QlPayload::Confirm(confirm) => confirm.encode_into(&mut out),
-            QlPayload::Ready(ready) => ready.encode_into(&mut out),
-            QlPayload::Session(encrypted) => encrypted.encode_into(&mut out),
+        match self {
+            Self::Handshake(record) => record.encode(),
+            Self::Session(record) => record.encode(),
         }
-        out
     }
 }
 
@@ -102,44 +199,35 @@ impl<B: ByteSlice> QlRecord<B> {
         if reader.take_u8()? != QL_WIRE_VERSION {
             return Err(WireError::InvalidPayload);
         }
-        let (header, payload_bytes) = decode_record_header(reader.take_rest())?;
-        let payload = parse_payload(header.kind, payload_bytes)?;
-        Ok(Self {
-            header: header.header,
-            payload,
-        })
+
+        let record_type = RecordType::try_from(reader.take_u8()?)?;
+        let remaining = reader.take_rest();
+        match record_type {
+            RecordType::Handshake => Ok(Self::Handshake(parse_handshake_record(remaining)?)),
+            RecordType::Session => Ok(Self::Session(parse_session_record(remaining)?)),
+        }
     }
 
     pub fn into_owned(self) -> QlRecord<Vec<u8>> {
-        QlRecord {
-            header: self.header,
-            payload: self.payload.into_owned(),
-        }
-    }
-}
-
-impl<B: ByteSlice> QlPayload<B> {
-    pub fn into_owned(self) -> QlPayload<Vec<u8>> {
         match self {
-            Self::PairRequest(request) => QlPayload::PairRequest(request.into_owned()),
-            Self::Unpair(unpair) => QlPayload::Unpair(unpair),
-            Self::Hello(hello) => QlPayload::Hello(hello),
-            Self::HelloReply(reply) => QlPayload::HelloReply(reply),
-            Self::Confirm(confirm) => QlPayload::Confirm(confirm),
-            Self::Ready(ready) => QlPayload::Ready(ready.into_owned()),
-            Self::Session(encrypted) => QlPayload::Session(encrypted.into_owned()),
+            Self::Handshake(record) => QlRecord::Handshake(record),
+            Self::Session(record) => QlRecord::Session(record.into_owned()),
         }
     }
 }
 
-fn parse_payload<B: ByteSlice>(kind: RecordKind, payload: B) -> Result<QlPayload<B>, WireError> {
-    match kind {
-        RecordKind::PairRequest => Ok(QlPayload::PairRequest(PairRequestRecord::parse(payload)?)),
-        RecordKind::Unpair => Ok(QlPayload::Unpair(Unpair::decode(&payload[..])?)),
-        RecordKind::Hello => Ok(QlPayload::Hello(handshake::Hello::decode(&payload[..])?)),
-        RecordKind::HelloReply => Ok(QlPayload::HelloReply(HelloReply::decode(&payload[..])?)),
-        RecordKind::Confirm => Ok(QlPayload::Confirm(Confirm::decode(&payload[..])?)),
-        RecordKind::Ready => Ok(QlPayload::Ready(Ready::parse(payload)?)),
-        RecordKind::Session => Ok(QlPayload::Session(EncryptedMessage::parse(payload)?)),
-    }
+fn parse_handshake_record<B: ByteSlice>(bytes: B) -> Result<QlHandshakeRecord, WireError> {
+    let mut reader = codec::Reader::new(bytes);
+    let header = HandshakeHeader::decode_from(&mut reader)?;
+    let kind = HandshakeKind::try_from(reader.take_u8()?)?;
+    let payload = reader.take_rest();
+    let payload = HandshakePayload::decode(kind, &payload[..])?;
+    Ok(QlHandshakeRecord { header, payload })
+}
+
+fn parse_session_record<B: ByteSlice>(bytes: B) -> Result<QlSessionRecord<B>, WireError> {
+    let mut reader = codec::Reader::new(bytes);
+    let header = SessionHeader::decode_from(&mut reader)?;
+    let payload = EncryptedMessage::parse(reader.take_rest())?;
+    Ok(QlSessionRecord { header, payload })
 }
