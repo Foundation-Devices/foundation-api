@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, time::Instant};
 
 use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionCloseBody, StreamCloseVec, StreamId,
+    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionCloseBody, StreamClose, StreamId,
     XID,
 };
 
@@ -87,7 +87,7 @@ pub enum OutboundState {
 pub enum InboundState {
     Open,
     Finished,
-    Closed(StreamCloseVec),
+    Closed(StreamClose),
     Discarding,
 }
 
@@ -96,7 +96,7 @@ pub struct StreamState {
     pub role: StreamRole,
     pub rx: StreamRx,
     pub tx: StreamTx,
-    pub pending_close: Option<StreamCloseVec>,
+    pub pending_close: Option<StreamClose>,
     pub peer_max_offset: u64,
     pub outbound_state: OutboundState,
     pub inbound_state: InboundState,
@@ -149,7 +149,7 @@ impl StreamState {
 #[derive(Debug, Clone)]
 pub enum ReliableFrame {
     StreamData(StreamDataManifest),
-    StreamClose(StreamCloseVec),
+    StreamClose(StreamClose),
     Close(SessionCloseBody),
 }
 

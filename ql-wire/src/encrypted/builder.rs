@@ -91,7 +91,7 @@ impl SessionRecordBuilder {
         true
     }
 
-    pub fn push_stream_close<B: ByteChunks>(&mut self, frame: &StreamClose<B>) -> bool {
+    pub fn push_stream_close(&mut self, frame: &StreamClose) -> bool {
         if !self.can_push_len(1 + SIZE_LEN + frame.encoded_len()) {
             return false;
         }

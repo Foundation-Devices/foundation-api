@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use ql_wire::{
     CloseCode, CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionFrame, SessionRecord,
-    StreamCloseVec, StreamData, StreamId, XID,
+    StreamClose, StreamData, StreamId, XID,
 };
 
 use super::{state::StreamParity, SessionEvent, SessionFsm, SessionFsmConfig};
@@ -195,7 +195,6 @@ fn remote_stream_close_is_reliable_and_retried() {
         stream_id,
         CloseTarget::Both,
         CloseCode::CANCELLED,
-        b"bye".to_vec(),
     )
     .unwrap();
 
@@ -204,7 +203,7 @@ fn remote_stream_close_is_reliable_and_retried() {
     let first = SessionRecord::decode(builder.bytes()).unwrap();
     assert!(matches!(
         first.frames.as_slice(),
-        [SessionFrame::StreamClose(StreamCloseVec { stream_id: id, .. })] if *id == stream_id
+        [SessionFrame::StreamClose(StreamClose { stream_id: id, .. })] if *id == stream_id
     ));
 
     fsm.on_timer(now + Duration::from_millis(200), |_| {});

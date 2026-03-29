@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 pub use error::QlFsmError;
 use ql_wire::{
     CloseCode, CloseTarget, MlDsaPublicKey, MlKemPublicKey, QlCrypto, QlIdentity, QlRecord,
-    SessionCloseBody, StreamCloseVec, StreamId, XID,
+    SessionCloseBody, StreamClose, StreamId, XID,
 };
 pub use session::stream_rx::StreamReadIter;
 
@@ -102,7 +102,7 @@ pub enum QlSessionEvent {
     /// the peer finished writing this stream
     Finished(StreamId),
     /// a stream was closed
-    Closed(StreamCloseVec),
+    Closed(StreamClose),
     /// local writes on this stream are closed
     WritableClosed(StreamId),
     /// the peer requested unpairing
@@ -330,9 +330,8 @@ impl QlFsm {
         stream_id: StreamId,
         target: CloseTarget,
         code: CloseCode,
-        payload: Vec<u8>,
     ) -> Result<(), QlFsmError> {
-        implementation::close_stream(self, stream_id, target, code, payload)
+        implementation::close_stream(self, stream_id, target, code)
     }
 
     /// queues a ping on the active session

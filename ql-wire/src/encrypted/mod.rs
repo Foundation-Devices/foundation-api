@@ -40,13 +40,12 @@ pub enum SessionFrame<B> {
     Ack(RecordAck),
     StreamData(StreamData<B>),
     StreamWindow(StreamWindow),
-    StreamClose(StreamClose<B>),
+    StreamClose(StreamClose),
     Close(SessionCloseBody),
 }
 
 pub type SessionFrameVec = SessionFrame<Vec<u8>>;
 pub type StreamDataVec = StreamData<Vec<u8>>;
-pub type StreamCloseVec = StreamClose<Vec<u8>>;
 
 pub(crate) const SIZE_LEN: usize = size_of::<u16>();
 
@@ -171,7 +170,7 @@ impl<B: ByteSlice> SessionFrame<B> {
             Self::Ack(frame) => SessionFrame::Ack(frame),
             Self::StreamData(frame) => SessionFrame::StreamData(frame.into_owned()),
             Self::StreamWindow(frame) => SessionFrame::StreamWindow(frame),
-            Self::StreamClose(frame) => SessionFrame::StreamClose(frame.into_owned()),
+            Self::StreamClose(frame) => SessionFrame::StreamClose(frame),
             Self::Close(frame) => SessionFrame::Close(frame),
         }
     }

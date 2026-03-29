@@ -10,8 +10,7 @@ use std::time::{Duration, Instant};
 use indexmap::map::Entry;
 use ql_wire::{
     CloseCode, CloseTarget, RecordAck, RecordSeq, SessionCloseBody, SessionFrame,
-    SessionRecordBuilder, StreamClose, StreamCloseVec, StreamData, StreamId, StreamWindow,
-    WireError,
+    SessionRecordBuilder, StreamClose, StreamData, StreamId, StreamWindow, WireError,
 };
 
 use self::{
@@ -59,7 +58,7 @@ pub enum SessionEvent {
     Readable(StreamId),
     Writable(StreamId),
     Finished(StreamId),
-    Closed(StreamCloseVec),
+    Closed(StreamClose),
     WritableClosed(StreamId),
     SessionClosed(SessionCloseBody),
 }
@@ -171,7 +170,6 @@ impl SessionFsm {
         stream_id: StreamId,
         target: CloseTarget,
         code: CloseCode,
-        payload: Vec<u8>,
     ) -> Result<(), StreamError> {
         self.ensure_session_open()?;
         {
@@ -185,7 +183,6 @@ impl SessionFsm {
                 stream_id,
                 target,
                 code,
-                payload,
             });
         }
         self.try_reap_stream(stream_id);
@@ -293,10 +290,7 @@ impl SessionFsm {
                     }
                 }
                 SessionFrame::StreamClose(frame) => {
-                    if self
-                        .handle_stream_close(frame.into_owned(), &mut emit)
-                        .is_err()
-                    {
+                    if self.handle_stream_close(frame, &mut emit).is_err() {
                         return;
                     }
                 }
@@ -848,7 +842,7 @@ impl SessionFsm {
 
     fn handle_stream_close(
         &mut self,
-        frame: StreamCloseVec,
+        frame: StreamClose,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
         let created = match self.state.streams.entry(frame.stream_id) {
@@ -933,7 +927,7 @@ impl SessionFsm {
         matches!(target, CloseTarget::Both) || role.outbound_target() == target
     }
 
-    fn restore_stream_close(&mut self, close: StreamCloseVec) {
+    fn restore_stream_close(&mut self, close: StreamClose) {
         if let Some(stream) = self.state.streams.get_mut(&close.stream_id) {
             stream.pending_close = Some(close);
         }

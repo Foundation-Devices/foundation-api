@@ -96,7 +96,6 @@ fn encrypted_session_record_round_trip_and_decrypt() {
                 stream_id: StreamId(9),
                 target: CloseTarget::Both,
                 code: CloseCode::PROTOCOL,
-                payload: b"bye".to_vec(),
             }),
             SessionFrame::Close(SessionCloseBody {
                 code: CloseCode::TIMEOUT,
@@ -152,7 +151,6 @@ fn decrypted_session_record_iterates_zero_copy_frames() {
                 stream_id: StreamId(1),
                 target: CloseTarget::Response,
                 code: CloseCode::CANCELLED,
-                payload: b"later".to_vec(),
             }),
         ],
     };
@@ -190,10 +188,9 @@ fn decrypted_session_record_iterates_zero_copy_frames() {
     }
     match frames.next().unwrap().unwrap() {
         SessionFrame::StreamClose(frame) => {
-            let owned = frame.into_owned();
-            assert_eq!(owned.stream_id, StreamId(1));
-            assert_eq!(owned.target, CloseTarget::Response);
-            assert_eq!(owned.payload, b"later".to_vec());
+            assert_eq!(frame.stream_id, StreamId(1));
+            assert_eq!(frame.target, CloseTarget::Response);
+            assert_eq!(frame.code, CloseCode::CANCELLED);
         }
         other => panic!("expected stream close, got {}", frame_name(&other)),
     }
@@ -627,7 +624,6 @@ fn protocol_record_size_breakdown() {
                 stream_id: StreamId(1),
                 target: CloseTarget::Both,
                 code: CloseCode::PROTOCOL,
-                payload: Vec::new(),
             })],
         },
     );

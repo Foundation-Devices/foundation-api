@@ -1,7 +1,7 @@
 use std::mem::size_of;
 
 use super::StreamId;
-use crate::{codec, ByteChunks, ByteSlice, WireError};
+use crate::{codec, ByteSlice, WireError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -49,54 +49,33 @@ impl CloseCode {
 
 /// aborts one or both directions of a stream with a close code.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamClose<B> {
+pub struct StreamClose {
     pub stream_id: StreamId,
     pub target: CloseTarget,
     pub code: CloseCode,
-    pub payload: B,
 }
 
-impl<B> StreamClose<B> {
-    pub const MIN_WIRE_SIZE: usize = size_of::<u32>() + size_of::<u8>() + size_of::<u16>();
-}
+impl StreamClose {
+    pub const WIRE_SIZE: usize = size_of::<u32>() + size_of::<u8>() + size_of::<u16>();
 
-impl<B: ByteSlice> StreamClose<B> {
-    pub fn parse(bytes: B) -> Result<Self, WireError> {
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
-        Ok(Self {
+        let close = Self {
             stream_id: StreamId(reader.take_u32()?),
             target: CloseTarget::try_from(reader.take_u8()?)?,
             code: CloseCode(reader.take_u16()?),
-            payload: reader.take_rest(),
-        })
+        };
+        reader.finish()?;
+        Ok(close)
     }
-}
 
-impl<B> StreamClose<B> {
-    pub fn into_owned(self) -> StreamClose<Vec<u8>>
-    where
-        B: ByteSlice,
-    {
-        StreamClose {
-            stream_id: self.stream_id,
-            target: self.target,
-            code: self.code,
-            payload: self.payload.to_vec(),
-        }
-    }
-}
-
-impl<B: ByteChunks> StreamClose<B> {
     pub fn encoded_len(&self) -> usize {
-        Self::MIN_WIRE_SIZE + self.payload.len()
+        Self::WIRE_SIZE
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         codec::push_u32(out, self.stream_id.0);
         codec::push_u8(out, self.target.to_wire());
         codec::push_u16(out, self.code.0);
-        for chunk in self.payload.chunks() {
-            codec::push_bytes(out, chunk);
-        }
     }
 }

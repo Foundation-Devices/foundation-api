@@ -218,10 +218,9 @@ pub fn close_stream(
     stream_id: StreamId,
     target: CloseTarget,
     code: CloseCode,
-    payload: Vec<u8>,
 ) -> Result<(), QlFsmError> {
     ensure_peer_bound(fsm)?;
-    Ok(fsm.session.close_stream(stream_id, target, code, payload)?)
+    Ok(fsm.session.close_stream(stream_id, target, code)?)
 }
 
 pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
