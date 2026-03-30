@@ -298,10 +298,12 @@ impl XxHandshake {
         &mut self,
         crypto: &impl QlCrypto,
         header: HandshakeHeader,
+        now_seconds: u64,
         message: &XxMessage,
     ) -> Result<(), WireError> {
         match (&self.step, message) {
             (XxStep::Recv1, XxMessage::Message1(message)) => {
+                message.meta.ensure_not_expired(now_seconds)?;
                 initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
                 mix_hash_handshake(
                     &mut self.symmetric,
@@ -316,6 +318,7 @@ impl XxHandshake {
                 Ok(())
             }
             (XxStep::Recv2, XxMessage::Message2(message)) => {
+                message.meta.ensure_not_expired(now_seconds)?;
                 require_handshake_meta(&self.handshake_meta, message.meta)?;
                 mix_hash_handshake(
                     &mut self.symmetric,
@@ -341,6 +344,7 @@ impl XxHandshake {
                 Ok(())
             }
             (XxStep::Recv3, XxMessage::Message3(message)) => {
+                message.meta.ensure_not_expired(now_seconds)?;
                 require_handshake_meta(&self.handshake_meta, message.meta)?;
                 mix_hash_handshake(
                     &mut self.symmetric,
@@ -366,6 +370,7 @@ impl XxHandshake {
                 Ok(())
             }
             (XxStep::Recv4, XxMessage::Message4(message)) => {
+                message.meta.ensure_not_expired(now_seconds)?;
                 require_handshake_meta(&self.handshake_meta, message.meta)?;
                 mix_hash_handshake(
                     &mut self.symmetric,

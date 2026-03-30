@@ -215,10 +215,12 @@ impl KkHandshake {
         &mut self,
         crypto: &impl QlCrypto,
         header: HandshakeHeader,
+        now_seconds: u64,
         message: &KkMessage,
     ) -> Result<(), WireError> {
         match (&self.step, message) {
             (KkStep::Recv1, KkMessage::Message1(message)) => {
+                message.meta.ensure_not_expired(now_seconds)?;
                 initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
                 mix_hash_handshake(
                     &mut self.symmetric,
@@ -240,6 +242,7 @@ impl KkHandshake {
                 Ok(())
             }
             (KkStep::Recv2, KkMessage::Message2(message)) => {
+                message.meta.ensure_not_expired(now_seconds)?;
                 require_handshake_meta(&self.handshake_meta, message.meta)?;
                 mix_hash_handshake(
                     &mut self.symmetric,
