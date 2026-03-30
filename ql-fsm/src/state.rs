@@ -10,6 +10,7 @@ use crate::{replay_cache::ReplayCache, FsmTime, PeerStatus, QlFsmEvent, QlSessio
 pub struct QlFsmState {
     pub replay_cache: ReplayCache,
     pub next_control_id: u32,
+    pub peer: Option<PeerBundle>,
     pub handshake: Option<QlHandshakeRecord>,
     pub link: LinkState,
     pub events: VecDeque<QlFsmEvent>,
@@ -83,5 +84,14 @@ impl LinkState {
             | Self::XxResponder { deadline, .. }
             | Self::KkInitiator { deadline, .. } => Some(*deadline),
         }
+    }
+}
+
+impl QlFsmState {
+    pub fn ensure_peer_bound(&self) -> Result<(), crate::QlFsmError> {
+        self.peer
+            .as_ref()
+            .map(|_| ())
+            .ok_or(crate::QlFsmError::NoPeerBound)
     }
 }

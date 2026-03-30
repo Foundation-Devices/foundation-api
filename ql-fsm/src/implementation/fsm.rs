@@ -15,7 +15,7 @@ pub fn receive(
     match wire::QlRecord::parse(&mut bytes[..])? {
         wire::QlRecord::Handshake(record) => super::handle_handshake_record(fsm, crypto, &record),
         wire::QlRecord::Session(record) => {
-            let (_, transport) = super::peer_transport(fsm).ok_or(QlFsmError::NoSession)?;
+            let transport = fsm.state.link.transport().ok_or(QlFsmError::NoSession)?;
             if record.header.connection_id != transport.rx_connection_id {
                 return Err(QlFsmError::InvalidPayload);
             }
@@ -41,7 +41,7 @@ pub fn receive(
 
 pub fn on_timer(fsm: &mut QlFsm) {
     super::handle_timer(fsm);
-    if super::peer_transport(fsm).is_some() {
+    if fsm.state.link.transport().is_some() {
         let mut session_closed = false;
         fsm.session.on_timer(fsm.state.now.instant, {
             let session_events = &mut fsm.state.session_events;
@@ -58,7 +58,10 @@ pub fn on_timer(fsm: &mut QlFsm) {
 pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
     [
         super::next_handshake_deadline(fsm),
-        super::peer_transport(fsm).and_then(|_| fsm.session.next_deadline()),
+        fsm.state
+            .link
+            .transport()
+            .and_then(|_| fsm.session.next_deadline()),
     ]
     .into_iter()
     .flatten()
@@ -74,7 +77,7 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     }
 
     if matches!(fsm.state.link, crate::state::LinkState::Idle)
-        && fsm.peer.is_some()
+        && fsm.state.peer.is_some()
         && fsm.session.has_pending_stream_work()
     {
         let _ = super::handle_connect(fsm, crypto);
@@ -86,7 +89,7 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
         }
     }
 
-    let (_, transport) = super::peer_transport(fsm)?;
+    let transport = fsm.state.link.transport()?;
     let (write_id, seq, builder) = fsm.session.take_next_write(fsm.state.now.instant)?;
     let record = builder.encrypt(
         crypto,
@@ -111,7 +114,7 @@ pub fn reject_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
 }
 
 pub fn kill_session(fsm: &mut QlFsm, code: SessionCloseCode) {
-    if fsm.peer.is_none() {
+    if fsm.state.peer.is_none() {
         return;
     }
     if !matches!(fsm.state.link, crate::state::LinkState::Connected(_)) {
@@ -127,7 +130,7 @@ pub fn kill_session(fsm: &mut QlFsm, code: SessionCloseCode) {
 }
 
 pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, QlFsmError> {
-    ensure_peer_bound(fsm)?;
+    fsm.state.ensure_peer_bound()?;
     Ok(fsm.session.open_stream()?)
 }
 
@@ -136,7 +139,7 @@ pub fn write_stream(
     stream_id: StreamId,
     bytes: &[u8],
 ) -> Result<usize, QlFsmError> {
-    ensure_peer_bound(fsm)?;
+    fsm.state.ensure_peer_bound()?;
     Ok(fsm.session.write_stream(stream_id, bytes)?)
 }
 
@@ -157,7 +160,7 @@ pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Result<usize,
 }
 
 pub fn finish_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<(), QlFsmError> {
-    ensure_peer_bound(fsm)?;
+    fsm.state.ensure_peer_bound()?;
     Ok(fsm.session.finish_stream(stream_id)?)
 }
 
@@ -167,7 +170,7 @@ pub fn close_stream(
     target: CloseTarget,
     code: StreamCloseCode,
 ) -> Result<(), QlFsmError> {
-    ensure_peer_bound(fsm)?;
+    fsm.state.ensure_peer_bound()?;
     Ok(fsm.session.close_stream(stream_id, target, code)?)
 }
 
@@ -176,12 +179,8 @@ pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
     Ok(fsm.session.queue_ping()?)
 }
 
-fn ensure_peer_bound(fsm: &QlFsm) -> Result<(), QlFsmError> {
-    fsm.peer.as_ref().map(|_| ()).ok_or(QlFsmError::NoPeerBound)
-}
-
 fn ensure_session_open(fsm: &QlFsm) -> Result<(), QlFsmError> {
-    ensure_peer_bound(fsm)?;
+    fsm.state.ensure_peer_bound()?;
     if fsm.state.link.transport().is_none() {
         return Err(QlFsmError::SessionClosed);
     }

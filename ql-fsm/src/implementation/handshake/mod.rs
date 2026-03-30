@@ -14,7 +14,7 @@ pub fn handle_connect(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlF
         return Ok(());
     }
 
-    match fsm.peer.clone() {
+    match fsm.state.peer.clone() {
         Some(peer) => kk::start_initiator(fsm, crypto, peer),
         None => xx::start_initiator(fsm, crypto),
     }
@@ -81,12 +81,12 @@ pub fn finish_handshake(
     transport: SessionTransport,
     remote_bundle: wire::PeerBundle,
 ) -> Result<(), QlFsmError> {
-    if let Some(peer) = fsm.peer.as_ref() {
+    if let Some(peer) = fsm.state.peer.as_ref() {
         if peer != &remote_bundle {
             return Err(QlFsmError::InvalidPayload);
         }
     } else {
-        fsm.peer = Some(remote_bundle.clone());
+        fsm.state.peer = Some(remote_bundle.clone());
         reset_session(fsm);
         fsm.state
             .events

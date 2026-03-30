@@ -46,7 +46,7 @@ pub fn handle_kk1(
         return Ok(());
     }
 
-    let Some(peer) = fsm.peer.clone() else {
+    let Some(peer) = fsm.state.peer.clone() else {
         return Err(QlFsmError::InvalidPayload);
     };
     if message.header.recipient != fsm.identity.xid || message.header.sender != peer.xid {
@@ -111,7 +111,7 @@ pub fn should_ignore_inbound(fsm: &QlFsm, message: &Kk1) -> bool {
         LinkState::KkInitiator {
             initial_ephemeral, ..
         } => {
-            if fsm.peer.as_ref().map(|peer| peer.xid) != Some(message.header.sender) {
+            if fsm.state.peer.as_ref().map(|peer| peer.xid) != Some(message.header.sender) {
                 return false;
             }
             super::local_start_wins(initial_ephemeral, &message.ephemeral)

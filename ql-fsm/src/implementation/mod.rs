@@ -5,7 +5,6 @@ use std::{collections::VecDeque, time::Duration};
 
 pub use fsm::*;
 pub use handshake::*;
-use ql_wire::XID;
 
 use crate::{
     session::{state::StreamParity, SessionEvent, SessionFsmConfig},
@@ -14,7 +13,7 @@ use crate::{
 };
 
 fn emit_peer_status(fsm: &mut QlFsm) {
-    if let Some(peer) = fsm.peer.as_ref() {
+    if let Some(peer) = fsm.state.peer.as_ref() {
         fsm.state.events.push_back(QlFsmEvent::PeerStatusChanged {
             peer: peer.xid,
             status: fsm.state.link.status(),
@@ -22,14 +21,9 @@ fn emit_peer_status(fsm: &mut QlFsm) {
     }
 }
 
-fn peer_transport(fsm: &QlFsm) -> Option<(XID, crate::state::SessionTransport)> {
-    let peer = fsm.peer.as_ref()?;
-    let transport = fsm.state.link.transport()?.clone();
-    Some((peer.xid, transport))
-}
-
 fn reset_session(fsm: &mut QlFsm) {
     let local_parity = fsm
+        .state
         .peer
         .as_ref()
         .map(|peer| StreamParity::for_local(fsm.identity.xid, peer.xid))
@@ -52,7 +46,7 @@ fn reset_session(fsm: &mut QlFsm) {
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
     fsm.state.handshake = None;
     fsm.state.link = LinkState::Idle;
-    fsm.peer = Some(peer.clone());
+    fsm.state.peer = Some(peer.clone());
     reset_session(fsm);
     fsm.state.events.push_back(QlFsmEvent::NewPeer(peer));
     emit_peer_status(fsm);

@@ -327,13 +327,13 @@ fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
     let (local, peer, config) = if a {
         (
             harness.a.fsm.identity.xid,
-            harness.a.fsm.peer.as_ref().unwrap().xid,
+            harness.a.fsm.state.peer.as_ref().unwrap().xid,
             harness.a.fsm.config,
         )
     } else {
         (
             harness.b.fsm.identity.xid,
-            harness.b.fsm.peer.as_ref().unwrap().xid,
+            harness.b.fsm.state.peer.as_ref().unwrap().xid,
             harness.b.fsm.config,
         )
     };

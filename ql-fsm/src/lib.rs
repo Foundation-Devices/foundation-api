@@ -154,7 +154,6 @@ pub struct QlFsm {
     pub config: QlFsmConfig,
     /// local identity and private keys
     pub identity: QlIdentity,
-    pub(crate) peer: Option<PeerBundle>,
     pub(crate) session: SessionFsm,
     pub(crate) state: QlFsmState,
 }
@@ -165,7 +164,6 @@ impl QlFsm {
         Self {
             config,
             identity,
-            peer: None,
             session: session::SessionFsm::new(
                 session::SessionFsmConfig {
                     local_parity: session::state::StreamParity::Even,
@@ -182,6 +180,7 @@ impl QlFsm {
             state: QlFsmState {
                 replay_cache: ReplayCache::default(),
                 next_control_id: 1,
+                peer: None,
                 handshake: None,
                 link: LinkState::Idle,
                 events: Default::default(),

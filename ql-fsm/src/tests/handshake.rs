@@ -31,8 +31,14 @@ fn xx_connect_round_trip_learns_peer_bundles() {
         .unwrap();
     harness.pump();
 
-    assert_eq!(harness.a.fsm.peer, Some(harness.b.fsm.identity.bundle()));
-    assert_eq!(harness.b.fsm.peer, Some(harness.a.fsm.identity.bundle()));
+    assert_eq!(
+        harness.a.fsm.state.peer,
+        Some(harness.b.fsm.identity.bundle())
+    );
+    assert_eq!(
+        harness.b.fsm.state.peer,
+        Some(harness.a.fsm.identity.bundle())
+    );
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
     assert!(matches!(harness.b.fsm.state.link, LinkState::Connected(_)));
 }
@@ -48,7 +54,10 @@ fn inbound_xx1_auto_binds_unbound_responder() {
         .unwrap();
     harness.pump();
 
-    assert_eq!(harness.b.fsm.peer, Some(harness.a.fsm.identity.bundle()));
+    assert_eq!(
+        harness.b.fsm.state.peer,
+        Some(harness.a.fsm.identity.bundle())
+    );
 }
 
 #[test]
@@ -149,7 +158,10 @@ fn simultaneous_xx_and_kk_connect_prefers_xx() {
         .unwrap();
     harness.pump();
 
-    assert_eq!(harness.a.fsm.peer, Some(harness.b.fsm.identity.bundle()));
+    assert_eq!(
+        harness.a.fsm.state.peer,
+        Some(harness.b.fsm.identity.bundle())
+    );
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
     assert!(matches!(harness.b.fsm.state.link, LinkState::Connected(_)));
 }
