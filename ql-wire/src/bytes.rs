@@ -154,37 +154,10 @@ pub struct RangedByteChunks<T> {
     pub len: usize,
 }
 
-pub struct CappedByteChunksIter<I> {
-    inner: I,
-    remaining: usize,
-}
-
 pub struct RangedByteChunksIter<I> {
     inner: I,
     skip: usize,
     remaining: usize,
-}
-
-impl<'a, I> Iterator for CappedByteChunksIter<I>
-where
-    I: Iterator<Item = &'a [u8]>,
-{
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.remaining > 0 {
-            let chunk = self.inner.next()?;
-            if chunk.is_empty() {
-                continue;
-            }
-
-            let len = chunk.len().min(self.remaining);
-            self.remaining -= len;
-            return Some(&chunk[..len]);
-        }
-
-        None
-    }
 }
 
 impl<'a, I> Iterator for RangedByteChunksIter<I>
@@ -216,24 +189,6 @@ where
     }
 }
 
-impl<T: ByteChunks> ByteChunks for CappedByteChunks<T> {
-    type Chunks<'a>
-        = CappedByteChunksIter<T::Chunks<'a>>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize {
-        self.inner.len().min(self.limit)
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        CappedByteChunksIter {
-            inner: self.inner.chunks(),
-            remaining: self.len(),
-        }
-    }
-}
-
 impl<T: ByteChunks> ByteChunks for RangedByteChunks<T> {
     type Chunks<'a>
         = RangedByteChunksIter<T::Chunks<'a>>
@@ -257,7 +212,7 @@ impl<T: ByteChunks> ByteChunks for RangedByteChunks<T> {
 mod tests {
     use std::collections::VecDeque;
 
-    use super::{ByteChunks, ByteSlice, ByteSliceMut, CappedByteChunks, RangedByteChunks};
+    use super::{ByteChunks, ByteSlice, ByteSliceMut, RangedByteChunks};
 
     #[test]
     fn shared_slice_split_at() {
@@ -308,36 +263,6 @@ mod tests {
         assert_eq!(bytes.len(), 6);
         assert_eq!(chunks.concat(), b"cdefgh");
         assert!(chunks.len() >= 1);
-    }
-
-    #[test]
-    fn capped_byte_chunks_truncate_slice() {
-        let bytes: &[u8] = b"abcdef";
-        let capped = CappedByteChunks {
-            inner: bytes,
-            limit: 4,
-        };
-
-        let chunks = capped.chunks().collect::<Vec<_>>();
-        assert_eq!(capped.len(), 4);
-        assert_eq!(chunks, vec![b"abcd".as_slice()]);
-    }
-
-    #[test]
-    fn capped_byte_chunks_truncate_borrowed_vec_deque() {
-        let mut bytes = VecDeque::with_capacity(8);
-        bytes.extend(b"abcd".iter().copied());
-        bytes.drain(..2);
-        bytes.extend(b"efgh".iter().copied());
-
-        let capped = CappedByteChunks {
-            inner: &bytes,
-            limit: 4,
-        };
-
-        let chunks = capped.chunks().collect::<Vec<_>>();
-        assert_eq!(capped.len(), 4);
-        assert_eq!(chunks.concat(), b"cdef");
     }
 
     #[test]
