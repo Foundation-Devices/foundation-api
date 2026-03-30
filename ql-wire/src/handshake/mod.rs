@@ -128,7 +128,7 @@ impl CipherState {
         plaintext: &[u8],
     ) -> Result<Vec<u8>, WireError> {
         let key = self.key.as_ref().ok_or(WireError::InvalidState)?;
-        let nonce = noise_nonce(self.nonce);
+        let nonce = Nonce::from_counter(self.nonce);
         let mut ciphertext = plaintext.to_vec();
         let auth = crypto.aes256_gcm_encrypt(key, &nonce, aad, &mut ciphertext);
         self.nonce = self.nonce.wrapping_add(1);
@@ -149,7 +149,7 @@ impl CipherState {
         let (ciphertext, auth) = ciphertext.split_at(split);
         let mut plaintext = ciphertext.to_vec();
         let key = self.key.as_ref().ok_or(WireError::InvalidState)?;
-        let nonce = noise_nonce(self.nonce);
+        let nonce = Nonce::from_counter(self.nonce);
         let mut auth_tag = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
         auth_tag.copy_from_slice(auth);
         if !crypto.aes256_gcm_decrypt(key, &nonce, aad, &mut plaintext, &auth_tag) {
@@ -389,12 +389,6 @@ fn derive_connection_ids(
         ConnectionId::from_data(initiator_rx),
         ConnectionId::from_data(responder_rx),
     )
-}
-
-fn noise_nonce(counter: u64) -> Nonce {
-    let mut nonce = [0u8; Nonce::SIZE];
-    nonce[4..].copy_from_slice(&counter.to_le_bytes());
-    Nonce(nonce)
 }
 
 fn hkdf2(

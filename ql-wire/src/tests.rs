@@ -347,9 +347,9 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     let crypto = TestCrypto::new(30);
     let header = SessionHeader {
         connection_id: ConnectionId::from_data([0x44; ConnectionId::SIZE]),
+        seq: RecordSeq(11),
     };
     let body = SessionRecord {
-        seq: RecordSeq(11),
         frames: vec![
             SessionFrame::Ping,
             SessionFrame::Ack(RecordAck {
@@ -379,13 +379,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         ],
     };
     let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
-    let record = encrypted::encrypt_record(
-        &crypto,
-        header,
-        &session_key,
-        &body,
-        Nonce([8; Nonce::SIZE]),
-    );
+    let record = encrypted::encrypt_record(&crypto, header, &session_key, &body);
 
     let bytes = record.encode();
     let decoded = QlRecord::decode(&bytes).unwrap();
@@ -404,9 +398,19 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
 
     let wrong_header = SessionHeader {
         connection_id: ConnectionId::from_data([0x99; ConnectionId::SIZE]),
+        seq: header.seq,
     };
     assert_eq!(
-        encrypted::decrypt_record(&crypto, &wrong_header, encrypted, &session_key),
+        encrypted::decrypt_record(&crypto, &wrong_header, encrypted.clone(), &session_key),
+        Err(WireError::DecryptFailed)
+    );
+
+    let wrong_seq_header = SessionHeader {
+        connection_id: header.connection_id,
+        seq: RecordSeq(header.seq.0 + 1),
+    };
+    assert_eq!(
+        encrypted::decrypt_record(&crypto, &wrong_seq_header, encrypted, &session_key),
         Err(WireError::DecryptFailed)
     );
 }
@@ -479,22 +483,21 @@ fn protocol_record_size_breakdown() {
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
+            seq: RecordSeq(1),
         },
         &session.tx_key,
         &SessionRecord {
-            seq: RecordSeq(1),
             frames: vec![SessionFrame::Ping],
         },
-        Nonce([0x41; Nonce::SIZE]),
     );
     let session_stream_empty = encrypted::encrypt_record(
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
+            seq: RecordSeq(2),
         },
         &session.tx_key,
         &SessionRecord {
-            seq: RecordSeq(2),
             frames: vec![SessionFrame::StreamData(StreamData {
                 stream_id: StreamId(1),
                 offset: 0,
@@ -502,21 +505,19 @@ fn protocol_record_size_breakdown() {
                 bytes: Vec::new(),
             })],
         },
-        Nonce([0x42; Nonce::SIZE]),
     );
     let session_close = encrypted::encrypt_record(
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
+            seq: RecordSeq(3),
         },
         &session.tx_key,
         &SessionRecord {
-            seq: RecordSeq(3),
             frames: vec![SessionFrame::Close(SessionCloseBody {
                 code: CloseCode::PROTOCOL,
             })],
         },
-        Nonce([0x43; Nonce::SIZE]),
     );
 
     print_size("ql-wire peer bundle", initiator.bundle().encode().len());

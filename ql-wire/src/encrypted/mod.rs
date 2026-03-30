@@ -1,8 +1,8 @@
 use std::mem::size_of;
 
 use crate::{
-    codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, QlCrypto, QlSessionRecord,
-    SessionHeader, SessionKey, WireError,
+    codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, Nonce, QlCrypto,
+    QlSessionRecord, SessionHeader, SessionKey, WireError,
 };
 
 mod ack;
@@ -24,13 +24,8 @@ pub use stream_window::*;
 #[repr(transparent)]
 pub struct StreamId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct RecordSeq(pub u64);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
-    pub seq: RecordSeq,
     pub frames: Vec<SessionFrameVec>,
 }
 
@@ -81,38 +76,30 @@ impl TryFrom<u8> for SessionFrameKind {
 }
 
 impl SessionRecord {
-    pub const HEADER_LEN: usize = size_of::<u64>();
-
-    pub fn parse(bytes: &[u8]) -> Result<(RecordSeq, SessionFrameIter<'_>), WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let seq = RecordSeq(reader.take_u64()?);
-        Ok((
-            seq,
-            SessionFrameIter {
-                remaining: reader.take_rest(),
-            },
-        ))
+    pub fn parse(bytes: &[u8]) -> Result<SessionFrameIter<'_>, WireError> {
+        let reader = codec::Reader::new(bytes);
+        Ok(SessionFrameIter {
+            remaining: reader.take_rest(),
+        })
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let (seq, frames) = Self::parse(bytes)?;
+        let frames = Self::parse(bytes)?;
         let frames = frames
             .map(|frame| frame.map(SessionFrame::into_owned))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { seq, frames })
+        Ok(Self { frames })
     }
 
     pub fn encoded_len(&self) -> usize {
-        Self::HEADER_LEN
-            + self
-                .frames
-                .iter()
-                .map(SessionFrame::encoded_len)
-                .sum::<usize>()
+        self.frames
+            .iter()
+            .map(SessionFrame::encoded_len)
+            .sum::<usize>()
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = SessionRecordBuilder::new(self.seq, self.encoded_len());
+        let mut out = SessionRecordBuilder::new(self.encoded_len());
         for frame in &self.frames {
             let pushed = out.push_frame(frame);
             debug_assert!(pushed);
@@ -203,14 +190,13 @@ pub fn encrypt_record(
     header: SessionHeader,
     session_key: &SessionKey,
     body: &SessionRecord,
-    nonce: crate::Nonce,
 ) -> QlSessionRecord<Vec<u8>> {
-    let mut builder = SessionRecordBuilder::new(body.seq, body.encoded_len());
+    let mut builder = SessionRecordBuilder::new(body.encoded_len());
     for frame in &body.frames {
         let pushed = builder.push_frame(frame);
         debug_assert!(pushed);
     }
-    builder.encrypt(crypto, header, session_key, nonce)
+    builder.encrypt(crypto, header, session_key)
 }
 
 pub fn decrypt_record<B: AsMut<[u8]>>(
@@ -220,7 +206,8 @@ pub fn decrypt_record<B: AsMut<[u8]>>(
     session_key: &SessionKey,
 ) -> Result<B, WireError> {
     let aad = header.aad();
-    encrypted.decrypt_in_place(crypto, session_key, &aad)
+    let nonce = Nonce::from_counter(header.seq.0);
+    encrypted.decrypt_in_place(crypto, session_key, &nonce, &aad)
 }
 
 fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireError> {

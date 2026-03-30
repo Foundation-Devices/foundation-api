@@ -1,5 +1,21 @@
 use crate::{codec, QL_WIRE_VERSION, XID};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandshakeHeader {
+    pub sender: XID,
+    pub recipient: XID,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionHeader {
+    pub connection_id: ConnectionId,
+    pub seq: RecordSeq,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct RecordSeq(pub u64);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct ConnectionId(pub [u8; Self::SIZE]);
@@ -14,17 +30,6 @@ impl ConnectionId {
     pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HandshakeHeader {
-    pub sender: XID,
-    pub recipient: XID,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SessionHeader {
-    pub connection_id: ConnectionId,
 }
 
 impl HandshakeHeader {
@@ -53,10 +58,11 @@ impl HandshakeHeader {
 }
 
 impl SessionHeader {
-    pub const ENCODED_LEN: usize = ConnectionId::SIZE;
+    pub const ENCODED_LEN: usize = ConnectionId::SIZE + core::mem::size_of::<u64>();
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         codec::push_bytes(out, self.connection_id.as_bytes());
+        codec::push_u64(out, self.seq.0);
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, crate::WireError> {
@@ -71,6 +77,7 @@ impl SessionHeader {
     ) -> Result<Self, crate::WireError> {
         Ok(Self {
             connection_id: ConnectionId::from_data(reader.take_array()?),
+            seq: RecordSeq(reader.take_u64()?),
         })
     }
 
@@ -80,6 +87,7 @@ impl SessionHeader {
         codec::append_field(&mut aad, b"wire-version", &[QL_WIRE_VERSION]);
         codec::append_field(&mut aad, b"record-kind", b"session");
         codec::append_field(&mut aad, b"connection-id", self.connection_id.as_bytes());
+        codec::append_field(&mut aad, b"record-seq", &self.seq.0.to_le_bytes());
         aad
     }
 }

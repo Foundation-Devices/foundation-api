@@ -1,9 +1,9 @@
 use super::{
-    push_variable_len, RecordAck, RecordSeq, SessionCloseBody, SessionFrame, SessionFrameKind,
-    StreamClose, StreamData, StreamWindow, SIZE_LEN,
+    push_variable_len, RecordAck, SessionCloseBody, SessionFrame, SessionFrameKind, StreamClose,
+    StreamData, StreamWindow, SIZE_LEN,
 };
 use crate::{
-    codec, encrypted_message::EncryptedMessage, ByteChunks, Nonce, QlCrypto, QlSessionRecord,
+    encrypted_message::EncryptedMessage, ByteChunks, Nonce, QlCrypto, QlSessionRecord,
     SessionHeader, SessionKey,
 };
 
@@ -14,12 +14,8 @@ pub struct SessionRecordBuilder {
 }
 
 impl SessionRecordBuilder {
-    pub const HEADER_LEN: usize = std::mem::size_of::<u64>();
-
-    pub fn new(seq: RecordSeq, max_capacity: usize) -> Self {
-        let max_capacity = max_capacity.max(Self::HEADER_LEN);
-        let mut bytes = Vec::with_capacity(max_capacity);
-        codec::push_u64(&mut bytes, seq.0);
+    pub fn new(max_capacity: usize) -> Self {
+        let bytes = Vec::with_capacity(max_capacity);
         Self {
             max_capacity,
             bytes,
@@ -35,7 +31,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bytes.len() == Self::HEADER_LEN
+        self.bytes.is_empty()
     }
 
     pub fn remaining_capacity(&self) -> usize {
@@ -126,10 +122,10 @@ impl SessionRecordBuilder {
         crypto: &impl QlCrypto,
         header: SessionHeader,
         session_key: &SessionKey,
-        nonce: Nonce,
     ) -> QlSessionRecord<Vec<u8>> {
         let aad = header.aad();
-        let encrypted = EncryptedMessage::encrypt(crypto, session_key, self.bytes, &aad, nonce);
+        let nonce = Nonce::from_counter(header.seq.0);
+        let encrypted = EncryptedMessage::encrypt(crypto, session_key, self.bytes, &nonce, &aad);
         QlSessionRecord {
             header,
             payload: encrypted,
