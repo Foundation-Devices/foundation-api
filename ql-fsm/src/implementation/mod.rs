@@ -1,17 +1,16 @@
 mod fsm;
 mod handshake;
-mod peer;
 
 use std::{collections::VecDeque, time::Duration};
 
 pub use fsm::*;
 pub use handshake::*;
-pub use peer::*;
-use ql_wire::{ControlId, ControlMeta, QlHeader, QlPayload, QlRecord, SessionKey, XID};
+use ql_wire::XID;
 
 use crate::{
+    state::PeerRecord,
     session::{state::StreamParity, SessionEvent, SessionFsmConfig},
-    QlFsm, QlFsmEvent, QlSessionEvent,
+    Peer, QlFsm, QlFsmEvent, QlSessionEvent,
 };
 
 fn emit_peer_status(fsm: &mut QlFsm) {
@@ -23,35 +22,10 @@ fn emit_peer_status(fsm: &mut QlFsm) {
     }
 }
 
-fn next_control_meta(fsm: &mut QlFsm, lifetime: Duration) -> ControlMeta {
-    let control_id = ControlId(fsm.state.next_control_id);
-    fsm.state.next_control_id = fsm.state.next_control_id.wrapping_add(1);
-    ControlMeta {
-        control_id,
-        valid_until: deadline_after_secs(fsm.state.now.unix_secs, lifetime),
-    }
-}
-
-fn enqueue_handshake(fsm: &mut QlFsm, peer: XID, payload: QlPayload<Vec<u8>>) {
-    fsm.state.outbound.push_back(QlRecord {
-        header: QlHeader {
-            sender: fsm.identity.xid,
-            recipient: peer,
-        },
-        payload,
-    });
-}
-
-fn is_replayed_control(fsm: &mut QlFsm, peer: XID, meta: ControlMeta) -> bool {
-    fsm.state
-        .replay_cache
-        .check_and_store_valid_until(peer, meta, fsm.state.now.unix_secs)
-}
-
-fn peer_session(fsm: &QlFsm) -> Option<(XID, SessionKey)> {
+fn peer_transport(fsm: &QlFsm) -> Option<(XID, crate::state::SessionTransport)> {
     let entry = fsm.peer.as_ref()?;
-    let session_key = *entry.session.session_key()?;
-    Some((entry.peer.xid, session_key))
+    let transport = entry.session.transport()?.clone();
+    Some((entry.peer.xid, transport))
 }
 
 fn reset_session(fsm: &mut QlFsm) {
@@ -75,14 +49,12 @@ fn reset_session(fsm: &mut QlFsm) {
     );
 }
 
-fn clear_bound_peer(fsm: &mut QlFsm) {
-    if fsm.peer.take().is_none() {
-        return;
-    }
-    fsm.state.outbound.clear();
+pub fn handle_bind_peer(fsm: &mut QlFsm, peer: Peer) {
+    fsm.state.handshake = None;
+    fsm.peer = Some(PeerRecord::new(peer.clone()));
     reset_session(fsm);
-    fsm.state.session_events.push_back(QlSessionEvent::Unpaired);
-    fsm.state.events.push_back(QlFsmEvent::ClearPeer);
+    fsm.state.events.push_back(QlFsmEvent::NewPeer(peer));
+    emit_peer_status(fsm);
 }
 
 fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::CloseCode) {
@@ -92,7 +64,7 @@ fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::CloseCode) {
     reset_session(fsm);
     fsm.state
         .session_events
-        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionCloseBody {
+        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionClose {
             code,
         }));
 }

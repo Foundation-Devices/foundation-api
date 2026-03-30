@@ -12,4 +12,5 @@ thiserror = { version = "2" }
 
 [dev-dependencies]
 libcrux-aesgcm = "0.0.7"
+libcrux-ml-kem = "0.0.7"
 sha2 = "0.10"

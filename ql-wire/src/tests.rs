@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use libcrux_aesgcm::AesGcm256Key;
+use libcrux_ml_kem::mlkem1024;
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -19,6 +20,12 @@ impl TestCrypto {
     fn next_block(&self) -> [u8; 32] {
         let value = self.counter.fetch_add(1, Ordering::Relaxed).to_le_bytes();
         sha256_parts(&[b"ql-wire:test-rng:v1", &value])
+    }
+
+    fn random_array<const L: usize>(&self) -> [u8; L] {
+        let mut out = [0u8; L];
+        self.fill_random_bytes(&mut out);
+        out
     }
 }
 
@@ -73,20 +80,11 @@ impl QlAead for TestCrypto {
 
 impl QlKem for TestCrypto {
     fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
-        let seed = self.next_block();
-        let key_id = self.sha256(&[b"ql-wire:test-mlkem:key-id:v1", &seed]);
-
+        let key_pair = mlkem1024::generate_key_pair(self.random_array());
         let mut public = [0u8; MlKemPublicKey::SIZE];
-        fill_expanded(self, &[b"ql-wire:test-mlkem:public:v1", &seed], &mut public);
-        public[..key_id.len()].copy_from_slice(&key_id);
-
+        public.copy_from_slice(key_pair.pk());
         let mut private = [0u8; MlKemPrivateKey::SIZE];
-        fill_expanded(
-            self,
-            &[b"ql-wire:test-mlkem:private:v1", &seed],
-            &mut private,
-        );
-        private[..key_id.len()].copy_from_slice(&key_id);
+        private.copy_from_slice(key_pair.sk());
 
         MlKemKeyPair {
             private: MlKemPrivateKey::from_data(private),
@@ -95,19 +93,13 @@ impl QlKem for TestCrypto {
     }
 
     fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
-        let mut encaps_seed = [0u8; 32];
-        self.fill_random_bytes(&mut encaps_seed);
-        let key_id = &public_key.as_bytes()[..32];
-
+        let public_key = public_key.as_bytes().into();
+        let (ciphertext_value, shared_value) =
+            mlkem1024::encapsulate(&public_key, self.random_array());
         let mut ciphertext = [0u8; MlKemCiphertext::SIZE];
-        fill_expanded(
-            self,
-            &[b"ql-wire:test-mlkem:ciphertext:v1", &encaps_seed],
-            &mut ciphertext,
-        );
-        ciphertext[..encaps_seed.len()].copy_from_slice(&encaps_seed);
-
-        let shared = self.sha256(&[b"ql-wire:test-mlkem:shared:v1", key_id, &encaps_seed]);
+        ciphertext.copy_from_slice(ciphertext_value.as_slice());
+        let mut shared = [0u8; SessionKey::SIZE];
+        shared.copy_from_slice(shared_value.as_slice());
         (
             MlKemCiphertext::from_data(ciphertext),
             SessionKey::from_data(shared),
@@ -119,9 +111,12 @@ impl QlKem for TestCrypto {
         private_key: &MlKemPrivateKey,
         ciphertext: &MlKemCiphertext,
     ) -> SessionKey {
-        let key_id = &private_key.as_bytes()[..32];
-        let encaps_seed = &ciphertext.as_bytes()[..32];
-        SessionKey::from_data(self.sha256(&[b"ql-wire:test-mlkem:shared:v1", key_id, encaps_seed]))
+        let private_key = private_key.as_bytes().into();
+        let ciphertext = ciphertext.as_bytes().into();
+        let shared = mlkem1024::decapsulate(&private_key, &ciphertext);
+        let mut out = [0u8; SessionKey::SIZE];
+        out.copy_from_slice(shared.as_slice());
+        SessionKey::from_data(out)
     }
 }
 
@@ -455,7 +450,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
                 target: CloseTarget::Both,
                 code: CloseCode::PROTOCOL,
             }),
-            SessionFrame::Close(SessionCloseBody {
+            SessionFrame::Close(SessionClose {
                 code: CloseCode::TIMEOUT,
             }),
         ],
@@ -605,7 +600,7 @@ fn protocol_record_size_breakdown() {
         },
         &session.tx_key,
         &SessionRecord {
-            frames: vec![SessionFrame::Close(SessionCloseBody {
+            frames: vec![SessionFrame::Close(SessionClose {
                 code: CloseCode::PROTOCOL,
             })],
         },

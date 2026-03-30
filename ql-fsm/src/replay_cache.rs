@@ -1,11 +1,11 @@
 use std::collections::{hash_map::Entry, HashMap};
 
-use ql_wire::{ControlId, ControlMeta, XID};
+use ql_wire::{HandshakeId, HandshakeMeta, XID};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ReplayKey {
     peer: XID,
-    control_id: ControlId,
+    handshake_id: HandshakeId,
 }
 
 #[derive(Debug, Default)]
@@ -17,7 +17,7 @@ impl ReplayCache {
     pub fn check_and_store_valid_until(
         &mut self,
         peer: XID,
-        meta: ControlMeta,
+        meta: HandshakeMeta,
         now_secs: u64,
     ) -> bool {
         self.valid_until_by_key
@@ -25,7 +25,7 @@ impl ReplayCache {
 
         let key = ReplayKey {
             peer,
-            control_id: meta.control_id,
+            handshake_id: meta.handshake_id,
         };
 
         match self.valid_until_by_key.entry(key) {

@@ -37,14 +37,7 @@ pub struct CloseCode(pub u16);
 impl CloseCode {
     pub const CANCELLED: Self = Self(0);
     pub const PROTOCOL: Self = Self(1);
-    pub const INVALID_DATA: Self = Self(2);
-    pub const TIMEOUT: Self = Self(3);
-
-    pub const UNKNOWN: Self = Self(16);
-    pub const UNKNOWN_ROUTE: Self = Self(17);
-    pub const INVALID_HEAD: Self = Self(18);
-    pub const BUSY: Self = Self(19);
-    pub const UNHANDLED: Self = Self(20);
+    pub const TIMEOUT: Self = Self(2);
 }
 
 /// aborts one or both directions of a stream with a close code.

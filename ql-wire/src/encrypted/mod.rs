@@ -36,7 +36,7 @@ pub enum SessionFrame<B> {
     StreamData(StreamData<B>),
     StreamWindow(StreamWindow),
     StreamClose(StreamClose),
-    Close(SessionCloseBody),
+    Close(SessionClose),
 }
 
 pub type SessionFrameVec = SessionFrame<Vec<u8>>;
@@ -116,7 +116,7 @@ impl<B: ByteChunks> SessionFrame<B> {
             Self::StreamData(frame) => SIZE_LEN + frame.encoded_len(),
             Self::StreamWindow(_) => StreamWindow::WIRE_SIZE,
             Self::StreamClose(frame) => SIZE_LEN + frame.encoded_len(),
-            Self::Close(_) => SessionCloseBody::WIRE_SIZE,
+            Self::Close(_) => SessionClose::WIRE_SIZE,
         }
     }
 
@@ -237,11 +237,11 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
             Ok((SessionFrame::StreamClose(StreamClose::parse(frame)?), rest))
         }
         SessionFrameKind::Close => {
-            if rest.len() < SessionCloseBody::WIRE_SIZE {
+            if rest.len() < SessionClose::WIRE_SIZE {
                 return Err(WireError::InvalidPayload);
             }
-            let (frame, rest) = rest.split_at(SessionCloseBody::WIRE_SIZE);
-            Ok((SessionFrame::Close(SessionCloseBody::decode(frame)?), rest))
+            let (frame, rest) = rest.split_at(SessionClose::WIRE_SIZE);
+            Ok((SessionFrame::Close(SessionClose::decode(frame)?), rest))
         }
     }
 }

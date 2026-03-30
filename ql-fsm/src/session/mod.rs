@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use indexmap::map::Entry;
 use ql_wire::{
-    CloseCode, CloseTarget, RecordAck, RecordSeq, SessionCloseBody, SessionFrame,
+    CloseCode, CloseTarget, RecordAck, RecordSeq, SessionClose, SessionFrame,
     SessionRecordBuilder, StreamClose, StreamData, StreamId, StreamWindow, WireError,
 };
 
@@ -60,7 +60,7 @@ pub enum SessionEvent {
     Finished(StreamId),
     Closed(StreamClose),
     WritableClosed(StreamId),
-    SessionClosed(SessionCloseBody),
+    SessionClosed(SessionClose),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,7 +263,7 @@ impl SessionFsm {
                 Ok(frame) => frame,
                 Err(_) => {
                     self.fail_session(
-                        SessionCloseBody {
+                        SessionClose {
                             code: CloseCode::PROTOCOL,
                         },
                         &mut emit,
@@ -345,7 +345,7 @@ impl SessionFsm {
             && self.state.last_inbound_at + self.config.peer_timeout <= self.state.now
         {
             self.fail_session(
-                SessionCloseBody {
+                SessionClose {
                     code: CloseCode::TIMEOUT,
                 },
                 &mut emit,
@@ -400,20 +400,21 @@ impl SessionFsm {
         })
     }
 
-    pub fn take_next_write(&mut self, now: Instant) -> Option<(u64, SessionRecordBuilder)> {
+    pub fn take_next_write(&mut self, now: Instant) -> Option<(u64, RecordSeq, SessionRecordBuilder)> {
         self.state.now = now;
         self.collect_timeouts();
 
         let (builder, outbound) = self.build_next_record()?;
         let write_id = self.state.next_write_id;
         self.state.next_write_id = self.state.next_write_id.wrapping_add(1);
+        let seq = outbound.seq;
         self.state.outbound_records.insert(write_id, outbound);
-        Some((write_id, builder))
+        Some((write_id, seq, builder))
     }
 
     fn build_next_record(&mut self) -> Option<(SessionRecordBuilder, OutboundRecord)> {
         let seq = self.state.next_record_seq;
-        let mut builder = SessionRecordBuilder::new(seq, self.config.record_size);
+        let mut builder = SessionRecordBuilder::new(self.config.record_size);
         let mut outbound = OutboundRecord {
             seq,
             reliable: Vec::new(),
@@ -750,7 +751,7 @@ impl SessionFsm {
             Entry::Vacant(entry) => {
                 if !self.config.local_parity.remote().matches(stream_id) {
                     self.fail_session(
-                        SessionCloseBody {
+                        SessionClose {
                             code: CloseCode::PROTOCOL,
                         },
                         emit,
@@ -773,7 +774,7 @@ impl SessionFsm {
                     return Ok(());
                 }
                 self.fail_session(
-                    SessionCloseBody {
+                    SessionClose {
                         code: CloseCode::PROTOCOL,
                     },
                     emit,
@@ -804,7 +805,7 @@ impl SessionFsm {
             | Err(StreamRxError::TooManyMissingRanges)
             | Err(StreamRxError::OffsetOverflow) => {
                 self.fail_session(
-                    SessionCloseBody {
+                    SessionClose {
                         code: CloseCode::PROTOCOL,
                     },
                     emit,
@@ -822,7 +823,7 @@ impl SessionFsm {
     ) -> Result<(), ()> {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
             self.fail_session(
-                SessionCloseBody {
+                SessionClose {
                     code: CloseCode::PROTOCOL,
                 },
                 emit,
@@ -850,7 +851,7 @@ impl SessionFsm {
             Entry::Vacant(entry) => {
                 if !self.config.local_parity.remote().matches(frame.stream_id) {
                     self.fail_session(
-                        SessionCloseBody {
+                        SessionClose {
                             code: CloseCode::PROTOCOL,
                         },
                         emit,
@@ -894,7 +895,7 @@ impl SessionFsm {
 
     fn handle_session_close(
         &mut self,
-        close: SessionCloseBody,
+        close: SessionClose,
         emit: &mut impl FnMut(SessionEvent),
     ) {
         if self.state.session_state == SessionState::Closed {
@@ -1008,7 +1009,7 @@ impl SessionFsm {
         }
     }
 
-    fn fail_session(&mut self, close: SessionCloseBody, emit: &mut impl FnMut(SessionEvent)) {
+    fn fail_session(&mut self, close: SessionClose, emit: &mut impl FnMut(SessionEvent)) {
         if self.state.session_state == SessionState::Closed {
             return;
         }

@@ -3,14 +3,13 @@
 //! a caller drives `QlFsm` inside its own event loop
 //!
 //! inputs to that loop usually include
-//! - app actions like `bind_peer`, `pair`, `connect`, `unpair`, `open_stream`, or `write_stream`
+//! - app actions like `bind_peer`, `connect`, `open_stream`, or `write_stream`
 //! - inbound transport bytes passed to `receive`
 //! - a deadline expiring, handled by calling `on_timer`
 //! - transport write results passed to `confirm_session_write` or `reject_session_write`
 //!
 //! outputs from `QlFsm` are
 //! - outbound session and handshake records from `take_next_write`
-//! - a best-effort peer unpair record returned directly from `unpair`
 //! - peer events from `take_next_event`
 //! - session events from `take_next_session_event`
 //!
@@ -30,8 +29,8 @@ use std::time::{Duration, Instant};
 
 pub use error::QlFsmError;
 use ql_wire::{
-    CloseCode, CloseTarget, MlDsaPublicKey, MlKemPublicKey, QlCrypto, QlIdentity, QlRecord,
-    SessionCloseBody, StreamClose, StreamId, XID,
+    CloseCode, CloseTarget, PeerBundle, QlCrypto, QlIdentity, QlRecord, SessionClose, StreamClose,
+    StreamId, XID,
 };
 pub use session::stream_rx::StreamReadIter;
 
@@ -55,10 +54,8 @@ pub struct FsmTime {
 pub struct Peer {
     /// peer xid
     pub xid: XID,
-    /// peer signing public key
-    pub signing_key: MlDsaPublicKey,
-    /// peer encapsulation public key
-    pub encapsulation_key: MlKemPublicKey,
+    /// peer static bundle when known
+    pub bundle: Option<PeerBundle>,
 }
 
 /// connection state for the bound peer
@@ -108,7 +105,7 @@ pub enum QlSessionEvent {
     /// the peer requested unpairing
     Unpaired,
     /// the encrypted session was closed
-    SessionClosed(SessionCloseBody),
+    SessionClosed(SessionClose),
 }
 
 /// handle for a session write returned by `QlFsm::take_next_write`
@@ -129,12 +126,6 @@ pub struct OutboundWrite {
 pub struct QlFsmConfig {
     /// overall time limit for one handshake attempt
     pub handshake_timeout: Duration,
-    /// delay before retrying the current handshake message
-    pub handshake_retry_interval: Duration,
-    /// maximum retries for each handshake step
-    pub max_handshake_retries: u8,
-    /// how far into the future control messages remain valid
-    pub control_expiration: Duration,
     /// delay before sending a pure record ack
     pub session_record_ack_delay: Duration,
     /// how long to wait before resending unacked session records
@@ -155,9 +146,6 @@ impl Default for QlFsmConfig {
     fn default() -> Self {
         Self {
             handshake_timeout: Duration::from_secs(5),
-            handshake_retry_interval: Duration::from_millis(750),
-            max_handshake_retries: 3,
-            control_expiration: Duration::from_secs(30),
             session_record_ack_delay: Duration::from_millis(5),
             session_record_retransmit_timeout: Duration::from_millis(150),
             session_keepalive_interval: Duration::from_secs(10),
@@ -203,7 +191,7 @@ impl QlFsm {
             state: QlFsmState {
                 replay_cache: ReplayCache::default(),
                 next_control_id: 1,
-                outbound: Default::default(),
+                handshake: None,
                 events: Default::default(),
                 session_events: Default::default(),
                 now,
@@ -214,12 +202,6 @@ impl QlFsm {
     /// binds or replaces the remote peer
     pub fn bind_peer(&mut self, peer: Peer) {
         implementation::handle_bind_peer(self, peer);
-    }
-
-    /// queues a pair request for the bound peer
-    pub fn pair(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
-        self.state.now = now;
-        implementation::handle_pair_local(self, crypto)
     }
 
     /// starts or resumes the encrypted session handshake
@@ -287,7 +269,7 @@ impl QlFsm {
 
     /// returns the next peer-level event
     pub fn take_next_event(&mut self) -> Option<QlFsmEvent> {
-        implementation::take_next_event(self)
+        self.state.events.pop_front()
     }
 
     /// opens a new outgoing stream
@@ -339,14 +321,8 @@ impl QlFsm {
         implementation::queue_ping(self)
     }
 
-    /// clears the bound peer locally and returns a best-effort unpair record
-    pub fn unpair(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Option<QlRecord<Vec<u8>>> {
-        self.state.now = now;
-        implementation::unpair(self, crypto)
-    }
-
     /// returns the next session or stream event
     pub fn take_next_session_event(&mut self) -> Option<QlSessionEvent> {
-        implementation::take_next_session_event(self)
+        self.state.session_events.pop_front()
     }
 }

@@ -1,85 +1,44 @@
 use std::time::Instant;
 
-use ql_wire::{self as wire, CloseCode, CloseTarget, Nonce, QlCrypto, QlPayload, StreamId};
+use ql_wire::{self as wire, CloseCode, CloseTarget, QlCrypto, SessionHeader, StreamId};
 
-use crate::{
-    OutboundWrite, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId, StreamReadIter,
-};
+use crate::{OutboundWrite, QlFsm, QlFsmError, QlSessionEvent, SessionWriteId, StreamReadIter};
 
 pub fn receive(
     fsm: &mut QlFsm,
     mut bytes: Vec<u8>,
     crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
-    let wire::QlRecord { header, payload } = wire::QlRecord::parse(&mut bytes[..])?;
-
-    if header.recipient != fsm.identity.xid {
-        return Err(QlFsmError::InvalidXid);
-    }
-    match &payload {
-        QlPayload::PairRequest(_) => {}
-        QlPayload::Unpair(_) => {
-            let Some(peer) = fsm.peer.as_ref().map(|entry| entry.peer.xid) else {
-                return Ok(());
-            };
-            if header.sender != peer {
-                return Err(QlFsmError::InvalidXid);
+    match wire::QlRecord::parse(&mut bytes[..])? {
+        wire::QlRecord::Handshake(record) => super::handle_handshake_record(fsm, crypto, &record),
+        wire::QlRecord::Session(record) => {
+            let (_, transport) = super::peer_transport(fsm).ok_or(QlFsmError::NoSession)?;
+            if record.header.connection_id != transport.rx_connection_id {
+                return Err(QlFsmError::InvalidPayload);
             }
-        }
-        _ => {
-            let Some(peer) = fsm.peer.as_ref().map(|entry| entry.peer.xid) else {
-                return Err(QlFsmError::NoPeerBound);
-            };
-            if header.sender != peer {
-                return Err(QlFsmError::InvalidXid);
-            }
-        }
-    }
 
-    match payload {
-        QlPayload::PairRequest(request) => {
-            super::handle_pair(fsm, crypto, &header, request)?;
-        }
-        QlPayload::Unpair(unpair) => {
-            super::handle_unpair(fsm, crypto, &header, &unpair)?;
-        }
-        QlPayload::Hello(hello) => {
-            super::handle_hello(fsm, crypto, &header, &hello)?;
-        }
-        QlPayload::HelloReply(reply) => {
-            super::handle_hello_reply(fsm, crypto, &header, &reply)?;
-        }
-        QlPayload::Confirm(confirm) => {
-            super::handle_confirm(fsm, crypto, &header, &confirm)?;
-        }
-        QlPayload::Ready(ready) => {
-            super::handle_ready(fsm, crypto, &header, ready)?;
-        }
-        QlPayload::Session(encrypted) => {
-            let Some((_, session_key)) = super::peer_session(fsm) else {
-                return Err(QlFsmError::NoSession);
-            };
-            let plaintext = wire::decrypt_record(crypto, &header, encrypted, &session_key)?;
-            let (seq, frames) = wire::SessionRecord::parse(plaintext.as_ref())?;
+            let plaintext =
+                wire::decrypt_record(crypto, &record.header, record.payload, &transport.rx_key)?;
+            let frames = wire::SessionRecord::parse(plaintext.as_ref())?;
             let mut session_closed = false;
-            fsm.session.receive(fsm.state.now.instant, seq, frames, {
-                let session_events = &mut fsm.state.session_events;
-                |event| {
-                    session_closed |= super::forward_session_event(session_events, event);
-                }
-            });
+            fsm.session
+                .receive(fsm.state.now.instant, record.header.seq, frames, {
+                    let session_events = &mut fsm.state.session_events;
+                    |event| {
+                        session_closed |= super::forward_session_event(session_events, event);
+                    }
+                });
             if session_closed {
                 super::apply_session_closed(fsm);
             }
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 pub fn on_timer(fsm: &mut QlFsm) {
     super::handle_timer(fsm);
-    if super::peer_session(fsm).is_some() {
+    if super::peer_transport(fsm).is_some() {
         let mut session_closed = false;
         fsm.session.on_timer(fsm.state.now.instant, {
             let session_events = &mut fsm.state.session_events;
@@ -96,7 +55,7 @@ pub fn on_timer(fsm: &mut QlFsm) {
 pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
     [
         super::next_handshake_deadline(fsm),
-        super::peer_session(fsm).and_then(|_| fsm.session.next_deadline()),
+        super::peer_transport(fsm).and_then(|_| fsm.session.next_deadline()),
     ]
     .into_iter()
     .flatten()
@@ -104,9 +63,9 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
 }
 
 pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
-    if let Some(record) = fsm.state.outbound.pop_front() {
+    if let Some(record) = fsm.state.handshake.take() {
         return Some(OutboundWrite {
-            record,
+            record: wire::QlRecord::Handshake(record),
             session_write_id: None,
         });
     }
@@ -117,26 +76,26 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     ) && fsm.session.has_pending_stream_work()
     {
         let _ = super::handle_connect(fsm, crypto);
-        if let Some(record) = fsm.state.outbound.pop_front() {
+        if let Some(record) = fsm.state.handshake.take() {
             return Some(OutboundWrite {
-                record,
+                record: wire::QlRecord::Handshake(record),
                 session_write_id: None,
             });
         }
     }
 
-    let sender = fsm.identity.xid;
-    let (recipient, session_key) = super::peer_session(fsm)?;
-    let (write_id, builder) = fsm.session.take_next_write(fsm.state.now.instant)?;
-    let mut nonce = [0u8; Nonce::SIZE];
-    crypto.fill_random_bytes(&mut nonce);
+    let (_, transport) = super::peer_transport(fsm)?;
+    let (write_id, seq, builder) = fsm.session.take_next_write(fsm.state.now.instant)?;
+    let record = builder.encrypt(
+        crypto,
+        SessionHeader {
+            connection_id: transport.tx_connection_id,
+            seq,
+        },
+        &transport.tx_key,
+    );
     Some(OutboundWrite {
-        record: builder.encrypt(
-            crypto,
-            wire::QlHeader { sender, recipient },
-            &session_key,
-            Nonce(nonce),
-        ),
+        record: wire::QlRecord::Session(record),
         session_write_id: Some(SessionWriteId(write_id)),
     })
 }
@@ -153,10 +112,7 @@ pub fn kill_session(fsm: &mut QlFsm, code: CloseCode) {
     let Some(entry) = fsm.peer.as_mut() else {
         return;
     };
-    if !matches!(
-        entry.session,
-        crate::state::ConnectionState::Connected { .. }
-    ) {
+    if !matches!(entry.session, crate::state::ConnectionState::Connected(_)) {
         return;
     }
 
@@ -165,17 +121,9 @@ pub fn kill_session(fsm: &mut QlFsm, code: CloseCode) {
     super::reset_session(fsm);
     fsm.state
         .session_events
-        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionCloseBody {
+        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionClose {
             code,
         }));
-}
-
-pub fn take_next_event(fsm: &mut QlFsm) -> Option<QlFsmEvent> {
-    fsm.state.events.pop_front()
-}
-
-pub fn take_next_session_event(fsm: &mut QlFsm) -> Option<QlSessionEvent> {
-    fsm.state.session_events.pop_front()
 }
 
 pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, QlFsmError> {
@@ -228,10 +176,6 @@ pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
     Ok(fsm.session.queue_ping()?)
 }
 
-pub fn unpair(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<wire::QlRecord<Vec<u8>>> {
-    super::handle_unpair_local(fsm, crypto)
-}
-
 fn ensure_peer_bound(fsm: &QlFsm) -> Result<(), QlFsmError> {
     fsm.peer.as_ref().map(|_| ()).ok_or(QlFsmError::NoPeerBound)
 }
@@ -241,7 +185,7 @@ fn ensure_session_open(fsm: &QlFsm) -> Result<(), QlFsmError> {
     if fsm
         .peer
         .as_ref()
-        .and_then(|entry| entry.session.session_key())
+        .and_then(|entry| entry.session.transport())
         .is_none()
     {
         return Err(QlFsmError::SessionClosed);

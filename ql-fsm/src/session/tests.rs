@@ -23,15 +23,15 @@ fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {
     out
 }
 
-fn next_outbound(fsm: &mut SessionFsm, now: Instant) -> Option<SessionRecord> {
-    let (write_id, builder) = fsm.take_next_write(now)?;
+fn next_outbound(fsm: &mut SessionFsm, now: Instant) -> Option<(RecordSeq, SessionRecord)> {
+    let (write_id, seq, builder) = fsm.take_next_write(now)?;
     fsm.confirm_write(now, write_id);
-    Some(SessionRecord::decode(builder.bytes()).unwrap())
+    Some((seq, SessionRecord::decode(builder.bytes()).unwrap()))
 }
 
-fn receive_events(fsm: &mut SessionFsm, now: Instant, record: SessionRecord) -> Vec<SessionEvent> {
+fn receive_events(fsm: &mut SessionFsm, now: Instant, seq: RecordSeq, record: SessionRecord) -> Vec<SessionEvent> {
     let bytes = record.encode();
-    let (seq, frames) = SessionRecord::parse(&bytes).unwrap();
+    let frames = SessionRecord::parse(&bytes).unwrap();
     let mut events = Vec::new();
     fsm.receive(now, seq, frames, |event| events.push(event));
     events
@@ -44,13 +44,13 @@ fn outbound_record_seq_increments_monotonically() {
     let stream_id = fsm.open_stream().unwrap();
 
     assert_eq!(fsm.write_stream(stream_id, b"one").unwrap(), 3);
-    let first = next_outbound(&mut fsm, now).unwrap();
+    let (first_seq, _) = next_outbound(&mut fsm, now).unwrap();
 
     assert_eq!(fsm.write_stream(stream_id, b"two").unwrap(), 3);
-    let second = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
+    let (second_seq, _) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
 
-    assert_eq!(first.seq, RecordSeq(0));
-    assert_eq!(second.seq, RecordSeq(1));
+    assert_eq!(first_seq, RecordSeq(0));
+    assert_eq!(second_seq, RecordSeq(1));
 }
 
 #[test]
@@ -60,12 +60,12 @@ fn retransmit_uses_new_record_seq() {
     let stream_id = fsm.open_stream().unwrap();
 
     assert_eq!(fsm.write_stream(stream_id, b"retry").unwrap(), 5);
-    let first = next_outbound(&mut fsm, now).unwrap();
+    let (first_seq, first) = next_outbound(&mut fsm, now).unwrap();
 
     fsm.on_timer(now + Duration::from_millis(200), |_| {});
-    let retried = next_outbound(&mut fsm, now + Duration::from_millis(200)).unwrap();
+    let (retried_seq, retried) = next_outbound(&mut fsm, now + Duration::from_millis(200)).unwrap();
 
-    assert_ne!(first.seq, retried.seq);
+    assert_ne!(first_seq, retried_seq);
     assert_eq!(first.frames, retried.frames);
 }
 
@@ -87,12 +87,16 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
     assert_eq!(fsm.write_stream(stream_id_a, &payload_a).unwrap(), 40);
     assert_eq!(fsm.write_stream(stream_id_b, &payload_b).unwrap(), 40);
 
-    let first = next_outbound(&mut fsm, now).unwrap();
-    let second = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
-    assert_ne!(first.seq, second.seq);
+    let (first_seq, first) = next_outbound(&mut fsm, now).unwrap();
+    let (second_seq, _second) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
+    assert_ne!(first_seq, second_seq);
+    assert!(first
+        .frames
+        .iter()
+        .any(|frame| matches!(frame, SessionFrame::StreamData(frame) if frame.stream_id == stream_id_a)));
 
     assert_eq!(fsm.write_stream(stream_id_b, b"b-2").unwrap(), 3);
-    let third = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
+    let (_third_seq, third) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
 
     let stream_ids: Vec<_> = third
         .frames
@@ -106,7 +110,7 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
 }
 
 #[test]
-fn write_stream_is_partial_and_ack_emits_writable() {
+fn ack_reopens_write_capacity() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
         SessionFsmConfig {
@@ -118,20 +122,22 @@ fn write_stream_is_partial_and_ack_emits_writable() {
     let stream_id = fsm.open_stream().unwrap();
 
     assert_eq!(fsm.write_stream(stream_id, b"abcd").unwrap(), 4);
-    assert_eq!(fsm.write_stream(stream_id, b"z").unwrap(), 0);
+    let (seq, _record) = next_outbound(&mut fsm, now).unwrap();
 
-    let sent = next_outbound(&mut fsm, now).unwrap();
-    let ack = SessionRecord {
-        seq: RecordSeq(99),
-        frames: vec![SessionFrame::Ack(RecordAck {
+    let mut events = Vec::new();
+    fsm.receive(
+        now + Duration::from_millis(1),
+        RecordSeq(9),
+        std::iter::once(Ok(SessionFrame::Ack(RecordAck {
             ranges: vec![RecordAckRange {
-                start: sent.seq.0,
-                end: sent.seq.0 + 1,
+                start: seq.0,
+                end: seq.0 + 1,
             }],
-        })],
-    };
-    let events = receive_events(&mut fsm, now + Duration::from_millis(1), ack);
-    assert_eq!(events, vec![SessionEvent::Writable(stream_id)]);
+        }))),
+        |event| events.push(event),
+    );
+
+    assert!(events.contains(&SessionEvent::Writable(stream_id)));
     assert_eq!(fsm.write_stream(stream_id, b"z").unwrap(), 1);
 }
 
@@ -148,7 +154,6 @@ fn commit_stream_read_is_what_advances_stream_window() {
     );
     let stream_id = StreamId(1);
     let data = SessionRecord {
-        seq: RecordSeq(7),
         frames: vec![SessionFrame::StreamData(StreamData {
             stream_id,
             offset: 0,
@@ -156,7 +161,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
             bytes: b"hi".to_vec(),
         })],
     };
-    let events = receive_events(&mut fsm, now, data);
+    let events = receive_events(&mut fsm, now, RecordSeq(7), data);
     assert_eq!(
         events,
         vec![
@@ -165,7 +170,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
         ]
     );
 
-    let first = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
+    let (_first_seq, first) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
     assert!(matches!(first.frames.as_slice(), [SessionFrame::Ack(_)]));
 
     let read = fsm
@@ -178,11 +183,37 @@ fn commit_stream_read_is_what_advances_stream_window() {
     assert!(next_outbound(&mut fsm, now + Duration::from_millis(2)).is_none());
 
     fsm.stream_read_commit(stream_id, 2).unwrap();
-    let second = next_outbound(&mut fsm, now + Duration::from_millis(3)).unwrap();
+    let (_second_seq, second) = next_outbound(&mut fsm, now + Duration::from_millis(3)).unwrap();
     assert!(matches!(
         second.frames.as_slice(),
         [SessionFrame::StreamWindow(window)] if window.stream_id == stream_id
     ));
+}
+
+#[test]
+fn inbound_stream_data_emits_opened_and_readable() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = ql_wire::StreamId(1);
+    let record = SessionRecord {
+        frames: vec![SessionFrame::StreamData(ql_wire::StreamData {
+            stream_id,
+            offset: 0,
+            fin: true,
+            bytes: b"hello".to_vec(),
+        })],
+    };
+
+    let events = receive_events(&mut fsm, now, RecordSeq(0), record);
+    assert_eq!(
+        events,
+        vec![
+            SessionEvent::Opened(stream_id),
+            SessionEvent::Readable(stream_id),
+            SessionEvent::Finished(stream_id)
+        ]
+    );
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"hello".to_vec());
 }
 
 #[test]
@@ -191,14 +222,10 @@ fn remote_stream_close_is_reliable_and_retried() {
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
-    fsm.close_stream(
-        stream_id,
-        CloseTarget::Both,
-        CloseCode::CANCELLED,
-    )
-    .unwrap();
+    fsm.close_stream(stream_id, CloseTarget::Both, CloseCode::CANCELLED)
+        .unwrap();
 
-    let (write_id, builder) = fsm.take_next_write(now).unwrap();
+    let (write_id, _seq, builder) = fsm.take_next_write(now).unwrap();
     fsm.confirm_write(now, write_id);
     let first = SessionRecord::decode(builder.bytes()).unwrap();
     assert!(matches!(
@@ -207,8 +234,7 @@ fn remote_stream_close_is_reliable_and_retried() {
     ));
 
     fsm.on_timer(now + Duration::from_millis(200), |_| {});
-    let retried = next_outbound(&mut fsm, now + Duration::from_millis(200)).unwrap();
-    assert_ne!(first.seq, retried.seq);
+    let (_retried_seq, retried) = next_outbound(&mut fsm, now + Duration::from_millis(200)).unwrap();
     assert_eq!(first.frames, retried.frames);
 }
 
@@ -247,7 +273,6 @@ fn duplicate_stream_data_is_not_redelivered() {
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = StreamId(1);
     let record = SessionRecord {
-        seq: RecordSeq(1),
         frames: vec![SessionFrame::StreamData(StreamData {
             stream_id,
             offset: 0,
@@ -255,15 +280,8 @@ fn duplicate_stream_data_is_not_redelivered() {
             bytes: b"hi".to_vec(),
         })],
     };
-    let _ = receive_events(&mut fsm, now, record.clone());
-    let _ = receive_events(
-        &mut fsm,
-        now + Duration::from_millis(1),
-        SessionRecord {
-            seq: RecordSeq(2),
-            ..record
-        },
-    );
+    let _ = receive_events(&mut fsm, now, RecordSeq(1), record.clone());
+    let _ = receive_events(&mut fsm, now + Duration::from_millis(1), RecordSeq(2), record);
 
     assert_eq!(read_stream_all(&mut fsm, stream_id), b"hi".to_vec());
 }

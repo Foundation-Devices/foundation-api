@@ -1,286 +1,158 @@
 use std::time::Duration;
 
-use ql_wire::{QlPayload, XID};
+use ql_wire::{HandshakePayload, QlRecord};
 
 use super::*;
-use crate::state::{ConnectionState, HandshakeInitiator, HandshakeResponder};
+use crate::state::ConnectionState;
 
 #[test]
-fn handshake_deadline_is_derived_from_peer_state() {
-    let config = QlFsmConfig {
-        handshake_timeout: Duration::from_secs(5),
-        handshake_retry_interval: Duration::from_secs(10),
-        max_handshake_retries: 0,
-        session_keepalive_interval: Duration::from_millis(1),
-        session_peer_timeout: Duration::from_millis(2),
-        ..QlFsmConfig::default()
-    };
-    let mut harness = Harness::paired(config);
+fn kk_connect_round_trip_establishes_transport() {
+    let mut harness = Harness::paired_known(QlFsmConfig::default());
 
     harness
         .a
         .fsm
         .connect(harness.time(), &harness.a.crypto)
         .unwrap();
+    harness.pump();
+
+    assert!(matches!(
+        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(ConnectionState::Connected(_))
+    ));
+    assert!(matches!(
+        harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(ConnectionState::Connected(_))
+    ));
+}
+
+#[test]
+fn xx_connect_round_trip_learns_peer_bundles() {
+    let mut harness = Harness::paired_unknown(QlFsmConfig::default());
+
+    harness
+        .a
+        .fsm
+        .connect(harness.time(), &harness.a.crypto)
+        .unwrap();
+    harness.pump();
+
     assert_eq!(
-        harness.a.fsm.next_deadline(),
-        Some(harness.now + config.handshake_timeout)
+        harness.a.fsm.peer.as_ref().unwrap().peer.bundle,
+        Some(harness.b.fsm.identity.bundle())
     );
-
-    let _hello = harness.next_outbound_a().unwrap();
-    harness.advance(Duration::from_secs(4));
-    harness.a.fsm.on_timer(harness.time());
+    assert_eq!(
+        harness.b.fsm.peer.as_ref().unwrap().peer.bundle,
+        Some(harness.a.fsm.identity.bundle())
+    );
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Initiator { .. })
+        Some(ConnectionState::Connected(_))
     ));
+    assert!(matches!(
+        harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(ConnectionState::Connected(_))
+    ));
+}
 
-    harness.advance(Duration::from_secs(1));
+#[test]
+fn inbound_xx1_auto_binds_unbound_responder() {
+    let mut harness = Harness::responder_unbound_unknown(QlFsmConfig::default());
+
+    harness
+        .a
+        .fsm
+        .connect(harness.time(), &harness.a.crypto)
+        .unwrap();
+    harness.pump();
+
+    assert_eq!(
+        harness.b.fsm.peer.as_ref().map(|entry| entry.peer.xid),
+        Some(harness.a.fsm.identity.xid)
+    );
+    assert_eq!(
+        harness.b.fsm.peer.as_ref().unwrap().peer.bundle,
+        Some(harness.a.fsm.identity.bundle())
+    );
+}
+
+#[test]
+fn handshake_timeout_drops_single_attempt_without_resend() {
+    let config = QlFsmConfig {
+        handshake_timeout: Duration::from_millis(60),
+        ..QlFsmConfig::default()
+    };
+    let mut harness = Harness::paired_unknown(config);
+
+    harness
+        .a
+        .fsm
+        .connect(harness.time(), &harness.a.crypto)
+        .unwrap();
+    let first = harness.next_outbound_a().unwrap();
+    assert!(matches!(
+        first,
+        QlRecord::Handshake(ql_wire::QlHandshakeRecord {
+            payload: HandshakePayload::Xx1(_),
+            ..
+        })
+    ));
+    assert!(harness.next_outbound_a().is_none());
+
+    harness.advance(config.handshake_timeout);
     harness.a.fsm.on_timer(harness.time());
+
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
         Some(ConnectionState::Disconnected)
     ));
+    assert!(harness.next_outbound_a().is_none());
 }
 
 #[test]
-fn initiator_retries_hello_after_retry_interval() {
+fn handshake_timeout_clears_queued_handshake_output() {
     let config = QlFsmConfig {
-        handshake_retry_interval: Duration::from_millis(250),
-        max_handshake_retries: 2,
+        handshake_timeout: Duration::from_millis(60),
         ..QlFsmConfig::default()
     };
-    let mut harness = Harness::paired(config);
+    let mut harness = Harness::paired_unknown(config);
 
     harness
         .a
         .fsm
         .connect(harness.time(), &harness.a.crypto)
         .unwrap();
-    let hello = harness.next_outbound_a().unwrap();
 
-    harness.advance(config.handshake_retry_interval);
+    harness.advance(config.handshake_timeout);
     harness.a.fsm.on_timer(harness.time());
 
-    assert_eq!(harness.next_outbound_a(), Some(hello));
-    assert!(matches!(
-        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Initiator {
-            stage: HandshakeInitiator::WaitingHelloReply { retry_count: 1, .. },
-            ..
-        })
-    ));
-}
-
-#[test]
-fn responder_retries_hello_reply_after_retry_interval() {
-    let config = QlFsmConfig {
-        handshake_retry_interval: Duration::from_millis(250),
-        max_handshake_retries: 2,
-        ..QlFsmConfig::default()
-    };
-    let mut harness = Harness::paired(config);
-
-    harness
-        .a
-        .fsm
-        .connect(harness.time(), &harness.a.crypto)
-        .unwrap();
-    let hello = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(hello);
-    let reply = harness.next_outbound_b().unwrap();
-
-    harness.advance(config.handshake_retry_interval);
-    harness.b.fsm.on_timer(harness.time());
-
-    assert_eq!(harness.next_outbound_b(), Some(reply));
-    assert!(matches!(
-        harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Responder {
-            stage: HandshakeResponder::WaitingConfirm { retry_count: 1, .. },
-            ..
-        })
-    ));
-}
-
-#[test]
-fn initiator_retries_confirm_after_retry_interval() {
-    let config = QlFsmConfig {
-        handshake_retry_interval: Duration::from_millis(250),
-        max_handshake_retries: 2,
-        ..QlFsmConfig::default()
-    };
-    let mut harness = Harness::paired(config);
-
-    harness
-        .a
-        .fsm
-        .connect(harness.time(), &harness.a.crypto)
-        .unwrap();
-    let hello = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(hello);
-    let reply = harness.next_outbound_b().unwrap();
-    harness.deliver_to_a(reply);
-    let confirm = harness.next_outbound_a().unwrap();
-
-    harness.advance(config.handshake_retry_interval);
-    harness.a.fsm.on_timer(harness.time());
-
-    assert_eq!(harness.next_outbound_a(), Some(confirm));
-    assert!(matches!(
-        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Initiator {
-            stage: HandshakeInitiator::WaitingReady { retry_count: 1, .. },
-            ..
-        })
-    ));
-}
-
-#[test]
-fn duplicate_hello_resends_hello_reply() {
-    let mut harness = Harness::paired(QlFsmConfig::default());
-
-    harness
-        .a
-        .fsm
-        .connect(harness.time(), &harness.a.crypto)
-        .unwrap();
-    let hello = harness.next_outbound_a().unwrap();
-
-    harness.deliver_to_b(hello.clone());
-    let reply = harness.next_outbound_b().unwrap();
-
-    harness.deliver_to_b(hello);
-    assert_eq!(harness.next_outbound_b(), Some(reply));
-}
-
-#[test]
-fn duplicate_hello_reply_resends_confirm() {
-    let mut harness = Harness::paired(QlFsmConfig::default());
-
-    harness
-        .a
-        .fsm
-        .connect(harness.time(), &harness.a.crypto)
-        .unwrap();
-    let hello = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(hello);
-    let reply = harness.next_outbound_b().unwrap();
-
-    harness.deliver_to_a(reply.clone());
-    let confirm = harness.next_outbound_a().unwrap();
-
-    harness.deliver_to_a(reply);
-    assert_eq!(harness.next_outbound_a(), Some(confirm));
-}
-
-#[test]
-fn responder_resends_ready_for_duplicate_confirm_after_connecting() {
-    let mut harness = Harness::paired(QlFsmConfig::default());
-
-    harness
-        .a
-        .fsm
-        .connect(harness.time(), &harness.a.crypto)
-        .unwrap();
-    let hello = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(hello);
-    let reply = harness.next_outbound_b().unwrap();
-    harness.deliver_to_a(reply);
-    let confirm = harness.next_outbound_a().unwrap();
-
-    harness.deliver_to_b(confirm.clone());
-    let ready = harness.next_outbound_b().unwrap();
-
-    assert!(matches!(
-        harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Connected {
-            recent_ready: Some(_),
-            ..
-        })
-    ));
-
-    harness.deliver_to_b(confirm);
-    assert_eq!(harness.next_outbound_b(), Some(ready));
-}
-
-#[test]
-fn initiator_waits_for_ready_before_connecting() {
-    let mut harness = Harness::paired(QlFsmConfig::default());
-
-    harness
-        .a
-        .fsm
-        .connect(harness.time(), &harness.a.crypto)
-        .unwrap();
-    let hello = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(hello);
-    let reply = harness.next_outbound_b().unwrap();
-    harness.deliver_to_a(reply);
-
-    assert!(matches!(
-        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Initiator {
-            stage: HandshakeInitiator::WaitingReady { .. },
-            ..
-        })
-    ));
-    let stream_id = harness.a.fsm.open_stream().unwrap();
-    harness.a.fsm.write_stream(stream_id, b"queued").unwrap();
-
-    let confirm = harness.next_outbound_a().unwrap();
-    assert!(matches!(confirm.payload, QlPayload::Confirm(_)));
-    harness.deliver_to_b(confirm);
-    let ready = harness.next_outbound_b().unwrap();
-
-    assert!(matches!(
-        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Initiator {
-            stage: HandshakeInitiator::WaitingReady { .. },
-            ..
-        })
-    ));
-
-    harness.deliver_to_a(ready);
-    assert!(matches!(
-        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Connected { .. })
-    ));
-    let record = harness.next_outbound_a().unwrap();
-    assert!(matches!(record.payload, QlPayload::Session(_)));
-}
-
-#[test]
-fn handshake_retry_limit_disconnects_initiator() {
-    let config = QlFsmConfig {
-        handshake_retry_interval: Duration::from_millis(250),
-        max_handshake_retries: 1,
-        ..QlFsmConfig::default()
-    };
-    let mut harness = Harness::paired(config);
-
-    harness
-        .a
-        .fsm
-        .connect(harness.time(), &harness.a.crypto)
-        .unwrap();
-    let hello = harness.next_outbound_a().unwrap();
-
-    harness.advance(config.handshake_retry_interval);
-    harness.a.fsm.on_timer(harness.time());
-    assert_eq!(harness.next_outbound_a(), Some(hello));
-
-    harness.advance(config.handshake_retry_interval);
-    harness.a.fsm.on_timer(harness.time());
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
         Some(ConnectionState::Disconnected)
     ));
+    assert!(harness.next_outbound_a().is_none());
 }
 
 #[test]
-fn simultaneous_connect_converges_to_connected_peers() {
-    let mut harness = Harness::paired(QlFsmConfig::default());
+fn bind_peer_clears_queued_handshake_output() {
+    let mut harness = Harness::paired_unknown(QlFsmConfig::default());
+
+    harness
+        .a
+        .fsm
+        .connect(harness.time(), &harness.a.crypto)
+        .unwrap();
+    harness.a.fsm.bind_peer(Peer {
+        xid: test_identity(99).xid,
+        bundle: None,
+    });
+
+    assert!(harness.next_outbound_a().is_none());
+}
+
+#[test]
+fn simultaneous_xx_connect_converges() {
+    let mut harness = Harness::paired_unknown(QlFsmConfig::default());
 
     harness
         .a
@@ -292,63 +164,44 @@ fn simultaneous_connect_converges_to_connected_peers() {
         .fsm
         .connect(harness.time(), &harness.b.crypto)
         .unwrap();
-
-    let hello_a = harness.next_outbound_a().unwrap();
-    let hello_b = harness.next_outbound_b().unwrap();
-
-    harness.deliver_to_a(hello_b);
-    harness.deliver_to_b(hello_a);
     harness.pump();
 
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Connected { .. })
+        Some(ConnectionState::Connected(_))
     ));
     assert!(matches!(
         harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(ConnectionState::Connected { .. })
+        Some(ConnectionState::Connected(_))
     ));
 }
 
 #[test]
-fn receive_surfaces_invalid_xid_for_wrong_recipient() {
-    let mut harness = Harness::paired(QlFsmConfig::default());
+fn simultaneous_xx_and_kk_connect_prefers_xx() {
+    let mut harness = Harness::paired(QlFsmConfig::default(), false, true);
 
     harness
         .a
         .fsm
         .connect(harness.time(), &harness.a.crypto)
         .unwrap();
-    let mut hello = harness.next_outbound_a().unwrap();
-    hello.header.recipient = XID([0xAA; XID::SIZE]);
-
-    assert_eq!(
-        harness
-            .b
-            .fsm
-            .receive(harness.time(), hello.encode(), &harness.b.crypto),
-        Err(crate::QlFsmError::InvalidXid)
-    );
-}
-
-#[test]
-fn receive_surfaces_invalid_signature_for_tampered_hello() {
-    let mut harness = Harness::paired(QlFsmConfig::default());
-
     harness
-        .a
+        .b
         .fsm
-        .connect(harness.time(), &harness.a.crypto)
+        .connect(harness.time(), &harness.b.crypto)
         .unwrap();
-    let hello = harness.next_outbound_a().unwrap();
-    let mut bytes = hello.encode();
-    *bytes.last_mut().unwrap() ^= 0x01;
+    harness.pump();
 
     assert_eq!(
-        harness
-            .b
-            .fsm
-            .receive(harness.time(), bytes, &harness.b.crypto),
-        Err(crate::QlFsmError::InvalidSignature)
+        harness.a.fsm.peer.as_ref().unwrap().peer.bundle,
+        Some(harness.b.fsm.identity.bundle())
     );
+    assert!(matches!(
+        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(ConnectionState::Connected(_))
+    ));
+    assert!(matches!(
+        harness.b.fsm.peer.as_ref().map(|entry| &entry.session),
+        Some(ConnectionState::Connected(_))
+    ));
 }

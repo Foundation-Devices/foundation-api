@@ -7,22 +7,24 @@ use std::{
 };
 
 use libcrux_aesgcm::AesGcm256Key;
+use libcrux_ml_kem::mlkem1024;
 use ql_wire::{
-    self, generate_ml_dsa_keypair, generate_ml_kem_keypair, QlCrypto, QlIdentity, QlPayload,
-    QlRecord, SessionKey, XID, ENCRYPTED_MESSAGE_AUTH_SIZE,
+    self, generate_identity, ConnectionId, ENCRYPTED_MESSAGE_AUTH_SIZE, MlKemCiphertext,
+    MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce, QlAead, QlCrypto, QlHash, QlIdentity,
+    QlKem, QlRandom, QlRecord, SessionKey, XID,
 };
 use sha2::{Digest, Sha256};
 
 use crate::{
     session::{state::StreamParity, SessionFsm, SessionFsmConfig},
-    state::ConnectionState,
+    state::{ConnectionState, SessionTransport},
     FsmTime, OutboundWrite, Peer, QlFsm, QlFsmConfig, SessionWriteId,
 };
 
 #[derive(Clone)]
 struct TestCrypto {
     seed: u8,
-    counter: Cell<u8>,
+    counter: Cell<u64>,
 }
 
 impl TestCrypto {
@@ -32,27 +34,37 @@ impl TestCrypto {
             counter: Cell::new(0),
         }
     }
+
+    fn next_block(&self) -> [u8; 32] {
+        let counter = self.counter.get();
+        self.counter.set(counter.wrapping_add(1));
+        sha256_parts(&[b"ql-fsm:test-rng:v1", &[self.seed], &counter.to_le_bytes()])
+    }
+
+    fn random_array<const L: usize>(&self) -> [u8; L] {
+        let mut out = [0u8; L];
+        self.fill_random_bytes(&mut out);
+        out
+    }
 }
 
-impl QlCrypto for TestCrypto {
-    fn fill_random_bytes(&self, data: &mut [u8]) {
-        let value = self.seed.wrapping_add(self.counter.get());
-        self.counter.set(self.counter.get().wrapping_add(1));
-        data.fill(value);
+impl QlRandom for TestCrypto {
+    fn fill_random_bytes(&self, out: &mut [u8]) {
+        fill_expanded(self, &[b"ql-fsm:test-fill:v1"], out);
     }
+}
 
-    fn hash(&self, parts: &[&[u8]]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        for part in parts {
-            hasher.update(part);
-        }
-        hasher.finalize().into()
+impl QlHash for TestCrypto {
+    fn sha256(&self, parts: &[&[u8]]) -> [u8; 32] {
+        sha256_parts(parts)
     }
+}
 
-    fn encrypt_with_aead(
+impl QlAead for TestCrypto {
+    fn aes256_gcm_encrypt(
         &self,
         key: &SessionKey,
-        nonce: &ql_wire::Nonce,
+        nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
     ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE] {
@@ -70,10 +82,10 @@ impl QlCrypto for TestCrypto {
         auth
     }
 
-    fn decrypt_with_aead(
+    fn aes256_gcm_decrypt(
         &self,
         key: &SessionKey,
-        nonce: &ql_wire::Nonce,
+        nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
         auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
@@ -82,6 +94,48 @@ impl QlCrypto for TestCrypto {
         let ciphertext = buffer.to_vec();
         key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
             .is_ok()
+    }
+}
+
+impl QlKem for TestCrypto {
+    fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
+        let key_pair = mlkem1024::generate_key_pair(self.random_array());
+        let mut public = [0u8; MlKemPublicKey::SIZE];
+        public.copy_from_slice(key_pair.pk());
+        let mut private = [0u8; MlKemPrivateKey::SIZE];
+        private.copy_from_slice(key_pair.sk());
+
+        MlKemKeyPair {
+            private: MlKemPrivateKey::from_data(private),
+            public: MlKemPublicKey::from_data(public),
+        }
+    }
+
+    fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
+        let public_key = public_key.as_bytes().into();
+        let (ciphertext_value, shared_value) =
+            mlkem1024::encapsulate(&public_key, self.random_array());
+        let mut ciphertext = [0u8; MlKemCiphertext::SIZE];
+        ciphertext.copy_from_slice(ciphertext_value.as_slice());
+        let mut shared = [0u8; SessionKey::SIZE];
+        shared.copy_from_slice(shared_value.as_slice());
+        (
+            MlKemCiphertext::from_data(ciphertext),
+            SessionKey::from_data(shared),
+        )
+    }
+
+    fn mlkem_decapsulate(
+        &self,
+        private_key: &MlKemPrivateKey,
+        ciphertext: &MlKemCiphertext,
+    ) -> SessionKey {
+        let private_key = private_key.as_bytes().into();
+        let ciphertext = ciphertext.as_bytes().into();
+        let shared = mlkem1024::decapsulate(&private_key, &ciphertext);
+        let mut out = [0u8; SessionKey::SIZE];
+        out.copy_from_slice(shared.as_slice());
+        SessionKey::from_data(out)
     }
 }
 
@@ -98,11 +152,47 @@ struct Harness {
 }
 
 impl Harness {
-    fn paired(config: QlFsmConfig) -> Self {
+    fn paired_known(config: QlFsmConfig) -> Self {
+        Self::paired(config, true, true)
+    }
+
+    fn paired_unknown(config: QlFsmConfig) -> Self {
+        Self::paired(config, false, false)
+    }
+
+    fn paired(config: QlFsmConfig, know_a: bool, know_b: bool) -> Self {
         let identity_a = test_identity(11);
         let identity_b = test_identity(73);
-        let peer_a = peer_from_identity(&identity_b);
-        let peer_b = peer_from_identity(&identity_a);
+        let now = Instant::now();
+        let time = FsmTime {
+            instant: now,
+            unix_secs: 1_700_000_000,
+        };
+
+        let mut harness = Self {
+            now,
+            unix_secs: time.unix_secs,
+            a: Node {
+                fsm: QlFsm::new(config, identity_a.clone(), time),
+                crypto: TestCrypto::new(1),
+            },
+            b: Node {
+                fsm: QlFsm::new(config, identity_b.clone(), time),
+                crypto: TestCrypto::new(2),
+            },
+        };
+
+        harness.a.fsm.bind_peer(peer_from_identity(&identity_b, know_a));
+        harness.b.fsm.bind_peer(peer_from_identity(&identity_a, know_b));
+        while harness.a.fsm.take_next_event().is_some() {}
+        while harness.b.fsm.take_next_event().is_some() {}
+
+        harness
+    }
+
+    fn responder_unbound_unknown(config: QlFsmConfig) -> Self {
+        let identity_a = test_identity(11);
+        let identity_b = test_identity(73);
         let now = Instant::now();
         let time = FsmTime {
             instant: now,
@@ -117,63 +207,41 @@ impl Harness {
                 crypto: TestCrypto::new(1),
             },
             b: Node {
-                fsm: QlFsm::new(config, identity_b, time),
+                fsm: QlFsm::new(config, identity_b.clone(), time),
                 crypto: TestCrypto::new(2),
             },
         };
 
-        harness.a.fsm.bind_peer(peer_a);
-        harness.b.fsm.bind_peer(peer_b);
+        harness
+            .a
+            .fsm
+            .bind_peer(Peer { xid: identity_b.xid, bundle: None });
         while harness.a.fsm.take_next_event().is_some() {}
-        while harness.b.fsm.take_next_event().is_some() {}
 
         harness
     }
 
     fn connected(config: QlFsmConfig) -> Self {
-        let mut harness = Self::paired(config);
-        let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
+        let mut harness = Self::paired_known(config);
+        let a_to_b_key = SessionKey::from_data([7; SessionKey::SIZE]);
+        let b_to_a_key = SessionKey::from_data([9; SessionKey::SIZE]);
+        let a_to_b_conn = ConnectionId::from_data([0xA1; ConnectionId::SIZE]);
+        let b_to_a_conn = ConnectionId::from_data([0xB2; ConnectionId::SIZE]);
 
-        harness.a.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected {
-            session_key,
-            recent_ready: None,
-        };
-        harness.b.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected {
-            session_key,
-            recent_ready: None,
-        };
-        harness.a.fsm.session = SessionFsm::new(
-            SessionFsmConfig {
-                local_parity: StreamParity::for_local(
-                    harness.a.fsm.identity.xid,
-                    harness.a.fsm.peer.as_ref().unwrap().peer.xid,
-                ),
-                record_size: config.session_record_size,
-                ack_delay: config.session_record_ack_delay,
-                retransmit_timeout: config.session_record_retransmit_timeout,
-                keepalive_interval: config.session_keepalive_interval,
-                peer_timeout: config.session_peer_timeout,
-                stream_send_buffer_size: config.session_stream_send_buffer_size,
-                stream_receive_buffer_size: config.session_stream_receive_buffer_size,
-            },
-            harness.now,
-        );
-        harness.b.fsm.session = SessionFsm::new(
-            SessionFsmConfig {
-                local_parity: StreamParity::for_local(
-                    harness.b.fsm.identity.xid,
-                    harness.b.fsm.peer.as_ref().unwrap().peer.xid,
-                ),
-                record_size: config.session_record_size,
-                ack_delay: config.session_record_ack_delay,
-                retransmit_timeout: config.session_record_retransmit_timeout,
-                keepalive_interval: config.session_keepalive_interval,
-                peer_timeout: config.session_peer_timeout,
-                stream_send_buffer_size: config.session_stream_send_buffer_size,
-                stream_receive_buffer_size: config.session_stream_receive_buffer_size,
-            },
-            harness.now,
-        );
+        harness.a.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected(SessionTransport {
+            tx_key: a_to_b_key.clone(),
+            rx_key: b_to_a_key.clone(),
+            tx_connection_id: a_to_b_conn,
+            rx_connection_id: b_to_a_conn,
+        });
+        harness.b.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected(SessionTransport {
+            tx_key: b_to_a_key,
+            rx_key: a_to_b_key,
+            tx_connection_id: b_to_a_conn,
+            rx_connection_id: a_to_b_conn,
+        });
+        harness.a.fsm.session = SessionFsm::new(session_config(&harness, true), harness.now);
+        harness.b.fsm.session = SessionFsm::new(session_config(&harness, false), harness.now);
         harness
     }
 
@@ -256,22 +324,40 @@ impl Harness {
 
 fn test_identity(seed: u8) -> QlIdentity {
     let crypto = TestCrypto::new(seed);
-    let (signing_private, signing_public) = generate_ml_dsa_keypair(&crypto);
-    let (encapsulation_private, encapsulation_public) = generate_ml_kem_keypair(&crypto);
-    QlIdentity::new(
-        XID([seed; XID::SIZE]),
-        signing_private,
-        signing_public,
-        encapsulation_private,
-        encapsulation_public,
-    )
+    generate_identity(&crypto, XID([seed; XID::SIZE]))
 }
 
-fn peer_from_identity(identity: &QlIdentity) -> Peer {
+fn peer_from_identity(identity: &QlIdentity, know_bundle: bool) -> Peer {
     Peer {
         xid: identity.xid,
-        signing_key: identity.signing_public_key.clone(),
-        encapsulation_key: identity.encapsulation_public_key.clone(),
+        bundle: know_bundle.then(|| identity.bundle()),
+    }
+}
+
+fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
+    let (local, peer, config) = if a {
+        (
+            harness.a.fsm.identity.xid,
+            harness.a.fsm.peer.as_ref().unwrap().peer.xid,
+            harness.a.fsm.config,
+        )
+    } else {
+        (
+            harness.b.fsm.identity.xid,
+            harness.b.fsm.peer.as_ref().unwrap().peer.xid,
+            harness.b.fsm.config,
+        )
+    };
+
+    SessionFsmConfig {
+        local_parity: StreamParity::for_local(local, peer),
+        record_size: config.session_record_size,
+        ack_delay: config.session_record_ack_delay,
+        retransmit_timeout: config.session_record_retransmit_timeout,
+        keepalive_interval: config.session_keepalive_interval,
+        peer_timeout: config.session_peer_timeout,
+        stream_send_buffer_size: config.session_stream_send_buffer_size,
+        stream_receive_buffer_size: config.session_stream_receive_buffer_size,
     }
 }
 
@@ -279,11 +365,39 @@ fn decrypt_record(
     crypto: &impl QlCrypto,
     record: &QlRecord<Vec<u8>>,
     session_key: &SessionKey,
-) -> ql_wire::SessionRecord {
-    let aad = record.header.aad();
-    let QlPayload::Session(encrypted) = &record.payload else {
-        panic!("expected encrypted payload");
+) -> (ql_wire::SessionHeader, ql_wire::SessionRecord) {
+    let ql_wire::QlRecord::Session(record) = record else {
+        panic!("expected encrypted session record");
     };
-    let plaintext = encrypted.decrypt(crypto, session_key, &aad).unwrap();
-    ql_wire::SessionRecord::decode(&plaintext).unwrap()
+    let plaintext =
+        ql_wire::decrypt_record(crypto, &record.header, record.payload.clone(), session_key)
+            .unwrap();
+    (record.header, ql_wire::SessionRecord::decode(&plaintext).unwrap())
+}
+
+fn sha256_parts(parts: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+
+fn fill_expanded(crypto: &TestCrypto, parts: &[&[u8]], out: &mut [u8]) {
+    let mut written = 0usize;
+    let mut counter = 0u64;
+    while written < out.len() {
+        let random = crypto.next_block();
+        let counter_bytes = counter.to_le_bytes();
+        let mut inputs = Vec::with_capacity(parts.len() + 3);
+        inputs.push(b"ql-fsm:test-expand:v1".as_slice());
+        inputs.push(&random);
+        inputs.push(&counter_bytes);
+        inputs.extend_from_slice(parts);
+        let block = sha256_parts(&inputs);
+        let take = (out.len() - written).min(block.len());
+        out[written..written + take].copy_from_slice(&block[..take]);
+        written += take;
+        counter = counter.wrapping_add(1);
+    }
 }

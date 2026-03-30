@@ -1,75 +1,73 @@
 use std::{collections::VecDeque, time::Instant};
 
-use ql_wire::{Confirm, Hello, HelloReply, QlRecord, Ready, ResponderSecrets, SessionKey};
+use ql_wire::{
+    ConnectionId, EphemeralPublicKey, HandshakeId, KkHandshake, PeerBundle, QlHandshakeRecord,
+    SessionKey, XxHandshake,
+};
 
 use crate::{replay_cache::ReplayCache, FsmTime, Peer, PeerStatus, QlFsmEvent, QlSessionEvent};
 
 #[derive(Debug, Clone)]
-pub enum HandshakeInitiator {
-    WaitingHelloReply {
-        initiator_secret: SessionKey,
-        retry_count: u8,
-        retry_at: Option<Instant>,
-    },
-    WaitingReady {
-        reply: HelloReply,
-        confirm: Confirm,
-        session_key: SessionKey,
-        retry_count: u8,
-        retry_at: Option<Instant>,
-    },
+pub enum HandshakeMode {
+    XxInitiator(XxHandshake),
+    XxResponder(XxHandshake),
+    KkInitiator(KkHandshake),
 }
 
 #[derive(Debug, Clone)]
-pub enum HandshakeResponder {
-    WaitingConfirm {
-        secrets: ResponderSecrets,
-        retry_count: u8,
-        retry_at: Option<Instant>,
-    },
+pub struct HandshakeState {
+    pub id: HandshakeId,
+    pub deadline: Instant,
+    pub mode: HandshakeMode,
+    pub initial_ephemeral: Option<EphemeralPublicKey>,
 }
 
-#[derive(Debug, Clone)]
-pub struct RecentReady {
-    pub hello: Hello,
-    pub reply: HelloReply,
-    pub ready: Ready<Vec<u8>>,
-    pub expires_at: Instant,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTransport {
+    pub tx_key: SessionKey,
+    pub rx_key: SessionKey,
+    pub tx_connection_id: ConnectionId,
+    pub rx_connection_id: ConnectionId,
+}
+
+impl SessionTransport {
+    pub fn from_finalized(finalized: ql_wire::FinalizedHandshake) -> (Self, PeerBundle) {
+        (
+            Self {
+                tx_key: finalized.tx_key,
+                rx_key: finalized.rx_key,
+                tx_connection_id: finalized.tx_connection_id,
+                rx_connection_id: finalized.rx_connection_id,
+            },
+            finalized.remote_bundle,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum ConnectionState {
     Disconnected,
-    Initiator {
-        hello: Hello,
-        deadline: Instant,
-        stage: HandshakeInitiator,
-    },
-    Responder {
-        hello: Hello,
-        reply: HelloReply,
-        deadline: Instant,
-        stage: HandshakeResponder,
-    },
-    Connected {
-        session_key: SessionKey,
-        recent_ready: Option<RecentReady>,
-    },
+    Handshaking(HandshakeState),
+    Connected(SessionTransport),
 }
 
 impl ConnectionState {
     pub fn status(&self) -> PeerStatus {
         match self {
             Self::Disconnected => PeerStatus::Disconnected,
-            Self::Initiator { .. } => PeerStatus::Initiator,
-            Self::Responder { .. } => PeerStatus::Responder,
-            Self::Connected { .. } => PeerStatus::Connected,
+            Self::Handshaking(HandshakeState { mode, .. }) => match mode {
+                HandshakeMode::XxInitiator(_) | HandshakeMode::KkInitiator(_) => {
+                    PeerStatus::Initiator
+                }
+                HandshakeMode::XxResponder(_) => PeerStatus::Responder,
+            },
+            Self::Connected(_) => PeerStatus::Connected,
         }
     }
 
-    pub fn session_key(&self) -> Option<&SessionKey> {
+    pub fn transport(&self) -> Option<&SessionTransport> {
         match self {
-            Self::Connected { session_key, .. } => Some(session_key),
+            Self::Connected(transport) => Some(transport),
             _ => None,
         }
     }
@@ -93,7 +91,7 @@ impl PeerRecord {
 pub struct QlFsmState {
     pub replay_cache: ReplayCache,
     pub next_control_id: u32,
-    pub outbound: VecDeque<QlRecord<Vec<u8>>>,
+    pub handshake: Option<QlHandshakeRecord>,
     pub events: VecDeque<QlFsmEvent>,
     pub session_events: VecDeque<QlSessionEvent>,
     pub now: FsmTime,

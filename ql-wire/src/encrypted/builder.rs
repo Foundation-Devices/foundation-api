@@ -1,5 +1,5 @@
 use super::{
-    push_variable_len, RecordAck, SessionCloseBody, SessionFrame, SessionFrameKind, StreamClose,
+    push_variable_len, RecordAck, SessionClose, SessionFrame, SessionFrameKind, StreamClose,
     StreamData, StreamWindow, SIZE_LEN,
 };
 use crate::{
@@ -97,8 +97,8 @@ impl SessionRecordBuilder {
         true
     }
 
-    pub fn push_close(&mut self, close: &SessionCloseBody) -> bool {
-        if !self.can_push_len(1 + SessionCloseBody::WIRE_SIZE) {
+    pub fn push_close(&mut self, close: &SessionClose) -> bool {
+        if !self.can_push_len(1 + SessionClose::WIRE_SIZE) {
             return false;
         }
         self.bytes.push(SessionFrameKind::Close as u8);

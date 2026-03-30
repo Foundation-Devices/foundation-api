@@ -8,11 +8,11 @@ use crate::{
 
 /// closes the whole session immediately with a close code.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionCloseBody {
+pub struct SessionClose {
     pub code: CloseCode,
 }
 
-impl SessionCloseBody {
+impl SessionClose {
     pub const WIRE_SIZE: usize = size_of::<u16>();
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
