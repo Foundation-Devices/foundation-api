@@ -448,10 +448,10 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
             SessionFrame::StreamClose(StreamClose {
                 stream_id: StreamId(9),
                 target: CloseTarget::Both,
-                code: CloseCode::PROTOCOL,
+                code: StreamCloseCode(0),
             }),
             SessionFrame::Close(SessionClose {
-                code: CloseCode::TIMEOUT,
+                code: SessionCloseCode::TIMEOUT,
             }),
         ],
     };
@@ -601,7 +601,7 @@ fn protocol_record_size_breakdown() {
         &session.tx_key,
         &SessionRecord {
             frames: vec![SessionFrame::Close(SessionClose {
-                code: CloseCode::PROTOCOL,
+                code: SessionCloseCode::PROTOCOL,
             })],
         },
     );

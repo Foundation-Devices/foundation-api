@@ -1,6 +1,5 @@
 use std::mem::size_of;
 
-use super::CloseCode;
 use crate::{
     codec::{self, Reader},
     WireError,
@@ -9,11 +8,11 @@ use crate::{
 /// closes the whole session immediately with a close code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionClose {
-    pub code: CloseCode,
+    pub code: SessionCloseCode,
 }
 
 impl SessionClose {
-    pub const WIRE_SIZE: usize = size_of::<u16>();
+    pub const WIRE_SIZE: usize = size_of::<SessionCloseCode>();
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         codec::push_u16(out, self.code.0);
@@ -23,7 +22,17 @@ impl SessionClose {
         let mut reader = Reader::new(bytes);
         let code = reader.take_u16()?;
         Ok(Self {
-            code: CloseCode(code),
+            code: SessionCloseCode(code),
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct SessionCloseCode(pub u16);
+
+impl SessionCloseCode {
+    pub const CANCELLED: Self = Self(0);
+    pub const PROTOCOL: Self = Self(1);
+    pub const TIMEOUT: Self = Self(2);
 }

@@ -189,7 +189,7 @@ fn queued_stream_work_is_failed_when_handshake_times_out() {
     assert_eq!(
         harness.a.fsm.take_next_session_event(),
         Some(QlSessionEvent::SessionClosed(SessionClose {
-            code: ql_wire::CloseCode::TIMEOUT
+            code: ql_wire::SessionCloseCode::TIMEOUT
         }))
     );
     assert!(harness.next_outbound_a().is_none());
@@ -313,7 +313,10 @@ fn ack_frame_releases_stream_capacity_and_emits_writable() {
 fn kill_session_disconnects_locally() {
     let mut harness = Harness::connected(QlFsmConfig::default());
 
-    harness.a.fsm.kill_session(ql_wire::CloseCode::CANCELLED);
+    harness
+        .a
+        .fsm
+        .kill_session(ql_wire::SessionCloseCode::CANCELLED);
 
     assert!(matches!(
         harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
@@ -322,7 +325,7 @@ fn kill_session_disconnects_locally() {
     assert_eq!(
         harness.a.fsm.take_next_session_event(),
         Some(QlSessionEvent::SessionClosed(SessionClose {
-            code: ql_wire::CloseCode::CANCELLED
+            code: ql_wire::SessionCloseCode::CANCELLED
         }))
     );
     assert!(matches!(

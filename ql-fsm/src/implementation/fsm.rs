@@ -1,6 +1,9 @@
 use std::time::Instant;
 
-use ql_wire::{self as wire, CloseCode, CloseTarget, QlCrypto, SessionHeader, StreamId};
+use ql_wire::{
+    self as wire, CloseTarget, QlCrypto, SessionClose, SessionCloseCode, SessionHeader,
+    StreamCloseCode, StreamId,
+};
 
 use crate::{OutboundWrite, QlFsm, QlFsmError, QlSessionEvent, SessionWriteId, StreamReadIter};
 
@@ -108,7 +111,7 @@ pub fn reject_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
     fsm.session.reject_write(write_id.0);
 }
 
-pub fn kill_session(fsm: &mut QlFsm, code: CloseCode) {
+pub fn kill_session(fsm: &mut QlFsm, code: SessionCloseCode) {
     let Some(entry) = fsm.peer.as_mut() else {
         return;
     };
@@ -121,9 +124,7 @@ pub fn kill_session(fsm: &mut QlFsm, code: CloseCode) {
     super::reset_session(fsm);
     fsm.state
         .session_events
-        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionClose {
-            code,
-        }));
+        .push_back(QlSessionEvent::SessionClosed(SessionClose { code }));
 }
 
 pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, QlFsmError> {
@@ -165,7 +166,7 @@ pub fn close_stream(
     fsm: &mut QlFsm,
     stream_id: StreamId,
     target: CloseTarget,
-    code: CloseCode,
+    code: StreamCloseCode,
 ) -> Result<(), QlFsmError> {
     ensure_peer_bound(fsm)?;
     Ok(fsm.session.close_stream(stream_id, target, code)?)

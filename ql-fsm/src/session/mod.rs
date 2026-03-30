@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 
 use indexmap::map::Entry;
 use ql_wire::{
-    CloseCode, CloseTarget, RecordAck, RecordSeq, SessionClose, SessionFrame,
-    SessionRecordBuilder, StreamClose, StreamData, StreamId, StreamWindow, WireError,
+    CloseTarget, RecordAck, RecordSeq, SessionClose, SessionCloseCode, SessionFrame,
+    SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamId, StreamWindow,
+    WireError,
 };
 
 use self::{
@@ -169,7 +170,7 @@ impl SessionFsm {
         &mut self,
         stream_id: StreamId,
         target: CloseTarget,
-        code: CloseCode,
+        code: StreamCloseCode,
     ) -> Result<(), StreamError> {
         self.ensure_session_open()?;
         {
@@ -264,7 +265,7 @@ impl SessionFsm {
                 Err(_) => {
                     self.fail_session(
                         SessionClose {
-                            code: CloseCode::PROTOCOL,
+                            code: SessionCloseCode::PROTOCOL,
                         },
                         &mut emit,
                     );
@@ -346,7 +347,7 @@ impl SessionFsm {
         {
             self.fail_session(
                 SessionClose {
-                    code: CloseCode::TIMEOUT,
+                    code: SessionCloseCode::TIMEOUT,
                 },
                 &mut emit,
             );
@@ -752,7 +753,7 @@ impl SessionFsm {
                 if !self.config.local_parity.remote().matches(stream_id) {
                     self.fail_session(
                         SessionClose {
-                            code: CloseCode::PROTOCOL,
+                            code: SessionCloseCode::PROTOCOL,
                         },
                         emit,
                     );
@@ -775,7 +776,7 @@ impl SessionFsm {
                 }
                 self.fail_session(
                     SessionClose {
-                        code: CloseCode::PROTOCOL,
+                        code: SessionCloseCode::PROTOCOL,
                     },
                     emit,
                 );
@@ -806,7 +807,7 @@ impl SessionFsm {
             | Err(StreamRxError::OffsetOverflow) => {
                 self.fail_session(
                     SessionClose {
-                        code: CloseCode::PROTOCOL,
+                        code: SessionCloseCode::PROTOCOL,
                     },
                     emit,
                 );
@@ -824,7 +825,7 @@ impl SessionFsm {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
             self.fail_session(
                 SessionClose {
-                    code: CloseCode::PROTOCOL,
+                    code: SessionCloseCode::PROTOCOL,
                 },
                 emit,
             );
@@ -852,7 +853,7 @@ impl SessionFsm {
                 if !self.config.local_parity.remote().matches(frame.stream_id) {
                     self.fail_session(
                         SessionClose {
-                            code: CloseCode::PROTOCOL,
+                            code: SessionCloseCode::PROTOCOL,
                         },
                         emit,
                     );

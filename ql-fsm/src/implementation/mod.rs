@@ -57,16 +57,14 @@ pub fn handle_bind_peer(fsm: &mut QlFsm, peer: Peer) {
     emit_peer_status(fsm);
 }
 
-fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::CloseCode) {
+fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::SessionCloseCode) {
     if !fsm.session.has_pending_stream_work() {
         return;
     }
     reset_session(fsm);
     fsm.state
         .session_events
-        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionClose {
-            code,
-        }));
+        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionClose { code }));
 }
 
 fn forward_session_event(

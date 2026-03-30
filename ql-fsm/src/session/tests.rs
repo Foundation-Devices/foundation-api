@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    CloseCode, CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionFrame, SessionRecord,
-    StreamClose, StreamData, StreamId, XID,
+    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionFrame, SessionRecord, StreamClose,
+    StreamCloseCode, StreamData, StreamId, XID,
 };
 
 use super::{state::StreamParity, SessionEvent, SessionFsm, SessionFsmConfig};
@@ -222,7 +222,7 @@ fn remote_stream_close_is_reliable_and_retried() {
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
-    fsm.close_stream(stream_id, CloseTarget::Both, CloseCode::CANCELLED)
+    fsm.close_stream(stream_id, CloseTarget::Both, StreamCloseCode(0))
         .unwrap();
 
     let (write_id, _seq, builder) = fsm.take_next_write(now).unwrap();

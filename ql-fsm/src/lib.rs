@@ -29,8 +29,8 @@ use std::time::{Duration, Instant};
 
 pub use error::QlFsmError;
 use ql_wire::{
-    CloseCode, CloseTarget, PeerBundle, QlCrypto, QlIdentity, QlRecord, SessionClose, StreamClose,
-    StreamId, XID,
+    CloseTarget, PeerBundle, QlCrypto, QlIdentity, QlRecord, SessionClose, SessionCloseCode,
+    StreamClose, StreamCloseCode, StreamId, XID,
 };
 pub use session::stream_rx::StreamReadIter;
 
@@ -263,7 +263,7 @@ impl QlFsm {
     }
 
     /// closes the current encrypted session locally
-    pub fn kill_session(&mut self, code: CloseCode) {
+    pub fn kill_session(&mut self, code: SessionCloseCode) {
         implementation::kill_session(self, code);
     }
 
@@ -311,7 +311,7 @@ impl QlFsm {
         &mut self,
         stream_id: StreamId,
         target: CloseTarget,
-        code: CloseCode,
+        code: StreamCloseCode,
     ) -> Result<(), QlFsmError> {
         implementation::close_stream(self, stream_id, target, code)
     }

@@ -94,7 +94,7 @@ pub fn handle_timer(fsm: &mut QlFsm) {
         entry.session = ConnectionState::Disconnected;
     }
     fsm.state.handshake = None;
-    fail_pending_connect_session(fsm, ql_wire::CloseCode::TIMEOUT);
+    fail_pending_connect_session(fsm, ql_wire::SessionCloseCode::TIMEOUT);
     emit_peer_status(fsm);
 }
 
