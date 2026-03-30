@@ -1,12 +1,12 @@
 use super::{
     decrypt_mlkem_ciphertext, decrypt_peer_bundle, encrypt_mlkem_ciphertext, encrypt_peer_bundle,
     finalize_handshake, generate_ephemeral_keypair, initialize_handshake_meta, mix_hash_ephemeral,
-    mix_hash_handshake, require_handshake_meta, EncryptedMlKemCiphertext, EncryptedPeerBundle,
+    mix_hash_xx_handshake, require_handshake_meta, EncryptedMlKemCiphertext, EncryptedPeerBundle,
     EphemeralKeyPair, EphemeralPublicKey, FinalizedHandshake, Role, SymmetricState, PROTOCOL_XX,
 };
 use crate::{
-    codec, HandshakeHeader, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto,
-    QlIdentity, WireError,
+    codec, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity,
+    WireError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,10 +72,9 @@ pub struct Xx3 {
 }
 
 impl Xx3 {
-    pub const ENCODED_LEN: usize =
-        HandshakeMeta::ENCODED_LEN
-            + EncryptedMlKemCiphertext::ENCODED_LEN
-            + EncryptedPeerBundle::ENCODED_LEN;
+    pub const ENCODED_LEN: usize = HandshakeMeta::ENCODED_LEN
+        + EncryptedMlKemCiphertext::ENCODED_LEN
+        + EncryptedPeerBundle::ENCODED_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -191,19 +190,12 @@ impl XxHandshake {
     pub fn write_message(
         &mut self,
         crypto: &impl QlCrypto,
-        header: HandshakeHeader,
         meta: HandshakeMeta,
     ) -> Result<XxMessage, WireError> {
         match self.step {
             XxStep::Send1 => {
                 initialize_handshake_meta(&mut self.handshake_meta, meta)?;
-                mix_hash_handshake(
-                    &mut self.symmetric,
-                    crypto,
-                    header,
-                    HandshakeKind::Xx1,
-                    &meta,
-                );
+                mix_hash_xx_handshake(&mut self.symmetric, crypto, HandshakeKind::Xx1, &meta);
                 let local_ephemeral = generate_ephemeral_keypair(crypto);
                 let public = local_ephemeral.public();
                 mix_hash_ephemeral(&mut self.symmetric, crypto, &public);
@@ -216,13 +208,7 @@ impl XxHandshake {
             }
             XxStep::Send2 => {
                 require_handshake_meta(&self.handshake_meta, meta)?;
-                mix_hash_handshake(
-                    &mut self.symmetric,
-                    crypto,
-                    header,
-                    HandshakeKind::Xx2,
-                    &meta,
-                );
+                mix_hash_xx_handshake(&mut self.symmetric, crypto, HandshakeKind::Xx2, &meta);
                 let remote_ephemeral = self
                     .remote_ephemeral
                     .clone()
@@ -244,13 +230,7 @@ impl XxHandshake {
             }
             XxStep::Send3 => {
                 require_handshake_meta(&self.handshake_meta, meta)?;
-                mix_hash_handshake(
-                    &mut self.symmetric,
-                    crypto,
-                    header,
-                    HandshakeKind::Xx3,
-                    &meta,
-                );
+                mix_hash_xx_handshake(&mut self.symmetric, crypto, HandshakeKind::Xx3, &meta);
                 let remote_bundle = self.remote_bundle.clone().ok_or(WireError::InvalidState)?;
                 let (skem_ciphertext, skem_secret) =
                     crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
@@ -271,13 +251,7 @@ impl XxHandshake {
             }
             XxStep::Send4 => {
                 require_handshake_meta(&self.handshake_meta, meta)?;
-                mix_hash_handshake(
-                    &mut self.symmetric,
-                    crypto,
-                    header,
-                    HandshakeKind::Xx4,
-                    &meta,
-                );
+                mix_hash_xx_handshake(&mut self.symmetric, crypto, HandshakeKind::Xx4, &meta);
                 let remote_bundle = self.remote_bundle.clone().ok_or(WireError::InvalidState)?;
                 let (skem_ciphertext, skem_secret) =
                     crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
@@ -299,7 +273,6 @@ impl XxHandshake {
     pub fn read_message(
         &mut self,
         crypto: &impl QlCrypto,
-        header: HandshakeHeader,
         now_seconds: u64,
         message: &XxMessage,
     ) -> Result<(), WireError> {
@@ -307,10 +280,9 @@ impl XxHandshake {
             (XxStep::Recv1, XxMessage::Message1(message)) => {
                 message.meta.ensure_not_expired(now_seconds)?;
                 initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
-                mix_hash_handshake(
+                mix_hash_xx_handshake(
                     &mut self.symmetric,
                     crypto,
-                    header,
                     HandshakeKind::Xx1,
                     &message.meta,
                 );
@@ -322,10 +294,9 @@ impl XxHandshake {
             (XxStep::Recv2, XxMessage::Message2(message)) => {
                 message.meta.ensure_not_expired(now_seconds)?;
                 require_handshake_meta(&self.handshake_meta, message.meta)?;
-                mix_hash_handshake(
+                mix_hash_xx_handshake(
                     &mut self.symmetric,
                     crypto,
-                    header,
                     HandshakeKind::Xx2,
                     &message.meta,
                 );
@@ -348,10 +319,9 @@ impl XxHandshake {
             (XxStep::Recv3, XxMessage::Message3(message)) => {
                 message.meta.ensure_not_expired(now_seconds)?;
                 require_handshake_meta(&self.handshake_meta, message.meta)?;
-                mix_hash_handshake(
+                mix_hash_xx_handshake(
                     &mut self.symmetric,
                     crypto,
-                    header,
                     HandshakeKind::Xx3,
                     &message.meta,
                 );
@@ -374,10 +344,9 @@ impl XxHandshake {
             (XxStep::Recv4, XxMessage::Message4(message)) => {
                 message.meta.ensure_not_expired(now_seconds)?;
                 require_handshake_meta(&self.handshake_meta, message.meta)?;
-                mix_hash_handshake(
+                mix_hash_xx_handshake(
                     &mut self.symmetric,
                     crypto,
-                    header,
                     HandshakeKind::Xx4,
                     &message.meta,
                 );

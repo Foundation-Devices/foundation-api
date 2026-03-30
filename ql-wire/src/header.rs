@@ -1,10 +1,4 @@
-use crate::{codec, QL_WIRE_VERSION, XID};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HandshakeHeader {
-    pub sender: XID,
-    pub recipient: XID,
-}
+use crate::{codec, QL_WIRE_VERSION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionHeader {
@@ -29,31 +23,6 @@ impl ConnectionId {
 
     pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
-    }
-}
-
-impl HandshakeHeader {
-    pub const ENCODED_LEN: usize = XID::SIZE * 2;
-
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_bytes(out, &self.sender.0);
-        codec::push_bytes(out, &self.recipient.0);
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, crate::WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let header = Self::decode_from(&mut reader)?;
-        reader.finish()?;
-        Ok(header)
-    }
-
-    pub fn decode_from<B: crate::ByteSlice>(
-        reader: &mut codec::Reader<B>,
-    ) -> Result<Self, crate::WireError> {
-        Ok(Self {
-            sender: XID(reader.take_array()?),
-            recipient: XID(reader.take_array()?),
-        })
     }
 }
 

@@ -1,14 +1,13 @@
 use crate::{
-    codec, ConnectionId, HandshakeHeader, HandshakeKind, MlKemCiphertext, MlKemKeyPair,
-    MlKemPublicKey, Nonce, PeerBundle, QlCrypto, SessionKey, WireError,
-    ENCRYPTED_MESSAGE_AUTH_SIZE,
+    codec, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey, Nonce,
+    PeerBundle, QlCrypto, SessionKey, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 mod kk;
 mod meta;
 mod xx;
 
-pub use kk::{Kk1, Kk2, KkHandshake, KkMessage};
+pub use kk::{Kk1, Kk2, KkHandshake, KkHandshakeHeader, KkMessage};
 pub use meta::{HandshakeId, HandshakeMeta};
 pub use xx::{Xx1, Xx2, Xx3, Xx4, XxHandshake, XxMessage};
 
@@ -266,14 +265,26 @@ fn mix_hash_ephemeral(
     symmetric.mix_hash(crypto, public.mlkem_public_key.as_bytes());
 }
 
-fn mix_hash_handshake(
+fn mix_hash_xx_handshake(
     symmetric: &mut SymmetricState,
     crypto: &impl QlCrypto,
-    header: HandshakeHeader,
     kind: HandshakeKind,
     meta: &HandshakeMeta,
 ) {
-    let mut encoded_header = Vec::with_capacity(HandshakeHeader::ENCODED_LEN);
+    let encoded = meta.encode();
+    symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);
+    symmetric.mix_hash(crypto, &[kind as u8]);
+    symmetric.mix_hash(crypto, &encoded);
+}
+
+fn mix_hash_kk_handshake(
+    symmetric: &mut SymmetricState,
+    crypto: &impl QlCrypto,
+    header: KkHandshakeHeader,
+    kind: HandshakeKind,
+    meta: &HandshakeMeta,
+) {
+    let mut encoded_header = Vec::with_capacity(KkHandshakeHeader::ENCODED_LEN);
     header.encode_into(&mut encoded_header);
     let encoded = meta.encode();
     symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);

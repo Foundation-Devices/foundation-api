@@ -3,17 +3,21 @@ use crate::{codec, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, Wire
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerBundle {
     pub version: u16,
+    pub xid: XID,
     pub capabilities: u32,
     pub mlkem_public_key: MlKemPublicKey,
 }
 
 impl PeerBundle {
     pub const VERSION: u16 = 1;
-    pub const ENCODED_LEN: usize =
-        core::mem::size_of::<u16>() + core::mem::size_of::<u32>() + MlKemPublicKey::SIZE;
+    pub const ENCODED_LEN: usize = core::mem::size_of::<u16>()
+        + XID::SIZE
+        + core::mem::size_of::<u32>()
+        + MlKemPublicKey::SIZE;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         codec::push_u16(out, self.version);
+        codec::push_bytes(out, &self.xid.0);
         codec::push_u32(out, self.capabilities);
         codec::push_bytes(out, self.mlkem_public_key.as_bytes());
     }
@@ -28,6 +32,7 @@ impl PeerBundle {
         let mut reader = codec::Reader::new(bytes);
         let bundle = Self {
             version: reader.take_u16()?,
+            xid: XID(reader.take_array()?),
             capabilities: reader.take_u32()?,
             mlkem_public_key: MlKemPublicKey::from_data(reader.take_array()?),
         };
@@ -66,6 +71,7 @@ impl QlIdentity {
     pub fn bundle(&self) -> PeerBundle {
         PeerBundle {
             version: PeerBundle::VERSION,
+            xid: self.xid,
             capabilities: self.capabilities,
             mlkem_public_key: self.mlkem_public_key.clone(),
         }
