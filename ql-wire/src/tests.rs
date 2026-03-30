@@ -156,9 +156,9 @@ fn xid(byte: u8) -> XID {
     XID([byte; XID::SIZE])
 }
 
-fn control_meta(id: u32) -> ControlMeta {
-    ControlMeta {
-        control_id: ControlId(id),
+fn handshake_meta(id: u32) -> HandshakeMeta {
+    HandshakeMeta {
+        handshake_id: HandshakeId(id),
         valid_until: 10_000 + u64::from(id),
     }
 }
@@ -200,7 +200,7 @@ fn peer_bundle_round_trip() {
 #[test]
 fn handshake_record_round_trip_uses_handshake_header() {
     let message = Xx1 {
-        meta: control_meta(1),
+        meta: handshake_meta(1),
         ephemeral: EphemeralPublicKey {
             mlkem_public_key: MlKemPublicKey::from_data([9; MlKemPublicKey::SIZE]),
         },
@@ -223,6 +223,34 @@ fn handshake_record_round_trip_uses_handshake_header() {
 }
 
 #[test]
+fn xx_handshake_rejects_tampered_handshake_meta() {
+    let crypto = TestCrypto::new(9);
+    let initiator = make_identity(&crypto, 1);
+    let responder = make_identity(&crypto, 2);
+
+    let mut initiator_state = XxHandshake::new_initiator(&crypto, initiator);
+    let mut responder_state = XxHandshake::new_responder(&crypto, responder);
+
+    let m1 = initiator_state
+        .write_message(&crypto, handshake_meta(77))
+        .unwrap();
+    responder_state.read_message(&crypto, &m1).unwrap();
+
+    let mut m2 = responder_state
+        .write_message(&crypto, handshake_meta(77))
+        .unwrap();
+    let XxMessage::Message2(message) = &mut m2 else {
+        panic!("expected xx2");
+    };
+    message.meta.handshake_id = HandshakeId(78);
+
+    assert_eq!(
+        initiator_state.read_message(&crypto, &m2),
+        Err(WireError::InvalidPayload)
+    );
+}
+
+#[test]
 fn xx_handshake_round_trip_derives_matching_transport() {
     let crypto = TestCrypto::new(10);
     let initiator = make_identity(&crypto, 1);
@@ -232,22 +260,22 @@ fn xx_handshake_round_trip_derives_matching_transport() {
     let mut responder_state = XxHandshake::new_responder(&crypto, responder.clone());
 
     let m1 = initiator_state
-        .write_message(&crypto, control_meta(1))
+        .write_message(&crypto, handshake_meta(1))
         .unwrap();
     responder_state.read_message(&crypto, &m1).unwrap();
 
     let m2 = responder_state
-        .write_message(&crypto, control_meta(2))
+        .write_message(&crypto, handshake_meta(1))
         .unwrap();
     initiator_state.read_message(&crypto, &m2).unwrap();
 
     let m3 = initiator_state
-        .write_message(&crypto, control_meta(3))
+        .write_message(&crypto, handshake_meta(1))
         .unwrap();
     responder_state.read_message(&crypto, &m3).unwrap();
 
     let m4 = responder_state
-        .write_message(&crypto, control_meta(4))
+        .write_message(&crypto, handshake_meta(1))
         .unwrap();
     initiator_state.read_message(&crypto, &m4).unwrap();
 
@@ -284,12 +312,12 @@ fn kk_handshake_round_trip_derives_matching_transport() {
         KkHandshake::new_responder(&crypto, responder.clone(), initiator.bundle());
 
     let m1 = initiator_state
-        .write_message(&crypto, control_meta(11))
+        .write_message(&crypto, handshake_meta(11))
         .unwrap();
     responder_state.read_message(&crypto, &m1).unwrap();
 
     let m2 = responder_state
-        .write_message(&crypto, control_meta(12))
+        .write_message(&crypto, handshake_meta(11))
         .unwrap();
     initiator_state.read_message(&crypto, &m2).unwrap();
 
@@ -404,22 +432,22 @@ fn protocol_record_size_breakdown() {
     let mut xx_responder = XxHandshake::new_responder(&crypto, responder.clone());
 
     let xx1 = xx_initiator
-        .write_message(&crypto, control_meta(101))
+        .write_message(&crypto, handshake_meta(101))
         .unwrap();
     xx_responder.read_message(&crypto, &xx1).unwrap();
 
     let xx2 = xx_responder
-        .write_message(&crypto, control_meta(102))
+        .write_message(&crypto, handshake_meta(101))
         .unwrap();
     xx_initiator.read_message(&crypto, &xx2).unwrap();
 
     let xx3 = xx_initiator
-        .write_message(&crypto, control_meta(103))
+        .write_message(&crypto, handshake_meta(101))
         .unwrap();
     xx_responder.read_message(&crypto, &xx3).unwrap();
 
     let xx4 = xx_responder
-        .write_message(&crypto, control_meta(104))
+        .write_message(&crypto, handshake_meta(101))
         .unwrap();
     xx_initiator.read_message(&crypto, &xx4).unwrap();
 
@@ -434,12 +462,12 @@ fn protocol_record_size_breakdown() {
         KkHandshake::new_responder(&crypto, responder.clone(), initiator.bundle());
 
     let kk1 = kk_initiator
-        .write_message(&crypto, control_meta(201))
+        .write_message(&crypto, handshake_meta(201))
         .unwrap();
     kk_responder.read_message(&crypto, &kk1).unwrap();
 
     let kk2 = kk_responder
-        .write_message(&crypto, control_meta(202))
+        .write_message(&crypto, handshake_meta(201))
         .unwrap();
     kk_initiator.read_message(&crypto, &kk2).unwrap();
 

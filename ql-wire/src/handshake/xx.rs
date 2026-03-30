@@ -1,19 +1,20 @@
 use super::{
     decrypt_mlkem_ciphertext, decrypt_peer_bundle, encrypt_mlkem_ciphertext, encrypt_peer_bundle,
-    finalize_handshake, generate_ephemeral_keypair, mix_hash_ephemeral, EncryptedMlKemCiphertext,
+    finalize_handshake, generate_ephemeral_keypair, initialize_handshake_meta, mix_hash_ephemeral,
+    mix_hash_handshake_meta, require_handshake_meta, EncryptedMlKemCiphertext,
     EncryptedPeerBundle, EphemeralKeyPair, EphemeralPublicKey, FinalizedHandshake, Role,
     SymmetricState, ENCRYPTED_MLKEM_CIPHERTEXT_LEN, ENCRYPTED_PEER_BUNDLE_LEN, PROTOCOL_XX,
 };
-use crate::{codec, ControlMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity, WireError};
+use crate::{codec, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity, WireError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xx1 {
-    pub meta: ControlMeta,
+    pub meta: HandshakeMeta,
     pub ephemeral: EphemeralPublicKey,
 }
 
 impl Xx1 {
-    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN + EphemeralPublicKey::ENCODED_LEN;
+    pub const ENCODED_LEN: usize = HandshakeMeta::ENCODED_LEN + EphemeralPublicKey::ENCODED_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -22,7 +23,7 @@ impl Xx1 {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
-        let meta = ControlMeta::decode_from(&mut reader)?;
+        let meta = HandshakeMeta::decode_from(&mut reader)?;
         let ephemeral =
             EphemeralPublicKey::decode(&reader.take_bytes(EphemeralPublicKey::ENCODED_LEN)?)?;
         reader.finish()?;
@@ -32,14 +33,14 @@ impl Xx1 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xx2 {
-    pub meta: ControlMeta,
+    pub meta: HandshakeMeta,
     pub ekem_ciphertext: MlKemCiphertext,
     pub static_bundle: EncryptedPeerBundle,
 }
 
 impl Xx2 {
     pub const ENCODED_LEN: usize =
-        ControlMeta::ENCODED_LEN + MlKemCiphertext::SIZE + ENCRYPTED_PEER_BUNDLE_LEN;
+        HandshakeMeta::ENCODED_LEN + MlKemCiphertext::SIZE + ENCRYPTED_PEER_BUNDLE_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -49,7 +50,7 @@ impl Xx2 {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
-        let meta = ControlMeta::decode_from(&mut reader)?;
+        let meta = HandshakeMeta::decode_from(&mut reader)?;
         let ekem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
         let static_bundle = EncryptedPeerBundle::from_data(reader.take_array()?);
         reader.finish()?;
@@ -63,14 +64,14 @@ impl Xx2 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xx3 {
-    pub meta: ControlMeta,
+    pub meta: HandshakeMeta,
     pub skem_ciphertext: EncryptedMlKemCiphertext,
     pub static_bundle: EncryptedPeerBundle,
 }
 
 impl Xx3 {
     pub const ENCODED_LEN: usize =
-        ControlMeta::ENCODED_LEN + ENCRYPTED_MLKEM_CIPHERTEXT_LEN + ENCRYPTED_PEER_BUNDLE_LEN;
+        HandshakeMeta::ENCODED_LEN + ENCRYPTED_MLKEM_CIPHERTEXT_LEN + ENCRYPTED_PEER_BUNDLE_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -80,7 +81,7 @@ impl Xx3 {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
-        let meta = ControlMeta::decode_from(&mut reader)?;
+        let meta = HandshakeMeta::decode_from(&mut reader)?;
         let skem_ciphertext = EncryptedMlKemCiphertext::from_data(reader.take_array()?);
         let static_bundle = EncryptedPeerBundle::from_data(reader.take_array()?);
         reader.finish()?;
@@ -94,12 +95,12 @@ impl Xx3 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xx4 {
-    pub meta: ControlMeta,
+    pub meta: HandshakeMeta,
     pub skem_ciphertext: EncryptedMlKemCiphertext,
 }
 
 impl Xx4 {
-    pub const ENCODED_LEN: usize = ControlMeta::ENCODED_LEN + ENCRYPTED_MLKEM_CIPHERTEXT_LEN;
+    pub const ENCODED_LEN: usize = HandshakeMeta::ENCODED_LEN + ENCRYPTED_MLKEM_CIPHERTEXT_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -108,7 +109,7 @@ impl Xx4 {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
-        let meta = ControlMeta::decode_from(&mut reader)?;
+        let meta = HandshakeMeta::decode_from(&mut reader)?;
         let skem_ciphertext = EncryptedMlKemCiphertext::from_data(reader.take_array()?);
         reader.finish()?;
         Ok(Self {
@@ -148,6 +149,7 @@ pub struct XxHandshake {
     local_ephemeral: Option<EphemeralKeyPair>,
     remote_ephemeral: Option<EphemeralPublicKey>,
     remote_bundle: Option<PeerBundle>,
+    handshake_meta: Option<HandshakeMeta>,
 }
 
 impl XxHandshake {
@@ -160,6 +162,7 @@ impl XxHandshake {
             local_ephemeral: None,
             remote_ephemeral: None,
             remote_bundle: None,
+            handshake_meta: None,
         }
     }
 
@@ -172,6 +175,7 @@ impl XxHandshake {
             local_ephemeral: None,
             remote_ephemeral: None,
             remote_bundle: None,
+            handshake_meta: None,
         }
     }
 
@@ -182,10 +186,12 @@ impl XxHandshake {
     pub fn write_message(
         &mut self,
         crypto: &impl QlCrypto,
-        meta: ControlMeta,
+        meta: HandshakeMeta,
     ) -> Result<XxMessage, WireError> {
         match self.step {
             XxStep::Send1 => {
+                initialize_handshake_meta(&mut self.handshake_meta, meta)?;
+                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"xx1", &meta);
                 let local_ephemeral = generate_ephemeral_keypair(crypto);
                 let public = local_ephemeral.public();
                 mix_hash_ephemeral(&mut self.symmetric, crypto, &public);
@@ -197,6 +203,8 @@ impl XxHandshake {
                 }))
             }
             XxStep::Send2 => {
+                require_handshake_meta(&self.handshake_meta, meta)?;
+                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"xx2", &meta);
                 let remote_ephemeral = self
                     .remote_ephemeral
                     .clone()
@@ -217,6 +225,8 @@ impl XxHandshake {
                 }))
             }
             XxStep::Send3 => {
+                require_handshake_meta(&self.handshake_meta, meta)?;
+                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"xx3", &meta);
                 let remote_bundle = self.remote_bundle.clone().ok_or(WireError::InvalidState)?;
                 let (skem_ciphertext, skem_secret) =
                     crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
@@ -236,6 +246,8 @@ impl XxHandshake {
                 }))
             }
             XxStep::Send4 => {
+                require_handshake_meta(&self.handshake_meta, meta)?;
+                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"xx4", &meta);
                 let remote_bundle = self.remote_bundle.clone().ok_or(WireError::InvalidState)?;
                 let (skem_ciphertext, skem_secret) =
                     crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
@@ -261,12 +273,16 @@ impl XxHandshake {
     ) -> Result<(), WireError> {
         match (&self.step, message) {
             (XxStep::Recv1, XxMessage::Message1(message)) => {
+                initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
+                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"xx1", &message.meta);
                 mix_hash_ephemeral(&mut self.symmetric, crypto, &message.ephemeral);
                 self.remote_ephemeral = Some(message.ephemeral.clone());
                 self.step = XxStep::Send2;
                 Ok(())
             }
             (XxStep::Recv2, XxMessage::Message2(message)) => {
+                require_handshake_meta(&self.handshake_meta, message.meta)?;
+                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"xx2", &message.meta);
                 let local_ephemeral = self
                     .local_ephemeral
                     .as_ref()
@@ -284,6 +300,8 @@ impl XxHandshake {
                 Ok(())
             }
             (XxStep::Recv3, XxMessage::Message3(message)) => {
+                require_handshake_meta(&self.handshake_meta, message.meta)?;
+                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"xx3", &message.meta);
                 let skem_ciphertext = decrypt_mlkem_ciphertext(
                     crypto,
                     &mut self.symmetric,
@@ -301,6 +319,8 @@ impl XxHandshake {
                 Ok(())
             }
             (XxStep::Recv4, XxMessage::Message4(message)) => {
+                require_handshake_meta(&self.handshake_meta, message.meta)?;
+                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"xx4", &message.meta);
                 let skem_ciphertext = decrypt_mlkem_ciphertext(
                     crypto,
                     &mut self.symmetric,

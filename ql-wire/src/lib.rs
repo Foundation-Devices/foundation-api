@@ -6,7 +6,6 @@
 
 mod bytes;
 mod codec;
-mod control;
 mod crypto;
 mod encrypted;
 mod encrypted_message;
@@ -20,7 +19,6 @@ mod record;
 mod xid;
 
 pub use bytes::*;
-pub use control::*;
 pub use crypto::*;
 pub use encrypted::*;
 pub use encrypted_message::*;

@@ -3,9 +3,11 @@ use crate::{
     QlCrypto, SessionKey, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
+mod meta;
 mod kk;
 mod xx;
 
+pub use meta::{HandshakeId, HandshakeMeta};
 pub use kk::{Kk1, Kk2, KkHandshake, KkMessage};
 pub use xx::{Xx1, Xx2, Xx3, Xx4, XxHandshake, XxMessage};
 
@@ -13,6 +15,7 @@ const SHA256_BLOCK_LEN: usize = 64;
 const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
 const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const CONNECTION_ID_DOMAIN: &[u8] = b"ql-wire:conn-id:v1";
+const HANDSHAKE_META_DOMAIN: &[u8] = b"ql-wire:handshake-meta:v1";
 
 pub const ENCRYPTED_MLKEM_CIPHERTEXT_LEN: usize =
     MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
@@ -260,6 +263,42 @@ fn mix_hash_ephemeral(
     public: &EphemeralPublicKey,
 ) {
     symmetric.mix_hash(crypto, public.mlkem_public_key.as_bytes());
+}
+
+fn mix_hash_handshake_meta(
+    symmetric: &mut SymmetricState,
+    crypto: &impl QlCrypto,
+    message_name: &[u8],
+    meta: &HandshakeMeta,
+) {
+    let encoded = meta.encode();
+    symmetric.mix_hash(crypto, HANDSHAKE_META_DOMAIN);
+    symmetric.mix_hash(crypto, message_name);
+    symmetric.mix_hash(crypto, &encoded);
+}
+
+fn initialize_handshake_meta(
+    expected: &mut Option<HandshakeMeta>,
+    meta: HandshakeMeta,
+) -> Result<(), WireError> {
+    match expected {
+        Some(stored) if *stored != meta => Err(WireError::InvalidPayload),
+        Some(_) => Ok(()),
+        None => {
+            *expected = Some(meta);
+            Ok(())
+        }
+    }
+}
+
+fn require_handshake_meta(
+    expected: &Option<HandshakeMeta>,
+    meta: HandshakeMeta,
+) -> Result<(), WireError> {
+    match expected {
+        Some(stored) if *stored == meta => Ok(()),
+        _ => Err(WireError::InvalidPayload),
+    }
 }
 
 fn encrypt_peer_bundle(

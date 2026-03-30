@@ -2,15 +2,15 @@ use crate::{codec, WireError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct ControlId(pub u32);
+pub struct HandshakeId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ControlMeta {
-    pub control_id: ControlId,
+pub struct HandshakeMeta {
+    pub handshake_id: HandshakeId,
     pub valid_until: u64,
 }
 
-impl ControlMeta {
+impl HandshakeMeta {
     pub const ENCODED_LEN: usize = core::mem::size_of::<u32>() + core::mem::size_of::<u64>();
 
     pub fn ensure_not_expired(&self, now_seconds: u64) -> Result<(), WireError> {
@@ -22,7 +22,7 @@ impl ControlMeta {
     }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_u32(out, self.control_id.0);
+        codec::push_u32(out, self.handshake_id.0);
         codec::push_u64(out, self.valid_until);
     }
 
@@ -35,7 +35,7 @@ impl ControlMeta {
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
         let meta = Self {
-            control_id: ControlId(reader.take_u32()?),
+            handshake_id: HandshakeId(reader.take_u32()?),
             valid_until: reader.take_u64()?,
         };
         reader.finish()?;
@@ -46,7 +46,7 @@ impl ControlMeta {
         reader: &mut codec::Reader<B>,
     ) -> Result<Self, WireError> {
         Ok(Self {
-            control_id: ControlId(reader.take_u32()?),
+            handshake_id: HandshakeId(reader.take_u32()?),
             valid_until: reader.take_u64()?,
         })
     }
