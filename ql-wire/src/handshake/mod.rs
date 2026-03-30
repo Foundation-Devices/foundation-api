@@ -18,10 +18,6 @@ const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const CONNECTION_ID_DOMAIN: &[u8] = b"ql-wire:conn-id:v1";
 const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
 
-pub const ENCRYPTED_MLKEM_CIPHERTEXT_LEN: usize =
-    MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
-pub const ENCRYPTED_PEER_BUNDLE_LEN: usize = PeerBundle::ENCODED_LEN + ENCRYPTED_MESSAGE_AUTH_SIZE;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EphemeralPublicKey {
     pub mlkem_public_key: MlKemPublicKey,
@@ -45,27 +41,31 @@ impl EphemeralPublicKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncryptedMlKemCiphertext(Box<[u8; ENCRYPTED_MLKEM_CIPHERTEXT_LEN]>);
+pub struct EncryptedMlKemCiphertext(Box<[u8; Self::ENCODED_LEN]>);
 
 impl EncryptedMlKemCiphertext {
-    pub fn from_data(data: [u8; ENCRYPTED_MLKEM_CIPHERTEXT_LEN]) -> Self {
+    pub const ENCODED_LEN: usize = MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
+
+    pub fn from_data(data: [u8; Self::ENCODED_LEN]) -> Self {
         Self(Box::new(data))
     }
 
-    pub fn as_bytes(&self) -> &[u8; ENCRYPTED_MLKEM_CIPHERTEXT_LEN] {
+    pub fn as_bytes(&self) -> &[u8; Self::ENCODED_LEN] {
         self.0.as_ref()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncryptedPeerBundle(Box<[u8; ENCRYPTED_PEER_BUNDLE_LEN]>);
+pub struct EncryptedPeerBundle(Box<[u8; Self::ENCODED_LEN]>);
 
 impl EncryptedPeerBundle {
-    pub fn from_data(data: [u8; ENCRYPTED_PEER_BUNDLE_LEN]) -> Self {
+    pub const ENCODED_LEN: usize = PeerBundle::ENCODED_LEN + ENCRYPTED_MESSAGE_AUTH_SIZE;
+
+    pub fn from_data(data: [u8; Self::ENCODED_LEN]) -> Self {
         Self(Box::new(data))
     }
 
-    pub fn as_bytes(&self) -> &[u8; ENCRYPTED_PEER_BUNDLE_LEN] {
+    pub fn as_bytes(&self) -> &[u8; Self::ENCODED_LEN] {
         self.0.as_ref()
     }
 }
@@ -312,10 +312,10 @@ fn encrypt_peer_bundle(
     bundle: &PeerBundle,
 ) -> Result<EncryptedPeerBundle, WireError> {
     let ciphertext = symmetric.encrypt_and_hash(crypto, &bundle.encode())?;
-    if ciphertext.len() != ENCRYPTED_PEER_BUNDLE_LEN {
+    if ciphertext.len() != EncryptedPeerBundle::ENCODED_LEN {
         return Err(WireError::InvalidState);
     }
-    let mut out = [0u8; ENCRYPTED_PEER_BUNDLE_LEN];
+    let mut out = [0u8; EncryptedPeerBundle::ENCODED_LEN];
     out.copy_from_slice(&ciphertext);
     Ok(EncryptedPeerBundle::from_data(out))
 }
@@ -335,10 +335,10 @@ fn encrypt_mlkem_ciphertext(
     ciphertext: &MlKemCiphertext,
 ) -> Result<EncryptedMlKemCiphertext, WireError> {
     let encrypted = symmetric.encrypt_and_hash(crypto, ciphertext.as_bytes())?;
-    if encrypted.len() != ENCRYPTED_MLKEM_CIPHERTEXT_LEN {
+    if encrypted.len() != EncryptedMlKemCiphertext::ENCODED_LEN {
         return Err(WireError::InvalidState);
     }
-    let mut out = [0u8; ENCRYPTED_MLKEM_CIPHERTEXT_LEN];
+    let mut out = [0u8; EncryptedMlKemCiphertext::ENCODED_LEN];
     out.copy_from_slice(&encrypted);
     Ok(EncryptedMlKemCiphertext::from_data(out))
 }

@@ -2,8 +2,7 @@ use super::{
     decrypt_mlkem_ciphertext, decrypt_peer_bundle, encrypt_mlkem_ciphertext, encrypt_peer_bundle,
     finalize_handshake, generate_ephemeral_keypair, initialize_handshake_meta, mix_hash_ephemeral,
     mix_hash_handshake, require_handshake_meta, EncryptedMlKemCiphertext, EncryptedPeerBundle,
-    EphemeralKeyPair, EphemeralPublicKey, FinalizedHandshake, Role, SymmetricState,
-    ENCRYPTED_MLKEM_CIPHERTEXT_LEN, ENCRYPTED_PEER_BUNDLE_LEN, PROTOCOL_XX,
+    EphemeralKeyPair, EphemeralPublicKey, FinalizedHandshake, Role, SymmetricState, PROTOCOL_XX,
 };
 use crate::{
     codec, HandshakeHeader, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto,
@@ -43,7 +42,7 @@ pub struct Xx2 {
 
 impl Xx2 {
     pub const ENCODED_LEN: usize =
-        HandshakeMeta::ENCODED_LEN + MlKemCiphertext::SIZE + ENCRYPTED_PEER_BUNDLE_LEN;
+        HandshakeMeta::ENCODED_LEN + MlKemCiphertext::SIZE + EncryptedPeerBundle::ENCODED_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -74,7 +73,9 @@ pub struct Xx3 {
 
 impl Xx3 {
     pub const ENCODED_LEN: usize =
-        HandshakeMeta::ENCODED_LEN + ENCRYPTED_MLKEM_CIPHERTEXT_LEN + ENCRYPTED_PEER_BUNDLE_LEN;
+        HandshakeMeta::ENCODED_LEN
+            + EncryptedMlKemCiphertext::ENCODED_LEN
+            + EncryptedPeerBundle::ENCODED_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
@@ -103,7 +104,8 @@ pub struct Xx4 {
 }
 
 impl Xx4 {
-    pub const ENCODED_LEN: usize = HandshakeMeta::ENCODED_LEN + ENCRYPTED_MLKEM_CIPHERTEXT_LEN;
+    pub const ENCODED_LEN: usize =
+        HandshakeMeta::ENCODED_LEN + EncryptedMlKemCiphertext::ENCODED_LEN;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         self.meta.encode_into(out);
