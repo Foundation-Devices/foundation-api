@@ -5,12 +5,6 @@ edition = "2021"
 description = "Quantum Link wire format types and crypto helpers"
 license = "Proprietary"
 
-[dependencies]
-libcrux-ml-kem = { version = "0.0.7", default-features = false, features = [
-  "std",
-  "mlkem1024",
-] }
-
 [dev-dependencies]
 libcrux-aesgcm = "0.0.7"
 sha2 = "0.10"

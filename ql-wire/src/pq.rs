@@ -1,14 +1,18 @@
-use libcrux_ml_kem::{mlkem1024, SHARED_SECRET_SIZE};
-
-use crate::QlCrypto;
-
 pub const ML_KEM_SUITE_TAG: &[u8] = b"ml-kem-1024";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// ql-wire fixes the protocol to ML-KEM-1024 on the wire, but the host
+// platform is free to satisfy QlKem with any backend that produces the same
+// serialized sizes.
+const ML_KEM_1024_SHARED_SECRET_SIZE: usize = 32;
+const ML_KEM_1024_PUBLIC_KEY_SIZE: usize = 1568;
+const ML_KEM_1024_PRIVATE_KEY_SIZE: usize = 3168;
+const ML_KEM_1024_CIPHERTEXT_SIZE: usize = 1568;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionKey([u8; Self::SIZE]);
 
 impl SessionKey {
-    pub const SIZE: usize = SHARED_SECRET_SIZE;
+    pub const SIZE: usize = ML_KEM_1024_SHARED_SECRET_SIZE;
 
     pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(data)
@@ -29,11 +33,17 @@ impl AsRef<[u8]> for SessionKey {
     }
 }
 
+impl Drop for SessionKey {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MlKemPublicKey(Box<[u8; MlKemPublicKey::SIZE]>);
 
 impl MlKemPublicKey {
-    pub const SIZE: usize = mlkem1024::MlKem1024PublicKey::len();
+    pub const SIZE: usize = ML_KEM_1024_PUBLIC_KEY_SIZE;
 
     pub fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(Box::new(data))
@@ -41,6 +51,12 @@ impl MlKemPublicKey {
 
     pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
         self.0.as_ref()
+    }
+}
+
+impl Drop for MlKemPublicKey {
+    fn drop(&mut self) {
+        self.0.as_mut().fill(0);
     }
 }
 
@@ -48,7 +64,7 @@ impl MlKemPublicKey {
 pub struct MlKemPrivateKey(Box<[u8; MlKemPrivateKey::SIZE]>);
 
 impl MlKemPrivateKey {
-    pub const SIZE: usize = mlkem1024::MlKem1024PrivateKey::len();
+    pub const SIZE: usize = ML_KEM_1024_PRIVATE_KEY_SIZE;
 
     pub fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(Box::new(data))
@@ -56,6 +72,12 @@ impl MlKemPrivateKey {
 
     pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
         self.0.as_ref()
+    }
+}
+
+impl Drop for MlKemPrivateKey {
+    fn drop(&mut self) {
+        self.0.as_mut().fill(0);
     }
 }
 
@@ -63,7 +85,7 @@ impl MlKemPrivateKey {
 pub struct MlKemCiphertext(Box<[u8; MlKemCiphertext::SIZE]>);
 
 impl MlKemCiphertext {
-    pub const SIZE: usize = mlkem1024::MlKem1024Ciphertext::len();
+    pub const SIZE: usize = ML_KEM_1024_CIPHERTEXT_SIZE;
 
     pub fn from_data(data: [u8; Self::SIZE]) -> Self {
         Self(Box::new(data))
@@ -74,12 +96,14 @@ impl MlKemCiphertext {
     }
 }
 
+impl Drop for MlKemCiphertext {
+    fn drop(&mut self) {
+        self.0.as_mut().fill(0);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MlKemKeyPair {
     pub private: MlKemPrivateKey,
     pub public: MlKemPublicKey,
-}
-
-pub fn generate_ml_kem_keypair(crypto: &impl QlCrypto) -> MlKemKeyPair {
-    crypto.mlkem_generate_keypair()
 }
