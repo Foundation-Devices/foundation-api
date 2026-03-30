@@ -1,10 +1,13 @@
 use super::{
     decrypt_mlkem_ciphertext, encrypt_mlkem_ciphertext, finalize_handshake,
     generate_ephemeral_keypair, init_kk_symmetric, initialize_handshake_meta, mix_hash_ephemeral,
-    mix_hash_handshake_meta, require_handshake_meta, EncryptedMlKemCiphertext, EphemeralKeyPair,
+    mix_hash_handshake, require_handshake_meta, EncryptedMlKemCiphertext, EphemeralKeyPair,
     EphemeralPublicKey, FinalizedHandshake, Role, SymmetricState, ENCRYPTED_MLKEM_CIPHERTEXT_LEN,
 };
-use crate::{codec, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity, WireError};
+use crate::{
+    codec, HandshakeHeader, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto,
+    QlIdentity, WireError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Kk1 {
@@ -140,12 +143,19 @@ impl KkHandshake {
     pub fn write_message(
         &mut self,
         crypto: &impl QlCrypto,
+        header: HandshakeHeader,
         meta: HandshakeMeta,
     ) -> Result<KkMessage, WireError> {
         match self.step {
             KkStep::Send1 => {
                 initialize_handshake_meta(&mut self.handshake_meta, meta)?;
-                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"kk1", &meta);
+                mix_hash_handshake(
+                    &mut self.symmetric,
+                    crypto,
+                    header,
+                    HandshakeKind::Kk1,
+                    &meta,
+                );
                 let (skem_ciphertext, skem_secret) =
                     crypto.mlkem_encapsulate(&self.remote_bundle.mlkem_public_key);
                 self.symmetric
@@ -167,7 +177,13 @@ impl KkHandshake {
             }
             KkStep::Send2 => {
                 require_handshake_meta(&self.handshake_meta, meta)?;
-                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"kk2", &meta);
+                mix_hash_handshake(
+                    &mut self.symmetric,
+                    crypto,
+                    header,
+                    HandshakeKind::Kk2,
+                    &meta,
+                );
                 let remote_ephemeral = self
                     .remote_ephemeral
                     .clone()
@@ -198,12 +214,19 @@ impl KkHandshake {
     pub fn read_message(
         &mut self,
         crypto: &impl QlCrypto,
+        header: HandshakeHeader,
         message: &KkMessage,
     ) -> Result<(), WireError> {
         match (&self.step, message) {
             (KkStep::Recv1, KkMessage::Message1(message)) => {
                 initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
-                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"kk1", &message.meta);
+                mix_hash_handshake(
+                    &mut self.symmetric,
+                    crypto,
+                    header,
+                    HandshakeKind::Kk1,
+                    &message.meta,
+                );
                 self.symmetric
                     .decrypt_and_hash(crypto, message.skem_ciphertext.as_bytes())?;
                 let skem_secret = crypto
@@ -218,7 +241,13 @@ impl KkHandshake {
             }
             (KkStep::Recv2, KkMessage::Message2(message)) => {
                 require_handshake_meta(&self.handshake_meta, message.meta)?;
-                mix_hash_handshake_meta(&mut self.symmetric, crypto, b"kk2", &message.meta);
+                mix_hash_handshake(
+                    &mut self.symmetric,
+                    crypto,
+                    header,
+                    HandshakeKind::Kk2,
+                    &message.meta,
+                );
                 let local_ephemeral = self
                     .local_ephemeral
                     .as_ref()

@@ -1,21 +1,22 @@
 use crate::{
-    codec, ConnectionId, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey, Nonce, PeerBundle,
-    QlCrypto, SessionKey, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
+    codec, ConnectionId, HandshakeHeader, HandshakeKind, MlKemCiphertext, MlKemKeyPair,
+    MlKemPublicKey, Nonce, PeerBundle, QlCrypto, SessionKey, WireError,
+    ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
-mod meta;
 mod kk;
+mod meta;
 mod xx;
 
-pub use meta::{HandshakeId, HandshakeMeta};
 pub use kk::{Kk1, Kk2, KkHandshake, KkMessage};
+pub use meta::{HandshakeId, HandshakeMeta};
 pub use xx::{Xx1, Xx2, Xx3, Xx4, XxHandshake, XxMessage};
 
 const SHA256_BLOCK_LEN: usize = 64;
 const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
 const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const CONNECTION_ID_DOMAIN: &[u8] = b"ql-wire:conn-id:v1";
-const HANDSHAKE_META_DOMAIN: &[u8] = b"ql-wire:handshake-meta:v1";
+const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
 
 pub const ENCRYPTED_MLKEM_CIPHERTEXT_LEN: usize =
     MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
@@ -265,15 +266,19 @@ fn mix_hash_ephemeral(
     symmetric.mix_hash(crypto, public.mlkem_public_key.as_bytes());
 }
 
-fn mix_hash_handshake_meta(
+fn mix_hash_handshake(
     symmetric: &mut SymmetricState,
     crypto: &impl QlCrypto,
-    message_name: &[u8],
+    header: HandshakeHeader,
+    kind: HandshakeKind,
     meta: &HandshakeMeta,
 ) {
+    let mut encoded_header = Vec::with_capacity(HandshakeHeader::ENCODED_LEN);
+    header.encode_into(&mut encoded_header);
     let encoded = meta.encode();
-    symmetric.mix_hash(crypto, HANDSHAKE_META_DOMAIN);
-    symmetric.mix_hash(crypto, message_name);
+    symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);
+    symmetric.mix_hash(crypto, &encoded_header);
+    symmetric.mix_hash(crypto, &[kind as u8]);
     symmetric.mix_hash(crypto, &encoded);
 }
 
