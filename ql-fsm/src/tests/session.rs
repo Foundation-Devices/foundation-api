@@ -3,7 +3,7 @@ use std::time::Duration;
 use ql_wire::{SessionClose, StreamId};
 
 use super::*;
-use crate::{session::state::StreamParity, QlFsmEvent, QlSessionEvent};
+use crate::{session::state::StreamParity, state::LinkState, QlFsmEvent, QlSessionEvent};
 
 fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();
@@ -58,17 +58,9 @@ fn session_retransmit_uses_new_record_seq() {
     assert_eq!(harness.a.fsm.write_stream(stream_id, b"retry").unwrap(), 5);
 
     let first = harness.next_outbound_a().unwrap();
-    let first_transport = harness
-        .b
-        .fsm
-        .peer
-        .as_ref()
-        .unwrap()
-        .session
-        .transport()
-        .unwrap()
-        .clone();
-    let (first_header, first_record) = decrypt_record(&harness.b.crypto, &first, &first_transport.rx_key);
+    let first_transport = harness.b.fsm.state.link.transport().unwrap().clone();
+    let (first_header, first_record) =
+        decrypt_record(&harness.b.crypto, &first, &first_transport.rx_key);
 
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
     harness.a.fsm.on_timer(harness.time());
@@ -94,7 +86,10 @@ fn session_retransmit_uses_new_record_seq() {
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Readable(stream_id))
     );
-    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"retry".to_vec());
+    assert_eq!(
+        read_stream_all(&mut harness.b.fsm, stream_id),
+        b"retry".to_vec()
+    );
 
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
     harness.a.fsm.on_timer(harness.time());
@@ -118,8 +113,14 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
             .matches(stream_id_b)
     );
 
-    assert_eq!(harness.a.fsm.write_stream(stream_id_a, b"from-a").unwrap(), 6);
-    assert_eq!(harness.b.fsm.write_stream(stream_id_b, b"from-b").unwrap(), 6);
+    assert_eq!(
+        harness.a.fsm.write_stream(stream_id_a, b"from-a").unwrap(),
+        6
+    );
+    assert_eq!(
+        harness.b.fsm.write_stream(stream_id_b, b"from-b").unwrap(),
+        6
+    );
 
     harness.pump();
 
@@ -131,7 +132,10 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
         harness.a.fsm.take_next_session_event(),
         Some(QlSessionEvent::Readable(stream_id_b))
     );
-    assert_eq!(read_stream_all(&mut harness.a.fsm, stream_id_b), b"from-b".to_vec());
+    assert_eq!(
+        read_stream_all(&mut harness.a.fsm, stream_id_b),
+        b"from-b".to_vec()
+    );
     assert_eq!(
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Opened(stream_id_a))
@@ -140,7 +144,10 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Readable(stream_id_a))
     );
-    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id_a), b"from-a".to_vec());
+    assert_eq!(
+        read_stream_all(&mut harness.b.fsm, stream_id_a),
+        b"from-a".to_vec()
+    );
 }
 
 #[test]
@@ -177,7 +184,7 @@ fn queued_stream_work_is_failed_when_handshake_times_out() {
         handshake_timeout: Duration::from_millis(50),
         ..QlFsmConfig::default()
     };
-    let mut harness = Harness::paired_unknown(config);
+    let mut harness = Harness::paired_known(config);
 
     let stream_id = harness.a.fsm.open_stream().unwrap();
     assert_eq!(harness.a.fsm.write_stream(stream_id, b"queued").unwrap(), 6);
@@ -205,17 +212,7 @@ fn returned_session_write_is_reissued_with_new_record_seq() {
     let write = harness.next_write_a().unwrap();
     let id = write.session_write_id.expect("expected session write");
     let record = write.record;
-    let session_key = harness
-        .b
-        .fsm
-        .peer
-        .as_ref()
-        .unwrap()
-        .session
-        .transport()
-        .unwrap()
-        .rx_key
-        .clone();
+    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
     let (first_header, first) = decrypt_record(&harness.b.crypto, &record, &session_key);
 
     harness.return_write_a(id);
@@ -241,7 +238,10 @@ fn returned_session_write_is_reissued_with_new_record_seq() {
         harness.b.fsm.take_next_session_event(),
         Some(QlSessionEvent::Readable(stream_id))
     );
-    assert_eq!(read_stream_all(&mut harness.b.fsm, stream_id), b"retry".to_vec());
+    assert_eq!(
+        read_stream_all(&mut harness.b.fsm, stream_id),
+        b"retry".to_vec()
+    );
 }
 
 #[test]
@@ -255,17 +255,7 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
     let write = harness.next_write_a().unwrap();
     let id = write.session_write_id.expect("expected session write");
     let record = write.record;
-    let session_key = harness
-        .b
-        .fsm
-        .peer
-        .as_ref()
-        .unwrap()
-        .session
-        .transport()
-        .unwrap()
-        .rx_key
-        .clone();
+    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
     let (first_header, first) = decrypt_record(&harness.b.crypto, &record, &session_key);
 
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
@@ -318,10 +308,7 @@ fn kill_session_disconnects_locally() {
         .fsm
         .kill_session(ql_wire::SessionCloseCode::CANCELLED);
 
-    assert!(matches!(
-        harness.a.fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(crate::state::ConnectionState::Disconnected)
-    ));
+    assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
     assert_eq!(
         harness.a.fsm.take_next_session_event(),
         Some(QlSessionEvent::SessionClosed(SessionClose {
@@ -348,17 +335,10 @@ fn session_records_contain_ack_frames_after_delivery() {
     harness.b.fsm.on_timer(harness.time());
 
     let ack = harness.next_outbound_b().unwrap();
-    let session_key = harness
-        .a
-        .fsm
-        .peer
-        .as_ref()
-        .unwrap()
-        .session
-        .transport()
-        .unwrap()
-        .rx_key
-        .clone();
+    let session_key = harness.a.fsm.state.link.transport().unwrap().rx_key.clone();
     let (_ack_header, ack_record) = decrypt_record(&harness.a.crypto, &ack, &session_key);
-    assert!(matches!(ack_record.frames.as_slice(), [ql_wire::SessionFrame::Ack(_)]));
+    assert!(matches!(
+        ack_record.frames.as_slice(),
+        [ql_wire::SessionFrame::Ack(_)]
+    ));
 }

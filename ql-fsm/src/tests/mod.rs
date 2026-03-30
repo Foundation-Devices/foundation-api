@@ -9,16 +9,16 @@ use std::{
 use libcrux_aesgcm::AesGcm256Key;
 use libcrux_ml_kem::mlkem1024;
 use ql_wire::{
-    self, generate_identity, ConnectionId, ENCRYPTED_MESSAGE_AUTH_SIZE, MlKemCiphertext,
-    MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce, QlAead, QlCrypto, QlHash, QlIdentity,
-    QlKem, QlRandom, QlRecord, SessionKey, XID,
+    self, generate_identity, ConnectionId, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
+    MlKemPublicKey, Nonce, QlAead, QlCrypto, QlHash, QlIdentity, QlKem, QlRandom, QlRecord,
+    SessionKey, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
 };
 use sha2::{Digest, Sha256};
 
 use crate::{
     session::{state::StreamParity, SessionFsm, SessionFsmConfig},
-    state::{ConnectionState, SessionTransport},
-    FsmTime, OutboundWrite, Peer, QlFsm, QlFsmConfig, SessionWriteId,
+    state::{LinkState, SessionTransport},
+    FsmTime, OutboundWrite, QlFsm, QlFsmConfig, SessionWriteId,
 };
 
 #[derive(Clone)]
@@ -182,8 +182,12 @@ impl Harness {
             },
         };
 
-        harness.a.fsm.bind_peer(peer_from_identity(&identity_b, know_a));
-        harness.b.fsm.bind_peer(peer_from_identity(&identity_a, know_b));
+        if know_a {
+            harness.a.fsm.bind_peer(identity_b.bundle());
+        }
+        if know_b {
+            harness.b.fsm.bind_peer(identity_a.bundle());
+        }
         while harness.a.fsm.take_next_event().is_some() {}
         while harness.b.fsm.take_next_event().is_some() {}
 
@@ -199,7 +203,7 @@ impl Harness {
             unix_secs: 1_700_000_000,
         };
 
-        let mut harness = Self {
+        Self {
             now,
             unix_secs: time.unix_secs,
             a: Node {
@@ -207,18 +211,10 @@ impl Harness {
                 crypto: TestCrypto::new(1),
             },
             b: Node {
-                fsm: QlFsm::new(config, identity_b.clone(), time),
+                fsm: QlFsm::new(config, identity_b, time),
                 crypto: TestCrypto::new(2),
             },
-        };
-
-        harness
-            .a
-            .fsm
-            .bind_peer(Peer { xid: identity_b.xid, bundle: None });
-        while harness.a.fsm.take_next_event().is_some() {}
-
-        harness
+        }
     }
 
     fn connected(config: QlFsmConfig) -> Self {
@@ -228,13 +224,13 @@ impl Harness {
         let a_to_b_conn = ConnectionId::from_data([0xA1; ConnectionId::SIZE]);
         let b_to_a_conn = ConnectionId::from_data([0xB2; ConnectionId::SIZE]);
 
-        harness.a.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected(SessionTransport {
+        harness.a.fsm.state.link = LinkState::Connected(SessionTransport {
             tx_key: a_to_b_key.clone(),
             rx_key: b_to_a_key.clone(),
             tx_connection_id: a_to_b_conn,
             rx_connection_id: b_to_a_conn,
         });
-        harness.b.fsm.peer.as_mut().unwrap().session = ConnectionState::Connected(SessionTransport {
+        harness.b.fsm.state.link = LinkState::Connected(SessionTransport {
             tx_key: b_to_a_key,
             rx_key: a_to_b_key,
             tx_connection_id: b_to_a_conn,
@@ -327,24 +323,17 @@ fn test_identity(seed: u8) -> QlIdentity {
     generate_identity(&crypto, XID([seed; XID::SIZE]))
 }
 
-fn peer_from_identity(identity: &QlIdentity, know_bundle: bool) -> Peer {
-    Peer {
-        xid: identity.xid,
-        bundle: know_bundle.then(|| identity.bundle()),
-    }
-}
-
 fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
     let (local, peer, config) = if a {
         (
             harness.a.fsm.identity.xid,
-            harness.a.fsm.peer.as_ref().unwrap().peer.xid,
+            harness.a.fsm.peer.as_ref().unwrap().xid,
             harness.a.fsm.config,
         )
     } else {
         (
             harness.b.fsm.identity.xid,
-            harness.b.fsm.peer.as_ref().unwrap().peer.xid,
+            harness.b.fsm.peer.as_ref().unwrap().xid,
             harness.b.fsm.config,
         )
     };
@@ -372,7 +361,10 @@ fn decrypt_record(
     let plaintext =
         ql_wire::decrypt_record(crypto, &record.header, record.payload.clone(), session_key)
             .unwrap();
-    (record.header, ql_wire::SessionRecord::decode(&plaintext).unwrap())
+    (
+        record.header,
+        ql_wire::SessionRecord::decode(&plaintext).unwrap(),
+    )
 }
 
 fn sha256_parts(parts: &[&[u8]]) -> [u8; 32] {

@@ -37,7 +37,7 @@ pub use session::stream_rx::StreamReadIter;
 use crate::{
     replay_cache::ReplayCache,
     session::SessionFsm,
-    state::{PeerRecord, QlFsmState},
+    state::{LinkState, QlFsmState},
 };
 
 /// time input for `QlFsm`
@@ -47,15 +47,6 @@ pub struct FsmTime {
     pub instant: Instant,
     /// wall-clock unix time used for expiration checks
     pub unix_secs: u64,
-}
-
-/// bound remote peer identity and public keys
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Peer {
-    /// peer xid
-    pub xid: XID,
-    /// peer static bundle when known
-    pub bundle: Option<PeerBundle>,
 }
 
 /// connection state for the bound peer
@@ -75,7 +66,7 @@ pub enum PeerStatus {
 #[derive(Debug, Clone)]
 pub enum QlFsmEvent {
     /// a peer was bound or replaced
-    NewPeer(Peer),
+    NewPeer(PeerBundle),
     /// the bound peer was cleared
     ClearPeer,
     /// the peer changed connection state
@@ -157,13 +148,13 @@ impl Default for QlFsmConfig {
     }
 }
 
-/// synchronous driver for pairing, handshake, and encrypted streams
+/// synchronous driver for peer binding, handshake, and encrypted streams
 pub struct QlFsm {
     /// active configuration
     pub config: QlFsmConfig,
     /// local identity and private keys
     pub identity: QlIdentity,
-    pub(crate) peer: Option<PeerRecord>,
+    pub(crate) peer: Option<PeerBundle>,
     pub(crate) session: SessionFsm,
     pub(crate) state: QlFsmState,
 }
@@ -192,6 +183,7 @@ impl QlFsm {
                 replay_cache: ReplayCache::default(),
                 next_control_id: 1,
                 handshake: None,
+                link: LinkState::Idle,
                 events: Default::default(),
                 session_events: Default::default(),
                 now,
@@ -200,7 +192,7 @@ impl QlFsm {
     }
 
     /// binds or replaces the remote peer
-    pub fn bind_peer(&mut self, peer: Peer) {
+    pub fn bind_peer(&mut self, peer: PeerBundle) {
         implementation::handle_bind_peer(self, peer);
     }
 

@@ -29,7 +29,12 @@ fn next_outbound(fsm: &mut SessionFsm, now: Instant) -> Option<(RecordSeq, Sessi
     Some((seq, SessionRecord::decode(builder.bytes()).unwrap()))
 }
 
-fn receive_events(fsm: &mut SessionFsm, now: Instant, seq: RecordSeq, record: SessionRecord) -> Vec<SessionEvent> {
+fn receive_events(
+    fsm: &mut SessionFsm,
+    now: Instant,
+    seq: RecordSeq,
+    record: SessionRecord,
+) -> Vec<SessionEvent> {
     let bytes = record.encode();
     let frames = SessionRecord::parse(&bytes).unwrap();
     let mut events = Vec::new();
@@ -90,10 +95,9 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
     let (first_seq, first) = next_outbound(&mut fsm, now).unwrap();
     let (second_seq, _second) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
     assert_ne!(first_seq, second_seq);
-    assert!(first
-        .frames
-        .iter()
-        .any(|frame| matches!(frame, SessionFrame::StreamData(frame) if frame.stream_id == stream_id_a)));
+    assert!(first.frames.iter().any(
+        |frame| matches!(frame, SessionFrame::StreamData(frame) if frame.stream_id == stream_id_a)
+    ));
 
     assert_eq!(fsm.write_stream(stream_id_b, b"b-2").unwrap(), 3);
     let (_third_seq, third) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
@@ -234,7 +238,8 @@ fn remote_stream_close_is_reliable_and_retried() {
     ));
 
     fsm.on_timer(now + Duration::from_millis(200), |_| {});
-    let (_retried_seq, retried) = next_outbound(&mut fsm, now + Duration::from_millis(200)).unwrap();
+    let (_retried_seq, retried) =
+        next_outbound(&mut fsm, now + Duration::from_millis(200)).unwrap();
     assert_eq!(first.frames, retried.frames);
 }
 
@@ -281,7 +286,12 @@ fn duplicate_stream_data_is_not_redelivered() {
         })],
     };
     let _ = receive_events(&mut fsm, now, RecordSeq(1), record.clone());
-    let _ = receive_events(&mut fsm, now + Duration::from_millis(1), RecordSeq(2), record);
+    let _ = receive_events(
+        &mut fsm,
+        now + Duration::from_millis(1),
+        RecordSeq(2),
+        record,
+    );
 
     assert_eq!(read_stream_all(&mut fsm, stream_id), b"hi".to_vec());
 }

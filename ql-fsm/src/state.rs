@@ -1,25 +1,20 @@
 use std::{collections::VecDeque, time::Instant};
 
 use ql_wire::{
-    ConnectionId, EphemeralPublicKey, HandshakeId, KkHandshake, PeerBundle, QlHandshakeRecord,
-    SessionKey, XxHandshake,
+    ConnectionId, EphemeralPublicKey, KkHandshake, PeerBundle, QlHandshakeRecord, SessionKey,
+    XxHandshake,
 };
 
-use crate::{replay_cache::ReplayCache, FsmTime, Peer, PeerStatus, QlFsmEvent, QlSessionEvent};
+use crate::{replay_cache::ReplayCache, FsmTime, PeerStatus, QlFsmEvent, QlSessionEvent};
 
-#[derive(Debug, Clone)]
-pub enum HandshakeMode {
-    XxInitiator(XxHandshake),
-    XxResponder(XxHandshake),
-    KkInitiator(KkHandshake),
-}
-
-#[derive(Debug, Clone)]
-pub struct HandshakeState {
-    pub id: HandshakeId,
-    pub deadline: Instant,
-    pub mode: HandshakeMode,
-    pub initial_ephemeral: Option<EphemeralPublicKey>,
+pub struct QlFsmState {
+    pub replay_cache: ReplayCache,
+    pub next_control_id: u32,
+    pub handshake: Option<QlHandshakeRecord>,
+    pub link: LinkState,
+    pub events: VecDeque<QlFsmEvent>,
+    pub session_events: VecDeque<QlSessionEvent>,
+    pub now: FsmTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,22 +40,31 @@ impl SessionTransport {
 }
 
 #[derive(Debug, Clone)]
-pub enum ConnectionState {
-    Disconnected,
-    Handshaking(HandshakeState),
+pub enum LinkState {
+    Idle,
+    XxInitiator {
+        handshake: XxHandshake,
+        deadline: Instant,
+        initial_ephemeral: EphemeralPublicKey,
+    },
+    XxResponder {
+        handshake: XxHandshake,
+        deadline: Instant,
+    },
+    KkInitiator {
+        handshake: KkHandshake,
+        deadline: Instant,
+        initial_ephemeral: EphemeralPublicKey,
+    },
     Connected(SessionTransport),
 }
 
-impl ConnectionState {
+impl LinkState {
     pub fn status(&self) -> PeerStatus {
         match self {
-            Self::Disconnected => PeerStatus::Disconnected,
-            Self::Handshaking(HandshakeState { mode, .. }) => match mode {
-                HandshakeMode::XxInitiator(_) | HandshakeMode::KkInitiator(_) => {
-                    PeerStatus::Initiator
-                }
-                HandshakeMode::XxResponder(_) => PeerStatus::Responder,
-            },
+            Self::Idle => PeerStatus::Disconnected,
+            Self::XxInitiator { .. } | Self::KkInitiator { .. } => PeerStatus::Initiator,
+            Self::XxResponder { .. } => PeerStatus::Responder,
             Self::Connected(_) => PeerStatus::Connected,
         }
     }
@@ -71,28 +75,13 @@ impl ConnectionState {
             _ => None,
         }
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct PeerRecord {
-    pub peer: Peer,
-    pub session: ConnectionState,
-}
-
-impl PeerRecord {
-    pub fn new(peer: Peer) -> Self {
-        Self {
-            peer,
-            session: ConnectionState::Disconnected,
+    pub fn handshake_deadline(&self) -> Option<Instant> {
+        match self {
+            Self::Idle | Self::Connected(_) => None,
+            Self::XxInitiator { deadline, .. }
+            | Self::XxResponder { deadline, .. }
+            | Self::KkInitiator { deadline, .. } => Some(*deadline),
         }
     }
-}
-
-pub struct QlFsmState {
-    pub replay_cache: ReplayCache,
-    pub next_control_id: u32,
-    pub handshake: Option<QlHandshakeRecord>,
-    pub events: VecDeque<QlFsmEvent>,
-    pub session_events: VecDeque<QlSessionEvent>,
-    pub now: FsmTime,
 }

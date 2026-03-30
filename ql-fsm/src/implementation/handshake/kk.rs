@@ -1,46 +1,35 @@
 use ql_wire::{
-    self as wire, HandshakeHeader, HandshakePayload, Kk1, Kk2, KkMessage, PeerBundle, QlCrypto,
-    WireError, XID,
+    self as wire, Kk1, Kk2, KkMessage, PeerBundle, QlCrypto, QlHandshakeRecord, WireError,
 };
 
 use super::{
-    ensure_bound_peer, ensure_bound_peer_with_bundle, finish_handshake,
-    reset_connected_session_if_needed, should_ignore_inbound_handshake_start,
+    enqueue_handshake, finish_handshake, is_replayed_handshake_start,
+    reset_connected_session_if_needed,
 };
 use crate::{
-    implementation::{emit_peer_status, enqueue_handshake, is_replayed_handshake_start},
-    state::{ConnectionState, HandshakeMode, HandshakeState, SessionTransport},
+    implementation::emit_peer_status,
+    state::{LinkState, SessionTransport},
     QlFsm, QlFsmError,
 };
 
 pub fn start_initiator(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
-    peer: XID,
-    bundle: PeerBundle,
+    peer: PeerBundle,
 ) -> Result<(), QlFsmError> {
-    let header = HandshakeHeader {
-        sender: fsm.identity.xid,
-        recipient: peer,
-    };
     let meta = super::next_handshake_meta(fsm);
-    let mut handshake = wire::KkHandshake::new_initiator(crypto, fsm.identity.clone(), bundle);
-    let message = handshake.write_message(crypto, header, meta)?;
-    let payload = kk_payload(message);
-    let initial_ephemeral = match &payload {
-        HandshakePayload::Kk1(message) => Some(message.ephemeral.clone()),
-        _ => None,
+    let mut handshake = wire::KkHandshake::new_initiator(crypto, fsm.identity.clone(), peer);
+    let message = handshake.write_message(crypto, meta)?;
+    let KkMessage::Message1(message) = message else {
+        return Err(QlFsmError::InvalidPayload);
     };
 
-    if let Some(entry) = fsm.peer.as_mut() {
-        entry.session = ConnectionState::Handshaking(HandshakeState {
-            id: meta.handshake_id,
-            deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
-            mode: HandshakeMode::KkInitiator(handshake),
-            initial_ephemeral,
-        });
-    }
-    enqueue_handshake(fsm, peer, payload);
+    fsm.state.link = LinkState::KkInitiator {
+        initial_ephemeral: message.ephemeral.clone(),
+        handshake,
+        deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
+    };
+    enqueue_handshake(fsm, QlHandshakeRecord::Kk1(message));
     emit_peer_status(fsm);
     Ok(())
 }
@@ -48,68 +37,54 @@ pub fn start_initiator(
 pub fn handle_kk1(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
-    header: HandshakeHeader,
     message: &Kk1,
 ) -> Result<(), QlFsmError> {
-    if should_ignore_inbound_handshake_start(fsm, header.sender, false, &message.ephemeral) {
+    if should_ignore_inbound(fsm, message) {
+        return Ok(());
+    }
+    if is_replayed_handshake_start(fsm, message.meta) {
         return Ok(());
     }
 
-    if is_replayed_handshake_start(fsm, header.sender, message.meta) {
-        return Ok(());
+    let Some(peer) = fsm.peer.clone() else {
+        return Err(QlFsmError::InvalidPayload);
+    };
+    if message.header.recipient != fsm.identity.xid || message.header.sender != peer.xid {
+        return Err(QlFsmError::InvalidXid);
     }
-    ensure_bound_peer_with_bundle(fsm, header.sender)?;
+
     reset_connected_session_if_needed(fsm);
 
-    let bundle = fsm
-        .peer
-        .as_ref()
-        .and_then(|entry| entry.peer.bundle.clone())
-        .ok_or(QlFsmError::NoPeerBound)?;
-    let mut handshake = wire::KkHandshake::new_responder(crypto, fsm.identity.clone(), bundle);
+    let mut handshake = wire::KkHandshake::new_responder(crypto, fsm.identity.clone(), peer);
     handshake.read_message(
         crypto,
-        header,
         fsm.state.now.unix_secs,
         &KkMessage::Message1(message.clone()),
     )?;
-    let outbound = handshake.write_message(
-        crypto,
-        HandshakeHeader {
-            sender: fsm.identity.xid,
-            recipient: header.sender,
-        },
-        message.meta,
-    )?;
+    let outbound = handshake.write_message(crypto, message.meta)?;
     let (transport, remote_bundle) = SessionTransport::from_finalized(handshake.finalize(crypto)?);
     finish_handshake(fsm, transport, remote_bundle)?;
     fsm.state.handshake = None;
-    enqueue_handshake(fsm, header.sender, kk_payload(outbound));
+    enqueue_handshake(fsm, kk_record(outbound));
     Ok(())
 }
 
 pub fn handle_kk2(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
-    header: HandshakeHeader,
     message: &Kk2,
 ) -> Result<(), QlFsmError> {
-    ensure_bound_peer(fsm, header.sender)?;
-    let session = match fsm.peer.as_ref() {
-        Some(entry) => entry.session.clone(),
-        None => return Ok(()),
-    };
-    let ConnectionState::Handshaking(HandshakeState {
-        mode: HandshakeMode::KkInitiator(mut handshake),
-        ..
-    }) = session
+    let LinkState::KkInitiator {
+        mut handshake,
+        deadline: _,
+        initial_ephemeral: _,
+    } = fsm.state.link.clone()
     else {
         return Ok(());
     };
 
     match handshake.read_message(
         crypto,
-        header,
         fsm.state.now.unix_secs,
         &KkMessage::Message2(message.clone()),
     ) {
@@ -122,9 +97,24 @@ pub fn handle_kk2(
     finish_handshake(fsm, transport, remote_bundle)
 }
 
-fn kk_payload(message: KkMessage) -> HandshakePayload {
+fn kk_record(message: KkMessage) -> QlHandshakeRecord {
     match message {
-        KkMessage::Message1(message) => HandshakePayload::Kk1(message),
-        KkMessage::Message2(message) => HandshakePayload::Kk2(message),
+        KkMessage::Message1(message) => QlHandshakeRecord::Kk1(message),
+        KkMessage::Message2(message) => QlHandshakeRecord::Kk2(message),
+    }
+}
+
+pub fn should_ignore_inbound(fsm: &QlFsm, message: &Kk1) -> bool {
+    match &fsm.state.link {
+        LinkState::Idle | LinkState::Connected(_) => false,
+        LinkState::XxInitiator { .. } | LinkState::XxResponder { .. } => true,
+        LinkState::KkInitiator {
+            initial_ephemeral, ..
+        } => {
+            if fsm.peer.as_ref().map(|peer| peer.xid) != Some(message.header.sender) {
+                return false;
+            }
+            super::local_start_wins(initial_ephemeral, &message.ephemeral)
+        }
     }
 }

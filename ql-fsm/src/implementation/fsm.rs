@@ -73,10 +73,9 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
         });
     }
 
-    if matches!(
-        fsm.peer.as_ref().map(|entry| &entry.session),
-        Some(crate::state::ConnectionState::Disconnected)
-    ) && fsm.session.has_pending_stream_work()
+    if matches!(fsm.state.link, crate::state::LinkState::Idle)
+        && fsm.peer.is_some()
+        && fsm.session.has_pending_stream_work()
     {
         let _ = super::handle_connect(fsm, crypto);
         if let Some(record) = fsm.state.handshake.take() {
@@ -112,14 +111,14 @@ pub fn reject_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
 }
 
 pub fn kill_session(fsm: &mut QlFsm, code: SessionCloseCode) {
-    let Some(entry) = fsm.peer.as_mut() else {
+    if fsm.peer.is_none() {
         return;
-    };
-    if !matches!(entry.session, crate::state::ConnectionState::Connected(_)) {
+    }
+    if !matches!(fsm.state.link, crate::state::LinkState::Connected(_)) {
         return;
     }
 
-    entry.session = crate::state::ConnectionState::Disconnected;
+    fsm.state.link = crate::state::LinkState::Idle;
     super::emit_peer_status(fsm);
     super::reset_session(fsm);
     fsm.state
@@ -183,12 +182,7 @@ fn ensure_peer_bound(fsm: &QlFsm) -> Result<(), QlFsmError> {
 
 fn ensure_session_open(fsm: &QlFsm) -> Result<(), QlFsmError> {
     ensure_peer_bound(fsm)?;
-    if fsm
-        .peer
-        .as_ref()
-        .and_then(|entry| entry.session.transport())
-        .is_none()
-    {
+    if fsm.state.link.transport().is_none() {
         return Err(QlFsmError::SessionClosed);
     }
     Ok(())

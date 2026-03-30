@@ -401,7 +401,10 @@ impl SessionFsm {
         })
     }
 
-    pub fn take_next_write(&mut self, now: Instant) -> Option<(u64, RecordSeq, SessionRecordBuilder)> {
+    pub fn take_next_write(
+        &mut self,
+        now: Instant,
+    ) -> Option<(u64, RecordSeq, SessionRecordBuilder)> {
         self.state.now = now;
         self.collect_timeouts();
 
@@ -894,11 +897,7 @@ impl SessionFsm {
         Ok(())
     }
 
-    fn handle_session_close(
-        &mut self,
-        close: SessionClose,
-        emit: &mut impl FnMut(SessionEvent),
-    ) {
+    fn handle_session_close(&mut self, close: SessionClose, emit: &mut impl FnMut(SessionEvent)) {
         if self.state.session_state == SessionState::Closed {
             return;
         }

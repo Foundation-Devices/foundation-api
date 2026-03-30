@@ -66,9 +66,9 @@ impl StreamTx {
         self.segments
             .iter()
             .any(|segment| matches!(segment.state, SendState::Unsent | SendState::Lost))
-            || self
-                .final_offset
-                .is_some_and(|final_offset| matches!(final_offset.state, SendState::Unsent | SendState::Lost))
+            || self.final_offset.is_some_and(|final_offset| {
+                matches!(final_offset.state, SendState::Unsent | SendState::Lost)
+            })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -211,7 +211,8 @@ impl StreamTx {
             self.segments[index].state = state;
         } else {
             let segment = self.segments.remove(index).unwrap();
-            self.segments.insert(index, SendSegment { offset, len, state });
+            self.segments
+                .insert(index, SendSegment { offset, len, state });
             self.segments.insert(
                 index + 1,
                 SendSegment {

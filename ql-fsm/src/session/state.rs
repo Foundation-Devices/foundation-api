@@ -2,8 +2,7 @@ use std::{collections::BTreeSet, time::Instant};
 
 use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionClose, StreamClose, StreamId,
-    XID,
+    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionClose, StreamClose, StreamId, XID,
 };
 
 use super::{

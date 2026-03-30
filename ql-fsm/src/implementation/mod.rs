@@ -8,31 +8,31 @@ pub use handshake::*;
 use ql_wire::XID;
 
 use crate::{
-    state::PeerRecord,
     session::{state::StreamParity, SessionEvent, SessionFsmConfig},
-    Peer, QlFsm, QlFsmEvent, QlSessionEvent,
+    state::LinkState,
+    QlFsm, QlFsmEvent, QlSessionEvent,
 };
 
 fn emit_peer_status(fsm: &mut QlFsm) {
-    if let Some(entry) = fsm.peer.as_ref() {
+    if let Some(peer) = fsm.peer.as_ref() {
         fsm.state.events.push_back(QlFsmEvent::PeerStatusChanged {
-            peer: entry.peer.xid,
-            status: entry.session.status(),
+            peer: peer.xid,
+            status: fsm.state.link.status(),
         });
     }
 }
 
 fn peer_transport(fsm: &QlFsm) -> Option<(XID, crate::state::SessionTransport)> {
-    let entry = fsm.peer.as_ref()?;
-    let transport = entry.session.transport()?.clone();
-    Some((entry.peer.xid, transport))
+    let peer = fsm.peer.as_ref()?;
+    let transport = fsm.state.link.transport()?.clone();
+    Some((peer.xid, transport))
 }
 
 fn reset_session(fsm: &mut QlFsm) {
     let local_parity = fsm
         .peer
         .as_ref()
-        .map(|peer| StreamParity::for_local(fsm.identity.xid, peer.peer.xid))
+        .map(|peer| StreamParity::for_local(fsm.identity.xid, peer.xid))
         .unwrap_or(StreamParity::Even);
     fsm.session = crate::session::SessionFsm::new(
         SessionFsmConfig {
@@ -49,9 +49,10 @@ fn reset_session(fsm: &mut QlFsm) {
     );
 }
 
-pub fn handle_bind_peer(fsm: &mut QlFsm, peer: Peer) {
+pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
     fsm.state.handshake = None;
-    fsm.peer = Some(PeerRecord::new(peer.clone()));
+    fsm.state.link = LinkState::Idle;
+    fsm.peer = Some(peer.clone());
     reset_session(fsm);
     fsm.state.events.push_back(QlFsmEvent::NewPeer(peer));
     emit_peer_status(fsm);
@@ -64,7 +65,9 @@ fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::SessionCloseCode
     reset_session(fsm);
     fsm.state
         .session_events
-        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionClose { code }));
+        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionClose {
+            code,
+        }));
 }
 
 fn forward_session_event(
@@ -104,14 +107,9 @@ fn forward_session_event(
 }
 
 fn apply_session_closed(fsm: &mut QlFsm) {
-    if let Some(entry) = fsm.peer.as_mut() {
-        if matches!(
-            entry.session,
-            crate::state::ConnectionState::Connected { .. }
-        ) {
-            entry.session = crate::state::ConnectionState::Disconnected;
-            emit_peer_status(fsm);
-        }
+    if matches!(fsm.state.link, crate::state::LinkState::Connected(_)) {
+        fsm.state.link = crate::state::LinkState::Idle;
+        emit_peer_status(fsm);
     }
     reset_session(fsm);
 }
