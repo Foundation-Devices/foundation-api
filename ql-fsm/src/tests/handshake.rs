@@ -47,7 +47,7 @@ fn connect_methods_require_bound_peer() {
 }
 
 #[test]
-fn connect_methods_return_busy_when_link_is_not_idle() {
+fn connect_ik_replaces_in_flight_attempt_and_ignores_stale_reply() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
     harness
@@ -55,15 +55,73 @@ fn connect_methods_return_busy_when_link_is_not_idle() {
         .fsm
         .connect_ik(harness.time(), &harness.a.crypto)
         .unwrap();
+    let first = harness.next_outbound_a().unwrap();
+    let first_id = handshake_id(&first);
 
-    assert_eq!(
-        harness.a.fsm.connect_ik(harness.time(), &harness.a.crypto),
-        Err(QlFsmError::Busy)
-    );
-    assert_eq!(
-        harness.a.fsm.connect_kk(harness.time(), &harness.a.crypto),
-        Err(QlFsmError::Busy)
-    );
+    harness
+        .a
+        .fsm
+        .connect_ik(harness.time(), &harness.a.crypto)
+        .unwrap();
+    let second = harness.next_outbound_a().unwrap();
+    let second_id = handshake_id(&second);
+
+    assert_ne!(first_id, second_id);
+
+    harness.deliver_to_b(first);
+    let stale_reply = harness.next_outbound_b().unwrap();
+    assert_eq!(handshake_id(&stale_reply), first_id);
+
+    harness.deliver_to_a(stale_reply);
+    assert!(matches!(
+        harness.a.fsm.state.link,
+        LinkState::IkInitiator(_)
+    ));
+
+    harness.deliver_to_b(second);
+    harness.pump();
+
+    assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
+    assert!(matches!(harness.b.fsm.state.link, LinkState::Connected(_)));
+}
+
+#[test]
+fn connect_kk_replaces_in_flight_attempt_and_ignores_stale_reply() {
+    let mut harness = Harness::paired_known(QlFsmConfig::default());
+
+    harness
+        .a
+        .fsm
+        .connect_kk(harness.time(), &harness.a.crypto)
+        .unwrap();
+    let first = harness.next_outbound_a().unwrap();
+    let first_id = handshake_id(&first);
+
+    harness
+        .a
+        .fsm
+        .connect_kk(harness.time(), &harness.a.crypto)
+        .unwrap();
+    let second = harness.next_outbound_a().unwrap();
+    let second_id = handshake_id(&second);
+
+    assert_ne!(first_id, second_id);
+
+    harness.deliver_to_b(first);
+    let stale_reply = harness.next_outbound_b().unwrap();
+    assert_eq!(handshake_id(&stale_reply), first_id);
+
+    harness.deliver_to_a(stale_reply);
+    assert!(matches!(
+        harness.a.fsm.state.link,
+        LinkState::KkInitiator(_)
+    ));
+
+    harness.deliver_to_b(second);
+    harness.pump();
+
+    assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
+    assert!(matches!(harness.b.fsm.state.link, LinkState::Connected(_)));
 }
 
 #[test]
@@ -185,4 +243,14 @@ fn simultaneous_ik_and_kk_connect_prefers_ik() {
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
     assert!(matches!(harness.b.fsm.state.link, LinkState::Connected(_)));
+}
+
+fn handshake_id(record: &QlRecord<Vec<u8>>) -> ql_wire::HandshakeId {
+    match record {
+        QlRecord::Handshake(ql_wire::QlHandshakeRecord::Ik1(message)) => message.meta.handshake_id,
+        QlRecord::Handshake(ql_wire::QlHandshakeRecord::Ik2(message)) => message.meta.handshake_id,
+        QlRecord::Handshake(ql_wire::QlHandshakeRecord::Kk1(message)) => message.meta.handshake_id,
+        QlRecord::Handshake(ql_wire::QlHandshakeRecord::Kk2(message)) => message.meta.handshake_id,
+        QlRecord::Session(_) => panic!("expected handshake record"),
+    }
 }

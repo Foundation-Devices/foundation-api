@@ -193,13 +193,13 @@ impl QlFsm {
         implementation::handle_bind_peer(self, peer);
     }
 
-    /// starts an IK handshake with the currently bound peer
+    /// starts or replaces an IK handshake with the currently bound peer
     pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
         self.state.now = now;
         implementation::handle_connect_ik(self, crypto)
     }
 
-    /// starts a KK handshake with the currently bound peer
+    /// starts or replaces a KK handshake with the currently bound peer
     pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
         self.state.now = now;
         implementation::handle_connect_kk(self, crypto)

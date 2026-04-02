@@ -10,18 +10,14 @@ use crate::{
 };
 
 pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
-    if !matches!(fsm.state.link, LinkState::Idle) {
-        return Err(QlFsmError::Busy);
-    }
     let peer = fsm.state.peer.clone().ok_or(QlFsmError::NoPeerBound)?;
+    prepare_for_outbound_connect(fsm);
     ik::start_initiator(fsm, crypto, peer)
 }
 
 pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
-    if !matches!(fsm.state.link, LinkState::Idle) {
-        return Err(QlFsmError::Busy);
-    }
     let peer = fsm.state.peer.clone().ok_or(QlFsmError::NoPeerBound)?;
+    prepare_for_outbound_connect(fsm);
     kk::start_initiator(fsm, crypto, peer)
 }
 
@@ -40,6 +36,11 @@ pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
 pub fn enqueue_handshake(fsm: &mut QlFsm, record: QlHandshakeRecord) {
     debug_assert!(fsm.state.handshake.is_none());
     fsm.state.handshake = Some(record);
+}
+
+pub fn prepare_for_outbound_connect(fsm: &mut QlFsm) {
+    fsm.state.handshake = None;
+    reset_connected_session_if_needed(fsm);
 }
 
 pub fn is_replayed_handshake_start(fsm: &mut QlFsm, meta: HandshakeMeta) -> bool {

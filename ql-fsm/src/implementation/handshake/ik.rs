@@ -1,6 +1,4 @@
-use ql_wire::{
-    self as wire, Ik1, Ik2, IkMessage, PeerBundle, QlCrypto, QlHandshakeRecord, WireError,
-};
+use ql_wire::{self as wire, Ik1, Ik2, IkMessage, PeerBundle, QlCrypto, QlHandshakeRecord};
 
 use super::{
     enqueue_handshake, finish_handshake, is_replayed_handshake_start,
@@ -8,7 +6,7 @@ use super::{
 };
 use crate::{
     implementation::emit_peer_status,
-    state::{LinkState, SessionTransport},
+    state::{IkInitiatorState, LinkState, SessionTransport},
     QlFsm, QlFsmError,
 };
 
@@ -24,11 +22,12 @@ pub fn start_initiator(
         return Err(QlFsmError::InvalidPayload);
     };
 
-    fsm.state.link = LinkState::IkInitiator {
+    fsm.state.link = LinkState::IkInitiator(IkInitiatorState {
+        handshake_id: meta.handshake_id,
         initial_ephemeral: message.ephemeral.clone(),
         handshake,
         deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
-    };
+    });
     enqueue_handshake(fsm, QlHandshakeRecord::Ik1(message));
     emit_peer_status(fsm);
     Ok(())
@@ -76,26 +75,27 @@ pub fn handle_ik2(
     crypto: &impl QlCrypto,
     message: &Ik2,
 ) -> Result<(), QlFsmError> {
-    let LinkState::IkInitiator {
-        mut handshake,
-        deadline: _,
-        initial_ephemeral: _,
-    } = fsm.state.link.clone()
-    else {
-        return Ok(());
-    };
+    {
+        let LinkState::IkInitiator(state) = &mut fsm.state.link else {
+            return Ok(());
+        };
 
-    match handshake.read_message(
-        crypto,
-        fsm.state.now.unix_secs,
-        &IkMessage::Message2(message.clone()),
-    ) {
-        Ok(()) => {}
-        Err(WireError::InvalidState) => return Ok(()),
-        Err(error) => return Err(error.into()),
+        if message.meta.handshake_id != state.handshake_id {
+            return Ok(());
+        }
+
+        state.handshake.read_message(
+            crypto,
+            fsm.state.now.unix_secs,
+            &IkMessage::Message2(message.clone()),
+        )?;
     }
 
-    let (transport, remote_bundle) = SessionTransport::from_finalized(handshake.finalize(crypto)?);
+    let LinkState::IkInitiator(state) = fsm.state.link.take() else {
+        unreachable!("active IK initiator was checked above");
+    };
+    let (transport, remote_bundle) =
+        SessionTransport::from_finalized(state.handshake.finalize(crypto)?);
     finish_handshake(fsm, transport, remote_bundle)
 }
 
@@ -109,14 +109,12 @@ fn ik_record(message: IkMessage) -> QlHandshakeRecord {
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Ik1) -> bool {
     match &fsm.state.link {
         LinkState::Idle | LinkState::Connected(_) => false,
-        LinkState::IkInitiator {
-            initial_ephemeral, ..
-        } => {
+        LinkState::IkInitiator(state) => {
             if fsm.state.peer.as_ref().map(|peer| peer.xid) != Some(message.header.sender) {
                 return false;
             }
-            super::local_start_wins(initial_ephemeral, &message.ephemeral)
+            super::local_start_wins(&state.initial_ephemeral, &message.ephemeral)
         }
-        LinkState::KkInitiator { .. } => false,
+        LinkState::KkInitiator(_) => false,
     }
 }

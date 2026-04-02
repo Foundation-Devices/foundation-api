@@ -7,6 +7,8 @@ use crate::session::StreamError;
 pub enum QlFsmError {
     #[error("invalid payload")]
     InvalidPayload,
+    #[error("invalid state")]
+    InvalidState,
     #[error("expired")]
     Expired,
     #[error("decryption failed")]
@@ -23,8 +25,6 @@ pub enum QlFsmError {
     SessionClosed,
     #[error("no peer bound")]
     NoPeerBound,
-    #[error("fsm is busy")]
-    Busy,
     #[error("no active session")]
     NoSession,
 }
@@ -33,9 +33,9 @@ impl From<WireError> for QlFsmError {
     fn from(value: WireError) -> Self {
         match value {
             WireError::InvalidPayload => Self::InvalidPayload,
+            WireError::InvalidState => Self::InvalidState,
             WireError::Expired => Self::Expired,
             WireError::DecryptFailed => Self::DecryptFailed,
-            WireError::InvalidState => Self::InvalidPayload,
         }
     }
 }

@@ -1,8 +1,8 @@
 use std::{collections::VecDeque, time::Instant};
 
 use ql_wire::{
-    ConnectionId, EphemeralPublicKey, IkHandshake, KkHandshake, PeerBundle, QlHandshakeRecord,
-    SessionKey,
+    ConnectionId, EphemeralPublicKey, HandshakeId, IkHandshake, KkHandshake, PeerBundle,
+    QlHandshakeRecord, SessionKey,
 };
 
 use crate::{replay_cache::ReplayCache, FsmTime, PeerStatus, QlFsmEvent, QlSessionEvent};
@@ -43,24 +43,36 @@ impl SessionTransport {
 #[derive(Debug, Clone)]
 pub enum LinkState {
     Idle,
-    IkInitiator {
-        handshake: IkHandshake,
-        deadline: Instant,
-        initial_ephemeral: EphemeralPublicKey,
-    },
-    KkInitiator {
-        handshake: KkHandshake,
-        deadline: Instant,
-        initial_ephemeral: EphemeralPublicKey,
-    },
+    IkInitiator(IkInitiatorState),
+    KkInitiator(KkInitiatorState),
     Connected(SessionTransport),
 }
 
+#[derive(Debug, Clone)]
+pub struct IkInitiatorState {
+    pub handshake: IkHandshake,
+    pub handshake_id: HandshakeId,
+    pub deadline: Instant,
+    pub initial_ephemeral: EphemeralPublicKey,
+}
+
+#[derive(Debug, Clone)]
+pub struct KkInitiatorState {
+    pub handshake: KkHandshake,
+    pub handshake_id: HandshakeId,
+    pub deadline: Instant,
+    pub initial_ephemeral: EphemeralPublicKey,
+}
+
 impl LinkState {
+    pub fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::Idle)
+    }
+
     pub fn status(&self) -> PeerStatus {
         match self {
             Self::Idle => PeerStatus::Disconnected,
-            Self::IkInitiator { .. } | Self::KkInitiator { .. } => PeerStatus::Initiator,
+            Self::IkInitiator(_) | Self::KkInitiator(_) => PeerStatus::Initiator,
             Self::Connected(_) => PeerStatus::Connected,
         }
     }
@@ -75,9 +87,8 @@ impl LinkState {
     pub fn handshake_deadline(&self) -> Option<Instant> {
         match self {
             Self::Idle | Self::Connected(_) => None,
-            Self::IkInitiator { deadline, .. } | Self::KkInitiator { deadline, .. } => {
-                Some(*deadline)
-            }
+            Self::IkInitiator(state) => Some(state.deadline),
+            Self::KkInitiator(state) => Some(state.deadline),
         }
     }
 }
