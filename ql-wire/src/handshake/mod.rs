@@ -1,21 +1,52 @@
 use crate::{
     codec, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey, Nonce,
-    PeerBundle, QlCrypto, SessionKey, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
+    PeerBundle, QlCrypto, SessionKey, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
 };
 
+mod ik;
 mod kk;
 mod meta;
-mod xx;
 
-pub use kk::{Kk1, Kk2, KkHandshake, KkHandshakeHeader, KkMessage};
+pub use ik::{Ik1, Ik2, IkHandshake, IkMessage};
+pub use kk::{Kk1, Kk2, KkHandshake, KkMessage};
 pub use meta::{HandshakeId, HandshakeMeta};
-pub use xx::{Xx1, Xx2, Xx3, Xx4, XxHandshake, XxMessage};
 
 const SHA256_BLOCK_LEN: usize = 64;
-const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
+const PROTOCOL_IK: &[u8] = b"ql-wire:pq-ik:v1";
 const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const CONNECTION_ID_DOMAIN: &[u8] = b"ql-wire:conn-id:v1";
 const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandshakeHeader {
+    pub sender: XID,
+    pub recipient: XID,
+}
+
+impl HandshakeHeader {
+    pub const ENCODED_LEN: usize = XID::SIZE * 2;
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        codec::push_bytes(out, &self.sender.0);
+        codec::push_bytes(out, &self.recipient.0);
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = codec::Reader::new(bytes);
+        let header = Self::decode_from(&mut reader)?;
+        reader.finish()?;
+        Ok(header)
+    }
+
+    pub fn decode_from<B: crate::ByteSlice>(
+        reader: &mut codec::Reader<B>,
+    ) -> Result<Self, WireError> {
+        Ok(Self {
+            sender: XID(reader.take_array()?),
+            recipient: XID(reader.take_array()?),
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EphemeralPublicKey {
@@ -251,6 +282,12 @@ fn init_kk_symmetric(
     symmetric
 }
 
+fn init_ik_symmetric(crypto: &impl QlCrypto, responder_bundle: &PeerBundle) -> SymmetricState {
+    let mut symmetric = SymmetricState::new(crypto, PROTOCOL_IK);
+    symmetric.mix_hash(crypto, &responder_bundle.encode());
+    symmetric
+}
+
 fn generate_ephemeral_keypair(crypto: &impl QlCrypto) -> EphemeralKeyPair {
     EphemeralKeyPair {
         mlkem: crypto.mlkem_generate_keypair(),
@@ -265,26 +302,14 @@ fn mix_hash_ephemeral(
     symmetric.mix_hash(crypto, public.mlkem_public_key.as_bytes());
 }
 
-fn mix_hash_xx_handshake(
+fn mix_hash_routed_handshake(
     symmetric: &mut SymmetricState,
     crypto: &impl QlCrypto,
+    header: HandshakeHeader,
     kind: HandshakeKind,
     meta: &HandshakeMeta,
 ) {
-    let encoded = meta.encode();
-    symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);
-    symmetric.mix_hash(crypto, &[kind as u8]);
-    symmetric.mix_hash(crypto, &encoded);
-}
-
-fn mix_hash_kk_handshake(
-    symmetric: &mut SymmetricState,
-    crypto: &impl QlCrypto,
-    header: KkHandshakeHeader,
-    kind: HandshakeKind,
-    meta: &HandshakeMeta,
-) {
-    let mut encoded_header = Vec::with_capacity(KkHandshakeHeader::ENCODED_LEN);
+    let mut encoded_header = Vec::with_capacity(HandshakeHeader::ENCODED_LEN);
     header.encode_into(&mut encoded_header);
     let encoded = meta.encode();
     symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);

@@ -1,7 +1,7 @@
 use crate::{
     codec,
     encrypted_message::EncryptedMessage,
-    handshake::{Kk1, Kk2, Xx1, Xx2, Xx3, Xx4},
+    handshake::{Ik1, Ik2, Kk1, Kk2},
     ByteSlice, SessionHeader, WireError, QL_WIRE_VERSION,
 };
 
@@ -19,10 +19,8 @@ pub enum QlRecord<B> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlHandshakeRecord {
-    Xx1(Xx1),
-    Xx2(Xx2),
-    Xx3(Xx3),
-    Xx4(Xx4),
+    Ik1(Ik1),
+    Ik2(Ik2),
     Kk1(Kk1),
     Kk2(Kk2),
 }
@@ -49,12 +47,10 @@ impl TryFrom<u8> for RecordType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum HandshakeKind {
-    Xx1 = 1,
-    Xx2 = 2,
-    Xx3 = 3,
-    Xx4 = 4,
-    Kk1 = 5,
-    Kk2 = 6,
+    Ik1 = 1,
+    Ik2 = 2,
+    Kk1 = 3,
+    Kk2 = 4,
 }
 
 impl TryFrom<u8> for HandshakeKind {
@@ -62,12 +58,10 @@ impl TryFrom<u8> for HandshakeKind {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            1 => Ok(Self::Xx1),
-            2 => Ok(Self::Xx2),
-            3 => Ok(Self::Xx3),
-            4 => Ok(Self::Xx4),
-            5 => Ok(Self::Kk1),
-            6 => Ok(Self::Kk2),
+            1 => Ok(Self::Ik1),
+            2 => Ok(Self::Ik2),
+            3 => Ok(Self::Kk1),
+            4 => Ok(Self::Kk2),
             _ => Err(WireError::InvalidPayload),
         }
     }
@@ -76,10 +70,8 @@ impl TryFrom<u8> for HandshakeKind {
 impl QlHandshakeRecord {
     pub fn kind(&self) -> HandshakeKind {
         match self {
-            Self::Xx1(_) => HandshakeKind::Xx1,
-            Self::Xx2(_) => HandshakeKind::Xx2,
-            Self::Xx3(_) => HandshakeKind::Xx3,
-            Self::Xx4(_) => HandshakeKind::Xx4,
+            Self::Ik1(_) => HandshakeKind::Ik1,
+            Self::Ik2(_) => HandshakeKind::Ik2,
             Self::Kk1(_) => HandshakeKind::Kk1,
             Self::Kk2(_) => HandshakeKind::Kk2,
         }
@@ -87,10 +79,8 @@ impl QlHandshakeRecord {
 
     fn encode_into(&self, out: &mut Vec<u8>) {
         match self {
-            Self::Xx1(message) => message.encode_into(out),
-            Self::Xx2(message) => message.encode_into(out),
-            Self::Xx3(message) => message.encode_into(out),
-            Self::Xx4(message) => message.encode_into(out),
+            Self::Ik1(message) => message.encode_into(out),
+            Self::Ik2(message) => message.encode_into(out),
             Self::Kk1(message) => message.encode_into(out),
             Self::Kk2(message) => message.encode_into(out),
         }
@@ -98,10 +88,8 @@ impl QlHandshakeRecord {
 
     fn decode_payload(kind: HandshakeKind, bytes: &[u8]) -> Result<Self, WireError> {
         match kind {
-            HandshakeKind::Xx1 => Ok(Self::Xx1(Xx1::decode(bytes)?)),
-            HandshakeKind::Xx2 => Ok(Self::Xx2(Xx2::decode(bytes)?)),
-            HandshakeKind::Xx3 => Ok(Self::Xx3(Xx3::decode(bytes)?)),
-            HandshakeKind::Xx4 => Ok(Self::Xx4(Xx4::decode(bytes)?)),
+            HandshakeKind::Ik1 => Ok(Self::Ik1(Ik1::decode(bytes)?)),
+            HandshakeKind::Ik2 => Ok(Self::Ik2(Ik2::decode(bytes)?)),
             HandshakeKind::Kk1 => Ok(Self::Kk1(Kk1::decode(bytes)?)),
             HandshakeKind::Kk2 => Ok(Self::Kk2(Kk2::decode(bytes)?)),
         }

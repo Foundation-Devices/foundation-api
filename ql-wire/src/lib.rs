@@ -31,7 +31,7 @@ pub use pq::*;
 pub use record::*;
 pub use xid::*;
 
-pub const QL_WIRE_VERSION: u8 = 1;
+pub const QL_WIRE_VERSION: u8 = 2;
 pub const ENCRYPTED_MESSAGE_AUTH_SIZE: usize = 16;
 
 #[cfg(test)]
