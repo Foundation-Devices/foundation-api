@@ -29,8 +29,6 @@ pub enum StreamRxError {
     InconsistentFinalOffset,
     FinalOffsetBeforeBufferedData,
     BeyondFinalOffset,
-    ConflictingOverlap,
-    ConsumeBeyondReadable,
     TooManyMissingRanges,
 }
 
@@ -103,16 +101,6 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
         }
     }
 
-    #[cfg(test)]
-    pub fn copy_readable(&self) -> Vec<u8> {
-        let readable = self.readable_len();
-        let mut out = Vec::with_capacity(readable);
-        for chunk in self.bytes() {
-            out.extend_from_slice(chunk);
-        }
-        out
-    }
-
     pub fn is_complete(&self) -> bool {
         matches!(self.final_offset, Some(final_offset) if final_offset == self.buffered_end_offset())
             && self.missing.is_empty()
@@ -154,22 +142,23 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
 
         self.ensure_within_window(end)?;
         self.ensure_buffered(end)?;
-        self.validate_overlap(effective_offset, effective_bytes)?;
+        #[cfg(test)]
+        self.assert_valid_overlap(effective_offset, effective_bytes);
         self.write_bytes(effective_offset, effective_bytes);
         self.subtract_missing_range(effective_offset, end)?;
 
         Ok(self.insert_outcome(was_complete, old_readable))
     }
 
-    pub fn consume(&mut self, len: usize) -> Result<(), StreamRxError> {
+    pub fn consume(&mut self, len: usize) {
         let readable = self.readable_len();
+        debug_assert!(len <= readable, "consume beyond readable bytes");
         if len > readable {
-            return Err(StreamRxError::ConsumeBeyondReadable);
+            return;
         }
 
         self.bytes.drain(..len);
         self.start_offset = self.start_offset.saturating_add(len as u64);
-        Ok(())
     }
 
     fn insert_outcome(&self, was_complete: bool, old_readable: usize) -> InsertOutcome {
@@ -234,7 +223,8 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
         self.missing.push(range)
     }
 
-    fn validate_overlap(&self, offset: u64, bytes: &[u8]) -> Result<(), StreamRxError> {
+    #[cfg(test)]
+    fn assert_valid_overlap(&self, offset: u64, bytes: &[u8]) {
         let mut gap_index = self.first_gap_index_after(offset);
 
         for (index, byte) in bytes.iter().copied().enumerate() {
@@ -251,19 +241,31 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
                 continue;
             }
 
-            if self.byte_at(absolute) != byte {
-                return Err(StreamRxError::ConflictingOverlap);
-            }
-        }
+            let index =
+                usize::try_from(absolute - self.start_offset).expect("read index exceeds usize");
 
-        Ok(())
+            assert_eq!(
+                self.bytes[index], byte,
+                "conflicting overlap at stream offset {absolute}"
+            );
+        }
     }
 
     fn write_bytes(&mut self, offset: u64, bytes: &[u8]) {
-        let start_index =
-            usize::try_from(offset - self.start_offset).expect("write index exceeds usize");
-        for (index, byte) in bytes.iter().copied().enumerate() {
-            self.bytes[start_index + index] = byte;
+        let start = usize::try_from(offset - self.start_offset).expect("write index exceeds usize");
+        let (front, back) = self.bytes.as_mut_slices();
+
+        if start >= front.len() {
+            let start = start - front.len();
+            back[start..start + bytes.len()].copy_from_slice(bytes);
+            return;
+        }
+
+        let front_len = (front.len() - start).min(bytes.len());
+        front[start..start + front_len].copy_from_slice(&bytes[..front_len]);
+
+        if front_len < bytes.len() {
+            back[..bytes.len() - front_len].copy_from_slice(&bytes[front_len..]);
         }
     }
 
@@ -334,11 +336,6 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
         self.missing
             .as_slice()
             .partition_point(|range| range.end <= offset)
-    }
-
-    fn byte_at(&self, offset: u64) -> u8 {
-        let index = usize::try_from(offset - self.start_offset).expect("read index exceeds usize");
-        self.bytes[index]
     }
 }
 
@@ -465,6 +462,15 @@ impl<const N: usize> std::ops::IndexMut<usize> for MissingRanges<N> {
 mod tests {
     use super::{InsertOutcome, MissingRange, StreamRx, StreamRxError};
 
+    pub fn copy_readable(rx: &StreamRx) -> Vec<u8> {
+        let readable = rx.readable_len();
+        let mut out = Vec::with_capacity(readable);
+        for chunk in rx.bytes() {
+            out.extend_from_slice(chunk);
+        }
+        out
+    }
+
     #[test]
     fn contiguous_insert_becomes_readable_and_complete() {
         let mut rx = StreamRx::<8>::new(64);
@@ -479,7 +485,7 @@ mod tests {
             }
         );
         assert_eq!(rx.readable_len(), 5);
-        assert_eq!(rx.copy_readable(), b"hello");
+        assert_eq!(copy_readable(&rx), b"hello");
         assert_eq!(rx.final_offset, Some(5));
         assert!(rx.is_complete());
         assert!(rx.missing.is_empty());
@@ -508,7 +514,7 @@ mod tests {
                 became_complete: true,
             }
         );
-        assert_eq!(rx.copy_readable(), b"hello world");
+        assert_eq!(copy_readable(&rx), b"hello world");
         assert!(rx.missing.is_empty());
         assert!(rx.is_complete());
     }
@@ -527,17 +533,16 @@ mod tests {
                 became_complete: false,
             }
         );
-        assert_eq!(rx.copy_readable(), b"hello");
+        assert_eq!(copy_readable(&rx), b"hello");
     }
 
     #[test]
-    fn conflicting_overlap_is_rejected() {
+    #[should_panic(expected = "conflicting overlap at stream offset 3")]
+    fn conflicting_overlap_panics_in_test_builds() {
         let mut rx = StreamRx::<8>::new(64);
 
         rx.insert(0, false, b"abcdef").unwrap();
-        let error = rx.insert(3, false, b"xyz").unwrap_err();
-
-        assert_eq!(error, StreamRxError::ConflictingOverlap);
+        rx.insert(3, false, b"xyz").unwrap();
     }
 
     #[test]
@@ -545,9 +550,9 @@ mod tests {
         let mut rx = StreamRx::<8>::new(64);
 
         rx.insert(0, false, b"abcd").unwrap();
-        rx.consume(2).unwrap();
+        rx.consume(2);
         assert_eq!(rx.start_offset(), 2);
-        assert_eq!(rx.copy_readable(), b"cd");
+        assert_eq!(copy_readable(&rx), b"cd");
 
         let outcome = rx.insert(1, true, b"bcde").unwrap();
         assert_eq!(
@@ -557,7 +562,7 @@ mod tests {
                 became_complete: true,
             }
         );
-        assert_eq!(rx.copy_readable(), b"cde");
+        assert_eq!(copy_readable(&rx), b"cde");
         assert_eq!(rx.final_offset, Some(5));
         assert!(rx.is_complete());
     }
@@ -599,7 +604,8 @@ mod tests {
             }
         );
         assert!(rx.missing.is_empty());
-        assert_eq!(rx.copy_readable(), b"abcdefghij");
+
+        assert_eq!(copy_readable(&rx), b"abcdefghij");
         assert!(rx.is_complete());
     }
 }

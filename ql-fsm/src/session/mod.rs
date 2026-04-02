@@ -212,10 +212,7 @@ impl SessionFsm {
         if len > stream.readable_bytes() {
             return Err(StreamError::InvalidRead);
         }
-        stream
-            .rx
-            .consume(len)
-            .map_err(|_| StreamError::InvalidRead)?;
+        stream.rx.consume(len);
         if stream.recv_limit() > stream.advertised_max_offset {
             stream.pending_window = true;
         }
@@ -737,8 +734,7 @@ impl SessionFsm {
                 self.try_reap_stream(stream_id);
                 Ok(())
             }
-            Err(StreamRxError::ConflictingOverlap)
-            | Err(StreamRxError::OutOfWindow)
+            Err(StreamRxError::OutOfWindow)
             | Err(StreamRxError::InconsistentFinalOffset)
             | Err(StreamRxError::FinalOffsetBeforeBufferedData)
             | Err(StreamRxError::BeyondFinalOffset)
@@ -752,7 +748,6 @@ impl SessionFsm {
                 );
                 Err(())
             }
-            Err(StreamRxError::ConsumeBeyondReadable) => unreachable!(),
         }
     }
 

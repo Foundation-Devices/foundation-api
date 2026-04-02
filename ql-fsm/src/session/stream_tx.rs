@@ -81,7 +81,7 @@ impl StreamTx {
         }
 
         let start = self.end_offset();
-        self.bytes.extend(bytes.iter().copied());
+        self.bytes.extend(bytes);
         if let Some(last) = self.segments.back_mut() {
             if last.state == SendState::Unsent && last.end_offset() == start {
                 last.len += bytes.len();
@@ -130,20 +130,20 @@ impl StreamTx {
             if segment.state == SendState::Lost {
                 return Some(range);
             }
-            unsent = Some(range);
+            if unsent.is_none() {
+                unsent = Some(range);
+            }
         }
 
         if let Some(range) = unsent {
             return Some(range);
         }
 
-        let final_offset = self.final_offset?;
-        if !matches!(final_offset.state, SendState::Lost | SendState::Unsent) {
-            return None;
-        }
-        if final_offset.offset > peer_max_offset {
-            return None;
-        }
+        let final_offset = self.final_offset.filter(|final_offset| {
+            matches!(final_offset.state, SendState::Lost | SendState::Unsent)
+                && final_offset.offset <= peer_max_offset
+        })?;
+
         Some(StreamTxRange {
             offset: final_offset.offset,
             len: 0,
