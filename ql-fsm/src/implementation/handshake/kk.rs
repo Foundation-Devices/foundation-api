@@ -1,4 +1,4 @@
-use ql_wire::{self as wire, Kk1, Kk2, KkMessage, PeerBundle, QlCrypto, QlHandshakeRecord};
+use ql_wire::{self as wire, Kk1, Kk2, PeerBundle, QlCrypto, QlHandshakeRecord};
 
 use super::{
     enqueue_handshake, finish_handshake, is_replayed_handshake_start,
@@ -17,10 +17,7 @@ pub fn start_initiator(
 ) -> Result<(), QlFsmError> {
     let meta = super::next_handshake_meta(fsm);
     let mut handshake = wire::KkHandshake::new_initiator(crypto, fsm.identity.clone(), peer);
-    let message = handshake.write_message(crypto, meta)?;
-    let KkMessage::Message1(message) = message else {
-        return Err(QlFsmError::InvalidPayload);
-    };
+    let message = handshake.write_1(crypto, meta)?;
 
     fsm.state.link = LinkState::KkInitiator(KkInitiatorState {
         handshake_id: meta.handshake_id,
@@ -55,16 +52,12 @@ pub fn handle_kk1(
     reset_connected_session_if_needed(fsm);
 
     let mut handshake = wire::KkHandshake::new_responder(crypto, fsm.identity.clone(), peer);
-    handshake.read_message(
-        crypto,
-        fsm.state.now.unix_secs,
-        &KkMessage::Message1(message.clone()),
-    )?;
-    let outbound = handshake.write_message(crypto, message.meta)?;
+    handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
+    let outbound = handshake.write_2(crypto, message.meta)?;
     let (transport, remote_bundle) = SessionTransport::from_finalized(handshake.finalize(crypto)?);
     finish_handshake(fsm, transport, remote_bundle)?;
     fsm.state.handshake = None;
-    enqueue_handshake(fsm, kk_record(outbound));
+    enqueue_handshake(fsm, QlHandshakeRecord::Kk2(outbound));
     Ok(())
 }
 
@@ -82,11 +75,9 @@ pub fn handle_kk2(
             return Ok(());
         }
 
-        state.handshake.read_message(
-            crypto,
-            fsm.state.now.unix_secs,
-            &KkMessage::Message2(message.clone()),
-        )?;
+        state
+            .handshake
+            .read_2(crypto, fsm.state.now.unix_secs, message)?;
     }
 
     let LinkState::KkInitiator(state) = fsm.state.link.take() else {
@@ -95,13 +86,6 @@ pub fn handle_kk2(
     let (transport, remote_bundle) =
         SessionTransport::from_finalized(state.handshake.finalize(crypto)?);
     finish_handshake(fsm, transport, remote_bundle)
-}
-
-fn kk_record(message: KkMessage) -> QlHandshakeRecord {
-    match message {
-        KkMessage::Message1(message) => QlHandshakeRecord::Kk1(message),
-        KkMessage::Message2(message) => QlHandshakeRecord::Kk2(message),
-    }
 }
 
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Kk1) -> bool {

@@ -7,8 +7,8 @@ mod ik;
 mod kk;
 mod meta;
 
-pub use ik::{Ik1, Ik2, IkHandshake, IkMessage};
-pub use kk::{Kk1, Kk2, KkHandshake, KkMessage};
+pub use ik::{Ik1, Ik2, IkHandshake};
+pub use kk::{Kk1, Kk2, KkHandshake};
 pub use meta::{HandshakeId, HandshakeMeta};
 
 const SHA256_BLOCK_LEN: usize = 64;
