@@ -1,5 +1,5 @@
+mod ik;
 mod kk;
-mod xx;
 
 use ql_wire::{self as wire, EphemeralPublicKey, HandshakeMeta, QlCrypto, QlHandshakeRecord};
 
@@ -9,15 +9,20 @@ use crate::{
     QlFsm, QlFsmError, QlFsmEvent,
 };
 
-pub fn handle_connect(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
+pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
     if !matches!(fsm.state.link, LinkState::Idle) {
-        return Ok(());
+        return Err(QlFsmError::Busy);
     }
+    let peer = fsm.state.peer.clone().ok_or(QlFsmError::NoPeerBound)?;
+    ik::start_initiator(fsm, crypto, peer)
+}
 
-    match fsm.state.peer.clone() {
-        Some(peer) => kk::start_initiator(fsm, crypto, peer),
-        None => xx::start_initiator(fsm, crypto),
+pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
+    if !matches!(fsm.state.link, LinkState::Idle) {
+        return Err(QlFsmError::Busy);
     }
+    let peer = fsm.state.peer.clone().ok_or(QlFsmError::NoPeerBound)?;
+    kk::start_initiator(fsm, crypto, peer)
 }
 
 pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
@@ -49,10 +54,8 @@ pub fn handle_handshake_record(
     record: &QlHandshakeRecord,
 ) -> Result<(), QlFsmError> {
     match record {
-        QlHandshakeRecord::Xx1(message) => xx::handle_xx1(fsm, crypto, message),
-        QlHandshakeRecord::Xx2(message) => xx::handle_xx2(fsm, crypto, message),
-        QlHandshakeRecord::Xx3(message) => xx::handle_xx3(fsm, crypto, message),
-        QlHandshakeRecord::Xx4(message) => xx::handle_xx4(fsm, crypto, message),
+        QlHandshakeRecord::Ik1(message) => ik::handle_ik1(fsm, crypto, message),
+        QlHandshakeRecord::Ik2(message) => ik::handle_ik2(fsm, crypto, message),
         QlHandshakeRecord::Kk1(message) => kk::handle_kk1(fsm, crypto, message),
         QlHandshakeRecord::Kk2(message) => kk::handle_kk2(fsm, crypto, message),
     }

@@ -3,7 +3,7 @@
 //! a caller drives `QlFsm` inside its own event loop
 //!
 //! inputs to that loop usually include
-//! - app actions like `bind_peer`, `connect`, `open_stream`, or `write_stream`
+//! - app actions like `bind_peer`, `connect_ik`, `connect_kk`, `open_stream`, or `write_stream`
 //! - inbound transport bytes passed to `receive`
 //! - a deadline expiring, handled by calling `on_timer`
 //! - transport write results passed to `confirm_session_write` or `reject_session_write`
@@ -56,8 +56,6 @@ pub enum PeerStatus {
     Disconnected,
     /// we are driving the handshake
     Initiator,
-    /// the peer is driving the handshake
-    Responder,
     /// the encrypted session is up
     Connected,
 }
@@ -195,10 +193,16 @@ impl QlFsm {
         implementation::handle_bind_peer(self, peer);
     }
 
-    /// starts or resumes the encrypted session handshake
-    pub fn connect(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
+    /// starts an IK handshake with the currently bound peer
+    pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
         self.state.now = now;
-        implementation::handle_connect(self, crypto)
+        implementation::handle_connect_ik(self, crypto)
+    }
+
+    /// starts a KK handshake with the currently bound peer
+    pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
+        self.state.now = now;
+        implementation::handle_connect_kk(self, crypto)
     }
 
     /// handles one inbound wire message

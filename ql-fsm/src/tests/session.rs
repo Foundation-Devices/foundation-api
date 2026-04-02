@@ -151,13 +151,20 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
 }
 
 #[test]
-fn queued_stream_work_auto_connects_and_drains_after_handshake() {
+fn queued_stream_work_waits_for_explicit_connect_and_then_drains() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
     let stream_id = harness.a.fsm.open_stream().unwrap();
     assert_eq!(harness.a.fsm.write_stream(stream_id, b"queued").unwrap(), 6);
     harness.a.fsm.finish_stream(stream_id).unwrap();
 
+    assert!(harness.next_outbound_a().is_none());
+
+    harness
+        .a
+        .fsm
+        .connect_ik(harness.time(), &harness.a.crypto)
+        .unwrap();
     harness.pump();
 
     assert_eq!(
@@ -189,6 +196,11 @@ fn queued_stream_work_is_failed_when_handshake_times_out() {
     let stream_id = harness.a.fsm.open_stream().unwrap();
     assert_eq!(harness.a.fsm.write_stream(stream_id, b"queued").unwrap(), 6);
 
+    harness
+        .a
+        .fsm
+        .connect_ik(harness.time(), &harness.a.crypto)
+        .unwrap();
     let _first = harness.next_outbound_a().unwrap();
     harness.advance(config.handshake_timeout);
     harness.a.fsm.on_timer(harness.time());

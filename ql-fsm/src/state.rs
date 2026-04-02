@@ -1,8 +1,8 @@
 use std::{collections::VecDeque, time::Instant};
 
 use ql_wire::{
-    ConnectionId, EphemeralPublicKey, KkHandshake, PeerBundle, QlHandshakeRecord, SessionKey,
-    XxHandshake,
+    ConnectionId, EphemeralPublicKey, IkHandshake, KkHandshake, PeerBundle, QlHandshakeRecord,
+    SessionKey,
 };
 
 use crate::{replay_cache::ReplayCache, FsmTime, PeerStatus, QlFsmEvent, QlSessionEvent};
@@ -43,14 +43,10 @@ impl SessionTransport {
 #[derive(Debug, Clone)]
 pub enum LinkState {
     Idle,
-    XxInitiator {
-        handshake: XxHandshake,
+    IkInitiator {
+        handshake: IkHandshake,
         deadline: Instant,
         initial_ephemeral: EphemeralPublicKey,
-    },
-    XxResponder {
-        handshake: XxHandshake,
-        deadline: Instant,
     },
     KkInitiator {
         handshake: KkHandshake,
@@ -64,8 +60,7 @@ impl LinkState {
     pub fn status(&self) -> PeerStatus {
         match self {
             Self::Idle => PeerStatus::Disconnected,
-            Self::XxInitiator { .. } | Self::KkInitiator { .. } => PeerStatus::Initiator,
-            Self::XxResponder { .. } => PeerStatus::Responder,
+            Self::IkInitiator { .. } | Self::KkInitiator { .. } => PeerStatus::Initiator,
             Self::Connected(_) => PeerStatus::Connected,
         }
     }
@@ -80,9 +75,9 @@ impl LinkState {
     pub fn handshake_deadline(&self) -> Option<Instant> {
         match self {
             Self::Idle | Self::Connected(_) => None,
-            Self::XxInitiator { deadline, .. }
-            | Self::XxResponder { deadline, .. }
-            | Self::KkInitiator { deadline, .. } => Some(*deadline),
+            Self::IkInitiator { deadline, .. } | Self::KkInitiator { deadline, .. } => {
+                Some(*deadline)
+            }
         }
     }
 }

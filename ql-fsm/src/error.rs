@@ -23,6 +23,8 @@ pub enum QlFsmError {
     SessionClosed,
     #[error("no peer bound")]
     NoPeerBound,
+    #[error("fsm is busy")]
+    Busy,
     #[error("no active session")]
     NoSession,
 }

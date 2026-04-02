@@ -75,19 +75,8 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
             session_write_id: None,
         });
     }
-
-    if matches!(fsm.state.link, crate::state::LinkState::Idle)
-        && fsm.state.peer.is_some()
-        && fsm.session.has_pending_stream_work()
-    {
-        let _ = super::handle_connect(fsm, crypto);
-        if let Some(record) = fsm.state.handshake.take() {
-            return Some(OutboundWrite {
-                record: wire::QlRecord::Handshake(record),
-                session_write_id: None,
-            });
-        }
-    }
+    // TODO: queued stream work now requires an explicit connect_ik() or connect_kk()
+    // before any handshake or session bytes will be emitted.
 
     let transport = fsm.state.link.transport()?;
     let (write_id, seq, builder) = fsm.session.take_next_write(fsm.state.now.instant)?;

@@ -156,10 +156,6 @@ impl Harness {
         Self::paired(config, true, true)
     }
 
-    fn paired_unknown(config: QlFsmConfig) -> Self {
-        Self::paired(config, false, false)
-    }
-
     fn paired(config: QlFsmConfig, know_a: bool, know_b: bool) -> Self {
         let identity_a = test_identity(11);
         let identity_b = test_identity(73);
@@ -192,29 +188,6 @@ impl Harness {
         while harness.b.fsm.take_next_event().is_some() {}
 
         harness
-    }
-
-    fn responder_unbound_unknown(config: QlFsmConfig) -> Self {
-        let identity_a = test_identity(11);
-        let identity_b = test_identity(73);
-        let now = Instant::now();
-        let time = FsmTime {
-            instant: now,
-            unix_secs: 1_700_000_000,
-        };
-
-        Self {
-            now,
-            unix_secs: time.unix_secs,
-            a: Node {
-                fsm: QlFsm::new(config, identity_a, time),
-                crypto: TestCrypto::new(1),
-            },
-            b: Node {
-                fsm: QlFsm::new(config, identity_b, time),
-                crypto: TestCrypto::new(2),
-            },
-        }
     }
 
     fn connected(config: QlFsmConfig) -> Self {
