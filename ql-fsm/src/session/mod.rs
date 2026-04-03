@@ -1,3 +1,4 @@
+pub(crate) mod received_records;
 pub(crate) mod state;
 pub(crate) mod stream_rx;
 pub(crate) mod stream_tx;
@@ -15,16 +16,14 @@ use ql_wire::{
 };
 
 use self::{
+    received_records::{ReceiveInsertOutcome, ReceivedRecords},
     state::{
-        AckState, InboundState, OutboundRecord, OutboundState, ReceiveInsertOutcome,
-        ReceivedRecords, ReliableFrame, SessionFsmState, StreamDataManifest, StreamParity,
-        StreamRole, StreamState,
+        AckState, InboundState, OutboundRecord, OutboundState, ReliableFrame, SessionFsmState,
+        StreamDataManifest, StreamParity, StreamRole, StreamState,
     },
     stream_rx::{StreamReadIter, StreamRxError},
     stream_tx::StreamTxRange,
 };
-
-pub(crate) const SESSION_RECORD_TRACKED_WINDOW: u64 = 256;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionFsmConfig {
