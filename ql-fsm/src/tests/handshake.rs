@@ -157,6 +157,7 @@ fn handshake_timeout_drops_single_ik_attempt_without_resend() {
         .connect_ik(harness.time(), &harness.a.crypto)
         .unwrap();
     let first = harness.next_outbound_a().unwrap();
+    let first = QlRecord::decode(&first).unwrap();
     assert!(matches!(
         first,
         QlRecord::Handshake(ql_wire::QlHandshakeRecord::Ik1(_))
@@ -245,7 +246,8 @@ fn simultaneous_ik_and_kk_connect_prefers_ik() {
     assert!(matches!(harness.b.fsm.state.link, LinkState::Connected(_)));
 }
 
-fn handshake_id(record: &QlRecord<Vec<u8>>) -> ql_wire::HandshakeId {
+fn handshake_id(record: &[u8]) -> ql_wire::HandshakeId {
+    let record = QlRecord::decode(record).unwrap();
     match record {
         QlRecord::Handshake(ql_wire::QlHandshakeRecord::Ik1(message)) => message.meta.handshake_id,
         QlRecord::Handshake(ql_wire::QlHandshakeRecord::Ik2(message)) => message.meta.handshake_id,

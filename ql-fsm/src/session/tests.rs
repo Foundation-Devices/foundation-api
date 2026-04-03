@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionFrame, SessionRecord, StreamClose,
-    StreamCloseCode, StreamData, StreamId, XID,
+    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionFrame, SessionRecord,
+    SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamId, XID,
 };
 
 use super::{SessionEvent, SessionFsm, SessionFsmConfig};
@@ -36,7 +36,14 @@ fn receive_events(
     seq: RecordSeq,
     record: SessionRecord,
 ) -> Vec<SessionEvent> {
-    let bytes = record.encode();
+    let mut builder = SessionRecordBuilder::new(
+        SessionRecordBuilder::WIRE_PREFIX_LEN + record.encoded_len(),
+        SessionRecordBuilder::WIRE_PREFIX_LEN + record.encoded_len(),
+    );
+    for frame in &record.frames {
+        assert!(builder.push_frame(frame));
+    }
+    let bytes = builder.into_plaintext();
     let frames = SessionRecord::parse(&bytes).unwrap();
     let mut events = Vec::new();
     fsm.receive(now, seq, frames, |event| events.push(event));
@@ -80,7 +87,8 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
         SessionFsmConfig {
-            record_size: 80,
+            record_target_size: 80 + SessionRecordBuilder::WIRE_PREFIX_LEN,
+            record_max_size: 80 + SessionRecordBuilder::WIRE_PREFIX_LEN,
             ..SessionFsmConfig::default()
         },
         now,

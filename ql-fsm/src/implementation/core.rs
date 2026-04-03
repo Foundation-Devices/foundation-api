@@ -87,7 +87,7 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
 pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
     if let Some(record) = fsm.state.handshake.take() {
         return Some(OutboundWrite {
-            record: wire::QlRecord::Handshake(record),
+            record: record.encode(),
             session_write_id: None,
         });
     }
@@ -105,7 +105,7 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
         &transport.tx_key,
     );
     Some(OutboundWrite {
-        record: wire::QlRecord::Session(record),
+        record,
         session_write_id: Some(SessionWriteId(write_id)),
     })
 }
@@ -200,7 +200,8 @@ pub fn reset_session(fsm: &mut QlFsm) {
     fsm.session = crate::session::SessionFsm::new(
         SessionFsmConfig {
             local_parity,
-            record_size: fsm.config.session_record_size,
+            record_target_size: fsm.config.session_record_target_size,
+            record_max_size: fsm.config.session_record_max_size,
             ack_delay: fsm.config.session_record_ack_delay,
             retransmit_timeout: fsm.config.session_record_retransmit_timeout,
             keepalive_interval: fsm.config.session_keepalive_interval,

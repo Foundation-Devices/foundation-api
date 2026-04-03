@@ -10,8 +10,8 @@ use libcrux_aesgcm::AesGcm256Key;
 use libcrux_ml_kem::mlkem1024;
 use ql_wire::{
     self, generate_identity, ConnectionId, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
-    MlKemPublicKey, Nonce, QlAead, QlCrypto, QlHash, QlIdentity, QlKem, QlRandom, QlRecord,
-    SessionKey, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
+    MlKemPublicKey, Nonce, QlAead, QlCrypto, QlHash, QlIdentity, QlKem, QlRandom, SessionKey,
+    ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
 };
 use sha2::{Digest, Sha256};
 
@@ -226,7 +226,7 @@ impl Harness {
         self.unix_secs = self.unix_secs.saturating_add(duration.as_secs());
     }
 
-    fn next_outbound_a(&mut self) -> Option<QlRecord<Vec<u8>>> {
+    fn next_outbound_a(&mut self) -> Option<Vec<u8>> {
         let write = self.a.fsm.take_next_write(self.time(), &self.a.crypto)?;
         if let Some(id) = write.session_write_id {
             self.a.fsm.confirm_session_write(self.time(), id);
@@ -234,7 +234,7 @@ impl Harness {
         Some(write.record)
     }
 
-    fn next_outbound_b(&mut self) -> Option<QlRecord<Vec<u8>>> {
+    fn next_outbound_b(&mut self) -> Option<Vec<u8>> {
         let write = self.b.fsm.take_next_write(self.time(), &self.b.crypto)?;
         if let Some(id) = write.session_write_id {
             self.b.fsm.confirm_session_write(self.time(), id);
@@ -246,18 +246,12 @@ impl Harness {
         self.a.fsm.take_next_write(self.time(), &self.a.crypto)
     }
 
-    fn deliver_to_a(&mut self, record: QlRecord<Vec<u8>>) {
-        self.a
-            .fsm
-            .receive(self.time(), record.encode(), &self.a.crypto)
-            .unwrap();
+    fn deliver_to_a(&mut self, record: Vec<u8>) {
+        self.a.fsm.receive(self.time(), record, &self.a.crypto).unwrap();
     }
 
-    fn deliver_to_b(&mut self, record: QlRecord<Vec<u8>>) {
-        self.b
-            .fsm
-            .receive(self.time(), record.encode(), &self.b.crypto)
-            .unwrap();
+    fn deliver_to_b(&mut self, record: Vec<u8>) {
+        self.b.fsm.receive(self.time(), record, &self.b.crypto).unwrap();
     }
 
     fn confirm_write_a(&mut self, write_id: SessionWriteId) {
@@ -313,7 +307,8 @@ fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
 
     SessionFsmConfig {
         local_parity: StreamParity::for_local(local, peer),
-        record_size: config.session_record_size,
+        record_target_size: config.session_record_target_size,
+        record_max_size: config.session_record_max_size,
         ack_delay: config.session_record_ack_delay,
         retransmit_timeout: config.session_record_retransmit_timeout,
         keepalive_interval: config.session_keepalive_interval,
@@ -325,9 +320,10 @@ fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
 
 fn decrypt_record(
     crypto: &impl QlCrypto,
-    record: &QlRecord<Vec<u8>>,
+    record: &[u8],
     session_key: &SessionKey,
 ) -> (ql_wire::SessionHeader, ql_wire::SessionRecord) {
+    let record = ql_wire::QlRecord::decode(record).unwrap();
     let ql_wire::QlRecord::Session(record) = record else {
         panic!("expected encrypted session record");
     };

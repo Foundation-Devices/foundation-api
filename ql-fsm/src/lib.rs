@@ -29,8 +29,8 @@ use std::time::{Duration, Instant};
 
 pub use error::QlFsmError;
 use ql_wire::{
-    CloseTarget, PeerBundle, QlCrypto, QlIdentity, QlRecord, SessionClose, SessionCloseCode,
-    StreamClose, StreamCloseCode, StreamId, XID,
+    CloseTarget, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose,
+    StreamCloseCode, StreamId, XID,
 };
 pub use session::stream_rx::StreamReadIter;
 
@@ -104,8 +104,8 @@ pub struct SessionWriteId(pub(crate) u64);
 /// outbound record produced by `QlFsm`
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutboundWrite {
-    /// record to hand to the transport
-    pub record: QlRecord<Vec<u8>>,
+    /// wire bytes to hand to the transport
+    pub record: Vec<u8>,
     /// write handle that must be confirmed or rejected
     pub session_write_id: Option<SessionWriteId>,
 }
@@ -123,8 +123,10 @@ pub struct QlFsmConfig {
     pub session_keepalive_interval: Duration,
     /// how long to wait before declaring the peer dead
     pub session_peer_timeout: Duration,
-    /// target plaintext size for one session record
-    pub session_record_size: usize,
+    /// target total wire size for one session record, including header and auth tag
+    pub session_record_target_size: usize,
+    /// maximum total wire size for one session record, including header and auth tag
+    pub session_record_max_size: usize,
     /// maximum bytes buffered locally for one stream send side
     pub session_stream_send_buffer_size: usize,
     /// maximum bytes buffered locally for one stream receive side
@@ -133,15 +135,17 @@ pub struct QlFsmConfig {
 
 impl Default for QlFsmConfig {
     fn default() -> Self {
+        let s = session::SessionFsmConfig::default();
         Self {
             handshake_timeout: Duration::from_secs(5),
-            session_record_ack_delay: Duration::from_millis(5),
-            session_record_retransmit_timeout: Duration::from_millis(150),
-            session_keepalive_interval: Duration::from_secs(10),
-            session_peer_timeout: Duration::from_secs(30),
-            session_record_size: 16 * 1024,
-            session_stream_send_buffer_size: 64 * 1024,
-            session_stream_receive_buffer_size: 64 * 1024,
+            session_record_ack_delay: s.ack_delay,
+            session_record_retransmit_timeout: s.retransmit_timeout,
+            session_keepalive_interval: s.keepalive_interval,
+            session_peer_timeout: s.peer_timeout,
+            session_record_target_size: s.record_target_size,
+            session_record_max_size: s.record_max_size,
+            session_stream_send_buffer_size: s.stream_send_buffer_size,
+            session_stream_receive_buffer_size: s.stream_receive_buffer_size,
         }
     }
 }
@@ -165,7 +169,8 @@ impl QlFsm {
             session: session::SessionFsm::new(
                 session::SessionFsmConfig {
                     local_parity: session::stream_parity::StreamParity::Even,
-                    record_size: config.session_record_size,
+                    record_target_size: config.session_record_target_size,
+                    record_max_size: config.session_record_max_size,
                     ack_delay: config.session_record_ack_delay,
                     retransmit_timeout: config.session_record_retransmit_timeout,
                     keepalive_interval: config.session_keepalive_interval,
