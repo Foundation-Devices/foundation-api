@@ -144,7 +144,6 @@ pub fn write_stream(
     stream_id: StreamId,
     bytes: &[u8],
 ) -> Result<usize, QlFsmError> {
-    fsm.state.ensure_peer_bound()?;
     Ok(fsm.session.write_stream(stream_id, bytes)?)
 }
 
@@ -165,7 +164,6 @@ pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Option<usize>
 }
 
 pub fn finish_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<(), QlFsmError> {
-    fsm.state.ensure_peer_bound()?;
     Ok(fsm.session.finish_stream(stream_id)?)
 }
 
@@ -175,7 +173,6 @@ pub fn close_stream(
     target: CloseTarget,
     code: StreamCloseCode,
 ) -> Result<(), QlFsmError> {
-    fsm.state.ensure_peer_bound()?;
     Ok(fsm.session.close_stream(stream_id, target, code)?)
 }
 

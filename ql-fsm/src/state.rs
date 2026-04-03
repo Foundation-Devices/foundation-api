@@ -95,9 +95,7 @@ impl LinkState {
 
 impl QlFsmState {
     pub fn ensure_peer_bound(&self) -> Result<(), crate::QlFsmError> {
-        self.peer
-            .as_ref()
-            .map(|_| ())
-            .ok_or(crate::QlFsmError::NoPeerBound)
+        self.peer.as_ref().ok_or(crate::QlFsmError::NoPeerBound)?;
+        Ok(())
     }
 }
