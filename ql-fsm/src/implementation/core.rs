@@ -148,8 +148,8 @@ pub fn write_stream(
     Ok(fsm.session.write_stream(stream_id, bytes)?)
 }
 
-pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Result<StreamReadIter<'_>, QlFsmError> {
-    Ok(fsm.session.stream_read(stream_id)?)
+pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
+    fsm.session.stream_read(stream_id)
 }
 
 pub fn stream_read_commit(
@@ -160,8 +160,8 @@ pub fn stream_read_commit(
     Ok(fsm.session.stream_read_commit(stream_id, len)?)
 }
 
-pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Result<usize, QlFsmError> {
-    Ok(fsm.session.stream_available_bytes(stream_id)?)
+pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Option<usize> {
+    fsm.session.stream_available_bytes(stream_id)
 }
 
 pub fn finish_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<(), QlFsmError> {

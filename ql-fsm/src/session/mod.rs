@@ -190,13 +190,9 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn stream_read(&self, stream_id: StreamId) -> Result<StreamReadIter<'_>, StreamError> {
-        let stream = self
-            .state
-            .streams
-            .get(&stream_id)
-            .ok_or(StreamError::MissingStream)?;
-        Ok(stream.rx.bytes())
+    pub fn stream_read(&self, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
+        let stream = self.state.streams.get(&stream_id)?;
+        Some(stream.rx.bytes())
     }
 
     pub fn stream_read_commit(
@@ -220,13 +216,9 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn stream_available_bytes(&self, stream_id: StreamId) -> Result<usize, StreamError> {
-        let stream = self
-            .state
-            .streams
-            .get(&stream_id)
-            .ok_or(StreamError::MissingStream)?;
-        Ok(stream.readable_bytes())
+    pub fn stream_available_bytes(&self, stream_id: StreamId) -> Option<usize> {
+        let stream = self.state.streams.get(&stream_id)?;
+        Some(stream.readable_bytes())
     }
 
     pub fn queue_ping(&mut self) -> Result<(), StreamError> {

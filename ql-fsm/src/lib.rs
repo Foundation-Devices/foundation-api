@@ -278,7 +278,7 @@ impl QlFsm {
     }
 
     /// returns the readable stream bytes as borrowed chunks without consuming them
-    pub fn stream_read(&self, stream_id: StreamId) -> Result<StreamReadIter<'_>, QlFsmError> {
+    pub fn stream_read(&self, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
         implementation::stream_read(self, stream_id)
     }
 
@@ -292,7 +292,7 @@ impl QlFsm {
     }
 
     /// returns how many bytes can be read from a stream
-    pub fn stream_available_bytes(&self, stream_id: StreamId) -> Result<usize, QlFsmError> {
+    pub fn stream_available_bytes(&self, stream_id: StreamId) -> Option<usize> {
         implementation::stream_available_bytes(self, stream_id)
     }
 
