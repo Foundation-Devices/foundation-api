@@ -3,10 +3,10 @@ mod kk;
 
 use ql_wire::{self as wire, EphemeralPublicKey, HandshakeMeta, QlCrypto, QlHandshakeRecord};
 
-use super::{emit_peer_status, fail_pending_connect_session, reset_session};
+use super::{emit_peer_status, reset_session};
 use crate::{
     state::{LinkState, SessionTransport},
-    QlFsm, QlFsmError, QlFsmEvent,
+    QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent,
 };
 
 pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
@@ -107,6 +107,18 @@ pub fn reset_connected_session_if_needed(fsm: &mut QlFsm) {
         fsm.state.link = LinkState::Idle;
         reset_session(fsm);
     }
+}
+
+fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::SessionCloseCode) {
+    if !fsm.session.has_pending_stream_work() {
+        return;
+    }
+    reset_session(fsm);
+    fsm.state
+        .session_events
+        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionClose {
+            code,
+        }));
 }
 
 fn local_start_wins(local: &EphemeralPublicKey, inbound: &EphemeralPublicKey) -> bool {

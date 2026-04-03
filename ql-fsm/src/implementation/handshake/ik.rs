@@ -1,11 +1,10 @@
 use ql_wire::{self as wire, Ik1, Ik2, PeerBundle, QlCrypto, QlHandshakeRecord};
 
 use super::{
-    enqueue_handshake, finish_handshake, is_replayed_handshake_start,
+    emit_peer_status, enqueue_handshake, finish_handshake, is_replayed_handshake_start,
     reset_connected_session_if_needed,
 };
 use crate::{
-    implementation::emit_peer_status,
     state::{IkInitiatorState, LinkState, SessionTransport},
     QlFsm, QlFsmError,
 };

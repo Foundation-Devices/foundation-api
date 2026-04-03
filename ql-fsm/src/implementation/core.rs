@@ -1,11 +1,27 @@
-use std::time::Instant;
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use ql_wire::{
     self as wire, CloseTarget, QlCrypto, SessionClose, SessionCloseCode, SessionHeader,
     StreamCloseCode, StreamId,
 };
 
-use crate::{OutboundWrite, QlFsm, QlFsmError, QlSessionEvent, SessionWriteId, StreamReadIter};
+use crate::{
+    session::{stream_parity::StreamParity, SessionEvent, SessionFsmConfig},
+    state::LinkState,
+    OutboundWrite, QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent, SessionWriteId, StreamReadIter,
+};
+
+pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
+    fsm.state.handshake = None;
+    fsm.state.link = LinkState::Idle;
+    fsm.state.peer = Some(peer.clone());
+    reset_session(fsm);
+    fsm.state.events.push_back(QlFsmEvent::NewPeer(peer));
+    emit_peer_status(fsm);
+}
 
 pub fn receive(
     fsm: &mut QlFsm,
@@ -28,11 +44,11 @@ pub fn receive(
                 .receive(fsm.state.now.instant, record.header.seq, frames, {
                     let session_events = &mut fsm.state.session_events;
                     |event| {
-                        session_closed |= super::forward_session_event(session_events, event);
+                        session_closed |= forward_session_event(session_events, event);
                     }
                 });
             if session_closed {
-                super::apply_session_closed(fsm);
+                apply_session_closed(fsm);
             }
             Ok(())
         }
@@ -46,11 +62,11 @@ pub fn on_timer(fsm: &mut QlFsm) {
         fsm.session.on_timer(fsm.state.now.instant, {
             let session_events = &mut fsm.state.session_events;
             |event| {
-                session_closed |= super::forward_session_event(session_events, event);
+                session_closed |= forward_session_event(session_events, event);
             }
         });
         if session_closed {
-            super::apply_session_closed(fsm);
+            apply_session_closed(fsm);
         }
     }
 }
@@ -111,8 +127,8 @@ pub fn kill_session(fsm: &mut QlFsm, code: SessionCloseCode) {
     }
 
     fsm.state.link = crate::state::LinkState::Idle;
-    super::emit_peer_status(fsm);
-    super::reset_session(fsm);
+    emit_peer_status(fsm);
+    reset_session(fsm);
     fsm.state
         .session_events
         .push_back(QlSessionEvent::SessionClosed(SessionClose { code }));
@@ -168,10 +184,95 @@ pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
     Ok(fsm.session.queue_ping()?)
 }
 
+pub fn emit_peer_status(fsm: &mut QlFsm) {
+    if let Some(peer) = fsm.state.peer.as_ref() {
+        fsm.state.events.push_back(QlFsmEvent::PeerStatusChanged {
+            peer: peer.xid,
+            status: fsm.state.link.status(),
+        });
+    }
+}
+
+pub fn reset_session(fsm: &mut QlFsm) {
+    let local_parity = fsm
+        .state
+        .peer
+        .as_ref()
+        .map(|peer| StreamParity::for_local(fsm.identity.xid, peer.xid))
+        .unwrap_or(StreamParity::Even);
+    fsm.session = crate::session::SessionFsm::new(
+        SessionFsmConfig {
+            local_parity,
+            record_size: fsm.config.session_record_size,
+            ack_delay: fsm.config.session_record_ack_delay,
+            retransmit_timeout: fsm.config.session_record_retransmit_timeout,
+            keepalive_interval: fsm.config.session_keepalive_interval,
+            peer_timeout: fsm.config.session_peer_timeout,
+            stream_send_buffer_size: fsm.config.session_stream_send_buffer_size,
+            stream_receive_buffer_size: fsm.config.session_stream_receive_buffer_size,
+        },
+        fsm.state.now.instant,
+    );
+}
+
+fn forward_session_event(
+    session_events: &mut VecDeque<QlSessionEvent>,
+    event: SessionEvent,
+) -> bool {
+    match event {
+        SessionEvent::Opened(stream_id) => {
+            session_events.push_back(QlSessionEvent::Opened(stream_id));
+            false
+        }
+        SessionEvent::Readable(stream_id) => {
+            session_events.push_back(QlSessionEvent::Readable(stream_id));
+            false
+        }
+        SessionEvent::Writable(stream_id) => {
+            session_events.push_back(QlSessionEvent::Writable(stream_id));
+            false
+        }
+        SessionEvent::Finished(stream_id) => {
+            session_events.push_back(QlSessionEvent::Finished(stream_id));
+            false
+        }
+        SessionEvent::Closed(frame) => {
+            session_events.push_back(QlSessionEvent::Closed(frame));
+            false
+        }
+        SessionEvent::WritableClosed(stream_id) => {
+            session_events.push_back(QlSessionEvent::WritableClosed(stream_id));
+            false
+        }
+        SessionEvent::SessionClosed(close) => {
+            session_events.push_back(QlSessionEvent::SessionClosed(close));
+            true
+        }
+    }
+}
+
+fn apply_session_closed(fsm: &mut QlFsm) {
+    if matches!(fsm.state.link, crate::state::LinkState::Connected(_)) {
+        fsm.state.link = crate::state::LinkState::Idle;
+        emit_peer_status(fsm);
+    }
+    reset_session(fsm);
+}
+
 fn ensure_session_open(fsm: &QlFsm) -> Result<(), QlFsmError> {
     fsm.state.ensure_peer_bound()?;
     if fsm.state.link.transport().is_none() {
         return Err(QlFsmError::SessionClosed);
     }
     Ok(())
+}
+
+pub(super) fn deadline_after_secs(now_secs: u64, duration: Duration) -> u64 {
+    now_secs.saturating_add(duration_to_secs(duration))
+}
+
+fn duration_to_secs(duration: Duration) -> u64 {
+    duration
+        .as_secs()
+        .saturating_add(u64::from(duration.subsec_nanos() > 0))
 }
