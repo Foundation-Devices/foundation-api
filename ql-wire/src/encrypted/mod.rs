@@ -101,7 +101,7 @@ impl<B: ByteChunks> SessionFrame<B> {
     pub fn encoded_len(&self) -> usize {
         1 + match self {
             Self::Ping => 0,
-            Self::Ack(frame) => SIZE_LEN + frame.encoded_len(),
+            Self::Ack(_) => RecordAck::ENCODED_LEN,
             Self::StreamData(frame) => SIZE_LEN + frame.encoded_len(),
             Self::StreamWindow(_) => StreamWindow::WIRE_SIZE,
             Self::StreamClose(frame) => SIZE_LEN + frame.encoded_len(),
@@ -177,7 +177,9 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
     match SessionFrameKind::try_from(kind)? {
         SessionFrameKind::Ping => Ok((SessionFrame::Ping, rest)),
         SessionFrameKind::Ack => {
-            let (frame, rest) = split_variable_frame(rest)?;
+            let (frame, rest) = rest
+                .split_at_checked(RecordAck::ENCODED_LEN)
+                .ok_or(WireError::InvalidPayload)?;
             Ok((SessionFrame::Ack(RecordAck::decode(frame)?), rest))
         }
         SessionFrameKind::StreamData => {
@@ -185,10 +187,9 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
             Ok((SessionFrame::StreamData(StreamData::parse(frame)?), rest))
         }
         SessionFrameKind::StreamWindow => {
-            if rest.len() < StreamWindow::WIRE_SIZE {
-                return Err(WireError::InvalidPayload);
-            }
-            let (frame, rest) = rest.split_at(StreamWindow::WIRE_SIZE);
+            let (frame, rest) = rest
+                .split_at_checked(StreamWindow::WIRE_SIZE)
+                .ok_or(WireError::InvalidPayload)?;
             Ok((
                 SessionFrame::StreamWindow(StreamWindow::decode(frame)?),
                 rest,

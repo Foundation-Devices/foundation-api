@@ -62,11 +62,10 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_ack(&mut self, ack: &RecordAck) -> bool {
-        let len = 1 + super::SIZE_LEN + ack.encoded_len();
+        let len = 1 + RecordAck::ENCODED_LEN;
         self.push_encoded_len(len, |out| {
             out[0] = super::SessionFrameKind::Ack as u8;
-            super::push_variable_len(&mut out[1..=super::SIZE_LEN], ack.encoded_len());
-            ack.encode_into(&mut out[1 + super::SIZE_LEN..]);
+            ack.encode_into(&mut out[1..]);
         })
     }
 

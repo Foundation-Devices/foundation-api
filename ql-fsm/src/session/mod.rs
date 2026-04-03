@@ -18,7 +18,7 @@ use ql_wire::{
 };
 
 use self::{
-    received_records::{ReceiveInsertOutcome, ReceivedRecords},
+    received_records::{ReceiveOutcome, ReceivedRecords},
     state::{AckState, InboundState, OutboundState, SessionFsmState, StreamRole, StreamState},
     stream_parity::StreamParity,
     stream_rx::{StreamReadIter, StreamRxError},
@@ -250,8 +250,8 @@ impl SessionFsm {
         self.state.last_inbound_at = self.state.now;
 
         let (duplicate, out_of_order) = match self.state.received_records.insert(seq) {
-            ReceiveInsertOutcome::Duplicate => (true, false),
-            ReceiveInsertOutcome::New { out_of_order } => (false, out_of_order),
+            ReceiveOutcome::Duplicate => (true, false),
+            ReceiveOutcome::New { out_of_order } => (false, out_of_order),
         };
 
         let closed = self.state.session_state == SessionState::Closed;
@@ -627,11 +627,7 @@ impl SessionFsm {
             let tracked_records = &mut self.state.tracked_records;
             let streams = &mut self.state.streams;
             for (_, record) in tracked_records.extract_if(.., |_, record| {
-                record.sent_at.is_some()
-                    && ack
-                        .ranges
-                        .iter()
-                        .any(|range| range.start <= record.seq.0 && record.seq.0 < range.end)
+                record.sent_at.is_some() && ack.contains(record.seq.0)
             }) {
                 for frame in &record.frames {
                     acknowledge_tracked_frame(streams, stream_send_buffer_size, frame, emit);

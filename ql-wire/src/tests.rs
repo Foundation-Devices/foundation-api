@@ -467,10 +467,13 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         frames: vec![
             SessionFrame::Ping,
             SessionFrame::Ack(RecordAck {
-                ranges: vec![
-                    RecordAckRange { start: 12, end: 14 },
-                    RecordAckRange { start: 20, end: 24 },
-                ],
+                base_seq: RecordSeq(12),
+                bits: (1u64 << 0)
+                    | (1u64 << 1)
+                    | (1u64 << 8)
+                    | (1u64 << 9)
+                    | (1u64 << 10)
+                    | (1u64 << 11),
             }),
             SessionFrame::StreamWindow(StreamWindow {
                 stream_id: StreamId(9),

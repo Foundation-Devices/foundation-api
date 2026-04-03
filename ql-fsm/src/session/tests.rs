@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    CloseTarget, RecordAck, RecordAckRange, RecordSeq, SessionFrame, SessionRecord,
-    SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamId, XID,
+    CloseTarget, RecordAck, RecordSeq, SessionFrame, SessionRecord, SessionRecordBuilder,
+    StreamClose, StreamCloseCode, StreamData, StreamId, XID,
 };
 
 use super::{SessionEvent, SessionFsm, SessionFsmConfig};
@@ -142,10 +142,8 @@ fn ack_reopens_write_capacity() {
         now + Duration::from_millis(1),
         RecordSeq(9),
         std::iter::once(Ok(SessionFrame::Ack(RecordAck {
-            ranges: vec![RecordAckRange {
-                start: seq.0,
-                end: seq.0 + 1,
-            }],
+            base_seq: seq,
+            bits: 1u64,
         }))),
         |event| events.push(event),
     );

@@ -1,60 +1,72 @@
-use crate::{codec, WireError};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordAck {
-    pub ranges: Vec<RecordAckRange>,
-}
+use crate::{codec, RecordSeq, WireError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RecordAckRange {
-    pub start: u64,
-    pub end: u64,
+pub struct RecordAck {
+    pub base_seq: RecordSeq,
+    pub bits: u64,
 }
 
 impl RecordAck {
-    pub const RANGE_ENCODED_LEN: usize = size_of::<u64>() + size_of::<u64>();
+    pub const BITMAP_BITS: usize = u64::BITS as usize;
+    pub const ENCODED_LEN: usize = size_of::<u64>() + size_of::<u64>();
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        if bytes.is_empty() || bytes.len() % Self::RANGE_ENCODED_LEN != 0 {
-            return Err(WireError::InvalidPayload);
-        }
-
         let mut reader = codec::Reader::new(bytes);
-        let mut ranges = Vec::with_capacity(bytes.len() / Self::RANGE_ENCODED_LEN);
-        let mut previous_end = 0;
-
-        while !reader.is_empty() {
-            let range = RecordAckRange {
-                start: reader.take_u64()?,
-                end: reader.take_u64()?,
-            };
-
-            if range.start >= range.end {
-                return Err(WireError::InvalidPayload);
-            }
-            if !ranges.is_empty() && range.start < previous_end {
-                return Err(WireError::InvalidPayload);
-            }
-
-            previous_end = range.end;
-            ranges.push(range);
-        }
-
-        Ok(Self { ranges })
+        Ok(Self {
+            base_seq: RecordSeq(reader.take_u64()?),
+            bits: reader.take_u64()?,
+        })
     }
 
-    pub fn encoded_len(&self) -> usize {
-        self.ranges.len() * Self::RANGE_ENCODED_LEN
+    pub fn contains(&self, seq: u64) -> bool {
+        if seq < self.base_seq.0 {
+            return false;
+        }
+
+        let offset = seq - self.base_seq.0;
+        if offset >= Self::BITMAP_BITS as u64 {
+            return false;
+        }
+
+        (self.bits & (1u64 << offset)) != 0
     }
 
     pub fn encode_into(&self, out: &mut [u8]) {
-        assert_eq!(out.len(), self.encoded_len());
-        let mut out = out;
-        for range in &self.ranges {
-            let (encoded, rest) = out.split_at_mut(Self::RANGE_ENCODED_LEN);
-            let encoded = codec::write_u64(encoded, range.start);
-            let _ = codec::write_u64(encoded, range.end);
-            out = rest;
-        }
+        assert_eq!(out.len(), Self::ENCODED_LEN);
+        let out = codec::write_u64(out, self.base_seq.0);
+        let _ = codec::write_u64(out, self.bits);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecordAck;
+    use crate::RecordSeq;
+
+    #[test]
+    fn encode_decode_round_trip() {
+        let ack = RecordAck {
+            base_seq: RecordSeq(42),
+            bits: (1u64 << 0) | (1u64 << 17) | (1u64 << 63),
+        };
+        let mut encoded = [0; RecordAck::ENCODED_LEN];
+        ack.encode_into(&mut encoded);
+
+        assert_eq!(RecordAck::decode(&encoded).unwrap(), ack);
+    }
+
+    #[test]
+    fn contains_matches_bit_membership() {
+        let ack = RecordAck {
+            base_seq: RecordSeq(100),
+            bits: (1u64 << 0) | (1u64 << 5) | (1u64 << 63),
+        };
+
+        assert!(ack.contains(100));
+        assert!(ack.contains(105));
+        assert!(ack.contains(163));
+        assert!(!ack.contains(99));
+        assert!(!ack.contains(101));
+        assert!(!ack.contains(164));
     }
 }
