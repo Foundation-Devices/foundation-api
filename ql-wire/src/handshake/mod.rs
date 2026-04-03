@@ -26,9 +26,15 @@ pub struct HandshakeHeader {
 impl HandshakeHeader {
     pub const ENCODED_LEN: usize = XID::SIZE * 2;
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_bytes(out, &self.sender.0);
-        codec::push_bytes(out, &self.recipient.0);
+    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut out = [0; Self::ENCODED_LEN];
+        let _ = self.encode_into(&mut out);
+        out
+    }
+
+    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
+        let out = codec::write_bytes(out, &self.sender.0);
+        codec::write_bytes(out, &self.recipient.0)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -56,8 +62,8 @@ pub struct EphemeralPublicKey {
 impl EphemeralPublicKey {
     pub const ENCODED_LEN: usize = MlKemPublicKey::SIZE;
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_bytes(out, self.mlkem_public_key.as_bytes());
+    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
+        codec::write_bytes(out, self.mlkem_public_key.as_bytes())
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -309,8 +315,7 @@ fn mix_hash_routed_handshake(
     kind: HandshakeKind,
     meta: &HandshakeMeta,
 ) {
-    let mut encoded_header = Vec::with_capacity(HandshakeHeader::ENCODED_LEN);
-    header.encode_into(&mut encoded_header);
+    let encoded_header = header.encode();
     let encoded = meta.encode();
     symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);
     symmetric.mix_hash(crypto, &encoded_header);

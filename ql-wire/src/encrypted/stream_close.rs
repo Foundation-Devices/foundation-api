@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use super::StreamId;
 use crate::{codec, ByteSlice, WireError};
 
@@ -30,10 +28,10 @@ impl StreamClose {
         Self::WIRE_SIZE
     }
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_u32(out, self.stream_id.0);
-        codec::push_u8(out, self.target.to_wire());
-        codec::push_u16(out, self.code.0);
+    pub fn encode_into(&self, out: &mut [u8]) {
+        let out = codec::write_u32(out, self.stream_id.0);
+        let out = codec::write_u8(out, self.target.to_wire());
+        let _ = codec::write_u16(out, self.code.0);
     }
 }
 

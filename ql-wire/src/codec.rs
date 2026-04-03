@@ -1,23 +1,37 @@
 use crate::{ByteSlice, WireError};
 
-pub fn push_u8(out: &mut Vec<u8>, value: u8) {
-    out.push(value);
+pub fn write_u8(out: &mut [u8], value: u8) -> &mut [u8] {
+    let (head, rest) = out.split_at_mut(1);
+    head[0] = value;
+    rest
 }
 
-pub fn push_u16(out: &mut Vec<u8>, value: u16) {
-    out.extend_from_slice(&value.to_le_bytes());
+pub fn write_u16(out: &mut [u8], value: u16) -> &mut [u8] {
+    let (head, rest) = out.split_at_mut(size_of::<u16>());
+    head.copy_from_slice(&value.to_le_bytes());
+    rest
 }
 
-pub fn push_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_le_bytes());
+pub fn write_u32(out: &mut [u8], value: u32) -> &mut [u8] {
+    let (head, rest) = out.split_at_mut(size_of::<u32>());
+    head.copy_from_slice(&value.to_le_bytes());
+    rest
 }
 
-pub fn push_u64(out: &mut Vec<u8>, value: u64) {
-    out.extend_from_slice(&value.to_le_bytes());
+pub fn write_u64(out: &mut [u8], value: u64) -> &mut [u8] {
+    let (head, rest) = out.split_at_mut(size_of::<u64>());
+    head.copy_from_slice(&value.to_le_bytes());
+    rest
 }
 
-pub fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
-    out.extend_from_slice(bytes);
+pub fn write_bool(out: &mut [u8], value: bool) -> &mut [u8] {
+    write_u8(out, u8::from(value))
+}
+
+pub fn write_bytes<'a>(out: &'a mut [u8], bytes: &[u8]) -> &'a mut [u8] {
+    let (head, rest) = out.split_at_mut(bytes.len());
+    head.copy_from_slice(bytes);
+    rest
 }
 
 pub struct Reader<B> {
@@ -95,14 +109,4 @@ impl<B: ByteSlice> Reader<B> {
             Err(WireError::InvalidPayload)
         }
     }
-}
-
-pub fn append_field(out: &mut Vec<u8>, label: &[u8], value: &[u8]) {
-    append_framed_bytes(out, label);
-    append_framed_bytes(out, value);
-}
-
-pub fn append_framed_bytes(out: &mut Vec<u8>, value: &[u8]) {
-    out.extend_from_slice(&u64::try_from(value.len()).unwrap().to_le_bytes());
-    out.extend_from_slice(value);
 }

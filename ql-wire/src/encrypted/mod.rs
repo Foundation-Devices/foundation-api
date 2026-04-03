@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use crate::{
     codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, Nonce, QlCrypto,
     QlSessionRecord, SessionHeader, SessionKey, WireError,
@@ -97,15 +95,6 @@ impl SessionRecord {
             .map(SessionFrame::encoded_len)
             .sum::<usize>()
     }
-
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = SessionRecordBuilder::new(self.encoded_len());
-        for frame in &self.frames {
-            let pushed = out.push_frame(frame);
-            debug_assert!(pushed);
-        }
-        out.into_plaintext()
-    }
 }
 
 impl<B: ByteChunks> SessionFrame<B> {
@@ -117,35 +106,6 @@ impl<B: ByteChunks> SessionFrame<B> {
             Self::StreamWindow(_) => StreamWindow::WIRE_SIZE,
             Self::StreamClose(frame) => SIZE_LEN + frame.encoded_len(),
             Self::Close(_) => SessionClose::WIRE_SIZE,
-        }
-    }
-
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Ping => out.push(SessionFrameKind::Ping as u8),
-            Self::Ack(frame) => {
-                out.push(SessionFrameKind::Ack as u8);
-                push_variable_len(out, frame.encoded_len());
-                frame.encode_into(out);
-            }
-            Self::StreamData(frame) => {
-                out.push(SessionFrameKind::StreamData as u8);
-                push_variable_len(out, frame.encoded_len());
-                frame.encode_into(out);
-            }
-            Self::StreamWindow(frame) => {
-                out.push(SessionFrameKind::StreamWindow as u8);
-                frame.encode_into(out);
-            }
-            Self::StreamClose(frame) => {
-                out.push(SessionFrameKind::StreamClose as u8);
-                push_variable_len(out, frame.encoded_len());
-                frame.encode_into(out);
-            }
-            Self::Close(body) => {
-                out.push(SessionFrameKind::Close as u8);
-                body.encode_into(out);
-            }
         }
     }
 }
@@ -191,12 +151,14 @@ pub fn encrypt_record(
     session_key: &SessionKey,
     body: &SessionRecord,
 ) -> QlSessionRecord<Vec<u8>> {
-    let mut builder = SessionRecordBuilder::new(body.encoded_len());
+    let encoded_len = body.encoded_len() + SessionRecordBuilder::WIRE_PREFIX_LEN;
+    let mut builder = SessionRecordBuilder::new(encoded_len, encoded_len);
     for frame in &body.frames {
         let pushed = builder.push_frame(frame);
         debug_assert!(pushed);
     }
-    builder.encrypt(crypto, header, session_key)
+    QlSessionRecord::decode(&builder.encrypt(crypto, header, session_key))
+        .expect("builder emitted an invalid session record")
 }
 
 pub fn decrypt_record<B: AsMut<[u8]>>(
@@ -246,9 +208,9 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
     }
 }
 
-fn push_variable_len(out: &mut Vec<u8>, len: usize) {
+fn push_variable_len(out: &mut [u8], len: usize) {
     let len = u16::try_from(len).expect("session frame exceeds u16");
-    codec::push_u16(out, len);
+    let _ = codec::write_u16(out, len);
 }
 
 fn split_variable_frame(bytes: &[u8]) -> Result<(&[u8], &[u8]), WireError> {

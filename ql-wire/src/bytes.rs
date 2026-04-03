@@ -142,12 +142,6 @@ impl ByteSlice for &mut [u8] {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct CappedByteChunks<T> {
-    pub inner: T,
-    pub limit: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
 pub struct RangedByteChunks<T> {
     pub inner: T,
     pub offset: usize,

@@ -1,9 +1,4 @@
-use std::mem::size_of;
-
-use crate::{
-    codec::{self, Reader},
-    WireError,
-};
+use crate::{codec, codec::Reader, WireError};
 
 /// closes the whole session immediately with a close code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,8 +9,8 @@ pub struct SessionClose {
 impl SessionClose {
     pub const WIRE_SIZE: usize = size_of::<SessionCloseCode>();
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_u16(out, self.code.0);
+    pub fn encode_into(&self, out: &mut [u8]) {
+        let _ = codec::write_u16(out, self.code.0);
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {

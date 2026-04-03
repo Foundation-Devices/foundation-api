@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use super::StreamId;
 use crate::{codec, ByteChunks, ByteSlice, WireError};
 
@@ -13,7 +11,7 @@ pub struct StreamData<B> {
 }
 
 impl<B> StreamData<B> {
-    pub const MIN_WIRE_SIZE: usize = size_of::<u32>() + size_of::<u64>() + size_of::<u8>();
+    pub const MIN_WIRE_SIZE: usize = size_of::<StreamId>() + size_of::<u64>() + size_of::<u8>();
 }
 
 impl<B: ByteSlice> StreamData<B> {
@@ -47,12 +45,13 @@ impl<B: ByteChunks> StreamData<B> {
         Self::MIN_WIRE_SIZE + self.bytes.len()
     }
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_u32(out, self.stream_id.0);
-        codec::push_u64(out, self.offset);
-        codec::push_u8(out, u8::from(self.fin));
+    pub fn encode_into(&self, out: &mut [u8]) {
+        assert_eq!(out.len(), self.encoded_len());
+        let out = codec::write_u32(out, self.stream_id.0);
+        let out = codec::write_u64(out, self.offset);
+        let mut out = codec::write_bool(out, self.fin);
         for chunk in self.bytes.chunks() {
-            codec::push_bytes(out, chunk);
+            out = codec::write_bytes(out, chunk);
         }
     }
 }

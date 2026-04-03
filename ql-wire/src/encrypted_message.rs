@@ -34,14 +34,14 @@ impl<B: ByteSlice> EncryptedMessage<B> {
 }
 
 impl<B: AsRef<[u8]>> EncryptedMessage<B> {
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_bytes(out, &self.auth);
-        codec::push_bytes(out, self.ciphertext.as_ref());
+    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
+        let out = codec::write_bytes(out, &self.auth);
+        codec::write_bytes(out, self.ciphertext.as_ref())
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(Self::HEADER_LEN + self.ciphertext.as_ref().len());
-        self.encode_into(&mut out);
+        let mut out = vec![0; Self::HEADER_LEN + self.ciphertext.as_ref().len()];
+        let _ = self.encode_into(&mut out);
         out
     }
 

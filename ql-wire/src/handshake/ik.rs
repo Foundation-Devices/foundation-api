@@ -26,12 +26,12 @@ impl Ik1 {
         + EphemeralPublicKey::ENCODED_LEN
         + EncryptedPeerBundle::ENCODED_LEN;
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        self.header.encode_into(out);
-        self.meta.encode_into(out);
-        codec::push_bytes(out, self.skem_ciphertext.as_bytes());
-        self.ephemeral.encode_into(out);
-        codec::push_bytes(out, self.static_bundle.as_bytes());
+    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
+        let out = self.header.encode_into(out);
+        let out = self.meta.encode_into(out);
+        let out = codec::write_bytes(out, self.skem_ciphertext.as_bytes());
+        let out = self.ephemeral.encode_into(out);
+        codec::write_bytes(out, self.static_bundle.as_bytes())
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -67,11 +67,11 @@ impl Ik2 {
         + MlKemCiphertext::SIZE
         + EncryptedMlKemCiphertext::ENCODED_LEN;
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        self.header.encode_into(out);
-        self.meta.encode_into(out);
-        codec::push_bytes(out, self.ekem_ciphertext.as_bytes());
-        codec::push_bytes(out, self.skem_ciphertext.as_bytes());
+    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
+        let out = self.header.encode_into(out);
+        let out = self.meta.encode_into(out);
+        let out = codec::write_bytes(out, self.ekem_ciphertext.as_bytes());
+        codec::write_bytes(out, self.skem_ciphertext.as_bytes())
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {

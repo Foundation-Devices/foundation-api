@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use super::StreamId;
 use crate::{codec, WireError};
 
@@ -11,11 +9,11 @@ pub struct StreamWindow {
 }
 
 impl StreamWindow {
-    pub const WIRE_SIZE: usize = size_of::<u32>() + size_of::<u64>();
+    pub const WIRE_SIZE: usize = size_of::<StreamId>() + size_of::<u64>();
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_u32(out, self.stream_id.0);
-        codec::push_u64(out, self.maximum_offset);
+    pub fn encode_into(&self, out: &mut [u8]) {
+        let out = codec::write_u32(out, self.stream_id.0);
+        let _ = codec::write_u64(out, self.maximum_offset);
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {

@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use crate::{codec, WireError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,10 +47,14 @@ impl RecordAck {
         self.ranges.len() * Self::RANGE_ENCODED_LEN
     }
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
+    pub fn encode_into(&self, out: &mut [u8]) {
+        assert_eq!(out.len(), self.encoded_len());
+        let mut out = out;
         for range in &self.ranges {
-            codec::push_u64(out, range.start);
-            codec::push_u64(out, range.end);
+            let (encoded, rest) = out.split_at_mut(Self::RANGE_ENCODED_LEN);
+            let encoded = codec::write_u64(encoded, range.start);
+            let _ = codec::write_u64(encoded, range.end);
+            out = rest;
         }
     }
 }

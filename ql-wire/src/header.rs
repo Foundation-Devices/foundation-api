@@ -27,11 +27,20 @@ impl ConnectionId {
 }
 
 impl SessionHeader {
-    pub const ENCODED_LEN: usize = ConnectionId::SIZE + core::mem::size_of::<u64>();
+    pub const ENCODED_LEN: usize = ConnectionId::SIZE + size_of::<u64>();
+    const AAD_DOMAIN: &[u8] = b"ql-wire:session-aad:v1";
+    const AAD_RECORD_KIND_SESSION: u8 = 1;
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_bytes(out, self.connection_id.as_bytes());
-        codec::push_u64(out, self.seq.0);
+    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut out = [0; Self::ENCODED_LEN];
+        self.encode_into(&mut out);
+        out
+    }
+
+    pub fn encode_into(&self, out: &mut [u8]) {
+        assert_eq!(out.len(), Self::ENCODED_LEN);
+        let out = codec::write_bytes(out, self.connection_id.as_bytes());
+        let _ = codec::write_u64(out, self.seq.0);
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, crate::WireError> {
@@ -51,12 +60,17 @@ impl SessionHeader {
     }
 
     pub fn aad(&self) -> Vec<u8> {
-        let mut aad = Vec::new();
-        codec::append_field(&mut aad, b"domain", b"ql-wire:session-aad:v1");
-        codec::append_field(&mut aad, b"wire-version", &[QL_WIRE_VERSION]);
-        codec::append_field(&mut aad, b"record-kind", b"session");
-        codec::append_field(&mut aad, b"connection-id", self.connection_id.as_bytes());
-        codec::append_field(&mut aad, b"record-seq", &self.seq.0.to_le_bytes());
+        let aad_len = Self::AAD_DOMAIN.len()
+            + size_of::<u8>()
+            + size_of::<u8>()
+            + ConnectionId::SIZE
+            + size_of::<RecordSeq>();
+        let mut aad = vec![0; aad_len];
+        let out = codec::write_bytes(&mut aad, Self::AAD_DOMAIN);
+        let out = codec::write_u8(out, QL_WIRE_VERSION);
+        let out = codec::write_u8(out, Self::AAD_RECORD_KIND_SESSION);
+        let out = codec::write_bytes(out, self.connection_id.as_bytes());
+        let _ = codec::write_u64(out, self.seq.0);
         aad
     }
 }

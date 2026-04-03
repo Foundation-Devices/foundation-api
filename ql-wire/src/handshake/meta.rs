@@ -11,7 +11,7 @@ pub struct HandshakeMeta {
 }
 
 impl HandshakeMeta {
-    pub const ENCODED_LEN: usize = core::mem::size_of::<u32>() + core::mem::size_of::<u64>();
+    pub const ENCODED_LEN: usize = size_of::<u32>() + size_of::<u64>();
 
     pub fn ensure_not_expired(&self, now_seconds: u64) -> Result<(), WireError> {
         if now_seconds > self.valid_until {
@@ -21,14 +21,14 @@ impl HandshakeMeta {
         }
     }
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        codec::push_u32(out, self.handshake_id.0);
-        codec::push_u64(out, self.valid_until);
+    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
+        let out = codec::write_u32(out, self.handshake_id.0);
+        codec::write_u64(out, self.valid_until)
     }
 
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(Self::ENCODED_LEN);
-        self.encode_into(&mut out);
+    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut out = [0; Self::ENCODED_LEN];
+        let _ = self.encode_into(&mut out);
         out
     }
 

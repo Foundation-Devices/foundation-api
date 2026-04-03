@@ -1,23 +1,27 @@
-use super::{
-    push_variable_len, RecordAck, SessionClose, SessionFrame, SessionFrameKind, StreamClose,
-    StreamData, StreamWindow, SIZE_LEN,
-};
-use crate::{
-    encrypted_message::EncryptedMessage, ByteChunks, Nonce, QlCrypto, QlSessionRecord,
-    SessionHeader, SessionKey,
-};
+use super::{RecordAck, SessionClose, SessionFrame, StreamClose, StreamData, StreamWindow};
+use crate::{ByteChunks, Nonce, QlCrypto, RecordType, SessionHeader, SessionKey, QL_WIRE_VERSION};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecordBuilder {
     max_capacity: usize,
+    body_start: usize,
     bytes: Vec<u8>,
 }
 
 impl SessionRecordBuilder {
-    pub fn new(max_capacity: usize) -> Self {
-        let bytes = Vec::with_capacity(max_capacity);
+    pub const WIRE_PREFIX_LEN: usize =
+        1 + 1 + SessionHeader::ENCODED_LEN + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
+
+    pub fn new(max_capacity: usize, initial_capacity: usize) -> Self {
+        assert!(initial_capacity <= max_capacity);
+        assert!(max_capacity >= Self::WIRE_PREFIX_LEN);
+
+        let body_start = Self::WIRE_PREFIX_LEN;
+        let mut bytes = Vec::with_capacity(initial_capacity);
+        bytes.resize(body_start, 0);
         Self {
             max_capacity,
+            body_start,
             bytes,
         }
     }
@@ -27,23 +31,26 @@ impl SessionRecordBuilder {
     }
 
     pub fn len(&self) -> usize {
-        self.bytes.len()
+        self.bytes.len().saturating_sub(self.body_start)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.len() == 0
     }
 
     pub fn remaining_capacity(&self) -> usize {
-        self.max_capacity.saturating_sub(self.bytes.len())
+        self.max_capacity
+            .saturating_sub(self.body_start)
+            .saturating_sub(self.len())
     }
 
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        &self.bytes[self.body_start..]
     }
 
     pub fn into_plaintext(self) -> Vec<u8> {
-        self.bytes
+        let mut bytes = self.bytes;
+        bytes.split_off(self.body_start)
     }
 
     pub fn can_push_len(&self, len: usize) -> bool {
@@ -51,59 +58,50 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_ping(&mut self) -> bool {
-        if !self.can_push_len(1) {
-            return false;
-        }
-        self.bytes.push(SessionFrameKind::Ping as u8);
-        true
+        self.push_encoded_len(1, |out| out[0] = super::SessionFrameKind::Ping as u8)
     }
 
     pub fn push_ack(&mut self, ack: &RecordAck) -> bool {
-        if !self.can_push_len(1 + SIZE_LEN + ack.encoded_len()) {
-            return false;
-        }
-        self.bytes.push(SessionFrameKind::Ack as u8);
-        push_variable_len(&mut self.bytes, ack.encoded_len());
-        ack.encode_into(&mut self.bytes);
-        true
+        let len = 1 + super::SIZE_LEN + ack.encoded_len();
+        self.push_encoded_len(len, |out| {
+            out[0] = super::SessionFrameKind::Ack as u8;
+            super::push_variable_len(&mut out[1..1 + super::SIZE_LEN], ack.encoded_len());
+            ack.encode_into(&mut out[1 + super::SIZE_LEN..]);
+        })
     }
 
     pub fn push_stream_data<B: ByteChunks>(&mut self, frame: &StreamData<B>) -> bool {
-        if !self.can_push_len(1 + SIZE_LEN + frame.encoded_len()) {
-            return false;
-        }
-        self.bytes.push(SessionFrameKind::StreamData as u8);
-        push_variable_len(&mut self.bytes, frame.encoded_len());
-        frame.encode_into(&mut self.bytes);
-        true
+        let len = 1 + super::SIZE_LEN + frame.encoded_len();
+        self.push_encoded_len(len, |out| {
+            out[0] = super::SessionFrameKind::StreamData as u8;
+            super::push_variable_len(&mut out[1..1 + super::SIZE_LEN], frame.encoded_len());
+            frame.encode_into(&mut out[1 + super::SIZE_LEN..]);
+        })
     }
 
     pub fn push_stream_window(&mut self, frame: &StreamWindow) -> bool {
-        if !self.can_push_len(1 + StreamWindow::WIRE_SIZE) {
-            return false;
-        }
-        self.bytes.push(SessionFrameKind::StreamWindow as u8);
-        frame.encode_into(&mut self.bytes);
-        true
+        let len = 1 + StreamWindow::WIRE_SIZE;
+        self.push_encoded_len(len, |out| {
+            out[0] = super::SessionFrameKind::StreamWindow as u8;
+            frame.encode_into(&mut out[1..]);
+        })
     }
 
     pub fn push_stream_close(&mut self, frame: &StreamClose) -> bool {
-        if !self.can_push_len(1 + SIZE_LEN + frame.encoded_len()) {
-            return false;
-        }
-        self.bytes.push(SessionFrameKind::StreamClose as u8);
-        push_variable_len(&mut self.bytes, frame.encoded_len());
-        frame.encode_into(&mut self.bytes);
-        true
+        let len = 1 + super::SIZE_LEN + frame.encoded_len();
+        self.push_encoded_len(len, |out| {
+            out[0] = super::SessionFrameKind::StreamClose as u8;
+            super::push_variable_len(&mut out[1..1 + super::SIZE_LEN], frame.encoded_len());
+            frame.encode_into(&mut out[1 + super::SIZE_LEN..]);
+        })
     }
 
     pub fn push_close(&mut self, close: &SessionClose) -> bool {
-        if !self.can_push_len(1 + SessionClose::WIRE_SIZE) {
-            return false;
-        }
-        self.bytes.push(SessionFrameKind::Close as u8);
-        close.encode_into(&mut self.bytes);
-        true
+        let len = 1 + SessionClose::WIRE_SIZE;
+        self.push_encoded_len(len, |out| {
+            out[0] = super::SessionFrameKind::Close as u8;
+            close.encode_into(&mut out[1..]);
+        })
     }
 
     pub fn push_frame<B: ByteChunks>(&mut self, frame: &SessionFrame<B>) -> bool {
@@ -118,17 +116,35 @@ impl SessionRecordBuilder {
     }
 
     pub fn encrypt(
-        self,
+        mut self,
         crypto: &impl QlCrypto,
         header: SessionHeader,
         session_key: &SessionKey,
-    ) -> QlSessionRecord<Vec<u8>> {
+    ) -> Vec<u8> {
         let aad = header.aad();
         let nonce = Nonce::from_counter(header.seq.0);
-        let encrypted = EncryptedMessage::encrypt(crypto, session_key, self.bytes, &nonce, &aad);
-        QlSessionRecord {
-            header,
-            payload: encrypted,
+        let auth = crypto.aes256_gcm_encrypt(
+            session_key,
+            &nonce,
+            &aad,
+            &mut self.bytes[self.body_start..],
+        );
+
+        let prefix = &mut self.bytes[..self.body_start];
+        prefix[0] = QL_WIRE_VERSION;
+        prefix[1] = RecordType::Session as u8;
+        header.encode_into(&mut prefix[2..2 + SessionHeader::ENCODED_LEN]);
+        prefix[2 + SessionHeader::ENCODED_LEN..].copy_from_slice(&auth);
+        self.bytes
+    }
+
+    fn push_encoded_len(&mut self, len: usize, encode: impl FnOnce(&mut [u8])) -> bool {
+        if !self.can_push_len(len) {
+            return false;
         }
+        let start = self.bytes.len();
+        self.bytes.resize(start + len, 0);
+        encode(&mut self.bytes[start..]);
+        true
     }
 }

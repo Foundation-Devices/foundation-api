@@ -77,7 +77,16 @@ impl QlHandshakeRecord {
         }
     }
 
-    fn encode_into(&self, out: &mut Vec<u8>) {
+    fn encoded_len(&self) -> usize {
+        match self {
+            Self::Ik1(_) => Ik1::ENCODED_LEN,
+            Self::Ik2(_) => Ik2::ENCODED_LEN,
+            Self::Kk1(_) => Kk1::ENCODED_LEN,
+            Self::Kk2(_) => Kk2::ENCODED_LEN,
+        }
+    }
+
+    fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
         match self {
             Self::Ik1(message) => message.encode_into(out),
             Self::Ik2(message) => message.encode_into(out),
@@ -96,11 +105,11 @@ impl QlHandshakeRecord {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        codec::push_u8(&mut out, QL_WIRE_VERSION);
-        codec::push_u8(&mut out, RecordType::Handshake as u8);
-        codec::push_u8(&mut out, self.kind() as u8);
-        self.encode_into(&mut out);
+        let mut out = vec![0; 3 + self.encoded_len()];
+        let rest = codec::write_u8(&mut out, QL_WIRE_VERSION);
+        let rest = codec::write_u8(rest, RecordType::Handshake as u8);
+        let rest = codec::write_u8(rest, self.kind() as u8);
+        let _ = self.encode_into(rest);
         out
     }
 
@@ -122,11 +131,12 @@ impl QlHandshakeRecord {
 
 impl<B: AsRef<[u8]>> QlSessionRecord<B> {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        codec::push_u8(&mut out, QL_WIRE_VERSION);
-        codec::push_u8(&mut out, RecordType::Session as u8);
-        self.header.encode_into(&mut out);
-        self.payload.encode_into(&mut out);
+        let mut out =
+            vec![0; 2 + SessionHeader::ENCODED_LEN + EncryptedMessage::<&[u8]>::HEADER_LEN + self.payload.ciphertext.as_ref().len()];
+        let rest = codec::write_u8(&mut out, QL_WIRE_VERSION);
+        let rest = codec::write_u8(rest, RecordType::Session as u8);
+        let rest = codec::write_bytes(rest, &self.header.encode());
+        let _ = self.payload.encode_into(rest);
         out
     }
 }
