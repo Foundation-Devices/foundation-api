@@ -1,5 +1,6 @@
 pub(crate) mod received_records;
 pub(crate) mod state;
+pub(crate) mod stream_parity;
 pub(crate) mod stream_rx;
 pub(crate) mod stream_tx;
 
@@ -19,8 +20,9 @@ use self::{
     received_records::{ReceiveInsertOutcome, ReceivedRecords},
     state::{
         AckState, InboundState, OutboundRecord, OutboundState, ReliableFrame, SessionFsmState,
-        StreamDataManifest, StreamParity, StreamRole, StreamState,
+        StreamDataManifest, StreamRole, StreamState,
     },
+    stream_parity::StreamParity,
     stream_rx::{StreamReadIter, StreamRxError},
     stream_tx::StreamTxRange,
 };

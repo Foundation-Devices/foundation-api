@@ -164,7 +164,7 @@ impl QlFsm {
             identity,
             session: session::SessionFsm::new(
                 session::SessionFsmConfig {
-                    local_parity: session::state::StreamParity::Even,
+                    local_parity: session::stream_parity::StreamParity::Even,
                     record_size: config.session_record_size,
                     ack_delay: config.session_record_ack_delay,
                     retransmit_timeout: config.session_record_retransmit_timeout,

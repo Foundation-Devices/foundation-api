@@ -1,91 +1,26 @@
 use std::time::Instant;
 
 use indexmap::IndexMap;
-use ql_wire::{CloseTarget, RecordSeq, SessionClose, StreamClose, StreamId, XID};
+use ql_wire::{CloseTarget, RecordSeq, SessionClose, StreamClose, StreamId};
 
 use super::{
     received_records::ReceivedRecords, stream_rx::StreamRx, stream_tx::StreamTx, SessionState,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamParity {
-    Even,
-    Odd,
-}
-
-impl StreamParity {
-    pub fn for_local(local: XID, peer: XID) -> Self {
-        match local.0.cmp(&peer.0) {
-            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => Self::Even,
-            std::cmp::Ordering::Greater => Self::Odd,
-        }
-    }
-
-    pub const fn first_stream_id(self) -> u32 {
-        match self {
-            Self::Even => 0,
-            Self::Odd => 1,
-        }
-    }
-
-    pub const fn matches(self, stream_id: StreamId) -> bool {
-        match self {
-            Self::Even => stream_id.0 % 2 == 0,
-            Self::Odd => stream_id.0 % 2 == 1,
-        }
-    }
-
-    pub const fn remote(self) -> Self {
-        match self {
-            Self::Even => Self::Odd,
-            Self::Odd => Self::Even,
-        }
-    }
-
-    pub fn make_stream_id(self, ordinal: u32) -> StreamId {
-        StreamId(
-            self.first_stream_id()
-                .saturating_add(ordinal.saturating_mul(2)),
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamRole {
-    Initiator,
-    Responder,
-}
-
-impl StreamRole {
-    pub fn outbound_target(self) -> CloseTarget {
-        match self {
-            Self::Initiator => CloseTarget::Request,
-            Self::Responder => CloseTarget::Response,
-        }
-    }
-
-    pub fn inbound_target(self) -> CloseTarget {
-        match self {
-            Self::Initiator => CloseTarget::Response,
-            Self::Responder => CloseTarget::Request,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OutboundState {
-    Open,
-    FinQueued,
-    Finished,
-    Closed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InboundState {
-    Open,
-    Finished,
-    Closed(StreamClose),
-    Discarding,
+pub struct SessionFsmState {
+    pub now: Instant,
+    pub last_activity_at: Instant,
+    pub last_inbound_at: Instant,
+    pub session_state: SessionState,
+    pub next_stream_ordinal: u32,
+    pub next_record_seq: RecordSeq,
+    pub next_write_id: u64,
+    pub outbound_records: IndexMap<u64, OutboundRecord>,
+    pub received_records: ReceivedRecords,
+    pub ack_state: AckState,
+    pub pending_control: PendingSessionControl,
+    pub streams: IndexMap<StreamId, StreamState>,
+    pub next_stream_index: usize,
 }
 
 #[derive(Debug)]
@@ -143,6 +78,54 @@ impl StreamState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamRole {
+    Initiator,
+    Responder,
+}
+
+impl StreamRole {
+    pub fn outbound_target(self) -> CloseTarget {
+        match self {
+            Self::Initiator => CloseTarget::Request,
+            Self::Responder => CloseTarget::Response,
+        }
+    }
+
+    pub fn inbound_target(self) -> CloseTarget {
+        match self {
+            Self::Initiator => CloseTarget::Response,
+            Self::Responder => CloseTarget::Request,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboundState {
+    Open,
+    FinQueued,
+    Finished,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InboundState {
+    Open,
+    Finished,
+    Closed(StreamClose),
+    Discarding,
+}
+
+#[derive(Debug, Clone)]
+pub struct OutboundRecord {
+    pub seq: RecordSeq,
+    pub reliable: Vec<ReliableFrame>,
+    pub ack_included: bool,
+    pub ping_included: bool,
+    pub window_updates: Vec<(StreamId, u64)>,
+    pub sent_at: Option<Instant>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ReliableFrame {
     StreamData(StreamDataManifest),
@@ -158,16 +141,6 @@ pub struct StreamDataManifest {
     pub fin: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct OutboundRecord {
-    pub seq: RecordSeq,
-    pub reliable: Vec<ReliableFrame>,
-    pub ack_included: bool,
-    pub ping_included: bool,
-    pub window_updates: Vec<(StreamId, u64)>,
-    pub sent_at: Option<Instant>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct PendingSessionControl {
     pub ping: bool,
@@ -179,20 +152,4 @@ pub enum AckState {
     Idle,
     Delayed { due_at: Instant },
     Immediate,
-}
-
-pub struct SessionFsmState {
-    pub now: Instant,
-    pub last_activity_at: Instant,
-    pub last_inbound_at: Instant,
-    pub session_state: SessionState,
-    pub next_stream_ordinal: u32,
-    pub next_record_seq: RecordSeq,
-    pub next_write_id: u64,
-    pub outbound_records: IndexMap<u64, OutboundRecord>,
-    pub received_records: ReceivedRecords,
-    pub ack_state: AckState,
-    pub pending_control: PendingSessionControl,
-    pub streams: IndexMap<StreamId, StreamState>,
-    pub next_stream_index: usize,
 }

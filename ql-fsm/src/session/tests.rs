@@ -5,7 +5,8 @@ use ql_wire::{
     StreamCloseCode, StreamData, StreamId, XID,
 };
 
-use super::{state::StreamParity, SessionEvent, SessionFsm, SessionFsmConfig};
+use super::{SessionEvent, SessionFsm, SessionFsmConfig};
+use crate::session::stream_parity::StreamParity;
 
 fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();

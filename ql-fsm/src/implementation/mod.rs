@@ -7,7 +7,7 @@ pub use fsm::*;
 pub use handshake::*;
 
 use crate::{
-    session::{state::StreamParity, SessionEvent, SessionFsmConfig},
+    session::{stream_parity::StreamParity, SessionEvent, SessionFsmConfig},
     state::LinkState,
     QlFsm, QlFsmEvent, QlSessionEvent,
 };

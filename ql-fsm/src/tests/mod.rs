@@ -16,7 +16,7 @@ use ql_wire::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    session::{state::StreamParity, SessionFsm, SessionFsmConfig},
+    session::{stream_parity::StreamParity, SessionFsm, SessionFsmConfig},
     state::{LinkState, SessionTransport},
     FsmTime, OutboundWrite, QlFsm, QlFsmConfig, SessionWriteId,
 };

@@ -3,7 +3,7 @@ use std::time::Duration;
 use ql_wire::{SessionClose, StreamId};
 
 use super::*;
-use crate::{session::state::StreamParity, state::LinkState, QlFsmEvent, QlSessionEvent};
+use crate::{state::LinkState, QlFsmEvent, QlSessionEvent};
 
 fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();
