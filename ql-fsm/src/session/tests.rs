@@ -34,7 +34,7 @@ fn receive_events(
     fsm: &mut SessionFsm,
     now: Instant,
     seq: RecordSeq,
-    record: SessionRecord,
+    record: &SessionRecord,
 ) -> Vec<SessionEvent> {
     let mut builder = SessionRecordBuilder::new(
         SessionRecordBuilder::WIRE_PREFIX_LEN + record.encoded_len(),
@@ -174,7 +174,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
             bytes: b"hi".to_vec(),
         })],
     };
-    let events = receive_events(&mut fsm, now, RecordSeq(7), data);
+    let events = receive_events(&mut fsm, now, RecordSeq(7), &data);
     assert_eq!(
         events,
         vec![
@@ -189,7 +189,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
     let read = fsm
         .stream_read(stream_id)
         .unwrap()
-        .map(|chunk| chunk.len())
+        .map(<[u8]>::len)
         .sum::<usize>();
     assert_eq!(read, 2);
 
@@ -217,7 +217,7 @@ fn inbound_stream_data_emits_opened_and_readable() {
         })],
     };
 
-    let events = receive_events(&mut fsm, now, RecordSeq(0), record);
+    let events = receive_events(&mut fsm, now, RecordSeq(0), &record);
     assert_eq!(
         events,
         vec![
@@ -294,12 +294,12 @@ fn duplicate_stream_data_is_not_redelivered() {
             bytes: b"hi".to_vec(),
         })],
     };
-    let _ = receive_events(&mut fsm, now, RecordSeq(1), record.clone());
+    let _ = receive_events(&mut fsm, now, RecordSeq(1), &record);
     let _ = receive_events(
         &mut fsm,
         now + Duration::from_millis(1),
         RecordSeq(2),
-        record,
+        &record,
     );
 
     assert_eq!(read_stream_all(&mut fsm, stream_id), b"hi".to_vec());

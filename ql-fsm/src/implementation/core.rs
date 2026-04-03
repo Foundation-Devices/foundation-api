@@ -38,7 +38,7 @@ pub fn receive(
 
             let plaintext =
                 wire::decrypt_record(crypto, &record.header, record.payload, &transport.rx_key)?;
-            let frames = wire::SessionRecord::parse(plaintext.as_ref())?;
+            let frames = wire::SessionRecord::parse(plaintext)?;
             let mut session_closed = false;
             fsm.session
                 .receive(fsm.state.now.instant, record.header.seq, frames, {
@@ -191,12 +191,9 @@ pub fn emit_peer_status(fsm: &mut QlFsm) {
 }
 
 pub fn reset_session(fsm: &mut QlFsm) {
-    let local_parity = fsm
-        .state
-        .peer
-        .as_ref()
-        .map(|peer| StreamParity::for_local(fsm.identity.xid, peer.xid))
-        .unwrap_or(StreamParity::Even);
+    let local_parity = fsm.state.peer.as_ref().map_or(StreamParity::Even, |peer| {
+        StreamParity::for_local(fsm.identity.xid, peer.xid)
+    });
     fsm.session = crate::session::SessionFsm::new(
         SessionFsmConfig {
             local_parity,

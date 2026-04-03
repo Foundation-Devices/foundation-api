@@ -36,7 +36,7 @@ impl Kk1 {
         let meta = HandshakeMeta::decode_from(&mut reader)?;
         let skem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
         let ephemeral =
-            EphemeralPublicKey::decode(&reader.take_bytes(EphemeralPublicKey::ENCODED_LEN)?)?;
+            EphemeralPublicKey::decode(reader.take_bytes(EphemeralPublicKey::ENCODED_LEN)?)?;
         reader.finish()?;
         Ok(Self {
             header,
@@ -214,7 +214,7 @@ impl KkHandshake {
         if self.step != KkStep::Send2 {
             return Err(WireError::InvalidState);
         }
-        require_handshake_meta(&self.handshake_meta, meta)?;
+        require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
         let header = self.outbound_header();
         mix_hash_routed_handshake(
             &mut self.symmetric,
@@ -290,7 +290,7 @@ impl KkHandshake {
             return Err(WireError::InvalidState);
         }
         message.meta.ensure_not_expired(now_seconds)?;
-        require_handshake_meta(&self.handshake_meta, message.meta)?;
+        require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_header(message.header)?;
         mix_hash_routed_handshake(
             &mut self.symmetric,
@@ -325,7 +325,7 @@ impl KkHandshake {
         }
         Ok(finalize_handshake(
             crypto,
-            self.symmetric,
+            &self.symmetric,
             self.role,
             self.remote_bundle,
         ))

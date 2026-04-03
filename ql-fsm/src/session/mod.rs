@@ -257,17 +257,14 @@ impl SessionFsm {
         let closed = self.state.session_state == SessionState::Closed;
         let mut ack_eliciting = false;
         for frame in frames {
-            let frame = match frame {
-                Ok(frame) => frame,
-                Err(_) => {
-                    self.fail_session(
-                        SessionClose {
-                            code: SessionCloseCode::PROTOCOL,
-                        },
-                        &mut emit,
-                    );
-                    return;
-                }
+            let Ok(frame) = frame else {
+                self.fail_session(
+                    SessionClose {
+                        code: SessionCloseCode::PROTOCOL,
+                    },
+                    &mut emit,
+                );
+                return;
             };
             ack_eliciting |= !matches!(frame, SessionFrame::Ack(_));
             if duplicate || closed {
@@ -276,19 +273,19 @@ impl SessionFsm {
 
             match frame {
                 SessionFrame::Ping => {}
-                SessionFrame::Ack(ack) => self.process_record_ack(ack, &mut emit),
+                SessionFrame::Ack(ack) => self.process_record_ack(&ack, &mut emit),
                 SessionFrame::StreamData(frame) => {
-                    if self.handle_stream_data(frame, &mut emit).is_err() {
+                    if self.handle_stream_data(&frame, &mut emit).is_err() {
                         return;
                     }
                 }
                 SessionFrame::StreamWindow(frame) => {
-                    if self.handle_stream_window(frame, &mut emit).is_err() {
+                    if self.handle_stream_window(&frame, &mut emit).is_err() {
                         return;
                     }
                 }
                 SessionFrame::StreamClose(frame) => {
-                    if self.handle_stream_close(frame, &mut emit).is_err() {
+                    if self.handle_stream_close(&frame, &mut emit).is_err() {
                         return;
                     }
                 }
@@ -624,7 +621,7 @@ impl SessionFsm {
         }
     }
 
-    fn process_record_ack(&mut self, ack: RecordAck, emit: &mut impl FnMut(SessionEvent)) {
+    fn process_record_ack(&mut self, ack: &RecordAck, emit: &mut impl FnMut(SessionEvent)) {
         let stream_send_buffer_size = self.config.stream_send_buffer_size;
         {
             let tracked_records = &mut self.state.tracked_records;
@@ -684,7 +681,7 @@ impl SessionFsm {
 
     fn handle_stream_data(
         &mut self,
-        frame: StreamData<&[u8]>,
+        frame: &StreamData<&[u8]>,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
         let stream_id = frame.stream_id;
@@ -739,12 +736,14 @@ impl SessionFsm {
                 self.try_reap_stream(stream_id);
                 Ok(())
             }
-            Err(StreamRxError::OutOfWindow)
-            | Err(StreamRxError::InconsistentFinalOffset)
-            | Err(StreamRxError::FinalOffsetBeforeBufferedData)
-            | Err(StreamRxError::BeyondFinalOffset)
-            | Err(StreamRxError::TooManyMissingRanges)
-            | Err(StreamRxError::OffsetOverflow) => {
+            Err(
+                StreamRxError::OutOfWindow
+                | StreamRxError::InconsistentFinalOffset
+                | StreamRxError::FinalOffsetBeforeBufferedData
+                | StreamRxError::BeyondFinalOffset
+                | StreamRxError::TooManyMissingRanges
+                | StreamRxError::OffsetOverflow,
+            ) => {
                 self.fail_session(
                     SessionClose {
                         code: SessionCloseCode::PROTOCOL,
@@ -758,7 +757,7 @@ impl SessionFsm {
 
     fn handle_stream_window(
         &mut self,
-        frame: StreamWindow,
+        frame: &StreamWindow,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
@@ -783,7 +782,7 @@ impl SessionFsm {
 
     fn handle_stream_close(
         &mut self,
-        frame: StreamClose,
+        frame: &StreamClose,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
         let created = match self.state.streams.entry(frame.stream_id) {

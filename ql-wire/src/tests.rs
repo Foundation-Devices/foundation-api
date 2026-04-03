@@ -554,8 +554,7 @@ fn protocol_record_size_breakdown() {
 
     let mut kk_initiator =
         KkHandshake::new_initiator(&crypto, initiator.clone(), responder.bundle());
-    let mut kk_responder =
-        KkHandshake::new_responder(&crypto, responder.clone(), initiator.bundle());
+    let mut kk_responder = KkHandshake::new_responder(&crypto, responder, initiator.bundle());
 
     let kk1 = kk_initiator.write_1(&crypto, handshake_meta(201)).unwrap();
     kk_responder.read_1(&crypto, 0, &kk1).unwrap();

@@ -338,7 +338,7 @@ fn initialize_handshake_meta(
 }
 
 fn require_handshake_meta(
-    expected: &Option<HandshakeMeta>,
+    expected: Option<&HandshakeMeta>,
     meta: HandshakeMeta,
 ) -> Result<(), WireError> {
     match expected {
@@ -400,7 +400,7 @@ fn decrypt_mlkem_ciphertext(
 
 fn finalize_handshake(
     crypto: &impl QlCrypto,
-    symmetric: SymmetricState,
+    symmetric: &SymmetricState,
     role: Role,
     remote_bundle: PeerBundle,
 ) -> FinalizedHandshake {

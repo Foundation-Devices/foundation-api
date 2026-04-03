@@ -111,7 +111,7 @@ impl StreamTx {
             }
 
             let credit_remaining = peer_max_offset.saturating_sub(segment.offset);
-            let credit_remaining = credit_remaining.min(usize::MAX as u64) as usize;
+            let credit_remaining = usize::try_from(credit_remaining).unwrap_or(usize::MAX);
             let len = segment.len.min(max_payload).min(credit_remaining);
             if len == 0 {
                 continue;

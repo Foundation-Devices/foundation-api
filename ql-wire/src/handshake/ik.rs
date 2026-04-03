@@ -40,7 +40,7 @@ impl Ik1 {
         let meta = HandshakeMeta::decode_from(&mut reader)?;
         let skem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
         let ephemeral =
-            EphemeralPublicKey::decode(&reader.take_bytes(EphemeralPublicKey::ENCODED_LEN)?)?;
+            EphemeralPublicKey::decode(reader.take_bytes(EphemeralPublicKey::ENCODED_LEN)?)?;
         let static_bundle = EncryptedPeerBundle::from_data(reader.take_array()?);
         reader.finish()?;
         Ok(Self {
@@ -226,7 +226,7 @@ impl IkHandshake {
         if self.step != IkStep::Send2 {
             return Err(WireError::InvalidState);
         }
-        require_handshake_meta(&self.handshake_meta, meta)?;
+        require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
         let header = self.outbound_header()?;
         mix_hash_routed_handshake(
             &mut self.symmetric,
@@ -317,7 +317,7 @@ impl IkHandshake {
             return Err(WireError::InvalidState);
         }
         message.meta.ensure_not_expired(now_seconds)?;
-        require_handshake_meta(&self.handshake_meta, message.meta)?;
+        require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_recipient(message.header)?;
         self.ensure_known_remote_sender(message.header)?;
         mix_hash_routed_handshake(
@@ -354,7 +354,7 @@ impl IkHandshake {
         let remote_bundle = self.remote_bundle.ok_or(WireError::InvalidState)?;
         Ok(finalize_handshake(
             crypto,
-            self.symmetric,
+            &self.symmetric,
             self.role,
             remote_bundle,
         ))

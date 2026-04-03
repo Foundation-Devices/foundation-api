@@ -83,10 +83,10 @@ pub fn next_handshake_deadline(fsm: &QlFsm) -> Option<std::time::Instant> {
 pub fn finish_handshake(
     fsm: &mut QlFsm,
     transport: SessionTransport,
-    remote_bundle: wire::PeerBundle,
+    remote_bundle: &wire::PeerBundle,
 ) -> Result<(), QlFsmError> {
     if let Some(peer) = fsm.state.peer.as_ref() {
-        if peer != &remote_bundle {
+        if peer != remote_bundle {
             return Err(QlFsmError::InvalidPayload);
         }
     } else {

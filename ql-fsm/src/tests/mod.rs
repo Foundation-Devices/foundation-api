@@ -247,11 +247,17 @@ impl Harness {
     }
 
     fn deliver_to_a(&mut self, record: Vec<u8>) {
-        self.a.fsm.receive(self.time(), record, &self.a.crypto).unwrap();
+        self.a
+            .fsm
+            .receive(self.time(), record, &self.a.crypto)
+            .unwrap();
     }
 
     fn deliver_to_b(&mut self, record: Vec<u8>) {
-        self.b.fsm.receive(self.time(), record, &self.b.crypto).unwrap();
+        self.b
+            .fsm
+            .receive(self.time(), record, &self.b.crypto)
+            .unwrap();
     }
 
     fn confirm_write_a(&mut self, write_id: SessionWriteId) {

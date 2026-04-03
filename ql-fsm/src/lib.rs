@@ -102,7 +102,7 @@ pub enum QlSessionEvent {
 pub struct SessionWriteId(pub(crate) u64);
 
 /// outbound record produced by `QlFsm`
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboundWrite {
     /// wire bytes to hand to the transport
     pub record: Vec<u8>,

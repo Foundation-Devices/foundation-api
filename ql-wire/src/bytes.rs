@@ -24,6 +24,10 @@ pub trait ByteChunks {
     fn len(&self) -> usize;
 
     fn chunks(&self) -> Self::Chunks<'_>;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl<B> ByteSliceMut for B where B: ByteSlice + DerefMut<Target = [u8]> {}
@@ -95,7 +99,7 @@ impl ByteChunks for Vec<u8> {
         Self: 'a;
 
     fn len(&self) -> usize {
-        Vec::len(self)
+        Self::len(self)
     }
 
     fn chunks(&self) -> Self::Chunks<'_> {
@@ -110,7 +114,7 @@ impl ByteChunks for VecDeque<u8> {
         Self: 'a;
 
     fn len(&self) -> usize {
-        VecDeque::len(self)
+        Self::len(self)
     }
 
     fn chunks(&self) -> Self::Chunks<'_> {
@@ -256,7 +260,7 @@ mod tests {
         let chunks = ByteChunks::chunks(&bytes).collect::<Vec<_>>();
         assert_eq!(bytes.len(), 6);
         assert_eq!(chunks.concat(), b"cdefgh");
-        assert!(chunks.len() >= 1);
+        assert!(!chunks.is_empty());
     }
 
     #[test]

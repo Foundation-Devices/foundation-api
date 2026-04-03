@@ -32,7 +32,7 @@ pub enum StreamRxError {
     TooManyMissingRanges,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct StreamReadIter<'a> {
     front: Option<&'a [u8]>,
     back: Option<&'a [u8]>,

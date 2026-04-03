@@ -61,6 +61,7 @@ impl QlIdentity {
         }
     }
 
+    #[must_use]
     pub fn with_capabilities(mut self, capabilities: u32) -> Self {
         self.capabilities = capabilities;
         self

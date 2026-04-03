@@ -56,7 +56,7 @@ pub fn handle_ik1(
     handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
     let outbound = handshake.write_2(crypto, message.meta)?;
     let (transport, remote_bundle) = SessionTransport::from_finalized(handshake.finalize(crypto)?);
-    finish_handshake(fsm, transport, remote_bundle)?;
+    finish_handshake(fsm, transport, &remote_bundle)?;
     fsm.state.handshake = None;
     enqueue_handshake(fsm, QlHandshakeRecord::Ik2(outbound));
     Ok(())
@@ -86,18 +86,17 @@ pub fn handle_ik2(
     };
     let (transport, remote_bundle) =
         SessionTransport::from_finalized(state.handshake.finalize(crypto)?);
-    finish_handshake(fsm, transport, remote_bundle)
+    finish_handshake(fsm, transport, &remote_bundle)
 }
 
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Ik1) -> bool {
     match &fsm.state.link {
-        LinkState::Idle | LinkState::Connected(_) => false,
+        LinkState::Idle | LinkState::Connected(_) | LinkState::KkInitiator(_) => false,
         LinkState::IkInitiator(state) => {
             if fsm.state.peer.as_ref().map(|peer| peer.xid) != Some(message.header.sender) {
                 return false;
             }
             super::local_start_wins(&state.initial_ephemeral, &message.ephemeral)
         }
-        LinkState::KkInitiator(_) => false,
     }
 }

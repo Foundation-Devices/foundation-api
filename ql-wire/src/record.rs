@@ -114,7 +114,7 @@ impl QlHandshakeRecord {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        Ok(Self::parse(bytes)?)
+        Self::parse(bytes)
     }
 
     pub fn parse<B: ByteSlice>(bytes: B) -> Result<Self, WireError> {
@@ -131,8 +131,12 @@ impl QlHandshakeRecord {
 
 impl<B: AsRef<[u8]>> QlSessionRecord<B> {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out =
-            vec![0; 2 + SessionHeader::ENCODED_LEN + EncryptedMessage::<&[u8]>::HEADER_LEN + self.payload.ciphertext.as_ref().len()];
+        let mut out = vec![
+            0;
+            2 + SessionHeader::ENCODED_LEN
+                + EncryptedMessage::<&[u8]>::HEADER_LEN
+                + self.payload.ciphertext.as_ref().len()
+        ];
         let rest = codec::write_u8(&mut out, QL_WIRE_VERSION);
         let rest = codec::write_u8(rest, RecordType::Session as u8);
         let rest = codec::write_bytes(rest, &self.header.encode());
@@ -143,7 +147,7 @@ impl<B: AsRef<[u8]>> QlSessionRecord<B> {
 
 impl QlSessionRecord<Vec<u8>> {
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        Ok(QlSessionRecord::parse(bytes)?.into_owned())
+        QlSessionRecord::parse(bytes).map(QlSessionRecord::into_owned)
     }
 }
 
@@ -178,7 +182,7 @@ impl<B: AsRef<[u8]>> QlRecord<B> {
 
 impl QlRecord<Vec<u8>> {
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        Ok(QlRecord::parse(bytes)?.into_owned())
+        QlRecord::parse(bytes).map(QlRecord::into_owned)
     }
 }
 

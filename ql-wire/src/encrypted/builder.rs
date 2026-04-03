@@ -65,7 +65,7 @@ impl SessionRecordBuilder {
         let len = 1 + super::SIZE_LEN + ack.encoded_len();
         self.push_encoded_len(len, |out| {
             out[0] = super::SessionFrameKind::Ack as u8;
-            super::push_variable_len(&mut out[1..1 + super::SIZE_LEN], ack.encoded_len());
+            super::push_variable_len(&mut out[1..=super::SIZE_LEN], ack.encoded_len());
             ack.encode_into(&mut out[1 + super::SIZE_LEN..]);
         })
     }
@@ -74,7 +74,7 @@ impl SessionRecordBuilder {
         let len = 1 + super::SIZE_LEN + frame.encoded_len();
         self.push_encoded_len(len, |out| {
             out[0] = super::SessionFrameKind::StreamData as u8;
-            super::push_variable_len(&mut out[1..1 + super::SIZE_LEN], frame.encoded_len());
+            super::push_variable_len(&mut out[1..=super::SIZE_LEN], frame.encoded_len());
             frame.encode_into(&mut out[1 + super::SIZE_LEN..]);
         })
     }
@@ -91,7 +91,7 @@ impl SessionRecordBuilder {
         let len = 1 + super::SIZE_LEN + frame.encoded_len();
         self.push_encoded_len(len, |out| {
             out[0] = super::SessionFrameKind::StreamClose as u8;
-            super::push_variable_len(&mut out[1..1 + super::SIZE_LEN], frame.encoded_len());
+            super::push_variable_len(&mut out[1..=super::SIZE_LEN], frame.encoded_len());
             frame.encode_into(&mut out[1 + super::SIZE_LEN..]);
         })
     }
