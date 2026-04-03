@@ -4,7 +4,8 @@ use indexmap::IndexMap;
 use ql_wire::{CloseTarget, RecordSeq, SessionClose, StreamClose, StreamId};
 
 use super::{
-    received_records::ReceivedRecords, stream_rx::StreamRx, stream_tx::StreamTx, SessionState,
+    received_records::ReceivedRecords, stream_rx::StreamRx, stream_tx::StreamTx,
+    tracked::TrackedRecord, SessionState,
 };
 
 pub struct SessionFsmState {
@@ -15,7 +16,7 @@ pub struct SessionFsmState {
     pub next_stream_ordinal: u32,
     pub next_record_seq: RecordSeq,
     pub next_write_id: u64,
-    pub outbound_records: IndexMap<u64, OutboundRecord>,
+    pub tracked_records: IndexMap<u64, TrackedRecord>,
     pub received_records: ReceivedRecords,
     pub ack_state: AckState,
     pub pending_control: PendingSessionControl,
@@ -114,31 +115,6 @@ pub enum InboundState {
     Finished,
     Closed(StreamClose),
     Discarding,
-}
-
-#[derive(Debug, Clone)]
-pub struct OutboundRecord {
-    pub seq: RecordSeq,
-    pub reliable: Vec<ReliableFrame>,
-    pub ack_included: bool,
-    pub ping_included: bool,
-    pub window_updates: Vec<(StreamId, u64)>,
-    pub sent_at: Option<Instant>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ReliableFrame {
-    StreamData(StreamDataManifest),
-    StreamClose(StreamClose),
-    Close(SessionClose),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamDataManifest {
-    pub stream_id: StreamId,
-    pub offset: u64,
-    pub len: usize,
-    pub fin: bool,
 }
 
 #[derive(Debug, Clone, Default)]

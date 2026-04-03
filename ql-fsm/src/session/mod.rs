@@ -3,6 +3,7 @@ pub(crate) mod state;
 pub(crate) mod stream_parity;
 pub(crate) mod stream_rx;
 pub(crate) mod stream_tx;
+pub(crate) mod tracked;
 
 #[cfg(test)]
 mod tests;
@@ -18,13 +19,11 @@ use ql_wire::{
 
 use self::{
     received_records::{ReceiveInsertOutcome, ReceivedRecords},
-    state::{
-        AckState, InboundState, OutboundRecord, OutboundState, ReliableFrame, SessionFsmState,
-        StreamDataManifest, StreamRole, StreamState,
-    },
+    state::{AckState, InboundState, OutboundState, SessionFsmState, StreamRole, StreamState},
     stream_parity::StreamParity,
     stream_rx::{StreamReadIter, StreamRxError},
     stream_tx::StreamTxRange,
+    tracked::{TrackedFrame, TrackedRecord, TrackedStreamData},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -103,7 +102,7 @@ impl SessionFsm {
                 next_stream_ordinal: 0,
                 next_record_seq: RecordSeq(0),
                 next_write_id: 0,
-                outbound_records: Default::default(),
+                tracked_records: Default::default(),
                 received_records: ReceivedRecords::default(),
                 ack_state: AckState::Idle,
                 pending_control: Default::default(),
@@ -307,7 +306,7 @@ impl SessionFsm {
 
     pub fn confirm_write(&mut self, now: Instant, write_id: u64) {
         self.state.now = now;
-        let Some(record) = self.state.outbound_records.get_mut(&write_id) else {
+        let Some(record) = self.state.tracked_records.get_mut(&write_id) else {
             return;
         };
         if record.sent_at.is_some() {
@@ -320,16 +319,16 @@ impl SessionFsm {
     pub fn reject_write(&mut self, write_id: u64) {
         if self
             .state
-            .outbound_records
+            .tracked_records
             .get(&write_id)
             .is_some_and(|record| record.sent_at.is_some())
         {
             return;
         }
-        let Some(record) = self.state.outbound_records.shift_remove(&write_id) else {
+        let Some(record) = self.state.tracked_records.shift_remove(&write_id) else {
             return;
         };
-        restore_outbound_record(
+        restore_tracked_record(
             self.state.now,
             self.config.ack_delay,
             &mut self.state.ack_state,
@@ -374,7 +373,7 @@ impl SessionFsm {
         };
         let retransmit_deadline = self
             .state
-            .outbound_records
+            .tracked_records
             .values()
             .filter_map(|record| {
                 record
@@ -417,16 +416,16 @@ impl SessionFsm {
         let write_id = self.state.next_write_id;
         self.state.next_write_id = self.state.next_write_id.wrapping_add(1);
         let seq = outbound.seq;
-        self.state.outbound_records.insert(write_id, outbound);
+        self.state.tracked_records.insert(write_id, outbound);
         Some((write_id, seq, builder))
     }
 
-    fn build_next_record(&mut self) -> Option<(SessionRecordBuilder, OutboundRecord)> {
+    fn build_next_record(&mut self) -> Option<(SessionRecordBuilder, TrackedRecord)> {
         let seq = self.state.next_record_seq;
         let mut builder = SessionRecordBuilder::new(self.config.record_size);
-        let mut outbound = OutboundRecord {
+        let mut outbound = TrackedRecord {
             seq,
-            reliable: Vec::new(),
+            frames: Vec::new(),
             ack_included: false,
             ping_included: false,
             window_updates: Vec::new(),
@@ -445,7 +444,7 @@ impl SessionFsm {
         if let Some(close) = self.state.pending_control.close.clone() {
             if builder.push_close(&close) {
                 self.state.pending_control.close = None;
-                outbound.reliable.push(ReliableFrame::Close(close));
+                outbound.frames.push(TrackedFrame::Close(close));
             }
         }
 
@@ -471,7 +470,7 @@ impl SessionFsm {
     fn push_next_pending_stream_close(
         &mut self,
         builder: &mut SessionRecordBuilder,
-        outbound: &mut OutboundRecord,
+        outbound: &mut TrackedRecord,
     ) -> bool {
         let len = self.state.streams.len();
         if len == 0 {
@@ -493,7 +492,7 @@ impl SessionFsm {
 
             let stream = self.state.streams.get_index_mut(index).unwrap().1;
             self.state.next_stream_index = (index + 1) % len;
-            outbound.reliable.push(ReliableFrame::StreamClose(
+            outbound.frames.push(TrackedFrame::StreamClose(
                 stream.pending_close.take().unwrap(),
             ));
             return true;
@@ -505,7 +504,7 @@ impl SessionFsm {
     fn push_next_pending_stream_window(
         &mut self,
         builder: &mut SessionRecordBuilder,
-        outbound: &mut OutboundRecord,
+        outbound: &mut TrackedRecord,
     ) -> bool {
         let len = self.state.streams.len();
         if len == 0 {
@@ -545,7 +544,7 @@ impl SessionFsm {
     fn push_next_stream_data(
         &mut self,
         builder: &mut SessionRecordBuilder,
-        outbound: &mut OutboundRecord,
+        outbound: &mut TrackedRecord,
     ) -> bool {
         let Some(max_payload) = self.max_stream_data_payload(builder) else {
             return false;
@@ -587,8 +586,8 @@ impl SessionFsm {
             }
             self.state.next_stream_index = (index + 1) % len;
             outbound
-                .reliable
-                .push(ReliableFrame::StreamData(StreamDataManifest {
+                .frames
+                .push(TrackedFrame::StreamData(TrackedStreamData {
                     stream_id,
                     offset: candidate.offset,
                     len: candidate.len,
@@ -623,17 +622,17 @@ impl SessionFsm {
     fn process_record_ack(&mut self, ack: RecordAck, emit: &mut impl FnMut(SessionEvent)) {
         let stream_send_buffer_size = self.config.stream_send_buffer_size;
         {
-            let outbound_records = &mut self.state.outbound_records;
+            let tracked_records = &mut self.state.tracked_records;
             let streams = &mut self.state.streams;
-            for (_, record) in outbound_records.extract_if(.., |_, record| {
+            for (_, record) in tracked_records.extract_if(.., |_, record| {
                 record.sent_at.is_some()
                     && ack
                         .ranges
                         .iter()
                         .any(|range| range.start <= record.seq.0 && record.seq.0 < range.end)
             }) {
-                for frame in &record.reliable {
-                    acknowledge_reliable_frame(streams, stream_send_buffer_size, frame, emit);
+                for frame in &record.frames {
+                    acknowledge_tracked_frame(streams, stream_send_buffer_size, frame, emit);
                 }
             }
         }
@@ -662,12 +661,12 @@ impl SessionFsm {
 
     fn collect_timeouts(&mut self) {
         let retransmit_timeout = self.config.retransmit_timeout;
-        for (_, record) in self.state.outbound_records.extract_if(.., |_, record| {
+        for (_, record) in self.state.tracked_records.extract_if(.., |_, record| {
             record
                 .sent_at
                 .is_some_and(|sent_at| sent_at + retransmit_timeout <= self.state.now)
         }) {
-            restore_outbound_record(
+            restore_tracked_record(
                 self.state.now,
                 self.config.ack_delay,
                 &mut self.state.ack_state,
@@ -835,7 +834,7 @@ impl SessionFsm {
         }
 
         self.state.session_state = SessionState::Closed;
-        self.state.outbound_records.clear();
+        self.state.tracked_records.clear();
         self.clear_streams();
         self.state.pending_control = Default::default();
         emit(SessionEvent::SessionClosed(close));
@@ -861,15 +860,15 @@ impl SessionFsm {
     }
 
     fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
-        let outbound_refs_stream = self.state.outbound_records.values().any(|record| {
+        let tracked_refs_stream = self.state.tracked_records.values().any(|record| {
             record.window_updates.iter().any(|(id, _)| *id == stream_id)
-                || record.reliable.iter().any(|frame| match frame {
-                    ReliableFrame::StreamData(frame) => frame.stream_id == stream_id,
-                    ReliableFrame::StreamClose(frame) => frame.stream_id == stream_id,
-                    ReliableFrame::Close(_) => false,
+                || record.frames.iter().any(|frame| match frame {
+                    TrackedFrame::StreamData(frame) => frame.stream_id == stream_id,
+                    TrackedFrame::StreamClose(frame) => frame.stream_id == stream_id,
+                    TrackedFrame::Close(_) => false,
                 })
         });
-        if outbound_refs_stream {
+        if tracked_refs_stream {
             return false;
         }
 
@@ -935,7 +934,7 @@ impl SessionFsm {
         }
 
         self.state.session_state = SessionState::Closed;
-        self.state.outbound_records.clear();
+        self.state.tracked_records.clear();
         self.state.pending_control = Default::default();
         self.state.pending_control.close = Some(close.clone());
         self.clear_streams();
@@ -959,13 +958,13 @@ fn schedule_ack(ack_state: &mut AckState, now: Instant, ack_delay: Duration, imm
     };
 }
 
-fn restore_outbound_record(
+fn restore_tracked_record(
     now: Instant,
     ack_delay: Duration,
     ack_state: &mut AckState,
     pending_control: &mut state::PendingSessionControl,
     streams: &mut IndexMap<StreamId, StreamState>,
-    record: OutboundRecord,
+    record: TrackedRecord,
 ) {
     if record.ack_included {
         schedule_ack(ack_state, now, ack_delay, true);
@@ -980,22 +979,22 @@ fn restore_outbound_record(
             }
         }
     }
-    for frame in record.reliable {
-        requeue_reliable_frame(pending_control, streams, frame);
+    for frame in record.frames {
+        requeue_tracked_frame(pending_control, streams, frame);
     }
 }
 
-fn requeue_reliable_frame(
+fn requeue_tracked_frame(
     pending_control: &mut state::PendingSessionControl,
     streams: &mut IndexMap<StreamId, StreamState>,
-    frame: ReliableFrame,
+    frame: TrackedFrame,
 ) {
     match frame {
-        ReliableFrame::Close(close) => {
+        TrackedFrame::Close(close) => {
             pending_control.close = Some(close);
         }
-        ReliableFrame::StreamClose(close) => restore_stream_close(streams, close),
-        ReliableFrame::StreamData(frame) => restore_stream_data(streams, frame),
+        TrackedFrame::StreamClose(close) => restore_stream_close(streams, close),
+        TrackedFrame::StreamData(frame) => restore_stream_data(streams, frame),
     }
 }
 
@@ -1005,7 +1004,7 @@ fn restore_stream_close(streams: &mut IndexMap<StreamId, StreamState>, close: St
     }
 }
 
-fn restore_stream_data(streams: &mut IndexMap<StreamId, StreamState>, frame: StreamDataManifest) {
+fn restore_stream_data(streams: &mut IndexMap<StreamId, StreamState>, frame: TrackedStreamData) {
     if let Some(stream) = streams.get_mut(&frame.stream_id) {
         if matches!(stream.outbound_state, OutboundState::Closed) {
             return;
@@ -1021,15 +1020,15 @@ fn restore_stream_data(streams: &mut IndexMap<StreamId, StreamState>, frame: Str
     }
 }
 
-fn acknowledge_reliable_frame(
+fn acknowledge_tracked_frame(
     streams: &mut IndexMap<StreamId, StreamState>,
     stream_send_buffer_size: usize,
-    frame: &ReliableFrame,
+    frame: &TrackedFrame,
     emit: &mut impl FnMut(SessionEvent),
 ) {
     match frame {
-        ReliableFrame::Close(_) | ReliableFrame::StreamClose(_) => {}
-        ReliableFrame::StreamData(frame) => {
+        TrackedFrame::Close(_) | TrackedFrame::StreamClose(_) => {}
+        TrackedFrame::StreamData(frame) => {
             let stream_id = frame.stream_id;
             if let Some(stream) = streams.get_mut(&stream_id) {
                 let was_full = stream.send_capacity(stream_send_buffer_size) == 0;
