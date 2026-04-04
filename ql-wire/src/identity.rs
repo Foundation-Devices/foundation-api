@@ -35,7 +35,7 @@ impl<B: ByteSlice> codec::WireParse<B> for PeerBundle {
             version: reader.take_u16()?,
             xid: XID(reader.take_array()?),
             capabilities: reader.take_u32()?,
-            mlkem_public_key: MlKemPublicKey::from_data(reader.take_array()?),
+            mlkem_public_key: MlKemPublicKey::new(reader.take_boxed_array()?),
         })
     }
 }

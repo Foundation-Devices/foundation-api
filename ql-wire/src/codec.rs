@@ -88,6 +88,18 @@ impl<B: ByteSlice> Reader<B> {
         Ok(out)
     }
 
+    pub fn take_boxed_array<const N: usize>(&mut self) -> Result<Box<[u8; N]>, WireError> {
+        let bytes = self.take_bytes(N)?;
+        let mut out = Box::<[u8; N]>::new_uninit();
+        let src = bytes.as_ptr();
+        let dst = out.as_mut_ptr().cast::<u8>();
+        // SAFETY: `take_bytes(N)` guarantees the source has exactly `N` bytes
+        unsafe {
+            std::ptr::copy_nonoverlapping(src, dst, N);
+            Ok(out.assume_init())
+        }
+    }
+
     pub fn take_u8(&mut self) -> Result<u8, WireError> {
         Ok(self.take_bytes(1)?[0])
     }

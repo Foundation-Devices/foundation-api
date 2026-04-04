@@ -87,8 +87,8 @@ impl QlKem for TestCrypto {
         private.copy_from_slice(key_pair.sk());
 
         MlKemKeyPair {
-            private: MlKemPrivateKey::from_data(private),
-            public: MlKemPublicKey::from_data(public),
+            private: MlKemPrivateKey::new(Box::new(private)),
+            public: MlKemPublicKey::new(Box::new(public)),
         }
     }
 
@@ -101,7 +101,7 @@ impl QlKem for TestCrypto {
         let mut shared = [0u8; SessionKey::SIZE];
         shared.copy_from_slice(shared_value.as_slice());
         (
-            MlKemCiphertext::from_data(ciphertext),
+            MlKemCiphertext::new(Box::new(ciphertext)),
             SessionKey::from_data(shared),
         )
     }
@@ -201,11 +201,11 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
     let ik = QlHandshakeRecord::Ik1(Ik1 {
         header: handshake_header(1, 2),
         meta: handshake_meta(1),
-        skem_ciphertext: MlKemCiphertext::from_data([7; MlKemCiphertext::SIZE]),
+        skem_ciphertext: MlKemCiphertext::new(Box::new([7; MlKemCiphertext::SIZE])),
         ephemeral: EphemeralPublicKey {
-            mlkem_public_key: MlKemPublicKey::from_data([9; MlKemPublicKey::SIZE]),
+            mlkem_public_key: MlKemPublicKey::new(Box::new([9; MlKemPublicKey::SIZE])),
         },
-        static_bundle: EncryptedPeerBundle::from_data([13; EncryptedPeerBundle::WIRE_SIZE]),
+        static_bundle: EncryptedPeerBundle::new(Box::new([13; EncryptedPeerBundle::WIRE_SIZE])),
     });
     let ik_encoded = ik.encode();
     assert_eq!(QlHandshakeRecord::parse(ik_encoded.as_slice()).unwrap(), ik);
@@ -217,9 +217,9 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
     let kk = QlHandshakeRecord::Kk1(Kk1 {
         header: handshake_header(1, 2),
         meta: handshake_meta(2),
-        skem_ciphertext: MlKemCiphertext::from_data([11; MlKemCiphertext::SIZE]),
+        skem_ciphertext: MlKemCiphertext::new(Box::new([11; MlKemCiphertext::SIZE])),
         ephemeral: EphemeralPublicKey {
-            mlkem_public_key: MlKemPublicKey::from_data([15; MlKemPublicKey::SIZE]),
+            mlkem_public_key: MlKemPublicKey::new(Box::new([15; MlKemPublicKey::SIZE])),
         },
     });
     let kk_encoded = kk.encode();

@@ -45,8 +45,8 @@ pub struct MlKemPublicKey(Box<[u8; MlKemPublicKey::SIZE]>);
 impl MlKemPublicKey {
     pub const SIZE: usize = ML_KEM_1024_PUBLIC_KEY_SIZE;
 
-    pub fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(Box::new(data))
+    pub fn new(data: Box<[u8; Self::SIZE]>) -> Self {
+        Self(data)
     }
 
     pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
@@ -66,8 +66,8 @@ pub struct MlKemPrivateKey(Box<[u8; MlKemPrivateKey::SIZE]>);
 impl MlKemPrivateKey {
     pub const SIZE: usize = ML_KEM_1024_PRIVATE_KEY_SIZE;
 
-    pub fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(Box::new(data))
+    pub fn new(data: Box<[u8; Self::SIZE]>) -> Self {
+        Self(data)
     }
 
     pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
@@ -87,8 +87,8 @@ pub struct MlKemCiphertext(Box<[u8; MlKemCiphertext::SIZE]>);
 impl MlKemCiphertext {
     pub const SIZE: usize = ML_KEM_1024_CIPHERTEXT_SIZE;
 
-    pub fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(Box::new(data))
+    pub fn new(data: Box<[u8; Self::SIZE]>) -> Self {
+        Self(data)
     }
 
     pub fn as_bytes(&self) -> &[u8; Self::SIZE] {

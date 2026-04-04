@@ -36,7 +36,7 @@ impl<B: ByteSlice> codec::WireParse<B> for Kk1 {
         Ok(Self {
             header: reader.parse()?,
             meta: reader.parse()?,
-            skem_ciphertext: MlKemCiphertext::from_data(reader.take_array()?),
+            skem_ciphertext: MlKemCiphertext::new(reader.take_boxed_array()?),
             ephemeral: reader.parse()?,
         })
     }
@@ -69,8 +69,8 @@ impl<B: ByteSlice> codec::WireParse<B> for Kk2 {
         Ok(Self {
             header: reader.parse()?,
             meta: reader.parse()?,
-            ekem_ciphertext: MlKemCiphertext::from_data(reader.take_array()?),
-            skem_ciphertext: EncryptedMlKemCiphertext::from_data(reader.take_array()?),
+            ekem_ciphertext: MlKemCiphertext::new(reader.take_boxed_array()?),
+            skem_ciphertext: EncryptedMlKemCiphertext::new(reader.take_boxed_array()?),
         })
     }
 }

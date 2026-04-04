@@ -64,7 +64,7 @@ impl EphemeralPublicKey {
 impl<B: ByteSlice> codec::WireParse<B> for EphemeralPublicKey {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            mlkem_public_key: MlKemPublicKey::from_data(reader.take_array()?),
+            mlkem_public_key: MlKemPublicKey::new(reader.take_boxed_array()?),
         })
     }
 }
@@ -75,8 +75,8 @@ pub struct EncryptedMlKemCiphertext(Box<[u8; Self::WIRE_SIZE]>);
 impl EncryptedMlKemCiphertext {
     pub const WIRE_SIZE: usize = MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
 
-    pub fn from_data(data: [u8; Self::WIRE_SIZE]) -> Self {
-        Self(Box::new(data))
+    pub fn new(data: Box<[u8; Self::WIRE_SIZE]>) -> Self {
+        Self(data)
     }
 
     pub fn as_bytes(&self) -> &[u8; Self::WIRE_SIZE] {
@@ -90,8 +90,8 @@ pub struct EncryptedPeerBundle(Box<[u8; Self::WIRE_SIZE]>);
 impl EncryptedPeerBundle {
     pub const WIRE_SIZE: usize = PeerBundle::WIRE_SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
 
-    pub fn from_data(data: [u8; Self::WIRE_SIZE]) -> Self {
-        Self(Box::new(data))
+    pub fn new(data: Box<[u8; Self::WIRE_SIZE]>) -> Self {
+        Self(data)
     }
 
     pub fn as_bytes(&self) -> &[u8; Self::WIRE_SIZE] {
@@ -159,7 +159,8 @@ impl CipherState {
     ) -> Result<Vec<u8>, WireError> {
         let key = self.key.as_ref().ok_or(WireError::InvalidState)?;
         let nonce = Nonce::from_counter(self.nonce);
-        let mut ciphertext = plaintext.to_vec();
+        let mut ciphertext = Vec::with_capacity(plaintext.len() + ENCRYPTED_MESSAGE_AUTH_SIZE);
+        ciphertext.extend_from_slice(plaintext);
         let auth = crypto.aes256_gcm_encrypt(key, &nonce, aad, &mut ciphertext);
         self.nonce = self.nonce.wrapping_add(1);
         ciphertext.extend_from_slice(&auth);
@@ -346,9 +347,9 @@ fn encrypt_peer_bundle(
     bundle: &PeerBundle,
 ) -> Result<EncryptedPeerBundle, WireError> {
     let ciphertext = symmetric.encrypt_and_hash(crypto, &bundle.encode())?;
-    let out: [u8; EncryptedPeerBundle::WIRE_SIZE] =
+    let out: Box<[u8; EncryptedPeerBundle::WIRE_SIZE]> =
         ciphertext.try_into().map_err(|_| WireError::InvalidState)?;
-    Ok(EncryptedPeerBundle::from_data(out))
+    Ok(EncryptedPeerBundle::new(out))
 }
 
 fn decrypt_peer_bundle(
@@ -366,9 +367,9 @@ fn encrypt_mlkem_ciphertext(
     ciphertext: &MlKemCiphertext,
 ) -> Result<EncryptedMlKemCiphertext, WireError> {
     let encrypted = symmetric.encrypt_and_hash(crypto, ciphertext.as_bytes())?;
-    let out: [u8; EncryptedMlKemCiphertext::WIRE_SIZE] =
+    let out: Box<[u8; EncryptedMlKemCiphertext::WIRE_SIZE]> =
         encrypted.try_into().map_err(|_| WireError::InvalidState)?;
-    Ok(EncryptedMlKemCiphertext::from_data(out))
+    Ok(EncryptedMlKemCiphertext::new(out))
 }
 
 fn decrypt_mlkem_ciphertext(
@@ -377,10 +378,10 @@ fn decrypt_mlkem_ciphertext(
     ciphertext: &EncryptedMlKemCiphertext,
 ) -> Result<MlKemCiphertext, WireError> {
     let plaintext = symmetric.decrypt_and_hash(crypto, ciphertext.as_bytes())?;
-    let out: [u8; MlKemCiphertext::SIZE] = plaintext
+    let out: Box<[u8; MlKemCiphertext::SIZE]> = plaintext
         .try_into()
         .map_err(|_| WireError::InvalidPayload)?;
-    Ok(MlKemCiphertext::from_data(out))
+    Ok(MlKemCiphertext::new(out))
 }
 
 fn finalize_handshake(

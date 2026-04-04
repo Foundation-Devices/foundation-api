@@ -106,8 +106,8 @@ impl QlKem for TestCrypto {
         private.copy_from_slice(key_pair.sk());
 
         MlKemKeyPair {
-            private: MlKemPrivateKey::from_data(private),
-            public: MlKemPublicKey::from_data(public),
+            private: MlKemPrivateKey::new(Box::new(private)),
+            public: MlKemPublicKey::new(Box::new(public)),
         }
     }
 
@@ -120,7 +120,7 @@ impl QlKem for TestCrypto {
         let mut shared = [0u8; SessionKey::SIZE];
         shared.copy_from_slice(shared_value.as_slice());
         (
-            MlKemCiphertext::from_data(ciphertext),
+            MlKemCiphertext::new(Box::new(ciphertext)),
             SessionKey::from_data(shared),
         )
     }
