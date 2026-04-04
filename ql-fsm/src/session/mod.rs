@@ -37,6 +37,7 @@ pub struct SessionFsmConfig {
     pub peer_timeout: Duration,
     pub stream_send_buffer_size: usize,
     pub stream_receive_buffer_size: usize,
+    pub initial_peer_stream_receive_window: u32,
 }
 
 impl Default for SessionFsmConfig {
@@ -51,6 +52,7 @@ impl Default for SessionFsmConfig {
             peer_timeout: Duration::from_secs(30),
             stream_send_buffer_size: 64 * 1024,
             stream_receive_buffer_size: 64 * 1024,
+            initial_peer_stream_receive_window: 16 * 1024,
         }
     }
 }
@@ -132,6 +134,7 @@ impl SessionFsm {
             StreamState::new(
                 StreamRole::Initiator,
                 self.config.stream_receive_buffer_size,
+                self.config.initial_peer_stream_receive_window,
             ),
         );
         Ok(stream_id)
@@ -233,6 +236,13 @@ impl SessionFsm {
         self.ensure_session_open()?;
         self.state.pending_control.ping = true;
         Ok(())
+    }
+
+    pub fn set_initial_peer_stream_receive_window(&mut self, window: u32) {
+        self.config.initial_peer_stream_receive_window = window;
+        for stream in self.state.streams.values_mut() {
+            stream.peer_max_offset = window as u64;
+        }
     }
 
     pub fn receive<'a, I>(
@@ -700,6 +710,7 @@ impl SessionFsm {
                 entry.insert(StreamState::new(
                     StreamRole::Responder,
                     self.config.stream_receive_buffer_size,
+                    self.config.initial_peer_stream_receive_window,
                 ))
             }
         };
@@ -799,6 +810,7 @@ impl SessionFsm {
                 entry.insert(StreamState::new(
                     StreamRole::Responder,
                     self.config.stream_receive_buffer_size,
+                    self.config.initial_peer_stream_receive_window,
                 ));
                 true
             }

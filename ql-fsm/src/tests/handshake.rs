@@ -36,6 +36,52 @@ fn kk_connect_round_trip_establishes_transport() {
 }
 
 #[test]
+fn ik_connect_learns_remote_initial_stream_receive_window() {
+    let mut harness = Harness::paired_known_with_configs(
+        QlFsmConfig {
+            session_stream_receive_buffer_size: 9,
+            ..QlFsmConfig::default()
+        },
+        QlFsmConfig {
+            session_stream_receive_buffer_size: 3,
+            ..QlFsmConfig::default()
+        },
+    );
+
+    harness
+        .a
+        .fsm
+        .connect_ik(harness.time(), &harness.a.crypto)
+        .unwrap();
+    harness.pump();
+
+    assert_eq!(
+        harness
+            .a
+            .fsm
+            .state
+            .link
+            .transport()
+            .unwrap()
+            .remote_transport_params
+            .initial_stream_receive_window,
+        3
+    );
+    assert_eq!(
+        harness
+            .b
+            .fsm
+            .state
+            .link
+            .transport()
+            .unwrap()
+            .remote_transport_params
+            .initial_stream_receive_window,
+        9
+    );
+}
+
+#[test]
 fn connect_methods_require_bound_peer() {
     let time = Harness::paired_known(QlFsmConfig::default()).time();
     let identity = test_identity(55);

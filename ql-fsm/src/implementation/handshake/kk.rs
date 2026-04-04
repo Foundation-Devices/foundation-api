@@ -1,4 +1,4 @@
-use ql_wire::{self as wire, Kk1, Kk2, PeerBundle, QlCrypto, QlHandshakeRecord};
+use ql_wire::{self as wire, Kk1, Kk2, PeerBundle, QlCrypto, QlHandshakeRecord, TransportParams};
 
 use super::{
     emit_peer_status, enqueue_handshake, finish_handshake, is_replayed_handshake_start,
@@ -15,7 +15,14 @@ pub fn start_initiator(
     peer: PeerBundle,
 ) -> Result<(), QlFsmError> {
     let meta = super::next_handshake_meta(fsm);
-    let mut handshake = wire::KkHandshake::new_initiator(crypto, fsm.identity.clone(), peer);
+    let mut handshake = wire::KkHandshake::new_initiator(
+        crypto,
+        fsm.identity.clone(),
+        peer,
+        TransportParams {
+            initial_stream_receive_window: fsm.config.session_stream_receive_buffer_size as u32,
+        },
+    );
     let message = handshake.write_1(crypto, meta)?;
 
     fsm.state.link = LinkState::KkInitiator(KkInitiatorState {
@@ -50,7 +57,14 @@ pub fn handle_kk1(
 
     reset_connected_session_if_needed(fsm);
 
-    let mut handshake = wire::KkHandshake::new_responder(crypto, fsm.identity.clone(), peer);
+    let mut handshake = wire::KkHandshake::new_responder(
+        crypto,
+        fsm.identity.clone(),
+        peer,
+        TransportParams {
+            initial_stream_receive_window: fsm.config.session_stream_receive_buffer_size as u32,
+        },
+    );
     handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
     let outbound = handshake.write_2(crypto, message.meta)?;
     let (transport, remote_bundle) = SessionTransport::from_finalized(handshake.finalize(crypto)?);

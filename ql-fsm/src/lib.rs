@@ -177,6 +177,8 @@ impl QlFsm {
                     peer_timeout: config.session_peer_timeout,
                     stream_send_buffer_size: config.session_stream_send_buffer_size,
                     stream_receive_buffer_size: config.session_stream_receive_buffer_size,
+                    initial_peer_stream_receive_window: config
+                        .session_stream_receive_buffer_size as u32,
                 },
                 now.instant,
             ),

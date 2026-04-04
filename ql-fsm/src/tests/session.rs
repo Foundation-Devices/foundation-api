@@ -354,3 +354,39 @@ fn session_records_contain_ack_frames_after_delivery() {
         [ql_wire::SessionFrame::Ack(_)]
     ));
 }
+
+#[test]
+fn queued_stream_work_uses_negotiated_initial_peer_credit_after_connect() {
+    let mut harness = Harness::paired_known_with_configs(
+        QlFsmConfig {
+            session_stream_receive_buffer_size: 8,
+            ..QlFsmConfig::default()
+        },
+        QlFsmConfig {
+            session_stream_receive_buffer_size: 3,
+            ..QlFsmConfig::default()
+        },
+    );
+
+    let stream_id = harness.a.fsm.open_stream().unwrap();
+    assert_eq!(harness.a.fsm.write_stream(stream_id, b"hello").unwrap(), 5);
+
+    harness
+        .a
+        .fsm
+        .connect_ik(harness.time(), &harness.a.crypto)
+        .unwrap();
+    let ik1 = harness.next_outbound_a().unwrap();
+    harness.deliver_to_b(ik1);
+    let ik2 = harness.next_outbound_b().unwrap();
+    harness.deliver_to_a(ik2);
+
+    let data = harness.next_outbound_a().unwrap();
+    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
+    let (_header, record) = decrypt_record(&harness.b.crypto, &data, &session_key);
+
+    assert!(matches!(
+        record.frames.as_slice(),
+        [ql_wire::SessionFrame::StreamData(frame)] if frame.stream_id == stream_id && frame.bytes.as_slice() == b"hel"
+    ));
+}

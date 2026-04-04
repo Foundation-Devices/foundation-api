@@ -2,7 +2,7 @@ use std::{collections::VecDeque, time::Instant};
 
 use ql_wire::{
     ConnectionId, EphemeralPublicKey, HandshakeId, IkHandshake, KkHandshake, PeerBundle,
-    QlHandshakeRecord, SessionKey,
+    QlHandshakeRecord, SessionKey, TransportParams,
 };
 
 use crate::{replay_cache::ReplayCache, FsmTime, PeerStatus, QlFsmEvent, QlSessionEvent};
@@ -24,6 +24,7 @@ pub struct SessionTransport {
     pub rx_key: SessionKey,
     pub tx_connection_id: ConnectionId,
     pub rx_connection_id: ConnectionId,
+    pub remote_transport_params: TransportParams,
 }
 
 impl SessionTransport {
@@ -34,6 +35,7 @@ impl SessionTransport {
                 rx_key: finalized.rx_key,
                 tx_connection_id: finalized.tx_connection_id,
                 rx_connection_id: finalized.rx_connection_id,
+                remote_transport_params: finalized.remote_transport_params,
             },
             finalized.remote_bundle,
         )

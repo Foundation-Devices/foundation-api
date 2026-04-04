@@ -302,3 +302,42 @@ fn duplicate_stream_data_is_not_redelivered() {
 
     assert_eq!(read_stream_all(&mut fsm, stream_id), b"hi".to_vec());
 }
+
+#[test]
+fn initial_peer_stream_receive_window_limits_first_send() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionFsmConfig {
+            initial_peer_stream_receive_window: 3,
+            ..SessionFsmConfig::default()
+        },
+        now,
+    );
+    let stream_id = fsm.open_stream().unwrap();
+
+    assert_eq!(fsm.write_stream(stream_id, b"hello").unwrap(), 5);
+    let (_first_seq, first) = next_outbound(&mut fsm, now).unwrap();
+    assert!(matches!(
+        first.frames.as_slice(),
+        [SessionFrame::StreamData(frame)] if frame.stream_id == stream_id && frame.bytes.as_slice() == b"hel"
+    ));
+
+    let events = receive_events(
+        &mut fsm,
+        now + Duration::from_millis(1),
+        RecordSeq(9),
+        &SessionRecord {
+            frames: vec![SessionFrame::StreamWindow(ql_wire::StreamWindow {
+                stream_id,
+                maximum_offset: 5,
+            })],
+        },
+    );
+    assert!(events.is_empty());
+
+    let (_second_seq, second) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
+    assert!(matches!(
+        second.frames.as_slice(),
+        [SessionFrame::StreamData(frame)] if frame.stream_id == stream_id && frame.offset == 3 && frame.bytes.as_slice() == b"lo"
+    ));
+}

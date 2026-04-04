@@ -11,7 +11,7 @@ use libcrux_ml_kem::mlkem1024;
 use ql_wire::{
     self, generate_identity, ConnectionId, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
     MlKemPublicKey, Nonce, QlAead, QlCrypto, QlHash, QlIdentity, QlKem, QlRandom, SessionKey,
-    WireParse, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
+    TransportParams, WireParse, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
 };
 use sha2::{Digest, Sha256};
 
@@ -153,10 +153,23 @@ struct Harness {
 
 impl Harness {
     fn paired_known(config: QlFsmConfig) -> Self {
-        Self::paired(config, true, true)
+        Self::paired_with_configs(config, config, true, true)
     }
 
     fn paired(config: QlFsmConfig, know_a: bool, know_b: bool) -> Self {
+        Self::paired_with_configs(config, config, know_a, know_b)
+    }
+
+    fn paired_known_with_configs(config_a: QlFsmConfig, config_b: QlFsmConfig) -> Self {
+        Self::paired_with_configs(config_a, config_b, true, true)
+    }
+
+    fn paired_with_configs(
+        config_a: QlFsmConfig,
+        config_b: QlFsmConfig,
+        know_a: bool,
+        know_b: bool,
+    ) -> Self {
         let identity_a = test_identity(11);
         let identity_b = test_identity(73);
         let now = Instant::now();
@@ -169,11 +182,11 @@ impl Harness {
             now,
             unix_secs: time.unix_secs,
             a: Node {
-                fsm: QlFsm::new(config, identity_a.clone(), time),
+                fsm: QlFsm::new(config_a, identity_a.clone(), time),
                 crypto: TestCrypto::new(1),
             },
             b: Node {
-                fsm: QlFsm::new(config, identity_b.clone(), time),
+                fsm: QlFsm::new(config_b, identity_b.clone(), time),
                 crypto: TestCrypto::new(2),
             },
         };
@@ -202,12 +215,26 @@ impl Harness {
             rx_key: b_to_a_key.clone(),
             tx_connection_id: a_to_b_conn,
             rx_connection_id: b_to_a_conn,
+            remote_transport_params: TransportParams {
+                initial_stream_receive_window: harness
+                    .b
+                    .fsm
+                    .config
+                    .session_stream_receive_buffer_size as u32,
+            },
         });
         harness.b.fsm.state.link = LinkState::Connected(SessionTransport {
             tx_key: b_to_a_key,
             rx_key: a_to_b_key,
             tx_connection_id: b_to_a_conn,
             rx_connection_id: a_to_b_conn,
+            remote_transport_params: TransportParams {
+                initial_stream_receive_window: harness
+                    .a
+                    .fsm
+                    .config
+                    .session_stream_receive_buffer_size as u32,
+            },
         });
         harness.a.fsm.session = SessionFsm::new(session_config(&harness, true), harness.now);
         harness.b.fsm.session = SessionFsm::new(session_config(&harness, false), harness.now);
@@ -321,6 +348,11 @@ fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
         peer_timeout: config.session_peer_timeout,
         stream_send_buffer_size: config.session_stream_send_buffer_size,
         stream_receive_buffer_size: config.session_stream_receive_buffer_size,
+        initial_peer_stream_receive_window: if a {
+            harness.b.fsm.config.session_stream_receive_buffer_size as u32
+        } else {
+            harness.a.fsm.config.session_stream_receive_buffer_size as u32
+        },
     }
 }
 

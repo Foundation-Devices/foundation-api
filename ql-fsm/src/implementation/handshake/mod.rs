@@ -85,19 +85,30 @@ pub fn finish_handshake(
     transport: SessionTransport,
     remote_bundle: &wire::PeerBundle,
 ) -> Result<(), QlFsmError> {
-    if let Some(peer) = fsm.state.peer.as_ref() {
+    let initial_peer_stream_receive_window = transport
+        .remote_transport_params
+        .initial_stream_receive_window;
+    let new_peer = if let Some(peer) = fsm.state.peer.as_ref() {
         if peer != remote_bundle {
             return Err(QlFsmError::InvalidPayload);
         }
+        false
     } else {
         fsm.state.peer = Some(remote_bundle.clone());
-        reset_session(fsm);
         fsm.state
             .events
             .push_back(QlFsmEvent::NewPeer(remote_bundle.clone()));
-    }
+        true
+    };
 
     fsm.state.link = LinkState::Connected(transport);
+
+    if new_peer {
+        reset_session(fsm);
+    } else {
+        fsm.session
+            .set_initial_peer_stream_receive_window(initial_peer_stream_receive_window);
+    }
     emit_peer_status(fsm);
     Ok(())
 }

@@ -210,6 +210,16 @@ pub fn reset_session(fsm: &mut QlFsm) {
             peer_timeout: fsm.config.session_peer_timeout,
             stream_send_buffer_size: fsm.config.session_stream_send_buffer_size,
             stream_receive_buffer_size: fsm.config.session_stream_receive_buffer_size,
+            initial_peer_stream_receive_window: fsm
+                .state
+                .link
+                .transport()
+                .map(|transport| {
+                    transport
+                        .remote_transport_params
+                        .initial_stream_receive_window
+                })
+                .unwrap_or(fsm.config.session_stream_receive_buffer_size as u32),
         },
         fsm.state.now.instant,
     );
