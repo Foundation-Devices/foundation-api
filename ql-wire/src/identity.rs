@@ -1,4 +1,6 @@
-use crate::{codec, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, WireError, XID};
+use crate::{
+    codec, ByteSlice, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, WireError, XID,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerBundle {
@@ -25,17 +27,16 @@ impl PeerBundle {
         let _ = self.encode_into(&mut out);
         out
     }
+}
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let bundle = Self {
+impl<B: ByteSlice> codec::WireParse<B> for PeerBundle {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
             version: reader.take_u16()?,
             xid: XID(reader.take_array()?),
             capabilities: reader.take_u32()?,
             mlkem_public_key: MlKemPublicKey::from_data(reader.take_array()?),
-        };
-        reader.finish()?;
-        Ok(bundle)
+        })
     }
 }
 

@@ -34,6 +34,20 @@ pub fn write_bytes<'a>(out: &'a mut [u8], bytes: &[u8]) -> &'a mut [u8] {
     rest
 }
 
+pub trait WireParse<B: ByteSlice>: Sized {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError>;
+
+    fn parse_bytes(bytes: B) -> Result<Self, WireError> {
+        let mut reader = Reader::new(bytes);
+        let value = Self::parse(&mut reader)?;
+        if reader.is_empty() {
+            Ok(value)
+        } else {
+            Err(WireError::InvalidPayload)
+        }
+    }
+}
+
 pub struct Reader<B> {
     remaining: Option<B>,
 }
@@ -47,10 +61,6 @@ impl<B: ByteSlice> Reader<B> {
 
     pub fn is_empty(&self) -> bool {
         self.remaining.as_ref().unwrap().is_empty()
-    }
-
-    pub fn remaining(&self) -> usize {
-        self.remaining.as_ref().unwrap().len()
     }
 
     pub fn take_bytes(&mut self, len: usize) -> Result<B, WireError> {
@@ -102,11 +112,10 @@ impl<B: ByteSlice> Reader<B> {
         }
     }
 
-    pub fn finish(self) -> Result<(), WireError> {
-        if self.is_empty() {
-            Ok(())
-        } else {
-            Err(WireError::InvalidPayload)
-        }
+    pub fn parse<T>(&mut self) -> Result<T, WireError>
+    where
+        T: WireParse<B>,
+    {
+        T::parse(self)
     }
 }

@@ -1,4 +1,4 @@
-use crate::{codec, WireError};
+use crate::{codec, ByteSlice, WireError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -31,20 +31,10 @@ impl HandshakeMeta {
         let _ = self.encode_into(&mut out);
         out
     }
+}
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let meta = Self {
-            handshake_id: HandshakeId(reader.take_u32()?),
-            valid_until: reader.take_u64()?,
-        };
-        reader.finish()?;
-        Ok(meta)
-    }
-
-    pub fn decode_from<B: crate::ByteSlice>(
-        reader: &mut codec::Reader<B>,
-    ) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireParse<B> for HandshakeMeta {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
             handshake_id: HandshakeId(reader.take_u32()?),
             valid_until: reader.take_u64()?,

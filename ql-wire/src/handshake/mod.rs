@@ -1,6 +1,7 @@
 use crate::{
-    codec, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey, Nonce,
-    PeerBundle, QlCrypto, SessionKey, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
+    codec, ByteSlice, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey,
+    Nonce, PeerBundle, QlCrypto, SessionKey, WireError, WireParse, ENCRYPTED_MESSAGE_AUTH_SIZE,
+    XID,
 };
 
 mod ik;
@@ -36,17 +37,10 @@ impl HandshakeHeader {
         let out = codec::write_bytes(out, &self.sender.0);
         codec::write_bytes(out, &self.recipient.0)
     }
+}
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let header = Self::decode_from(&mut reader)?;
-        reader.finish()?;
-        Ok(header)
-    }
-
-    pub fn decode_from<B: crate::ByteSlice>(
-        reader: &mut codec::Reader<B>,
-    ) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireParse<B> for HandshakeHeader {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
             sender: XID(reader.take_array()?),
             recipient: XID(reader.take_array()?),
@@ -65,14 +59,13 @@ impl EphemeralPublicKey {
     pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
         codec::write_bytes(out, self.mlkem_public_key.as_bytes())
     }
+}
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let value = Self {
+impl<B: ByteSlice> codec::WireParse<B> for EphemeralPublicKey {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
             mlkem_public_key: MlKemPublicKey::from_data(reader.take_array()?),
-        };
-        reader.finish()?;
-        Ok(value)
+        })
     }
 }
 
@@ -353,11 +346,8 @@ fn encrypt_peer_bundle(
     bundle: &PeerBundle,
 ) -> Result<EncryptedPeerBundle, WireError> {
     let ciphertext = symmetric.encrypt_and_hash(crypto, &bundle.encode())?;
-    if ciphertext.len() != EncryptedPeerBundle::WIRE_SIZE {
-        return Err(WireError::InvalidState);
-    }
-    let mut out = [0u8; EncryptedPeerBundle::WIRE_SIZE];
-    out.copy_from_slice(&ciphertext);
+    let out: [u8; EncryptedPeerBundle::WIRE_SIZE] =
+        ciphertext.try_into().map_err(|_| WireError::InvalidState)?;
     Ok(EncryptedPeerBundle::from_data(out))
 }
 
@@ -367,7 +357,7 @@ fn decrypt_peer_bundle(
     bundle: &EncryptedPeerBundle,
 ) -> Result<PeerBundle, WireError> {
     let plaintext = symmetric.decrypt_and_hash(crypto, bundle.as_bytes())?;
-    PeerBundle::decode(&plaintext)
+    PeerBundle::parse_bytes(plaintext.as_slice())
 }
 
 fn encrypt_mlkem_ciphertext(
@@ -376,11 +366,8 @@ fn encrypt_mlkem_ciphertext(
     ciphertext: &MlKemCiphertext,
 ) -> Result<EncryptedMlKemCiphertext, WireError> {
     let encrypted = symmetric.encrypt_and_hash(crypto, ciphertext.as_bytes())?;
-    if encrypted.len() != EncryptedMlKemCiphertext::WIRE_SIZE {
-        return Err(WireError::InvalidState);
-    }
-    let mut out = [0u8; EncryptedMlKemCiphertext::WIRE_SIZE];
-    out.copy_from_slice(&encrypted);
+    let out: [u8; EncryptedMlKemCiphertext::WIRE_SIZE] =
+        encrypted.try_into().map_err(|_| WireError::InvalidState)?;
     Ok(EncryptedMlKemCiphertext::from_data(out))
 }
 
@@ -390,11 +377,9 @@ fn decrypt_mlkem_ciphertext(
     ciphertext: &EncryptedMlKemCiphertext,
 ) -> Result<MlKemCiphertext, WireError> {
     let plaintext = symmetric.decrypt_and_hash(crypto, ciphertext.as_bytes())?;
-    if plaintext.len() != MlKemCiphertext::SIZE {
-        return Err(WireError::InvalidPayload);
-    }
-    let mut out = [0u8; MlKemCiphertext::SIZE];
-    out.copy_from_slice(&plaintext);
+    let out: [u8; MlKemCiphertext::SIZE] = plaintext
+        .try_into()
+        .map_err(|_| WireError::InvalidPayload)?;
     Ok(MlKemCiphertext::from_data(out))
 }
 

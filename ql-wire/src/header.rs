@@ -1,4 +1,4 @@
-use crate::{codec, QL_WIRE_VERSION};
+use crate::{codec, ByteSlice, QL_WIRE_VERSION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionHeader {
@@ -43,22 +43,6 @@ impl SessionHeader {
         let _ = codec::write_u64(out, self.seq.0);
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, crate::WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let header = Self::decode_from(&mut reader)?;
-        reader.finish()?;
-        Ok(header)
-    }
-
-    pub fn decode_from<B: crate::ByteSlice>(
-        reader: &mut codec::Reader<B>,
-    ) -> Result<Self, crate::WireError> {
-        Ok(Self {
-            connection_id: ConnectionId::from_data(reader.take_array()?),
-            seq: RecordSeq(reader.take_u64()?),
-        })
-    }
-
     pub fn aad(&self) -> Vec<u8> {
         let aad_len = Self::AAD_DOMAIN.len()
             + size_of::<u8>()
@@ -72,5 +56,14 @@ impl SessionHeader {
         let out = codec::write_bytes(out, self.connection_id.as_bytes());
         let _ = codec::write_u64(out, self.seq.0);
         aad
+    }
+}
+
+impl<B: ByteSlice> codec::WireParse<B> for SessionHeader {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, crate::WireError> {
+        Ok(Self {
+            connection_id: ConnectionId::from_data(reader.take_array()?),
+            seq: RecordSeq(reader.take_u64()?),
+        })
     }
 }

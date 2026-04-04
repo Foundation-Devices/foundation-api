@@ -2,7 +2,7 @@ use crate::{
     codec,
     encrypted_message::EncryptedMessage,
     handshake::{Ik1, Ik2, Kk1, Kk2},
-    ByteSlice, SessionHeader, WireError, QL_WIRE_VERSION,
+    ByteSlice, SessionHeader, WireError, WireParse, QL_WIRE_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,10 +97,10 @@ impl QlHandshakeRecord {
 
     fn decode_payload(kind: HandshakeKind, bytes: &[u8]) -> Result<Self, WireError> {
         match kind {
-            HandshakeKind::Ik1 => Ok(Self::Ik1(Ik1::decode(bytes)?)),
-            HandshakeKind::Ik2 => Ok(Self::Ik2(Ik2::decode(bytes)?)),
-            HandshakeKind::Kk1 => Ok(Self::Kk1(Kk1::decode(bytes)?)),
-            HandshakeKind::Kk2 => Ok(Self::Kk2(Kk2::decode(bytes)?)),
+            HandshakeKind::Ik1 => Ok(Self::Ik1(Ik1::parse_bytes(bytes)?)),
+            HandshakeKind::Ik2 => Ok(Self::Ik2(Ik2::parse_bytes(bytes)?)),
+            HandshakeKind::Kk1 => Ok(Self::Kk1(Kk1::parse_bytes(bytes)?)),
+            HandshakeKind::Kk2 => Ok(Self::Kk2(Kk2::parse_bytes(bytes)?)),
         }
     }
 
@@ -111,10 +111,6 @@ impl QlHandshakeRecord {
         let rest = codec::write_u8(rest, self.kind() as u8);
         let _ = self.encode_into(rest);
         out
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        Self::parse(bytes)
     }
 
     pub fn parse<B: ByteSlice>(bytes: B) -> Result<Self, WireError> {
@@ -218,7 +214,7 @@ fn parse_handshake_record<B: ByteSlice>(bytes: B) -> Result<QlHandshakeRecord, W
 
 fn parse_session_record<B: ByteSlice>(bytes: B) -> Result<QlSessionRecord<B>, WireError> {
     let mut reader = codec::Reader::new(bytes);
-    let header = SessionHeader::decode_from(&mut reader)?;
+    let header = reader.parse::<SessionHeader>()?;
     let payload = EncryptedMessage::parse(reader.take_rest())?;
     Ok(QlSessionRecord { header, payload })
 }

@@ -13,21 +13,20 @@ impl StreamClose {
     pub const WIRE_SIZE: usize =
         size_of::<StreamId>() + size_of::<CloseTarget>() + size_of::<StreamCloseCode>();
 
-    pub fn parse<B: ByteSlice>(bytes: B) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let close = Self {
-            stream_id: StreamId(reader.take_u32()?),
-            target: CloseTarget::try_from(reader.take_u8()?)?,
-            code: StreamCloseCode(reader.take_u16()?),
-        };
-        reader.finish()?;
-        Ok(close)
-    }
-
     pub fn encode_into(&self, out: &mut [u8]) {
         let out = codec::write_u32(out, self.stream_id.0);
         let out = codec::write_u8(out, self.target.to_wire());
         let _ = codec::write_u16(out, self.code.0);
+    }
+}
+
+impl<B: ByteSlice> codec::WireParse<B> for StreamClose {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
+            stream_id: StreamId(reader.take_u32()?),
+            target: CloseTarget::try_from(reader.take_u8()?)?,
+            code: StreamCloseCode(reader.take_u16()?),
+        })
     }
 }
 

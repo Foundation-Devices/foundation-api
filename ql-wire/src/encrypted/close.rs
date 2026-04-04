@@ -1,4 +1,4 @@
-use crate::{codec, codec::Reader, WireError};
+use crate::{codec, codec::Reader, ByteSlice, WireError};
 
 /// closes the whole session immediately with a close code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,12 +12,12 @@ impl SessionClose {
     pub fn encode_into(&self, out: &mut [u8]) {
         let _ = codec::write_u16(out, self.code.0);
     }
+}
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = Reader::new(bytes);
-        let code = reader.take_u16()?;
+impl<B: ByteSlice> codec::WireParse<B> for SessionClose {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            code: SessionCloseCode(code),
+            code: SessionCloseCode(reader.take_u16()?),
         })
     }
 }

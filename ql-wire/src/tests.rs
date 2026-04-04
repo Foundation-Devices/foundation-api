@@ -191,7 +191,7 @@ fn peer_bundle_round_trip() {
     let bundle = identity.bundle();
 
     let encoded = bundle.encode();
-    let decoded = PeerBundle::decode(&encoded).unwrap();
+    let decoded = PeerBundle::parse_bytes(encoded.as_slice()).unwrap();
 
     assert_eq!(decoded, bundle);
 }
@@ -208,7 +208,7 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
         static_bundle: EncryptedPeerBundle::from_data([13; EncryptedPeerBundle::WIRE_SIZE]),
     });
     let ik_encoded = ik.encode();
-    assert_eq!(QlHandshakeRecord::decode(&ik_encoded).unwrap(), ik);
+    assert_eq!(QlHandshakeRecord::parse(ik_encoded.as_slice()).unwrap(), ik);
     assert_eq!(
         QlRecord::decode(&ik_encoded).unwrap(),
         QlRecord::Handshake(ik)
@@ -223,7 +223,7 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
         },
     });
     let kk_encoded = kk.encode();
-    assert_eq!(QlHandshakeRecord::decode(&kk_encoded).unwrap(), kk);
+    assert_eq!(QlHandshakeRecord::parse(kk_encoded.as_slice()).unwrap(), kk);
     assert_eq!(
         QlRecord::decode(&kk_encoded).unwrap(),
         QlRecord::Handshake(kk)

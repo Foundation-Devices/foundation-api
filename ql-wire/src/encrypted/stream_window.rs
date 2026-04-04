@@ -1,5 +1,5 @@
 use super::StreamId;
-use crate::{codec, WireError};
+use crate::{codec, ByteSlice, WireError};
 
 /// advertises the highest byte offset the peer may send on a stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,14 +15,13 @@ impl StreamWindow {
         let out = codec::write_u32(out, self.stream_id.0);
         let _ = codec::write_u64(out, self.maximum_offset);
     }
+}
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let window = Self {
+impl<B: ByteSlice> codec::WireParse<B> for StreamWindow {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
             stream_id: StreamId(reader.take_u32()?),
             maximum_offset: reader.take_u64()?,
-        };
-        reader.finish()?;
-        Ok(window)
+        })
     }
 }

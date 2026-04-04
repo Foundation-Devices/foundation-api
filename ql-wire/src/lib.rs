@@ -19,6 +19,7 @@ mod record;
 mod xid;
 
 pub use bytes::*;
+pub use codec::*;
 pub use crypto::*;
 pub use encrypted::*;
 pub use encrypted_message::*;

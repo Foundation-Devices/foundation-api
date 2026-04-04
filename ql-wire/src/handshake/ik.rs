@@ -6,8 +6,8 @@ use super::{
     FinalizedHandshake, HandshakeHeader, Role, SymmetricState,
 };
 use crate::{
-    codec, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity,
-    WireError,
+    codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto,
+    QlIdentity, WireError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,22 +33,16 @@ impl Ik1 {
         let out = self.ephemeral.encode_into(out);
         codec::write_bytes(out, self.static_bundle.as_bytes())
     }
+}
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let header = HandshakeHeader::decode_from(&mut reader)?;
-        let meta = HandshakeMeta::decode_from(&mut reader)?;
-        let skem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
-        let ephemeral =
-            EphemeralPublicKey::decode(reader.take_bytes(EphemeralPublicKey::WIRE_SIZE)?)?;
-        let static_bundle = EncryptedPeerBundle::from_data(reader.take_array()?);
-        reader.finish()?;
+impl<B: ByteSlice> codec::WireParse<B> for Ik1 {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            header,
-            meta,
-            skem_ciphertext,
-            ephemeral,
-            static_bundle,
+            header: reader.parse()?,
+            meta: reader.parse()?,
+            skem_ciphertext: MlKemCiphertext::from_data(reader.take_array()?),
+            ephemeral: reader.parse()?,
+            static_bundle: EncryptedPeerBundle::from_data(reader.take_array()?),
         })
     }
 }
@@ -73,19 +67,15 @@ impl Ik2 {
         let out = codec::write_bytes(out, self.ekem_ciphertext.as_bytes());
         codec::write_bytes(out, self.skem_ciphertext.as_bytes())
     }
+}
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        let header = HandshakeHeader::decode_from(&mut reader)?;
-        let meta = HandshakeMeta::decode_from(&mut reader)?;
-        let ekem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
-        let skem_ciphertext = EncryptedMlKemCiphertext::from_data(reader.take_array()?);
-        reader.finish()?;
+impl<B: ByteSlice> codec::WireParse<B> for Ik2 {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            header,
-            meta,
-            ekem_ciphertext,
-            skem_ciphertext,
+            header: reader.parse()?,
+            meta: reader.parse()?,
+            ekem_ciphertext: MlKemCiphertext::from_data(reader.take_array()?),
+            skem_ciphertext: EncryptedMlKemCiphertext::from_data(reader.take_array()?),
         })
     }
 }

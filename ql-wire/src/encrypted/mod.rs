@@ -1,6 +1,6 @@
 use crate::{
     codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, Nonce, QlCrypto,
-    SessionHeader, SessionKey, WireError,
+    SessionHeader, SessionKey, WireError, WireParse,
 };
 
 mod ack;
@@ -161,7 +161,7 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
             let (frame, rest) = rest
                 .split_at_checked(RecordAck::WIRE_SIZE)
                 .ok_or(WireError::InvalidPayload)?;
-            Ok((SessionFrame::Ack(RecordAck::decode(frame)?), rest))
+            Ok((SessionFrame::Ack(RecordAck::parse_bytes(frame)?), rest))
         }
         SessionFrameKind::StreamData => {
             let (frame, rest) = split_variable_frame(rest)?;
@@ -172,19 +172,22 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
                 .split_at_checked(StreamWindow::WIRE_SIZE)
                 .ok_or(WireError::InvalidPayload)?;
             Ok((
-                SessionFrame::StreamWindow(StreamWindow::decode(frame)?),
+                SessionFrame::StreamWindow(StreamWindow::parse_bytes(frame)?),
                 rest,
             ))
         }
         SessionFrameKind::StreamClose => {
             let (frame, rest) = split_variable_frame(rest)?;
-            Ok((SessionFrame::StreamClose(StreamClose::parse(frame)?), rest))
+            Ok((
+                SessionFrame::StreamClose(StreamClose::parse_bytes(frame)?),
+                rest,
+            ))
         }
         SessionFrameKind::Close => {
             let (frame, rest) = rest
                 .split_at_checked(SessionClose::WIRE_SIZE)
                 .ok_or(WireError::InvalidPayload)?;
-            Ok((SessionFrame::Close(SessionClose::decode(frame)?), rest))
+            Ok((SessionFrame::Close(SessionClose::parse_bytes(frame)?), rest))
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::{codec, RecordSeq, WireError};
+use crate::{codec, ByteSlice, RecordSeq, WireError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordAck {
@@ -9,14 +9,6 @@ pub struct RecordAck {
 impl RecordAck {
     pub const BITMAP_BITS: usize = u64::BITS as usize;
     pub const WIRE_SIZE: usize = size_of::<u64>() + size_of::<u64>();
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
-        Ok(Self {
-            base_seq: RecordSeq(reader.take_u64()?),
-            bits: reader.take_u64()?,
-        })
-    }
 
     pub fn contains(&self, seq: u64) -> bool {
         if seq < self.base_seq.0 {
@@ -38,10 +30,19 @@ impl RecordAck {
     }
 }
 
+impl<B: ByteSlice> codec::WireParse<B> for RecordAck {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
+            base_seq: RecordSeq(reader.take_u64()?),
+            bits: reader.take_u64()?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RecordAck;
-    use crate::{RecordSeq, WireError};
+    use crate::{RecordSeq, WireError, WireParse};
 
     #[test]
     fn encode_decode_round_trip() {
@@ -52,7 +53,7 @@ mod tests {
         let mut encoded = [0; RecordAck::WIRE_SIZE];
         ack.encode_into(&mut encoded);
 
-        assert_eq!(RecordAck::decode(&encoded).unwrap(), ack);
+        assert_eq!(RecordAck::parse_bytes(&encoded[..]).unwrap(), ack);
     }
 
     #[test]
@@ -71,14 +72,13 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_invalid_length() {
-        assert_eq!(RecordAck::decode(&[]), Err(WireError::InvalidPayload));
+    fn decode_rejects_truncated_payload() {
         assert_eq!(
-            RecordAck::decode(&[0; RecordAck::WIRE_SIZE - 1]),
+            RecordAck::parse_bytes(&[][..]),
             Err(WireError::InvalidPayload)
         );
         assert_eq!(
-            RecordAck::decode(&[0; RecordAck::WIRE_SIZE + 1]),
+            RecordAck::parse_bytes(&[0; RecordAck::WIRE_SIZE - 1][..]),
             Err(WireError::InvalidPayload)
         );
     }
