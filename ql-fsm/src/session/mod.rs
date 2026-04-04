@@ -427,23 +427,24 @@ impl SessionFsm {
             sent_at: None,
         };
 
-        if let Some(close) = self.state.pending_control.close.clone() {
+        if let Some(close) = self.state.pending_control.close.take() {
             if builder.push_close(&close) {
-                self.state.pending_control.close = None;
-                outbound.frames.push(TrackedFrame::Close(close));
+                outbound.frames.push(TrackedFrame::Close(close.clone()));
+            } else {
+                self.state.pending_control.close = Some(close);
             }
         }
 
-        while self.push_next_pending_stream_close(&mut builder, &mut outbound) {}
+        self.push_next_pending_stream_close(&mut builder, &mut outbound);
 
         if self.state.pending_control.ping && builder.push_ping() {
             self.state.pending_control.ping = false;
             outbound.ping_included = true;
         }
 
-        while self.push_next_pending_stream_window(&mut builder, &mut outbound) {}
+        self.push_next_pending_stream_window(&mut builder, &mut outbound);
 
-        while self.push_next_stream_data(&mut builder, &mut outbound) {}
+        self.push_next_stream_data(&mut builder, &mut outbound);
 
         if let Some((ack, due_at)) = self.pending_ack() {
             if (!builder.is_empty() || due_at <= self.state.now) && builder.push_ack(&ack) {
@@ -464,52 +465,43 @@ impl SessionFsm {
         &mut self,
         builder: &mut SessionRecordBuilder,
         outbound: &mut TrackedRecord,
-    ) -> bool {
+    ) {
         let len = self.state.streams.len();
         if len == 0 {
-            return false;
+            return;
         }
 
         let start = self.state.next_stream_index % len;
         for offset in 0..len {
             let index = (start + offset) % len;
-            let Some((_, stream)) = self.state.streams.get_index(index) else {
-                continue;
-            };
+            let stream = self.state.streams.get_index_mut(index).unwrap().1;
             let Some(close) = stream.pending_close.as_ref() else {
                 continue;
             };
             if !builder.push_stream_close(close) {
-                continue;
+                break;
             }
 
-            let stream = self.state.streams.get_index_mut(index).unwrap().1;
-            self.state.next_stream_index = (index + 1) % len;
             outbound.frames.push(TrackedFrame::StreamClose(
                 stream.pending_close.take().unwrap(),
             ));
-            return true;
         }
-
-        false
     }
 
     fn push_next_pending_stream_window(
         &mut self,
         builder: &mut SessionRecordBuilder,
         outbound: &mut TrackedRecord,
-    ) -> bool {
+    ) {
         let len = self.state.streams.len();
         if len == 0 {
-            return false;
+            return;
         }
 
         let start = self.state.next_stream_index % len;
         for offset in 0..len {
             let index = (start + offset) % len;
-            let Some((&stream_id, stream)) = self.state.streams.get_index(index) else {
-                continue;
-            };
+            let (&stream_id, stream) = self.state.streams.get_index_mut(index).unwrap();
             if !stream.pending_window {
                 continue;
             }
@@ -518,66 +510,59 @@ impl SessionFsm {
                 maximum_offset: stream.recv_limit(),
             };
             if !builder.push_stream_window(&frame) {
-                continue;
+                break;
             }
 
-            let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
             stream.pending_window = false;
             stream.advertised_max_offset = frame.maximum_offset;
-            self.state.next_stream_index = (index + 1) % len;
             outbound
                 .window_updates
                 .push((stream_id, frame.maximum_offset));
-            return true;
         }
-
-        false
     }
 
     fn push_next_stream_data(
         &mut self,
         builder: &mut SessionRecordBuilder,
         outbound: &mut TrackedRecord,
-    ) -> bool {
-        let Some(max_payload) = self.max_stream_data_payload(builder) else {
-            return false;
-        };
+    ) {
+        const OVERHEAD: usize =
+            1 + std::mem::size_of::<u16>() + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
+
         let len = self.state.streams.len();
         if len == 0 {
-            return false;
+            return;
         }
 
         let start = self.state.next_stream_index % len;
+        let mut next_index = start;
+
         for offset in 0..len {
-            let index = (start + offset) % len;
-            let Some((&stream_id, stream)) = self.state.streams.get_index(index) else {
-                continue;
+            let Some(max_payload) = builder.remaining_capacity().checked_sub(OVERHEAD) else {
+                break;
             };
+
+            let index = (start + offset) % len;
+            let (&stream_id, stream) = self.state.streams.get_index_mut(index).unwrap();
             if matches!(stream.outbound_state, OutboundState::Closed) {
                 continue;
             }
-
             let Some(candidate) = stream.tx.next_range(max_payload, stream.peer_max_offset) else {
                 continue;
             };
-            {
-                let frame = StreamData {
-                    stream_id,
-                    offset: candidate.offset,
-                    fin: candidate.fin,
-                    bytes: stream.tx.ranged_bytes(candidate),
-                };
-                if !builder.push_stream_data(&frame) {
-                    continue;
-                }
-            }
+            let frame = StreamData {
+                stream_id,
+                offset: candidate.offset,
+                fin: candidate.fin,
+                bytes: stream.tx.ranged_bytes(candidate),
+            };
+            let res = builder.push_stream_data(&frame);
+            assert!(res, "builder has capacity");
 
-            let (_, stream) = self.state.streams.get_index_mut(index).unwrap();
             stream.tx.mark_in_flight(candidate);
             if candidate.fin {
                 stream.outbound_state = OutboundState::Finished;
             }
-            self.state.next_stream_index = (index + 1) % len;
             outbound
                 .frames
                 .push(TrackedFrame::StreamData(TrackedStreamData {
@@ -586,20 +571,10 @@ impl SessionFsm {
                     len: candidate.len,
                     fin: candidate.fin,
                 }));
-            return true;
+            next_index = (index + 1) % len;
         }
 
-        false
-    }
-
-    fn max_stream_data_payload(&self, builder: &SessionRecordBuilder) -> Option<usize> {
-        let overhead = 1 + std::mem::size_of::<u16>() + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
-        let remaining = builder.remaining_capacity();
-        if remaining >= overhead {
-            Some(remaining - overhead)
-        } else {
-            None
-        }
+        self.state.next_stream_index = next_index;
     }
 
     fn ensure_session_open(&self) -> Result<(), StreamError> {
