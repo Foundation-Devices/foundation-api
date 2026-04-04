@@ -169,6 +169,21 @@ fn handshake_header(sender: u8, recipient: u8) -> HandshakeHeader {
     }
 }
 
+fn encrypt_record(
+    crypto: &impl QlCrypto,
+    header: SessionHeader,
+    session_key: &SessionKey,
+    body: &SessionRecord,
+) -> QlSessionRecord<Vec<u8>> {
+    let wire_size = body.wire_size() + SessionRecordBuilder::WIRE_PREFIX_LEN;
+    let mut builder = SessionRecordBuilder::new(wire_size, wire_size);
+    for frame in &body.frames {
+        let _pushed = builder.push_frame(frame);
+        debug_assert!(_pushed);
+    }
+    QlSessionRecord::decode(&builder.encrypt(crypto, header, session_key)).unwrap()
+}
+
 #[test]
 fn peer_bundle_round_trip() {
     let crypto = TestCrypto::new(1);
@@ -496,7 +511,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         ],
     };
     let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
-    let record = encrypted::encrypt_record(&crypto, header, &session_key, &body);
+    let record = encrypt_record(&crypto, header, &session_key, &body);
 
     let bytes = record.encode();
     let decoded = QlRecord::decode(&bytes).unwrap();
@@ -569,7 +584,7 @@ fn protocol_record_size_breakdown() {
     let kk2 = QlHandshakeRecord::Kk2(kk2);
 
     let session = ik_initiator.finalize(&crypto).unwrap();
-    let session_ping = encrypted::encrypt_record(
+    let session_ping = encrypt_record(
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
@@ -580,7 +595,7 @@ fn protocol_record_size_breakdown() {
             frames: vec![SessionFrame::Ping],
         },
     );
-    let session_stream_empty = encrypted::encrypt_record(
+    let session_stream_empty = encrypt_record(
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
@@ -596,7 +611,7 @@ fn protocol_record_size_breakdown() {
             })],
         },
     );
-    let session_close = encrypted::encrypt_record(
+    let session_close = encrypt_record(
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,

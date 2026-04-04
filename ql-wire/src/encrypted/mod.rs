@@ -1,6 +1,6 @@
 use crate::{
     codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, Nonce, QlCrypto,
-    QlSessionRecord, SessionHeader, SessionKey, WireError,
+    SessionHeader, SessionKey, WireError,
 };
 
 mod ack;
@@ -75,10 +75,7 @@ impl TryFrom<u8> for SessionFrameKind {
 
 impl SessionRecord {
     pub fn parse(bytes: &[u8]) -> Result<SessionFrameIter<'_>, WireError> {
-        let reader = codec::Reader::new(bytes);
-        Ok(SessionFrameIter {
-            remaining: reader.take_rest(),
-        })
+        Ok(SessionFrameIter { remaining: bytes })
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -143,22 +140,6 @@ impl<'a> Iterator for SessionFrameIter<'a> {
             }
         }
     }
-}
-
-pub fn encrypt_record(
-    crypto: &impl QlCrypto,
-    header: SessionHeader,
-    session_key: &SessionKey,
-    body: &SessionRecord,
-) -> QlSessionRecord<Vec<u8>> {
-    let wire_size = body.wire_size() + SessionRecordBuilder::WIRE_PREFIX_LEN;
-    let mut builder = SessionRecordBuilder::new(wire_size, wire_size);
-    for frame in &body.frames {
-        let pushed = builder.push_frame(frame);
-        debug_assert!(pushed);
-    }
-    QlSessionRecord::decode(&builder.encrypt(crypto, header, session_key))
-        .expect("builder emitted an invalid session record")
 }
 
 pub fn decrypt_record<B: AsMut<[u8]>>(

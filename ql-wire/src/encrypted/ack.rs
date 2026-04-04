@@ -11,10 +11,6 @@ impl RecordAck {
     pub const WIRE_SIZE: usize = size_of::<u64>() + size_of::<u64>();
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        if bytes.len() != Self::WIRE_SIZE {
-            return Err(WireError::InvalidPayload);
-        }
-
         let mut reader = codec::Reader::new(bytes);
         Ok(Self {
             base_seq: RecordSeq(reader.take_u64()?),
