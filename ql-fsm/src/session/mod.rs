@@ -344,7 +344,6 @@ impl SessionFsm {
         };
         restore_tracked_record(
             self.state.now,
-            self.config.ack_delay,
             &mut self.state.ack_state,
             &mut self.state.pending_control,
             &mut self.state.streams,
@@ -355,11 +354,6 @@ impl SessionFsm {
     pub fn on_timer(&mut self, now: Instant, mut emit: impl FnMut(SessionEvent)) {
         self.state.now = now;
         self.collect_timeouts();
-        if let AckState::Delayed { due_at } = self.state.ack_state {
-            if due_at <= self.state.now {
-                self.state.ack_state = AckState::Immediate;
-            }
-        }
         if !self.config.peer_timeout.is_zero()
             && self.state.last_inbound_at + self.config.peer_timeout <= self.state.now
         {
@@ -382,8 +376,7 @@ impl SessionFsm {
     pub fn next_deadline(&self) -> Option<Instant> {
         let ack_deadline = match self.state.ack_state {
             AckState::Idle => None,
-            AckState::Immediate => Some(self.state.now),
-            AckState::Delayed { due_at } => Some(due_at),
+            AckState::Dirty { due_at } => Some(due_at),
         };
         let retransmit_deadline = self
             .state
@@ -441,15 +434,6 @@ impl SessionFsm {
             sent_at: None,
         };
 
-        if self.should_send_ack() {
-            if let Some(ack) = self.state.received_records.ack() {
-                if builder.push_ack(&ack) {
-                    outbound.ack_included = true;
-                    self.state.ack_state = AckState::Idle;
-                }
-            }
-        }
-
         if let Some(close) = self.state.pending_control.close.clone() {
             if builder.push_close(&close) {
                 self.state.pending_control.close = None;
@@ -467,6 +451,13 @@ impl SessionFsm {
         while self.push_next_pending_stream_window(&mut builder, &mut outbound) {}
 
         while self.push_next_stream_data(&mut builder, &mut outbound) {}
+
+        if let Some((ack, due_at)) = self.pending_ack() {
+            if (!builder.is_empty() || due_at <= self.state.now) && builder.push_ack(&ack) {
+                outbound.ack_included = true;
+                self.state.ack_state = AckState::Idle;
+            }
+        }
 
         if builder.is_empty() {
             return None;
@@ -651,20 +642,20 @@ impl SessionFsm {
     fn schedule_ack(&mut self, immediate: bool) {
         schedule_ack(
             &mut self.state.ack_state,
-            self.state.now,
-            self.config.ack_delay,
-            immediate,
+            if immediate {
+                self.state.now
+            } else {
+                self.state.now + self.config.ack_delay
+            },
         );
     }
 
-    fn should_send_ack(&self) -> bool {
-        if self.state.received_records.ack().is_none() {
-            return false;
-        }
+    fn pending_ack(&self) -> Option<(RecordAck, Instant)> {
         match self.state.ack_state {
-            AckState::Immediate => true,
-            AckState::Delayed { due_at } => due_at <= self.state.now,
-            AckState::Idle => false,
+            AckState::Idle => None,
+            AckState::Dirty { due_at } => {
+                self.state.received_records.ack().map(|ack| (ack, due_at))
+            }
         }
     }
 
@@ -677,7 +668,6 @@ impl SessionFsm {
         }) {
             restore_tracked_record(
                 self.state.now,
-                self.config.ack_delay,
                 &mut self.state.ack_state,
                 &mut self.state.pending_control,
                 &mut self.state.streams,
@@ -960,27 +950,24 @@ impl SessionFsm {
     }
 }
 
-fn schedule_ack(ack_state: &mut AckState, now: Instant, ack_delay: Duration, immediate: bool) {
+fn schedule_ack(ack_state: &mut AckState, due_at: Instant) {
     *ack_state = match *ack_state {
-        AckState::Immediate => AckState::Immediate,
-        _ if immediate || ack_delay.is_zero() => AckState::Immediate,
-        AckState::Delayed { due_at } => AckState::Delayed { due_at },
-        AckState::Idle => AckState::Delayed {
-            due_at: now + ack_delay,
+        AckState::Dirty { due_at: old } => AckState::Dirty {
+            due_at: due_at.min(old),
         },
+        AckState::Idle => AckState::Dirty { due_at: due_at },
     };
 }
 
 fn restore_tracked_record(
     now: Instant,
-    ack_delay: Duration,
     ack_state: &mut AckState,
     pending_control: &mut state::PendingSessionControl,
     streams: &mut IndexMap<StreamId, StreamState>,
     record: TrackedRecord,
 ) {
     if record.ack_included {
-        schedule_ack(ack_state, now, ack_delay, true);
+        schedule_ack(ack_state, now);
     }
     if record.ping_included {
         pending_control.ping = true;

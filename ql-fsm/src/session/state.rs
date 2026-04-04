@@ -129,7 +129,8 @@ pub struct PendingSessionControl {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AckState {
+    // ack state is not dirty
     Idle,
-    Delayed { due_at: Instant },
-    Immediate,
+    // ack is dirty. we can wait to piggy back on an outgoing record until this time
+    Dirty { due_at: Instant },
 }

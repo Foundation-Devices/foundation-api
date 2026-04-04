@@ -378,8 +378,13 @@ fn initial_peer_stream_receive_window_limits_first_send() {
     assert!(events.is_empty());
 
     let (_second_seq, second) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
-    assert!(matches!(
-        second.frames.as_slice(),
-        [SessionFrame::StreamData(frame)] if frame.stream_id == stream_id && frame.offset == 3 && frame.bytes.as_slice() == b"lo"
-    ));
+    assert!(second.frames.iter().any(|frame| {
+        matches!(
+            frame,
+            SessionFrame::StreamData(frame)
+                if frame.stream_id == stream_id
+                    && frame.offset == 3
+                    && frame.bytes.as_slice() == b"lo"
+        )
+    }));
 }
