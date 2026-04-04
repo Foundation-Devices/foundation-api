@@ -7,10 +7,12 @@ use crate::{
 mod ik;
 mod kk;
 mod meta;
+mod transport_params;
 
 pub use ik::{Ik1, Ik2, IkHandshake};
 pub use kk::{Kk1, Kk2, KkHandshake};
 pub use meta::{HandshakeId, HandshakeMeta};
+pub use transport_params::TransportParams;
 
 const SHA256_BLOCK_LEN: usize = 64;
 const PROTOCOL_IK: &[u8] = b"ql-wire:pq-ik:v1";
@@ -107,6 +109,8 @@ pub struct FinalizedHandshake {
     pub rx_connection_id: ConnectionId,
     pub handshake_hash: [u8; 32],
     pub remote_bundle: PeerBundle,
+    /// Transport parameters advertised by the remote peer
+    pub remote_transport_params: TransportParams,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,13 +312,16 @@ fn mix_hash_routed_handshake(
     header: HandshakeHeader,
     kind: HandshakeKind,
     meta: &HandshakeMeta,
+    transport_params: &TransportParams,
 ) {
     let encoded_header = header.encode();
-    let encoded = meta.encode();
+    let encoded_meta = meta.encode();
+    let encoded_transport_params = transport_params.encode();
     symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);
     symmetric.mix_hash(crypto, &encoded_header);
     symmetric.mix_hash(crypto, &[kind as u8]);
-    symmetric.mix_hash(crypto, &encoded);
+    symmetric.mix_hash(crypto, &encoded_meta);
+    symmetric.mix_hash(crypto, &encoded_transport_params);
 }
 
 fn initialize_handshake_meta(
@@ -389,6 +396,7 @@ fn finalize_handshake(
     symmetric: &SymmetricState,
     role: Role,
     remote_bundle: PeerBundle,
+    remote_transport_params: TransportParams,
 ) -> FinalizedHandshake {
     let handshake_hash = symmetric.handshake_hash;
     let (tx_key, rx_key) = symmetric.split_for_role(crypto, role);
@@ -404,6 +412,7 @@ fn finalize_handshake(
         rx_connection_id,
         handshake_hash,
         remote_bundle,
+        remote_transport_params,
     }
 }
 

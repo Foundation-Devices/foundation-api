@@ -3,6 +3,7 @@ use super::{
     generate_ephemeral_keypair, init_kk_symmetric, initialize_handshake_meta, mix_hash_ephemeral,
     mix_hash_routed_handshake, require_handshake_meta, EncryptedMlKemCiphertext, EphemeralKeyPair,
     EphemeralPublicKey, FinalizedHandshake, HandshakeHeader, Role, SymmetricState,
+    TransportParams,
 };
 use crate::{
     codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto,
@@ -13,6 +14,7 @@ use crate::{
 pub struct Kk1 {
     pub header: HandshakeHeader,
     pub meta: HandshakeMeta,
+    pub transport_params: TransportParams,
     pub skem_ciphertext: MlKemCiphertext,
     pub ephemeral: EphemeralPublicKey,
 }
@@ -20,12 +22,14 @@ pub struct Kk1 {
 impl Kk1 {
     pub const WIRE_SIZE: usize = HandshakeHeader::WIRE_SIZE
         + HandshakeMeta::WIRE_SIZE
+        + TransportParams::WIRE_SIZE
         + MlKemCiphertext::SIZE
         + EphemeralPublicKey::WIRE_SIZE;
 
     pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
         let out = self.header.encode_into(out);
         let out = self.meta.encode_into(out);
+        let out = self.transport_params.encode_into(out);
         let out = codec::write_bytes(out, self.skem_ciphertext.as_bytes());
         self.ephemeral.encode_into(out)
     }
@@ -36,6 +40,7 @@ impl<B: ByteSlice> codec::WireParse<B> for Kk1 {
         Ok(Self {
             header: reader.parse()?,
             meta: reader.parse()?,
+            transport_params: reader.parse()?,
             skem_ciphertext: MlKemCiphertext::new(reader.take_boxed_array()?),
             ephemeral: reader.parse()?,
         })
@@ -46,6 +51,7 @@ impl<B: ByteSlice> codec::WireParse<B> for Kk1 {
 pub struct Kk2 {
     pub header: HandshakeHeader,
     pub meta: HandshakeMeta,
+    pub transport_params: TransportParams,
     pub ekem_ciphertext: MlKemCiphertext,
     pub skem_ciphertext: EncryptedMlKemCiphertext,
 }
@@ -53,12 +59,14 @@ pub struct Kk2 {
 impl Kk2 {
     pub const WIRE_SIZE: usize = HandshakeHeader::WIRE_SIZE
         + HandshakeMeta::WIRE_SIZE
+        + TransportParams::WIRE_SIZE
         + MlKemCiphertext::SIZE
         + EncryptedMlKemCiphertext::WIRE_SIZE;
 
     pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
         let out = self.header.encode_into(out);
         let out = self.meta.encode_into(out);
+        let out = self.transport_params.encode_into(out);
         let out = codec::write_bytes(out, self.ekem_ciphertext.as_bytes());
         codec::write_bytes(out, self.skem_ciphertext.as_bytes())
     }
@@ -69,6 +77,7 @@ impl<B: ByteSlice> codec::WireParse<B> for Kk2 {
         Ok(Self {
             header: reader.parse()?,
             meta: reader.parse()?,
+            transport_params: reader.parse()?,
             ekem_ciphertext: MlKemCiphertext::new(reader.take_boxed_array()?),
             skem_ciphertext: EncryptedMlKemCiphertext::new(reader.take_boxed_array()?),
         })
@@ -94,6 +103,8 @@ pub struct KkHandshake {
     local_ephemeral: Option<EphemeralKeyPair>,
     remote_ephemeral: Option<EphemeralPublicKey>,
     handshake_meta: Option<HandshakeMeta>,
+    local_transport_params: TransportParams,
+    remote_transport_params: Option<TransportParams>,
 }
 
 impl KkHandshake {
@@ -101,6 +112,7 @@ impl KkHandshake {
         crypto: &impl QlCrypto,
         local: QlIdentity,
         remote_bundle: PeerBundle,
+        local_transport_params: TransportParams,
     ) -> Self {
         let symmetric = init_kk_symmetric(crypto, &local.bundle(), &remote_bundle);
         Self {
@@ -112,6 +124,8 @@ impl KkHandshake {
             local_ephemeral: None,
             remote_ephemeral: None,
             handshake_meta: None,
+            local_transport_params,
+            remote_transport_params: None,
         }
     }
 
@@ -119,6 +133,7 @@ impl KkHandshake {
         crypto: &impl QlCrypto,
         local: QlIdentity,
         remote_bundle: PeerBundle,
+        local_transport_params: TransportParams,
     ) -> Self {
         let symmetric = init_kk_symmetric(crypto, &remote_bundle, &local.bundle());
         Self {
@@ -130,6 +145,8 @@ impl KkHandshake {
             local_ephemeral: None,
             remote_ephemeral: None,
             handshake_meta: None,
+            local_transport_params,
+            remote_transport_params: None,
         }
     }
 
@@ -175,6 +192,7 @@ impl KkHandshake {
             header,
             HandshakeKind::Kk1,
             &meta,
+            &self.local_transport_params,
         );
         let (skem_ciphertext, skem_secret) =
             crypto.mlkem_encapsulate(&self.remote_bundle.mlkem_public_key);
@@ -192,6 +210,7 @@ impl KkHandshake {
         Ok(Kk1 {
             header,
             meta,
+            transport_params: self.local_transport_params,
             skem_ciphertext,
             ephemeral: public,
         })
@@ -213,6 +232,7 @@ impl KkHandshake {
             header,
             HandshakeKind::Kk2,
             &meta,
+            &self.local_transport_params,
         );
         let remote_ephemeral = self
             .remote_ephemeral
@@ -234,6 +254,7 @@ impl KkHandshake {
         Ok(Kk2 {
             header,
             meta,
+            transport_params: self.local_transport_params,
             ekem_ciphertext,
             skem_ciphertext,
         })
@@ -257,6 +278,7 @@ impl KkHandshake {
             message.header,
             HandshakeKind::Kk1,
             &message.meta,
+            &message.transport_params,
         );
         self.symmetric
             .decrypt_and_hash(crypto, message.skem_ciphertext.as_bytes())?;
@@ -267,6 +289,7 @@ impl KkHandshake {
 
         mix_hash_ephemeral(&mut self.symmetric, crypto, &message.ephemeral);
         self.remote_ephemeral = Some(message.ephemeral.clone());
+        self.remote_transport_params = Some(message.transport_params);
         self.step = KkStep::Send2;
         Ok(())
     }
@@ -289,6 +312,7 @@ impl KkHandshake {
             message.header,
             HandshakeKind::Kk2,
             &message.meta,
+            &message.transport_params,
         );
         let local_ephemeral = self
             .local_ephemeral
@@ -306,6 +330,7 @@ impl KkHandshake {
         self.symmetric
             .mix_key_and_hash(crypto, skem_secret.as_bytes());
 
+        self.remote_transport_params = Some(message.transport_params);
         self.step = KkStep::Done;
         Ok(())
     }
@@ -314,11 +339,13 @@ impl KkHandshake {
         if !self.is_finished() {
             return Err(WireError::InvalidState);
         }
+        let remote_transport_params = self.remote_transport_params.ok_or(WireError::InvalidState)?;
         Ok(finalize_handshake(
             crypto,
             &self.symmetric,
             self.role,
             self.remote_bundle,
+            remote_transport_params,
         ))
     }
 }
