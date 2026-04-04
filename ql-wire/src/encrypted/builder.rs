@@ -4,6 +4,7 @@ use crate::{ByteChunks, Nonce, QlCrypto, RecordType, SessionHeader, SessionKey, 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecordBuilder {
     max_capacity: usize,
+    // todo: remove
     body_start: usize,
     bytes: Vec<u8>,
 }

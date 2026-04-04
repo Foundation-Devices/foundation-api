@@ -249,6 +249,9 @@ impl SessionFsm {
         self.state.last_activity_at = self.state.now;
         self.state.last_inbound_at = self.state.now;
 
+        // TODO: We record the session seq before validating its frames. If later frame
+        // handling fails with PROTOCOL, a subsequent outbound close can still carry an ack for
+        // this seq even though its stream data was rejected.
         let (duplicate, out_of_order) = match self.state.received_records.insert(seq) {
             ReceiveOutcome::Duplicate => (true, false),
             ReceiveOutcome::New { out_of_order } => (false, out_of_order),
