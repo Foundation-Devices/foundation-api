@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     session::{stream_parity::StreamParity, SessionFsm, SessionFsmConfig},
-    state::{LinkState, SessionTransport},
+    state::{ConnectedState, LinkState, SessionTransport},
     FsmTime, OutboundWrite, QlFsm, QlFsmConfig, SessionWriteId,
 };
 
@@ -210,34 +210,40 @@ impl Harness {
         let a_to_b_conn = ConnectionId::from_data([0xA1; ConnectionId::SIZE]);
         let b_to_a_conn = ConnectionId::from_data([0xB2; ConnectionId::SIZE]);
 
-        harness.a.fsm.state.link = LinkState::Connected(SessionTransport {
-            tx_key: a_to_b_key.clone(),
-            rx_key: b_to_a_key.clone(),
-            tx_connection_id: a_to_b_conn,
-            rx_connection_id: b_to_a_conn,
-            remote_transport_params: TransportParams {
-                initial_stream_receive_window: harness
-                    .b
-                    .fsm
-                    .config
-                    .session_stream_receive_buffer_size as u32,
+        harness.a.fsm.state.link = LinkState::Connected(ConnectedState {
+            transport: SessionTransport {
+                tx_key: a_to_b_key.clone(),
+                rx_key: b_to_a_key.clone(),
+                tx_connection_id: a_to_b_conn,
+                rx_connection_id: b_to_a_conn,
+                remote_transport_params: TransportParams {
+                    initial_stream_receive_window: harness
+                        .b
+                        .fsm
+                        .config
+                        .session_stream_receive_buffer_size
+                        as u32,
+                },
             },
+            session: SessionFsm::new(session_config(&harness, true), harness.now),
         });
-        harness.b.fsm.state.link = LinkState::Connected(SessionTransport {
-            tx_key: b_to_a_key,
-            rx_key: a_to_b_key,
-            tx_connection_id: b_to_a_conn,
-            rx_connection_id: a_to_b_conn,
-            remote_transport_params: TransportParams {
-                initial_stream_receive_window: harness
-                    .a
-                    .fsm
-                    .config
-                    .session_stream_receive_buffer_size as u32,
+        harness.b.fsm.state.link = LinkState::Connected(ConnectedState {
+            transport: SessionTransport {
+                tx_key: b_to_a_key,
+                rx_key: a_to_b_key,
+                tx_connection_id: b_to_a_conn,
+                rx_connection_id: a_to_b_conn,
+                remote_transport_params: TransportParams {
+                    initial_stream_receive_window: harness
+                        .a
+                        .fsm
+                        .config
+                        .session_stream_receive_buffer_size
+                        as u32,
+                },
             },
+            session: SessionFsm::new(session_config(&harness, false), harness.now),
         });
-        harness.a.fsm.session = SessionFsm::new(session_config(&harness, true), harness.now);
-        harness.b.fsm.session = SessionFsm::new(session_config(&harness, false), harness.now);
         harness
     }
 

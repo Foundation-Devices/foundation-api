@@ -238,13 +238,6 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn set_initial_peer_stream_receive_window(&mut self, window: u32) {
-        self.config.initial_peer_stream_receive_window = window;
-        for stream in self.state.streams.values_mut() {
-            stream.peer_max_offset = window as u64;
-        }
-    }
-
     pub fn receive<'a, I>(
         &mut self,
         now: Instant,
@@ -407,12 +400,6 @@ impl SessionFsm {
         .into_iter()
         .flatten()
         .min()
-    }
-
-    pub fn has_pending_stream_work(&self) -> bool {
-        self.state.streams.values().any(|stream| {
-            stream.pending_close.is_some() || stream.pending_window || stream.tx.has_pending()
-        })
     }
 
     pub fn take_next_write(

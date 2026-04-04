@@ -5,7 +5,10 @@ use ql_wire::{
     QlHandshakeRecord, SessionKey, TransportParams,
 };
 
-use crate::{replay_cache::ReplayCache, FsmTime, PeerStatus, QlFsmEvent, QlSessionEvent};
+use crate::{
+    replay_cache::ReplayCache, session::SessionFsm, FsmTime, PeerStatus, QlFsmError, QlFsmEvent,
+    QlSessionEvent,
+};
 
 pub struct QlFsmState {
     pub replay_cache: ReplayCache,
@@ -42,12 +45,16 @@ impl SessionTransport {
     }
 }
 
-#[derive(Debug, Clone)]
 pub enum LinkState {
     Idle,
     IkInitiator(IkInitiatorState),
     KkInitiator(KkInitiatorState),
-    Connected(SessionTransport),
+    Connected(ConnectedState),
+}
+
+pub struct ConnectedState {
+    pub transport: SessionTransport,
+    pub session: SessionFsm,
 }
 
 #[derive(Debug, Clone)]
@@ -79,11 +86,25 @@ impl LinkState {
         }
     }
 
-    pub fn transport(&self) -> Option<&SessionTransport> {
+    #[inline]
+    pub fn connected(&self) -> Option<&ConnectedState> {
         match self {
-            Self::Connected(transport) => Some(transport),
+            Self::Connected(state) => Some(state),
             _ => None,
         }
+    }
+
+    #[inline]
+    pub fn connected_mut(&mut self) -> Option<&mut ConnectedState> {
+        match self {
+            Self::Connected(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn connected_mut_or_err(&mut self) -> Result<&mut ConnectedState, QlFsmError> {
+        self.connected_mut().ok_or(QlFsmError::NoSession)
     }
 
     pub fn handshake_deadline(&self) -> Option<Instant> {
@@ -93,11 +114,9 @@ impl LinkState {
             Self::KkInitiator(state) => Some(state.deadline),
         }
     }
-}
 
-impl QlFsmState {
-    pub fn ensure_peer_bound(&self) -> Result<(), crate::QlFsmError> {
-        self.peer.as_ref().ok_or(crate::QlFsmError::NoPeerBound)?;
-        Ok(())
+    #[cfg(test)]
+    pub fn transport(&self) -> Option<&SessionTransport> {
+        self.connected().map(|state| &state.transport)
     }
 }

@@ -36,7 +36,6 @@ pub use session::stream_rx::StreamReadIter;
 
 use crate::{
     replay_cache::ReplayCache,
-    session::SessionFsm,
     state::{LinkState, QlFsmState},
 };
 
@@ -156,7 +155,6 @@ pub struct QlFsm {
     pub config: QlFsmConfig,
     /// local identity and private keys
     pub identity: QlIdentity,
-    pub(crate) session: SessionFsm,
     pub(crate) state: QlFsmState,
 }
 
@@ -166,22 +164,6 @@ impl QlFsm {
         Self {
             config,
             identity,
-            session: session::SessionFsm::new(
-                session::SessionFsmConfig {
-                    local_parity: session::stream_parity::StreamParity::Even,
-                    record_target_size: config.session_record_target_size,
-                    record_max_size: config.session_record_max_size,
-                    ack_delay: config.session_record_ack_delay,
-                    retransmit_timeout: config.session_record_retransmit_timeout,
-                    keepalive_interval: config.session_keepalive_interval,
-                    peer_timeout: config.session_peer_timeout,
-                    stream_send_buffer_size: config.session_stream_send_buffer_size,
-                    stream_receive_buffer_size: config.session_stream_receive_buffer_size,
-                    initial_peer_stream_receive_window: config
-                        .session_stream_receive_buffer_size as u32,
-                },
-                now.instant,
-            ),
             state: QlFsmState {
                 replay_cache: ReplayCache::default(),
                 next_control_id: 1,

@@ -3,10 +3,11 @@ mod kk;
 
 use ql_wire::{self as wire, EphemeralPublicKey, HandshakeMeta, QlCrypto, QlHandshakeRecord};
 
-use super::{emit_peer_status, reset_session};
+use super::emit_peer_status;
 use crate::{
-    state::{LinkState, SessionTransport},
-    QlFsm, QlFsmError, QlFsmEvent, QlSessionEvent,
+    session::{stream_parity::StreamParity, SessionFsm, SessionFsmConfig},
+    state::{ConnectedState, LinkState, SessionTransport},
+    QlFsm, QlFsmError, QlFsmEvent,
 };
 
 pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
@@ -72,7 +73,6 @@ pub fn handle_timer(fsm: &mut QlFsm) {
 
     fsm.state.link = LinkState::Idle;
     fsm.state.handshake = None;
-    fail_pending_connect_session(fsm, ql_wire::SessionCloseCode::TIMEOUT);
     emit_peer_status(fsm);
 }
 
@@ -85,30 +85,36 @@ pub fn finish_handshake(
     transport: SessionTransport,
     remote_bundle: &wire::PeerBundle,
 ) -> Result<(), QlFsmError> {
-    let initial_peer_stream_receive_window = transport
-        .remote_transport_params
-        .initial_stream_receive_window;
-    let new_peer = if let Some(peer) = fsm.state.peer.as_ref() {
+    if let Some(peer) = fsm.state.peer.as_ref() {
         if peer != remote_bundle {
             return Err(QlFsmError::InvalidPayload);
         }
-        false
     } else {
         fsm.state.peer = Some(remote_bundle.clone());
         fsm.state
             .events
             .push_back(QlFsmEvent::NewPeer(remote_bundle.clone()));
-        true
-    };
-
-    fsm.state.link = LinkState::Connected(transport);
-
-    if new_peer {
-        reset_session(fsm);
-    } else {
-        fsm.session
-            .set_initial_peer_stream_receive_window(initial_peer_stream_receive_window);
     }
+
+    let config = &fsm.config;
+    let session = SessionFsm::new(
+        SessionFsmConfig {
+            local_parity: StreamParity::for_local(fsm.identity.xid, remote_bundle.xid),
+            record_target_size: config.session_record_target_size,
+            record_max_size: config.session_record_max_size,
+            ack_delay: config.session_record_ack_delay,
+            retransmit_timeout: config.session_record_retransmit_timeout,
+            keepalive_interval: config.session_keepalive_interval,
+            peer_timeout: config.session_peer_timeout,
+            stream_send_buffer_size: config.session_stream_send_buffer_size,
+            stream_receive_buffer_size: config.session_stream_receive_buffer_size,
+            initial_peer_stream_receive_window: transport
+                .remote_transport_params
+                .initial_stream_receive_window,
+        },
+        fsm.state.now.instant,
+    );
+    fsm.state.link = LinkState::Connected(ConnectedState { transport, session });
     emit_peer_status(fsm);
     Ok(())
 }
@@ -116,20 +122,7 @@ pub fn finish_handshake(
 pub fn reset_connected_session_if_needed(fsm: &mut QlFsm) {
     if matches!(fsm.state.link, LinkState::Connected(_)) {
         fsm.state.link = LinkState::Idle;
-        reset_session(fsm);
     }
-}
-
-fn fail_pending_connect_session(fsm: &mut QlFsm, code: ql_wire::SessionCloseCode) {
-    if !fsm.session.has_pending_stream_work() {
-        return;
-    }
-    reset_session(fsm);
-    fsm.state
-        .session_events
-        .push_back(QlSessionEvent::SessionClosed(ql_wire::SessionClose {
-            code,
-        }));
 }
 
 fn local_start_wins(local: &EphemeralPublicKey, inbound: &EphemeralPublicKey) -> bool {

@@ -62,15 +62,6 @@ impl StreamTx {
         self.base_offset + self.bytes.len() as u64
     }
 
-    pub fn has_pending(&self) -> bool {
-        self.segments
-            .iter()
-            .any(|segment| matches!(segment.state, SendState::Unsent | SendState::Lost))
-            || self.final_offset.is_some_and(|final_offset| {
-                matches!(final_offset.state, SendState::Unsent | SendState::Lost)
-            })
-    }
-
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty() && self.segments.is_empty() && self.final_offset.is_none()
     }
