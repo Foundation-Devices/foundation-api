@@ -89,22 +89,22 @@ impl SessionRecord {
         Ok(Self { frames })
     }
 
-    pub fn encoded_len(&self) -> usize {
+    pub fn wire_size(&self) -> usize {
         self.frames
             .iter()
-            .map(SessionFrame::encoded_len)
+            .map(SessionFrame::wire_size)
             .sum::<usize>()
     }
 }
 
 impl<B: ByteChunks> SessionFrame<B> {
-    pub fn encoded_len(&self) -> usize {
+    pub fn wire_size(&self) -> usize {
         1 + match self {
             Self::Ping => 0,
-            Self::Ack(_) => RecordAck::ENCODED_LEN,
-            Self::StreamData(frame) => SIZE_LEN + frame.encoded_len(),
+            Self::Ack(_) => RecordAck::WIRE_SIZE,
+            Self::StreamData(frame) => SIZE_LEN + frame.wire_size(),
             Self::StreamWindow(_) => StreamWindow::WIRE_SIZE,
-            Self::StreamClose(frame) => SIZE_LEN + frame.encoded_len(),
+            Self::StreamClose(_) => SIZE_LEN + StreamClose::WIRE_SIZE,
             Self::Close(_) => SessionClose::WIRE_SIZE,
         }
     }
@@ -151,8 +151,8 @@ pub fn encrypt_record(
     session_key: &SessionKey,
     body: &SessionRecord,
 ) -> QlSessionRecord<Vec<u8>> {
-    let encoded_len = body.encoded_len() + SessionRecordBuilder::WIRE_PREFIX_LEN;
-    let mut builder = SessionRecordBuilder::new(encoded_len, encoded_len);
+    let wire_size = body.wire_size() + SessionRecordBuilder::WIRE_PREFIX_LEN;
+    let mut builder = SessionRecordBuilder::new(wire_size, wire_size);
     for frame in &body.frames {
         let pushed = builder.push_frame(frame);
         debug_assert!(pushed);
@@ -178,7 +178,7 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
         SessionFrameKind::Ping => Ok((SessionFrame::Ping, rest)),
         SessionFrameKind::Ack => {
             let (frame, rest) = rest
-                .split_at_checked(RecordAck::ENCODED_LEN)
+                .split_at_checked(RecordAck::WIRE_SIZE)
                 .ok_or(WireError::InvalidPayload)?;
             Ok((SessionFrame::Ack(RecordAck::decode(frame)?), rest))
         }
@@ -200,10 +200,9 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
             Ok((SessionFrame::StreamClose(StreamClose::parse(frame)?), rest))
         }
         SessionFrameKind::Close => {
-            if rest.len() < SessionClose::WIRE_SIZE {
-                return Err(WireError::InvalidPayload);
-            }
-            let (frame, rest) = rest.split_at(SessionClose::WIRE_SIZE);
+            let (frame, rest) = rest
+                .split_at_checked(SessionClose::WIRE_SIZE)
+                .ok_or(WireError::InvalidPayload)?;
             Ok((SessionFrame::Close(SessionClose::decode(frame)?), rest))
         }
     }

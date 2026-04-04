@@ -77,12 +77,12 @@ impl QlHandshakeRecord {
         }
     }
 
-    fn encoded_len(&self) -> usize {
+    fn wire_size(&self) -> usize {
         match self {
-            Self::Ik1(_) => Ik1::ENCODED_LEN,
-            Self::Ik2(_) => Ik2::ENCODED_LEN,
-            Self::Kk1(_) => Kk1::ENCODED_LEN,
-            Self::Kk2(_) => Kk2::ENCODED_LEN,
+            Self::Ik1(_) => Ik1::WIRE_SIZE,
+            Self::Ik2(_) => Ik2::WIRE_SIZE,
+            Self::Kk1(_) => Kk1::WIRE_SIZE,
+            Self::Kk2(_) => Kk2::WIRE_SIZE,
         }
     }
 
@@ -105,7 +105,7 @@ impl QlHandshakeRecord {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = vec![0; 3 + self.encoded_len()];
+        let mut out = vec![0; 3 + self.wire_size()];
         let rest = codec::write_u8(&mut out, QL_WIRE_VERSION);
         let rest = codec::write_u8(rest, RecordType::Handshake as u8);
         let rest = codec::write_u8(rest, self.kind() as u8);
@@ -133,7 +133,7 @@ impl<B: AsRef<[u8]>> QlSessionRecord<B> {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = vec![
             0;
-            2 + SessionHeader::ENCODED_LEN
+            2 + SessionHeader::WIRE_SIZE
                 + EncryptedMessage::<&[u8]>::HEADER_LEN
                 + self.payload.ciphertext.as_ref().len()
         ];

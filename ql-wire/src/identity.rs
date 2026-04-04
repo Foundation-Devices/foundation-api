@@ -10,7 +10,7 @@ pub struct PeerBundle {
 
 impl PeerBundle {
     pub const VERSION: u16 = 1;
-    pub const ENCODED_LEN: usize =
+    pub const WIRE_SIZE: usize =
         size_of::<u16>() + XID::SIZE + size_of::<u32>() + MlKemPublicKey::SIZE;
 
     pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
@@ -21,7 +21,7 @@ impl PeerBundle {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = vec![0; Self::ENCODED_LEN];
+        let mut out = vec![0; Self::WIRE_SIZE];
         let _ = self.encode_into(&mut out);
         out
     }

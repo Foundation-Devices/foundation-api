@@ -190,7 +190,7 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
         ephemeral: EphemeralPublicKey {
             mlkem_public_key: MlKemPublicKey::from_data([9; MlKemPublicKey::SIZE]),
         },
-        static_bundle: EncryptedPeerBundle::from_data([13; EncryptedPeerBundle::ENCODED_LEN]),
+        static_bundle: EncryptedPeerBundle::from_data([13; EncryptedPeerBundle::WIRE_SIZE]),
     });
     let ik_encoded = ik.encode();
     assert_eq!(QlHandshakeRecord::decode(&ik_encoded).unwrap(), ik);

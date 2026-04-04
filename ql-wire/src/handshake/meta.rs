@@ -11,7 +11,7 @@ pub struct HandshakeMeta {
 }
 
 impl HandshakeMeta {
-    pub const ENCODED_LEN: usize = size_of::<u32>() + size_of::<u64>();
+    pub const WIRE_SIZE: usize = size_of::<u32>() + size_of::<u64>();
 
     pub fn ensure_not_expired(&self, now_seconds: u64) -> Result<(), WireError> {
         if now_seconds > self.valid_until {
@@ -26,8 +26,8 @@ impl HandshakeMeta {
         codec::write_u64(out, self.valid_until)
     }
 
-    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
-        let mut out = [0; Self::ENCODED_LEN];
+    pub fn encode(&self) -> [u8; Self::WIRE_SIZE] {
+        let mut out = [0; Self::WIRE_SIZE];
         let _ = self.encode_into(&mut out);
         out
     }

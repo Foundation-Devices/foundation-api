@@ -37,8 +37,8 @@ fn receive_events(
     record: &SessionRecord,
 ) -> Vec<SessionEvent> {
     let mut builder = SessionRecordBuilder::new(
-        SessionRecordBuilder::WIRE_PREFIX_LEN + record.encoded_len(),
-        SessionRecordBuilder::WIRE_PREFIX_LEN + record.encoded_len(),
+        SessionRecordBuilder::WIRE_PREFIX_LEN + record.wire_size(),
+        SessionRecordBuilder::WIRE_PREFIX_LEN + record.wire_size(),
     );
     for frame in &record.frames {
         assert!(builder.push_frame(frame));

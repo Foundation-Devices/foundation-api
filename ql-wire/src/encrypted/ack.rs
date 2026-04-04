@@ -8,9 +8,13 @@ pub struct RecordAck {
 
 impl RecordAck {
     pub const BITMAP_BITS: usize = u64::BITS as usize;
-    pub const ENCODED_LEN: usize = size_of::<u64>() + size_of::<u64>();
+    pub const WIRE_SIZE: usize = size_of::<u64>() + size_of::<u64>();
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        if bytes.len() != Self::WIRE_SIZE {
+            return Err(WireError::InvalidPayload);
+        }
+
         let mut reader = codec::Reader::new(bytes);
         Ok(Self {
             base_seq: RecordSeq(reader.take_u64()?),
@@ -32,7 +36,7 @@ impl RecordAck {
     }
 
     pub fn encode_into(&self, out: &mut [u8]) {
-        assert_eq!(out.len(), Self::ENCODED_LEN);
+        assert_eq!(out.len(), Self::WIRE_SIZE);
         let out = codec::write_u64(out, self.base_seq.0);
         let _ = codec::write_u64(out, self.bits);
     }
@@ -41,7 +45,7 @@ impl RecordAck {
 #[cfg(test)]
 mod tests {
     use super::RecordAck;
-    use crate::RecordSeq;
+    use crate::{RecordSeq, WireError};
 
     #[test]
     fn encode_decode_round_trip() {
@@ -49,7 +53,7 @@ mod tests {
             base_seq: RecordSeq(42),
             bits: (1u64 << 0) | (1u64 << 17) | (1u64 << 63),
         };
-        let mut encoded = [0; RecordAck::ENCODED_LEN];
+        let mut encoded = [0; RecordAck::WIRE_SIZE];
         ack.encode_into(&mut encoded);
 
         assert_eq!(RecordAck::decode(&encoded).unwrap(), ack);
@@ -68,5 +72,18 @@ mod tests {
         assert!(!ack.contains(99));
         assert!(!ack.contains(101));
         assert!(!ack.contains(164));
+    }
+
+    #[test]
+    fn decode_rejects_invalid_length() {
+        assert_eq!(RecordAck::decode(&[]), Err(WireError::InvalidPayload));
+        assert_eq!(
+            RecordAck::decode(&[0; RecordAck::WIRE_SIZE - 1]),
+            Err(WireError::InvalidPayload)
+        );
+        assert_eq!(
+            RecordAck::decode(&[0; RecordAck::WIRE_SIZE + 1]),
+            Err(WireError::InvalidPayload)
+        );
     }
 }

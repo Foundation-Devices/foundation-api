@@ -24,10 +24,6 @@ impl StreamClose {
         Ok(close)
     }
 
-    pub fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
-    }
-
     pub fn encode_into(&self, out: &mut [u8]) {
         let out = codec::write_u32(out, self.stream_id.0);
         let out = codec::write_u8(out, self.target.to_wire());

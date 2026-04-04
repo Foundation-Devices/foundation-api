@@ -27,18 +27,18 @@ impl ConnectionId {
 }
 
 impl SessionHeader {
-    pub const ENCODED_LEN: usize = ConnectionId::SIZE + size_of::<u64>();
+    pub const WIRE_SIZE: usize = ConnectionId::SIZE + size_of::<u64>();
     const AAD_DOMAIN: &[u8] = b"ql-wire:session-aad:v1";
     const AAD_RECORD_KIND_SESSION: u8 = 1;
 
-    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
-        let mut out = [0; Self::ENCODED_LEN];
+    pub fn encode(&self) -> [u8; Self::WIRE_SIZE] {
+        let mut out = [0; Self::WIRE_SIZE];
         self.encode_into(&mut out);
         out
     }
 
     pub fn encode_into(&self, out: &mut [u8]) {
-        assert_eq!(out.len(), Self::ENCODED_LEN);
+        assert_eq!(out.len(), Self::WIRE_SIZE);
         let out = codec::write_bytes(out, self.connection_id.as_bytes());
         let _ = codec::write_u64(out, self.seq.0);
     }

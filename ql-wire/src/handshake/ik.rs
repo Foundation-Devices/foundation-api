@@ -20,11 +20,11 @@ pub struct Ik1 {
 }
 
 impl Ik1 {
-    pub const ENCODED_LEN: usize = HandshakeHeader::ENCODED_LEN
-        + HandshakeMeta::ENCODED_LEN
+    pub const WIRE_SIZE: usize = HandshakeHeader::WIRE_SIZE
+        + HandshakeMeta::WIRE_SIZE
         + MlKemCiphertext::SIZE
-        + EphemeralPublicKey::ENCODED_LEN
-        + EncryptedPeerBundle::ENCODED_LEN;
+        + EphemeralPublicKey::WIRE_SIZE
+        + EncryptedPeerBundle::WIRE_SIZE;
 
     pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
         let out = self.header.encode_into(out);
@@ -40,7 +40,7 @@ impl Ik1 {
         let meta = HandshakeMeta::decode_from(&mut reader)?;
         let skem_ciphertext = MlKemCiphertext::from_data(reader.take_array()?);
         let ephemeral =
-            EphemeralPublicKey::decode(reader.take_bytes(EphemeralPublicKey::ENCODED_LEN)?)?;
+            EphemeralPublicKey::decode(reader.take_bytes(EphemeralPublicKey::WIRE_SIZE)?)?;
         let static_bundle = EncryptedPeerBundle::from_data(reader.take_array()?);
         reader.finish()?;
         Ok(Self {
@@ -62,10 +62,10 @@ pub struct Ik2 {
 }
 
 impl Ik2 {
-    pub const ENCODED_LEN: usize = HandshakeHeader::ENCODED_LEN
-        + HandshakeMeta::ENCODED_LEN
+    pub const WIRE_SIZE: usize = HandshakeHeader::WIRE_SIZE
+        + HandshakeMeta::WIRE_SIZE
         + MlKemCiphertext::SIZE
-        + EncryptedMlKemCiphertext::ENCODED_LEN;
+        + EncryptedMlKemCiphertext::WIRE_SIZE;
 
     pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
         let out = self.header.encode_into(out);
