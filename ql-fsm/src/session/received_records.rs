@@ -1,16 +1,16 @@
 use ql_wire::{RecordAck, RecordSeq};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ReceivedRecords {
     seen: u64,
     base: u64,
-    largest: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiveOutcome {
     New { out_of_order: bool },
     Duplicate,
+    TooOld,
 }
 
 impl ReceivedRecords {
@@ -19,33 +19,32 @@ impl ReceivedRecords {
 
     pub fn insert(&mut self, seq: RecordSeq) -> ReceiveOutcome {
         let seq = seq.0;
-        let Some(largest) = self.largest else {
+        if self.seen == 0 {
             self.base = seq;
             self.seen = 1;
-            self.largest = Some(seq);
             return ReceiveOutcome::New {
                 out_of_order: false,
             };
-        };
+        }
 
-        if largest.saturating_sub(seq) > Self::TRACKED_WINDOW {
+        if seq < self.base {
+            return ReceiveOutcome::TooOld;
+        }
+
+        let base = self.base.max(seq.saturating_sub(Self::TRACKED_WINDOW));
+        let seen = self.rebased_seen(base);
+        let next_seen = seen | (1u64 << (seq - base));
+        if next_seen == seen {
             return ReceiveOutcome::Duplicate;
         }
 
-        let out_of_order = seq != largest.saturating_add(1);
-        if seq > largest {
-            self.advance_base(seq.saturating_sub(Self::TRACKED_WINDOW));
-            self.largest = Some(seq);
-        }
-
-        let Some(bit) = self.bit_for(seq) else {
-            return ReceiveOutcome::Duplicate;
-        };
-        if self.seen & bit != 0 {
-            return ReceiveOutcome::Duplicate;
-        }
-
-        self.seen |= bit;
+        let out_of_order = seq
+            != self
+                .base
+                .saturating_add((u64::BITS - 1 - self.seen.leading_zeros()) as u64)
+                .saturating_add(1);
+        self.base = base;
+        self.seen = next_seen;
         ReceiveOutcome::New { out_of_order }
     }
 
@@ -56,27 +55,17 @@ impl ReceivedRecords {
         })
     }
 
-    fn bit_for(&self, seq: u64) -> Option<u64> {
-        if seq < self.base {
-            return None;
-        }
-
-        let offset = seq - self.base;
-        (offset < Self::TRACKED_LEN).then_some(1u64 << offset)
-    }
-
-    fn advance_base(&mut self, new_base: u64) {
+    fn rebased_seen(&self, new_base: u64) -> u64 {
         if new_base <= self.base {
-            return;
+            return self.seen;
         }
 
         let shift = new_base - self.base;
         if shift >= Self::TRACKED_LEN {
-            self.seen = 0;
+            0
         } else {
-            self.seen >>= shift;
+            self.seen >> shift
         }
-        self.base = new_base;
     }
 }
 
@@ -129,7 +118,7 @@ mod tests {
             received.insert(RecordSeq(300)),
             ReceiveOutcome::New { out_of_order: true }
         );
-        assert_eq!(received.insert(RecordSeq(0)), ReceiveOutcome::Duplicate);
+        assert_eq!(received.insert(RecordSeq(0)), ReceiveOutcome::TooOld);
 
         let ack = received.ack().unwrap();
         assert_eq!(

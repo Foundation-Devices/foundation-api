@@ -304,6 +304,48 @@ fn duplicate_stream_data_is_not_redelivered() {
 }
 
 #[test]
+fn close_does_not_ack_rejected_record_seq() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionFsmConfig {
+            ack_delay: Duration::ZERO,
+            ..SessionFsmConfig::default()
+        },
+        now,
+    );
+
+    let invalid = SessionRecord {
+        frames: vec![SessionFrame::StreamData(StreamData {
+            stream_id: StreamId(0),
+            offset: 0,
+            fin: false,
+            bytes: b"bad".to_vec(),
+        })],
+    };
+    let events = receive_events(&mut fsm, now, RecordSeq(7), &invalid);
+    assert_eq!(
+        events,
+        vec![SessionEvent::SessionClosed(ql_wire::SessionClose {
+            code: ql_wire::SessionCloseCode::PROTOCOL,
+        })]
+    );
+
+    let valid_after_close = SessionRecord {
+        frames: vec![SessionFrame::Ping],
+    };
+    let events = receive_events(
+        &mut fsm,
+        now + Duration::from_millis(1),
+        RecordSeq(8),
+        &valid_after_close,
+    );
+    assert!(events.is_empty());
+
+    let (_seq, outbound) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
+    assert!(matches!(outbound.frames.as_slice(), [SessionFrame::Close(_)]));
+}
+
+#[test]
 fn initial_peer_stream_receive_window_limits_first_send() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(

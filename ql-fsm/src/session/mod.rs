@@ -252,16 +252,23 @@ impl SessionFsm {
         self.state.last_activity_at = self.state.now;
         self.state.last_inbound_at = self.state.now;
 
-        // TODO: We record the session seq before validating its frames. If later frame
-        // handling fails with PROTOCOL, a subsequent outbound close can still carry an ack for
-        // this seq even though its stream data was rejected.
-        let (duplicate, out_of_order) = match self.state.received_records.insert(seq) {
-            ReceiveOutcome::Duplicate => (true, false),
-            ReceiveOutcome::New { out_of_order } => (false, out_of_order),
+        if self.state.session_state == SessionState::Closed {
+            return;
+        }
+
+        let mut received_records = self.state.received_records.clone();
+        let out_of_order = match received_records.insert(seq) {
+            ReceiveOutcome::TooOld => return,
+            ReceiveOutcome::Duplicate => {
+                self.schedule_ack(true);
+                return;
+            }
+            ReceiveOutcome::New { out_of_order } => out_of_order,
         };
 
-        let closed = self.state.session_state == SessionState::Closed;
         let mut ack_eliciting = false;
+        let mut handled_close = false;
+
         for frame in frames {
             let Ok(frame) = frame else {
                 self.fail_session(
@@ -273,10 +280,6 @@ impl SessionFsm {
                 return;
             };
             ack_eliciting |= !matches!(frame, SessionFrame::Ack(_));
-            if duplicate || closed {
-                continue;
-            }
-
             match frame {
                 SessionFrame::Ping => {}
                 SessionFrame::Ack(ack) => self.process_record_ack(&ack, &mut emit),
@@ -297,13 +300,21 @@ impl SessionFsm {
                 }
                 SessionFrame::Close(close) => {
                     self.handle_session_close(close, &mut emit);
-                    return;
+                    handled_close = true;
+                    break;
                 }
             }
         }
 
+        // commit after processing
+        self.state.received_records = received_records;
+
+        if handled_close {
+            return;
+        }
+
         if ack_eliciting {
-            self.schedule_ack(duplicate || closed || out_of_order);
+            self.schedule_ack(out_of_order);
         }
     }
 
