@@ -181,7 +181,9 @@ fn encrypt_record(
         let _pushed = builder.push_frame(frame);
         debug_assert!(_pushed);
     }
-    QlSessionRecord::decode(&builder.encrypt(crypto, header, session_key)).unwrap()
+    QlSessionRecord::parse_bytes(builder.encrypt(crypto, header, session_key).as_slice())
+        .unwrap()
+        .into_owned()
 }
 
 #[test]
@@ -208,10 +210,16 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
         static_bundle: EncryptedPeerBundle::new(Box::new([13; EncryptedPeerBundle::WIRE_SIZE])),
     });
     let ik_encoded = ik.encode();
-    assert_eq!(QlHandshakeRecord::parse(ik_encoded.as_slice()).unwrap(), ik);
     assert_eq!(
-        QlRecord::decode(&ik_encoded).unwrap(),
-        QlRecord::Handshake(ik)
+        RecordHeader::parse_prefix(ik_encoded.as_slice()).unwrap(),
+        RecordHeader {
+            version: QL_WIRE_VERSION,
+            record_type: RecordType::Handshake,
+        }
+    );
+    assert_eq!(
+        QlHandshakeRecord::parse_bytes(ik_encoded.as_slice()).unwrap(),
+        ik
     );
 
     let kk = QlHandshakeRecord::Kk1(Kk1 {
@@ -223,10 +231,16 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
         },
     });
     let kk_encoded = kk.encode();
-    assert_eq!(QlHandshakeRecord::parse(kk_encoded.as_slice()).unwrap(), kk);
     assert_eq!(
-        QlRecord::decode(&kk_encoded).unwrap(),
-        QlRecord::Handshake(kk)
+        RecordHeader::parse_prefix(kk_encoded.as_slice()).unwrap(),
+        RecordHeader {
+            version: QL_WIRE_VERSION,
+            record_type: RecordType::Handshake,
+        }
+    );
+    assert_eq!(
+        QlHandshakeRecord::parse_bytes(kk_encoded.as_slice()).unwrap(),
+        kk
     );
 }
 
@@ -514,19 +528,22 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     let record = encrypt_record(&crypto, header, &session_key, &body);
 
     let bytes = record.encode();
-    let decoded = QlRecord::decode(&bytes).unwrap();
-    let QlRecord::Session(decoded) = decoded else {
-        panic!("expected session payload");
-    };
+    assert_eq!(
+        RecordHeader::parse_prefix(bytes.as_slice()).unwrap(),
+        RecordHeader {
+            version: QL_WIRE_VERSION,
+            record_type: RecordType::Session,
+        }
+    );
+    let decoded = QlSessionRecord::parse_bytes(bytes.as_slice())
+        .unwrap()
+        .into_owned();
     assert_eq!(decoded.header, header);
     let encrypted = decoded.payload;
 
     let decrypted =
         encrypted::decrypt_record(&crypto, &header, encrypted.clone(), &session_key).unwrap();
     assert_eq!(SessionRecord::decode(&decrypted).unwrap(), body);
-
-    let decoded = QlSessionRecord::decode(&bytes).unwrap();
-    assert_eq!(decoded.header, header);
 
     let wrong_header = SessionHeader {
         connection_id: ConnectionId::from_data([0x99; ConnectionId::SIZE]),

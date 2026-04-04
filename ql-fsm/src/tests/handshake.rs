@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ql_wire::QlRecord;
+use ql_wire::{QlHandshakeRecord, WireParse};
 
 use super::*;
 use crate::{state::LinkState, QlFsmError};
@@ -157,11 +157,8 @@ fn handshake_timeout_drops_single_ik_attempt_without_resend() {
         .connect_ik(harness.time(), &harness.a.crypto)
         .unwrap();
     let first = harness.next_outbound_a().unwrap();
-    let first = QlRecord::decode(&first).unwrap();
-    assert!(matches!(
-        first,
-        QlRecord::Handshake(ql_wire::QlHandshakeRecord::Ik1(_))
-    ));
+    let first = QlHandshakeRecord::parse_bytes(first.as_slice()).unwrap();
+    assert!(matches!(first, ql_wire::QlHandshakeRecord::Ik1(_)));
     assert!(harness.next_outbound_a().is_none());
 
     harness.advance(config.handshake_timeout);
@@ -247,12 +244,11 @@ fn simultaneous_ik_and_kk_connect_prefers_ik() {
 }
 
 fn handshake_id(record: &[u8]) -> ql_wire::HandshakeId {
-    let record = QlRecord::decode(record).unwrap();
+    let record = QlHandshakeRecord::parse_bytes(record).unwrap();
     match record {
-        QlRecord::Handshake(ql_wire::QlHandshakeRecord::Ik1(message)) => message.meta.handshake_id,
-        QlRecord::Handshake(ql_wire::QlHandshakeRecord::Ik2(message)) => message.meta.handshake_id,
-        QlRecord::Handshake(ql_wire::QlHandshakeRecord::Kk1(message)) => message.meta.handshake_id,
-        QlRecord::Handshake(ql_wire::QlHandshakeRecord::Kk2(message)) => message.meta.handshake_id,
-        QlRecord::Session(_) => panic!("expected handshake record"),
+        ql_wire::QlHandshakeRecord::Ik1(message) => message.meta.handshake_id,
+        ql_wire::QlHandshakeRecord::Ik2(message) => message.meta.handshake_id,
+        ql_wire::QlHandshakeRecord::Kk1(message) => message.meta.handshake_id,
+        ql_wire::QlHandshakeRecord::Kk2(message) => message.meta.handshake_id,
     }
 }

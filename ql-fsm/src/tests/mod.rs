@@ -11,7 +11,7 @@ use libcrux_ml_kem::mlkem1024;
 use ql_wire::{
     self, generate_identity, ConnectionId, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
     MlKemPublicKey, Nonce, QlAead, QlCrypto, QlHash, QlIdentity, QlKem, QlRandom, SessionKey,
-    ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
+    WireParse, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
 };
 use sha2::{Digest, Sha256};
 
@@ -329,10 +329,9 @@ fn decrypt_record(
     record: &[u8],
     session_key: &SessionKey,
 ) -> (ql_wire::SessionHeader, ql_wire::SessionRecord) {
-    let record = ql_wire::QlRecord::decode(record).unwrap();
-    let ql_wire::QlRecord::Session(record) = record else {
-        panic!("expected encrypted session record");
-    };
+    let record = ql_wire::QlSessionRecord::parse_bytes(record)
+        .unwrap()
+        .into_owned();
     let plaintext =
         ql_wire::decrypt_record(crypto, &record.header, record.payload.clone(), session_key)
             .unwrap();

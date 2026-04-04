@@ -5,7 +5,7 @@ use std::{
 
 use ql_wire::{
     self as wire, CloseTarget, QlCrypto, SessionClose, SessionCloseCode, SessionHeader,
-    StreamCloseCode, StreamId,
+    StreamCloseCode, StreamId, WireParse,
 };
 
 use crate::{
@@ -28,9 +28,14 @@ pub fn receive(
     mut bytes: Vec<u8>,
     crypto: &impl QlCrypto,
 ) -> Result<(), QlFsmError> {
-    match wire::QlRecord::parse(&mut bytes[..])? {
-        wire::QlRecord::Handshake(record) => super::handle_handshake_record(fsm, crypto, &record),
-        wire::QlRecord::Session(record) => {
+    let header = wire::RecordHeader::parse_prefix(bytes.as_slice())?;
+    match header.record_type {
+        wire::RecordType::Handshake => {
+            let record = wire::QlHandshakeRecord::parse_bytes(bytes.as_slice())?;
+            super::handle_handshake_record(fsm, crypto, &record)
+        }
+        wire::RecordType::Session => {
+            let record = wire::QlSessionRecord::parse_bytes(&mut bytes[..])?;
             let transport = fsm.state.link.transport().ok_or(QlFsmError::NoSession)?;
             if record.header.connection_id != transport.rx_connection_id {
                 return Err(QlFsmError::InvalidPayload);
