@@ -36,14 +36,12 @@ fn receive_events(
     seq: RecordSeq,
     record: &SessionRecord,
 ) -> Vec<SessionEvent> {
-    let mut builder = SessionRecordBuilder::new(
-        SessionRecordBuilder::WIRE_PREFIX_LEN + record.wire_size(),
-        SessionRecordBuilder::WIRE_PREFIX_LEN + record.wire_size(),
-    );
+    let mut builder =
+        SessionRecordBuilder::new(SessionRecordBuilder::WIRE_PREFIX_LEN + record.wire_size());
     for frame in &record.frames {
         assert!(builder.push_frame(frame));
     }
-    let bytes = builder.into_plaintext();
+    let bytes = builder.bytes().to_vec();
     let frames = SessionRecord::parse(&bytes).unwrap();
     let mut events = Vec::new();
     fsm.receive(now, seq, frames, |event| events.push(event));
@@ -87,7 +85,6 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
         SessionFsmConfig {
-            record_target_size: 80 + SessionRecordBuilder::WIRE_PREFIX_LEN,
             record_max_size: 80 + SessionRecordBuilder::WIRE_PREFIX_LEN,
             ..SessionFsmConfig::default()
         },
@@ -120,6 +117,34 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
         })
         .collect();
     assert_eq!(stream_ids, vec![stream_id_b]);
+}
+
+#[test]
+fn fin_only_stream_data_fits_exact_record_limit() {
+    let now = Instant::now();
+    let stream_data_overhead =
+        1 + std::mem::size_of::<u16>() + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
+    let mut fsm = SessionFsm::new(
+        SessionFsmConfig {
+            record_max_size: SessionRecordBuilder::WIRE_PREFIX_LEN + stream_data_overhead,
+            ..SessionFsmConfig::default()
+        },
+        now,
+    );
+    let stream_id = fsm.open_stream().unwrap();
+
+    fsm.finish_stream(stream_id).unwrap();
+
+    let (_seq, record) = next_outbound(&mut fsm, now).unwrap();
+    assert_eq!(record.frames.len(), 1);
+    match &record.frames[0] {
+        SessionFrame::StreamData(frame) => {
+            assert_eq!(frame.stream_id, stream_id);
+            assert!(frame.fin);
+            assert!(frame.bytes.is_empty());
+        }
+        frame => panic!("expected stream data frame, got {frame:?}"),
+    }
 }
 
 #[test]
@@ -342,7 +367,10 @@ fn close_does_not_ack_rejected_record_seq() {
     assert!(events.is_empty());
 
     let (_seq, outbound) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
-    assert!(matches!(outbound.frames.as_slice(), [SessionFrame::Close(_)]));
+    assert!(matches!(
+        outbound.frames.as_slice(),
+        [SessionFrame::Close(_)]
+    ));
 }
 
 #[test]

@@ -122,8 +122,6 @@ pub struct QlFsmConfig {
     pub session_keepalive_interval: Duration,
     /// how long to wait before declaring the peer dead
     pub session_peer_timeout: Duration,
-    /// target total wire size for one session record, including header and auth tag
-    pub session_record_target_size: usize,
     /// maximum total wire size for one session record, including header and auth tag
     pub session_record_max_size: usize,
     /// maximum bytes buffered locally for one stream send side
@@ -141,7 +139,6 @@ impl Default for QlFsmConfig {
             session_record_retransmit_timeout: s.retransmit_timeout,
             session_keepalive_interval: s.keepalive_interval,
             session_peer_timeout: s.peer_timeout,
-            session_record_target_size: s.record_target_size,
             session_record_max_size: s.record_max_size,
             session_stream_send_buffer_size: s.stream_send_buffer_size,
             session_stream_receive_buffer_size: s.stream_receive_buffer_size,

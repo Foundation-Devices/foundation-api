@@ -29,7 +29,6 @@ use self::{
 #[derive(Debug, Clone, Copy)]
 pub struct SessionFsmConfig {
     pub local_parity: StreamParity,
-    pub record_target_size: usize,
     pub record_max_size: usize,
     pub ack_delay: Duration,
     pub retransmit_timeout: Duration,
@@ -44,7 +43,6 @@ impl Default for SessionFsmConfig {
     fn default() -> Self {
         Self {
             local_parity: StreamParity::Even,
-            record_target_size: 4 * 1024,
             record_max_size: 16 * 1024,
             ack_delay: Duration::from_millis(5),
             retransmit_timeout: Duration::from_millis(150),
@@ -93,13 +91,9 @@ pub struct SessionFsm {
 
 impl SessionFsm {
     pub fn new(mut config: SessionFsmConfig, now: Instant) -> Self {
-        config.record_target_size = config
-            .record_target_size
-            .max(SessionRecordBuilder::WIRE_PREFIX_LEN);
         config.record_max_size = config
             .record_max_size
             .max(SessionRecordBuilder::WIRE_PREFIX_LEN);
-        config.record_target_size = config.record_target_size.min(config.record_max_size);
         config.stream_send_buffer_size = config.stream_send_buffer_size.max(1);
         config.stream_receive_buffer_size = config.stream_receive_buffer_size.max(1);
         Self {
@@ -423,8 +417,7 @@ impl SessionFsm {
 
     fn build_next_record(&mut self) -> Option<(SessionRecordBuilder, TrackedRecord)> {
         let seq = self.state.next_record_seq;
-        let mut builder =
-            SessionRecordBuilder::new(self.config.record_max_size, self.config.record_target_size);
+        let mut builder = SessionRecordBuilder::new(self.config.record_max_size);
         let mut outbound = TrackedRecord {
             seq,
             frames: Vec::new(),
@@ -602,14 +595,8 @@ impl SessionFsm {
     fn max_stream_data_payload(&self, builder: &SessionRecordBuilder) -> Option<usize> {
         let overhead = 1 + std::mem::size_of::<u16>() + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
         let remaining = builder.remaining_capacity();
-        if remaining > overhead {
+        if remaining >= overhead {
             Some(remaining - overhead)
-        } else if builder.is_empty() {
-            Some(
-                self.config
-                    .record_max_size
-                    .saturating_sub(SessionRecordBuilder::WIRE_PREFIX_LEN),
-            )
         } else {
             None
         }

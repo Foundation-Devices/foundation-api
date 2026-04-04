@@ -182,7 +182,7 @@ fn encrypt_record(
     body: &SessionRecord,
 ) -> QlSessionRecord<Vec<u8>> {
     let wire_size = body.wire_size() + SessionRecordBuilder::WIRE_PREFIX_LEN;
-    let mut builder = SessionRecordBuilder::new(wire_size, wire_size);
+    let mut builder = SessionRecordBuilder::new(wire_size);
     for frame in &body.frames {
         let _pushed = builder.push_frame(frame);
         debug_assert!(_pushed);

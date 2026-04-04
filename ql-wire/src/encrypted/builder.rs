@@ -4,8 +4,6 @@ use crate::{ByteChunks, Nonce, QlCrypto, RecordType, SessionHeader, SessionKey, 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecordBuilder {
     max_capacity: usize,
-    // todo: remove
-    body_start: usize,
     bytes: Vec<u8>,
 }
 
@@ -13,17 +11,11 @@ impl SessionRecordBuilder {
     pub const WIRE_PREFIX_LEN: usize =
         1 + 1 + SessionHeader::WIRE_SIZE + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
 
-    pub fn new(max_capacity: usize, initial_capacity: usize) -> Self {
-        assert!(initial_capacity <= max_capacity);
+    pub fn new(max_capacity: usize) -> Self {
         assert!(max_capacity >= Self::WIRE_PREFIX_LEN);
-
-        let body_start = Self::WIRE_PREFIX_LEN;
-        let mut bytes = Vec::with_capacity(initial_capacity);
-        bytes.resize(body_start, 0);
         Self {
             max_capacity,
-            body_start,
-            bytes,
+            bytes: Vec::new(),
         }
     }
 
@@ -32,7 +24,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn len(&self) -> usize {
-        self.bytes.len().saturating_sub(self.body_start)
+        self.bytes.len().saturating_sub(Self::WIRE_PREFIX_LEN)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -41,21 +33,11 @@ impl SessionRecordBuilder {
 
     pub fn remaining_capacity(&self) -> usize {
         self.max_capacity
-            .saturating_sub(self.body_start)
-            .saturating_sub(self.len())
+            .saturating_sub(self.bytes.len().max(Self::WIRE_PREFIX_LEN))
     }
 
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes[self.body_start..]
-    }
-
-    pub fn into_plaintext(self) -> Vec<u8> {
-        let mut bytes = self.bytes;
-        bytes.split_off(self.body_start)
-    }
-
-    pub fn can_push_len(&self, len: usize) -> bool {
-        len <= self.remaining_capacity() || self.is_empty()
+        self.bytes.get(Self::WIRE_PREFIX_LEN..).unwrap_or_default()
     }
 
     pub fn push_ping(&mut self) -> bool {
@@ -121,16 +103,17 @@ impl SessionRecordBuilder {
         header: SessionHeader,
         session_key: &SessionKey,
     ) -> Vec<u8> {
+        self.ensure_prefix_capacity(0);
         let aad = header.aad();
         let nonce = Nonce::from_counter(header.seq.0);
         let auth = crypto.aes256_gcm_encrypt(
             session_key,
             &nonce,
             &aad,
-            &mut self.bytes[self.body_start..],
+            &mut self.bytes[Self::WIRE_PREFIX_LEN..],
         );
 
-        let prefix = &mut self.bytes[..self.body_start];
+        let prefix = &mut self.bytes[..Self::WIRE_PREFIX_LEN];
         prefix[0] = QL_WIRE_VERSION;
         prefix[1] = RecordType::Session as u8;
         header.encode_into(&mut prefix[2..2 + SessionHeader::WIRE_SIZE]);
@@ -142,9 +125,22 @@ impl SessionRecordBuilder {
         if !self.can_push_len(wire_size) {
             return false;
         }
+        self.ensure_prefix_capacity(wire_size);
         let start = self.bytes.len();
         self.bytes.resize(start + wire_size, 0);
         encode(&mut self.bytes[start..]);
         true
+    }
+
+    fn can_push_len(&self, len: usize) -> bool {
+        len <= self.remaining_capacity()
+    }
+
+    fn ensure_prefix_capacity(&mut self, additional_body_len: usize) {
+        if self.bytes.is_empty() {
+            self.bytes
+                .reserve(Self::WIRE_PREFIX_LEN + additional_body_len);
+            self.bytes.resize(Self::WIRE_PREFIX_LEN, 0);
+        }
     }
 }

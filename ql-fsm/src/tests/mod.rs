@@ -346,7 +346,6 @@ fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
 
     SessionFsmConfig {
         local_parity: StreamParity::for_local(local, peer),
-        record_target_size: config.session_record_target_size,
         record_max_size: config.session_record_max_size,
         ack_delay: config.session_record_ack_delay,
         retransmit_timeout: config.session_record_retransmit_timeout,
