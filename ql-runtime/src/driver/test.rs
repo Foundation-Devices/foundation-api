@@ -92,7 +92,7 @@ fn new_driver_state() -> (DriverState, QlFsm) {
     (
         DriverState {
             streams: HashMap::new(),
-            runtime_tx,
+            runtime_tx: runtime_tx.downgrade(),
             stream_send_buffer_bytes: 16,
             max_concurrent_message_writes: 1,
             peer_xid: None,

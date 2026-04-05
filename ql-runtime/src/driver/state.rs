@@ -7,7 +7,7 @@ use crate::{command::RuntimeCommand, QlError};
 
 pub struct DriverState {
     pub streams: HashMap<StreamId, DriverStreamIo>,
-    pub runtime_tx: async_channel::Sender<RuntimeCommand>,
+    pub runtime_tx: async_channel::WeakSender<RuntimeCommand>,
     pub stream_send_buffer_bytes: usize,
     pub max_concurrent_message_writes: usize,
     pub peer_xid: Option<XID>,

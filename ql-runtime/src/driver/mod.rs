@@ -32,7 +32,6 @@ impl<P: QlPlatform> Runtime<P> {
             tx,
         } = self;
 
-        let runtime_tx = tx.upgrade().expect("runtime tx");
         let mut fsm = QlFsm::new(config.fsm, identity, now());
         let mut peer_xid = None;
         if let Some(peer) = platform.load_peer().await {
@@ -42,7 +41,7 @@ impl<P: QlPlatform> Runtime<P> {
 
         let mut state = DriverState {
             streams: HashMap::new(),
-            runtime_tx,
+            runtime_tx: tx,
             stream_send_buffer_bytes: config.stream_send_buffer_bytes,
             max_concurrent_message_writes: config.max_concurrent_message_writes,
             peer_xid,
@@ -166,36 +165,54 @@ impl DriverState {
             RuntimeCommand::OpenStream {
                 request_reader,
                 start,
-            } => match fsm.open_stream().map_err(QlError::from) {
-                Ok(stream_id) => {
-                    let (response_reader, response_writer) =
-                        piper::pipe(self.stream_send_buffer_bytes);
-                    let (response_terminal_tx, response_terminal_rx) = oneshot::channel();
-                    self.streams.insert(
-                        stream_id,
-                        DriverStreamIo::new_initiator(
-                            request_reader,
-                            response_writer,
-                            response_terminal_tx,
-                        ),
-                    );
-                    let _ = start.send(Ok(OpenedStreamDelivery {
-                        stream_id,
-                        reader: ByteReader::new(
+            } => {
+                let Some(runtime_tx) = self.runtime_tx.upgrade() else {
+                    let _ = start.send(Err(QlError::Cancelled));
+                    return;
+                };
+
+                match fsm.open_stream().map_err(QlError::from) {
+                    Ok(stream_id) => {
+                        let (response_reader, response_writer) =
+                            piper::pipe(self.stream_send_buffer_bytes);
+                        let (response_terminal_tx, response_terminal_rx) = oneshot::channel();
+                        self.streams.insert(
                             stream_id,
-                            CloseTarget::Return,
-                            response_reader,
-                            response_terminal_rx,
-                            self.runtime_tx.clone(),
-                        ),
-                    }));
-                    self.poll_stream(fsm, stream_id);
-                    self.finish_step(fsm, platform, in_flight);
+                            DriverStreamIo::new_initiator(
+                                request_reader,
+                                response_writer,
+                                response_terminal_tx,
+                            ),
+                        );
+                        if start
+                            .send(Ok(OpenedStreamDelivery {
+                                stream_id,
+                                reader: ByteReader::new(
+                                    stream_id,
+                                    CloseTarget::Return,
+                                    response_reader,
+                                    response_terminal_rx,
+                                    runtime_tx,
+                                ),
+                            }))
+                            .is_err()
+                        {
+                            if let Some(stream) = self.streams.get_mut(&stream_id) {
+                                stream.inbound_mut().close();
+                                stream.outbound_mut().close();
+                            }
+                            let _ =
+                                fsm.close_stream(stream_id, CloseTarget::Both, StreamCloseCode(0));
+                            return;
+                        }
+                        self.poll_stream(fsm, stream_id);
+                        self.finish_step(fsm, platform, in_flight);
+                    }
+                    Err(error) => {
+                        let _ = start.send(Err(error));
+                    }
                 }
-                Err(error) => {
-                    let _ = start.send(Err(error));
-                }
-            },
+            }
             RuntimeCommand::PollInbound { stream_id } => {
                 self.handle_inbound_readable(fsm, stream_id);
                 self.finish_step(fsm, platform, in_flight);
@@ -294,7 +311,7 @@ impl DriverState {
                 }
             }
             QlFsmEvent::Opened(stream_id) => {
-                self.handle_opened_stream(platform, stream_id);
+                self.handle_opened_stream(fsm, platform, stream_id);
             }
             QlFsmEvent::Readable(stream_id) => {
                 self.handle_inbound_readable(fsm, stream_id);
@@ -315,7 +332,17 @@ impl DriverState {
         }
     }
 
-    fn handle_opened_stream<P: QlPlatform>(&mut self, platform: &P, stream_id: StreamId) {
+    fn handle_opened_stream<P: QlPlatform>(
+        &mut self,
+        fsm: &mut QlFsm,
+        platform: &P,
+        stream_id: StreamId,
+    ) {
+        let Some(runtime_tx) = self.runtime_tx.upgrade() else {
+            let _ = fsm.close_stream(stream_id, CloseTarget::Both, StreamCloseCode(0));
+            return;
+        };
+
         let (request_reader, request_writer) = piper::pipe(self.stream_send_buffer_bytes);
         let (request_terminal_tx, request_terminal_rx) = oneshot::channel();
         let (response_reader, response_writer) = piper::pipe(self.stream_send_buffer_bytes);
@@ -332,14 +359,9 @@ impl DriverState {
                 CloseTarget::Origin,
                 request_reader,
                 request_terminal_rx,
-                self.runtime_tx.clone(),
+                runtime_tx.clone(),
             ),
-            writer: ByteWriter::new(
-                stream_id,
-                CloseTarget::Return,
-                response_writer,
-                self.runtime_tx.clone(),
-            ),
+            writer: ByteWriter::new(stream_id, CloseTarget::Return, response_writer, runtime_tx),
         });
     }
 
