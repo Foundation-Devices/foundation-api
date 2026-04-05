@@ -1,9 +1,4 @@
-pub use handle::{ByteReader, ByteWriter, QlStream, RuntimeHandle};
-pub use ql_fsm::{PeerStatus, QlFsmConfig, QlFsmError, SessionWriteId};
-pub use ql_wire::{
-    self as wire, CloseTarget, PeerBundle, QlIdentity, SessionCloseCode, StreamCloseCode, StreamId,
-    XID,
-};
+pub use self::{handle::*, platform::*};
 
 pub(crate) mod command;
 pub(crate) mod driver;
@@ -15,9 +10,9 @@ pub mod rpc;
 #[cfg(test)]
 mod tests;
 
+use ql_fsm::{QlFsmConfig, QlFsmError};
+use ql_wire::QlIdentity;
 use thiserror::Error;
-
-use self::platform::QlPlatform;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum QlError {
@@ -47,8 +42,8 @@ pub enum QlError {
     SendFailed,
     #[error("stream closed {code:?}")]
     StreamClosed {
-        target: CloseTarget,
-        code: StreamCloseCode,
+        target: ql_wire::CloseTarget,
+        code: ql_wire::StreamCloseCode,
     },
     #[error("cancelled")]
     Cancelled,
@@ -98,8 +93,8 @@ impl RuntimeConfig {
 }
 
 pub(crate) struct OpenedStreamDelivery {
-    pub stream_id: StreamId,
-    pub reader: crate::ByteReader,
+    pub stream_id: ql_wire::StreamId,
+    pub reader: ByteReader,
 }
 
 pub struct Runtime<P> {
