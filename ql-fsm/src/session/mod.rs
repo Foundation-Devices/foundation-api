@@ -43,13 +43,13 @@ impl Default for SessionFsmConfig {
     fn default() -> Self {
         Self {
             local_parity: StreamParity::Even,
-            record_max_size: 16 * 1024,
+            record_max_size: 8 * 1024,
             ack_delay: Duration::from_millis(5),
             retransmit_timeout: Duration::from_millis(150),
             keepalive_interval: Duration::from_secs(10),
             peer_timeout: Duration::from_secs(30),
-            stream_send_buffer_size: 64 * 1024,
-            stream_receive_buffer_size: 64 * 1024,
+            stream_send_buffer_size: 16 * 1024,
+            stream_receive_buffer_size: 16 * 1024,
             initial_peer_stream_receive_window: 16 * 1024,
         }
     }

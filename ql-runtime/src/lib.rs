@@ -25,7 +25,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             fsm: QlFsmConfig::default(),
-            stream_send_buffer_bytes: 64 * 1024,
+            stream_send_buffer_bytes: 16 * 1024,
             max_concurrent_message_writes: 4,
         }
     }
