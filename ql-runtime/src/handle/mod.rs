@@ -4,7 +4,7 @@ mod writer;
 use ql_wire::{CloseTarget, PeerBundle, StreamId};
 
 pub use self::{reader::*, writer::*};
-use crate::{command::RuntimeCommand, OpenedStreamDelivery, QlError};
+use crate::{command::RuntimeCommand, QlError};
 
 #[derive(Debug)]
 pub struct QlStream {
@@ -36,16 +36,12 @@ impl RuntimeHandle {
         let (request_reader, request_writer) = piper::pipe(self.stream_send_buffer_bytes);
         let (start_tx, start_rx) = oneshot::channel();
 
-        self.tx
-            .send(RuntimeCommand::OpenStream {
-                request_reader,
-                start: start_tx,
-            })
-            .await
-            .map_err(|_| QlError::Cancelled)?;
-
-        let OpenedStreamDelivery { stream_id, reader } =
-            start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
+        self.send(RuntimeCommand::OpenStream {
+            request_reader,
+            start: start_tx,
+        });
+        // runtime cannot be shutdown while we have a handle
+        let (stream_id, reader) = start_rx.await.unwrap()?;
 
         Ok(QlStream {
             stream_id,

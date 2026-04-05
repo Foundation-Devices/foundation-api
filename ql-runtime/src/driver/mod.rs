@@ -18,7 +18,7 @@ use crate::{
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
     platform::{PlatformFuture, QlPlatform},
-    OpenedStreamDelivery, QlError, Runtime,
+    QlError, Runtime,
 };
 
 impl<P: QlPlatform> Runtime<P> {
@@ -184,19 +184,14 @@ impl DriverState {
                                 response_terminal_tx,
                             ),
                         );
-                        if start
-                            .send(Ok(OpenedStreamDelivery {
-                                stream_id,
-                                reader: ByteReader::new(
-                                    stream_id,
-                                    CloseTarget::Return,
-                                    response_reader,
-                                    response_terminal_rx,
-                                    runtime_tx,
-                                ),
-                            }))
-                            .is_err()
-                        {
+                        let reader = ByteReader::new(
+                            stream_id,
+                            CloseTarget::Return,
+                            response_reader,
+                            response_terminal_rx,
+                            runtime_tx,
+                        );
+                        if start.send(Ok((stream_id, reader))).is_err() {
                             if let Some(stream) = self.streams.get_mut(&stream_id) {
                                 stream.inbound_mut().close();
                                 stream.outbound_mut().close();

@@ -39,11 +39,6 @@ impl RuntimeConfig {
     }
 }
 
-pub(crate) struct OpenedStreamDelivery {
-    pub stream_id: ql_wire::StreamId,
-    pub reader: ByteReader,
-}
-
 pub struct Runtime<P> {
     identity: QlIdentity,
     platform: P,
