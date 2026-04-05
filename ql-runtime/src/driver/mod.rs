@@ -16,7 +16,7 @@ use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 use self::state::*;
 use crate::{
     command::RuntimeCommand,
-    handle::{ByteReader, ByteWriter, InboundStream},
+    handle::{ByteReader, ByteWriter, QlStream},
     platform::{PlatformFuture, QlPlatform},
     OpenedStreamDelivery, QlError, Runtime,
 };
@@ -180,7 +180,7 @@ impl DriverState {
                     );
                     let _ = start.send(Ok(OpenedStreamDelivery {
                         stream_id,
-                        response: ByteReader::new(
+                        reader: ByteReader::new(
                             stream_id,
                             CloseTarget::Return,
                             response_reader,
@@ -323,16 +323,16 @@ impl DriverState {
             DriverStreamIo::new_responder(request_writer, request_terminal_tx, response_reader),
         );
 
-        platform.handle_inbound(InboundStream {
+        platform.handle_inbound(QlStream {
             stream_id,
-            request: ByteReader::new(
+            reader: ByteReader::new(
                 stream_id,
                 CloseTarget::Origin,
                 request_reader,
                 request_terminal_rx,
                 self.runtime_tx.clone(),
             ),
-            response: ByteWriter::new(
+            writer: ByteWriter::new(
                 stream_id,
                 CloseTarget::Return,
                 response_writer,

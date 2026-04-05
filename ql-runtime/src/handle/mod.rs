@@ -7,17 +7,10 @@ pub use self::{reader::*, writer::*};
 use crate::{command::RuntimeCommand, OpenedStreamDelivery, QlError};
 
 #[derive(Debug)]
-pub struct OutboundStream {
+pub struct QlStream {
     pub stream_id: StreamId,
-    pub request: ByteWriter,
-    pub response: ByteReader,
-}
-
-#[derive(Debug)]
-pub struct InboundStream {
-    pub stream_id: StreamId,
-    pub request: ByteReader,
-    pub response: ByteWriter,
+    pub writer: ByteWriter,
+    pub reader: ByteReader,
 }
 
 #[derive(Clone)]
@@ -41,7 +34,7 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::Incoming(bytes))
     }
 
-    pub async fn open_stream(&self) -> Result<OutboundStream, QlError> {
+    pub async fn open_stream(&self) -> Result<QlStream, QlError> {
         let (request_reader, request_writer) = piper::pipe(self.stream_send_buffer_bytes);
         let (start_tx, start_rx) = oneshot::channel();
 
@@ -53,20 +46,18 @@ impl RuntimeHandle {
             .await
             .map_err(|_| QlError::Cancelled)?;
 
-        let OpenedStreamDelivery {
-            stream_id,
-            response,
-        } = start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
+        let OpenedStreamDelivery { stream_id, reader } =
+            start_rx.await.unwrap_or(Err(QlError::Cancelled))?;
 
-        Ok(OutboundStream {
+        Ok(QlStream {
             stream_id,
-            request: ByteWriter::new(
+            writer: ByteWriter::new(
                 stream_id,
                 CloseTarget::Origin,
                 request_writer,
                 self.tx.clone(),
             ),
-            response,
+            reader,
         })
     }
 

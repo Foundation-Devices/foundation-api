@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin, time::Duration};
 
 use ql_wire::QlCrypto;
 
-use crate::{PeerBundle, PeerStatus, QlError, XID};
+use crate::{PeerBundle, PeerStatus, QlError, QlStream, XID};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -14,5 +14,5 @@ pub trait QlPlatform: QlCrypto {
     fn persist_peer(&self, peer: PeerBundle);
 
     fn handle_peer_status(&self, peer: XID, status: PeerStatus);
-    fn handle_inbound(&self, event: super::InboundStream);
+    fn handle_inbound(&self, event: QlStream);
 }

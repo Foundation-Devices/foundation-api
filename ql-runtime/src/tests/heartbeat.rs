@@ -43,24 +43,21 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
 
         let responder_task = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
-            let _ = read_all(stream.request).await;
-            let response = stream.response;
-            let _ = response.finish().await;
+            let _ = read_all(stream.reader).await;
+            let _ = stream.writer.finish().await;
         });
 
         drop_flag.store(true, Ordering::Relaxed);
 
         let mut pending = handle_a.open_stream().await.unwrap();
-        pending.request.finish().await.unwrap();
+        pending.writer.finish().await.unwrap();
 
         await_status(&status_a, identity_b.xid, PeerStage::Disconnected).await;
 
-        let result = tokio::time::timeout(
-            Duration::from_millis(300),
-            next_chunk(&mut pending.response),
-        )
-        .await
-        .unwrap();
+        let result =
+            tokio::time::timeout(Duration::from_millis(300), next_chunk(&mut pending.reader))
+                .await
+                .unwrap();
         assert!(matches!(
             result,
             Err(QlError::SessionClosed) | Err(QlError::Cancelled)

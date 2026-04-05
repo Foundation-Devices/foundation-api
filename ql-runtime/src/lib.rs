@@ -1,4 +1,4 @@
-pub use handle::{ByteReader, ByteWriter, InboundStream, OutboundStream, RuntimeHandle};
+pub use handle::{ByteReader, ByteWriter, QlStream, RuntimeHandle};
 pub use ql_fsm::{PeerStatus, QlFsmConfig, QlFsmError, SessionWriteId};
 pub use ql_wire::{
     self as wire, CloseTarget, PeerBundle, QlIdentity, SessionCloseCode, StreamCloseCode, StreamId,
@@ -99,7 +99,7 @@ impl RuntimeConfig {
 
 pub(crate) struct OpenedStreamDelivery {
     pub stream_id: StreamId,
-    pub response: crate::ByteReader,
+    pub reader: crate::ByteReader,
 }
 
 pub struct Runtime<P> {

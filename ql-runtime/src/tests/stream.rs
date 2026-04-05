@@ -30,30 +30,27 @@ async fn open_stream_duplex_happy_path() {
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
 
-            let mut request = inbound.request;
-            let mut response = inbound.response;
+            let mut writer = inbound.writer;
+            let mut reader = inbound.reader;
 
-            assert_eq!(next_chunk(&mut request).await.unwrap(), Some(vec![1, 2]));
-            response.write_all(&[9]).await.unwrap();
-            assert_eq!(next_chunk(&mut request).await.unwrap(), Some(vec![3, 4]));
-            response.write_all(&[8, 7]).await.unwrap();
-            assert_eq!(next_chunk(&mut request).await.unwrap(), None);
-            response.finish().await.unwrap();
+            assert_eq!(next_chunk(&mut reader).await.unwrap(), Some(vec![1, 2]));
+            writer.write_all(&[9]).await.unwrap();
+            assert_eq!(next_chunk(&mut reader).await.unwrap(), Some(vec![3, 4]));
+            writer.write_all(&[8, 7]).await.unwrap();
+            assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
+            writer.finish().await.unwrap();
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.request.write_all(&[1, 2]).await.unwrap();
+        stream.writer.write_all(&[1, 2]).await.unwrap();
+        assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), Some(vec![9]));
+        stream.writer.write_all(&[3, 4]).await.unwrap();
+        stream.writer.finish().await.unwrap();
         assert_eq!(
-            next_chunk(&mut stream.response).await.unwrap(),
-            Some(vec![9])
-        );
-        stream.request.write_all(&[3, 4]).await.unwrap();
-        stream.request.finish().await.unwrap();
-        assert_eq!(
-            next_chunk(&mut stream.response).await.unwrap(),
+            next_chunk(&mut stream.reader).await.unwrap(),
             Some(vec![8, 7])
         );
-        assert_eq!(next_chunk(&mut stream.response).await.unwrap(), None);
+        assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
             .await
@@ -95,15 +92,15 @@ async fn stream_backpressure_with_small_runtime_buffer() {
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
-            let request_data = read_all(stream.request).await.unwrap();
-            stream.response.finish().await.unwrap();
+            let request_data = read_all(stream.reader).await.unwrap();
+            stream.writer.finish().await.unwrap();
             done_tx.send(request_data).await.unwrap();
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.request.write_all(&payload).await.unwrap();
-        stream.request.finish().await.unwrap();
-        assert_eq!(next_chunk(&mut stream.response).await.unwrap(), None);
+        stream.writer.write_all(&payload).await.unwrap();
+        stream.writer.finish().await.unwrap();
+        assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
 
         let received = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
             .await
@@ -145,13 +142,13 @@ async fn dropping_responder_closes_initiator_response() {
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
-            drop(stream.response);
+            drop(stream.reader);
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.request.finish().await.unwrap();
+        stream.writer.finish().await.unwrap();
 
-        let err = next_chunk(&mut stream.response).await.unwrap_err();
+        let err = next_chunk(&mut stream.reader).await.unwrap_err();
         assert!(matches!(
             err,
             QlError::StreamClosed {
@@ -198,22 +195,22 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
-            let mut request = stream.request;
-            let mut response = stream.response;
-            assert_eq!(next_chunk(&mut request).await.unwrap(), None);
-            response.write_all(&[1, 2, 3, 4]).await.unwrap();
+            let mut writer = stream.writer;
+            let mut reader = stream.reader;
+            assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
+            writer.write_all(&[1, 2, 3, 4]).await.unwrap();
             go_rx.recv().await.unwrap();
-            let err = response.write_all(&[5; 64]).await.unwrap_err();
+            let err = writer.write_all(&[5; 64]).await.unwrap_err();
             assert!(matches!(err, QlError::Cancelled));
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.request.finish().await.unwrap();
+        stream.writer.finish().await.unwrap();
         assert_eq!(
-            next_chunk(&mut stream.response).await.unwrap(),
+            next_chunk(&mut stream.reader).await.unwrap(),
             Some(vec![1, 2, 3, 4])
         );
-        drop(stream.response);
+        drop(stream.reader);
         go_tx.send(()).await.unwrap();
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -256,8 +253,8 @@ async fn max_concurrent_message_writes_is_respected() {
         let responder = tokio::task::spawn_local(async move {
             for _ in 0..4 {
                 let stream = inbound_b.recv().await.unwrap();
-                let _ = read_all(stream.request).await;
-                let _ = stream.response.finish().await;
+                let _ = read_all(stream.reader).await;
+                let _ = stream.writer.finish().await;
             }
         });
 
@@ -266,9 +263,9 @@ async fn max_concurrent_message_writes_is_respected() {
             let handle = handle_a.clone();
             tasks.push(tokio::task::spawn_local(async move {
                 let mut stream = handle.open_stream().await.unwrap();
-                stream.request.write_all(&[i; 8]).await.unwrap();
-                stream.request.finish().await.unwrap();
-                assert_eq!(next_chunk(&mut stream.response).await.unwrap(), None);
+                stream.writer.write_all(&[i; 8]).await.unwrap();
+                stream.writer.finish().await.unwrap();
+                assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
             }));
         }
 
@@ -330,19 +327,19 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
-            let received_request = read_all(stream.request).await.unwrap();
-            let mut response = stream.response;
-            response.write_all(&response_payload).await.unwrap();
-            response.finish().await.unwrap();
+            let received_request = read_all(stream.reader).await.unwrap();
+            let mut writer = stream.writer;
+            writer.write_all(&response_payload).await.unwrap();
+            writer.finish().await.unwrap();
             received_request
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.request.write_all(&request_payload).await.unwrap();
-        stream.request.finish().await.unwrap();
+        stream.writer.write_all(&request_payload).await.unwrap();
+        stream.writer.finish().await.unwrap();
 
         let mut received_response = Vec::new();
-        while let Some(chunk) = next_chunk(&mut stream.response).await.unwrap() {
+        while let Some(chunk) = next_chunk(&mut stream.reader).await.unwrap() {
             received_response.extend_from_slice(&chunk);
         }
         assert_eq!(received_response, expected_response);

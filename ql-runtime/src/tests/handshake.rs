@@ -108,15 +108,15 @@ async fn rejected_session_write_is_reissued() {
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
-            let request = read_all(stream.request).await.unwrap();
-            stream.response.finish().await.unwrap();
+            let request = read_all(stream.reader).await.unwrap();
+            stream.writer.finish().await.unwrap();
             request
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.request.write_all(b"retry").await.unwrap();
-        stream.request.finish().await.unwrap();
-        assert_eq!(next_chunk(&mut stream.response).await.unwrap(), None);
+        stream.writer.write_all(b"retry").await.unwrap();
+        stream.writer.finish().await.unwrap();
+        assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
 
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), responder)
