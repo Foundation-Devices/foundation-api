@@ -110,7 +110,7 @@ fn new_inbound_io(capacity: usize) -> InboundIo {
 
 #[test]
 fn handle_inbound_finished_reaps_closed_initiator_stream() {
-    let (mut state, mut fsm) = new_driver_state();
+    let (mut state, fsm) = new_driver_state();
     let stream_id = StreamId(1);
 
     state.streams.insert(
@@ -121,7 +121,7 @@ fn handle_inbound_finished_reaps_closed_initiator_stream() {
         },
     );
 
-    state.handle_inbound_finished(&mut fsm, stream_id);
+    state.handle_inbound_finished(&fsm, stream_id);
 
     assert!(!state.streams.contains_key(&stream_id));
 }
@@ -140,7 +140,7 @@ fn handle_closed_stream_reaps_when_both_halves_close() {
         },
     );
 
-    state.handle_closed_stream(StreamClose {
+    state.handle_closed_stream(&StreamClose {
         stream_id,
         target: CloseTarget::Both,
         code: StreamCloseCode(0),

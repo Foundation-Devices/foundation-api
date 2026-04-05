@@ -60,7 +60,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
                 .unwrap();
         assert!(matches!(
             result,
-            Err(QlError::SessionClosed) | Err(QlError::Cancelled)
+            Err(QlError::SessionClosed | QlError::Cancelled)
         ));
 
         responder_task.abort();

@@ -1,4 +1,4 @@
-use ql_wire::CloseCode;
+use ql_wire::StreamCloseCode;
 
 use crate::MethodId;
 
@@ -24,15 +24,15 @@ pub enum RpcError {
 }
 
 impl RpcError {
-    pub const fn close_code(self) -> CloseCode {
+    pub const fn close_code(self) -> StreamCloseCode {
         match self {
-            Self::UnexpectedMethod { .. } => CloseCode::UNKNOWN_ROUTE,
+            Self::UnexpectedMethod { .. } => StreamCloseCode(404),
             Self::Truncated
             | Self::LengthOverflow
             | Self::InvalidVersion(_)
             | Self::UnexpectedFrameKind(_)
             | Self::MissingResponse
-            | Self::TrailingBytes => CloseCode::INVALID_HEAD,
+            | Self::TrailingBytes => StreamCloseCode(400),
         }
     }
 }

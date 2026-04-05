@@ -57,7 +57,7 @@ impl ByteReader {
             return Poll::Ready(Ok(None));
         }
 
-        if let Poll::Ready(true) = self.reader.poll(cx) {
+        if self.reader.poll(cx) == Poll::Ready(true) {
             return Poll::Ready(Ok(Some(self.reader.peek_buf())));
         }
 

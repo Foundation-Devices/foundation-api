@@ -10,10 +10,11 @@ use ql_rpc::{
     RpcError,
 };
 
-use super::{ChunkState, RpcCallError};
+use super::RpcCallError;
+use crate::ByteReader;
 
 pub struct ProgressCall<M: RequestWithProgress> {
-    pub(super) chunks: ChunkState,
+    pub(super) stream: ByteReader,
     pub(super) reader: Option<ql_rpc::request_with_progress::ResponseReader<M>>,
     pub(super) terminal: Option<Result<M::Response, RpcCallError<M::Error>>>,
 }
@@ -62,10 +63,12 @@ where
                 }
             }
 
-            match this.chunks.poll_next(cx) {
+            match this.stream.poll_fill_buf(cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
+                    let len = chunk.len();
                     let reader = this.reader.take().expect("progress reader is present");
-                    this.reader = Some(reader.push(&chunk));
+                    this.reader = Some(reader.push(chunk));
+                    this.stream.consume(len);
                 }
                 Poll::Ready(Ok(None)) => {
                     this.reader = None;
@@ -114,10 +117,12 @@ where
                 Err(error) => return Poll::Ready(Err(error.into())),
             }
 
-            match this.chunks.poll_next(cx) {
+            match this.stream.poll_fill_buf(cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
+                    let len = chunk.len();
                     let reader = this.reader.take().expect("progress reader is present");
-                    this.reader = Some(reader.push(&chunk));
+                    this.reader = Some(reader.push(chunk));
+                    this.stream.consume(len);
                 }
                 Poll::Ready(Ok(None)) => {
                     this.reader = None;

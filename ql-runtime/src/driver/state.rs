@@ -76,18 +76,18 @@ impl DriverStreamIo {
         }
     }
 
-    pub fn fail_all(&mut self, error: QlError) {
+    pub fn fail_all(&mut self, error: &QlError) {
         match self {
             Self::Initiator {
                 request, response, ..
             } => {
                 request.close();
-                response.fail(error);
+                response.fail(error.clone());
             }
             Self::Responder {
                 request, response, ..
             } => {
-                request.fail(error);
+                request.fail(error.clone());
                 response.close();
             }
         }

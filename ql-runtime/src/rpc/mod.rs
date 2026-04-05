@@ -1,5 +1,6 @@
-use std::task::{Context, Poll};
+use std::task::Poll;
 
+use futures_lite::future::poll_fn;
 mod error;
 mod request_with_progress;
 mod subscription;
@@ -15,16 +16,11 @@ use ql_rpc::{
 pub use request_with_progress::*;
 pub use subscription::*;
 
-use crate::{ByteReader, OutboundStream, QlError, RuntimeHandle};
+use crate::{ByteReader, QlError, RuntimeHandle};
 
 #[derive(Clone)]
 pub struct RpcHandle {
     pub(crate) inner: RuntimeHandle,
-}
-
-pub(super) enum ChunkState {
-    Open(ByteReader),
-    Closed,
 }
 
 impl RpcHandle {
@@ -34,12 +30,8 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         notification::encode_event::<M>(event, &mut payload).map_err(RpcCallError::Codec)?;
-
-        let response = self
-            .start_request(payload)
-            .await
-            .map_err(RpcCallError::Runtime)?;
-        let response = read_all(response).await.map_err(RpcCallError::Runtime)?;
+        let response = self.start_request(payload).await?;
+        let response = read_all(response).await?;
         if response.is_empty() {
             Ok(())
         } else {
@@ -56,11 +48,8 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         request::encode_request::<M>(request, &mut payload).map_err(RpcCallError::Codec)?;
-        let response = self
-            .start_request(payload)
-            .await
-            .map_err(RpcCallError::Runtime)?;
-        let response = read_all(response).await.map_err(RpcCallError::Runtime)?;
+        let response = self.start_request(payload).await?;
+        let response = read_all(response).await?;
         request::decode_response::<M>(&response).map_err(RpcCallError::Codec)
     }
 
@@ -74,13 +63,9 @@ impl RpcHandle {
         let mut payload = Vec::new();
         rpc_subscription::encode_request::<M>(request, &mut payload)
             .map_err(RpcCallError::Codec)?;
-
-        let response = self
-            .start_request(payload)
-            .await
-            .map_err(RpcCallError::Runtime)?;
+        let response = self.start_request(payload).await?;
         Ok(Subscription {
-            chunks: ChunkState::new(response),
+            stream: response,
             reader: Some(rpc_subscription::ResponseReader::new()),
         })
     }
@@ -95,59 +80,36 @@ impl RpcHandle {
         let mut payload = Vec::new();
         rpc_request_with_progress::encode_request::<M>(request, &mut payload)
             .map_err(RpcCallError::Codec)?;
-
-        let response = self
-            .start_request(payload)
-            .await
-            .map_err(RpcCallError::Runtime)?;
+        let response = self.start_request(payload).await?;
         Ok(ProgressCall {
-            chunks: ChunkState::new(response),
+            stream: response,
             reader: Some(rpc_request_with_progress::ResponseReader::new()),
             terminal: None,
         })
     }
 
     async fn start_request(&self, payload: Vec<u8>) -> Result<ByteReader, QlError> {
-        let OutboundStream {
-            mut request,
-            response,
-            ..
-        } = self.inner.open_stream().await?;
-
-        request.write_all(&payload).await?;
-        request.finish().await?;
-        Ok(response)
-    }
-}
-
-impl ChunkState {
-    fn new(reader: ByteReader) -> Self {
-        Self::Open(reader)
-    }
-
-    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Vec<u8>>, QlError>> {
-        match self {
-            Self::Open(reader) => match reader.poll_next_chunk(cx) {
-                Poll::Pending => Poll::Pending,
-                Poll::Ready(Ok(Some(bytes))) => Poll::Ready(Ok(Some(bytes))),
-                Poll::Ready(Ok(None)) => {
-                    *self = Self::Closed;
-                    Poll::Ready(Ok(None))
-                }
-                Poll::Ready(Err(error)) => {
-                    *self = Self::Closed;
-                    Poll::Ready(Err(error))
-                }
-            },
-            Self::Closed => Poll::Ready(Ok(None)),
-        }
+        let mut stream = self.inner.open_stream().await?;
+        stream.writer.write_all(&payload).await?;
+        stream.writer.finish().await?;
+        Ok(stream.reader)
     }
 }
 
 async fn read_all(mut reader: ByteReader) -> Result<Vec<u8>, QlError> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = reader.next_chunk().await? {
-        bytes.extend_from_slice(&chunk);
+    while let Some(len) = poll_fn(|cx| match reader.poll_fill_buf(cx) {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Ok(Some(chunk))) => {
+            bytes.extend_from_slice(chunk);
+            Poll::Ready(Ok(Some(chunk.len())))
+        }
+        Poll::Ready(Ok(None)) => Poll::Ready(Ok(None)),
+        Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+    })
+    .await?
+    {
+        reader.consume(len);
     }
     Ok(bytes)
 }
