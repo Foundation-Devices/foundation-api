@@ -537,11 +537,34 @@ fn runtime_is_send() {
     let config = default_runtime_config();
     let identity_a = new_identity(11);
     let (platform_a, _, _) = TestPlatform::new(1);
-    let (runtime_a, _handle) = new_runtime(identity_a.clone(), platform_a, config);
+    let (runtime_a, _handle) = new_runtime(identity_a, platform_a, config);
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(runtime_a.run())
+            .block_on(runtime_a.run());
     });
+}
+
+#[test]
+fn runtime_exits_when_last_handle_drops() {
+    let config = default_runtime_config();
+    let identity = new_identity(11);
+    let (platform, _, _) = TestPlatform::new(1);
+    let (runtime, handle) = new_runtime(identity, platform, config);
+    let (done_tx, done_rx) = oneshot::channel();
+
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(runtime.run());
+        done_tx.send(()).unwrap();
+    });
+
+    drop(handle);
+
+    done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("runtime should stop once the last sender is dropped");
 }
