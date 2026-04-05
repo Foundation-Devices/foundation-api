@@ -46,7 +46,6 @@ impl<B: ByteChunks> StreamData<B> {
     }
 
     pub fn encode_into(&self, out: &mut [u8]) {
-        assert_eq!(out.len(), self.wire_size());
         let out = codec::write_u32(out, self.stream_id.0);
         let out = codec::write_u64(out, self.offset);
         let mut out = codec::write_bool(out, self.fin);

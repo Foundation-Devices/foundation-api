@@ -2,12 +2,18 @@ use std::collections::VecDeque;
 
 use ql_wire::RangedByteChunks;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamTx {
+    bytes: VecDeque<u8>,
+    base_offset: u64,
+    segments: VecDeque<SendSegment>,
+    final_offset: Option<TrackedFinalOffset>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SendState {
-    Unsent,
-    InFlight,
-    Lost,
-    Acked,
+struct TrackedFinalOffset {
+    offset: u64,
+    state: SendState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,9 +30,11 @@ impl SendSegment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TrackedFinalOffset {
-    offset: u64,
-    state: SendState,
+enum SendState {
+    Unsent,
+    InFlight,
+    Lost,
+    Acked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,14 +42,6 @@ pub struct StreamTxRange {
     pub offset: u64,
     pub len: usize,
     pub fin: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamTx {
-    bytes: VecDeque<u8>,
-    base_offset: u64,
-    segments: VecDeque<SendSegment>,
-    final_offset: Option<TrackedFinalOffset>,
 }
 
 impl StreamTx {
