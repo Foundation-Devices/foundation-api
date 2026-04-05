@@ -40,6 +40,7 @@ impl RuntimeHandle {
             request_reader,
             start: start_tx,
         });
+
         // runtime cannot be shutdown while we have a handle
         let (stream_id, reader) = start_rx.await.unwrap()?;
 
@@ -77,6 +78,6 @@ impl RuntimeHandle {
     #[inline]
     #[track_caller]
     fn send(&self, cmd: RuntimeCommand) {
-        self.tx.send_blocking(cmd).expect("runtime is alive");
+        self.tx.try_send(cmd).expect("runtime is alive");
     }
 }
