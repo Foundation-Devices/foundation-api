@@ -2,8 +2,7 @@ use super::{
     decrypt_mlkem_ciphertext, encrypt_mlkem_ciphertext, finalize_handshake,
     generate_ephemeral_keypair, init_kk_symmetric, initialize_handshake_meta, mix_hash_ephemeral,
     mix_hash_routed_handshake, require_handshake_meta, EncryptedMlKemCiphertext, EphemeralKeyPair,
-    EphemeralPublicKey, FinalizedHandshake, HandshakeHeader, Role, SymmetricState,
-    TransportParams,
+    EphemeralPublicKey, FinalizedHandshake, HandshakeHeader, Role, SymmetricState, TransportParams,
 };
 use crate::{
     codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto,
@@ -192,7 +191,7 @@ impl KkHandshake {
             header,
             HandshakeKind::Kk1,
             &meta,
-            &self.local_transport_params,
+            self.local_transport_params,
         );
         let (skem_ciphertext, skem_secret) =
             crypto.mlkem_encapsulate(&self.remote_bundle.mlkem_public_key);
@@ -232,7 +231,7 @@ impl KkHandshake {
             header,
             HandshakeKind::Kk2,
             &meta,
-            &self.local_transport_params,
+            self.local_transport_params,
         );
         let remote_ephemeral = self
             .remote_ephemeral
@@ -278,7 +277,7 @@ impl KkHandshake {
             message.header,
             HandshakeKind::Kk1,
             &message.meta,
-            &message.transport_params,
+            message.transport_params,
         );
         self.symmetric
             .decrypt_and_hash(crypto, message.skem_ciphertext.as_bytes())?;
@@ -312,7 +311,7 @@ impl KkHandshake {
             message.header,
             HandshakeKind::Kk2,
             &message.meta,
-            &message.transport_params,
+            message.transport_params,
         );
         let local_ephemeral = self
             .local_ephemeral
@@ -339,7 +338,9 @@ impl KkHandshake {
         if !self.is_finished() {
             return Err(WireError::InvalidState);
         }
-        let remote_transport_params = self.remote_transport_params.ok_or(WireError::InvalidState)?;
+        let remote_transport_params = self
+            .remote_transport_params
+            .ok_or(WireError::InvalidState)?;
         Ok(finalize_handshake(
             crypto,
             &self.symmetric,

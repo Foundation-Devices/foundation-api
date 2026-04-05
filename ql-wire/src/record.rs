@@ -171,6 +171,6 @@ impl<B: ByteSlice> WireParse<B> for QlSessionRecord<B> {
         }
         let header = reader.parse::<SessionHeader>()?;
         let payload = EncryptedMessage::parse(reader.take_bytes(reader.remaining_len())?)?;
-        Ok(QlSessionRecord { header, payload })
+        Ok(Self { header, payload })
     }
 }

@@ -312,7 +312,7 @@ fn mix_hash_routed_handshake(
     header: HandshakeHeader,
     kind: HandshakeKind,
     meta: &HandshakeMeta,
-    transport_params: &TransportParams,
+    transport_params: TransportParams,
 ) {
     let encoded_header = header.encode();
     let encoded_meta = meta.encode();

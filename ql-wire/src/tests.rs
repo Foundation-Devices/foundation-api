@@ -184,8 +184,8 @@ fn encrypt_record(
     let wire_size = body.wire_size() + SessionRecordBuilder::WIRE_PREFIX_LEN;
     let mut builder = SessionRecordBuilder::new(wire_size);
     for frame in &body.frames {
-        let _pushed = builder.push_frame(frame);
-        debug_assert!(_pushed);
+        let pushed = builder.push_frame(frame);
+        debug_assert!(pushed);
     }
     QlSessionRecord::parse_bytes(builder.encrypt(crypto, header, session_key).as_slice())
         .unwrap()
@@ -264,12 +264,8 @@ fn ik_handshake_rejects_tampered_handshake_meta() {
         responder.bundle(),
         TransportParams::default(),
     );
-    let mut responder_state = IkHandshake::new_responder(
-        &crypto,
-        responder,
-        None,
-        TransportParams::default(),
-    );
+    let mut responder_state =
+        IkHandshake::new_responder(&crypto, responder, None, TransportParams::default());
 
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(77))
@@ -293,13 +289,12 @@ fn kk_handshake_rejects_tampered_handshake_header() {
     let initiator = make_identity(&crypto, 1);
     let responder = make_identity(&crypto, 2);
 
-    let mut initiator_state =
-        KkHandshake::new_initiator(
-            &crypto,
-            initiator.clone(),
-            responder.bundle(),
-            TransportParams::default(),
-        );
+    let mut initiator_state = KkHandshake::new_initiator(
+        &crypto,
+        initiator.clone(),
+        responder.bundle(),
+        TransportParams::default(),
+    );
     let mut responder_state = KkHandshake::new_responder(
         &crypto,
         responder,
@@ -325,7 +320,7 @@ fn kk_handshake_rejects_tampered_handshake_header() {
 
 #[test]
 fn ik_handshake_rejects_tampered_transport_params() {
-    let crypto = TestCrypto::new(10_1);
+    let crypto = TestCrypto::new(101);
     let initiator = make_identity(&crypto, 1);
     let responder = make_identity(&crypto, 2);
 
@@ -335,12 +330,8 @@ fn ik_handshake_rejects_tampered_transport_params() {
         responder.bundle(),
         handshake_transport_params(4096),
     );
-    let mut responder_state = IkHandshake::new_responder(
-        &crypto,
-        responder,
-        None,
-        handshake_transport_params(8192),
-    );
+    let mut responder_state =
+        IkHandshake::new_responder(&crypto, responder, None, handshake_transport_params(8192));
 
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(89))
@@ -370,12 +361,8 @@ fn ik_handshake_rejects_tampered_handshake_header() {
         responder.bundle(),
         TransportParams::default(),
     );
-    let mut responder_state = IkHandshake::new_responder(
-        &crypto,
-        responder,
-        None,
-        TransportParams::default(),
-    );
+    let mut responder_state =
+        IkHandshake::new_responder(&crypto, responder, None, TransportParams::default());
 
     let mut m1 = initiator_state
         .write_1(&crypto, handshake_meta(90))
@@ -430,12 +417,8 @@ fn ik_handshake_rejects_expired_message() {
         responder.bundle(),
         TransportParams::default(),
     );
-    let mut responder_state = IkHandshake::new_responder(
-        &crypto,
-        responder,
-        None,
-        TransportParams::default(),
-    );
+    let mut responder_state =
+        IkHandshake::new_responder(&crypto, responder, None, TransportParams::default());
 
     let m1 = initiator_state
         .write_1(
@@ -467,12 +450,8 @@ fn ik_handshake_round_trip_derives_matching_transport_and_learns_remote() {
         responder.bundle(),
         initiator_params,
     );
-    let mut responder_state = IkHandshake::new_responder(
-        &crypto,
-        responder.clone(),
-        None,
-        responder_params,
-    );
+    let mut responder_state =
+        IkHandshake::new_responder(&crypto, responder.clone(), None, responder_params);
 
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(11))
@@ -739,19 +718,14 @@ fn protocol_record_size_breakdown() {
     let initiator = make_identity(&crypto, 1);
     let responder = make_identity(&crypto, 2);
 
-    let mut ik_initiator =
-        IkHandshake::new_initiator(
-            &crypto,
-            initiator.clone(),
-            responder.bundle(),
-            TransportParams::default(),
-        );
-    let mut ik_responder = IkHandshake::new_responder(
+    let mut ik_initiator = IkHandshake::new_initiator(
         &crypto,
-        responder.clone(),
-        None,
+        initiator.clone(),
+        responder.bundle(),
         TransportParams::default(),
     );
+    let mut ik_responder =
+        IkHandshake::new_responder(&crypto, responder.clone(), None, TransportParams::default());
 
     let ik1 = ik_initiator.write_1(&crypto, handshake_meta(101)).unwrap();
     ik_responder.read_1(&crypto, 0, &ik1).unwrap();
@@ -762,13 +736,12 @@ fn protocol_record_size_breakdown() {
     let ik1 = QlHandshakeRecord::Ik1(ik1);
     let ik2 = QlHandshakeRecord::Ik2(ik2);
 
-    let mut kk_initiator =
-        KkHandshake::new_initiator(
-            &crypto,
-            initiator.clone(),
-            responder.bundle(),
-            TransportParams::default(),
-        );
+    let mut kk_initiator = KkHandshake::new_initiator(
+        &crypto,
+        initiator.clone(),
+        responder.bundle(),
+        TransportParams::default(),
+    );
     let mut kk_responder = KkHandshake::new_responder(
         &crypto,
         responder,

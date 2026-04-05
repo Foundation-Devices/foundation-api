@@ -41,7 +41,7 @@ impl ReceivedRecords {
         let out_of_order = seq
             != self
                 .base
-                .saturating_add((u64::BITS - 1 - self.seen.leading_zeros()) as u64)
+                .saturating_add(u64::from(u64::BITS - 1 - self.seen.leading_zeros()))
                 .saturating_add(1);
         self.base = base;
         self.seen = next_seen;

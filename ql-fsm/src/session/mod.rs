@@ -35,7 +35,7 @@ pub struct SessionFsmConfig {
     pub keepalive_interval: Duration,
     pub peer_timeout: Duration,
     pub stream_send_buffer_size: usize,
-    pub stream_receive_buffer_size: usize,
+    pub stream_receive_buffer_size: u32,
     pub initial_peer_stream_receive_window: u32,
 }
 
@@ -917,7 +917,7 @@ fn schedule_ack(ack_state: &mut AckState, due_at: Instant) {
         AckState::Dirty { due_at: old } => AckState::Dirty {
             due_at: due_at.min(old),
         },
-        AckState::Idle => AckState::Dirty { due_at: due_at },
+        AckState::Idle => AckState::Dirty { due_at },
     };
 }
 

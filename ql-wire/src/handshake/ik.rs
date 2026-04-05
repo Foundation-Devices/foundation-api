@@ -200,7 +200,7 @@ impl IkHandshake {
             header,
             HandshakeKind::Ik1,
             &meta,
-            &self.local_transport_params,
+            self.local_transport_params,
         );
         let (skem_ciphertext, skem_secret) =
             crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
@@ -242,7 +242,7 @@ impl IkHandshake {
             header,
             HandshakeKind::Ik2,
             &meta,
-            &self.local_transport_params,
+            self.local_transport_params,
         );
         let remote_ephemeral = self
             .remote_ephemeral
@@ -290,7 +290,7 @@ impl IkHandshake {
             message.header,
             HandshakeKind::Ik1,
             &message.meta,
-            &message.transport_params,
+            message.transport_params,
         );
         self.symmetric
             .mix_hash(crypto, message.skem_ciphertext.as_bytes());
@@ -338,7 +338,7 @@ impl IkHandshake {
             message.header,
             HandshakeKind::Ik2,
             &message.meta,
-            &message.transport_params,
+            message.transport_params,
         );
         let local_ephemeral = self
             .local_ephemeral
@@ -366,7 +366,9 @@ impl IkHandshake {
             return Err(WireError::InvalidState);
         }
         let remote_bundle = self.remote_bundle.ok_or(WireError::InvalidState)?;
-        let remote_transport_params = self.remote_transport_params.ok_or(WireError::InvalidState)?;
+        let remote_transport_params = self
+            .remote_transport_params
+            .ok_or(WireError::InvalidState)?;
         Ok(finalize_handshake(
             crypto,
             &self.symmetric,

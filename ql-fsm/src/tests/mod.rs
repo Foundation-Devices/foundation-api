@@ -221,8 +221,7 @@ impl Harness {
                         .b
                         .fsm
                         .config
-                        .session_stream_receive_buffer_size
-                        as u32,
+                        .session_stream_receive_buffer_size,
                 },
             },
             session: SessionFsm::new(session_config(&harness, true), harness.now),
@@ -238,8 +237,7 @@ impl Harness {
                         .a
                         .fsm
                         .config
-                        .session_stream_receive_buffer_size
-                        as u32,
+                        .session_stream_receive_buffer_size,
                 },
             },
             session: SessionFsm::new(session_config(&harness, false), harness.now),
@@ -354,9 +352,9 @@ fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
         stream_send_buffer_size: config.session_stream_send_buffer_size,
         stream_receive_buffer_size: config.session_stream_receive_buffer_size,
         initial_peer_stream_receive_window: if a {
-            harness.b.fsm.config.session_stream_receive_buffer_size as u32
+            harness.b.fsm.config.session_stream_receive_buffer_size
         } else {
-            harness.a.fsm.config.session_stream_receive_buffer_size as u32
+            harness.a.fsm.config.session_stream_receive_buffer_size
         },
     }
 }

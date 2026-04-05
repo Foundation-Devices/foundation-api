@@ -1,4 +1,4 @@
-use ql_wire::{self as wire, Ik1, Ik2, PeerBundle, QlCrypto, QlHandshakeRecord, TransportParams};
+use ql_wire::{self as wire, Ik1, Ik2, PeerBundle, QlCrypto, QlHandshakeRecord};
 
 use super::{
     emit_peer_status, enqueue_handshake, finish_handshake, is_replayed_handshake_start,
@@ -19,9 +19,7 @@ pub fn start_initiator(
         crypto,
         fsm.identity.clone(),
         peer,
-        TransportParams {
-            initial_stream_receive_window: fsm.config.session_stream_receive_buffer_size as u32,
-        },
+        super::local_transport_params(fsm),
     );
     let message = handshake.write_1(crypto, meta)?;
 
@@ -62,9 +60,7 @@ pub fn handle_ik1(
         crypto,
         fsm.identity.clone(),
         fsm.state.peer.clone(),
-        TransportParams {
-            initial_stream_receive_window: fsm.config.session_stream_receive_buffer_size as u32,
-        },
+        super::local_transport_params(fsm),
     );
     handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
     let outbound = handshake.write_2(crypto, message.meta)?;

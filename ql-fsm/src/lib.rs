@@ -127,7 +127,7 @@ pub struct QlFsmConfig {
     /// maximum bytes buffered locally for one stream send side
     pub session_stream_send_buffer_size: usize,
     /// maximum bytes buffered locally for one stream receive side
-    pub session_stream_receive_buffer_size: usize,
+    pub session_stream_receive_buffer_size: u32,
 }
 
 impl Default for QlFsmConfig {

@@ -39,6 +39,12 @@ pub fn enqueue_handshake(fsm: &mut QlFsm, record: QlHandshakeRecord) {
     fsm.state.handshake = Some(record);
 }
 
+fn local_transport_params(fsm: &QlFsm) -> wire::TransportParams {
+    wire::TransportParams {
+        initial_stream_receive_window: fsm.config.session_stream_receive_buffer_size,
+    }
+}
+
 pub fn prepare_for_outbound_connect(fsm: &mut QlFsm) {
     fsm.state.handshake = None;
     reset_connected_session_if_needed(fsm);

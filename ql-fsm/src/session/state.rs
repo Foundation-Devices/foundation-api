@@ -40,14 +40,15 @@ pub struct StreamState {
 impl StreamState {
     pub fn new(
         role: StreamRole,
-        receive_buffer_size: usize,
+        receive_buffer_size: u32,
         initial_peer_stream_receive_window: u32,
     ) -> Self {
+        let receive_buffer_size = receive_buffer_size as usize;
         Self {
             role,
             tx: StreamTx::new(),
             pending_close: None,
-            peer_max_offset: initial_peer_stream_receive_window as u64,
+            peer_max_offset: u64::from(initial_peer_stream_receive_window),
             outbound_state: OutboundState::Open,
             inbound_state: InboundState::Open,
             rx: StreamRx::new(receive_buffer_size),
