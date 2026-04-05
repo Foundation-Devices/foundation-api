@@ -1,15 +1,13 @@
 use crate::{
-    wire::{CloseCode, CloseTarget},
-    OpenedStreamDelivery, Peer, QlError, StreamId,
+    wire::{CloseTarget, StreamCloseCode},
+    OpenedStreamDelivery, PeerBundle, QlError, StreamId,
 };
 
 pub(crate) enum RuntimeCommand {
     BindPeer {
-        peer: Peer,
+        peer: PeerBundle,
     },
-    Pair,
     Connect,
-    Unpair,
     OpenStream {
         request_reader: piper::Reader,
         start: oneshot::Sender<Result<OpenedStreamDelivery, QlError>>,
@@ -20,8 +18,7 @@ pub(crate) enum RuntimeCommand {
     CloseStream {
         stream_id: StreamId,
         target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
+        code: StreamCloseCode,
     },
     Incoming(Vec<u8>),
 }

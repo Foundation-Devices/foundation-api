@@ -11,14 +11,15 @@ use std::{
 use async_channel::{Receiver, Sender};
 use libcrux_aesgcm::AesGcm256Key;
 use ql_wire::{
-    generate_ml_dsa_keypair, generate_ml_kem_keypair, EncryptedMessage, Nonce, QlCrypto,
-    QlIdentity, QlPayload, QlRecord, SessionKey, XID,
+    generate_identity, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce,
+    PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom, RecordHeader, RecordType, SessionKey,
+    WireParse, XID,
 };
 use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
 
 use crate::{
-    new_runtime, platform::PlatformFuture, InboundStream, Peer, PeerStatus, QlError, QlFsmConfig,
+    new_runtime, platform::PlatformFuture, InboundStream, PeerStatus, QlError, QlFsmConfig,
     RuntimeConfig, RuntimeHandle,
 };
 
@@ -27,13 +28,11 @@ mod heartbeat;
 #[cfg(feature = "rpc")]
 mod rpc;
 mod stream;
-mod unpair;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeerStage {
     Disconnected,
     Initiator,
-    Responder,
     Connected,
 }
 
@@ -76,31 +75,35 @@ impl DeterministicCrypto {
     }
 }
 
-impl QlCrypto for DeterministicCrypto {
+impl QlRandom for DeterministicCrypto {
     fn fill_random_bytes(&self, data: &mut [u8]) {
         let value = self.seed.wrapping_add(self.counter.get());
         self.counter.set(self.counter.get().wrapping_add(1));
         data.fill(value);
     }
+}
 
-    fn hash(&self, parts: &[&[u8]]) -> [u8; 32] {
+impl QlHash for DeterministicCrypto {
+    fn sha256(&self, parts: &[&[u8]]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         for part in parts {
             hasher.update(part);
         }
         hasher.finalize().into()
     }
+}
 
-    fn encrypt_with_aead(
+impl QlAead for DeterministicCrypto {
+    fn aes256_gcm_encrypt(
         &self,
         key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; EncryptedMessage::AUTH_SIZE] {
+    ) -> [u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE] {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
-        let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
+        let mut auth = [0u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE];
         key.encrypt(
             buffer,
             (&mut auth).into(),
@@ -112,18 +115,47 @@ impl QlCrypto for DeterministicCrypto {
         auth
     }
 
-    fn decrypt_with_aead(
+    fn aes256_gcm_decrypt(
         &self,
         key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-        auth_tag: &[u8; EncryptedMessage::AUTH_SIZE],
+        auth_tag: &[u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE],
     ) -> bool {
         let key: AesGcm256Key = (*key.data()).into();
         let ciphertext = buffer.to_vec();
         key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
             .is_ok()
+    }
+}
+
+impl QlKem for DeterministicCrypto {
+    fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
+        let data = Box::new([self.seed; MlKemPublicKey::SIZE]);
+        MlKemKeyPair {
+            private: MlKemPrivateKey::new(Box::new([self.seed; MlKemPrivateKey::SIZE])),
+            public: MlKemPublicKey::new(data),
+        }
+    }
+
+    fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
+        let mut secret = [0u8; SessionKey::SIZE];
+        secret.copy_from_slice(&public_key.as_bytes()[..SessionKey::SIZE]);
+        (
+            MlKemCiphertext::new(Box::new([self.seed; MlKemCiphertext::SIZE])),
+            SessionKey::from_data(secret),
+        )
+    }
+
+    fn mlkem_decapsulate(
+        &self,
+        private_key: &MlKemPrivateKey,
+        _ciphertext: &MlKemCiphertext,
+    ) -> SessionKey {
+        let mut secret = [0u8; SessionKey::SIZE];
+        secret.copy_from_slice(&private_key.as_bytes()[..SessionKey::SIZE]);
+        SessionKey::from_data(secret)
     }
 }
 
@@ -206,32 +238,36 @@ impl TestPlatform {
     }
 }
 
-impl QlCrypto for TestPlatform {
+impl QlRandom for TestPlatform {
     fn fill_random_bytes(&self, data: &mut [u8]) {
         let value = self
             .nonce_seed
             .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
         data.fill(value);
     }
+}
 
-    fn hash(&self, parts: &[&[u8]]) -> [u8; 32] {
+impl QlHash for TestPlatform {
+    fn sha256(&self, parts: &[&[u8]]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         for part in parts {
             hasher.update(part);
         }
         hasher.finalize().into()
     }
+}
 
-    fn encrypt_with_aead(
+impl QlAead for TestPlatform {
+    fn aes256_gcm_encrypt(
         &self,
         key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; EncryptedMessage::AUTH_SIZE] {
+    ) -> [u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE] {
         let key: AesGcm256Key = (*key.data()).into();
         let plaintext = buffer.to_vec();
-        let mut auth = [0u8; EncryptedMessage::AUTH_SIZE];
+        let mut auth = [0u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE];
         key.encrypt(
             buffer,
             (&mut auth).into(),
@@ -243,18 +279,47 @@ impl QlCrypto for TestPlatform {
         auth
     }
 
-    fn decrypt_with_aead(
+    fn aes256_gcm_decrypt(
         &self,
         key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
         buffer: &mut [u8],
-        auth_tag: &[u8; EncryptedMessage::AUTH_SIZE],
+        auth_tag: &[u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE],
     ) -> bool {
         let key: AesGcm256Key = (*key.data()).into();
         let ciphertext = buffer.to_vec();
         key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
             .is_ok()
+    }
+}
+
+impl QlKem for TestPlatform {
+    fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
+        let byte = self.nonce_seed;
+        MlKemKeyPair {
+            private: MlKemPrivateKey::new(Box::new([byte; MlKemPrivateKey::SIZE])),
+            public: MlKemPublicKey::new(Box::new([byte; MlKemPublicKey::SIZE])),
+        }
+    }
+
+    fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
+        let mut secret = [0u8; SessionKey::SIZE];
+        secret.copy_from_slice(&public_key.as_bytes()[..SessionKey::SIZE]);
+        (
+            MlKemCiphertext::new(Box::new([self.nonce_seed; MlKemCiphertext::SIZE])),
+            SessionKey::from_data(secret),
+        )
+    }
+
+    fn mlkem_decapsulate(
+        &self,
+        private_key: &MlKemPrivateKey,
+        _ciphertext: &MlKemCiphertext,
+    ) -> SessionKey {
+        let mut secret = [0u8; SessionKey::SIZE];
+        secret.copy_from_slice(&private_key.as_bytes()[..SessionKey::SIZE]);
+        SessionKey::from_data(secret)
     }
 }
 
@@ -302,19 +367,16 @@ impl crate::platform::QlPlatform for TestPlatform {
         Box::pin(tokio::time::sleep(duration))
     }
 
-    fn load_peer(&self) -> PlatformFuture<'_, Option<Peer>> {
+    fn load_peer(&self) -> PlatformFuture<'_, Option<PeerBundle>> {
         Box::pin(async { None })
     }
 
-    fn persist_peer(&self, _peer: Peer) {}
-
-    fn clear_peer(&self) {}
+    fn persist_peer(&self, _peer: PeerBundle) {}
 
     fn handle_peer_status(&self, peer: XID, status: PeerStatus) {
         let stage = match status {
             PeerStatus::Disconnected => PeerStage::Disconnected,
             PeerStatus::Initiator => PeerStage::Initiator,
-            PeerStatus::Responder => PeerStage::Responder,
             PeerStatus::Connected => PeerStage::Connected,
         };
         let _ = self.status.try_send(StatusEvent { peer, stage });
@@ -328,30 +390,14 @@ impl crate::platform::QlPlatform for TestPlatform {
 }
 
 fn is_encrypted_payload(bytes: &[u8]) -> bool {
-    QlRecord::decode(bytes)
+    RecordHeader::parse_prefix(bytes)
         .ok()
-        .is_some_and(|record| matches!(record.payload, QlPayload::Session(_)))
+        .is_some_and(|header| header.record_type == RecordType::Session)
 }
 
 pub(crate) fn new_identity(seed: u8) -> QlIdentity {
     let crypto = DeterministicCrypto::new(seed);
-    let (signing_private, signing_public) = generate_ml_dsa_keypair(&crypto);
-    let (encapsulation_private, encapsulation_public) = generate_ml_kem_keypair(&crypto);
-    QlIdentity::new(
-        XID([seed; XID::SIZE]),
-        signing_private,
-        signing_public,
-        encapsulation_private,
-        encapsulation_public,
-    )
-}
-
-fn peer_from_identity(identity: &QlIdentity) -> Peer {
-    Peer {
-        xid: identity.xid,
-        signing_key: identity.signing_public_key.clone(),
-        encapsulation_key: identity.encapsulation_public_key.clone(),
-    }
+    generate_identity(&crypto, XID([seed; XID::SIZE]))
 }
 
 fn register_peers(
@@ -360,8 +406,8 @@ fn register_peers(
     id_a: &QlIdentity,
     id_b: &QlIdentity,
 ) {
-    handle_a.bind_peer(peer_from_identity(id_b));
-    handle_b.bind_peer(peer_from_identity(id_a));
+    handle_a.bind_peer(id_b.bundle());
+    handle_b.bind_peer(id_a.bundle());
 }
 
 fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
@@ -458,7 +504,7 @@ fn default_runtime_config() -> RuntimeConfig {
     RuntimeConfig {
         fsm: QlFsmConfig {
             handshake_timeout: Duration::from_millis(300),
-            session_retransmit_timeout: Duration::from_millis(30),
+            session_record_retransmit_timeout: Duration::from_millis(30),
             session_keepalive_interval: Duration::ZERO,
             session_peer_timeout: Duration::ZERO,
             ..Default::default()

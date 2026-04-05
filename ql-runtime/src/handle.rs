@@ -4,8 +4,8 @@ use async_channel::{Receiver, Sender};
 use futures_lite::{future::poll_fn, Stream};
 
 use crate::{
-    command::RuntimeCommand, CloseCode, CloseTarget, InboundEvent, OpenedStreamDelivery, Peer,
-    QlError, StreamId,
+    command::RuntimeCommand, CloseTarget, InboundEvent, OpenedStreamDelivery, PeerBundle, QlError,
+    StreamCloseCode, StreamId,
 };
 
 #[derive(Clone)]
@@ -114,7 +114,7 @@ impl ByteReader {
         }
     }
 
-    pub async fn close(mut self, code: CloseCode, payload: Vec<u8>) -> Result<(), QlError> {
+    pub async fn close(mut self, code: StreamCloseCode) -> Result<(), QlError> {
         if self.finished {
             return Ok(());
         }
@@ -124,7 +124,6 @@ impl ByteReader {
                 stream_id: self.stream_id,
                 target: self.target,
                 code,
-                payload,
             })
             .await
             .map_err(|_| QlError::Cancelled)
@@ -139,8 +138,7 @@ impl Drop for ByteReader {
         let _ = self.tx.try_send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
-            code: CloseCode::CANCELLED,
-            payload: Vec::new(),
+            code: StreamCloseCode(0),
         });
     }
 }
@@ -201,7 +199,7 @@ impl ByteWriter {
         self.poll_runtime()
     }
 
-    pub async fn close(mut self, code: CloseCode, payload: Vec<u8>) -> Result<(), QlError> {
+    pub async fn close(mut self, code: StreamCloseCode) -> Result<(), QlError> {
         if self.writer.take().is_none() {
             return Ok(());
         }
@@ -210,7 +208,6 @@ impl ByteWriter {
                 stream_id: self.stream_id,
                 target: self.target,
                 code,
-                payload,
             })
             .await
             .map_err(|_| QlError::Cancelled)
@@ -225,32 +222,19 @@ impl Drop for ByteWriter {
         let _ = self.tx.try_send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
-            code: CloseCode::CANCELLED,
-            payload: Vec::new(),
+            code: StreamCloseCode(0),
         });
     }
 }
 
 impl RuntimeHandle {
-    pub fn bind_peer(&self, peer: Peer) {
+    pub fn bind_peer(&self, peer: PeerBundle) {
         self.send(RuntimeCommand::BindPeer { peer })
-    }
-
-    pub fn pair(&self) -> Result<(), QlError> {
-        self.tx
-            .send_blocking(RuntimeCommand::Pair)
-            .map_err(|_| QlError::Cancelled)
     }
 
     pub fn connect(&self) -> Result<(), QlError> {
         self.tx
             .send_blocking(RuntimeCommand::Connect)
-            .map_err(|_| QlError::Cancelled)
-    }
-
-    pub fn unpair(&self) -> Result<(), QlError> {
-        self.tx
-            .send_blocking(RuntimeCommand::Unpair)
             .map_err(|_| QlError::Cancelled)
     }
 

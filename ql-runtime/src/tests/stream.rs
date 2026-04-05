@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::{CloseCode, CloseTarget};
+use crate::{CloseTarget, StreamCloseCode};
 
 #[tokio::test(flavor = "current_thread")]
 async fn open_stream_duplex_happy_path() {
@@ -153,9 +153,8 @@ async fn dropping_responder_closes_initiator_response() {
             err,
             QlError::StreamClosed {
                 target: CloseTarget::Return,
-                code: CloseCode::CANCELLED,
-                payload,
-            } if payload.is_empty()
+                code,
+            } if code == StreamCloseCode(0)
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -296,7 +295,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
     run_local_test(async {
         let config = RuntimeConfig {
             fsm: QlFsmConfig {
-                session_retransmit_timeout: Duration::from_millis(20),
+                session_record_retransmit_timeout: Duration::from_millis(20),
                 ..default_runtime_config().fsm
             },
             stream_send_buffer_bytes: 4,

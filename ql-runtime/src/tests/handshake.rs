@@ -30,11 +30,11 @@ async fn connect_round_trip_changes_peer_status() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn opening_stream_auto_connects() {
+async fn opening_stream_requires_connection() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
+        let (platform_a, _outbound_a, _status_a) = TestPlatform::new(1);
+        let (platform_b, _outbound_b, _status_b, _inbound_b) = TestPlatform::new_with_inbound(2);
         let identity_a = new_identity(11);
         let identity_b = new_identity(73);
 
@@ -44,33 +44,11 @@ async fn opening_stream_auto_connects() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-
-        let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
-            let request = read_all(stream.request).await.unwrap();
-            stream.response.finish().await.unwrap();
-            request
-        });
-
-        let mut stream = handle_a.open_stream().await.unwrap();
-        stream.request.write_all(b"auto-connect").await.unwrap();
-        stream.request.finish().await.unwrap();
-        assert_eq!(stream.response.next_chunk().await.unwrap(), None);
-
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(2), responder)
-                .await
-                .unwrap()
-                .unwrap(),
-            b"auto-connect".to_vec()
-        );
-
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        assert!(matches!(
+            handle_a.open_stream().await,
+            Err(QlError::NoSession)
+        ));
     })
     .await;
 }

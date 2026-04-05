@@ -1,6 +1,9 @@
 pub use handle::{ByteReader, ByteWriter, InboundStream, OutboundStream, RuntimeHandle};
-pub use ql_fsm::{Peer, PeerStatus, QlFsmConfig, QlFsmError, SessionWriteId};
-pub use ql_wire::{self as wire, CloseCode, CloseTarget, QlIdentity, StreamId, XID};
+pub use ql_fsm::{PeerStatus, QlFsmConfig, QlFsmError, SessionWriteId};
+pub use ql_wire::{
+    self as wire, CloseTarget, PeerBundle, QlIdentity, SessionCloseCode, StreamCloseCode, StreamId,
+    XID,
+};
 
 pub(crate) mod command;
 pub(crate) mod driver;
@@ -20,8 +23,8 @@ use self::platform::QlPlatform;
 pub enum QlError {
     #[error("invalid payload")]
     InvalidPayload,
-    #[error("invalid signature")]
-    InvalidSignature,
+    #[error("invalid state")]
+    InvalidState,
     #[error("expired")]
     Expired,
     #[error("decryption failed")]
@@ -32,6 +35,8 @@ pub enum QlError {
     MissingStream,
     #[error("stream is not writable")]
     NotWritable,
+    #[error("invalid read")]
+    InvalidRead,
     #[error("session is closed")]
     SessionClosed,
     #[error("no peer bound")]
@@ -43,8 +48,7 @@ pub enum QlError {
     #[error("stream closed {code:?}")]
     StreamClosed {
         target: CloseTarget,
-        code: CloseCode,
-        payload: Vec<u8>,
+        code: StreamCloseCode,
     },
     #[error("cancelled")]
     Cancelled,
@@ -54,12 +58,13 @@ impl From<QlFsmError> for QlError {
     fn from(value: QlFsmError) -> Self {
         match value {
             QlFsmError::InvalidPayload => Self::InvalidPayload,
-            QlFsmError::InvalidSignature => Self::InvalidSignature,
+            QlFsmError::InvalidState => Self::InvalidState,
             QlFsmError::Expired => Self::Expired,
             QlFsmError::DecryptFailed => Self::DecryptFailed,
             QlFsmError::InvalidXid => Self::InvalidXid,
             QlFsmError::MissingStream => Self::MissingStream,
             QlFsmError::NotWritable => Self::NotWritable,
+            QlFsmError::InvalidRead => Self::InvalidRead,
             QlFsmError::SessionClosed => Self::SessionClosed,
             QlFsmError::NoPeerBound => Self::NoPeerBound,
             QlFsmError::NoSession => Self::NoSession,
