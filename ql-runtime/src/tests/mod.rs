@@ -12,6 +12,7 @@ use std::{
 use async_channel::{Receiver, Sender};
 use futures_lite::future::poll_fn;
 use libcrux_aesgcm::AesGcm256Key;
+use ql_fsm::PeerStatus;
 use ql_wire::{
     generate_identity, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce,
     PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom, RecordHeader, RecordType, SessionKey,
@@ -21,8 +22,8 @@ use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
 
 use crate::{
-    new_runtime, platform::PlatformFuture, PeerStatus, QlError, QlFsmConfig, QlStream,
-    RuntimeConfig, RuntimeHandle,
+    new_runtime, platform::PlatformFuture, QlError, QlFsmConfig, QlStream, RuntimeConfig,
+    RuntimeHandle,
 };
 
 mod handshake;
@@ -32,16 +33,9 @@ mod rpc;
 mod stream;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PeerStage {
-    Disconnected,
-    Initiator,
-    Connected,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatusEvent {
     peer: XID,
-    stage: PeerStage,
+    status: PeerStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -377,12 +371,7 @@ impl crate::platform::QlPlatform for TestPlatform {
     fn persist_peer(&self, _peer: PeerBundle) {}
 
     fn handle_peer_status(&self, peer: XID, status: PeerStatus) {
-        let stage = match status {
-            PeerStatus::Disconnected => PeerStage::Disconnected,
-            PeerStatus::Initiator => PeerStage::Initiator,
-            PeerStatus::Connected => PeerStage::Connected,
-        };
-        let _ = self.status.try_send(StatusEvent { peer, stage });
+        let _ = self.status.try_send(StatusEvent { peer, status });
     }
 
     fn handle_inbound(&self, event: QlStream) {
@@ -464,11 +453,11 @@ where
     local.run_until(future).await;
 }
 
-async fn await_status(receiver: &Receiver<StatusEvent>, peer: XID, stage: PeerStage) {
+async fn await_status(receiver: &Receiver<StatusEvent>, peer: XID, stage: PeerStatus) {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if let Ok(event) = receiver.recv().await {
-                if event.peer == peer && event.stage == stage {
+                if event.peer == peer && event.status == stage {
                     return;
                 }
             }
@@ -481,19 +470,19 @@ async fn await_status(receiver: &Receiver<StatusEvent>, peer: XID, stage: PeerSt
 async fn assert_no_status_for(
     receiver: &Receiver<StatusEvent>,
     peer: XID,
-    stage: PeerStage,
+    status: PeerStatus,
     window: Duration,
 ) {
     let res = tokio::time::timeout(window, async {
         loop {
             let event = receiver.recv().await.unwrap();
-            if event.peer == peer && event.stage == stage {
+            if event.peer == peer && event.status == status {
                 return;
             }
         }
     })
     .await;
-    assert!(res.is_err(), "unexpected status event: {stage:?}");
+    assert!(res.is_err(), "unexpected status event: {status:?}");
 }
 
 async fn read_all(mut stream: crate::ByteReader) -> Result<Vec<u8>, QlError> {

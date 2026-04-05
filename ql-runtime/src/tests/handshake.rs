@@ -23,8 +23,8 @@ async fn connect_round_trip_changes_peer_status() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
     })
     .await;
 }
@@ -77,7 +77,7 @@ async fn handshake_timeout_disconnects() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Disconnected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Disconnected).await;
     })
     .await;
 }
@@ -103,8 +103,8 @@ async fn rejected_session_write_is_reissued() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
@@ -129,7 +129,7 @@ async fn rejected_session_write_is_reissued() {
         assert_no_status_for(
             &status_a,
             identity_b.xid,
-            PeerStage::Disconnected,
+            PeerStatus::Disconnected,
             Duration::from_millis(150),
         )
         .await;

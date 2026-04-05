@@ -1,7 +1,6 @@
-use crate::{
-    wire::{CloseTarget, StreamCloseCode},
-    OpenedStreamDelivery, PeerBundle, QlError, StreamId,
-};
+use ql_wire::{CloseTarget, PeerBundle, StreamCloseCode, StreamId};
+
+use crate::{OpenedStreamDelivery, QlError};
 
 pub(crate) enum RuntimeCommand {
     BindPeer {

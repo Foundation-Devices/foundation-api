@@ -38,8 +38,8 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder_task = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
@@ -52,7 +52,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
         let mut pending = handle_a.open_stream().await.unwrap();
         pending.writer.finish().await.unwrap();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Disconnected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Disconnected).await;
 
         let result =
             tokio::time::timeout(Duration::from_millis(300), next_chunk(&mut pending.reader))

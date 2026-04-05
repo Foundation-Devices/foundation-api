@@ -70,8 +70,8 @@ async fn rpc_request_round_trips() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -126,8 +126,8 @@ async fn rpc_subscription_streams_events() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -194,8 +194,8 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();

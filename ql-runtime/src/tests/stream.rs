@@ -1,7 +1,8 @@
 use std::time::Duration;
 
+use ql_wire::{CloseTarget, StreamCloseCode};
+
 use super::*;
-use crate::{CloseTarget, StreamCloseCode};
 
 #[tokio::test(flavor = "current_thread")]
 async fn open_stream_duplex_happy_path() {
@@ -24,8 +25,8 @@ async fn open_stream_duplex_happy_path() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -87,8 +88,8 @@ async fn stream_backpressure_with_small_runtime_buffer() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
@@ -137,8 +138,8 @@ async fn dropping_responder_closes_initiator_response() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
@@ -190,8 +191,8 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
@@ -247,8 +248,8 @@ async fn max_concurrent_message_writes_is_respected() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             for _ in 0..4 {
@@ -322,8 +323,8 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();

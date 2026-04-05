@@ -1,8 +1,9 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
-use ql_wire::QlCrypto;
+use ql_fsm::PeerStatus;
+use ql_wire::{PeerBundle, QlCrypto, XID};
 
-use crate::{PeerBundle, PeerStatus, QlError, QlStream, XID};
+use crate::{QlError, QlStream};
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
