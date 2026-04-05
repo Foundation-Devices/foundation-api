@@ -1,36 +1,32 @@
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use ql_wire::{
-    self as wire, CloseTarget, QlCrypto, SessionClose, SessionCloseCode, SessionHeader,
-    StreamCloseCode, StreamId, WireParse,
+    self as wire, CloseTarget, QlCrypto, SessionCloseCode, SessionHeader, StreamCloseCode,
+    StreamId, WireParse,
 };
 
 use crate::{
     session::SessionEvent, state::LinkState, OutboundWrite, QlFsm, QlFsmError, QlFsmEvent,
-    QlSessionEvent, SessionWriteId, StreamReadIter,
+    SessionWriteId, StreamReadIter,
 };
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
     fsm.state.handshake = None;
     fsm.state.link = LinkState::Idle;
-    fsm.state.peer = Some(peer.clone());
-    fsm.state.events.push_back(QlFsmEvent::NewPeer(peer));
-    emit_peer_status(fsm);
+    fsm.state.peer = Some(peer);
 }
 
 pub fn receive(
     fsm: &mut QlFsm,
     mut bytes: Vec<u8>,
     crypto: &impl QlCrypto,
+    mut emit: impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     let header = wire::RecordHeader::parse_prefix(bytes.as_slice())?;
     match header.record_type {
         wire::RecordType::Handshake => {
             let record = wire::QlHandshakeRecord::parse_bytes(bytes.as_slice())?;
-            super::handle_handshake_record(fsm, crypto, &record)
+            super::handle_handshake_record(fsm, crypto, &record, &mut emit)
         }
         wire::RecordType::Session => {
             let record = wire::QlSessionRecord::parse_bytes(&mut bytes[..])?;
@@ -49,37 +45,31 @@ pub fn receive(
             let mut session_closed = false;
             state
                 .session
-                .receive(fsm.state.now.instant, record.header.seq, frames, {
-                    let session_events = &mut fsm.state.session_events;
-                    |event| {
-                        session_closed |= forward_session_event(session_events, event);
-                    }
+                .receive(fsm.state.now.instant, record.header.seq, frames, |event| {
+                    session_closed |= forward_session_event(event, &mut emit);
                 });
 
             if session_closed {
-                apply_session_closed(fsm);
+                apply_session_closed(fsm, &mut emit);
             }
             Ok(())
         }
     }
 }
 
-pub fn on_timer(fsm: &mut QlFsm) {
-    super::handle_timer(fsm);
+pub fn on_timer(fsm: &mut QlFsm, mut emit: impl FnMut(QlFsmEvent)) {
+    super::handle_timer(fsm, &mut emit);
     let Some(state) = fsm.state.link.connected_mut() else {
         return;
     };
 
     let mut session_closed = false;
-    state.session.on_timer(fsm.state.now.instant, {
-        let session_events = &mut fsm.state.session_events;
-        |event| {
-            session_closed |= forward_session_event(session_events, event);
-        }
+    state.session.on_timer(fsm.state.now.instant, |event| {
+        session_closed |= forward_session_event(event, &mut emit);
     });
 
     if session_closed {
-        apply_session_closed(fsm);
+        apply_session_closed(fsm, &mut emit);
     }
 }
 
@@ -134,7 +124,7 @@ pub fn reject_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
     }
 }
 
-pub fn kill_session(fsm: &mut QlFsm, code: SessionCloseCode) {
+pub fn kill_session(fsm: &mut QlFsm, _code: SessionCloseCode) {
     if fsm.state.peer.is_none() {
         return;
     }
@@ -143,10 +133,6 @@ pub fn kill_session(fsm: &mut QlFsm, code: SessionCloseCode) {
     }
 
     fsm.state.link = crate::state::LinkState::Idle;
-    emit_peer_status(fsm);
-    fsm.state
-        .session_events
-        .push_back(QlSessionEvent::SessionClosed(SessionClose { code }));
 }
 
 pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, QlFsmError> {
@@ -206,55 +192,49 @@ pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
     Ok(state.session.queue_ping()?)
 }
 
-pub fn emit_peer_status(fsm: &mut QlFsm) {
-    if let Some(peer) = fsm.state.peer.as_ref() {
-        fsm.state.events.push_back(QlFsmEvent::PeerStatusChanged {
-            peer: peer.xid,
-            status: fsm.state.link.status(),
-        });
+pub fn emit_peer_status(fsm: &QlFsm, emit: &mut impl FnMut(QlFsmEvent)) {
+    if fsm.state.peer.is_some() {
+        emit(QlFsmEvent::PeerStatusChanged(fsm.state.link.status()));
     }
 }
 
-fn forward_session_event(
-    session_events: &mut VecDeque<QlSessionEvent>,
-    event: SessionEvent,
-) -> bool {
+fn forward_session_event(event: SessionEvent, emit: &mut impl FnMut(QlFsmEvent)) -> bool {
     match event {
         SessionEvent::Opened(stream_id) => {
-            session_events.push_back(QlSessionEvent::Opened(stream_id));
+            emit(QlFsmEvent::Opened(stream_id));
             false
         }
         SessionEvent::Readable(stream_id) => {
-            session_events.push_back(QlSessionEvent::Readable(stream_id));
+            emit(QlFsmEvent::Readable(stream_id));
             false
         }
         SessionEvent::Writable(stream_id) => {
-            session_events.push_back(QlSessionEvent::Writable(stream_id));
+            emit(QlFsmEvent::Writable(stream_id));
             false
         }
         SessionEvent::Finished(stream_id) => {
-            session_events.push_back(QlSessionEvent::Finished(stream_id));
+            emit(QlFsmEvent::Finished(stream_id));
             false
         }
         SessionEvent::Closed(frame) => {
-            session_events.push_back(QlSessionEvent::Closed(frame));
+            emit(QlFsmEvent::Closed(frame));
             false
         }
         SessionEvent::WritableClosed(stream_id) => {
-            session_events.push_back(QlSessionEvent::WritableClosed(stream_id));
+            emit(QlFsmEvent::WritableClosed(stream_id));
             false
         }
         SessionEvent::SessionClosed(close) => {
-            session_events.push_back(QlSessionEvent::SessionClosed(close));
+            emit(QlFsmEvent::SessionClosed(close));
             true
         }
     }
 }
 
-fn apply_session_closed(fsm: &mut QlFsm) {
+fn apply_session_closed(fsm: &mut QlFsm, emit: &mut impl FnMut(QlFsmEvent)) {
     if matches!(fsm.state.link, crate::state::LinkState::Connected(_)) {
         fsm.state.link = crate::state::LinkState::Idle;
-        emit_peer_status(fsm);
+        emit_peer_status(fsm, emit);
     }
 }
 

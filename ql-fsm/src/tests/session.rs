@@ -3,7 +3,7 @@ use std::time::Duration;
 use ql_wire::{SessionClose, StreamId};
 
 use super::*;
-use crate::{state::LinkState, QlFsmError, QlFsmEvent, QlSessionEvent};
+use crate::{state::LinkState, PeerStatus, QlFsmError, QlFsmEvent};
 
 fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();
@@ -31,21 +31,18 @@ fn connected_fsms_deliver_stream_data() {
 
     harness.pump();
 
+    assert_eq!(harness.take_event_b(), Some(QlFsmEvent::Opened(stream_id)));
     assert_eq!(
-        harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Opened(stream_id))
-    );
-    assert_eq!(
-        harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Readable(stream_id))
+        harness.take_event_b(),
+        Some(QlFsmEvent::Readable(stream_id))
     );
     assert_eq!(
         read_stream_all(&mut harness.b.fsm, stream_id),
         b"hello".to_vec()
     );
     assert_eq!(
-        harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Finished(stream_id))
+        harness.take_event_b(),
+        Some(QlFsmEvent::Finished(stream_id))
     );
 }
 
@@ -63,7 +60,7 @@ fn session_retransmit_uses_new_record_seq() {
         decrypt_record(&harness.b.crypto, &first, &first_transport.rx_key);
 
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
-    harness.a.fsm.on_timer(harness.time());
+    harness.on_timer_a();
 
     let retried = harness.next_outbound_a().unwrap();
     let (retried_header, retried_record) =
@@ -74,17 +71,14 @@ fn session_retransmit_uses_new_record_seq() {
 
     harness.deliver_to_b(retried);
     harness.advance(config.session_record_ack_delay);
-    harness.a.fsm.on_timer(harness.time());
-    harness.b.fsm.on_timer(harness.time());
+    harness.on_timer_a();
+    harness.on_timer_b();
     harness.pump();
 
+    assert_eq!(harness.take_event_b(), Some(QlFsmEvent::Opened(stream_id)));
     assert_eq!(
-        harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Opened(stream_id))
-    );
-    assert_eq!(
-        harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Readable(stream_id))
+        harness.take_event_b(),
+        Some(QlFsmEvent::Readable(stream_id))
     );
     assert_eq!(
         read_stream_all(&mut harness.b.fsm, stream_id),
@@ -92,7 +86,7 @@ fn session_retransmit_uses_new_record_seq() {
     );
 
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
-    harness.a.fsm.on_timer(harness.time());
+    harness.on_timer_a();
     assert!(harness.next_outbound_a().is_none());
 }
 
@@ -125,24 +119,24 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
     harness.pump();
 
     assert_eq!(
-        harness.a.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Opened(stream_id_b))
+        harness.take_event_a(),
+        Some(QlFsmEvent::Opened(stream_id_b))
     );
     assert_eq!(
-        harness.a.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Readable(stream_id_b))
+        harness.take_event_a(),
+        Some(QlFsmEvent::Readable(stream_id_b))
     );
     assert_eq!(
         read_stream_all(&mut harness.a.fsm, stream_id_b),
         b"from-b".to_vec()
     );
     assert_eq!(
-        harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Opened(stream_id_a))
+        harness.take_event_b(),
+        Some(QlFsmEvent::Opened(stream_id_a))
     );
     assert_eq!(
-        harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Readable(stream_id_a))
+        harness.take_event_b(),
+        Some(QlFsmEvent::Readable(stream_id_a))
     );
     assert_eq!(
         read_stream_all(&mut harness.b.fsm, stream_id_a),
@@ -216,13 +210,10 @@ fn returned_session_write_is_reissued_with_new_record_seq() {
     harness.deliver_to_b(record);
     harness.pump();
 
+    assert_eq!(harness.take_event_b(), Some(QlFsmEvent::Opened(stream_id)));
     assert_eq!(
-        harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Opened(stream_id))
-    );
-    assert_eq!(
-        harness.b.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Readable(stream_id))
+        harness.take_event_b(),
+        Some(QlFsmEvent::Readable(stream_id))
     );
     assert_eq!(
         read_stream_all(&mut harness.b.fsm, stream_id),
@@ -245,12 +236,12 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
     let (first_header, first) = decrypt_record(&harness.b.crypto, &record, &session_key);
 
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
-    harness.a.fsm.on_timer(harness.time());
+    harness.on_timer_a();
     assert!(harness.next_write_a().is_none());
 
     harness.confirm_write_a(id);
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
-    harness.a.fsm.on_timer(harness.time());
+    harness.on_timer_a();
 
     let write = harness.next_write_a().unwrap();
     let record = write.record;
@@ -275,13 +266,13 @@ fn ack_frame_releases_stream_capacity_and_emits_writable() {
     let record = harness.next_outbound_a().unwrap();
     harness.deliver_to_b(record);
     harness.advance(config.session_record_ack_delay);
-    harness.a.fsm.on_timer(harness.time());
-    harness.b.fsm.on_timer(harness.time());
+    harness.on_timer_a();
+    harness.on_timer_b();
     harness.pump();
 
     assert_eq!(
-        harness.a.fsm.take_next_session_event(),
-        Some(QlSessionEvent::Writable(stream_id))
+        harness.take_event_a(),
+        Some(QlFsmEvent::Writable(stream_id))
     );
 }
 
@@ -295,16 +286,7 @@ fn kill_session_disconnects_locally() {
         .kill_session(ql_wire::SessionCloseCode::CANCELLED);
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
-    assert_eq!(
-        harness.a.fsm.take_next_session_event(),
-        Some(QlSessionEvent::SessionClosed(SessionClose {
-            code: ql_wire::SessionCloseCode::CANCELLED
-        }))
-    );
-    assert!(matches!(
-        harness.a.fsm.take_next_event(),
-        Some(QlFsmEvent::PeerStatusChanged { .. })
-    ));
+    assert!(harness.drain_events_a().is_empty());
 }
 
 #[test]
@@ -318,7 +300,7 @@ fn session_records_contain_ack_frames_after_delivery() {
     let data = harness.next_outbound_a().unwrap();
     harness.deliver_to_b(data);
     harness.advance(config.session_record_ack_delay);
-    harness.b.fsm.on_timer(harness.time());
+    harness.on_timer_b();
 
     let ack = harness.next_outbound_b().unwrap();
     let session_key = harness.a.fsm.state.link.transport().unwrap().rx_key.clone();
@@ -342,11 +324,7 @@ fn first_stream_data_uses_negotiated_initial_peer_credit() {
         },
     );
 
-    harness
-        .a
-        .fsm
-        .connect_ik(harness.time(), &harness.a.crypto)
-        .unwrap();
+    harness.connect_ik_a().unwrap();
     let ik1 = harness.next_outbound_a().unwrap();
     harness.deliver_to_b(ik1);
     let ik2 = harness.next_outbound_b().unwrap();
@@ -363,4 +341,26 @@ fn first_stream_data_uses_negotiated_initial_peer_credit() {
         record.frames.as_slice(),
         [ql_wire::SessionFrame::StreamData(frame)] if frame.stream_id == stream_id && frame.bytes.as_slice() == b"hel"
     ));
+}
+
+#[test]
+fn session_timeout_emits_close_before_disconnect() {
+    let config = QlFsmConfig {
+        session_peer_timeout: Duration::from_millis(30),
+        ..QlFsmConfig::default()
+    };
+    let mut harness = Harness::connected(config);
+
+    harness.advance(config.session_peer_timeout);
+    harness.on_timer_a();
+
+    assert_eq!(
+        harness.drain_events_a(),
+        vec![
+            QlFsmEvent::SessionClosed(SessionClose {
+                code: ql_wire::SessionCloseCode::TIMEOUT,
+            }),
+            QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected),
+        ]
+    );
 }

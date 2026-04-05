@@ -10,10 +10,10 @@
 //!
 //! outputs from `QlFsm` are
 //! - outbound session and handshake records from `take_next_write`
-//! - peer events from `take_next_event`
-//! - session events from `take_next_session_event`
+//! - callback-driven `QlFsmEvent`s emitted during `connect_ik`, `connect_kk`, `receive`, and
+//!   `on_timer`
 //!
-//! call `next_deadline` after handling current inputs and draining current outputs
+//! call `next_deadline` after handling current inputs and any emitted outputs
 //! use it to decide how long the outer loop can wait before `on_timer` must run
 //! another input may arrive before that deadline, which is fine
 
@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 pub use error::QlFsmError;
 use ql_wire::{
     CloseTarget, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose,
-    StreamCloseCode, StreamId, XID,
+    StreamCloseCode, StreamId,
 };
 pub use session::stream_rx::StreamReadIter;
 
@@ -59,25 +59,13 @@ pub enum PeerStatus {
     Connected,
 }
 
-/// peer-level events emitted by `QlFsm`
-#[derive(Debug, Clone)]
-pub enum QlFsmEvent {
-    /// a peer was bound or replaced
-    NewPeer(PeerBundle),
-    /// the bound peer was cleared
-    ClearPeer,
-    /// the peer changed connection state
-    PeerStatusChanged {
-        /// peer that changed state
-        peer: XID,
-        /// new connection state
-        status: PeerStatus,
-    },
-}
-
-/// session and stream events emitted by `QlFsm`
+/// events emitted by `QlFsm`
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QlSessionEvent {
+pub enum QlFsmEvent {
+    /// a peer was learned during handshake completion
+    NewPeer,
+    /// the peer changed connection state
+    PeerStatusChanged(PeerStatus),
     /// a stream was opened
     Opened(StreamId),
     /// a stream has bytes ready to read
@@ -90,8 +78,6 @@ pub enum QlSessionEvent {
     Closed(StreamClose),
     /// local writes on this stream are closed
     WritableClosed(StreamId),
-    /// the peer requested unpairing
-    Unpaired,
     /// the encrypted session was closed
     SessionClosed(SessionClose),
 }
@@ -167,8 +153,6 @@ impl QlFsm {
                 peer: None,
                 handshake: None,
                 link: LinkState::Idle,
-                events: Default::default(),
-                session_events: Default::default(),
                 now,
             },
         }
@@ -179,16 +163,31 @@ impl QlFsm {
         implementation::handle_bind_peer(self, peer);
     }
 
+    /// returns the currently bound peer, if any
+    pub fn peer(&self) -> Option<&PeerBundle> {
+        self.state.peer.as_ref()
+    }
+
     /// starts or replaces an IK handshake with the currently bound peer
-    pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
+    pub fn connect_ik(
+        &mut self,
+        now: FsmTime,
+        crypto: &impl QlCrypto,
+        emit: impl FnMut(QlFsmEvent),
+    ) -> Result<(), QlFsmError> {
         self.state.now = now;
-        implementation::handle_connect_ik(self, crypto)
+        implementation::handle_connect_ik(self, crypto, emit)
     }
 
     /// starts or replaces a KK handshake with the currently bound peer
-    pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
+    pub fn connect_kk(
+        &mut self,
+        now: FsmTime,
+        crypto: &impl QlCrypto,
+        emit: impl FnMut(QlFsmEvent),
+    ) -> Result<(), QlFsmError> {
         self.state.now = now;
-        implementation::handle_connect_kk(self, crypto)
+        implementation::handle_connect_kk(self, crypto, emit)
     }
 
     /// handles one inbound wire message
@@ -197,15 +196,16 @@ impl QlFsm {
         now: FsmTime,
         bytes: Vec<u8>,
         crypto: &impl QlCrypto,
+        emit: impl FnMut(QlFsmEvent),
     ) -> Result<(), QlFsmError> {
         self.state.now = now;
-        implementation::receive(self, bytes, crypto)
+        implementation::receive(self, bytes, crypto, emit)
     }
 
     /// advances time-based state
-    pub fn on_timer(&mut self, now: FsmTime) {
+    pub fn on_timer(&mut self, now: FsmTime, emit: impl FnMut(QlFsmEvent)) {
         self.state.now = now;
-        implementation::on_timer(self);
+        implementation::on_timer(self, emit);
     }
 
     /// returns the next timer deadline, if any
@@ -246,11 +246,6 @@ impl QlFsm {
     /// closes the current encrypted session locally
     pub fn kill_session(&mut self, code: SessionCloseCode) {
         implementation::kill_session(self, code);
-    }
-
-    /// returns the next peer-level event
-    pub fn take_next_event(&mut self) -> Option<QlFsmEvent> {
-        self.state.events.pop_front()
     }
 
     /// opens a new outgoing stream
@@ -300,10 +295,5 @@ impl QlFsm {
     /// queues a ping on the active session
     pub fn queue_ping(&mut self) -> Result<(), QlFsmError> {
         implementation::queue_ping(self)
-    }
-
-    /// returns the next session or stream event
-    pub fn take_next_session_event(&mut self) -> Option<QlSessionEvent> {
-        self.state.session_events.pop_front()
     }
 }

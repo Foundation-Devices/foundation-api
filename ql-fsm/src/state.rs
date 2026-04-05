@@ -1,14 +1,11 @@
-use std::{collections::VecDeque, time::Instant};
+use std::time::Instant;
 
 use ql_wire::{
     ConnectionId, EphemeralPublicKey, HandshakeId, IkHandshake, KkHandshake, PeerBundle,
     QlHandshakeRecord, SessionKey, TransportParams,
 };
 
-use crate::{
-    replay_cache::ReplayCache, session::SessionFsm, FsmTime, PeerStatus, QlFsmError, QlFsmEvent,
-    QlSessionEvent,
-};
+use crate::{replay_cache::ReplayCache, session::SessionFsm, FsmTime, PeerStatus, QlFsmError};
 
 pub struct QlFsmState {
     pub replay_cache: ReplayCache,
@@ -16,8 +13,6 @@ pub struct QlFsmState {
     pub peer: Option<PeerBundle>,
     pub handshake: Option<QlHandshakeRecord>,
     pub link: LinkState,
-    pub events: VecDeque<QlFsmEvent>,
-    pub session_events: VecDeque<QlSessionEvent>,
     pub now: FsmTime,
 }
 

@@ -3,6 +3,7 @@ mod session;
 
 use std::{
     cell::Cell,
+    collections::VecDeque,
     time::{Duration, Instant},
 };
 
@@ -18,7 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     session::{stream_parity::StreamParity, SessionFsm, SessionFsmConfig},
     state::{ConnectedState, LinkState, SessionTransport},
-    FsmTime, OutboundWrite, QlFsm, QlFsmConfig, SessionWriteId,
+    FsmTime, OutboundWrite, QlFsm, QlFsmConfig, QlFsmError, QlFsmEvent, SessionWriteId,
 };
 
 #[derive(Clone)]
@@ -142,6 +143,7 @@ impl QlKem for TestCrypto {
 struct Node {
     fsm: QlFsm,
     crypto: TestCrypto,
+    events: VecDeque<QlFsmEvent>,
 }
 
 struct Harness {
@@ -184,10 +186,12 @@ impl Harness {
             a: Node {
                 fsm: QlFsm::new(config_a, identity_a.clone(), time),
                 crypto: TestCrypto::new(1),
+                events: Default::default(),
             },
             b: Node {
                 fsm: QlFsm::new(config_b, identity_b.clone(), time),
                 crypto: TestCrypto::new(2),
+                events: Default::default(),
             },
         };
 
@@ -197,8 +201,6 @@ impl Harness {
         if know_b {
             harness.b.fsm.bind_peer(identity_a.bundle());
         }
-        while harness.a.fsm.take_next_event().is_some() {}
-        while harness.b.fsm.take_next_event().is_some() {}
 
         harness
     }
@@ -277,17 +279,65 @@ impl Harness {
         self.a.fsm.take_next_write(self.time(), &self.a.crypto)
     }
 
+    fn connect_ik_a(&mut self) -> Result<(), QlFsmError> {
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.a;
+        fsm.connect_ik(time, crypto, |event| events.push_back(event))
+    }
+
+    fn connect_ik_b(&mut self) -> Result<(), QlFsmError> {
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.b;
+        fsm.connect_ik(time, crypto, |event| events.push_back(event))
+    }
+
+    fn connect_kk_a(&mut self) -> Result<(), QlFsmError> {
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.a;
+        fsm.connect_kk(time, crypto, |event| events.push_back(event))
+    }
+
+    fn connect_kk_b(&mut self) -> Result<(), QlFsmError> {
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.b;
+        fsm.connect_kk(time, crypto, |event| events.push_back(event))
+    }
+
     fn deliver_to_a(&mut self, record: Vec<u8>) {
-        self.a
-            .fsm
-            .receive(self.time(), record, &self.a.crypto)
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.a;
+        fsm.receive(time, record, crypto, |event| events.push_back(event))
             .unwrap();
     }
 
     fn deliver_to_b(&mut self, record: Vec<u8>) {
-        self.b
-            .fsm
-            .receive(self.time(), record, &self.b.crypto)
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.b;
+        fsm.receive(time, record, crypto, |event| events.push_back(event))
             .unwrap();
     }
 
@@ -297,6 +347,34 @@ impl Harness {
 
     fn return_write_a(&mut self, write_id: SessionWriteId) {
         self.a.fsm.reject_session_write(write_id);
+    }
+
+    fn on_timer_a(&mut self) {
+        let time = self.time();
+        let Node { fsm, events, .. } = &mut self.a;
+        fsm.on_timer(time, |event| events.push_back(event));
+    }
+
+    fn on_timer_b(&mut self) {
+        let time = self.time();
+        let Node { fsm, events, .. } = &mut self.b;
+        fsm.on_timer(time, |event| events.push_back(event));
+    }
+
+    fn take_event_a(&mut self) -> Option<QlFsmEvent> {
+        self.a.events.pop_front()
+    }
+
+    fn take_event_b(&mut self) -> Option<QlFsmEvent> {
+        self.b.events.pop_front()
+    }
+
+    fn drain_events_a(&mut self) -> Vec<QlFsmEvent> {
+        self.a.events.drain(..).collect()
+    }
+
+    fn drain_events_b(&mut self) -> Vec<QlFsmEvent> {
+        self.b.events.drain(..).collect()
     }
 
     fn pump(&mut self) {

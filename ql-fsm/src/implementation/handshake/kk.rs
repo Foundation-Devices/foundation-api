@@ -6,13 +6,14 @@ use super::{
 };
 use crate::{
     state::{KkInitiatorState, LinkState, SessionTransport},
-    QlFsm, QlFsmError,
+    QlFsm, QlFsmError, QlFsmEvent,
 };
 
 pub fn start_initiator(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     peer: PeerBundle,
+    emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     let meta = super::next_handshake_meta(fsm);
     let mut handshake = wire::KkHandshake::new_initiator(
@@ -30,7 +31,7 @@ pub fn start_initiator(
         deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
     });
     enqueue_handshake(fsm, QlHandshakeRecord::Kk1(message));
-    emit_peer_status(fsm);
+    emit_peer_status(fsm, emit);
     Ok(())
 }
 
@@ -38,6 +39,7 @@ pub fn handle_kk1(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Kk1,
+    emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     if should_ignore_inbound(fsm, message) {
         return Ok(());
@@ -64,7 +66,7 @@ pub fn handle_kk1(
     handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
     let outbound = handshake.write_2(crypto, message.meta)?;
     let (transport, remote_bundle) = SessionTransport::from_finalized(handshake.finalize(crypto)?);
-    finish_handshake(fsm, transport, &remote_bundle)?;
+    finish_handshake(fsm, transport, &remote_bundle, emit)?;
     fsm.state.handshake = None;
     enqueue_handshake(fsm, QlHandshakeRecord::Kk2(outbound));
     Ok(())
@@ -74,6 +76,7 @@ pub fn handle_kk2(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Kk2,
+    emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     {
         let LinkState::KkInitiator(state) = &mut fsm.state.link else {
@@ -94,7 +97,7 @@ pub fn handle_kk2(
     };
     let (transport, remote_bundle) =
         SessionTransport::from_finalized(state.handshake.finalize(crypto)?);
-    finish_handshake(fsm, transport, &remote_bundle)
+    finish_handshake(fsm, transport, &remote_bundle, emit)
 }
 
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Kk1) -> bool {
