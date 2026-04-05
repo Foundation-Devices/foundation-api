@@ -98,22 +98,23 @@ pub fn next_handshake_deadline(fsm: &QlFsm) -> Option<std::time::Instant> {
 pub fn finish_handshake(
     fsm: &mut QlFsm,
     transport: SessionTransport,
-    remote_bundle: &wire::PeerBundle,
+    remote_bundle: wire::PeerBundle,
     emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
+    let xid = remote_bundle.xid;
     if let Some(peer) = fsm.state.peer.as_ref() {
-        if peer != remote_bundle {
+        if peer != &remote_bundle {
             return Err(QlFsmError::InvalidPayload);
         }
     } else {
-        fsm.state.peer = Some(remote_bundle.clone());
+        fsm.state.peer = Some(remote_bundle);
         emit(QlFsmEvent::NewPeer);
     }
 
     let config = &fsm.config;
     let session = SessionFsm::new(
         SessionFsmConfig {
-            local_parity: StreamParity::for_local(fsm.identity.xid, remote_bundle.xid),
+            local_parity: StreamParity::for_local(fsm.identity.xid, xid),
             record_max_size: config.session_record_max_size,
             ack_delay: config.session_record_ack_delay,
             retransmit_timeout: config.session_record_retransmit_timeout,

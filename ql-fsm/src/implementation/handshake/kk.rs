@@ -66,7 +66,7 @@ pub fn handle_kk1(
     handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
     let outbound = handshake.write_2(crypto, message.meta)?;
     let (transport, remote_bundle) = SessionTransport::from_finalized(handshake.finalize(crypto)?);
-    finish_handshake(fsm, transport, &remote_bundle, emit)?;
+    finish_handshake(fsm, transport, remote_bundle, emit)?;
     fsm.state.handshake = None;
     enqueue_handshake(fsm, QlHandshakeRecord::Kk2(outbound));
     Ok(())
@@ -97,7 +97,7 @@ pub fn handle_kk2(
     };
     let (transport, remote_bundle) =
         SessionTransport::from_finalized(state.handshake.finalize(crypto)?);
-    finish_handshake(fsm, transport, &remote_bundle, emit)
+    finish_handshake(fsm, transport, remote_bundle, emit)
 }
 
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Kk1) -> bool {
