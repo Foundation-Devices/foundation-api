@@ -15,8 +15,8 @@ pub struct QlStream {
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    pub(crate) tx: async_channel::Sender<RuntimeCommand>,
-    pub(crate) stream_send_buffer_bytes: usize,
+    tx: async_channel::Sender<RuntimeCommand>,
+    stream_send_buffer_bytes: usize,
 }
 
 impl RuntimeHandle {
@@ -70,6 +70,16 @@ impl RuntimeHandle {
 }
 
 impl RuntimeHandle {
+    pub(crate) fn new(
+        tx: async_channel::Sender<RuntimeCommand>,
+        stream_send_buffer_bytes: usize,
+    ) -> Self {
+        Self {
+            tx,
+            stream_send_buffer_bytes,
+        }
+    }
+
     #[inline]
     #[track_caller]
     fn send(&self, cmd: RuntimeCommand) {

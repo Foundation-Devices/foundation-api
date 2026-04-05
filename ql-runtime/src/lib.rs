@@ -128,9 +128,6 @@ where
             rx,
             tx: tx.downgrade(),
         },
-        RuntimeHandle {
-            tx,
-            stream_send_buffer_bytes: config.stream_send_buffer_bytes,
-        },
+        RuntimeHandle::new(tx, config.stream_send_buffer_bytes),
     )
 }
