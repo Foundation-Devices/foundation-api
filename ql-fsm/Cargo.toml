@@ -8,7 +8,6 @@ license = "Proprietary"
 [dependencies]
 indexmap = "2"
 ql-wire = { path = "../ql-wire" }
-thiserror = { version = "2" }
 
 [dev-dependencies]
 libcrux-aesgcm = "0.0.7"

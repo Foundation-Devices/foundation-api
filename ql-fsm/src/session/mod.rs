@@ -72,17 +72,27 @@ pub enum SessionState {
     Closed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamError {
-    #[error("missing stream")]
     MissingStream,
-    #[error("stream is not writable")]
     NotWritable,
-    #[error("invalid read commit")]
     InvalidRead,
-    #[error("session is closed")]
     SessionClosed,
 }
+
+impl std::fmt::Display for StreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::MissingStream => "missing stream",
+            Self::NotWritable => "stream is not writable",
+            Self::InvalidRead => "invalid read commit",
+            Self::SessionClosed => "session is closed",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for StreamError {}
 
 pub struct SessionFsm {
     config: SessionFsmConfig,

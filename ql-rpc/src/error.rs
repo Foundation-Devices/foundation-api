@@ -2,26 +2,37 @@ use ql_wire::StreamCloseCode;
 
 use crate::MethodId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcError {
-    #[error("truncated rpc payload")]
     Truncated,
-    #[error("rpc payload length overflow")]
     LengthOverflow,
-    #[error("invalid rpc version {0}")]
     InvalidVersion(u8),
-    #[error("unexpected rpc method {actual:?}, expected {expected:?}")]
     UnexpectedMethod {
         expected: MethodId,
         actual: MethodId,
     },
-    #[error("unexpected rpc frame kind {0}")]
     UnexpectedFrameKind(u8),
-    #[error("missing terminal rpc response")]
     MissingResponse,
-    #[error("trailing rpc bytes")]
     TrailingBytes,
 }
+
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated => f.write_str("truncated rpc payload"),
+            Self::LengthOverflow => f.write_str("rpc payload length overflow"),
+            Self::InvalidVersion(version) => write!(f, "invalid rpc version {version}"),
+            Self::UnexpectedMethod { expected, actual } => {
+                write!(f, "unexpected rpc method {actual:?}, expected {expected:?}")
+            }
+            Self::UnexpectedFrameKind(kind) => write!(f, "unexpected rpc frame kind {kind}"),
+            Self::MissingResponse => f.write_str("missing terminal rpc response"),
+            Self::TrailingBytes => f.write_str("trailing rpc bytes"),
+        }
+    }
+}
+
+impl std::error::Error for RpcError {}
 
 impl RpcError {
     pub const fn close_code(self) -> StreamCloseCode {

@@ -8,4 +8,3 @@ license = "Proprietary"
 [dependencies]
 bytes = { version = "1" }
 ql-wire = { path = "../ql-wire" }
-thiserror = { version = "2" }

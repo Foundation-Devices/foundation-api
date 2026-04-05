@@ -1,7 +1,8 @@
-pub use self::{handle::*, platform::*};
+pub use self::{error::QlError, handle::*, platform::*};
 
 pub(crate) mod command;
 pub(crate) mod driver;
+mod error;
 pub mod handle;
 pub mod platform;
 #[cfg(feature = "rpc")]
@@ -10,62 +11,8 @@ pub mod rpc;
 #[cfg(test)]
 mod tests;
 
-use ql_fsm::{QlFsmConfig, QlFsmError};
+use ql_fsm::QlFsmConfig;
 use ql_wire::QlIdentity;
-use thiserror::Error;
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum QlError {
-    #[error("invalid payload")]
-    InvalidPayload,
-    #[error("invalid state")]
-    InvalidState,
-    #[error("expired")]
-    Expired,
-    #[error("decryption failed")]
-    DecryptFailed,
-    #[error("invalid xid")]
-    InvalidXid,
-    #[error("missing stream")]
-    MissingStream,
-    #[error("stream is not writable")]
-    NotWritable,
-    #[error("invalid read")]
-    InvalidRead,
-    #[error("session is closed")]
-    SessionClosed,
-    #[error("no peer bound")]
-    NoPeerBound,
-    #[error("no active session")]
-    NoSession,
-    #[error("send failed")]
-    SendFailed,
-    #[error("stream closed {code:?}")]
-    StreamClosed {
-        target: ql_wire::CloseTarget,
-        code: ql_wire::StreamCloseCode,
-    },
-    #[error("cancelled")]
-    Cancelled,
-}
-
-impl From<QlFsmError> for QlError {
-    fn from(value: QlFsmError) -> Self {
-        match value {
-            QlFsmError::InvalidPayload => Self::InvalidPayload,
-            QlFsmError::InvalidState => Self::InvalidState,
-            QlFsmError::Expired => Self::Expired,
-            QlFsmError::DecryptFailed => Self::DecryptFailed,
-            QlFsmError::InvalidXid => Self::InvalidXid,
-            QlFsmError::MissingStream => Self::MissingStream,
-            QlFsmError::NotWritable => Self::NotWritable,
-            QlFsmError::InvalidRead => Self::InvalidRead,
-            QlFsmError::SessionClosed => Self::SessionClosed,
-            QlFsmError::NoPeerBound => Self::NoPeerBound,
-            QlFsmError::NoSession => Self::NoSession,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {

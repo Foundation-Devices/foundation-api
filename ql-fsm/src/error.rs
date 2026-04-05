@@ -1,33 +1,42 @@
 use ql_wire::WireError;
-use thiserror::Error;
 
 use crate::session::StreamError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlFsmError {
-    #[error("invalid payload")]
     InvalidPayload,
-    #[error("invalid state")]
     InvalidState,
-    #[error("expired")]
     Expired,
-    #[error("decryption failed")]
     DecryptFailed,
-    #[error("invalid xid")]
     InvalidXid,
-    #[error("missing stream")]
     MissingStream,
-    #[error("stream is not writable")]
     NotWritable,
-    #[error("invalid read commit")]
     InvalidRead,
-    #[error("session is closed")]
     SessionClosed,
-    #[error("no peer bound")]
     NoPeerBound,
-    #[error("no active session")]
     NoSession,
 }
+
+impl std::fmt::Display for QlFsmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::InvalidPayload => "invalid payload",
+            Self::InvalidState => "invalid state",
+            Self::Expired => "expired",
+            Self::DecryptFailed => "decryption failed",
+            Self::InvalidXid => "invalid xid",
+            Self::MissingStream => "missing stream",
+            Self::NotWritable => "stream is not writable",
+            Self::InvalidRead => "invalid read commit",
+            Self::SessionClosed => "session is closed",
+            Self::NoPeerBound => "no peer bound",
+            Self::NoSession => "no active session",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for QlFsmError {}
 
 impl From<WireError> for QlFsmError {
     fn from(value: WireError) -> Self {
