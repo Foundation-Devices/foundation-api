@@ -279,11 +279,11 @@ impl RuntimeHandle {
             stream_id,
             request: ByteWriter::new(
                 stream_id,
-                CloseTarget::Request,
+                CloseTarget::Origin,
                 request_writer,
                 self.tx.clone(),
             ),
-            response: ByteReader::new(stream_id, CloseTarget::Response, response, self.tx.clone()),
+            response: ByteReader::new(stream_id, CloseTarget::Return, response, self.tx.clone()),
         })
     }
 

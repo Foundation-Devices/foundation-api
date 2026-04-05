@@ -152,7 +152,7 @@ async fn dropping_responder_closes_initiator_response() {
         assert!(matches!(
             err,
             QlError::StreamClosed {
-                target: CloseTarget::Response,
+                target: CloseTarget::Return,
                 code: CloseCode::CANCELLED,
                 payload,
             } if payload.is_empty()

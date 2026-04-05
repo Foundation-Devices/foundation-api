@@ -92,15 +92,15 @@ pub enum StreamRole {
 impl StreamRole {
     pub fn outbound_target(self) -> CloseTarget {
         match self {
-            Self::Initiator => CloseTarget::Request,
-            Self::Responder => CloseTarget::Response,
+            Self::Initiator => CloseTarget::Origin,
+            Self::Responder => CloseTarget::Return,
         }
     }
 
     pub fn inbound_target(self) -> CloseTarget {
         match self {
-            Self::Initiator => CloseTarget::Response,
-            Self::Responder => CloseTarget::Request,
+            Self::Initiator => CloseTarget::Return,
+            Self::Responder => CloseTarget::Origin,
         }
     }
 }

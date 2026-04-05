@@ -1,7 +1,11 @@
 use super::StreamId;
 use crate::{codec, ByteSlice, WireError};
 
-/// aborts one or both directions of a stream with a close code.
+/// aborts one or both lanes of a stream with a close code
+///
+/// stream origin is the peer that opened the stream
+/// origin lane carries bytes sent by the stream origin
+/// return lane carries bytes sent back toward the stream origin
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamClose {
     pub stream_id: StreamId,
@@ -30,11 +34,15 @@ impl<B: ByteSlice> codec::WireParse<B> for StreamClose {
     }
 }
 
+/// selects which stream lane a [`StreamClose`] applies to
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CloseTarget {
-    Request = 1,
-    Response = 2,
+    /// close the lane sent by the stream origin
+    Origin = 1,
+    /// close the lane sent back toward the stream origin
+    Return = 2,
+    /// close both stream lanes
     Both = 3,
 }
 
@@ -49,8 +57,8 @@ impl TryFrom<u8> for CloseTarget {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            1 => Ok(Self::Request),
-            2 => Ok(Self::Response),
+            1 => Ok(Self::Origin),
+            2 => Ok(Self::Return),
             3 => Ok(Self::Both),
             _ => Err(WireError::InvalidPayload),
         }

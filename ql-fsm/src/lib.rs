@@ -287,7 +287,7 @@ impl QlFsm {
         implementation::finish_stream(self, stream_id)
     }
 
-    /// closes part or all of a stream
+    /// closes the origin lane, return lane, or both lanes of a stream
     pub fn close_stream(
         &mut self,
         stream_id: StreamId,

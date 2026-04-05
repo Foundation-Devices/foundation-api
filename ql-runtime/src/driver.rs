@@ -156,15 +156,15 @@ impl DriverStreamIo {
 
     fn inbound_target(&self) -> CloseTarget {
         match self {
-            Self::Initiator { .. } => CloseTarget::Response,
-            Self::Responder { .. } => CloseTarget::Request,
+            Self::Initiator { .. } => CloseTarget::Return,
+            Self::Responder { .. } => CloseTarget::Origin,
         }
     }
 
     fn outbound_target(&self) -> CloseTarget {
         match self {
-            Self::Initiator { .. } => CloseTarget::Request,
-            Self::Responder { .. } => CloseTarget::Response,
+            Self::Initiator { .. } => CloseTarget::Origin,
+            Self::Responder { .. } => CloseTarget::Return,
         }
     }
 
@@ -352,13 +352,13 @@ impl DriverState {
             stream_id,
             request: ByteReader::new(
                 stream_id,
-                CloseTarget::Request,
+                CloseTarget::Origin,
                 request_rx,
                 self.runtime_tx.clone(),
             ),
             response: ByteWriter::new(
                 stream_id,
-                CloseTarget::Response,
+                CloseTarget::Return,
                 response_writer,
                 self.runtime_tx.clone(),
             ),
@@ -762,7 +762,7 @@ mod tests {
         state.drive_command(
             RuntimeCommand::CloseStream {
                 stream_id,
-                target: CloseTarget::Request,
+                target: CloseTarget::Origin,
                 code: CloseCode::CANCELLED,
                 payload: Vec::new(),
             },
