@@ -21,7 +21,7 @@ async fn connect_round_trip_changes_peer_status() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
@@ -75,7 +75,7 @@ async fn handshake_timeout_disconnects() {
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Disconnected).await;
     })
@@ -101,7 +101,7 @@ async fn rejected_session_write_is_reissued() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
