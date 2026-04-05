@@ -55,10 +55,12 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
 
         await_status(&status_a, identity_b.xid, PeerStage::Disconnected).await;
 
-        let result =
-            tokio::time::timeout(Duration::from_millis(300), pending.response.next_chunk())
-                .await
-                .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_millis(300),
+            next_chunk(&mut pending.response),
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             result,
             Err(QlError::SessionClosed) | Err(QlError::Cancelled)

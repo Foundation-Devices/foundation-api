@@ -97,16 +97,9 @@ impl RuntimeConfig {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum InboundEvent {
-    Data(Vec<u8>),
-    Finished,
-    Failed(crate::QlError),
-}
-
 pub(crate) struct OpenedStreamDelivery {
     pub stream_id: StreamId,
-    pub response: async_channel::Receiver<InboundEvent>,
+    pub response: crate::ByteReader,
 }
 
 pub struct Runtime<P> {

@@ -116,7 +116,7 @@ async fn rejected_session_write_is_reissued() {
         let mut stream = handle_a.open_stream().await.unwrap();
         stream.request.write_all(b"retry").await.unwrap();
         stream.request.finish().await.unwrap();
-        assert_eq!(stream.response.next_chunk().await.unwrap(), None);
+        assert_eq!(next_chunk(&mut stream.response).await.unwrap(), None);
 
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), responder)

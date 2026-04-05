@@ -12,6 +12,9 @@ pub(crate) enum RuntimeCommand {
         request_reader: piper::Reader,
         start: oneshot::Sender<Result<OpenedStreamDelivery, QlError>>,
     },
+    PollInbound {
+        stream_id: StreamId,
+    },
     PollStream {
         stream_id: StreamId,
     },

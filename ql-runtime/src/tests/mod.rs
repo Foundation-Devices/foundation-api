@@ -5,10 +5,12 @@ use std::{
         atomic::{AtomicU8, AtomicUsize, Ordering},
         Arc,
     },
+    task::Poll,
     time::Duration,
 };
 
 use async_channel::{Receiver, Sender};
+use futures_lite::future::poll_fn;
 use libcrux_aesgcm::AesGcm256Key;
 use ql_wire::{
     generate_identity, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce,
@@ -494,10 +496,24 @@ async fn assert_no_status_for(
 
 async fn read_all(mut stream: crate::ByteReader) -> Result<Vec<u8>, QlError> {
     let mut data = Vec::new();
-    while let Some(chunk) = stream.next_chunk().await? {
+    while let Some(chunk) = next_chunk(&mut stream).await? {
         data.extend_from_slice(&chunk);
     }
     Ok(data)
+}
+
+async fn next_chunk(stream: &mut crate::ByteReader) -> Result<Option<Vec<u8>>, QlError> {
+    poll_fn(|cx| match stream.poll_fill_buf(cx) {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Ok(Some(buf))) => {
+            let (bytes, len) = (buf.to_vec(), buf.len());
+            stream.consume(len);
+            Poll::Ready(Ok(Some(bytes)))
+        }
+        Poll::Ready(Ok(None)) => Poll::Ready(Ok(None)),
+        Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+    })
+    .await
 }
 
 fn default_runtime_config() -> RuntimeConfig {
