@@ -101,7 +101,7 @@ impl<B: ByteChunks> SessionFrame<B> {
             Self::Ack(_) => RecordAck::WIRE_SIZE,
             Self::StreamData(frame) => SIZE_LEN + frame.wire_size(),
             Self::StreamWindow(_) => StreamWindow::WIRE_SIZE,
-            Self::StreamClose(_) => SIZE_LEN + StreamClose::WIRE_SIZE,
+            Self::StreamClose(_) => StreamClose::WIRE_SIZE,
             Self::Close(_) => SessionClose::WIRE_SIZE,
         }
     }
@@ -177,7 +177,9 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
             ))
         }
         SessionFrameKind::StreamClose => {
-            let (frame, rest) = split_variable_frame(rest)?;
+            let (frame, rest) = rest
+                .split_at_checked(StreamClose::WIRE_SIZE)
+                .ok_or(WireError::InvalidPayload)?;
             Ok((
                 SessionFrame::StreamClose(StreamClose::parse_bytes(frame)?),
                 rest,

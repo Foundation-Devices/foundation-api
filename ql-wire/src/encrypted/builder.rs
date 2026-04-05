@@ -41,49 +41,57 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_ping(&mut self) -> bool {
-        self.push_wire_size(1, |out| out[0] = super::SessionFrameKind::Ping as u8)
+        self.push_empty_frame(super::SessionFrameKind::Ping)
     }
 
     pub fn push_ack(&mut self, ack: &RecordAck) -> bool {
-        let len = 1 + RecordAck::WIRE_SIZE;
-        self.push_wire_size(len, |out| {
-            out[0] = super::SessionFrameKind::Ack as u8;
-            ack.encode_into(&mut out[1..]);
-        })
+        self.push_frame_payload(
+            super::SessionFrameKind::Ack,
+            RecordAck::WIRE_SIZE,
+            |payload| {
+                ack.encode_into(payload);
+            },
+        )
     }
 
     pub fn push_stream_data<B: ByteChunks>(&mut self, frame: &StreamData<B>) -> bool {
-        let len = 1 + super::SIZE_LEN + frame.wire_size();
-        self.push_wire_size(len, |out| {
-            out[0] = super::SessionFrameKind::StreamData as u8;
-            super::push_variable_len(&mut out[1..=super::SIZE_LEN], frame.wire_size());
-            frame.encode_into(&mut out[1 + super::SIZE_LEN..]);
-        })
+        self.push_len_prefixed_frame(
+            super::SessionFrameKind::StreamData,
+            frame.wire_size(),
+            |payload| {
+                frame.encode_into(payload);
+            },
+        )
     }
 
     pub fn push_stream_window(&mut self, frame: &StreamWindow) -> bool {
-        let len = 1 + StreamWindow::WIRE_SIZE;
-        self.push_wire_size(len, |out| {
-            out[0] = super::SessionFrameKind::StreamWindow as u8;
-            frame.encode_into(&mut out[1..]);
-        })
+        self.push_frame_payload(
+            super::SessionFrameKind::StreamWindow,
+            StreamWindow::WIRE_SIZE,
+            |payload| {
+                frame.encode_into(payload);
+            },
+        )
     }
 
     pub fn push_stream_close(&mut self, frame: &StreamClose) -> bool {
-        let len = 1 + super::SIZE_LEN + StreamClose::WIRE_SIZE;
-        self.push_wire_size(len, |out| {
-            out[0] = super::SessionFrameKind::StreamClose as u8;
-            super::push_variable_len(&mut out[1..=super::SIZE_LEN], StreamClose::WIRE_SIZE);
-            frame.encode_into(&mut out[1 + super::SIZE_LEN..]);
-        })
+        self.push_frame_payload(
+            super::SessionFrameKind::StreamClose,
+            StreamClose::WIRE_SIZE,
+            |payload| {
+                frame.encode_into(payload);
+            },
+        )
     }
 
     pub fn push_close(&mut self, close: &SessionClose) -> bool {
-        let len = 1 + SessionClose::WIRE_SIZE;
-        self.push_wire_size(len, |out| {
-            out[0] = super::SessionFrameKind::Close as u8;
-            close.encode_into(&mut out[1..]);
-        })
+        self.push_frame_payload(
+            super::SessionFrameKind::Close,
+            SessionClose::WIRE_SIZE,
+            |payload| {
+                close.encode_into(payload);
+            },
+        )
     }
 
     pub fn push_frame<B: ByteChunks>(&mut self, frame: &SessionFrame<B>) -> bool {
@@ -130,6 +138,35 @@ impl SessionRecordBuilder {
         self.bytes.resize(start + wire_size, 0);
         encode(&mut self.bytes[start..]);
         true
+    }
+
+    fn push_empty_frame(&mut self, kind: super::SessionFrameKind) -> bool {
+        self.push_wire_size(1, |out| out[0] = kind as u8)
+    }
+
+    fn push_frame_payload(
+        &mut self,
+        kind: super::SessionFrameKind,
+        payload_wire_size: usize,
+        encode_payload: impl FnOnce(&mut [u8]),
+    ) -> bool {
+        self.push_wire_size(1 + payload_wire_size, |out| {
+            out[0] = kind as u8;
+            encode_payload(&mut out[1..]);
+        })
+    }
+
+    fn push_len_prefixed_frame(
+        &mut self,
+        kind: super::SessionFrameKind,
+        payload_wire_size: usize,
+        encode_payload: impl FnOnce(&mut [u8]),
+    ) -> bool {
+        self.push_wire_size(1 + super::SIZE_LEN + payload_wire_size, |out| {
+            out[0] = kind as u8;
+            super::push_variable_len(&mut out[1..=super::SIZE_LEN], payload_wire_size);
+            encode_payload(&mut out[1 + super::SIZE_LEN..]);
+        })
     }
 
     fn can_push_len(&self, len: usize) -> bool {
