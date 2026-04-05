@@ -342,11 +342,12 @@ impl crate::platform::QlPlatform for TestPlatform {
                 tokio::time::sleep(write_delay).await;
             }
 
-            let mut should_fail = false;
-            if is_encrypted_payload(&message) {
+            let should_fail = if is_encrypted_payload(&message) {
                 let count = self.encrypted_write_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                should_fail = fail_encrypted_write_at == Some(count);
-            }
+                fail_encrypted_write_at == Some(count)
+            } else {
+                false
+            };
 
             let result = if should_fail {
                 Err(QlError::SendFailed)
@@ -454,6 +455,7 @@ fn spawn_gated_forwarder(
     });
 }
 
+#[allow(clippy::future_not_send)]
 async fn run_local_test<F>(future: F)
 where
     F: Future<Output = ()>,
@@ -527,4 +529,19 @@ fn default_runtime_config() -> RuntimeConfig {
         },
         ..Default::default()
     }
+}
+
+// runtime is send, though the Runtime::run future itself is not
+#[test]
+fn runtime_is_send() {
+    let config = default_runtime_config();
+    let identity_a = new_identity(11);
+    let (platform_a, _, _) = TestPlatform::new(1);
+    let (runtime_a, _handle) = new_runtime(identity_a.clone(), platform_a, config);
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(runtime_a.run())
+    });
 }

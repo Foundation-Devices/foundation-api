@@ -4,6 +4,7 @@ use bytes::Buf;
 use futures_lite::StreamExt;
 
 use super::*;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BytesValue(Vec<u8>);
 
@@ -74,7 +75,7 @@ async fn rpc_request_round_trips() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request = read_all(inbound.request).await.unwrap();
+            let request = read_all(inbound.reader).await.unwrap();
             let rpc_inbound = ql_rpc::parse_inbound(&request).unwrap();
             assert_eq!(
                 ql_rpc::request::decode_request::<Echo>(rpc_inbound.body).unwrap(),
@@ -84,9 +85,9 @@ async fn rpc_request_round_trips() {
             let mut encoded = Vec::new();
             ql_rpc::request::encode_response::<Echo>(&BytesValue(b"world".to_vec()), &mut encoded)
                 .unwrap();
-            let mut response = inbound.response;
-            response.write_all(&encoded).await.unwrap();
-            response.finish().await.unwrap();
+            let mut writer = inbound.writer;
+            writer.write_all(&encoded).await.unwrap();
+            writer.finish().await.unwrap();
         });
 
         let rpc = handle_a.rpc();
@@ -130,7 +131,7 @@ async fn rpc_subscription_streams_events() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request = read_all(inbound.request).await.unwrap();
+            let request = read_all(inbound.reader).await.unwrap();
             let rpc_inbound = ql_rpc::parse_inbound(&request).unwrap();
             assert_eq!(
                 ql_rpc::subscription::decode_request::<Feed>(rpc_inbound.body).unwrap(),
@@ -144,9 +145,9 @@ async fn rpc_subscription_streams_events() {
                 .unwrap();
             ql_rpc::subscription::encode_end(&mut encoded);
 
-            let mut response = inbound.response;
-            response.write_all(&encoded).await.unwrap();
-            response.finish().await.unwrap();
+            let mut writer = inbound.writer;
+            writer.write_all(&encoded).await.unwrap();
+            writer.finish().await.unwrap();
         });
 
         let rpc = handle_a.rpc();
@@ -198,7 +199,7 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request = read_all(inbound.request).await.unwrap();
+            let request = read_all(inbound.reader).await.unwrap();
             let rpc_inbound = ql_rpc::parse_inbound(&request).unwrap();
             assert_eq!(
                 ql_rpc::request_with_progress::decode_request::<Download>(rpc_inbound.body)
@@ -223,9 +224,9 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
             )
             .unwrap();
 
-            let mut response = inbound.response;
-            response.write_all(&encoded).await.unwrap();
-            response.finish().await.unwrap();
+            let mut writer = inbound.writer;
+            writer.write_all(&encoded).await.unwrap();
+            writer.finish().await.unwrap();
         });
 
         let rpc = handle_a.rpc();

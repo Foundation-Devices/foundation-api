@@ -21,7 +21,7 @@ pub struct RuntimeHandle {
 
 impl RuntimeHandle {
     pub fn bind_peer(&self, peer: PeerBundle) {
-        self.send(RuntimeCommand::BindPeer { peer })
+        self.send(RuntimeCommand::BindPeer { peer });
     }
 
     pub fn connect(&self) -> Result<(), QlError> {
@@ -31,7 +31,7 @@ impl RuntimeHandle {
     }
 
     pub fn send_incoming(&self, bytes: Vec<u8>) {
-        self.send(RuntimeCommand::Incoming(bytes))
+        self.send(RuntimeCommand::Incoming(bytes));
     }
 
     pub async fn open_stream(&self) -> Result<QlStream, QlError> {
@@ -73,6 +73,6 @@ impl RuntimeHandle {
     #[inline]
     #[track_caller]
     fn send(&self, cmd: RuntimeCommand) {
-        self.tx.send_blocking(cmd).expect("runtime is alive")
+        self.tx.send_blocking(cmd).expect("runtime is alive");
     }
 }

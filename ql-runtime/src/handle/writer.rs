@@ -73,7 +73,7 @@ impl ByteWriter {
         if self.writer.take().is_none() {
             return Ok(());
         }
-        self.poll_runtime()
+        std::future::ready(self.poll_runtime()).await
     }
 
     pub async fn close(mut self, code: StreamCloseCode) -> Result<(), QlError> {

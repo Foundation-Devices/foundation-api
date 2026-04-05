@@ -13,7 +13,7 @@ use futures_lite::future::poll_fn;
 use ql_fsm::{FsmTime, QlFsm, QlFsmEvent, SessionWriteId};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use self::state::*;
+use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
@@ -22,8 +22,9 @@ use crate::{
 };
 
 impl<P: QlPlatform> Runtime<P> {
+    #[allow(clippy::future_not_send)]
     pub async fn run(self) {
-        let Runtime {
+        let Self {
             identity,
             platform,
             config,
@@ -58,21 +59,21 @@ impl<P: QlPlatform> Runtime<P> {
 
             match next_driver_event(&rx, &platform, fsm.next_deadline(), &mut in_flight).await {
                 DriverEvent::Command(command) => {
-                    state.drive_command(&mut fsm, command, &platform, &mut in_flight)
+                    state.drive_command(&mut fsm, command, &platform, &mut in_flight);
                 }
-                DriverEvent::WriteCompleted { index, result } => {
+                DriverEvent::WriteCompleted { index, success } => {
                     let write = in_flight.swap_remove(index);
                     state.drive_write_completed(
                         &mut fsm,
                         write.session_write_id,
-                        result,
+                        success,
                         &platform,
                         &mut in_flight,
                     );
                 }
                 DriverEvent::TimerExpired => {
                     state.with_fsm_events(&mut fsm, &platform, |fsm, emit| {
-                        fsm.on_timer(now(), emit)
+                        fsm.on_timer(now(), emit);
                     });
                     state.finish_step(&mut fsm, &platform, &mut in_flight);
                 }
@@ -89,14 +90,12 @@ struct InFlightWrite<'a> {
 
 enum DriverEvent {
     Command(RuntimeCommand),
-    WriteCompleted {
-        index: usize,
-        result: Result<(), QlError>,
-    },
+    WriteCompleted { index: usize, success: bool },
     TimerExpired,
     CommandsClosed,
 }
 
+#[allow(clippy::future_not_send)]
 async fn next_driver_event<P: QlPlatform>(
     rx: &async_channel::Receiver<RuntimeCommand>,
     platform: &P,
@@ -112,22 +111,24 @@ async fn next_driver_event<P: QlPlatform>(
     poll_fn(|cx| {
         for (index, write) in in_flight.iter_mut().enumerate() {
             if let Poll::Ready(result) = write.future.as_mut().poll(cx) {
-                return Poll::Ready(DriverEvent::WriteCompleted { index, result });
+                return Poll::Ready(DriverEvent::WriteCompleted {
+                    index,
+                    success: result.is_ok(),
+                });
             }
         }
 
         if let Some(future) = sleep_future.as_mut() {
-            if let Poll::Ready(()) = future.as_mut().poll(cx) {
+            if future.as_mut().poll(cx) == Poll::Ready(()) {
                 return Poll::Ready(DriverEvent::TimerExpired);
             }
         }
 
         if let Some(future) = recv_future.as_mut() {
             if let Poll::Ready(res) = future.as_mut().poll(cx) {
-                return Poll::Ready(match res {
-                    Ok(command) => DriverEvent::Command(command),
-                    Err(_) => DriverEvent::CommandsClosed,
-                });
+                return Poll::Ready(
+                    res.map_or_else(|_| DriverEvent::CommandsClosed, DriverEvent::Command),
+                );
             }
         }
 
@@ -224,24 +225,25 @@ impl DriverState {
     }
 
     fn drive_write_completed<'a, P: QlPlatform>(
-        &mut self,
+        &self,
         fsm: &mut QlFsm,
         session_write_id: Option<SessionWriteId>,
-        result: Result<(), QlError>,
+        success: bool,
         platform: &'a P,
         in_flight: &mut Vec<InFlightWrite<'a>>,
     ) {
         if let Some(write_id) = session_write_id {
-            match result {
-                Ok(()) => fsm.confirm_session_write(now(), write_id),
-                Err(_) => fsm.reject_session_write(write_id),
+            if success {
+                fsm.confirm_session_write(now(), write_id);
+            } else {
+                fsm.reject_session_write(write_id);
             }
         }
         self.finish_step(fsm, platform, in_flight);
     }
 
     fn finish_step<'a, P: QlPlatform>(
-        &mut self,
+        &self,
         fsm: &mut QlFsm,
         platform: &'a P,
         in_flight: &mut Vec<InFlightWrite<'a>>,
@@ -304,12 +306,12 @@ impl DriverState {
                 self.handle_inbound_finished(fsm, stream_id);
             }
             QlFsmEvent::Closed(frame) => {
-                self.handle_closed_stream(frame);
+                self.handle_closed_stream(&frame);
             }
             QlFsmEvent::WritableClosed(stream_id) => {
                 self.handle_writable_closed(stream_id);
             }
-            QlFsmEvent::SessionClosed(_) => self.fail_all_streams(QlError::SessionClosed),
+            QlFsmEvent::SessionClosed(_) => self.fail_all_streams(&QlError::SessionClosed),
         }
     }
 
@@ -398,7 +400,7 @@ impl DriverState {
         self.finish_inbound_if_ready(fsm, stream_id);
     }
 
-    fn handle_inbound_finished(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
+    fn handle_inbound_finished(&mut self, fsm: &QlFsm, stream_id: StreamId) {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
@@ -406,7 +408,7 @@ impl DriverState {
         self.finish_inbound_if_ready(fsm, stream_id);
     }
 
-    fn finish_inbound_if_ready(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
+    fn finish_inbound_if_ready(&mut self, fsm: &QlFsm, stream_id: StreamId) {
         if fsm.stream_available_bytes(stream_id).unwrap_or(0) != 0 {
             return;
         }
@@ -422,18 +424,16 @@ impl DriverState {
         self.try_reap_stream(stream_id);
     }
 
-    fn handle_closed_stream(&mut self, frame: ql_wire::StreamClose) {
+    fn handle_closed_stream(&mut self, frame: &ql_wire::StreamClose) {
         let Some(stream) = self.streams.get_mut(&frame.stream_id) else {
             return;
         };
 
-        let error = QlError::StreamClosed {
-            target: frame.target,
-            code: frame.code,
-        };
-
         if frame.target == CloseTarget::Both || frame.target == stream.inbound_target() {
-            stream.inbound_mut().fail(error.clone());
+            stream.inbound_mut().fail(QlError::StreamClosed {
+                target: frame.target,
+                code: frame.code,
+            });
         }
         if frame.target == CloseTarget::Both || frame.target == stream.outbound_target() {
             stream.outbound_mut().close();
@@ -449,15 +449,15 @@ impl DriverState {
         self.try_reap_stream(stream_id);
     }
 
-    fn fail_all_streams(&mut self, error: QlError) {
+    fn fail_all_streams(&mut self, error: &QlError) {
         for stream in self.streams.values_mut() {
-            stream.fail_all(error.clone());
+            stream.fail_all(error);
         }
         self.streams.clear();
     }
 
     fn fill_write_slots<'a, P: QlPlatform>(
-        &mut self,
+        &self,
         fsm: &mut QlFsm,
         platform: &'a P,
         in_flight: &mut Vec<InFlightWrite<'a>>,
@@ -495,17 +495,14 @@ impl DriverState {
                 } else {
                     let bytes = reader.peek_buf();
                     if bytes.is_empty() {
-                        if reader.is_closed() && reader.len() == 0 && !*finish_queued {
+                        if reader.is_closed() && reader.is_empty() && !*finish_queued {
                             *finish_queued = true;
                             should_finish = true;
                         }
                         false
                     } else {
                         let len = bytes.len();
-                        let accepted = match fsm.write_stream(stream_id, bytes) {
-                            Ok(accepted) => accepted,
-                            Err(_) => 0,
-                        };
+                        let accepted = fsm.write_stream(stream_id, bytes).unwrap_or_default();
                         if accepted > 0 {
                             reader.consume(accepted);
                         }
