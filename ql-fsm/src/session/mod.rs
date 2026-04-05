@@ -1,4 +1,5 @@
 pub(crate) mod received_records;
+pub(crate) mod remote_stream_history;
 pub(crate) mod state;
 pub(crate) mod stream_parity;
 pub(crate) mod stream_rx;
@@ -19,6 +20,7 @@ use ql_wire::{
 
 use self::{
     received_records::{ReceiveOutcome, ReceivedRecords},
+    remote_stream_history::RemoteStreamHistory,
     state::{AckState, InboundState, OutboundState, SessionFsmState, StreamRole, StreamState},
     stream_parity::StreamParity,
     stream_rx::{StreamReadIter, StreamRxError},
@@ -122,6 +124,7 @@ impl SessionFsm {
                 pending_control: Default::default(),
                 streams: Default::default(),
                 next_stream_index: 0,
+                remote_stream_history: RemoteStreamHistory::new(config.local_parity.remote()),
             },
         }
     }
@@ -662,18 +665,25 @@ impl SessionFsm {
         let stream = match self.state.streams.entry(stream_id) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                if !self.config.local_parity.remote().matches(stream_id) {
-                    if self.local_stream_was_opened(stream_id) {
-                        return Ok(());
+                match classify_missing_stream(
+                    self.config.local_parity,
+                    self.state.next_stream_ordinal,
+                    stream_id,
+                    &mut self.state.remote_stream_history,
+                ) {
+                    MissingStreamAction::Create => {}
+                    MissingStreamAction::Ignore => return Ok(()),
+                    MissingStreamAction::FailProtocol => {
+                        self.fail_session(
+                            SessionClose {
+                                code: SessionCloseCode::PROTOCOL,
+                            },
+                            emit,
+                        );
+                        return Err(());
                     }
-                    self.fail_session(
-                        SessionClose {
-                            code: SessionCloseCode::PROTOCOL,
-                        },
-                        emit,
-                    );
-                    return Err(());
                 }
+
                 emit(SessionEvent::Opened(stream_id));
                 entry.insert(StreamState::new(
                     StreamRole::Responder,
@@ -752,31 +762,38 @@ impl SessionFsm {
         frame: &StreamClose,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
-        let created = match self.state.streams.entry(frame.stream_id) {
-            Entry::Occupied(_) => false,
+        let mut created = false;
+        let stream = match self.state.streams.entry(frame.stream_id) {
+            Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                if !self.config.local_parity.remote().matches(frame.stream_id) {
-                    if self.local_stream_was_opened(frame.stream_id) {
-                        return Ok(());
+                match classify_missing_stream(
+                    self.config.local_parity,
+                    self.state.next_stream_ordinal,
+                    frame.stream_id,
+                    &mut self.state.remote_stream_history,
+                ) {
+                    MissingStreamAction::Create => {}
+                    MissingStreamAction::Ignore => return Ok(()),
+                    MissingStreamAction::FailProtocol => {
+                        self.fail_session(
+                            SessionClose {
+                                code: SessionCloseCode::PROTOCOL,
+                            },
+                            emit,
+                        );
+                        return Err(());
                     }
-                    self.fail_session(
-                        SessionClose {
-                            code: SessionCloseCode::PROTOCOL,
-                        },
-                        emit,
-                    );
-                    return Err(());
                 }
+
+                created = true;
                 entry.insert(StreamState::new(
                     StreamRole::Responder,
                     self.config.stream_receive_buffer_size,
                     self.config.initial_peer_stream_receive_window,
-                ));
-                true
+                ))
             }
         };
 
-        let stream = self.state.streams.get_mut(&frame.stream_id).unwrap();
         if created {
             emit(SessionEvent::Opened(frame.stream_id));
         }
@@ -832,17 +849,6 @@ impl SessionFsm {
 
     fn target_affects_outbound(role: StreamRole, target: CloseTarget) -> bool {
         matches!(target, CloseTarget::Both) || role.outbound_target() == target
-    }
-
-    /// Returns true if this locally-opened stream id was already reaped, so stale peer frames for it can be ignored.
-    fn local_stream_was_opened(&self, stream_id: StreamId) -> bool {
-        self.config.local_parity.matches(stream_id)
-            && stream_id.0
-                < self
-                    .config
-                    .local_parity
-                    .make_stream_id(self.state.next_stream_ordinal)
-                    .0
     }
 
     fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
@@ -941,6 +947,43 @@ fn schedule_ack(ack_state: &mut AckState, due_at: Instant) {
         },
         AckState::Idle => AckState::Dirty { due_at },
     };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissingStreamAction {
+    Create,
+    Ignore,
+    FailProtocol,
+}
+
+fn classify_missing_stream(
+    local_parity: StreamParity,
+    next_stream_ordinal: u32,
+    stream_id: StreamId,
+    remote_stream_history: &mut RemoteStreamHistory,
+) -> MissingStreamAction {
+    if !local_parity.remote().matches(stream_id) {
+        return if local_stream_was_opened(local_parity, next_stream_ordinal, stream_id) {
+            MissingStreamAction::Ignore
+        } else {
+            MissingStreamAction::FailProtocol
+        };
+    }
+
+    if remote_stream_history.observe(stream_id) {
+        MissingStreamAction::Ignore
+    } else {
+        MissingStreamAction::Create
+    }
+}
+
+fn local_stream_was_opened(
+    local_parity: StreamParity,
+    next_stream_ordinal: u32,
+    stream_id: StreamId,
+) -> bool {
+    local_parity.matches(stream_id)
+        && stream_id.0 < local_parity.make_stream_id(next_stream_ordinal).0
 }
 
 fn restore_tracked_record(

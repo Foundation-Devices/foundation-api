@@ -366,6 +366,91 @@ fn duplicate_stream_data_is_not_redelivered() {
 }
 
 #[test]
+fn duplicate_remote_close_after_reap_is_ignored() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let close = StreamClose {
+        stream_id: StreamId(1),
+        target: CloseTarget::Both,
+        code: StreamCloseCode(9),
+    };
+    let record = SessionRecord {
+        frames: vec![SessionFrame::StreamClose(close.clone())],
+    };
+
+    let first = receive_events(&mut fsm, now, RecordSeq(1), &record);
+    assert_eq!(
+        first,
+        vec![
+            SessionEvent::Opened(close.stream_id),
+            SessionEvent::Closed(close.clone()),
+            SessionEvent::WritableClosed(close.stream_id),
+        ]
+    );
+
+    let second = receive_events(&mut fsm, now + Duration::from_millis(1), RecordSeq(2), &record);
+    assert!(second.is_empty());
+}
+
+#[test]
+fn duplicate_finished_remote_data_after_reap_is_ignored() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = StreamId(1);
+    let record = SessionRecord {
+        frames: vec![SessionFrame::StreamData(StreamData {
+            stream_id,
+            offset: 0,
+            fin: true,
+            bytes: b"hello".to_vec(),
+        })],
+    };
+
+    let first = receive_events(&mut fsm, now, RecordSeq(1), &record);
+    assert_eq!(
+        first,
+        vec![
+            SessionEvent::Opened(stream_id),
+            SessionEvent::Readable(stream_id),
+            SessionEvent::Finished(stream_id),
+        ]
+    );
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"hello".to_vec());
+
+    let second = receive_events(&mut fsm, now + Duration::from_millis(1), RecordSeq(2), &record);
+    assert!(second.is_empty());
+}
+
+#[test]
+fn out_of_order_remote_stream_first_observations_still_open_once_each() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let close3 = SessionRecord {
+        frames: vec![SessionFrame::StreamClose(StreamClose {
+            stream_id: StreamId(3),
+            target: CloseTarget::Both,
+            code: StreamCloseCode(1),
+        })],
+    };
+    let close1 = SessionRecord {
+        frames: vec![SessionFrame::StreamClose(StreamClose {
+            stream_id: StreamId(1),
+            target: CloseTarget::Both,
+            code: StreamCloseCode(2),
+        })],
+    };
+
+    let first = receive_events(&mut fsm, now, RecordSeq(1), &close3);
+    assert!(first.contains(&SessionEvent::Opened(StreamId(3))));
+
+    let second = receive_events(&mut fsm, now + Duration::from_millis(1), RecordSeq(2), &close1);
+    assert!(second.contains(&SessionEvent::Opened(StreamId(1))));
+
+    let third = receive_events(&mut fsm, now + Duration::from_millis(2), RecordSeq(3), &close3);
+    assert!(third.is_empty());
+}
+
+#[test]
 fn close_does_not_ack_rejected_record_seq() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
