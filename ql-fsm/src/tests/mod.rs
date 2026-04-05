@@ -1,4 +1,5 @@
 mod handshake;
+mod proptest;
 mod session;
 
 use std::{
