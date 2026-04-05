@@ -36,7 +36,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
         spawn_gated_forwarder(outbound_b, handle_a.clone(), drop_flag.clone());
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;

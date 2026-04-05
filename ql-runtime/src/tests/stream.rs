@@ -22,7 +22,7 @@ async fn open_stream_duplex_happy_path() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
@@ -85,7 +85,7 @@ async fn stream_backpressure_with_small_runtime_buffer() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
@@ -135,7 +135,7 @@ async fn dropping_responder_closes_initiator_response() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
@@ -188,7 +188,7 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
@@ -245,7 +245,7 @@ async fn max_concurrent_message_writes_is_respected() {
         spawn_forwarder(outbound_b, handle_a.clone());
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;
@@ -320,7 +320,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
         spawn_drop_every_nth_encrypted_forwarder(outbound_b, handle_a.clone(), 3);
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect().unwrap();
+        handle_a.connect();
 
         await_status(&status_a, identity_b.xid, PeerStage::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStage::Connected).await;

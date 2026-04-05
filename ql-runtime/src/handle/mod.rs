@@ -24,10 +24,8 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::BindPeer { peer });
     }
 
-    pub fn connect(&self) -> Result<(), QlError> {
-        self.tx
-            .send_blocking(RuntimeCommand::Connect)
-            .map_err(|_| QlError::Cancelled)
+    pub fn connect(&self) {
+        self.send(RuntimeCommand::Connect)
     }
 
     pub fn send_incoming(&self, bytes: Vec<u8>) {
