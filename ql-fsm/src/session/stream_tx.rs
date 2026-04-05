@@ -155,7 +155,9 @@ impl StreamTx {
         self.set_segment_state(range.offset, range.len, SendState::InFlight);
         if range.fin {
             if let Some(final_offset) = self.final_offset.as_mut() {
-                final_offset.state = SendState::InFlight;
+                if final_offset.state != SendState::Acked {
+                    final_offset.state = SendState::InFlight;
+                }
             }
         }
     }
@@ -164,7 +166,9 @@ impl StreamTx {
         self.set_segment_state(range.offset, range.len, SendState::Lost);
         if range.fin {
             if let Some(final_offset) = self.final_offset.as_mut() {
-                final_offset.state = SendState::Lost;
+                if final_offset.state != SendState::Acked {
+                    final_offset.state = SendState::Lost;
+                }
             }
         }
     }
@@ -189,26 +193,45 @@ impl StreamTx {
         if len == 0 {
             return;
         }
+        let end = offset + len as u64;
 
         let Some(index) = self
             .segments
             .iter()
-            .position(|segment| segment.offset == offset && segment.len >= len)
+            .position(|segment| segment.offset <= offset && end <= segment.end_offset())
         else {
             return;
         };
 
-        if self.segments[index].len == len {
-            self.segments[index].state = state;
-        } else {
-            let segment = self.segments.remove(index).unwrap();
-            self.segments
-                .insert(index, SendSegment { offset, len, state });
+        if self.segments[index].state == SendState::Acked && state != SendState::Acked {
+            return;
+        }
+
+        let segment = self.segments.remove(index).unwrap();
+        let mut insert_index = index;
+
+        if segment.offset < offset {
             self.segments.insert(
-                index + 1,
+                insert_index,
                 SendSegment {
-                    offset: offset + len as u64,
-                    len: segment.len - len,
+                    offset: segment.offset,
+                    len: usize::try_from(offset - segment.offset).unwrap(),
+                    state: segment.state,
+                },
+            );
+            insert_index += 1;
+        }
+
+        self.segments
+            .insert(insert_index, SendSegment { offset, len, state });
+        insert_index += 1;
+
+        if end < segment.end_offset() {
+            self.segments.insert(
+                insert_index,
+                SendSegment {
+                    offset: end,
+                    len: usize::try_from(segment.end_offset() - end).unwrap(),
                     state: segment.state,
                 },
             );
@@ -325,5 +348,73 @@ mod tests {
         tx.mark_in_flight(range);
         tx.mark_acked(range);
         assert!(tx.is_empty());
+    }
+
+    #[test]
+    fn subrange_updates_split_merged_in_flight_segments() {
+        let mut tx = StreamTx::new();
+        tx.append(b"abcdefghijkl");
+
+        let first = tx.next_range(4, u64::MAX).unwrap();
+        tx.mark_in_flight(first);
+        let second = tx.next_range(4, u64::MAX).unwrap();
+        tx.mark_in_flight(second);
+        let third = tx.next_range(4, u64::MAX).unwrap();
+        tx.mark_in_flight(third);
+
+        tx.mark_lost(StreamTxRange {
+            offset: 4,
+            len: 4,
+            fin: false,
+        });
+
+        assert_eq!(
+            tx.next_range(4, u64::MAX),
+            Some(StreamTxRange {
+                offset: 4,
+                len: 4,
+                fin: false,
+            })
+        );
+    }
+
+    #[test]
+    fn acked_subrange_is_not_reopened_by_stale_timeout() {
+        let mut tx = StreamTx::new();
+        tx.append(b"abcdefghijklmnop");
+
+        let first = tx.next_range(4, u64::MAX).unwrap();
+        tx.mark_in_flight(first);
+        let second = tx.next_range(4, u64::MAX).unwrap();
+        tx.mark_in_flight(second);
+        let third = tx.next_range(4, u64::MAX).unwrap();
+        tx.mark_in_flight(third);
+        let fourth = tx.next_range(4, u64::MAX).unwrap();
+        tx.mark_in_flight(fourth);
+
+        tx.mark_acked(StreamTxRange {
+            offset: 4,
+            len: 4,
+            fin: false,
+        });
+        tx.mark_lost(StreamTxRange {
+            offset: 4,
+            len: 4,
+            fin: false,
+        });
+        tx.mark_lost(StreamTxRange {
+            offset: 8,
+            len: 4,
+            fin: false,
+        });
+
+        assert_eq!(
+            tx.next_range(4, u64::MAX),
+            Some(StreamTxRange {
+                offset: 8,
+                len: 4,
+                fin: false,
+            })
+        );
     }
 }

@@ -282,11 +282,7 @@ impl SessionFsm {
                         return;
                     }
                 }
-                SessionFrame::StreamWindow(frame) => {
-                    if self.handle_stream_window(&frame, &mut emit).is_err() {
-                        return;
-                    }
-                }
+                SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame, &mut emit),
                 SessionFrame::StreamClose(frame) => {
                     if self.handle_stream_close(&frame, &mut emit).is_err() {
                         return;
@@ -403,15 +399,24 @@ impl SessionFsm {
     pub fn take_next_write(
         &mut self,
         now: Instant,
-    ) -> Option<(u64, RecordSeq, SessionRecordBuilder)> {
+    ) -> Option<(Option<u64>, RecordSeq, SessionRecordBuilder)> {
         self.state.now = now;
         self.collect_timeouts();
 
         let (builder, outbound) = self.build_next_record()?;
-        let write_id = self.state.next_write_id;
-        self.state.next_write_id = self.state.next_write_id.wrapping_add(1);
         let seq = outbound.seq;
-        self.state.tracked_records.insert(write_id, outbound);
+
+        let should_track = outbound.ping_included
+            || !outbound.window_updates.is_empty()
+            || !outbound.frames.is_empty();
+
+        let write_id = should_track.then(|| {
+            let write_id = self.state.next_write_id;
+            self.state.next_write_id = self.state.next_write_id.wrapping_add(1);
+            self.state.tracked_records.insert(write_id, outbound);
+            write_id
+        });
+
         Some((write_id, seq, builder))
     }
 
@@ -648,6 +653,9 @@ impl SessionFsm {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 if !self.config.local_parity.remote().matches(stream_id) {
+                    if self.local_stream_was_opened(stream_id) {
+                        return Ok(());
+                    }
                     self.fail_session(
                         SessionClose {
                             code: SessionCloseCode::PROTOCOL,
@@ -715,19 +723,9 @@ impl SessionFsm {
         }
     }
 
-    fn handle_stream_window(
-        &mut self,
-        frame: &StreamWindow,
-        emit: &mut impl FnMut(SessionEvent),
-    ) -> Result<(), ()> {
+    fn handle_stream_window(&mut self, frame: &StreamWindow, emit: &mut impl FnMut(SessionEvent)) {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
-            self.fail_session(
-                SessionClose {
-                    code: SessionCloseCode::PROTOCOL,
-                },
-                emit,
-            );
-            return Err(());
+            return;
         };
 
         let was_full = stream.send_capacity(self.config.stream_send_buffer_size) == 0;
@@ -737,7 +735,6 @@ impl SessionFsm {
         if was_full && stream.send_capacity(self.config.stream_send_buffer_size) > 0 {
             emit(SessionEvent::Writable(frame.stream_id));
         }
-        Ok(())
     }
 
     fn handle_stream_close(
@@ -749,6 +746,9 @@ impl SessionFsm {
             Entry::Occupied(_) => false,
             Entry::Vacant(entry) => {
                 if !self.config.local_parity.remote().matches(frame.stream_id) {
+                    if self.local_stream_was_opened(frame.stream_id) {
+                        return Ok(());
+                    }
                     self.fail_session(
                         SessionClose {
                             code: SessionCloseCode::PROTOCOL,
@@ -824,6 +824,17 @@ impl SessionFsm {
         matches!(target, CloseTarget::Both) || role.outbound_target() == target
     }
 
+    /// Returns true if this locally-opened stream id was already reaped, so stale peer frames for it can be ignored.
+    fn local_stream_was_opened(&self, stream_id: StreamId) -> bool {
+        self.config.local_parity.matches(stream_id)
+            && stream_id.0
+                < self
+                    .config
+                    .local_parity
+                    .make_stream_id(self.state.next_stream_ordinal)
+                    .0
+    }
+
     fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
         let tracked_refs_stream = self.state.tracked_records.values().any(|record| {
             record.window_updates.iter().any(|(id, _)| *id == stream_id)
@@ -839,6 +850,7 @@ impl SessionFsm {
 
         if !stream.tx.is_empty()
             || stream.pending_close.is_some()
+            || stream.pending_window
             || stream.readable_bytes() > 0
             || stream.rx.buffered_end_offset() > stream.rx.start_offset()
         {

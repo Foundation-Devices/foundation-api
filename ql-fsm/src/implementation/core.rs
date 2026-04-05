@@ -106,7 +106,7 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     );
     Some(OutboundWrite {
         record,
-        session_write_id: Some(SessionWriteId(write_id)),
+        session_write_id: write_id.map(SessionWriteId),
     })
 }
 

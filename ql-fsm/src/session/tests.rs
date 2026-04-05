@@ -26,7 +26,9 @@ fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {
 
 fn next_outbound(fsm: &mut SessionFsm, now: Instant) -> Option<(RecordSeq, SessionRecord)> {
     let (write_id, seq, builder) = fsm.take_next_write(now)?;
-    fsm.confirm_write(now, write_id);
+    if let Some(write_id) = write_id {
+        fsm.confirm_write(now, write_id);
+    }
     Some((seq, SessionRecord::decode(builder.bytes()).unwrap()))
 }
 
@@ -206,7 +208,10 @@ fn commit_stream_read_is_what_advances_stream_window() {
         ]
     );
 
-    let (_first_seq, first) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
+    let (write_id, _first_seq, builder) =
+        fsm.take_next_write(now + Duration::from_millis(1)).unwrap();
+    let first = SessionRecord::decode(builder.bytes()).unwrap();
+    assert!(write_id.is_none());
     assert!(matches!(first.frames.as_slice(), [SessionFrame::Ack(_)]));
 
     let read = fsm
@@ -224,6 +229,38 @@ fn commit_stream_read_is_what_advances_stream_window() {
         second.frames.as_slice(),
         [SessionFrame::StreamWindow(window)] if window.stream_id == stream_id
     ));
+}
+
+#[test]
+fn pure_ack_only_records_are_fire_and_forget() {
+    let now = Instant::now();
+    let config = SessionFsmConfig {
+        ack_delay: Duration::ZERO,
+        ..SessionFsmConfig::default()
+    };
+    let retransmit_timeout = config.retransmit_timeout;
+    let mut fsm = SessionFsm::new(config, now);
+    let stream_id = StreamId(1);
+    let record = SessionRecord {
+        frames: vec![SessionFrame::StreamData(StreamData {
+            stream_id,
+            offset: 0,
+            fin: false,
+            bytes: b"hi".to_vec(),
+        })],
+    };
+
+    let _ = receive_events(&mut fsm, now, RecordSeq(7), &record);
+
+    let (write_id, _seq, builder) = fsm.take_next_write(now + Duration::from_millis(1)).unwrap();
+    let ack = SessionRecord::decode(builder.bytes()).unwrap();
+    assert!(write_id.is_none());
+    assert!(matches!(ack.frames.as_slice(), [SessionFrame::Ack(_)]));
+
+    fsm.on_timer(now + retransmit_timeout + Duration::from_millis(1), |_| {});
+    assert!(fsm
+        .take_next_write(now + retransmit_timeout + Duration::from_millis(1))
+        .is_none());
 }
 
 #[test]
@@ -262,7 +299,7 @@ fn remote_stream_close_is_reliable_and_retried() {
         .unwrap();
 
     let (write_id, _seq, builder) = fsm.take_next_write(now).unwrap();
-    fsm.confirm_write(now, write_id);
+    fsm.confirm_write(now, write_id.expect("stream close should be tracked"));
     let first = SessionRecord::decode(builder.bytes()).unwrap();
     assert!(matches!(
         first.frames.as_slice(),
