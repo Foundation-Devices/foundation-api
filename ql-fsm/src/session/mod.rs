@@ -1,4 +1,5 @@
 pub(crate) mod received_records;
+pub(crate) mod range_set;
 pub(crate) mod remote_stream_history;
 pub(crate) mod state;
 pub(crate) mod stream_parity;
@@ -564,7 +565,8 @@ impl SessionFsm {
             if matches!(stream.outbound_state, OutboundState::Closed) {
                 continue;
             }
-            let Some(candidate) = stream.tx.next_range(max_payload, stream.peer_max_offset) else {
+            let Some(candidate) = stream.tx.poll_transmit(max_payload, stream.peer_max_offset)
+            else {
                 continue;
             };
             let offset =
@@ -578,7 +580,6 @@ impl SessionFsm {
             let res = builder.push_stream_data(&frame);
             assert!(res, "builder has capacity");
 
-            stream.tx.mark_in_flight(candidate);
             if candidate.fin {
                 stream.outbound_state = OutboundState::Finished;
             }
@@ -732,7 +733,6 @@ impl SessionFsm {
                 | StreamRxError::InconsistentFinalOffset
                 | StreamRxError::FinalOffsetBeforeBufferedData
                 | StreamRxError::BeyondFinalOffset
-                | StreamRxError::TooManyMissingRanges
                 | StreamRxError::OffsetOverflow,
             ) => {
                 self.fail_session(
@@ -1043,7 +1043,7 @@ fn restore_stream_data(streams: &mut IndexMap<StreamId, StreamState>, frame: Tra
         if matches!(stream.outbound_state, OutboundState::Closed) {
             return;
         }
-        stream.tx.mark_lost(StreamTxRange {
+        stream.tx.retransmit(StreamTxRange {
             offset: frame.offset,
             len: frame.len,
             fin: frame.fin,
@@ -1066,7 +1066,7 @@ fn acknowledge_tracked_frame(
             let stream_id = frame.stream_id;
             if let Some(stream) = streams.get_mut(&stream_id) {
                 let was_full = stream.send_capacity(stream_send_buffer_size) == 0;
-                stream.tx.mark_acked(StreamTxRange {
+                stream.tx.ack(StreamTxRange {
                     offset: frame.offset,
                     len: frame.len,
                     fin: frame.fin,

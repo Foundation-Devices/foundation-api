@@ -1,12 +1,16 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, ops::Range};
 
 use ql_wire::RangedByteChunks;
+
+use super::range_set::RangeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamTx {
     bytes: VecDeque<u8>,
     base_offset: u64,
-    segments: VecDeque<SendSegment>,
+    unsent: u64,
+    acked: RangeSet,
+    retransmits: RangeSet,
     final_offset: Option<TrackedFinalOffset>,
 }
 
@@ -17,22 +21,9 @@ struct TrackedFinalOffset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SendSegment {
-    offset: u64,
-    len: usize,
-    state: SendState,
-}
-
-impl SendSegment {
-    fn end_offset(&self) -> u64 {
-        self.offset + self.len as u64
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SendState {
     Unsent,
-    InFlight,
+    Sent,
     Lost,
     Acked,
 }
@@ -49,7 +40,9 @@ impl StreamTx {
         Self {
             bytes: VecDeque::new(),
             base_offset: 0,
-            segments: VecDeque::new(),
+            unsent: 0,
+            acked: RangeSet::new(),
+            retransmits: RangeSet::new(),
             final_offset: None,
         }
     }
@@ -63,7 +56,7 @@ impl StreamTx {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty() && self.segments.is_empty() && self.final_offset.is_none()
+        self.bytes.is_empty() && self.final_offset.is_none()
     }
 
     pub fn append(&mut self, bytes: &[u8]) {
@@ -71,20 +64,7 @@ impl StreamTx {
             return;
         }
 
-        let start = self.end_offset();
         self.bytes.extend(bytes);
-        if let Some(last) = self.segments.back_mut() {
-            if last.state == SendState::Unsent && last.end_offset() == start {
-                last.len += bytes.len();
-                return;
-            }
-        }
-
-        self.segments.push_back(SendSegment {
-            offset: start,
-            len: bytes.len(),
-            state: SendState::Unsent,
-        });
     }
 
     pub fn queue_fin(&mut self) {
@@ -94,47 +74,50 @@ impl StreamTx {
         });
     }
 
-    pub fn next_range(&self, max_payload: usize, peer_max_offset: u64) -> Option<StreamTxRange> {
-        let mut unsent = None;
-        for segment in &self.segments {
-            if !matches!(segment.state, SendState::Lost | SendState::Unsent) {
-                continue;
-            }
-
-            let credit_remaining = peer_max_offset.saturating_sub(segment.offset);
-            let credit_remaining = usize::try_from(credit_remaining).unwrap_or(usize::MAX);
-            let len = segment.len.min(max_payload).min(credit_remaining);
-            if len == 0 {
-                continue;
-            }
-
-            let fin = self.final_offset.is_some_and(|final_offset| {
-                matches!(final_offset.state, SendState::Lost | SendState::Unsent)
-                    && final_offset.offset == segment.offset + len as u64
-            });
-            let range = StreamTxRange {
-                offset: segment.offset,
-                len,
-                fin,
-            };
-
-            if segment.state == SendState::Lost {
-                return Some(range);
-            }
-            if unsent.is_none() {
-                unsent = Some(range);
+    pub fn poll_transmit(
+        &mut self,
+        max_payload: usize,
+        peer_max_offset: u64,
+    ) -> Option<StreamTxRange> {
+        if let Some(range) = self.retransmits.peek_min() {
+            let end = range
+                .end
+                .min(range.start.saturating_add(max_payload as u64))
+                .min(peer_max_offset);
+            if end > range.start {
+                let range = self.retransmits.pop_min().unwrap();
+                if end < range.end {
+                    self.retransmits.insert(end..range.end);
+                }
+                return Some(StreamTxRange {
+                    offset: range.start,
+                    len: usize::try_from(end - range.start).unwrap(),
+                    fin: self.poll_fin(end),
+                });
             }
         }
 
-        if let Some(range) = unsent {
-            return Some(range);
+        if self.unsent < self.end_offset() {
+            let end = self
+                .end_offset()
+                .min(self.unsent.saturating_add(max_payload as u64))
+                .min(peer_max_offset);
+            if end > self.unsent {
+                let start = self.unsent;
+                self.unsent = end;
+                return Some(StreamTxRange {
+                    offset: start,
+                    len: usize::try_from(end - start).unwrap(),
+                    fin: self.poll_fin(end),
+                });
+            }
         }
 
         let final_offset = self.final_offset.filter(|final_offset| {
             matches!(final_offset.state, SendState::Lost | SendState::Unsent)
                 && final_offset.offset <= peer_max_offset
         })?;
-
+        self.final_offset.as_mut().unwrap().state = SendState::Sent;
         Some(StreamTxRange {
             offset: final_offset.offset,
             len: 0,
@@ -151,121 +134,113 @@ impl StreamTx {
         }
     }
 
-    pub fn mark_in_flight(&mut self, range: StreamTxRange) {
-        self.set_segment_state(range.offset, range.len, SendState::InFlight);
+    pub fn retransmit(&mut self, range: StreamTxRange) {
+        if let Some(range) = self.clamp_sent_range(range.offset, range.len) {
+            Self::insert_not_acked(&self.acked, &mut self.retransmits, range);
+        }
         if range.fin {
-            if let Some(final_offset) = self.final_offset.as_mut() {
-                if final_offset.state != SendState::Acked {
-                    final_offset.state = SendState::InFlight;
-                }
-            }
+            self.mark_fin_lost();
         }
     }
 
-    pub fn mark_lost(&mut self, range: StreamTxRange) {
-        self.set_segment_state(range.offset, range.len, SendState::Lost);
-        if range.fin {
-            if let Some(final_offset) = self.final_offset.as_mut() {
-                if final_offset.state != SendState::Acked {
-                    final_offset.state = SendState::Lost;
-                }
-            }
+    pub fn ack(&mut self, range: StreamTxRange) {
+        if let Some(range) = self.clamp_buffered_range(range.offset, range.len) {
+            self.acked.insert(range.clone());
+            self.retransmits.remove(range);
+            self.trim_acked_prefix();
         }
-    }
-
-    pub fn mark_acked(&mut self, range: StreamTxRange) {
-        self.set_segment_state(range.offset, range.len, SendState::Acked);
         if range.fin {
             if let Some(final_offset) = self.final_offset.as_mut() {
                 final_offset.state = SendState::Acked;
             }
         }
-        self.trim_acked_prefix();
+        self.trim_acked_fin();
     }
 
     pub fn clear(&mut self) {
         self.bytes.clear();
-        self.segments.clear();
+        self.unsent = self.base_offset;
+        self.acked = RangeSet::new();
+        self.retransmits = RangeSet::new();
         self.final_offset = None;
     }
 
-    fn set_segment_state(&mut self, offset: u64, len: usize, state: SendState) {
+    fn clamp_buffered_range(&self, offset: u64, len: usize) -> Option<Range<u64>> {
         if len == 0 {
-            return;
+            return None;
         }
-        let end = offset + len as u64;
-
-        let Some(index) = self
-            .segments
-            .iter()
-            .position(|segment| segment.offset <= offset && end <= segment.end_offset())
-        else {
-            return;
-        };
-
-        if self.segments[index].state == SendState::Acked && state != SendState::Acked {
-            return;
-        }
-
-        let segment = self.segments.remove(index).unwrap();
-        let mut insert_index = index;
-
-        if segment.offset < offset {
-            self.segments.insert(
-                insert_index,
-                SendSegment {
-                    offset: segment.offset,
-                    len: usize::try_from(offset - segment.offset).unwrap(),
-                    state: segment.state,
-                },
-            );
-            insert_index += 1;
-        }
-
-        self.segments
-            .insert(insert_index, SendSegment { offset, len, state });
-        insert_index += 1;
-
-        if end < segment.end_offset() {
-            self.segments.insert(
-                insert_index,
-                SendSegment {
-                    offset: end,
-                    len: usize::try_from(segment.end_offset() - end).unwrap(),
-                    state: segment.state,
-                },
-            );
-        }
-
-        self.merge_adjacent_segments();
+        let start = offset.max(self.base_offset);
+        let end = offset.saturating_add(len as u64).min(self.end_offset());
+        (start < end).then_some(start..end)
     }
 
-    fn merge_adjacent_segments(&mut self) {
-        let mut index = 1;
-        while index < self.segments.len() {
-            let prev = self.segments[index - 1];
-            let next = self.segments[index];
-            if prev.state == next.state && prev.end_offset() == next.offset {
-                self.segments[index - 1].len += next.len;
-                self.segments.remove(index);
-            } else {
-                index += 1;
+    fn clamp_sent_range(&self, offset: u64, len: usize) -> Option<Range<u64>> {
+        if len == 0 {
+            return None;
+        }
+        let start = offset.max(self.base_offset);
+        let end = offset.saturating_add(len as u64).min(self.unsent);
+        (start < end).then_some(start..end)
+    }
+
+    fn insert_not_acked(acked_set: &RangeSet, target: &mut RangeSet, range: Range<u64>) {
+        let mut cursor = range.start;
+        for acked in acked_set.iter() {
+            if acked.end <= cursor {
+                continue;
+            }
+            if acked.start >= range.end {
+                break;
+            }
+            if cursor < acked.start {
+                target.insert(cursor..acked.start.min(range.end));
+            }
+            cursor = cursor.max(acked.end);
+            if cursor >= range.end {
+                break;
+            }
+        }
+        if cursor < range.end {
+            target.insert(cursor..range.end);
+        }
+    }
+
+    fn poll_fin(&mut self, offset: u64) -> bool {
+        let Some(final_offset) = self.final_offset.as_mut() else {
+            return false;
+        };
+        if matches!(final_offset.state, SendState::Lost | SendState::Unsent)
+            && final_offset.offset == offset
+        {
+            final_offset.state = SendState::Sent;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn mark_fin_lost(&mut self) {
+        if let Some(final_offset) = self.final_offset.as_mut() {
+            if final_offset.state != SendState::Acked {
+                final_offset.state = SendState::Lost;
             }
         }
     }
 
     fn trim_acked_prefix(&mut self) {
-        while matches!(
-            self.segments.front(),
-            Some(segment) if segment.state == SendState::Acked
-        ) {
-            let len = self.segments.pop_front().unwrap().len;
+        while self.acked.min() == Some(self.base_offset) {
+            let prefix = self.acked.pop_min().unwrap();
+            let len = usize::try_from(prefix.end - prefix.start).unwrap();
             self.bytes.drain(..len);
-            self.base_offset = self.base_offset.saturating_add(len as u64);
+            self.base_offset = prefix.end;
         }
+    }
 
+    fn trim_acked_fin(&mut self) {
         if self.final_offset.is_some_and(|final_offset| {
-            final_offset.state == SendState::Acked && final_offset.offset == self.base_offset
+            final_offset.state == SendState::Acked
+                && final_offset.offset == self.base_offset
+                && self.bytes.is_empty()
         }) {
             self.final_offset = None;
         }
@@ -283,7 +258,7 @@ mod tests {
         tx.append(b"de");
 
         assert_eq!(
-            tx.next_range(8, u64::MAX),
+            tx.poll_transmit(8, u64::MAX),
             Some(StreamTxRange {
                 offset: 0,
                 len: 5,
@@ -297,12 +272,11 @@ mod tests {
         let mut tx = StreamTx::new();
         tx.append(b"abcdef");
 
-        let first = tx.next_range(3, u64::MAX).unwrap();
-        tx.mark_in_flight(first);
-        tx.mark_lost(first);
+        let first = tx.poll_transmit(3, u64::MAX).unwrap();
+        tx.retransmit(first);
 
         assert_eq!(
-            tx.next_range(3, u64::MAX),
+            tx.poll_transmit(3, u64::MAX),
             Some(StreamTxRange {
                 offset: 0,
                 len: 3,
@@ -316,12 +290,11 @@ mod tests {
         let mut tx = StreamTx::new();
         tx.append(b"abcdef");
 
-        let first = tx.next_range(3, u64::MAX).unwrap();
-        tx.mark_in_flight(first);
-        tx.mark_acked(first);
+        let first = tx.poll_transmit(3, u64::MAX).unwrap();
+        tx.ack(first);
 
         assert_eq!(
-            tx.next_range(3, u64::MAX),
+            tx.poll_transmit(3, u64::MAX),
             Some(StreamTxRange {
                 offset: 3,
                 len: 3,
@@ -335,7 +308,7 @@ mod tests {
         let mut tx = StreamTx::new();
         tx.queue_fin();
 
-        let range = tx.next_range(16, u64::MAX).unwrap();
+        let range = tx.poll_transmit(16, u64::MAX).unwrap();
         assert_eq!(
             range,
             StreamTxRange {
@@ -345,8 +318,7 @@ mod tests {
             }
         );
 
-        tx.mark_in_flight(range);
-        tx.mark_acked(range);
+        tx.ack(range);
         assert!(tx.is_empty());
     }
 
@@ -355,21 +327,14 @@ mod tests {
         let mut tx = StreamTx::new();
         tx.append(b"abcdefghijkl");
 
-        let first = tx.next_range(4, u64::MAX).unwrap();
-        tx.mark_in_flight(first);
-        let second = tx.next_range(4, u64::MAX).unwrap();
-        tx.mark_in_flight(second);
-        let third = tx.next_range(4, u64::MAX).unwrap();
-        tx.mark_in_flight(third);
+        let _first = tx.poll_transmit(4, u64::MAX).unwrap();
+        let second = tx.poll_transmit(4, u64::MAX).unwrap();
+        let _third = tx.poll_transmit(4, u64::MAX).unwrap();
 
-        tx.mark_lost(StreamTxRange {
-            offset: 4,
-            len: 4,
-            fin: false,
-        });
+        tx.retransmit(second);
 
         assert_eq!(
-            tx.next_range(4, u64::MAX),
+            tx.poll_transmit(4, u64::MAX),
             Some(StreamTxRange {
                 offset: 4,
                 len: 4,
@@ -383,33 +348,17 @@ mod tests {
         let mut tx = StreamTx::new();
         tx.append(b"abcdefghijklmnop");
 
-        let first = tx.next_range(4, u64::MAX).unwrap();
-        tx.mark_in_flight(first);
-        let second = tx.next_range(4, u64::MAX).unwrap();
-        tx.mark_in_flight(second);
-        let third = tx.next_range(4, u64::MAX).unwrap();
-        tx.mark_in_flight(third);
-        let fourth = tx.next_range(4, u64::MAX).unwrap();
-        tx.mark_in_flight(fourth);
+        let _first = tx.poll_transmit(4, u64::MAX).unwrap();
+        let second = tx.poll_transmit(4, u64::MAX).unwrap();
+        let third = tx.poll_transmit(4, u64::MAX).unwrap();
+        let _fourth = tx.poll_transmit(4, u64::MAX).unwrap();
 
-        tx.mark_acked(StreamTxRange {
-            offset: 4,
-            len: 4,
-            fin: false,
-        });
-        tx.mark_lost(StreamTxRange {
-            offset: 4,
-            len: 4,
-            fin: false,
-        });
-        tx.mark_lost(StreamTxRange {
-            offset: 8,
-            len: 4,
-            fin: false,
-        });
+        tx.ack(second);
+        tx.retransmit(second);
+        tx.retransmit(third);
 
         assert_eq!(
-            tx.next_range(4, u64::MAX),
+            tx.poll_transmit(4, u64::MAX),
             Some(StreamTxRange {
                 offset: 8,
                 len: 4,

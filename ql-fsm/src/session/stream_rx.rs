@@ -1,19 +1,15 @@
 use std::collections::VecDeque;
 
+use super::range_set::RangeSet;
+
 /// reassembles one stream direction from out-of-order byte ranges.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamRx<const MAX_MISSING_RANGES: usize = 8> {
+pub struct StreamRx {
     start_offset: u64,
     bytes: VecDeque<u8>,
-    missing: MissingRanges<MAX_MISSING_RANGES>,
+    missing: RangeSet,
     final_offset: Option<u64>,
     max_buffered: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MissingRange {
-    pub start: u64,
-    pub end: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +25,6 @@ pub enum StreamRxError {
     InconsistentFinalOffset,
     FinalOffsetBeforeBufferedData,
     BeyondFinalOffset,
-    TooManyMissingRanges,
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +33,7 @@ pub struct StreamReadIter<'a> {
     back: Option<&'a [u8]>,
 }
 
-impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
+impl StreamRx {
     pub fn new(max_buffered: usize) -> Self {
         Self::with_start_offset(0, max_buffered)
     }
@@ -47,7 +42,7 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
         Self {
             start_offset,
             bytes: VecDeque::new(),
-            missing: MissingRanges::new(),
+            missing: RangeSet::new(),
             final_offset: None,
             max_buffered,
         }
@@ -70,7 +65,7 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
             return 0;
         }
 
-        match self.missing.first() {
+        match self.missing.peek_min() {
             Some(range) if range.start <= self.start_offset => 0,
             Some(range) => usize::try_from(range.start - self.start_offset)
                 .expect("readable prefix exceeds usize"),
@@ -141,11 +136,11 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
         }
 
         self.ensure_within_window(end)?;
-        self.ensure_buffered(end)?;
+        self.ensure_buffered(end);
         #[cfg(test)]
         self.assert_valid_overlap(effective_offset, effective_bytes);
         self.write_bytes(effective_offset, effective_bytes);
-        self.subtract_missing_range(effective_offset, end)?;
+        self.missing.remove(effective_offset..end);
 
         Ok(self.insert_outcome(was_complete, old_readable))
     }
@@ -194,49 +189,25 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
         Ok(())
     }
 
-    fn ensure_buffered(&mut self, end: u64) -> Result<(), StreamRxError> {
+    fn ensure_buffered(&mut self, end: u64) {
         let buffered_end = self.buffered_end_offset();
         if end <= buffered_end {
-            return Ok(());
+            return;
         }
 
         let additional = usize::try_from(end - buffered_end).expect("buffer growth exceeds usize");
         self.bytes.resize(self.bytes.len() + additional, 0);
-        self.push_missing_range(MissingRange {
-            start: buffered_end,
-            end,
-        })
-    }
-
-    fn push_missing_range(&mut self, range: MissingRange) -> Result<(), StreamRxError> {
-        if range.start >= range.end {
-            return Ok(());
-        }
-
-        if let Some(last) = self.missing.last_mut() {
-            if last.end >= range.start {
-                last.end = last.end.max(range.end);
-                return Ok(());
-            }
-        }
-
-        self.missing.push(range)
+        self.missing.insert(buffered_end..end);
     }
 
     #[cfg(test)]
     fn assert_valid_overlap(&self, offset: u64, bytes: &[u8]) {
-        let mut gap_index = self.first_gap_index_after(offset);
-
         for (index, byte) in bytes.iter().copied().enumerate() {
             let absolute = offset + index as u64;
-
-            while gap_index < self.missing.len() && self.missing[gap_index].end <= absolute {
-                gap_index += 1;
-            }
-
-            let is_missing = gap_index < self.missing.len()
-                && self.missing[gap_index].start <= absolute
-                && absolute < self.missing[gap_index].end;
+            let is_missing = self
+                .missing
+                .iter()
+                .any(|range| range.start <= absolute && absolute < range.end);
             if is_missing {
                 continue;
             }
@@ -268,75 +239,6 @@ impl<const MAX_MISSING_RANGES: usize> StreamRx<MAX_MISSING_RANGES> {
             back[..bytes.len() - front_len].copy_from_slice(&bytes[front_len..]);
         }
     }
-
-    fn subtract_missing_range(&mut self, start: u64, end: u64) -> Result<(), StreamRxError> {
-        let first = self.first_gap_index_after(start);
-        if first == self.missing.len() || self.missing[first].start >= end {
-            return Ok(());
-        }
-
-        let mut last_exclusive = first;
-        while last_exclusive < self.missing.len() && self.missing[last_exclusive].start < end {
-            last_exclusive += 1;
-        }
-
-        let last = last_exclusive - 1;
-        let keep_left = self.missing[first].start < start;
-        let keep_right = self.missing[last].end > end;
-
-        if first == last {
-            let original = self.missing[first];
-            match (keep_left, keep_right) {
-                (true, true) => {
-                    self.missing[first].end = start;
-                    self.missing.insert(
-                        first + 1,
-                        MissingRange {
-                            start: end,
-                            end: original.end,
-                        },
-                    )?;
-                }
-                (true, false) => {
-                    self.missing[first].end = start;
-                }
-                (false, true) => {
-                    self.missing[first].start = end;
-                }
-                (false, false) => {
-                    self.missing.remove(first);
-                }
-            }
-            return Ok(());
-        }
-
-        match (keep_left, keep_right) {
-            (true, true) => {
-                self.missing[first].end = start;
-                self.missing[last].start = end;
-                self.missing.drain(first + 1..last);
-            }
-            (true, false) => {
-                self.missing[first].end = start;
-                self.missing.drain(first + 1..last_exclusive);
-            }
-            (false, true) => {
-                self.missing[last].start = end;
-                self.missing.drain(first..last);
-            }
-            (false, false) => {
-                self.missing.drain(first..last_exclusive);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn first_gap_index_after(&self, offset: u64) -> usize {
-        self.missing
-            .as_slice()
-            .partition_point(|range| range.end <= offset)
-    }
 }
 
 impl<'a> Iterator for StreamReadIter<'a> {
@@ -359,108 +261,9 @@ impl<'a> Iterator for StreamReadIter<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MissingRanges<const N: usize> {
-    ranges: [MissingRange; N],
-    len: usize,
-}
-
-impl<const N: usize> MissingRanges<N> {
-    fn new() -> Self {
-        Self {
-            ranges: [MissingRange { start: 0, end: 0 }; N],
-            len: 0,
-        }
-    }
-
-    fn as_slice(&self) -> &[MissingRange] {
-        &self.ranges[..self.len]
-    }
-
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn first(&self) -> Option<&MissingRange> {
-        self.as_slice().first()
-    }
-
-    fn last_mut(&mut self) -> Option<&mut MissingRange> {
-        if self.len == 0 {
-            None
-        } else {
-            Some(&mut self.ranges[self.len - 1])
-        }
-    }
-
-    fn push(&mut self, range: MissingRange) -> Result<(), StreamRxError> {
-        if self.len == N {
-            return Err(StreamRxError::TooManyMissingRanges);
-        }
-        self.ranges[self.len] = range;
-        self.len += 1;
-        Ok(())
-    }
-
-    fn insert(&mut self, index: usize, range: MissingRange) -> Result<(), StreamRxError> {
-        if self.len == N {
-            return Err(StreamRxError::TooManyMissingRanges);
-        }
-        for i in (index..self.len).rev() {
-            self.ranges[i + 1] = self.ranges[i];
-        }
-        self.ranges[index] = range;
-        self.len += 1;
-        Ok(())
-    }
-
-    fn remove(&mut self, index: usize) -> MissingRange {
-        let removed = self.ranges[index];
-        for i in index + 1..self.len {
-            self.ranges[i - 1] = self.ranges[i];
-        }
-        self.len -= 1;
-        self.ranges[self.len] = MissingRange { start: 0, end: 0 };
-        removed
-    }
-
-    fn drain(&mut self, range: std::ops::Range<usize>) {
-        let count = range.end - range.start;
-        if count == 0 {
-            return;
-        }
-
-        for i in range.end..self.len {
-            self.ranges[i - count] = self.ranges[i];
-        }
-        for i in self.len - count..self.len {
-            self.ranges[i] = MissingRange { start: 0, end: 0 };
-        }
-        self.len -= count;
-    }
-}
-
-impl<const N: usize> std::ops::Index<usize> for MissingRanges<N> {
-    type Output = MissingRange;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.as_slice()[index]
-    }
-}
-
-impl<const N: usize> std::ops::IndexMut<usize> for MissingRanges<N> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.ranges[index]
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{InsertOutcome, MissingRange, StreamRx, StreamRxError};
+    use super::{InsertOutcome, StreamRx, StreamRxError};
 
     pub fn copy_readable(rx: &StreamRx) -> Vec<u8> {
         let readable = rx.readable_len();
@@ -473,7 +276,7 @@ mod tests {
 
     #[test]
     fn contiguous_insert_becomes_readable_and_complete() {
-        let mut rx = StreamRx::<8>::new(64);
+        let mut rx = StreamRx::new(64);
 
         let outcome = rx.insert(0, true, b"hello").unwrap();
 
@@ -493,7 +296,7 @@ mod tests {
 
     #[test]
     fn out_of_order_insert_tracks_missing_ranges_until_gap_is_filled() {
-        let mut rx = StreamRx::<8>::new(64);
+        let mut rx = StreamRx::new(64);
 
         let first = rx.insert(5, true, b" world").unwrap();
         assert_eq!(
@@ -503,7 +306,7 @@ mod tests {
                 became_complete: false,
             }
         );
-        assert_eq!(rx.missing.as_slice(), &[MissingRange { start: 0, end: 5 }]);
+        assert_eq!(rx.missing.iter().collect::<Vec<_>>(), vec![0..5]);
         assert_eq!(rx.readable_len(), 0);
 
         let second = rx.insert(0, false, b"hello").unwrap();
@@ -521,7 +324,7 @@ mod tests {
 
     #[test]
     fn duplicate_insert_is_ignored_if_bytes_match() {
-        let mut rx = StreamRx::<8>::new(64);
+        let mut rx = StreamRx::new(64);
 
         rx.insert(0, false, b"hello").unwrap();
         let duplicate = rx.insert(0, false, b"hello").unwrap();
@@ -539,7 +342,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "conflicting overlap at stream offset 3")]
     fn conflicting_overlap_panics_in_test_builds() {
-        let mut rx = StreamRx::<8>::new(64);
+        let mut rx = StreamRx::new(64);
 
         rx.insert(0, false, b"abcdef").unwrap();
         rx.insert(3, false, b"xyz").unwrap();
@@ -547,7 +350,7 @@ mod tests {
 
     #[test]
     fn consume_advances_start_offset_and_trims_old_prefix() {
-        let mut rx = StreamRx::<8>::new(64);
+        let mut rx = StreamRx::new(64);
 
         rx.insert(0, false, b"abcd").unwrap();
         rx.consume(2);
@@ -568,31 +371,14 @@ mod tests {
     }
 
     #[test]
-    fn insert_rejects_when_missing_range_budget_is_exhausted() {
-        let mut rx = StreamRx::<2>::new(64);
-
-        rx.insert(1, false, b"a").unwrap();
-        rx.insert(3, false, b"b").unwrap();
-        let error = rx.insert(5, false, b"c").unwrap_err();
-
-        assert_eq!(error, StreamRxError::TooManyMissingRanges);
-    }
-
-    #[test]
     fn insert_can_fill_multiple_gaps_without_rebuilding_state() {
-        let mut rx = StreamRx::<8>::new(64);
+        let mut rx = StreamRx::new(64);
 
         rx.insert(0, false, b"ab").unwrap();
         rx.insert(4, false, b"ef").unwrap();
         rx.insert(8, true, b"ij").unwrap();
 
-        assert_eq!(
-            rx.missing.as_slice(),
-            &[
-                MissingRange { start: 2, end: 4 },
-                MissingRange { start: 6, end: 8 },
-            ]
-        );
+        assert_eq!(rx.missing.iter().collect::<Vec<_>>(), vec![2..4, 6..8]);
 
         let outcome = rx.insert(2, false, b"cdefgh").unwrap();
 
@@ -607,5 +393,39 @@ mod tests {
 
         assert_eq!(copy_readable(&rx), b"abcdefghij");
         assert!(rx.is_complete());
+    }
+
+    #[test]
+    fn heavily_fragmented_inserts_stay_valid() {
+        let mut rx = StreamRx::new(64);
+
+        rx.insert(1, false, b"b").unwrap();
+        rx.insert(3, false, b"d").unwrap();
+        rx.insert(5, false, b"f").unwrap();
+        rx.insert(7, false, b"h").unwrap();
+        rx.insert(9, true, b"j").unwrap();
+
+        assert_eq!(
+            rx.missing.iter().collect::<Vec<_>>(),
+            vec![0..1, 2..3, 4..5, 6..7, 8..9]
+        );
+
+        let outcome = rx.insert(0, false, b"abcdefghi").unwrap();
+        assert_eq!(
+            outcome,
+            InsertOutcome {
+                newly_readable_bytes: 10,
+                became_complete: true,
+            }
+        );
+        assert_eq!(copy_readable(&rx), b"abcdefghij");
+        assert!(rx.is_complete());
+    }
+
+    #[test]
+    fn out_of_window_insert_is_rejected() {
+        let mut rx = StreamRx::new(4);
+        let error = rx.insert(5, false, b"a").unwrap_err();
+        assert_eq!(error, StreamRxError::OutOfWindow);
     }
 }
