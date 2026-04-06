@@ -27,6 +27,7 @@ mod tests;
 
 use std::time::{Duration, Instant};
 
+pub use bytes::Bytes;
 pub use error::QlFsmError;
 use ql_wire::{
     CloseTarget, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose,
@@ -253,8 +254,12 @@ impl QlFsm {
         implementation::open_stream(self)
     }
 
-    /// queues bytes for an open stream and returns the accepted count
-    pub fn write_stream(&mut self, stream_id: StreamId, bytes: &[u8]) -> Result<usize, QlFsmError> {
+    /// queues owned bytes for an open stream and returns the accepted count
+    pub fn write_stream(
+        &mut self,
+        stream_id: StreamId,
+        bytes: &mut Bytes,
+    ) -> Result<usize, QlFsmError> {
         implementation::write_stream(self, stream_id, bytes)
     }
 

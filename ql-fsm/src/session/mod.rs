@@ -1,5 +1,5 @@
-pub(crate) mod received_records;
 pub(crate) mod range_set;
+pub(crate) mod received_records;
 pub(crate) mod remote_stream_history;
 pub(crate) mod state;
 pub(crate) mod stream_parity;
@@ -12,6 +12,7 @@ mod tests;
 
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use indexmap::{map::Entry, IndexMap};
 use ql_wire::{
     CloseTarget, RecordAck, RecordSeq, SessionClose, SessionCloseCode, SessionFrame,
@@ -151,8 +152,11 @@ impl SessionFsm {
     pub fn write_stream(
         &mut self,
         stream_id: StreamId,
-        bytes: &[u8],
+        bytes: &mut Bytes,
     ) -> Result<usize, StreamError> {
+        // TODO: consider a `BytesSource` abstraction here so callers can provide
+        // different chunk sources while preserving partial-accept semantics and deferring any
+        // required copying until capacity is known
         self.ensure_session_open()?;
         let stream = self
             .state
@@ -166,7 +170,9 @@ impl SessionFsm {
         let accepted = bytes
             .len()
             .min(stream.send_capacity(self.config.stream_send_buffer_size));
-        stream.tx.append(&bytes[..accepted]);
+        if accepted > 0 {
+            stream.tx.append(bytes.split_to(accepted));
+        }
         Ok(accepted)
     }
 

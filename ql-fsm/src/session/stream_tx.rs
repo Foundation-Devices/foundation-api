@@ -1,12 +1,14 @@
 use std::{collections::VecDeque, ops::Range};
 
-use ql_wire::RangedByteChunks;
+use bytes::{Buf, Bytes};
+use ql_wire::ByteChunks;
 
 use super::range_set::RangeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamTx {
-    bytes: VecDeque<u8>,
+    chunks: VecDeque<Bytes>,
+    buffered_len: usize,
     base_offset: u64,
     unsent: u64,
     acked: RangeSet,
@@ -35,10 +37,74 @@ pub struct StreamTxRange {
     pub fin: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct StreamTxBytes<'a> {
+    inner: &'a VecDeque<Bytes>,
+    offset: usize,
+    len: usize,
+}
+
+pub struct StreamTxBytesIter<'a> {
+    inner: std::collections::vec_deque::Iter<'a, Bytes>,
+    skip: usize,
+    remaining: usize,
+}
+
+impl ByteChunks for StreamTxBytes<'_> {
+    type Chunks<'a>
+        = StreamTxBytesIter<'a>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        self.inner
+            .iter()
+            .map(Bytes::len)
+            .sum::<usize>()
+            .saturating_sub(self.offset)
+            .min(self.len)
+    }
+
+    fn chunks(&self) -> Self::Chunks<'_> {
+        StreamTxBytesIter {
+            inner: self.inner.iter(),
+            skip: self.offset,
+            remaining: self.len(),
+        }
+    }
+}
+
+impl<'a> Iterator for StreamTxBytesIter<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.remaining > 0 {
+            let chunk = self.inner.next()?;
+            if self.skip >= chunk.len() {
+                self.skip -= chunk.len();
+                continue;
+            }
+
+            let chunk = &chunk[self.skip..];
+            self.skip = 0;
+            if chunk.is_empty() {
+                continue;
+            }
+
+            let len = chunk.len().min(self.remaining);
+            self.remaining -= len;
+            return Some(&chunk[..len]);
+        }
+
+        None
+    }
+}
+
 impl StreamTx {
     pub fn new() -> Self {
         Self {
-            bytes: VecDeque::new(),
+            chunks: VecDeque::new(),
+            buffered_len: 0,
             base_offset: 0,
             unsent: 0,
             acked: RangeSet::new(),
@@ -48,23 +114,24 @@ impl StreamTx {
     }
 
     pub fn buffered_len(&self) -> usize {
-        self.bytes.len()
+        self.buffered_len
     }
 
     pub fn end_offset(&self) -> u64 {
-        self.base_offset + self.bytes.len() as u64
+        self.base_offset + self.buffered_len as u64
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty() && self.final_offset.is_none()
+        self.buffered_len == 0 && self.final_offset.is_none()
     }
 
-    pub fn append(&mut self, bytes: &[u8]) {
+    pub fn append(&mut self, bytes: Bytes) {
         if bytes.is_empty() {
             return;
         }
 
-        self.bytes.extend(bytes);
+        self.buffered_len += bytes.len();
+        self.chunks.push_back(bytes);
     }
 
     pub fn queue_fin(&mut self) {
@@ -125,10 +192,10 @@ impl StreamTx {
         })
     }
 
-    pub fn ranged_bytes(&self, range: StreamTxRange) -> RangedByteChunks<&VecDeque<u8>> {
+    pub fn ranged_bytes(&self, range: StreamTxRange) -> StreamTxBytes<'_> {
         let offset = usize::try_from(range.offset - self.base_offset).unwrap();
-        RangedByteChunks {
-            inner: &self.bytes,
+        StreamTxBytes {
+            inner: &self.chunks,
             offset,
             len: range.len,
         }
@@ -158,7 +225,8 @@ impl StreamTx {
     }
 
     pub fn clear(&mut self) {
-        self.bytes.clear();
+        self.chunks.clear();
+        self.buffered_len = 0;
         self.unsent = self.base_offset;
         self.acked = RangeSet::new();
         self.retransmits = RangeSet::new();
@@ -230,8 +298,21 @@ impl StreamTx {
     fn trim_acked_prefix(&mut self) {
         while self.acked.min() == Some(self.base_offset) {
             let prefix = self.acked.pop_min().unwrap();
-            let len = usize::try_from(prefix.end - prefix.start).unwrap();
-            self.bytes.drain(..len);
+            let mut to_advance = usize::try_from(prefix.end - prefix.start).unwrap();
+            self.buffered_len -= to_advance;
+            while to_advance > 0 {
+                let front = self
+                    .chunks
+                    .front_mut()
+                    .expect("expected buffered chunks for acked prefix");
+                if front.len() <= to_advance {
+                    to_advance -= front.len();
+                    self.chunks.pop_front();
+                } else {
+                    front.advance(to_advance);
+                    to_advance = 0;
+                }
+            }
             self.base_offset = prefix.end;
         }
     }
@@ -240,7 +321,7 @@ impl StreamTx {
         if self.final_offset.is_some_and(|final_offset| {
             final_offset.state == SendState::Acked
                 && final_offset.offset == self.base_offset
-                && self.bytes.is_empty()
+                && self.buffered_len == 0
         }) {
             self.final_offset = None;
         }
@@ -249,13 +330,15 @@ impl StreamTx {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::{StreamTx, StreamTxRange};
 
     #[test]
     fn append_tracks_unsent_tail() {
         let mut tx = StreamTx::new();
-        tx.append(b"abc");
-        tx.append(b"de");
+        tx.append(Bytes::from_static(b"abc"));
+        tx.append(Bytes::from_static(b"de"));
 
         assert_eq!(
             tx.poll_transmit(8, u64::MAX),
@@ -270,7 +353,7 @@ mod tests {
     #[test]
     fn lost_range_is_selected_before_unsent_tail() {
         let mut tx = StreamTx::new();
-        tx.append(b"abcdef");
+        tx.append(Bytes::from_static(b"abcdef"));
 
         let first = tx.poll_transmit(3, u64::MAX).unwrap();
         tx.retransmit(first);
@@ -288,7 +371,7 @@ mod tests {
     #[test]
     fn acked_prefix_is_trimmed() {
         let mut tx = StreamTx::new();
-        tx.append(b"abcdef");
+        tx.append(Bytes::from_static(b"abcdef"));
 
         let first = tx.poll_transmit(3, u64::MAX).unwrap();
         tx.ack(first);
@@ -325,7 +408,7 @@ mod tests {
     #[test]
     fn subrange_updates_split_merged_in_flight_segments() {
         let mut tx = StreamTx::new();
-        tx.append(b"abcdefghijkl");
+        tx.append(Bytes::from_static(b"abcdefghijkl"));
 
         let _first = tx.poll_transmit(4, u64::MAX).unwrap();
         let second = tx.poll_transmit(4, u64::MAX).unwrap();
@@ -346,7 +429,7 @@ mod tests {
     #[test]
     fn acked_subrange_is_not_reopened_by_stale_timeout() {
         let mut tx = StreamTx::new();
-        tx.append(b"abcdefghijklmnop");
+        tx.append(Bytes::from_static(b"abcdefghijklmnop"));
 
         let _first = tx.poll_transmit(4, u64::MAX).unwrap();
         let second = tx.poll_transmit(4, u64::MAX).unwrap();

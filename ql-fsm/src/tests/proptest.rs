@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use ::proptest::{collection::vec, prelude::*, test_runner::TestCaseResult};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
@@ -313,7 +314,8 @@ impl Runner {
             }
             Action::WriteA { slot, bytes } => {
                 if let Some(stream_id) = self.slots_a[*slot] {
-                    if let Ok(accepted) = self.harness.a.fsm.write_stream(stream_id, bytes) {
+                    let mut chunk = Bytes::from(bytes.clone());
+                    if let Ok(accepted) = self.harness.a.fsm.write_stream(stream_id, &mut chunk) {
                         self.expected_at_b
                             .entry(stream_id)
                             .or_default()
@@ -323,7 +325,8 @@ impl Runner {
             }
             Action::WriteB { slot, bytes } => {
                 if let Some(stream_id) = self.slots_b[*slot] {
-                    if let Ok(accepted) = self.harness.b.fsm.write_stream(stream_id, bytes) {
+                    let mut chunk = Bytes::from(bytes.clone());
+                    if let Ok(accepted) = self.harness.b.fsm.write_stream(stream_id, &mut chunk) {
                         self.expected_at_a
                             .entry(stream_id)
                             .or_default()

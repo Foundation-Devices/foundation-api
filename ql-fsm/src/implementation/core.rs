@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use ql_wire::{
     self as wire, CloseTarget, QlCrypto, SessionCloseCode, StreamCloseCode, StreamId, WireDecode,
     WireEncode,
@@ -140,7 +141,7 @@ pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, QlFsmError> {
 pub fn write_stream(
     fsm: &mut QlFsm,
     stream_id: StreamId,
-    bytes: &[u8],
+    bytes: &mut Bytes,
 ) -> Result<usize, QlFsmError> {
     let state = fsm.state.link.connected_mut_or_err()?;
     Ok(state.session.write_stream(stream_id, bytes)?)

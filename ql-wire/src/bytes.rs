@@ -145,72 +145,11 @@ impl ByteSlice for &mut [u8] {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct RangedByteChunks<T> {
-    pub inner: T,
-    pub offset: usize,
-    pub len: usize,
-}
-
-pub struct RangedByteChunksIter<I> {
-    inner: I,
-    skip: usize,
-    remaining: usize,
-}
-
-impl<'a, I> Iterator for RangedByteChunksIter<I>
-where
-    I: Iterator<Item = &'a [u8]>,
-{
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.remaining > 0 {
-            let chunk = self.inner.next()?;
-            if self.skip >= chunk.len() {
-                self.skip -= chunk.len();
-                continue;
-            }
-
-            let chunk = &chunk[self.skip..];
-            self.skip = 0;
-            if chunk.is_empty() {
-                continue;
-            }
-
-            let len = chunk.len().min(self.remaining);
-            self.remaining -= len;
-            return Some(&chunk[..len]);
-        }
-
-        None
-    }
-}
-
-impl<T: ByteChunks> ByteChunks for RangedByteChunks<T> {
-    type Chunks<'a>
-        = RangedByteChunksIter<T::Chunks<'a>>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize {
-        self.inner.len().saturating_sub(self.offset).min(self.len)
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        RangedByteChunksIter {
-            inner: self.inner.chunks(),
-            skip: self.offset,
-            remaining: self.len(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
 
-    use super::{ByteChunks, ByteSlice, ByteSliceMut, RangedByteChunks};
+    use super::{ByteChunks, ByteSlice, ByteSliceMut};
 
     #[test]
     fn shared_slice_split_at() {
@@ -261,37 +200,5 @@ mod tests {
         assert_eq!(bytes.len(), 6);
         assert_eq!(chunks.concat(), b"cdefgh");
         assert!(!chunks.is_empty());
-    }
-
-    #[test]
-    fn ranged_byte_chunks_slice_middle() {
-        let bytes: &[u8] = b"abcdef";
-        let ranged = RangedByteChunks {
-            inner: bytes,
-            offset: 2,
-            len: 3,
-        };
-
-        let chunks = ranged.chunks().collect::<Vec<_>>();
-        assert_eq!(ranged.len(), 3);
-        assert_eq!(chunks, vec![b"cde".as_slice()]);
-    }
-
-    #[test]
-    fn ranged_byte_chunks_borrowed_vec_deque_middle() {
-        let mut bytes = VecDeque::with_capacity(8);
-        bytes.extend(b"abcd".iter().copied());
-        bytes.drain(..2);
-        bytes.extend(b"efgh".iter().copied());
-
-        let ranged = RangedByteChunks {
-            inner: &bytes,
-            offset: 1,
-            len: 4,
-        };
-
-        let chunks = ranged.chunks().collect::<Vec<_>>();
-        assert_eq!(ranged.len(), 4);
-        assert_eq!(chunks.concat(), b"defg");
     }
 }

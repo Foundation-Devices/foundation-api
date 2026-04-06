@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use ql_wire::{
     CloseTarget, RecordAck, RecordSeq, SessionFrame, SessionRecord, SessionRecordBuilder,
     StreamClose, StreamCloseCode, StreamData, StreamId, VarInt, XID,
@@ -18,6 +19,11 @@ fn stream_id(value: u64) -> StreamId {
 
 fn offset(value: u64) -> VarInt {
     VarInt::from_u64(value).unwrap()
+}
+
+fn write_stream_bytes(fsm: &mut SessionFsm, stream_id: StreamId, bytes: &[u8]) -> usize {
+    let mut bytes = Bytes::copy_from_slice(bytes);
+    fsm.write_stream(stream_id, &mut bytes).unwrap()
 }
 
 fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {
@@ -70,10 +76,10 @@ fn outbound_record_seq_increments_monotonically() {
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
-    assert_eq!(fsm.write_stream(stream_id, b"one").unwrap(), 3);
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"one"), 3);
     let (first_seq, _) = next_outbound(&mut fsm, now).unwrap();
 
-    assert_eq!(fsm.write_stream(stream_id, b"two").unwrap(), 3);
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"two"), 3);
     let (second_seq, _) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
 
     assert_eq!(first_seq, seq(0));
@@ -86,7 +92,7 @@ fn retransmit_uses_new_record_seq() {
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
     let stream_id = fsm.open_stream().unwrap();
 
-    assert_eq!(fsm.write_stream(stream_id, b"retry").unwrap(), 5);
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"retry"), 5);
     let (first_seq, first) = next_outbound(&mut fsm, now).unwrap();
 
     fsm.on_timer(now + Duration::from_millis(200), |_| {});
@@ -111,8 +117,8 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
     let payload_a = vec![b'a'; 40];
     let payload_b = vec![b'b'; 40];
 
-    assert_eq!(fsm.write_stream(stream_id_a, &payload_a).unwrap(), 40);
-    assert_eq!(fsm.write_stream(stream_id_b, &payload_b).unwrap(), 40);
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id_a, &payload_a), 40);
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id_b, &payload_b), 40);
 
     let (first_seq, first) = next_outbound(&mut fsm, now).unwrap();
     let (second_seq, _second) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
@@ -121,7 +127,7 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
         |frame| matches!(frame, SessionFrame::StreamData(frame) if frame.stream_id == stream_id_a)
     ));
 
-    assert_eq!(fsm.write_stream(stream_id_b, b"b-2").unwrap(), 3);
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id_b, b"b-2"), 3);
     let (_third_seq, third) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
 
     let stream_ids: Vec<_> = third
@@ -147,7 +153,7 @@ fn ack_reopens_write_capacity() {
     );
     let stream_id = fsm.open_stream().unwrap();
 
-    assert_eq!(fsm.write_stream(stream_id, b"abcd").unwrap(), 4);
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"abcd"), 4);
     let (record_seq, _record) = next_outbound(&mut fsm, now).unwrap();
 
     let mut events = Vec::new();
@@ -162,7 +168,7 @@ fn ack_reopens_write_capacity() {
     );
 
     assert!(events.contains(&SessionEvent::Writable(stream_id)));
-    assert_eq!(fsm.write_stream(stream_id, b"z").unwrap(), 1);
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"z"), 1);
 }
 
 #[test]
@@ -487,7 +493,7 @@ fn initial_peer_stream_receive_window_limits_first_send() {
     );
     let stream_id = fsm.open_stream().unwrap();
 
-    assert_eq!(fsm.write_stream(stream_id, b"hello").unwrap(), 5);
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"hello"), 5);
     let (_first_seq, first) = next_outbound(&mut fsm, now).unwrap();
     assert!(matches!(
         first.frames.as_slice(),
