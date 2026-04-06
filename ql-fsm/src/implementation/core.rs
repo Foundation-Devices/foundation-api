@@ -3,7 +3,6 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use ql_wire::{
     self as wire, CloseTarget, QlCrypto, SessionCloseCode, StreamCloseCode, StreamId, WireDecode,
-    WireEncode,
 };
 
 use crate::{
@@ -23,30 +22,36 @@ pub fn receive(
     crypto: &impl QlCrypto,
     mut emit: impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
-    let header = wire::RecordHeader::decode_bytes(bytes.as_slice())?;
+    let mut reader = wire::Reader::new(bytes.as_mut_slice());
+    let header = wire::RecordHeader::decode(&mut reader)?;
+
+    if header.version != wire::QL_WIRE_VERSION {
+        return Err(QlFsmError::InvalidPayload);
+    }
+
     match header.record_type {
         wire::RecordType::Handshake => {
-            let record = wire::QlHandshakeRecord::decode_exact(bytes.as_slice())?;
+            let record = wire::QlHandshakeRecord::decode(&mut reader)?;
             super::handle_handshake_record(fsm, crypto, &record, &mut emit)
         }
         wire::RecordType::Session => {
             let state = fsm.state.link.connected_mut_or_err()?;
-            let bytes_ptr = bytes.as_ptr() as usize;
-            let (seq, start, len) = {
-                let record = wire::QlSessionRecord::decode_exact(&mut bytes[..])?;
+            let (decrypt_len, seq) = {
+                let record = wire::QlSessionRecord::decode(&mut reader)?;
                 if record.header.connection_id != state.transport.rx_connection_id {
                     return Err(QlFsmError::InvalidPayload);
                 }
-                let plaintext = wire::decrypt_record(
+                let payload = wire::decrypt_record(
                     crypto,
                     &record.header,
                     record.payload,
                     &state.transport.rx_key,
                 )?;
-                let start = plaintext.as_ptr() as usize - bytes_ptr;
-                (record.header.seq, start, plaintext.len())
+                (payload.len(), record.header.seq)
             };
-            let plaintext = Bytes::from(bytes).slice(start..start + len);
+
+            let len = bytes.len();
+            let plaintext = Bytes::from(bytes).slice(len - decrypt_len..);
             let frames = wire::SessionRecord::parse(plaintext)?;
 
             let mut session_closed = false;
@@ -95,8 +100,9 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
 
 pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
     if let Some(record) = fsm.state.handshake.take() {
+        let record = wire::encode_record_vec(ql_wire::RecordType::Handshake, &record);
         return Some(OutboundWrite {
-            record: record.encode_vec(),
+            record,
             session_write_id: None,
         });
     }

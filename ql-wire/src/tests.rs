@@ -10,6 +10,15 @@ struct TestCrypto {
     counter: AtomicU64,
 }
 
+fn decode_handshake_record(bytes: &[u8]) -> QlHandshakeRecord {
+    decode_record(bytes).unwrap().1
+}
+
+fn decode_session_record(bytes: &[u8]) -> QlSessionRecord<Vec<u8>> {
+    let (_, record) = decode_record::<QlSessionRecord<_>, _>(bytes).unwrap();
+    record.into_owned()
+}
+
 impl TestCrypto {
     fn new(seed: u64) -> Self {
         Self {
@@ -198,13 +207,11 @@ fn encrypt_record(
         let pushed = builder.push_frame(frame);
         debug_assert!(pushed);
     }
-    QlSessionRecord::decode_exact(
+    decode_session_record(
         builder
             .encrypt(crypto, header.connection_id, session_key)
             .as_slice(),
     )
-    .unwrap()
-    .into_owned()
 }
 
 #[test]
@@ -231,7 +238,7 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
         },
         static_bundle: EncryptedPeerBundle::new(Box::new([13; EncryptedPeerBundle::WIRE_SIZE])),
     });
-    let ik_encoded = ik.encode_vec();
+    let ik_encoded = encode_record_vec(RecordType::Handshake, &ik);
     assert_eq!(
         RecordHeader::decode_bytes(ik_encoded.as_slice()).unwrap(),
         RecordHeader {
@@ -239,10 +246,7 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
             record_type: RecordType::Handshake,
         }
     );
-    assert_eq!(
-        QlHandshakeRecord::decode_exact(ik_encoded.as_slice()).unwrap(),
-        ik
-    );
+    assert_eq!(decode_handshake_record(ik_encoded.as_slice()), ik);
 
     let kk = QlHandshakeRecord::Kk1(Kk1 {
         header: handshake_header(1, 2),
@@ -253,7 +257,7 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
             mlkem_public_key: MlKemPublicKey::new(Box::new([15; MlKemPublicKey::SIZE])),
         },
     });
-    let kk_encoded = kk.encode_vec();
+    let kk_encoded = encode_record_vec(RecordType::Handshake, &kk);
     assert_eq!(
         RecordHeader::decode_bytes(kk_encoded.as_slice()).unwrap(),
         RecordHeader {
@@ -261,10 +265,7 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
             record_type: RecordType::Handshake,
         }
     );
-    assert_eq!(
-        QlHandshakeRecord::decode_exact(kk_encoded.as_slice()).unwrap(),
-        kk
-    );
+    assert_eq!(decode_handshake_record(kk_encoded.as_slice()), kk);
 }
 
 #[test]
@@ -686,7 +687,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
     let record = encrypt_record(&crypto, header, &session_key, &body);
 
-    let bytes = record.encode_vec();
+    let bytes = encode_record_vec(RecordType::Session, &record);
     assert_eq!(
         RecordHeader::decode_bytes(bytes.as_slice()).unwrap(),
         RecordHeader {
@@ -694,9 +695,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
             record_type: RecordType::Session,
         }
     );
-    let decoded = QlSessionRecord::decode_exact(bytes.as_slice())
-        .unwrap()
-        .into_owned();
+    let decoded = decode_session_record(bytes.as_slice());
     assert_eq!(decoded.header, header);
     let encrypted = decoded.payload;
 
