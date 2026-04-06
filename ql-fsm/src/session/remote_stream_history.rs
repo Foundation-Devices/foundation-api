@@ -1,22 +1,18 @@
-use std::collections::BTreeSet;
-
 use ql_wire::StreamId;
 
-use super::stream_parity::StreamParity;
+use super::{range_set::RangeSet, stream_parity::StreamParity};
 
 #[derive(Debug)]
 pub struct RemoteStreamHistory {
     parity: StreamParity,
-    seen_prefix_end: u32,
-    seen_sparse: BTreeSet<u32>,
+    seen: RangeSet,
 }
 
 impl RemoteStreamHistory {
     pub fn new(parity: StreamParity) -> Self {
         Self {
             parity,
-            seen_prefix_end: 0,
-            seen_sparse: BTreeSet::new(),
+            seen: RangeSet::new(),
         }
     }
 
@@ -26,27 +22,38 @@ impl RemoteStreamHistory {
         let ordinal = self
             .stream_ordinal(stream_id)
             .expect("remote stream history used with wrong stream parity");
-        if ordinal < self.seen_prefix_end {
-            return true;
-        }
-        if ordinal > self.seen_prefix_end {
-            return !self.seen_sparse.insert(ordinal);
-        }
-
-        self.seen_prefix_end = self.seen_prefix_end.saturating_add(1);
-        while self.seen_sparse.remove(&self.seen_prefix_end) {
-            self.seen_prefix_end = self.seen_prefix_end.saturating_add(1);
-        }
-        false
+        !self.seen.insert(ordinal..ordinal + 1)
     }
 
-    fn stream_ordinal(&self, stream_id: StreamId) -> Option<u32> {
+    fn stream_ordinal(&self, stream_id: StreamId) -> Option<u64> {
         let delta = stream_id
             .into_inner()
             .checked_sub(u64::from(self.parity.first_stream_id()))?;
         if delta % 2 != 0 {
             return None;
         }
-        u32::try_from(delta / 2).ok()
+        Some(delta / 2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RemoteStreamHistory;
+    use crate::session::stream_parity::StreamParity;
+
+    #[test]
+    fn observe() {
+        let parity = StreamParity::Even;
+        let mut history = RemoteStreamHistory::new(parity);
+
+        assert!(!history.observe(parity.make_stream_id(2)));
+        assert!(!history.observe(parity.make_stream_id(5)));
+        assert!(!history.observe(parity.make_stream_id(0)));
+        assert!(!history.observe(parity.make_stream_id(4)));
+        assert!(history.observe(parity.make_stream_id(2)));
+        assert!(!history.observe(parity.make_stream_id(1)));
+        assert!(history.observe(parity.make_stream_id(5)));
+        assert!(!history.observe(parity.make_stream_id(3)));
+        assert!(history.observe(parity.make_stream_id(0)));
     }
 }
