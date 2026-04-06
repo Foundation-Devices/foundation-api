@@ -200,10 +200,10 @@ fn encrypt_record(
     crypto: &impl QlCrypto,
     header: SessionHeader,
     session_key: &SessionKey,
-    body: &SessionRecord,
+    body: &[SessionFrame<Vec<u8>>],
 ) -> QlSessionRecord<Vec<u8>> {
     let mut builder = SessionRecordBuilder::new(header.seq, usize::MAX);
-    for frame in &body.frames {
+    for frame in body {
         let pushed = builder.push_frame(frame);
         debug_assert!(pushed);
     }
@@ -652,38 +652,36 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         connection_id: ConnectionId::from_data([0x44; ConnectionId::SIZE]),
         seq: record_seq(11),
     };
-    let body = SessionRecord {
-        frames: vec![
-            SessionFrame::Ping,
-            SessionFrame::Ack(RecordAck {
-                base_seq: record_seq(12),
-                bits: (1u64 << 0)
-                    | (1u64 << 1)
-                    | (1u64 << 8)
-                    | (1u64 << 9)
-                    | (1u64 << 10)
-                    | (1u64 << 11),
-            }),
-            SessionFrame::StreamWindow(StreamWindow {
-                stream_id: stream_id(9),
-                maximum_offset: varint(65_536),
-            }),
-            SessionFrame::StreamData(StreamData {
-                stream_id: stream_id(9),
-                offset: varint(1024),
-                bytes: b"hello".to_vec(),
-                fin: true,
-            }),
-            SessionFrame::StreamClose(StreamClose {
-                stream_id: stream_id(9),
-                target: CloseTarget::Both,
-                code: StreamCloseCode(0),
-            }),
-            SessionFrame::Close(SessionClose {
-                code: SessionCloseCode::TIMEOUT,
-            }),
-        ],
-    };
+    let body = vec![
+        SessionFrame::Ping,
+        SessionFrame::Ack(RecordAck {
+            base_seq: record_seq(12),
+            bits: (1u64 << 0)
+                | (1u64 << 1)
+                | (1u64 << 8)
+                | (1u64 << 9)
+                | (1u64 << 10)
+                | (1u64 << 11),
+        }),
+        SessionFrame::StreamWindow(StreamWindow {
+            stream_id: stream_id(9),
+            maximum_offset: varint(65_536),
+        }),
+        SessionFrame::StreamData(StreamData {
+            stream_id: stream_id(9),
+            offset: varint(1024),
+            bytes: b"hello".to_vec(),
+            fin: true,
+        }),
+        SessionFrame::StreamClose(StreamClose {
+            stream_id: stream_id(9),
+            target: CloseTarget::Both,
+            code: StreamCloseCode(0),
+        }),
+        SessionFrame::Close(SessionClose {
+            code: SessionCloseCode::TIMEOUT,
+        }),
+    ];
     let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
     let record = encrypt_record(&crypto, header, &session_key, &body);
 
@@ -701,7 +699,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
 
     let decrypted =
         encrypted::decrypt_record(&crypto, &header, encrypted.clone(), &session_key).unwrap();
-    assert_eq!(SessionRecord::decode(&decrypted).unwrap(), body);
+    assert_eq!(decode_session_frames(&decrypted).unwrap(), body);
 
     let wrong_header = SessionHeader {
         connection_id: ConnectionId::from_data([0x99; ConnectionId::SIZE]),
@@ -810,9 +808,7 @@ fn protocol_record_size_breakdown() {
             seq: record_seq(1),
         },
         &session.tx_key,
-        &SessionRecord {
-            frames: vec![SessionFrame::Ping],
-        },
+        &[SessionFrame::Ping],
     );
     let session_stream_empty = encrypt_record(
         &crypto,
@@ -821,14 +817,12 @@ fn protocol_record_size_breakdown() {
             seq: record_seq(2),
         },
         &session.tx_key,
-        &SessionRecord {
-            frames: vec![SessionFrame::StreamData(StreamData {
-                stream_id: stream_id(1),
-                offset: varint(0),
-                fin: false,
-                bytes: Vec::new(),
-            })],
-        },
+        &[SessionFrame::StreamData(StreamData {
+            stream_id: stream_id(1),
+            offset: varint(0),
+            fin: false,
+            bytes: Vec::new(),
+        })],
     );
     let session_close = encrypt_record(
         &crypto,
@@ -837,11 +831,9 @@ fn protocol_record_size_breakdown() {
             seq: record_seq(3),
         },
         &session.tx_key,
-        &SessionRecord {
-            frames: vec![SessionFrame::Close(SessionClose {
-                code: SessionCloseCode::PROTOCOL,
-            })],
-        },
+        &[SessionFrame::Close(SessionClose {
+            code: SessionCloseCode::PROTOCOL,
+        })],
     );
 
     print_size("ql-wire peer bundle", initiator.bundle().encode_vec().len());

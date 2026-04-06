@@ -442,7 +442,7 @@ fn decrypt_record(
     crypto: &impl QlCrypto,
     record: &[u8],
     session_key: &SessionKey,
-) -> (ql_wire::SessionHeader, ql_wire::SessionRecord) {
+) -> (ql_wire::SessionHeader, Vec<ql_wire::SessionFrame<Vec<u8>>>) {
     let (_header, record) =
         ql_wire::decode_record::<ql_wire::QlSessionRecord<_>, _>(record).unwrap();
     let plaintext = ql_wire::decrypt_record(
@@ -454,7 +454,7 @@ fn decrypt_record(
     .unwrap();
     (
         record.header,
-        ql_wire::SessionRecord::decode(&plaintext).unwrap(),
+        ql_wire::decode_session_frames(&plaintext).unwrap(),
     )
 }
 

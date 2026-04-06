@@ -1,4 +1,4 @@
-use ::bytes::BufMut;
+use bytes::BufMut;
 
 use super::{RecordAck, SessionClose, SessionFrame, StreamClose, StreamData, StreamWindow};
 use crate::{

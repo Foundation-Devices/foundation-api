@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ql_wire::{SessionClose, StreamId};
+use ql_wire::{SessionClose, StreamId, VarInt};
 
 use super::*;
 use crate::{state::LinkState, PeerStatus, QlFsmError, QlFsmEvent};
 
 fn stream_id(value: u32) -> StreamId {
-    StreamId::from_u32(value)
+    StreamId(VarInt::from_u32(value))
 }
 
 fn write_stream_bytes(
@@ -87,7 +87,7 @@ fn session_retransmit_uses_new_record_seq() {
         decrypt_record(&harness.b.crypto, &retried, &first_transport.rx_key);
 
     assert_ne!(retried_header.seq, first_header.seq);
-    assert_eq!(retried_record.frames, first_record.frames);
+    assert_eq!(retried_record, first_record);
 
     harness.deliver_to_b(retried);
     harness.advance(config.session_record_ack_delay);
@@ -227,7 +227,7 @@ fn returned_session_write_is_reissued_with_new_record_seq() {
 
     assert_ne!(reissued_id, id);
     assert_ne!(reissued_header.seq, first_header.seq);
-    assert_eq!(reissued.frames, first.frames);
+    assert_eq!(reissued, first);
 
     harness.confirm_write_a(reissued_id);
     harness.deliver_to_b(record);
@@ -274,7 +274,7 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
     let (retried_header, retried) = decrypt_record(&harness.b.crypto, &record, &session_key);
 
     assert_ne!(retried_header.seq, first_header.seq);
-    assert_eq!(retried.frames, first.frames);
+    assert_eq!(retried, first);
 }
 
 #[test]
@@ -341,7 +341,7 @@ fn session_records_contain_ack_frames_after_delivery() {
     let session_key = harness.a.fsm.state.link.transport().unwrap().rx_key.clone();
     let (_ack_header, ack_record) = decrypt_record(&harness.a.crypto, &ack, &session_key);
     assert!(matches!(
-        ack_record.frames.as_slice(),
+        ack_record.as_slice(),
         [ql_wire::SessionFrame::Ack(_)]
     ));
 }
@@ -376,7 +376,7 @@ fn first_stream_data_uses_negotiated_initial_peer_credit() {
     let (_header, record) = decrypt_record(&harness.b.crypto, &data, &session_key);
 
     assert!(matches!(
-        record.frames.as_slice(),
+        record.as_slice(),
         [ql_wire::SessionFrame::StreamData(frame)] if frame.stream_id == stream_id && frame.bytes.as_slice() == b"hel"
     ));
 }
