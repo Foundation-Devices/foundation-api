@@ -16,7 +16,7 @@ use ql_fsm::PeerStatus;
 use ql_wire::{
     generate_identity, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce,
     PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom, RecordHeader, RecordType, SessionKey,
-    WireParse, XID,
+    WireDecode, XID,
 };
 use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
@@ -382,7 +382,7 @@ impl crate::platform::QlPlatform for TestPlatform {
 }
 
 fn is_encrypted_payload(bytes: &[u8]) -> bool {
-    RecordHeader::parse_prefix(bytes)
+    RecordHeader::decode_bytes(bytes)
         .ok()
         .is_some_and(|header| header.record_type == RecordType::Session)
 }

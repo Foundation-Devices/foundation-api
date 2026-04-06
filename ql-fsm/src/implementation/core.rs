@@ -1,7 +1,8 @@
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    self as wire, CloseTarget, QlCrypto, SessionCloseCode, StreamCloseCode, StreamId, WireParse,
+    self as wire, CloseTarget, QlCrypto, SessionCloseCode, StreamCloseCode, StreamId, WireDecode,
+    WireEncode,
 };
 
 use crate::{
@@ -21,14 +22,14 @@ pub fn receive(
     crypto: &impl QlCrypto,
     mut emit: impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
-    let header = wire::RecordHeader::parse_prefix(bytes.as_slice())?;
+    let header = wire::RecordHeader::decode_bytes(bytes.as_slice())?;
     match header.record_type {
         wire::RecordType::Handshake => {
-            let record = wire::QlHandshakeRecord::parse_bytes(bytes.as_slice())?;
+            let record = wire::QlHandshakeRecord::decode_exact(bytes.as_slice())?;
             super::handle_handshake_record(fsm, crypto, &record, &mut emit)
         }
         wire::RecordType::Session => {
-            let record = wire::QlSessionRecord::parse_bytes(&mut bytes[..])?;
+            let record = wire::QlSessionRecord::decode_exact(&mut bytes[..])?;
             let state = fsm.state.link.connected_mut_or_err()?;
             if record.header.connection_id != state.transport.rx_connection_id {
                 return Err(QlFsmError::InvalidPayload);
@@ -88,7 +89,7 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
 pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
     if let Some(record) = fsm.state.handshake.take() {
         return Some(OutboundWrite {
-            record: record.encode(),
+            record: record.encode_vec(),
             session_write_id: None,
         });
     }
