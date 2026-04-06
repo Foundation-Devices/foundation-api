@@ -1,5 +1,5 @@
 use super::StreamId;
-use crate::{codec, ByteChunks, ByteSlice, VarInt, WireError};
+use crate::{codec, ByteChunks, ByteSlice, VarInt, WireDecode, WireEncode, WireError};
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,13 +15,12 @@ impl<B> StreamData<B> {
     pub const MIN_WIRE_SIZE: usize = StreamId::MAX_ENCODED_LEN + VarInt::MAX_SIZE + size_of::<u8>();
 }
 
-impl<B: ByteSlice> StreamData<B> {
-    pub fn parse(bytes: B) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
+impl<B: ByteSlice> WireDecode<B> for StreamData<B> {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            stream_id: reader.parse()?,
-            offset: reader.parse()?,
-            fin: reader.parse()?,
+            stream_id: reader.decode()?,
+            offset: reader.decode()?,
+            fin: reader.decode()?,
             bytes: reader.take_rest(),
         })
     }
@@ -43,19 +42,21 @@ impl<B> StreamData<B> {
 
 impl<B: ByteChunks> StreamData<B> {
     pub fn header_len(&self) -> usize {
-        self.stream_id.encoded_len() + self.offset.size() + size_of::<u8>()
+        self.stream_id.encoded_len() + self.offset.encoded_len() + size_of::<u8>()
     }
+}
 
-    pub fn wire_size(&self) -> usize {
+impl<B: ByteChunks> WireEncode for StreamData<B> {
+    fn encoded_len(&self) -> usize {
         self.header_len() + self.bytes.len()
     }
 
-    pub fn encode_into(&self, out: &mut [u8]) {
-        let out = codec::write_varint(out, self.stream_id.0);
-        let out = codec::write_varint(out, self.offset);
-        let mut out = codec::write_bool(out, self.fin);
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.stream_id.encode(out);
+        self.offset.encode(out);
+        self.fin.encode(out);
         for chunk in self.bytes.chunks() {
-            out = codec::write_bytes(out, chunk);
+            chunk.encode(out);
         }
     }
 }

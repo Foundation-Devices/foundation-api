@@ -1,5 +1,5 @@
 use super::StreamId;
-use crate::{codec, ByteSlice, WireError};
+use crate::{codec, ByteSlice, WireEncode, WireError};
 
 /// aborts one or both lanes of a stream with a close code
 ///
@@ -14,23 +14,26 @@ pub struct StreamClose {
 }
 
 impl StreamClose {
-    pub fn wire_size(&self) -> usize {
-        self.stream_id.encoded_len() + size_of::<CloseTarget>() + size_of::<StreamCloseCode>()
+}
+
+impl WireEncode for StreamClose {
+    fn encoded_len(&self) -> usize {
+        self.stream_id.encoded_len() + self.target.encoded_len() + self.code.encoded_len()
     }
 
-    pub fn encode_into(&self, out: &mut [u8]) {
-        let out = codec::write_varint(out, self.stream_id.0);
-        let out = codec::write_u8(out, self.target.to_wire());
-        let _ = codec::write_u16(out, self.code.0);
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.stream_id.encode(out);
+        self.target.encode(out);
+        self.code.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for StreamClose {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireDecode<B> for StreamClose {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            stream_id: reader.parse()?,
-            target: reader.parse()?,
-            code: reader.parse()?,
+            stream_id: reader.decode()?,
+            target: reader.decode()?,
+            code: reader.decode()?,
         })
     }
 }
@@ -53,6 +56,16 @@ impl CloseTarget {
     }
 }
 
+impl WireEncode for CloseTarget {
+    fn encoded_len(&self) -> usize {
+        size_of::<u8>()
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.to_wire().encode(out);
+    }
+}
+
 impl TryFrom<u8> for CloseTarget {
     type Error = WireError;
 
@@ -66,9 +79,9 @@ impl TryFrom<u8> for CloseTarget {
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for CloseTarget {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        reader.parse::<u8>()?.try_into()
+impl<B: ByteSlice> codec::WireDecode<B> for CloseTarget {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        reader.decode::<u8>()?.try_into()
     }
 }
 
@@ -76,8 +89,18 @@ impl<B: ByteSlice> codec::WireParse<B> for CloseTarget {
 #[repr(transparent)]
 pub struct StreamCloseCode(pub u16);
 
-impl<B: ByteSlice> codec::WireParse<B> for StreamCloseCode {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self(reader.parse()?))
+impl<B: ByteSlice> codec::WireDecode<B> for StreamCloseCode {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.decode()?))
+    }
+}
+
+impl WireEncode for StreamCloseCode {
+    fn encoded_len(&self) -> usize {
+        size_of::<u16>()
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.encode(out);
     }
 }

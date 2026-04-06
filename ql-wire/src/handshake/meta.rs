@@ -1,4 +1,4 @@
-use crate::{codec, ByteSlice, WireError};
+use crate::{codec, ByteSlice, WireEncode, WireError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -10,9 +10,19 @@ pub struct HandshakeMeta {
     pub valid_until: u64,
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for HandshakeId {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self(reader.parse()?))
+impl<B: ByteSlice> codec::WireDecode<B> for HandshakeId {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.decode()?))
+    }
+}
+
+impl WireEncode for HandshakeId {
+    fn encoded_len(&self) -> usize {
+        size_of::<u32>()
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.encode(out);
     }
 }
 
@@ -26,24 +36,24 @@ impl HandshakeMeta {
             Ok(())
         }
     }
+}
 
-    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
-        let out = codec::write_u32(out, self.handshake_id.0);
-        codec::write_u64(out, self.valid_until)
+impl WireEncode for HandshakeMeta {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
     }
 
-    pub fn encode(&self) -> [u8; Self::WIRE_SIZE] {
-        let mut out = [0; Self::WIRE_SIZE];
-        let _ = self.encode_into(&mut out);
-        out
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.handshake_id.encode(out);
+        self.valid_until.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for HandshakeMeta {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireDecode<B> for HandshakeMeta {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            handshake_id: reader.parse()?,
-            valid_until: reader.parse()?,
+            handshake_id: reader.decode()?,
+            valid_until: reader.decode()?,
         })
     }
 }

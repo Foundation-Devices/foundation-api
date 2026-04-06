@@ -1,4 +1,4 @@
-use crate::{codec, ByteSlice, WireError};
+use crate::{codec, ByteSlice, WireEncode, WireError};
 
 /// Session parameters advertised in the handshake
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,15 +9,15 @@ pub struct TransportParams {
 
 impl TransportParams {
     pub const WIRE_SIZE: usize = size_of::<u32>();
+}
 
-    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
-        codec::write_u32(out, self.initial_stream_receive_window)
+impl WireEncode for TransportParams {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
     }
 
-    pub fn encode(&self) -> [u8; Self::WIRE_SIZE] {
-        let mut out = [0; Self::WIRE_SIZE];
-        let _ = self.encode_into(&mut out);
-        out
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.initial_stream_receive_window.encode(out);
     }
 }
 
@@ -29,10 +29,10 @@ impl Default for TransportParams {
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for TransportParams {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireDecode<B> for TransportParams {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            initial_stream_receive_window: reader.parse()?,
+            initial_stream_receive_window: reader.decode()?,
         })
     }
 }

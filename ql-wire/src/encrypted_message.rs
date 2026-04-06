@@ -1,5 +1,6 @@
 use crate::{
-    codec, ByteSlice, Nonce, QlCrypto, SessionKey, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
+    codec, ByteSlice, Nonce, QlCrypto, SessionKey, WireEncode, WireError, WireDecode,
+    ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,28 +24,16 @@ impl<B> EncryptedMessage<B> {
     }
 }
 
-impl<B: ByteSlice> EncryptedMessage<B> {
-    pub fn parse(bytes: B) -> Result<Self, WireError> {
-        let mut reader = codec::Reader::new(bytes);
+impl<B: ByteSlice> WireDecode<B> for EncryptedMessage<B> {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            auth: reader.parse()?,
+            auth: reader.decode()?,
             ciphertext: reader.take_rest(),
         })
     }
 }
 
 impl<B: AsRef<[u8]>> EncryptedMessage<B> {
-    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
-        let out = codec::write_bytes(out, &self.auth);
-        codec::write_bytes(out, self.ciphertext.as_ref())
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = vec![0; Self::HEADER_LEN + self.ciphertext.as_ref().len()];
-        let _ = self.encode_into(&mut out);
-        out
-    }
-
     pub fn decrypt(
         &self,
         crypto: &impl QlCrypto,
@@ -57,6 +46,17 @@ impl<B: AsRef<[u8]>> EncryptedMessage<B> {
             return Err(WireError::DecryptFailed);
         }
         Ok(plaintext)
+    }
+}
+
+impl<B: AsRef<[u8]>> WireEncode for EncryptedMessage<B> {
+    fn encoded_len(&self) -> usize {
+        Self::HEADER_LEN + self.ciphertext.as_ref().len()
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.auth.encode(out);
+        self.ciphertext.as_ref().encode(out);
     }
 }
 
@@ -92,6 +92,6 @@ impl EncryptedMessage<Vec<u8>> {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        Ok(EncryptedMessage::parse(bytes)?.into_owned())
+        Ok(EncryptedMessage::decode_exact(bytes)?.into_owned())
     }
 }

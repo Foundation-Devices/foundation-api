@@ -1,5 +1,5 @@
 use super::StreamId;
-use crate::{codec, ByteSlice, VarInt, WireError};
+use crate::{codec, ByteSlice, VarInt, WireEncode, WireError};
 
 /// advertises the highest byte offset the peer may send on a stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,22 +8,22 @@ pub struct StreamWindow {
     pub maximum_offset: VarInt,
 }
 
-impl StreamWindow {
-    pub fn wire_size(&self) -> usize {
-        self.stream_id.encoded_len() + self.maximum_offset.size()
+impl WireEncode for StreamWindow {
+    fn encoded_len(&self) -> usize {
+        self.stream_id.encoded_len() + self.maximum_offset.encoded_len()
     }
 
-    pub fn encode_into(&self, out: &mut [u8]) {
-        let out = codec::write_varint(out, self.stream_id.0);
-        let _ = codec::write_varint(out, self.maximum_offset);
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.stream_id.encode(out);
+        self.maximum_offset.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for StreamWindow {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireDecode<B> for StreamWindow {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            stream_id: reader.parse()?,
-            maximum_offset: reader.parse()?,
+            stream_id: reader.decode()?,
+            maximum_offset: reader.decode()?,
         })
     }
 }

@@ -1,61 +1,31 @@
+use ::bytes::BufMut;
+
 use crate::{ByteSlice, VarInt, WireError};
 
-pub fn write_u8(out: &mut [u8], value: u8) -> &mut [u8] {
-    let (head, rest) = out.split_at_mut(1);
-    head[0] = value;
-    rest
-}
+pub trait WireEncode {
+    fn encoded_len(&self) -> usize;
 
-pub fn write_u16(out: &mut [u8], value: u16) -> &mut [u8] {
-    let (head, rest) = out.split_at_mut(size_of::<u16>());
-    head.copy_from_slice(&value.to_le_bytes());
-    rest
-}
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W);
 
-pub fn write_u32(out: &mut [u8], value: u32) -> &mut [u8] {
-    let (head, rest) = out.split_at_mut(size_of::<u32>());
-    head.copy_from_slice(&value.to_le_bytes());
-    rest
-}
-
-pub fn write_u64(out: &mut [u8], value: u64) -> &mut [u8] {
-    let (head, rest) = out.split_at_mut(size_of::<u64>());
-    head.copy_from_slice(&value.to_le_bytes());
-    rest
-}
-
-pub fn write_varint(out: &mut [u8], value: VarInt) -> &mut [u8] {
-    let x = value.into_inner();
-    match value.size() {
-        1 => write_u8(out, x as u8),
-        2 => write_bytes(out, &(((0b01u16 << 14) | (x as u16)).to_be_bytes())),
-        4 => write_bytes(out, &(((0b10u32 << 30) | (x as u32)).to_be_bytes())),
-        8 => write_bytes(out, &(((0b11u64 << 62) | x).to_be_bytes())),
-        _ => unreachable!("malformed varint"),
+    fn encode_vec(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.encoded_len());
+        self.encode(&mut out);
+        debug_assert_eq!(out.len(), self.encoded_len());
+        out
     }
 }
 
-pub fn write_bool(out: &mut [u8], value: bool) -> &mut [u8] {
-    write_u8(out, u8::from(value))
-}
+pub trait WireDecode<B: ByteSlice>: Sized {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError>;
 
-pub fn write_bytes<'a>(out: &'a mut [u8], bytes: &[u8]) -> &'a mut [u8] {
-    let (head, rest) = out.split_at_mut(bytes.len());
-    head.copy_from_slice(bytes);
-    rest
-}
-
-pub trait WireParse<B: ByteSlice>: Sized {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError>;
-
-    fn parse_prefix(bytes: B) -> Result<Self, WireError> {
+    fn decode_bytes(bytes: B) -> Result<Self, WireError> {
         let mut reader = Reader::new(bytes);
-        Self::parse(&mut reader)
+        Self::decode(&mut reader)
     }
 
-    fn parse_bytes(bytes: B) -> Result<Self, WireError> {
+    fn decode_exact(bytes: B) -> Result<Self, WireError> {
         let mut reader = Reader::new(bytes);
-        let value = Self::parse(&mut reader)?;
+        let value = Self::decode(&mut reader)?;
         if reader.is_empty() {
             Ok(value)
         } else {
@@ -64,8 +34,8 @@ pub trait WireParse<B: ByteSlice>: Sized {
     }
 }
 
-impl<B: ByteSlice, const N: usize> WireParse<B> for [u8; N] {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice, const N: usize> WireDecode<B> for [u8; N] {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
         let bytes = reader.take_bytes(N)?;
         let mut out = [0u8; N];
         out.copy_from_slice(&bytes);
@@ -73,8 +43,18 @@ impl<B: ByteSlice, const N: usize> WireParse<B> for [u8; N] {
     }
 }
 
-impl<B: ByteSlice, const N: usize> WireParse<B> for Box<[u8; N]> {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+impl<const N: usize> WireEncode for [u8; N] {
+    fn encoded_len(&self) -> usize {
+        N
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        out.put_slice(self);
+    }
+}
+
+impl<B: ByteSlice, const N: usize> WireDecode<B> for Box<[u8; N]> {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
         let bytes = reader.take_bytes(N)?;
         let mut out = Box::<[u8; N]>::new_uninit();
         let src = bytes.as_ptr();
@@ -87,33 +67,93 @@ impl<B: ByteSlice, const N: usize> WireParse<B> for Box<[u8; N]> {
     }
 }
 
-impl<B: ByteSlice> WireParse<B> for u8 {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+impl<const N: usize> WireEncode for Box<[u8; N]> {
+    fn encoded_len(&self) -> usize {
+        N
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        out.put_slice(self.as_ref());
+    }
+}
+
+impl WireEncode for [u8] {
+    fn encoded_len(&self) -> usize {
+        self.len()
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        out.put_slice(self);
+    }
+}
+
+impl<B: ByteSlice> WireDecode<B> for u8 {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
         Ok(reader.take_bytes(1)?[0])
     }
 }
 
-impl<B: ByteSlice> WireParse<B> for u16 {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        Ok(u16::from_le_bytes(reader.parse()?))
+impl WireEncode for u8 {
+    fn encoded_len(&self) -> usize {
+        size_of::<Self>()
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        out.put_u8(*self);
     }
 }
 
-impl<B: ByteSlice> WireParse<B> for u32 {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        Ok(u32::from_le_bytes(reader.parse()?))
+impl<B: ByteSlice> WireDecode<B> for u16 {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(u16::from_be_bytes(reader.decode()?))
     }
 }
 
-impl<B: ByteSlice> WireParse<B> for u64 {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        Ok(u64::from_le_bytes(reader.parse()?))
+impl WireEncode for u16 {
+    fn encoded_len(&self) -> usize {
+        size_of::<Self>()
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        out.put_u16(*self);
     }
 }
 
-impl<B: ByteSlice> WireParse<B> for VarInt {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        let first = reader.parse::<u8>()?;
+impl<B: ByteSlice> WireDecode<B> for u32 {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(u32::from_be_bytes(reader.decode()?))
+    }
+}
+
+impl WireEncode for u32 {
+    fn encoded_len(&self) -> usize {
+        size_of::<Self>()
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        out.put_u32(*self);
+    }
+}
+
+impl<B: ByteSlice> WireDecode<B> for u64 {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(u64::from_be_bytes(reader.decode()?))
+    }
+}
+
+impl WireEncode for u64 {
+    fn encoded_len(&self) -> usize {
+        size_of::<Self>()
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        out.put_u64(*self);
+    }
+}
+
+impl<B: ByteSlice> WireDecode<B> for VarInt {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        let first = reader.decode::<u8>()?;
         let tag = first >> 6;
         let first = first & 0b0011_1111;
         let value = match tag {
@@ -121,19 +161,19 @@ impl<B: ByteSlice> WireParse<B> for VarInt {
             0b01 => {
                 let mut buf = [0; 2];
                 buf[0] = first;
-                buf[1] = reader.parse()?;
+                buf[1] = reader.decode()?;
                 u64::from(u16::from_be_bytes(buf))
             }
             0b10 => {
                 let mut buf = [0; 4];
                 buf[0] = first;
-                buf[1..].copy_from_slice(&reader.parse::<[u8; 3]>()?);
+                buf[1..].copy_from_slice(&reader.decode::<[u8; 3]>()?);
                 u64::from(u32::from_be_bytes(buf))
             }
             0b11 => {
                 let mut buf = [0; 8];
                 buf[0] = first;
-                buf[1..].copy_from_slice(&reader.parse::<[u8; 7]>()?);
+                buf[1..].copy_from_slice(&reader.decode::<[u8; 7]>()?);
                 u64::from_be_bytes(buf)
             }
             _ => unreachable!(),
@@ -144,13 +184,40 @@ impl<B: ByteSlice> WireParse<B> for VarInt {
     }
 }
 
-impl<B: ByteSlice> WireParse<B> for bool {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        match reader.parse::<u8>()? {
+impl WireEncode for VarInt {
+    fn encoded_len(&self) -> usize {
+        self.size()
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        let x = self.into_inner();
+        match self.size() {
+            1 => out.put_u8(x as u8),
+            2 => out.put_u16((0b01 << 14) | x as u16),
+            4 => out.put_u32((0b10 << 30) | x as u32),
+            8 => out.put_u64((0b11 << 62) | x),
+            _ => unreachable!("malformed varint"),
+        }
+    }
+}
+
+impl<B: ByteSlice> WireDecode<B> for bool {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        match reader.decode::<u8>()? {
             0 => Ok(false),
             1 => Ok(true),
             _ => Err(WireError::InvalidPayload),
         }
+    }
+}
+
+impl WireEncode for bool {
+    fn encoded_len(&self) -> usize {
+        size_of::<u8>()
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        out.put_u8(u8::from(*self));
     }
 }
 
@@ -187,15 +254,15 @@ impl<B: ByteSlice> Reader<B> {
         }
     }
 
-    pub fn take_rest(mut self) -> B {
-        self.remaining.take().unwrap()
+    pub fn take_rest(&mut self) -> B {
+        self.take_bytes(self.remaining_len()).unwrap()
     }
 
     #[inline]
-    pub fn parse<T>(&mut self) -> Result<T, WireError>
+    pub fn decode<T>(&mut self) -> Result<T, WireError>
     where
-        T: WireParse<B>,
+        T: WireDecode<B>,
     {
-        T::parse(self)
+        T::decode(self)
     }
 }

@@ -1,4 +1,4 @@
-use crate::{codec, codec::Reader, ByteSlice, WireError};
+use crate::{codec, codec::Reader, ByteSlice, WireEncode, WireError};
 
 /// closes the whole session immediately with a close code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,10 +8,6 @@ pub struct SessionClose {
 
 impl SessionClose {
     pub const WIRE_SIZE: usize = size_of::<SessionCloseCode>();
-
-    pub fn encode_into(&self, out: &mut [u8]) {
-        let _ = codec::write_u16(out, self.code.0);
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,16 +20,36 @@ impl SessionCloseCode {
     pub const TIMEOUT: Self = Self(2);
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for SessionCloseCode {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        Ok(Self(reader.parse()?))
+impl WireEncode for SessionCloseCode {
+    fn encoded_len(&self) -> usize {
+        size_of::<u16>()
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for SessionClose {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireDecode<B> for SessionCloseCode {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.decode()?))
+    }
+}
+
+impl<B: ByteSlice> codec::WireDecode<B> for SessionClose {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            code: reader.parse()?,
+            code: reader.decode()?,
         })
+    }
+}
+
+impl WireEncode for SessionClose {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.code.encode(out);
     }
 }

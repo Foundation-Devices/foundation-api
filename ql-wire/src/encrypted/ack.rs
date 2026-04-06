@@ -1,4 +1,4 @@
-use crate::{codec, ByteSlice, RecordSeq, WireError};
+use crate::{codec, ByteSlice, RecordSeq, WireEncode, WireError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordAck {
@@ -21,23 +21,24 @@ impl RecordAck {
 
         (self.bits & (1u64 << offset)) != 0
     }
+}
 
-    pub fn wire_size(&self) -> usize {
+impl WireEncode for RecordAck {
+    fn encoded_len(&self) -> usize {
         self.base_seq.encoded_len() + size_of::<u64>()
     }
 
-    pub fn encode_into(&self, out: &mut [u8]) {
-        assert!(out.len() >= self.wire_size());
-        let out = codec::write_varint(out, self.base_seq.0);
-        let _ = codec::write_u64(out, self.bits);
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.base_seq.encode(out);
+        self.bits.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for RecordAck {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireDecode<B> for RecordAck {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            base_seq: reader.parse()?,
-            bits: reader.parse()?,
+            base_seq: reader.decode()?,
+            bits: reader.decode()?,
         })
     }
 }
@@ -45,7 +46,7 @@ impl<B: ByteSlice> codec::WireParse<B> for RecordAck {
 #[cfg(test)]
 mod tests {
     use super::RecordAck;
-    use crate::{RecordSeq, WireError, WireParse};
+    use crate::{RecordSeq, WireEncode, WireError, WireDecode};
 
     #[test]
     fn encode_decode_round_trip() {
@@ -53,10 +54,9 @@ mod tests {
             base_seq: RecordSeq::from_u32(42),
             bits: (1u64 << 0) | (1u64 << 17) | (1u64 << 63),
         };
-        let mut encoded = vec![0; ack.wire_size()];
-        ack.encode_into(&mut encoded);
+        let encoded = ack.encode_vec();
 
-        assert_eq!(RecordAck::parse_bytes(encoded.as_slice()).unwrap(), ack);
+        assert_eq!(RecordAck::decode_exact(encoded.as_slice()).unwrap(), ack);
     }
 
     #[test]
@@ -77,12 +77,12 @@ mod tests {
     #[test]
     fn decode_rejects_truncated_payload() {
         assert_eq!(
-            RecordAck::parse_bytes(&[][..]),
+            RecordAck::decode_exact(&[][..]),
             Err(WireError::InvalidPayload)
         );
         let encoded = vec![0; RecordSeq::from_u32(0).encoded_len() + size_of::<u64>()];
         assert_eq!(
-            RecordAck::parse_bytes(&encoded[..encoded.len() - 1]),
+            RecordAck::decode_exact(&encoded[..encoded.len() - 1]),
             Err(WireError::InvalidPayload)
         );
     }

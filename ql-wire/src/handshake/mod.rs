@@ -1,7 +1,7 @@
 use crate::{
     codec, ByteSlice, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey,
-    Nonce, PeerBundle, QlCrypto, SessionKey, WireError, WireParse, ENCRYPTED_MESSAGE_AUTH_SIZE,
-    XID,
+    Nonce, PeerBundle, QlCrypto, SessionKey, WireDecode, WireEncode, WireError,
+    ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
 };
 
 mod ik;
@@ -28,24 +28,24 @@ pub struct HandshakeHeader {
 
 impl HandshakeHeader {
     pub const WIRE_SIZE: usize = XID::SIZE * 2;
+}
 
-    pub fn encode(&self) -> [u8; Self::WIRE_SIZE] {
-        let mut out = [0; Self::WIRE_SIZE];
-        let _ = self.encode_into(&mut out);
-        out
+impl WireEncode for HandshakeHeader {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
     }
 
-    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
-        let out = codec::write_bytes(out, &self.sender.0);
-        codec::write_bytes(out, &self.recipient.0)
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.sender.encode(out);
+        self.recipient.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for HandshakeHeader {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireDecode<B> for HandshakeHeader {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            sender: reader.parse()?,
-            recipient: reader.parse()?,
+            sender: reader.decode()?,
+            recipient: reader.decode()?,
         })
     }
 }
@@ -57,16 +57,22 @@ pub struct EphemeralPublicKey {
 
 impl EphemeralPublicKey {
     pub const WIRE_SIZE: usize = MlKemPublicKey::SIZE;
+}
 
-    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
-        codec::write_bytes(out, self.mlkem_public_key.as_bytes())
+impl WireEncode for EphemeralPublicKey {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.mlkem_public_key.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for EphemeralPublicKey {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireDecode<B> for EphemeralPublicKey {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            mlkem_public_key: reader.parse()?,
+            mlkem_public_key: reader.decode()?,
         })
     }
 }
@@ -86,9 +92,19 @@ impl EncryptedMlKemCiphertext {
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for EncryptedMlKemCiphertext {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self::new(reader.parse()?))
+impl WireEncode for EncryptedMlKemCiphertext {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.as_ref().encode(out);
+    }
+}
+
+impl<B: ByteSlice> codec::WireDecode<B> for EncryptedMlKemCiphertext {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::new(reader.decode()?))
     }
 }
 
@@ -107,9 +123,19 @@ impl EncryptedPeerBundle {
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for EncryptedPeerBundle {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self::new(reader.parse()?))
+impl WireEncode for EncryptedPeerBundle {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.as_ref().encode(out);
+    }
+}
+
+impl<B: ByteSlice> codec::WireDecode<B> for EncryptedPeerBundle {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::new(reader.decode()?))
     }
 }
 
@@ -293,14 +319,14 @@ fn init_kk_symmetric(
     responder_bundle: &PeerBundle,
 ) -> SymmetricState {
     let mut symmetric = SymmetricState::new(crypto, PROTOCOL_KK);
-    symmetric.mix_hash(crypto, &initiator_bundle.encode());
-    symmetric.mix_hash(crypto, &responder_bundle.encode());
+    symmetric.mix_hash(crypto, &initiator_bundle.encode_vec());
+    symmetric.mix_hash(crypto, &responder_bundle.encode_vec());
     symmetric
 }
 
 fn init_ik_symmetric(crypto: &impl QlCrypto, responder_bundle: &PeerBundle) -> SymmetricState {
     let mut symmetric = SymmetricState::new(crypto, PROTOCOL_IK);
-    symmetric.mix_hash(crypto, &responder_bundle.encode());
+    symmetric.mix_hash(crypto, &responder_bundle.encode_vec());
     symmetric
 }
 
@@ -326,14 +352,11 @@ fn mix_hash_routed_handshake(
     meta: &HandshakeMeta,
     transport_params: TransportParams,
 ) {
-    let encoded_header = header.encode();
-    let encoded_meta = meta.encode();
-    let encoded_transport_params = transport_params.encode();
     symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);
-    symmetric.mix_hash(crypto, &encoded_header);
+    symmetric.mix_hash(crypto, &header.encode_vec());
     symmetric.mix_hash(crypto, &[kind as u8]);
-    symmetric.mix_hash(crypto, &encoded_meta);
-    symmetric.mix_hash(crypto, &encoded_transport_params);
+    symmetric.mix_hash(crypto, &meta.encode_vec());
+    symmetric.mix_hash(crypto, &transport_params.encode_vec());
 }
 
 fn initialize_handshake_meta(
@@ -365,7 +388,7 @@ fn encrypt_peer_bundle(
     symmetric: &mut SymmetricState,
     bundle: &PeerBundle,
 ) -> Result<EncryptedPeerBundle, WireError> {
-    let ciphertext = symmetric.encrypt_and_hash(crypto, &bundle.encode())?;
+    let ciphertext = symmetric.encrypt_and_hash(crypto, &bundle.encode_vec())?;
     let out: Box<[u8; EncryptedPeerBundle::WIRE_SIZE]> =
         ciphertext.try_into().map_err(|_| WireError::InvalidState)?;
     Ok(EncryptedPeerBundle::new(out))
@@ -377,7 +400,7 @@ fn decrypt_peer_bundle(
     bundle: &EncryptedPeerBundle,
 ) -> Result<PeerBundle, WireError> {
     let plaintext = symmetric.decrypt_and_hash(crypto, bundle.as_bytes())?;
-    PeerBundle::parse_bytes(plaintext.as_slice())
+    PeerBundle::decode_exact(plaintext.as_slice())
 }
 
 fn encrypt_mlkem_ciphertext(

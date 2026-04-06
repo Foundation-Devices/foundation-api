@@ -2220,6 +2220,7 @@ dependencies = [
 name = "ql-wire"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "libcrux-aesgcm",
  "libcrux-ml-kem",
  "sha2",

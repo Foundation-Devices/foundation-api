@@ -1,7 +1,9 @@
+use ::bytes::BufMut;
+
 use super::{RecordAck, SessionClose, SessionFrame, StreamClose, StreamData, StreamWindow};
 use crate::{
-    codec, ByteChunks, ConnectionId, Nonce, QlCrypto, RecordSeq, RecordType, SessionHeader,
-    SessionKey, VarInt, QL_WIRE_VERSION,
+    ByteChunks, ConnectionId, Nonce, QlCrypto, RecordSeq, RecordType, SessionHeader, SessionKey,
+    VarInt, WireEncode, QL_WIRE_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,49 +67,23 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_ack(&mut self, ack: &RecordAck) -> bool {
-        self.push_frame_payload(super::SessionFrameKind::Ack, ack.wire_size(), |payload| {
-            ack.encode_into(payload);
-        })
+        self.push_frame_payload(super::SessionFrameKind::Ack, ack)
     }
 
     pub fn push_stream_data<B: ByteChunks>(&mut self, frame: &StreamData<B>) -> bool {
-        self.push_len_prefixed_frame(
-            super::SessionFrameKind::StreamData,
-            frame.wire_size(),
-            |payload| {
-                frame.encode_into(payload);
-            },
-        )
+        self.push_len_prefixed_frame(super::SessionFrameKind::StreamData, frame)
     }
 
     pub fn push_stream_window(&mut self, frame: &StreamWindow) -> bool {
-        self.push_frame_payload(
-            super::SessionFrameKind::StreamWindow,
-            frame.wire_size(),
-            |payload| {
-                frame.encode_into(payload);
-            },
-        )
+        self.push_frame_payload(super::SessionFrameKind::StreamWindow, frame)
     }
 
     pub fn push_stream_close(&mut self, frame: &StreamClose) -> bool {
-        self.push_frame_payload(
-            super::SessionFrameKind::StreamClose,
-            frame.wire_size(),
-            |payload| {
-                frame.encode_into(payload);
-            },
-        )
+        self.push_frame_payload(super::SessionFrameKind::StreamClose, frame)
     }
 
     pub fn push_close(&mut self, close: &SessionClose) -> bool {
-        self.push_frame_payload(
-            super::SessionFrameKind::Close,
-            SessionClose::WIRE_SIZE,
-            |payload| {
-                close.encode_into(payload);
-            },
-        )
+        self.push_frame_payload(super::SessionFrameKind::Close, close)
     }
 
     pub fn push_frame<B: ByteChunks>(&mut self, frame: &SessionFrame<B>) -> bool {
@@ -141,54 +117,56 @@ impl SessionRecordBuilder {
             &mut self.bytes[self.prefix_len..],
         );
 
-        let prefix = &mut self.bytes[..self.prefix_len];
+        let mut prefix = &mut self.bytes[..self.prefix_len];
         prefix[0] = QL_WIRE_VERSION;
         prefix[1] = RecordType::Session as u8;
-        let auth_out = header.encode_into(&mut prefix[2..]);
-        auth_out[..crate::ENCRYPTED_MESSAGE_AUTH_SIZE].copy_from_slice(&auth);
+        prefix = &mut prefix[2..];
+        header.encode(&mut prefix);
+        auth.encode(&mut prefix);
+        debug_assert!(prefix.is_empty());
         self.bytes
     }
 
-    fn push_wire_size(&mut self, wire_size: usize, encode: impl FnOnce(&mut [u8])) -> bool {
+    fn push_wire_size(&mut self, wire_size: usize, encode: impl FnOnce(&mut Vec<u8>)) -> bool {
         if !self.can_push_len(wire_size) {
             return false;
         }
         self.ensure_prefix_capacity(wire_size);
         let start = self.bytes.len();
-        self.bytes.resize(start + wire_size, 0);
-        encode(&mut self.bytes[start..]);
+        encode(&mut self.bytes);
+        debug_assert_eq!(self.bytes.len(), start + wire_size);
         true
     }
 
     fn push_empty_frame(&mut self, kind: super::SessionFrameKind) -> bool {
-        self.push_wire_size(1, |out| out[0] = kind as u8)
+        self.push_wire_size(1, |out| out.put_u8(kind as u8))
     }
 
-    fn push_frame_payload(
+    fn push_frame_payload<T: WireEncode + ?Sized>(
         &mut self,
         kind: super::SessionFrameKind,
-        payload_wire_size: usize,
-        encode_payload: impl FnOnce(&mut [u8]),
+        payload: &T,
     ) -> bool {
+        let payload_wire_size = payload.encoded_len();
         self.push_wire_size(1 + payload_wire_size, |out| {
-            out[0] = kind as u8;
-            encode_payload(&mut out[1..]);
+            out.put_u8(kind as u8);
+            payload.encode(out);
         })
     }
 
-    fn push_len_prefixed_frame(
+    fn push_len_prefixed_frame<T: WireEncode + ?Sized>(
         &mut self,
         kind: super::SessionFrameKind,
-        payload_wire_size: usize,
-        encode_payload: impl FnOnce(&mut [u8]),
+        payload: &T,
     ) -> bool {
+        let payload_wire_size = payload.encoded_len();
         let Ok(prefix_len) = VarInt::try_from(payload_wire_size) else {
             return false;
         };
-        self.push_wire_size(1 + prefix_len.size() + payload_wire_size, |out| {
-            out[0] = kind as u8;
-            let payload = codec::write_varint(&mut out[1..], prefix_len);
-            encode_payload(payload);
+        self.push_wire_size(1 + prefix_len.encoded_len() + payload_wire_size, |out| {
+            out.put_u8(kind as u8);
+            prefix_len.encode(out);
+            payload.encode(out);
         })
     }
 

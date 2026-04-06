@@ -198,7 +198,7 @@ fn encrypt_record(
         let pushed = builder.push_frame(frame);
         debug_assert!(pushed);
     }
-    QlSessionRecord::parse_bytes(
+    QlSessionRecord::decode_exact(
         builder
             .encrypt(crypto, header.connection_id, session_key)
             .as_slice(),
@@ -213,8 +213,8 @@ fn peer_bundle_round_trip() {
     let identity = make_identity(&crypto, 7).with_capabilities(0x55aa_33cc);
     let bundle = identity.bundle();
 
-    let encoded = bundle.encode();
-    let decoded = PeerBundle::parse_bytes(encoded.as_slice()).unwrap();
+    let encoded = bundle.encode_vec();
+    let decoded = PeerBundle::decode_exact(encoded.as_slice()).unwrap();
 
     assert_eq!(decoded, bundle);
 }
@@ -231,16 +231,16 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
         },
         static_bundle: EncryptedPeerBundle::new(Box::new([13; EncryptedPeerBundle::WIRE_SIZE])),
     });
-    let ik_encoded = ik.encode();
+    let ik_encoded = ik.encode_vec();
     assert_eq!(
-        RecordHeader::parse_prefix(ik_encoded.as_slice()).unwrap(),
+        RecordHeader::decode_bytes(ik_encoded.as_slice()).unwrap(),
         RecordHeader {
             version: QL_WIRE_VERSION,
             record_type: RecordType::Handshake,
         }
     );
     assert_eq!(
-        QlHandshakeRecord::parse_bytes(ik_encoded.as_slice()).unwrap(),
+        QlHandshakeRecord::decode_exact(ik_encoded.as_slice()).unwrap(),
         ik
     );
 
@@ -253,16 +253,16 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
             mlkem_public_key: MlKemPublicKey::new(Box::new([15; MlKemPublicKey::SIZE])),
         },
     });
-    let kk_encoded = kk.encode();
+    let kk_encoded = kk.encode_vec();
     assert_eq!(
-        RecordHeader::parse_prefix(kk_encoded.as_slice()).unwrap(),
+        RecordHeader::decode_bytes(kk_encoded.as_slice()).unwrap(),
         RecordHeader {
             version: QL_WIRE_VERSION,
             record_type: RecordType::Handshake,
         }
     );
     assert_eq!(
-        QlHandshakeRecord::parse_bytes(kk_encoded.as_slice()).unwrap(),
+        QlHandshakeRecord::decode_exact(kk_encoded.as_slice()).unwrap(),
         kk
     );
 }
@@ -686,15 +686,15 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
     let record = encrypt_record(&crypto, header, &session_key, &body);
 
-    let bytes = record.encode();
+    let bytes = record.encode_vec();
     assert_eq!(
-        RecordHeader::parse_prefix(bytes.as_slice()).unwrap(),
+        RecordHeader::decode_bytes(bytes.as_slice()).unwrap(),
         RecordHeader {
             version: QL_WIRE_VERSION,
             record_type: RecordType::Session,
         }
     );
-    let decoded = QlSessionRecord::parse_bytes(bytes.as_slice())
+    let decoded = QlSessionRecord::decode_exact(bytes.as_slice())
         .unwrap()
         .into_owned();
     assert_eq!(decoded.header, header);
@@ -734,8 +734,8 @@ fn session_varint_fields_expand_at_expected_boundaries() {
         seq: record_seq(64),
     };
 
-    assert_eq!(short_header.encode().len(), ConnectionId::SIZE + 1);
-    assert_eq!(long_header.encode().len(), ConnectionId::SIZE + 2);
+    assert_eq!(short_header.encode_vec().len(), ConnectionId::SIZE + 1);
+    assert_eq!(long_header.encode_vec().len(), ConnectionId::SIZE + 2);
 
     let frame = StreamData {
         stream_id: stream_id(64),
@@ -743,11 +743,12 @@ fn session_varint_fields_expand_at_expected_boundaries() {
         fin: true,
         bytes: b"abc".to_vec(),
     };
-    let mut encoded = vec![0; frame.wire_size()];
-    frame.encode_into(&mut encoded);
+    let encoded = frame.encode_vec();
 
     assert_eq!(
-        StreamData::parse(encoded.as_slice()).unwrap().into_owned(),
+        StreamData::decode_exact(encoded.as_slice())
+            .unwrap()
+            .into_owned(),
         frame
     );
 }
@@ -844,17 +845,17 @@ fn protocol_record_size_breakdown() {
         },
     );
 
-    print_size("ql-wire peer bundle", initiator.bundle().encode().len());
+    print_size("ql-wire peer bundle", initiator.bundle().encode_vec().len());
     print_size("ql-wire mlkem public key", MlKemPublicKey::SIZE);
     print_size("ql-wire mlkem ciphertext", MlKemCiphertext::SIZE);
-    print_size("ql-wire pq ik1", ik1.encode().len());
-    print_size("ql-wire pq ik2", ik2.encode().len());
-    print_size("ql-wire pq kk1", kk1.encode().len());
-    print_size("ql-wire pq kk2", kk2.encode().len());
-    print_size("ql-wire session ping", session_ping.encode().len());
+    print_size("ql-wire pq ik1", ik1.encode_vec().len());
+    print_size("ql-wire pq ik2", ik2.encode_vec().len());
+    print_size("ql-wire pq kk1", kk1.encode_vec().len());
+    print_size("ql-wire pq kk2", kk2.encode_vec().len());
+    print_size("ql-wire session ping", session_ping.encode_vec().len());
     print_size(
         "ql-wire session stream empty",
-        session_stream_empty.encode().len(),
+        session_stream_empty.encode_vec().len(),
     );
-    print_size("ql-wire session close", session_close.encode().len());
+    print_size("ql-wire session close", session_close.encode_vec().len());
 }

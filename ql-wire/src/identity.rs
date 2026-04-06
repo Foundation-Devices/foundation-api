@@ -1,5 +1,6 @@
 use crate::{
-    codec, ByteSlice, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, WireError, XID,
+    codec, ByteSlice, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, WireEncode,
+    WireError, XID,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,28 +15,28 @@ impl PeerBundle {
     pub const VERSION: u16 = 1;
     pub const WIRE_SIZE: usize =
         size_of::<u16>() + XID::SIZE + size_of::<u32>() + MlKemPublicKey::SIZE;
+}
 
-    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
-        let out = codec::write_u16(out, self.version);
-        let out = codec::write_bytes(out, &self.xid.0);
-        let out = codec::write_u32(out, self.capabilities);
-        codec::write_bytes(out, self.mlkem_public_key.as_bytes())
+impl WireEncode for PeerBundle {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
     }
 
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = vec![0; Self::WIRE_SIZE];
-        let _ = self.encode_into(&mut out);
-        out
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.version.encode(out);
+        self.xid.encode(out);
+        self.capabilities.encode(out);
+        self.mlkem_public_key.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for PeerBundle {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> codec::WireDecode<B> for PeerBundle {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            version: reader.parse()?,
-            xid: reader.parse()?,
-            capabilities: reader.parse()?,
-            mlkem_public_key: reader.parse()?,
+            version: reader.decode()?,
+            xid: reader.decode()?,
+            capabilities: reader.decode()?,
+            mlkem_public_key: reader.decode()?,
         })
     }
 }

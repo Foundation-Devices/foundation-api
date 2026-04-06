@@ -1,4 +1,8 @@
-use crate::{codec, ByteSlice, VarInt, VarIntBoundsExceeded, WireError, QL_WIRE_VERSION};
+use ::bytes::BufMut;
+
+use crate::{
+    codec, ByteSlice, VarInt, VarIntBoundsExceeded, WireEncode, WireError, QL_WIRE_VERSION,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionHeader {
@@ -24,10 +28,6 @@ impl RecordSeq {
     pub const fn into_inner(self) -> u64 {
         self.0.into_inner()
     }
-
-    pub const fn encoded_len(self) -> usize {
-        self.0.size()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -46,15 +46,35 @@ impl ConnectionId {
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for RecordSeq {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self(reader.parse()?))
+impl<B: ByteSlice> codec::WireDecode<B> for RecordSeq {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.decode()?))
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for ConnectionId {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self::from_data(reader.parse()?))
+impl WireEncode for RecordSeq {
+    fn encoded_len(&self) -> usize {
+        self.0.size()
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.encode(out);
+    }
+}
+
+impl<B: ByteSlice> codec::WireDecode<B> for ConnectionId {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::from_data(reader.decode()?))
+    }
+}
+
+impl WireEncode for ConnectionId {
+    fn encoded_len(&self) -> usize {
+        Self::SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.encode(out);
     }
 }
 
@@ -63,43 +83,39 @@ impl SessionHeader {
     const AAD_DOMAIN: &[u8] = b"ql-wire:session-aad:v1";
     const AAD_RECORD_KIND_SESSION: u8 = 1;
 
-    pub fn encoded_len(&self) -> usize {
-        ConnectionId::SIZE + self.seq.encoded_len()
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = vec![0; self.encoded_len()];
-        let _ = self.encode_into(&mut out);
-        out
-    }
-
-    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
-        assert!(out.len() >= self.encoded_len());
-        let out = codec::write_bytes(out, self.connection_id.as_bytes());
-        codec::write_varint(out, self.seq.0)
-    }
-
     pub fn aad(&self) -> Vec<u8> {
         let aad_len = Self::AAD_DOMAIN.len()
             + size_of::<u8>()
             + size_of::<u8>()
             + ConnectionId::SIZE
             + self.seq.encoded_len();
-        let mut aad = vec![0; aad_len];
-        let out = codec::write_bytes(&mut aad, Self::AAD_DOMAIN);
-        let out = codec::write_u8(out, QL_WIRE_VERSION);
-        let out = codec::write_u8(out, Self::AAD_RECORD_KIND_SESSION);
-        let out = codec::write_bytes(out, self.connection_id.as_bytes());
-        let _ = codec::write_varint(out, self.seq.0);
+        let mut aad = Vec::with_capacity(aad_len);
+        aad.put_slice(Self::AAD_DOMAIN);
+        aad.put_u8(QL_WIRE_VERSION);
+        aad.put_u8(Self::AAD_RECORD_KIND_SESSION);
+        self.connection_id.encode(&mut aad);
+        self.seq.encode(&mut aad);
+        debug_assert_eq!(aad.len(), aad_len);
         aad
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for SessionHeader {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl WireEncode for SessionHeader {
+    fn encoded_len(&self) -> usize {
+        ConnectionId::SIZE + self.seq.encoded_len()
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.connection_id.encode(out);
+        self.seq.encode(out);
+    }
+}
+
+impl<B: ByteSlice> codec::WireDecode<B> for SessionHeader {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            connection_id: reader.parse()?,
-            seq: reader.parse()?,
+            connection_id: reader.decode()?,
+            seq: reader.decode()?,
         })
     }
 }

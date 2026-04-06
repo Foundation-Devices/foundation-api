@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto,
-    QlIdentity, WireError,
+    QlIdentity, WireEncode, WireError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,27 +27,33 @@ impl Ik1 {
         + MlKemCiphertext::SIZE
         + EphemeralPublicKey::WIRE_SIZE
         + EncryptedPeerBundle::WIRE_SIZE;
+}
 
-    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
-        let out = self.header.encode_into(out);
-        let out = self.meta.encode_into(out);
-        let out = self.transport_params.encode_into(out);
-        let out = codec::write_bytes(out, self.skem_ciphertext.as_bytes());
-        let out = self.ephemeral.encode_into(out);
-        codec::write_bytes(out, self.static_bundle.as_bytes())
+impl<B: ByteSlice> codec::WireDecode<B> for Ik1 {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
+            header: reader.decode()?,
+            meta: reader.decode()?,
+            transport_params: reader.decode()?,
+            skem_ciphertext: reader.decode()?,
+            ephemeral: reader.decode()?,
+            static_bundle: reader.decode()?,
+        })
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for Ik1 {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self {
-            header: reader.parse()?,
-            meta: reader.parse()?,
-            transport_params: reader.parse()?,
-            skem_ciphertext: reader.parse()?,
-            ephemeral: reader.parse()?,
-            static_bundle: reader.parse()?,
-        })
+impl WireEncode for Ik1 {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.header.encode(out);
+        self.meta.encode(out);
+        self.transport_params.encode(out);
+        self.skem_ciphertext.encode(out);
+        self.ephemeral.encode(out);
+        self.static_bundle.encode(out);
     }
 }
 
@@ -66,25 +72,31 @@ impl Ik2 {
         + TransportParams::WIRE_SIZE
         + MlKemCiphertext::SIZE
         + EncryptedMlKemCiphertext::WIRE_SIZE;
+}
 
-    pub fn encode_into<'a>(&self, out: &'a mut [u8]) -> &'a mut [u8] {
-        let out = self.header.encode_into(out);
-        let out = self.meta.encode_into(out);
-        let out = self.transport_params.encode_into(out);
-        let out = codec::write_bytes(out, self.ekem_ciphertext.as_bytes());
-        codec::write_bytes(out, self.skem_ciphertext.as_bytes())
+impl<B: ByteSlice> codec::WireDecode<B> for Ik2 {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
+            header: reader.decode()?,
+            meta: reader.decode()?,
+            transport_params: reader.decode()?,
+            ekem_ciphertext: reader.decode()?,
+            skem_ciphertext: reader.decode()?,
+        })
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for Ik2 {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self {
-            header: reader.parse()?,
-            meta: reader.parse()?,
-            transport_params: reader.parse()?,
-            ekem_ciphertext: reader.parse()?,
-            skem_ciphertext: reader.parse()?,
-        })
+impl WireEncode for Ik2 {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.header.encode(out);
+        self.meta.encode(out);
+        self.transport_params.encode(out);
+        self.ekem_ciphertext.encode(out);
+        self.skem_ciphertext.encode(out);
     }
 }
 

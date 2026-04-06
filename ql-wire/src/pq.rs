@@ -1,4 +1,4 @@
-use crate::{codec, ByteSlice, WireError};
+use crate::{codec, ByteSlice, WireEncode, WireError};
 
 pub const ML_KEM_SUITE_TAG: &[u8] = b"ml-kem-1024";
 
@@ -41,9 +41,19 @@ impl Drop for SessionKey {
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for SessionKey {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self::from_data(reader.parse()?))
+impl WireEncode for SessionKey {
+    fn encoded_len(&self) -> usize {
+        Self::SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.encode(out);
+    }
+}
+
+impl<B: ByteSlice> codec::WireDecode<B> for SessionKey {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::from_data(reader.decode()?))
     }
 }
 
@@ -68,9 +78,19 @@ impl Drop for MlKemPublicKey {
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for MlKemPublicKey {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self::new(reader.parse()?))
+impl<B: ByteSlice> codec::WireDecode<B> for MlKemPublicKey {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::new(reader.decode()?))
+    }
+}
+
+impl WireEncode for MlKemPublicKey {
+    fn encoded_len(&self) -> usize {
+        Self::SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.as_ref().encode(out);
     }
 }
 
@@ -116,9 +136,19 @@ impl Drop for MlKemCiphertext {
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for MlKemCiphertext {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self::new(reader.parse()?))
+impl<B: ByteSlice> codec::WireDecode<B> for MlKemCiphertext {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::new(reader.decode()?))
+    }
+}
+
+impl WireEncode for MlKemCiphertext {
+    fn encoded_len(&self) -> usize {
+        Self::SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.as_ref().encode(out);
     }
 }
 
