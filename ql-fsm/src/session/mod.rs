@@ -252,14 +252,14 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub fn receive<'a, I>(
+    pub(crate) fn receive<I>(
         &mut self,
         now: Instant,
         seq: RecordSeq,
         frames: I,
         mut emit: impl FnMut(SessionEvent),
     ) where
-        I: IntoIterator<Item = Result<SessionFrame<&'a [u8]>, WireError>>,
+        I: IntoIterator<Item = Result<SessionFrame<Bytes>, WireError>>,
     {
         self.state.now = now;
         self.collect_timeouts();
@@ -298,7 +298,7 @@ impl SessionFsm {
                 SessionFrame::Ping => {}
                 SessionFrame::Ack(ack) => self.process_record_ack(&ack, &mut emit),
                 SessionFrame::StreamData(frame) => {
-                    if self.handle_stream_data(&frame, &mut emit).is_err() {
+                    if self.handle_stream_data(frame, &mut emit).is_err() {
                         return;
                     }
                 }
@@ -666,7 +666,7 @@ impl SessionFsm {
 
     fn handle_stream_data(
         &mut self,
-        frame: &StreamData<&[u8]>,
+        frame: StreamData<Bytes>,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
         let stream_id = frame.stream_id;

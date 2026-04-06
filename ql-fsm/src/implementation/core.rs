@@ -30,23 +30,29 @@ pub fn receive(
             super::handle_handshake_record(fsm, crypto, &record, &mut emit)
         }
         wire::RecordType::Session => {
-            let record = wire::QlSessionRecord::decode_exact(&mut bytes[..])?;
             let state = fsm.state.link.connected_mut_or_err()?;
-            if record.header.connection_id != state.transport.rx_connection_id {
-                return Err(QlFsmError::InvalidPayload);
-            }
-            let plaintext = wire::decrypt_record(
-                crypto,
-                &record.header,
-                record.payload,
-                &state.transport.rx_key,
-            )?;
+            let bytes_ptr = bytes.as_ptr() as usize;
+            let (seq, start, len) = {
+                let record = wire::QlSessionRecord::decode_exact(&mut bytes[..])?;
+                if record.header.connection_id != state.transport.rx_connection_id {
+                    return Err(QlFsmError::InvalidPayload);
+                }
+                let plaintext = wire::decrypt_record(
+                    crypto,
+                    &record.header,
+                    record.payload,
+                    &state.transport.rx_key,
+                )?;
+                let start = plaintext.as_ptr() as usize - bytes_ptr;
+                (record.header.seq, start, plaintext.len())
+            };
+            let plaintext = Bytes::from(bytes).slice(start..start + len);
             let frames = wire::SessionRecord::parse(plaintext)?;
 
             let mut session_closed = false;
             state
                 .session
-                .receive(fsm.state.now.instant, record.header.seq, frames, |event| {
+                .receive(fsm.state.now.instant, seq, frames, |event| {
                     session_closed |= forward_session_event(event, &mut emit);
                 });
 

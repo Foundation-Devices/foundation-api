@@ -4,6 +4,8 @@ use core::{
 };
 use std::collections::VecDeque;
 
+use bytes::Bytes;
+
 /// A mutable or immutable byte slice owner used by the wire parser.
 pub trait ByteSlice: Deref<Target = [u8]> + Sized {
     /// Splits the current byte view at `mid`.
@@ -107,6 +109,21 @@ impl ByteChunks for Vec<u8> {
     }
 }
 
+impl ByteChunks for Bytes {
+    type Chunks<'a>
+        = Once<&'a [u8]>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        Bytes::len(self)
+    }
+
+    fn chunks(&self) -> Self::Chunks<'_> {
+        once(self.as_ref())
+    }
+}
+
 impl ByteChunks for VecDeque<u8> {
     type Chunks<'a>
         = Chain<Once<&'a [u8]>, Once<&'a [u8]>>
@@ -139,6 +156,17 @@ impl ByteSlice for &mut [u8] {
     fn split_at(self, mid: usize) -> Result<(Self, Self), Self> {
         if mid <= self.len() {
             Ok(<[u8]>::split_at_mut(self, mid))
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl ByteSlice for Bytes {
+    #[inline]
+    fn split_at(self, mid: usize) -> Result<(Self, Self), Self> {
+        if mid <= self.len() {
+            Ok((self.slice(..mid), self.slice(mid..)))
         } else {
             Err(self)
         }

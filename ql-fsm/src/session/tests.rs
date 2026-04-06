@@ -63,8 +63,8 @@ fn receive_events(
     for frame in &record.frames {
         assert!(builder.push_frame(frame));
     }
-    let bytes = builder.bytes().to_vec();
-    let frames = SessionRecord::parse(&bytes).unwrap();
+    let bytes = Bytes::from(builder.bytes().to_vec());
+    let frames = SessionRecord::parse(bytes).unwrap();
     let mut events = Vec::new();
     fsm.receive(now, seq, frames, |event| events.push(event));
     events

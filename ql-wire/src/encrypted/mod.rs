@@ -2,6 +2,7 @@ use crate::{
     codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, Nonce, QlCrypto,
     SessionHeader, SessionKey, VarInt, VarIntBoundsExceeded, WireDecode, WireEncode, WireError,
 };
+use bytes::Bytes;
 
 mod ack;
 mod builder;
@@ -71,6 +72,8 @@ pub enum SessionFrame<B> {
 
 pub type SessionFrameVec = SessionFrame<Vec<u8>>;
 pub type StreamDataVec = StreamData<Vec<u8>>;
+pub type SessionFrameBytes = SessionFrame<Bytes>;
+pub type StreamDataBytes = StreamData<Bytes>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -83,8 +86,8 @@ pub(crate) enum SessionFrameKind {
     Close = 6,
 }
 
-pub struct SessionFrameIter<'a> {
-    remaining: &'a [u8],
+pub struct SessionFrameIter<B> {
+    remaining: Option<B>,
 }
 
 impl TryFrom<u8> for SessionFrameKind {
@@ -103,9 +106,17 @@ impl TryFrom<u8> for SessionFrameKind {
     }
 }
 
+impl<B: ByteSlice> codec::WireDecode<B> for SessionFrameKind {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        reader.decode::<u8>()?.try_into()
+    }
+}
+
 impl SessionRecord {
-    pub fn parse(bytes: &[u8]) -> Result<SessionFrameIter<'_>, WireError> {
-        Ok(SessionFrameIter { remaining: bytes })
+    pub fn parse<B: ByteSlice>(bytes: B) -> Result<SessionFrameIter<B>, WireError> {
+        Ok(SessionFrameIter {
+            remaining: Some(bytes),
+        })
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -195,22 +206,22 @@ impl WireEncode for SessionRecord {
     }
 }
 
-impl<'a> Iterator for SessionFrameIter<'a> {
-    type Item = Result<SessionFrame<&'a [u8]>, WireError>;
+impl<B: ByteSlice> Iterator for SessionFrameIter<B> {
+    type Item = Result<SessionFrame<B>, WireError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining.is_empty() {
+        let remaining = self.remaining.take()?;
+        if remaining.is_empty() {
             return None;
         }
 
-        let parsed = parse_next_frame(self.remaining);
+        let parsed = parse_next_frame(remaining);
         match parsed {
             Ok((frame, rest)) => {
-                self.remaining = rest;
+                self.remaining = Some(rest);
                 Some(Ok(frame))
             }
             Err(error) => {
-                self.remaining = &[];
                 Some(Err(error))
             }
         }
@@ -228,50 +239,25 @@ pub fn decrypt_record<B: AsMut<[u8]>>(
     encrypted.decrypt_in_place(crypto, session_key, &nonce, &aad)
 }
 
-fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireError> {
-    let (&kind, rest) = bytes.split_first().ok_or(WireError::InvalidPayload)?;
-    match SessionFrameKind::try_from(kind)? {
-        SessionFrameKind::Ping => Ok((SessionFrame::Ping, rest)),
-        SessionFrameKind::Ack => {
-            let (frame, rest) = parse_inline_frame::<RecordAck>(rest)?;
-            Ok((SessionFrame::Ack(frame), rest))
-        }
+fn parse_next_frame<B: ByteSlice>(bytes: B) -> Result<(SessionFrame<B>, B), WireError> {
+    let mut reader = codec::Reader::new(bytes);
+    let kind = reader.decode::<SessionFrameKind>()?;
+    let frame = match kind {
+        SessionFrameKind::Ping => SessionFrame::Ping,
+        SessionFrameKind::Ack => SessionFrame::Ack(reader.decode::<RecordAck>()?),
         SessionFrameKind::StreamData => {
-            let (frame, rest) = split_variable_frame(rest)?;
-            Ok((
-                SessionFrame::StreamData(StreamData::decode_exact(frame)?),
-                rest,
-            ))
+            let len = usize::try_from(reader.decode::<VarInt>()?.into_inner())
+                .map_err(|_| WireError::InvalidPayload)?;
+            let frame = reader.take_bytes(len)?;
+            SessionFrame::StreamData(StreamData::decode_exact(frame)?)
         }
         SessionFrameKind::StreamWindow => {
-            let (frame, rest) = parse_inline_frame::<StreamWindow>(rest)?;
-            Ok((SessionFrame::StreamWindow(frame), rest))
+            SessionFrame::StreamWindow(reader.decode::<StreamWindow>()?)
         }
         SessionFrameKind::StreamClose => {
-            let (frame, rest) = parse_inline_frame::<StreamClose>(rest)?;
-            Ok((SessionFrame::StreamClose(frame), rest))
+            SessionFrame::StreamClose(reader.decode::<StreamClose>()?)
         }
-        SessionFrameKind::Close => {
-            let (frame, rest) = parse_inline_frame::<SessionClose>(rest)?;
-            Ok((SessionFrame::Close(frame), rest))
-        }
-    }
-}
-
-fn parse_inline_frame<T>(bytes: &[u8]) -> Result<(T, &[u8]), WireError>
-where
-    T: for<'a> WireDecode<&'a [u8]>,
-{
-    let mut reader = codec::Reader::new(bytes);
-    let frame = reader.decode::<T>()?;
-    let consumed = bytes.len() - reader.remaining_len();
-    Ok((frame, &bytes[consumed..]))
-}
-
-fn split_variable_frame(bytes: &[u8]) -> Result<(&[u8], &[u8]), WireError> {
-    let mut reader = codec::Reader::new(bytes);
-    let len = usize::try_from(reader.decode::<VarInt>()?.into_inner())
-        .map_err(|_| WireError::InvalidPayload)?;
-    let bytes = &bytes[bytes.len() - reader.remaining_len()..];
-    bytes.split_at_checked(len).ok_or(WireError::InvalidPayload)
+        SessionFrameKind::Close => SessionFrame::Close(reader.decode::<SessionClose>()?),
+    };
+    Ok((frame, reader.take_rest()))
 }

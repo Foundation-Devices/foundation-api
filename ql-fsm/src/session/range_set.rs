@@ -84,10 +84,6 @@ impl RangeSet {
         self.0.first_key_value().map(|(&start, _)| start)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     pub fn iter(&self) -> Iter<'_> {
         Iter(self.0.iter())
     }

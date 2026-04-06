@@ -1,13 +1,12 @@
-use std::collections::VecDeque;
+use std::collections::{btree_map, BTreeMap};
 
-use super::range_set::RangeSet;
+use bytes::{Buf, Bytes};
 
 /// reassembles one stream direction from out-of-order byte ranges.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamRx {
     start_offset: u64,
-    bytes: VecDeque<u8>,
-    missing: RangeSet,
+    chunks: BTreeMap<u64, Bytes>,
     final_offset: Option<u64>,
     max_buffered: usize,
 }
@@ -27,12 +26,6 @@ pub enum StreamRxError {
     BeyondFinalOffset,
 }
 
-#[derive(Debug, Clone)]
-pub struct StreamReadIter<'a> {
-    front: Option<&'a [u8]>,
-    back: Option<&'a [u8]>,
-}
-
 impl StreamRx {
     pub fn new(max_buffered: usize) -> Self {
         Self::with_start_offset(0, max_buffered)
@@ -41,8 +34,7 @@ impl StreamRx {
     pub fn with_start_offset(start_offset: u64, max_buffered: usize) -> Self {
         Self {
             start_offset,
-            bytes: VecDeque::new(),
-            missing: RangeSet::new(),
+            chunks: BTreeMap::new(),
             final_offset: None,
             max_buffered,
         }
@@ -53,7 +45,10 @@ impl StreamRx {
     }
 
     pub fn buffered_end_offset(&self) -> u64 {
-        self.start_offset + self.bytes.len() as u64
+        self.chunks
+            .last_key_value()
+            .map(|(&offset, bytes)| offset + bytes.len() as u64)
+            .unwrap_or(self.start_offset)
     }
 
     pub fn max_buffered(&self) -> usize {
@@ -61,51 +56,40 @@ impl StreamRx {
     }
 
     pub fn readable_len(&self) -> usize {
-        if self.bytes.is_empty() {
-            return 0;
+        let mut cursor = self.start_offset;
+        for (&offset, bytes) in self.chunks.range(self.start_offset..) {
+            if offset > cursor {
+                break;
+            }
+
+            let end = offset + bytes.len() as u64;
+            if end > cursor {
+                cursor = end;
+            }
         }
 
-        match self.missing.peek_min() {
-            Some(range) if range.start <= self.start_offset => 0,
-            Some(range) => usize::try_from(range.start - self.start_offset)
-                .expect("readable prefix exceeds usize"),
-            None => self.bytes.len(),
-        }
+        usize::try_from(cursor - self.start_offset).expect("readable prefix exceeds usize")
     }
 
     pub fn bytes(&self) -> StreamReadIter<'_> {
-        let readable = self.readable_len();
-        if readable == 0 {
-            return StreamReadIter {
-                front: None,
-                back: None,
-            };
-        }
-
-        let (front, back) = self.bytes.as_slices();
-        if readable <= front.len() {
-            StreamReadIter {
-                front: Some(&front[..readable]),
-                back: None,
-            }
-        } else {
-            StreamReadIter {
-                front: Some(front),
-                back: Some(&back[..readable - front.len()]),
-            }
+        StreamReadIter {
+            inner: self.chunks.range(self.start_offset..),
+            cursor: self.start_offset,
+            remaining: self.readable_len(),
         }
     }
 
     pub fn is_complete(&self) -> bool {
-        matches!(self.final_offset, Some(final_offset) if final_offset == self.buffered_end_offset())
-            && self.missing.is_empty()
+        matches!(self.final_offset, Some(final_offset)
+            if final_offset == self.buffered_end_offset()
+                && final_offset == self.start_offset + self.readable_len() as u64)
     }
 
     pub fn insert(
         &mut self,
         offset: u64,
         fin: bool,
-        bytes: &[u8],
+        mut bytes: Bytes,
     ) -> Result<InsertOutcome, StreamRxError> {
         let end = offset
             .checked_add(bytes.len() as u64)
@@ -130,17 +114,16 @@ impl StreamRx {
         let effective_offset = offset.max(self.start_offset);
         let trim_front =
             usize::try_from(effective_offset - offset).expect("front trim exceeds usize");
-        let effective_bytes = &bytes[trim_front..];
-        if effective_bytes.is_empty() {
+        bytes.advance(trim_front);
+        if bytes.is_empty() {
             return Ok(self.insert_outcome(was_complete, old_readable));
         }
 
-        self.ensure_within_window(end)?;
-        self.ensure_buffered(end);
+        let effective_end = effective_offset + bytes.len() as u64;
+        self.ensure_within_window(effective_end)?;
         #[cfg(test)]
-        self.assert_valid_overlap(effective_offset, effective_bytes);
-        self.write_bytes(effective_offset, effective_bytes);
-        self.missing.remove(effective_offset..end);
+        self.assert_valid_overlap(effective_offset, &bytes);
+        self.insert_chunk(effective_offset, bytes);
 
         Ok(self.insert_outcome(was_complete, old_readable))
     }
@@ -152,8 +135,22 @@ impl StreamRx {
             return;
         }
 
-        self.bytes.drain(..len);
-        self.start_offset = self.start_offset.saturating_add(len as u64);
+        let new_start = self.start_offset.saturating_add(len as u64);
+        while let Some((&offset, bytes)) = self.chunks.first_key_value() {
+            let end = offset + bytes.len() as u64;
+            if end <= new_start {
+                self.chunks.pop_first();
+                continue;
+            }
+            if offset < new_start {
+                let (offset, mut bytes) = self.chunks.pop_first().unwrap();
+                bytes.advance(usize::try_from(new_start - offset).expect("trim exceeds usize"));
+                self.chunks.insert(new_start, bytes);
+            }
+            break;
+        }
+
+        self.start_offset = new_start;
     }
 
     fn insert_outcome(&self, was_complete: bool, old_readable: usize) -> InsertOutcome {
@@ -189,72 +186,123 @@ impl StreamRx {
         Ok(())
     }
 
-    fn ensure_buffered(&mut self, end: u64) {
-        let buffered_end = self.buffered_end_offset();
-        if end <= buffered_end {
+    fn insert_chunk(&mut self, mut offset: u64, mut bytes: Bytes) {
+        if bytes.is_empty() {
             return;
         }
 
-        let additional = usize::try_from(end - buffered_end).expect("buffer growth exceeds usize");
-        self.bytes.resize(self.bytes.len() + additional, 0);
-        self.missing.insert(buffered_end..end);
+        if let Some((&existing_offset, existing)) = self.chunks.range(..offset).next_back() {
+            let existing_end = existing_offset + existing.len() as u64;
+            if existing_end > offset {
+                let overlap =
+                    usize::try_from((existing_end - offset).min(bytes.len() as u64)).unwrap();
+                bytes.advance(overlap);
+                offset += overlap as u64;
+            }
+        }
+
+        if bytes.is_empty() {
+            return;
+        }
+
+        let end = offset + bytes.len() as u64;
+        let overlapping = self
+            .chunks
+            .range(offset..end)
+            .map(|(&chunk_offset, _)| chunk_offset)
+            .collect::<Vec<_>>();
+
+        for chunk_offset in overlapping {
+            let chunk_end = chunk_offset + self.chunks[&chunk_offset].len() as u64;
+
+            if chunk_offset > offset {
+                let len = usize::try_from(chunk_offset - offset).expect("gap exceeds usize");
+                self.chunks.insert(offset, bytes.slice(..len));
+                bytes.advance(len);
+                offset = chunk_offset;
+            }
+
+            let overlap = usize::try_from((chunk_end - offset).min(bytes.len() as u64)).unwrap();
+            bytes.advance(overlap);
+            offset += overlap as u64;
+
+            if bytes.is_empty() {
+                return;
+            }
+        }
+
+        self.chunks.insert(offset, bytes);
     }
 
     #[cfg(test)]
-    fn assert_valid_overlap(&self, offset: u64, bytes: &[u8]) {
-        for (index, byte) in bytes.iter().copied().enumerate() {
-            let absolute = offset + index as u64;
-            let is_missing = self
-                .missing
-                .iter()
-                .any(|range| range.start <= absolute && absolute < range.end);
-            if is_missing {
-                continue;
-            }
-
-            let index =
-                usize::try_from(absolute - self.start_offset).expect("read index exceeds usize");
-
-            assert_eq!(
-                self.bytes[index], byte,
-                "conflicting overlap at stream offset {absolute}"
-            );
+    fn assert_valid_overlap(&self, offset: u64, bytes: &Bytes) {
+        if let Some((&existing_offset, existing)) = self.chunks.range(..offset).next_back() {
+            self.assert_overlap_chunk(offset, bytes, existing_offset, existing);
+        }
+        let end = offset + bytes.len() as u64;
+        for (&existing_offset, existing) in self.chunks.range(offset..end) {
+            self.assert_overlap_chunk(offset, bytes, existing_offset, existing);
         }
     }
 
-    fn write_bytes(&mut self, offset: u64, bytes: &[u8]) {
-        let start = usize::try_from(offset - self.start_offset).expect("write index exceeds usize");
-        let (front, back) = self.bytes.as_mut_slices();
-
-        if start >= front.len() {
-            let start = start - front.len();
-            back[start..start + bytes.len()].copy_from_slice(bytes);
+    #[cfg(test)]
+    fn assert_overlap_chunk(
+        &self,
+        offset: u64,
+        bytes: &Bytes,
+        existing_offset: u64,
+        existing: &Bytes,
+    ) {
+        let end = offset + bytes.len() as u64;
+        let existing_end = existing_offset + existing.len() as u64;
+        let overlap_start = offset.max(existing_offset);
+        let overlap_end = end.min(existing_end);
+        if overlap_start >= overlap_end {
             return;
         }
 
-        let front_len = (front.len() - start).min(bytes.len());
-        front[start..start + front_len].copy_from_slice(&bytes[..front_len]);
+        let start = usize::try_from(overlap_start - offset).expect("overlap start exceeds usize");
+        let existing_start = usize::try_from(overlap_start - existing_offset)
+            .expect("existing overlap start exceeds usize");
+        let len = usize::try_from(overlap_end - overlap_start).expect("overlap exceeds usize");
 
-        if front_len < bytes.len() {
-            back[..bytes.len() - front_len].copy_from_slice(&bytes[front_len..]);
-        }
+        assert_eq!(
+            &bytes[start..start + len],
+            &existing[existing_start..existing_start + len],
+            "conflicting overlap at stream offset {overlap_start}"
+        );
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamReadIter<'a> {
+    inner: btree_map::Range<'a, u64, Bytes>,
+    cursor: u64,
+    remaining: usize,
 }
 
 impl<'a> Iterator for StreamReadIter<'a> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(front) = self.front.take() {
-            if !front.is_empty() {
-                return Some(front);
+        while self.remaining > 0 {
+            let (&offset, bytes) = self.inner.next()?;
+            if offset > self.cursor {
+                self.remaining = 0;
+                return None;
             }
-        }
 
-        if let Some(back) = self.back.take() {
-            if !back.is_empty() {
-                return Some(back);
+            let skip = usize::try_from(self.cursor.saturating_sub(offset))
+                .expect("read cursor exceeds usize");
+            if skip >= bytes.len() {
+                continue;
             }
+
+            let chunk = &bytes[skip..];
+            let len = chunk.len().min(self.remaining);
+            self.remaining -= len;
+            self.cursor += len as u64;
+            return Some(&chunk[..len]);
         }
 
         None
@@ -263,6 +311,8 @@ impl<'a> Iterator for StreamReadIter<'a> {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::{InsertOutcome, StreamRx, StreamRxError};
 
     pub fn copy_readable(rx: &StreamRx) -> Vec<u8> {
@@ -274,11 +324,15 @@ mod tests {
         out
     }
 
+    fn bytes(bytes: &'static [u8]) -> Bytes {
+        Bytes::from_static(bytes)
+    }
+
     #[test]
     fn contiguous_insert_becomes_readable_and_complete() {
         let mut rx = StreamRx::new(64);
 
-        let outcome = rx.insert(0, true, b"hello").unwrap();
+        let outcome = rx.insert(0, true, bytes(b"hello")).unwrap();
 
         assert_eq!(
             outcome,
@@ -291,14 +345,13 @@ mod tests {
         assert_eq!(copy_readable(&rx), b"hello");
         assert_eq!(rx.final_offset, Some(5));
         assert!(rx.is_complete());
-        assert!(rx.missing.is_empty());
     }
 
     #[test]
-    fn out_of_order_insert_tracks_missing_ranges_until_gap_is_filled() {
+    fn out_of_order_insert_tracks_gap_until_prefix_is_filled() {
         let mut rx = StreamRx::new(64);
 
-        let first = rx.insert(5, true, b" world").unwrap();
+        let first = rx.insert(5, true, bytes(b" world")).unwrap();
         assert_eq!(
             first,
             InsertOutcome {
@@ -306,10 +359,9 @@ mod tests {
                 became_complete: false,
             }
         );
-        assert_eq!(rx.missing.iter().collect::<Vec<_>>(), vec![0..5]);
         assert_eq!(rx.readable_len(), 0);
 
-        let second = rx.insert(0, false, b"hello").unwrap();
+        let second = rx.insert(0, false, bytes(b"hello")).unwrap();
         assert_eq!(
             second,
             InsertOutcome {
@@ -318,7 +370,6 @@ mod tests {
             }
         );
         assert_eq!(copy_readable(&rx), b"hello world");
-        assert!(rx.missing.is_empty());
         assert!(rx.is_complete());
     }
 
@@ -326,8 +377,8 @@ mod tests {
     fn duplicate_insert_is_ignored_if_bytes_match() {
         let mut rx = StreamRx::new(64);
 
-        rx.insert(0, false, b"hello").unwrap();
-        let duplicate = rx.insert(0, false, b"hello").unwrap();
+        rx.insert(0, false, bytes(b"hello")).unwrap();
+        let duplicate = rx.insert(0, false, bytes(b"hello")).unwrap();
 
         assert_eq!(
             duplicate,
@@ -344,20 +395,20 @@ mod tests {
     fn conflicting_overlap_panics_in_test_builds() {
         let mut rx = StreamRx::new(64);
 
-        rx.insert(0, false, b"abcdef").unwrap();
-        rx.insert(3, false, b"xyz").unwrap();
+        rx.insert(0, false, bytes(b"abcdef")).unwrap();
+        rx.insert(3, false, bytes(b"xyz")).unwrap();
     }
 
     #[test]
     fn consume_advances_start_offset_and_trims_old_prefix() {
         let mut rx = StreamRx::new(64);
 
-        rx.insert(0, false, b"abcd").unwrap();
+        rx.insert(0, false, bytes(b"abcd")).unwrap();
         rx.consume(2);
         assert_eq!(rx.start_offset(), 2);
         assert_eq!(copy_readable(&rx), b"cd");
 
-        let outcome = rx.insert(1, true, b"bcde").unwrap();
+        let outcome = rx.insert(1, true, bytes(b"bcde")).unwrap();
         assert_eq!(
             outcome,
             InsertOutcome {
@@ -374,13 +425,11 @@ mod tests {
     fn insert_can_fill_multiple_gaps_without_rebuilding_state() {
         let mut rx = StreamRx::new(64);
 
-        rx.insert(0, false, b"ab").unwrap();
-        rx.insert(4, false, b"ef").unwrap();
-        rx.insert(8, true, b"ij").unwrap();
+        rx.insert(0, false, bytes(b"ab")).unwrap();
+        rx.insert(4, false, bytes(b"ef")).unwrap();
+        rx.insert(8, true, bytes(b"ij")).unwrap();
 
-        assert_eq!(rx.missing.iter().collect::<Vec<_>>(), vec![2..4, 6..8]);
-
-        let outcome = rx.insert(2, false, b"cdefgh").unwrap();
+        let outcome = rx.insert(2, false, bytes(b"cdefgh")).unwrap();
 
         assert_eq!(
             outcome,
@@ -389,7 +438,6 @@ mod tests {
                 became_complete: true,
             }
         );
-        assert!(rx.missing.is_empty());
 
         assert_eq!(copy_readable(&rx), b"abcdefghij");
         assert!(rx.is_complete());
@@ -399,18 +447,13 @@ mod tests {
     fn heavily_fragmented_inserts_stay_valid() {
         let mut rx = StreamRx::new(64);
 
-        rx.insert(1, false, b"b").unwrap();
-        rx.insert(3, false, b"d").unwrap();
-        rx.insert(5, false, b"f").unwrap();
-        rx.insert(7, false, b"h").unwrap();
-        rx.insert(9, true, b"j").unwrap();
+        rx.insert(1, false, bytes(b"b")).unwrap();
+        rx.insert(3, false, bytes(b"d")).unwrap();
+        rx.insert(5, false, bytes(b"f")).unwrap();
+        rx.insert(7, false, bytes(b"h")).unwrap();
+        rx.insert(9, true, bytes(b"j")).unwrap();
 
-        assert_eq!(
-            rx.missing.iter().collect::<Vec<_>>(),
-            vec![0..1, 2..3, 4..5, 6..7, 8..9]
-        );
-
-        let outcome = rx.insert(0, false, b"abcdefghi").unwrap();
+        let outcome = rx.insert(0, false, bytes(b"abcdefghi")).unwrap();
         assert_eq!(
             outcome,
             InsertOutcome {
@@ -425,7 +468,7 @@ mod tests {
     #[test]
     fn out_of_window_insert_is_rejected() {
         let mut rx = StreamRx::new(4);
-        let error = rx.insert(5, false, b"a").unwrap_err();
+        let error = rx.insert(5, false, bytes(b"a")).unwrap_err();
         assert_eq!(error, StreamRxError::OutOfWindow);
     }
 }
