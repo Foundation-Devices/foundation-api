@@ -1,6 +1,6 @@
 use crate::{
     codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, Nonce, QlCrypto,
-    SessionHeader, SessionKey, WireError, WireParse,
+    SessionHeader, SessionKey, VarInt, VarIntBoundsExceeded, WireError, WireParse,
 };
 
 mod ack;
@@ -20,7 +20,27 @@ pub use stream_window::*;
 // todo: should use even/odd based on xid ordering
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct StreamId(pub u32);
+pub struct StreamId(pub VarInt);
+
+impl StreamId {
+    pub const MAX_ENCODED_LEN: usize = VarInt::MAX_SIZE;
+
+    pub const fn from_u32(value: u32) -> Self {
+        Self(VarInt::from_u32(value))
+    }
+
+    pub fn from_u64(value: u64) -> Result<Self, VarIntBoundsExceeded> {
+        Ok(Self(VarInt::from_u64(value)?))
+    }
+
+    pub const fn into_inner(self) -> u64 {
+        self.0.into_inner()
+    }
+
+    pub const fn encoded_len(self) -> usize {
+        self.0.size()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
@@ -39,8 +59,6 @@ pub enum SessionFrame<B> {
 
 pub type SessionFrameVec = SessionFrame<Vec<u8>>;
 pub type StreamDataVec = StreamData<Vec<u8>>;
-
-pub(crate) const SIZE_LEN: usize = size_of::<u16>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -98,10 +116,15 @@ impl<B: ByteChunks> SessionFrame<B> {
     pub fn wire_size(&self) -> usize {
         1 + match self {
             Self::Ping => 0,
-            Self::Ack(_) => RecordAck::WIRE_SIZE,
-            Self::StreamData(frame) => SIZE_LEN + frame.wire_size(),
-            Self::StreamWindow(_) => StreamWindow::WIRE_SIZE,
-            Self::StreamClose(_) => StreamClose::WIRE_SIZE,
+            Self::Ack(frame) => frame.wire_size(),
+            Self::StreamData(frame) => {
+                VarInt::try_from(frame.wire_size())
+                    .unwrap_or(VarInt::MAX)
+                    .size()
+                    + frame.wire_size()
+            }
+            Self::StreamWindow(frame) => frame.wire_size(),
+            Self::StreamClose(frame) => frame.wire_size(),
             Self::Close(_) => SessionClose::WIRE_SIZE,
         }
     }
@@ -149,7 +172,7 @@ pub fn decrypt_record<B: AsMut<[u8]>>(
     session_key: &SessionKey,
 ) -> Result<B, WireError> {
     let aad = header.aad();
-    let nonce = Nonce::from_counter(header.seq.0);
+    let nonce = Nonce::from_counter(header.seq.into_inner());
     encrypted.decrypt_in_place(crypto, session_key, &nonce, &aad)
 }
 
@@ -158,52 +181,42 @@ fn parse_next_frame(bytes: &[u8]) -> Result<(SessionFrame<&[u8]>, &[u8]), WireEr
     match SessionFrameKind::try_from(kind)? {
         SessionFrameKind::Ping => Ok((SessionFrame::Ping, rest)),
         SessionFrameKind::Ack => {
-            let (frame, rest) = rest
-                .split_at_checked(RecordAck::WIRE_SIZE)
-                .ok_or(WireError::InvalidPayload)?;
-            Ok((SessionFrame::Ack(RecordAck::parse_bytes(frame)?), rest))
+            let (frame, rest) = parse_inline_frame::<RecordAck>(rest)?;
+            Ok((SessionFrame::Ack(frame), rest))
         }
         SessionFrameKind::StreamData => {
             let (frame, rest) = split_variable_frame(rest)?;
             Ok((SessionFrame::StreamData(StreamData::parse(frame)?), rest))
         }
         SessionFrameKind::StreamWindow => {
-            let (frame, rest) = rest
-                .split_at_checked(StreamWindow::WIRE_SIZE)
-                .ok_or(WireError::InvalidPayload)?;
-            Ok((
-                SessionFrame::StreamWindow(StreamWindow::parse_bytes(frame)?),
-                rest,
-            ))
+            let (frame, rest) = parse_inline_frame::<StreamWindow>(rest)?;
+            Ok((SessionFrame::StreamWindow(frame), rest))
         }
         SessionFrameKind::StreamClose => {
-            let (frame, rest) = rest
-                .split_at_checked(StreamClose::WIRE_SIZE)
-                .ok_or(WireError::InvalidPayload)?;
-            Ok((
-                SessionFrame::StreamClose(StreamClose::parse_bytes(frame)?),
-                rest,
-            ))
+            let (frame, rest) = parse_inline_frame::<StreamClose>(rest)?;
+            Ok((SessionFrame::StreamClose(frame), rest))
         }
         SessionFrameKind::Close => {
-            let (frame, rest) = rest
-                .split_at_checked(SessionClose::WIRE_SIZE)
-                .ok_or(WireError::InvalidPayload)?;
-            Ok((SessionFrame::Close(SessionClose::parse_bytes(frame)?), rest))
+            let (frame, rest) = parse_inline_frame::<SessionClose>(rest)?;
+            Ok((SessionFrame::Close(frame), rest))
         }
     }
 }
 
-fn push_variable_len(out: &mut [u8], len: usize) {
-    let len = u16::try_from(len).expect("session frame exceeds u16");
-    let _ = codec::write_u16(out, len);
+fn parse_inline_frame<T>(bytes: &[u8]) -> Result<(T, &[u8]), WireError>
+where
+    T: for<'a> WireParse<&'a [u8]>,
+{
+    let mut reader = codec::Reader::new(bytes);
+    let frame = reader.parse::<T>()?;
+    let consumed = bytes.len() - reader.remaining_len();
+    Ok((frame, &bytes[consumed..]))
 }
 
 fn split_variable_frame(bytes: &[u8]) -> Result<(&[u8], &[u8]), WireError> {
-    if bytes.len() < SIZE_LEN {
-        return Err(WireError::InvalidPayload);
-    }
-    let len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
-    let bytes = &bytes[SIZE_LEN..];
+    let mut reader = codec::Reader::new(bytes);
+    let len = usize::try_from(reader.take_varint()?.into_inner())
+        .map_err(|_| WireError::InvalidPayload)?;
+    let bytes = &bytes[bytes.len() - reader.remaining_len()..];
     bytes.split_at_checked(len).ok_or(WireError::InvalidPayload)
 }

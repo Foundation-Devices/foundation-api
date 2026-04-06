@@ -139,13 +139,13 @@ impl<B: AsRef<[u8]>> QlSessionRecord<B> {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = vec![
             0;
-            2 + SessionHeader::WIRE_SIZE
+            2 + self.header.encoded_len()
                 + EncryptedMessage::<&[u8]>::HEADER_LEN
                 + self.payload.ciphertext.as_ref().len()
         ];
         let rest = codec::write_u8(&mut out, QL_WIRE_VERSION);
         let rest = codec::write_u8(rest, RecordType::Session as u8);
-        let rest = codec::write_bytes(rest, &self.header.encode());
+        let rest = self.header.encode_into(rest);
         let _ = self.payload.encode_into(rest);
         out
     }

@@ -18,7 +18,7 @@ impl ReceivedRecords {
     const TRACKED_WINDOW: u64 = Self::TRACKED_LEN - 1;
 
     pub fn insert(&mut self, seq: RecordSeq) -> ReceiveOutcome {
-        let seq = seq.0;
+        let seq = seq.into_inner();
         if self.seen == 0 {
             self.base = seq;
             self.seen = 1;
@@ -50,7 +50,7 @@ impl ReceivedRecords {
 
     pub fn ack(&self) -> Option<RecordAck> {
         (self.seen != 0).then_some(RecordAck {
-            base_seq: RecordSeq(self.base),
+            base_seq: RecordSeq::from_u64(self.base).expect("tracked record seq must fit varint"),
             bits: self.seen,
         })
     }
@@ -75,22 +75,26 @@ mod tests {
 
     use super::{ReceiveOutcome, ReceivedRecords};
 
+    fn seq(value: u64) -> RecordSeq {
+        RecordSeq::from_u64(value).unwrap()
+    }
+
     #[test]
     fn inserts_pack_contiguous_bits() {
         let mut received = ReceivedRecords::default();
 
         assert_eq!(
-            received.insert(RecordSeq(10)),
+            received.insert(seq(10)),
             ReceiveOutcome::New {
                 out_of_order: false
             }
         );
         assert_eq!(
-            received.insert(RecordSeq(12)),
+            received.insert(seq(12)),
             ReceiveOutcome::New { out_of_order: true }
         );
         assert_eq!(
-            received.insert(RecordSeq(11)),
+            received.insert(seq(11)),
             ReceiveOutcome::New { out_of_order: true }
         );
 
@@ -98,7 +102,7 @@ mod tests {
         assert_eq!(
             ack,
             RecordAck {
-                base_seq: RecordSeq(10),
+                base_seq: seq(10),
                 bits: 0b111,
             }
         );
@@ -109,22 +113,22 @@ mod tests {
         let mut received = ReceivedRecords::default();
 
         assert_eq!(
-            received.insert(RecordSeq(0)),
+            received.insert(seq(0)),
             ReceiveOutcome::New {
                 out_of_order: false
             }
         );
         assert_eq!(
-            received.insert(RecordSeq(300)),
+            received.insert(seq(300)),
             ReceiveOutcome::New { out_of_order: true }
         );
-        assert_eq!(received.insert(RecordSeq(0)), ReceiveOutcome::TooOld);
+        assert_eq!(received.insert(seq(0)), ReceiveOutcome::TooOld);
 
         let ack = received.ack().unwrap();
         assert_eq!(
             ack,
             RecordAck {
-                base_seq: RecordSeq(237),
+                base_seq: seq(237),
                 bits: 1u64 << 63,
             }
         );
@@ -135,12 +139,12 @@ mod tests {
         let mut received = ReceivedRecords::default();
 
         assert_eq!(
-            received.insert(RecordSeq(7)),
+            received.insert(seq(7)),
             ReceiveOutcome::New {
                 out_of_order: false
             }
         );
-        assert_eq!(received.insert(RecordSeq(7)), ReceiveOutcome::Duplicate);
+        assert_eq!(received.insert(seq(7)), ReceiveOutcome::Duplicate);
     }
 
     #[test]
@@ -148,17 +152,17 @@ mod tests {
         let mut received = ReceivedRecords::default();
 
         assert_eq!(
-            received.insert(RecordSeq(10)),
+            received.insert(seq(10)),
             ReceiveOutcome::New {
                 out_of_order: false
             }
         );
         assert_eq!(
-            received.insert(RecordSeq(12)),
+            received.insert(seq(12)),
             ReceiveOutcome::New { out_of_order: true }
         );
         assert_eq!(
-            received.insert(RecordSeq(70)),
+            received.insert(seq(70)),
             ReceiveOutcome::New { out_of_order: true }
         );
 
@@ -166,7 +170,7 @@ mod tests {
         assert_eq!(
             ack,
             RecordAck {
-                base_seq: RecordSeq(10),
+                base_seq: seq(10),
                 bits: (1u64 << 0) | (1u64 << 2) | (1u64 << 60),
             }
         );

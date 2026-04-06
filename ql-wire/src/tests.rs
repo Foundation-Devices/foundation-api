@@ -151,6 +151,18 @@ fn xid(byte: u8) -> XID {
     XID([byte; XID::SIZE])
 }
 
+fn varint(value: u64) -> VarInt {
+    VarInt::from_u64(value).unwrap()
+}
+
+fn record_seq(value: u64) -> RecordSeq {
+    RecordSeq(varint(value))
+}
+
+fn stream_id(value: u64) -> StreamId {
+    StreamId(varint(value))
+}
+
 fn handshake_meta(id: u32) -> HandshakeMeta {
     HandshakeMeta {
         handshake_id: HandshakeId(id),
@@ -181,15 +193,18 @@ fn encrypt_record(
     session_key: &SessionKey,
     body: &SessionRecord,
 ) -> QlSessionRecord<Vec<u8>> {
-    let wire_size = body.wire_size() + SessionRecordBuilder::WIRE_PREFIX_LEN;
-    let mut builder = SessionRecordBuilder::new(wire_size);
+    let mut builder = SessionRecordBuilder::new(header.seq, usize::MAX);
     for frame in &body.frames {
         let pushed = builder.push_frame(frame);
         debug_assert!(pushed);
     }
-    QlSessionRecord::parse_bytes(builder.encrypt(crypto, header, session_key).as_slice())
-        .unwrap()
-        .into_owned()
+    QlSessionRecord::parse_bytes(
+        builder
+            .encrypt(crypto, header.connection_id, session_key)
+            .as_slice(),
+    )
+    .unwrap()
+    .into_owned()
 }
 
 #[test]
@@ -634,13 +649,13 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     let crypto = TestCrypto::new(40);
     let header = SessionHeader {
         connection_id: ConnectionId::from_data([0x44; ConnectionId::SIZE]),
-        seq: RecordSeq(11),
+        seq: record_seq(11),
     };
     let body = SessionRecord {
         frames: vec![
             SessionFrame::Ping,
             SessionFrame::Ack(RecordAck {
-                base_seq: RecordSeq(12),
+                base_seq: record_seq(12),
                 bits: (1u64 << 0)
                     | (1u64 << 1)
                     | (1u64 << 8)
@@ -649,17 +664,17 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
                     | (1u64 << 11),
             }),
             SessionFrame::StreamWindow(StreamWindow {
-                stream_id: StreamId(9),
-                maximum_offset: 65_536,
+                stream_id: stream_id(9),
+                maximum_offset: varint(65_536),
             }),
             SessionFrame::StreamData(StreamData {
-                stream_id: StreamId(9),
-                offset: 1024,
+                stream_id: stream_id(9),
+                offset: varint(1024),
                 bytes: b"hello".to_vec(),
                 fin: true,
             }),
             SessionFrame::StreamClose(StreamClose {
-                stream_id: StreamId(9),
+                stream_id: stream_id(9),
                 target: CloseTarget::Both,
                 code: StreamCloseCode(0),
             }),
@@ -700,11 +715,40 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
 
     let wrong_seq_header = SessionHeader {
         connection_id: header.connection_id,
-        seq: RecordSeq(header.seq.0 + 1),
+        seq: record_seq(header.seq.into_inner() + 1),
     };
     assert_eq!(
         encrypted::decrypt_record(&crypto, &wrong_seq_header, encrypted, &session_key),
         Err(WireError::DecryptFailed)
+    );
+}
+
+#[test]
+fn session_varint_fields_expand_at_expected_boundaries() {
+    let short_header = SessionHeader {
+        connection_id: ConnectionId::from_data([0x11; ConnectionId::SIZE]),
+        seq: record_seq(63),
+    };
+    let long_header = SessionHeader {
+        connection_id: ConnectionId::from_data([0x11; ConnectionId::SIZE]),
+        seq: record_seq(64),
+    };
+
+    assert_eq!(short_header.encode().len(), ConnectionId::SIZE + 1);
+    assert_eq!(long_header.encode().len(), ConnectionId::SIZE + 2);
+
+    let frame = StreamData {
+        stream_id: stream_id(64),
+        offset: varint(16_384),
+        fin: true,
+        bytes: b"abc".to_vec(),
+    };
+    let mut encoded = vec![0; frame.wire_size()];
+    frame.encode_into(&mut encoded);
+
+    assert_eq!(
+        StreamData::parse(encoded.as_slice()).unwrap().into_owned(),
+        frame
     );
 }
 
@@ -763,7 +807,7 @@ fn protocol_record_size_breakdown() {
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: RecordSeq(1),
+            seq: record_seq(1),
         },
         &session.tx_key,
         &SessionRecord {
@@ -774,13 +818,13 @@ fn protocol_record_size_breakdown() {
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: RecordSeq(2),
+            seq: record_seq(2),
         },
         &session.tx_key,
         &SessionRecord {
             frames: vec![SessionFrame::StreamData(StreamData {
-                stream_id: StreamId(1),
-                offset: 0,
+                stream_id: stream_id(1),
+                offset: varint(0),
                 fin: false,
                 bytes: Vec::new(),
             })],
@@ -790,7 +834,7 @@ fn protocol_record_size_breakdown() {
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: RecordSeq(3),
+            seq: record_seq(3),
         },
         &session.tx_key,
         &SessionRecord {

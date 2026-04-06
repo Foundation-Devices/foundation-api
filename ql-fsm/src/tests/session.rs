@@ -5,6 +5,10 @@ use ql_wire::{SessionClose, StreamId};
 use super::*;
 use crate::{state::LinkState, PeerStatus, QlFsmError, QlFsmEvent};
 
+fn stream_id(value: u32) -> StreamId {
+    StreamId::from_u32(value)
+}
+
 fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();
     loop {
@@ -147,7 +151,7 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
 #[test]
 fn disconnected_stream_operations_fail_with_no_session() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
-    let missing = StreamId(0);
+    let missing = stream_id(0);
 
     assert_eq!(harness.a.fsm.open_stream(), Err(QlFsmError::NoSession));
     assert_eq!(
@@ -176,7 +180,7 @@ fn disconnected_stream_operations_fail_with_no_session() {
 #[test]
 fn disconnected_stream_read_accessors_return_none() {
     let harness = Harness::paired_known(QlFsmConfig::default());
-    let missing = StreamId(0);
+    let missing = stream_id(0);
 
     assert!(harness.a.fsm.stream_read(missing).is_none());
     assert!(harness.a.fsm.stream_available_bytes(missing).is_none());

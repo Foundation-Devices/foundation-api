@@ -1,4 +1,4 @@
-use crate::{ByteSlice, WireError};
+use crate::{ByteSlice, VarInt, WireError};
 
 pub fn write_u8(out: &mut [u8], value: u8) -> &mut [u8] {
     let (head, rest) = out.split_at_mut(1);
@@ -22,6 +22,17 @@ pub fn write_u64(out: &mut [u8], value: u64) -> &mut [u8] {
     let (head, rest) = out.split_at_mut(size_of::<u64>());
     head.copy_from_slice(&value.to_le_bytes());
     rest
+}
+
+pub fn write_varint(out: &mut [u8], value: VarInt) -> &mut [u8] {
+    let x = value.into_inner();
+    match value.size() {
+        1 => write_u8(out, x as u8),
+        2 => write_bytes(out, &(((0b01u16 << 14) | (x as u16)).to_be_bytes())),
+        4 => write_bytes(out, &(((0b10u32 << 30) | (x as u32)).to_be_bytes())),
+        8 => write_bytes(out, &(((0b11u64 << 62) | x).to_be_bytes())),
+        _ => unreachable!("malformed varint"),
+    }
 }
 
 pub fn write_bool(out: &mut [u8], value: bool) -> &mut [u8] {
@@ -123,6 +134,37 @@ impl<B: ByteSlice> Reader<B> {
 
     pub fn take_u64(&mut self) -> Result<u64, WireError> {
         Ok(u64::from_le_bytes(self.take_array()?))
+    }
+
+    pub fn take_varint(&mut self) -> Result<VarInt, WireError> {
+        let first = self.take_u8()?;
+        let tag = first >> 6;
+        let first = first & 0b0011_1111;
+        let value = match tag {
+            0b00 => u64::from(first),
+            0b01 => {
+                let mut buf = [0; 2];
+                buf[0] = first;
+                buf[1] = self.take_u8()?;
+                u64::from(u16::from_be_bytes(buf))
+            }
+            0b10 => {
+                let mut buf = [0; 4];
+                buf[0] = first;
+                buf[1..].copy_from_slice(&self.take_array::<3>()?);
+                u64::from(u32::from_be_bytes(buf))
+            }
+            0b11 => {
+                let mut buf = [0; 8];
+                buf[0] = first;
+                buf[1..].copy_from_slice(&self.take_array::<7>()?);
+                u64::from_be_bytes(buf)
+            }
+            _ => unreachable!(),
+        };
+
+        // SAFETY: the decoded value is guaranteed to fit in the 62-bit varint range.
+        Ok(unsafe { VarInt::from_u64_unchecked(value) })
     }
 
     pub fn take_bool(&mut self) -> Result<bool, WireError> {

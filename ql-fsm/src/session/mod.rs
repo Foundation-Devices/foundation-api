@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use indexmap::{map::Entry, IndexMap};
 use ql_wire::{
     CloseTarget, RecordAck, RecordSeq, SessionClose, SessionCloseCode, SessionFrame,
-    SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamId, StreamWindow,
+    SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamId, StreamWindow, VarInt,
     WireError,
 };
 
@@ -105,7 +105,7 @@ impl SessionFsm {
     pub fn new(mut config: SessionFsmConfig, now: Instant) -> Self {
         config.record_max_size = config
             .record_max_size
-            .max(SessionRecordBuilder::WIRE_PREFIX_LEN);
+            .max(SessionRecordBuilder::MIN_CAPACITY);
         config.stream_send_buffer_size = config.stream_send_buffer_size.max(1);
         config.stream_receive_buffer_size = config.stream_receive_buffer_size.max(1);
         Self {
@@ -116,7 +116,7 @@ impl SessionFsm {
                 last_inbound_at: now,
                 session_state: SessionState::Open,
                 next_stream_ordinal: 0,
-                next_record_seq: RecordSeq(0),
+                next_record_seq: RecordSeq::from_u32(0),
                 next_write_id: 0,
                 tracked_records: Default::default(),
                 received_records: ReceivedRecords::default(),
@@ -409,15 +409,11 @@ impl SessionFsm {
         .min()
     }
 
-    pub fn take_next_write(
-        &mut self,
-        now: Instant,
-    ) -> Option<(Option<u64>, RecordSeq, SessionRecordBuilder)> {
+    pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
         self.state.now = now;
         self.collect_timeouts();
 
         let (builder, outbound) = self.build_next_record()?;
-        let seq = outbound.seq;
 
         let should_track = outbound.ping_included
             || !outbound.window_updates.is_empty()
@@ -430,12 +426,12 @@ impl SessionFsm {
             write_id
         });
 
-        Some((write_id, seq, builder))
+        Some((write_id, builder))
     }
 
     fn build_next_record(&mut self) -> Option<(SessionRecordBuilder, TrackedRecord)> {
         let seq = self.state.next_record_seq;
-        let mut builder = SessionRecordBuilder::new(self.config.record_max_size);
+        let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
         let mut outbound = TrackedRecord {
             seq,
             frames: Vec::new(),
@@ -475,7 +471,11 @@ impl SessionFsm {
             return None;
         }
 
-        self.state.next_record_seq = RecordSeq(self.state.next_record_seq.0.saturating_add(1));
+        self.state.next_record_seq = seq
+            .into_inner()
+            .checked_add(1)
+            .and_then(|next| RecordSeq::from_u64(next).ok())
+            .expect("record sequence overflow");
         Some((builder, outbound))
     }
 
@@ -525,17 +525,17 @@ impl SessionFsm {
             }
             let frame = StreamWindow {
                 stream_id,
-                maximum_offset: stream.recv_limit(),
+                maximum_offset: VarInt::from_u64(stream.recv_limit()).unwrap(),
             };
             if !builder.push_stream_window(&frame) {
                 break;
             }
 
             stream.pending_window = false;
-            stream.advertised_max_offset = frame.maximum_offset;
+            stream.advertised_max_offset = frame.maximum_offset.into_inner();
             outbound
                 .window_updates
-                .push((stream_id, frame.maximum_offset));
+                .push((stream_id, frame.maximum_offset.into_inner()));
         }
     }
 
@@ -544,8 +544,7 @@ impl SessionFsm {
         builder: &mut SessionRecordBuilder,
         outbound: &mut TrackedRecord,
     ) {
-        const OVERHEAD: usize =
-            1 + std::mem::size_of::<u16>() + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
+        const OVERHEAD: usize = 1 + VarInt::MAX_SIZE + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
 
         let len = self.state.streams.len();
         if len == 0 {
@@ -568,9 +567,11 @@ impl SessionFsm {
             let Some(candidate) = stream.tx.next_range(max_payload, stream.peer_max_offset) else {
                 continue;
             };
+            let offset =
+                VarInt::from_u64(candidate.offset).expect("stream offsets must fit ql-wire varint");
             let frame = StreamData {
                 stream_id,
-                offset: candidate.offset,
+                offset,
                 fin: candidate.fin,
                 bytes: stream.tx.ranged_bytes(candidate),
             };
@@ -609,7 +610,7 @@ impl SessionFsm {
             let tracked_records = &mut self.state.tracked_records;
             let streams = &mut self.state.streams;
             for (_, record) in tracked_records.extract_if(.., |_, record| {
-                record.sent_at.is_some() && ack.contains(record.seq.0)
+                record.sent_at.is_some() && ack.contains(record.seq.into_inner())
             }) {
                 for frame in &record.frames {
                     acknowledge_tracked_frame(streams, stream_send_buffer_size, frame, emit);
@@ -693,11 +694,13 @@ impl SessionFsm {
             }
         };
 
+        let frame_offset = frame.offset.into_inner();
         match stream.inbound_state {
             InboundState::Open => {}
             InboundState::Discarding => return Ok(()),
             InboundState::Finished | InboundState::Closed(_) => {
-                if frame.offset + frame.bytes.len() as u64 <= stream.rx.start_offset() {
+                if frame_offset.saturating_add(frame.bytes.len() as u64) <= stream.rx.start_offset()
+                {
                     return Ok(());
                 }
                 self.fail_session(
@@ -711,7 +714,7 @@ impl SessionFsm {
         }
 
         let was_readable = stream.readable_bytes() > 0;
-        let insert = stream.rx.insert(frame.offset, frame.fin, frame.bytes);
+        let insert = stream.rx.insert(frame_offset, frame.fin, frame.bytes);
         match insert {
             Ok(outcome) => {
                 if !was_readable && outcome.newly_readable_bytes > 0 {
@@ -749,8 +752,9 @@ impl SessionFsm {
         };
 
         let was_full = stream.send_capacity(self.config.stream_send_buffer_size) == 0;
-        if frame.maximum_offset > stream.peer_max_offset {
-            stream.peer_max_offset = frame.maximum_offset;
+        let maximum_offset = frame.maximum_offset.into_inner();
+        if maximum_offset > stream.peer_max_offset {
+            stream.peer_max_offset = maximum_offset;
         }
         if was_full && stream.send_capacity(self.config.stream_send_buffer_size) > 0 {
             emit(SessionEvent::Writable(frame.stream_id));
@@ -983,7 +987,10 @@ fn local_stream_was_opened(
     stream_id: StreamId,
 ) -> bool {
     local_parity.matches(stream_id)
-        && stream_id.0 < local_parity.make_stream_id(next_stream_ordinal).0
+        && stream_id.into_inner()
+            < local_parity
+                .make_stream_id(next_stream_ordinal)
+                .into_inner()
 }
 
 fn restore_tracked_record(

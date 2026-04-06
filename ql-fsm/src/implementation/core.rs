@@ -1,8 +1,7 @@
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    self as wire, CloseTarget, QlCrypto, SessionCloseCode, SessionHeader, StreamCloseCode,
-    StreamId, WireParse,
+    self as wire, CloseTarget, QlCrypto, SessionCloseCode, StreamCloseCode, StreamId, WireParse,
 };
 
 use crate::{
@@ -95,13 +94,10 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     }
 
     let state = fsm.state.link.connected_mut()?;
-    let (write_id, seq, builder) = state.session.take_next_write(fsm.state.now.instant)?;
+    let (write_id, builder) = state.session.take_next_write(fsm.state.now.instant)?;
     let record = builder.encrypt(
         crypto,
-        SessionHeader {
-            connection_id: state.transport.tx_connection_id,
-            seq,
-        },
+        state.transport.tx_connection_id,
         &state.transport.tx_key,
     );
     Some(OutboundWrite {

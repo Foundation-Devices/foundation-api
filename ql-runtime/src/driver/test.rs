@@ -111,7 +111,7 @@ fn new_inbound_io(capacity: usize) -> InboundIo {
 #[test]
 fn handle_inbound_finished_reaps_closed_initiator_stream() {
     let (mut state, fsm) = new_driver_state();
-    let stream_id = StreamId(1);
+    let stream_id = StreamId(1u32.into());
 
     state.streams.insert(
         stream_id,
@@ -129,7 +129,7 @@ fn handle_inbound_finished_reaps_closed_initiator_stream() {
 #[test]
 fn handle_closed_stream_reaps_when_both_halves_close() {
     let (mut state, _fsm) = new_driver_state();
-    let stream_id = StreamId(2);
+    let stream_id = StreamId(1u32.into());
     let (response_reader, _response_writer) = piper::pipe(1);
 
     state.streams.insert(
@@ -152,7 +152,7 @@ fn handle_closed_stream_reaps_when_both_halves_close() {
 #[test]
 fn poll_stream_reaps_after_local_finish_when_inbound_is_closed() {
     let (mut state, mut fsm) = new_driver_state();
-    let stream_id = StreamId(3);
+    let stream_id = StreamId(1u32.into());
     let (request_reader, request_writer) = piper::pipe(1);
 
     drop(request_writer);
@@ -172,7 +172,7 @@ fn poll_stream_reaps_after_local_finish_when_inbound_is_closed() {
 #[test]
 fn local_close_command_reaps_when_other_half_is_already_closed() {
     let (mut state, mut fsm) = new_driver_state();
-    let stream_id = StreamId(4);
+    let stream_id = StreamId(1u32.into());
     let (request_reader, _request_writer) = piper::pipe(1);
     let mut in_flight = Vec::new();
 

@@ -41,10 +41,12 @@ impl RemoteStreamHistory {
     }
 
     fn stream_ordinal(&self, stream_id: StreamId) -> Option<u32> {
-        let delta = stream_id.0.checked_sub(self.parity.first_stream_id())?;
+        let delta = stream_id
+            .into_inner()
+            .checked_sub(u64::from(self.parity.first_stream_id()))?;
         if delta % 2 != 0 {
             return None;
         }
-        Some(delta / 2)
+        u32::try_from(delta / 2).ok()
     }
 }

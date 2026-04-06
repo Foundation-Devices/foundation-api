@@ -1,22 +1,42 @@
 use super::{RecordAck, SessionClose, SessionFrame, StreamClose, StreamData, StreamWindow};
-use crate::{ByteChunks, Nonce, QlCrypto, RecordType, SessionHeader, SessionKey, QL_WIRE_VERSION};
+use crate::{
+    codec, ByteChunks, ConnectionId, Nonce, QlCrypto, RecordSeq, RecordType, SessionHeader,
+    SessionKey, VarInt, QL_WIRE_VERSION,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecordBuilder {
+    seq: RecordSeq,
+    prefix_len: usize,
     max_capacity: usize,
     bytes: Vec<u8>,
 }
 
 impl SessionRecordBuilder {
-    pub const WIRE_PREFIX_LEN: usize =
-        1 + 1 + SessionHeader::WIRE_SIZE + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
+    pub const MIN_CAPACITY: usize = 1
+        + 1
+        + ConnectionId::SIZE
+        + RecordSeq::MAX_ENCODED_LEN
+        + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
 
-    pub fn new(max_capacity: usize) -> Self {
-        assert!(max_capacity >= Self::WIRE_PREFIX_LEN);
+    pub fn new(seq: RecordSeq, max_capacity: usize) -> Self {
+        let prefix_len =
+            1 + 1 + ConnectionId::SIZE + seq.encoded_len() + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
+        assert!(max_capacity >= prefix_len);
         Self {
+            seq,
+            prefix_len,
             max_capacity,
             bytes: Vec::new(),
         }
+    }
+
+    pub fn seq(&self) -> RecordSeq {
+        self.seq
+    }
+
+    pub fn prefix_len(&self) -> usize {
+        self.prefix_len
     }
 
     pub fn max_capacity(&self) -> usize {
@@ -24,7 +44,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn len(&self) -> usize {
-        self.bytes.len().saturating_sub(Self::WIRE_PREFIX_LEN)
+        self.bytes.len().saturating_sub(self.prefix_len)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -33,11 +53,11 @@ impl SessionRecordBuilder {
 
     pub fn remaining_capacity(&self) -> usize {
         self.max_capacity
-            .saturating_sub(self.bytes.len().max(Self::WIRE_PREFIX_LEN))
+            .saturating_sub(self.bytes.len().max(self.prefix_len))
     }
 
     pub fn bytes(&self) -> &[u8] {
-        self.bytes.get(Self::WIRE_PREFIX_LEN..).unwrap_or_default()
+        self.bytes.get(self.prefix_len..).unwrap_or_default()
     }
 
     pub fn push_ping(&mut self) -> bool {
@@ -45,13 +65,9 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_ack(&mut self, ack: &RecordAck) -> bool {
-        self.push_frame_payload(
-            super::SessionFrameKind::Ack,
-            RecordAck::WIRE_SIZE,
-            |payload| {
-                ack.encode_into(payload);
-            },
-        )
+        self.push_frame_payload(super::SessionFrameKind::Ack, ack.wire_size(), |payload| {
+            ack.encode_into(payload);
+        })
     }
 
     pub fn push_stream_data<B: ByteChunks>(&mut self, frame: &StreamData<B>) -> bool {
@@ -67,7 +83,7 @@ impl SessionRecordBuilder {
     pub fn push_stream_window(&mut self, frame: &StreamWindow) -> bool {
         self.push_frame_payload(
             super::SessionFrameKind::StreamWindow,
-            StreamWindow::WIRE_SIZE,
+            frame.wire_size(),
             |payload| {
                 frame.encode_into(payload);
             },
@@ -77,7 +93,7 @@ impl SessionRecordBuilder {
     pub fn push_stream_close(&mut self, frame: &StreamClose) -> bool {
         self.push_frame_payload(
             super::SessionFrameKind::StreamClose,
-            StreamClose::WIRE_SIZE,
+            frame.wire_size(),
             |payload| {
                 frame.encode_into(payload);
             },
@@ -108,24 +124,28 @@ impl SessionRecordBuilder {
     pub fn encrypt(
         mut self,
         crypto: &impl QlCrypto,
-        header: SessionHeader,
+        connection_id: ConnectionId,
         session_key: &SessionKey,
     ) -> Vec<u8> {
         self.ensure_prefix_capacity(0);
+        let header = SessionHeader {
+            connection_id,
+            seq: self.seq,
+        };
         let aad = header.aad();
-        let nonce = Nonce::from_counter(header.seq.0);
+        let nonce = Nonce::from_counter(self.seq.into_inner());
         let auth = crypto.aes256_gcm_encrypt(
             session_key,
             &nonce,
             &aad,
-            &mut self.bytes[Self::WIRE_PREFIX_LEN..],
+            &mut self.bytes[self.prefix_len..],
         );
 
-        let prefix = &mut self.bytes[..Self::WIRE_PREFIX_LEN];
+        let prefix = &mut self.bytes[..self.prefix_len];
         prefix[0] = QL_WIRE_VERSION;
         prefix[1] = RecordType::Session as u8;
-        header.encode_into(&mut prefix[2..2 + SessionHeader::WIRE_SIZE]);
-        prefix[2 + SessionHeader::WIRE_SIZE..].copy_from_slice(&auth);
+        let auth_out = header.encode_into(&mut prefix[2..]);
+        auth_out[..crate::ENCRYPTED_MESSAGE_AUTH_SIZE].copy_from_slice(&auth);
         self.bytes
     }
 
@@ -162,10 +182,13 @@ impl SessionRecordBuilder {
         payload_wire_size: usize,
         encode_payload: impl FnOnce(&mut [u8]),
     ) -> bool {
-        self.push_wire_size(1 + super::SIZE_LEN + payload_wire_size, |out| {
+        let Ok(prefix_len) = VarInt::try_from(payload_wire_size) else {
+            return false;
+        };
+        self.push_wire_size(1 + prefix_len.size() + payload_wire_size, |out| {
             out[0] = kind as u8;
-            super::push_variable_len(&mut out[1..=super::SIZE_LEN], payload_wire_size);
-            encode_payload(&mut out[1 + super::SIZE_LEN..]);
+            let payload = codec::write_varint(&mut out[1..], prefix_len);
+            encode_payload(payload);
         })
     }
 
@@ -175,9 +198,8 @@ impl SessionRecordBuilder {
 
     fn ensure_prefix_capacity(&mut self, additional_body_len: usize) {
         if self.bytes.is_empty() {
-            self.bytes
-                .reserve(Self::WIRE_PREFIX_LEN + additional_body_len);
-            self.bytes.resize(Self::WIRE_PREFIX_LEN, 0);
+            self.bytes.reserve(self.prefix_len + additional_body_len);
+            self.bytes.resize(self.prefix_len, 0);
         }
     }
 }
