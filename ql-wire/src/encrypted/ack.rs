@@ -46,7 +46,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for RecordAck {
 #[cfg(test)]
 mod tests {
     use super::RecordAck;
-    use crate::{RecordSeq, WireEncode, WireError, WireDecode};
+    use crate::{RecordSeq, WireDecode, WireEncode, WireError};
 
     #[test]
     fn encode_decode_round_trip() {

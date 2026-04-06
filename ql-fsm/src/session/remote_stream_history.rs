@@ -17,7 +17,8 @@ impl RemoteStreamHistory {
     }
 
     /// returns true when this remote stream id was already observed before
-    /// panics if stream_id is wrong stream parity
+    /// panics if `stream_id` is wrong stream parity
+    #[allow(clippy::range_plus_one)]
     pub fn observe(&mut self, stream_id: StreamId) -> bool {
         let ordinal = self
             .stream_ordinal(stream_id)

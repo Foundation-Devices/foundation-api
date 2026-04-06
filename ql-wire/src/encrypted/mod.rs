@@ -2,7 +2,6 @@ use crate::{
     codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, Nonce, QlCrypto,
     SessionHeader, SessionKey, VarInt, VarIntBoundsExceeded, WireDecode, WireEncode, WireError,
 };
-use bytes::Bytes;
 
 mod ack;
 mod builder;
@@ -57,7 +56,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for StreamId {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
-    pub frames: Vec<SessionFrameVec>,
+    pub frames: Vec<SessionFrame<Vec<u8>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,11 +68,6 @@ pub enum SessionFrame<B> {
     StreamClose(StreamClose),
     Close(SessionClose),
 }
-
-pub type SessionFrameVec = SessionFrame<Vec<u8>>;
-pub type StreamDataVec = StreamData<Vec<u8>>;
-pub type SessionFrameBytes = SessionFrame<Bytes>;
-pub type StreamDataBytes = StreamData<Bytes>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -142,7 +136,7 @@ impl<B> SessionFrame<B> {
 }
 
 impl<B: ByteSlice> SessionFrame<B> {
-    pub fn into_owned(self) -> SessionFrameVec {
+    pub fn into_owned(self) -> SessionFrame<Vec<u8>> {
         match self {
             Self::Ping => SessionFrame::Ping,
             Self::Ack(frame) => SessionFrame::Ack(frame),
@@ -221,9 +215,7 @@ impl<B: ByteSlice> Iterator for SessionFrameIter<B> {
                 self.remaining = Some(rest);
                 Some(Ok(frame))
             }
-            Err(error) => {
-                Some(Err(error))
-            }
+            Err(error) => Some(Err(error)),
         }
     }
 }
@@ -254,9 +246,7 @@ fn parse_next_frame<B: ByteSlice>(bytes: B) -> Result<(SessionFrame<B>, B), Wire
         SessionFrameKind::StreamWindow => {
             SessionFrame::StreamWindow(reader.decode::<StreamWindow>()?)
         }
-        SessionFrameKind::StreamClose => {
-            SessionFrame::StreamClose(reader.decode::<StreamClose>()?)
-        }
+        SessionFrameKind::StreamClose => SessionFrame::StreamClose(reader.decode::<StreamClose>()?),
         SessionFrameKind::Close => SessionFrame::Close(reader.decode::<SessionClose>()?),
     };
     Ok((frame, reader.take_rest()))

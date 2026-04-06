@@ -13,8 +13,7 @@ pub struct StreamClose {
     pub code: StreamCloseCode,
 }
 
-impl StreamClose {
-}
+impl StreamClose {}
 
 impl WireEncode for StreamClose {
     fn encoded_len(&self) -> usize {

@@ -116,7 +116,7 @@ impl ByteChunks for Bytes {
         Self: 'a;
 
     fn len(&self) -> usize {
-        Bytes::len(self)
+        Self::len(self)
     }
 
     fn chunks(&self) -> Self::Chunks<'_> {

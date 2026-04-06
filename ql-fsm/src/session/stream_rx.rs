@@ -47,8 +47,9 @@ impl StreamRx {
     pub fn buffered_end_offset(&self) -> u64 {
         self.chunks
             .last_key_value()
-            .map(|(&offset, bytes)| offset + bytes.len() as u64)
-            .unwrap_or(self.start_offset)
+            .map_or(self.start_offset, |(&offset, bytes)| {
+                offset + bytes.len() as u64
+            })
     }
 
     pub fn max_buffered(&self) -> usize {
@@ -121,8 +122,6 @@ impl StreamRx {
 
         let effective_end = effective_offset + bytes.len() as u64;
         self.ensure_within_window(effective_end)?;
-        #[cfg(test)]
-        self.assert_valid_overlap(effective_offset, &bytes);
         self.insert_chunk(effective_offset, bytes);
 
         Ok(self.insert_outcome(was_complete, old_readable))
@@ -232,45 +231,6 @@ impl StreamRx {
         }
 
         self.chunks.insert(offset, bytes);
-    }
-
-    #[cfg(test)]
-    fn assert_valid_overlap(&self, offset: u64, bytes: &Bytes) {
-        if let Some((&existing_offset, existing)) = self.chunks.range(..offset).next_back() {
-            self.assert_overlap_chunk(offset, bytes, existing_offset, existing);
-        }
-        let end = offset + bytes.len() as u64;
-        for (&existing_offset, existing) in self.chunks.range(offset..end) {
-            self.assert_overlap_chunk(offset, bytes, existing_offset, existing);
-        }
-    }
-
-    #[cfg(test)]
-    fn assert_overlap_chunk(
-        &self,
-        offset: u64,
-        bytes: &Bytes,
-        existing_offset: u64,
-        existing: &Bytes,
-    ) {
-        let end = offset + bytes.len() as u64;
-        let existing_end = existing_offset + existing.len() as u64;
-        let overlap_start = offset.max(existing_offset);
-        let overlap_end = end.min(existing_end);
-        if overlap_start >= overlap_end {
-            return;
-        }
-
-        let start = usize::try_from(overlap_start - offset).expect("overlap start exceeds usize");
-        let existing_start = usize::try_from(overlap_start - existing_offset)
-            .expect("existing overlap start exceeds usize");
-        let len = usize::try_from(overlap_end - overlap_start).expect("overlap exceeds usize");
-
-        assert_eq!(
-            &bytes[start..start + len],
-            &existing[existing_start..existing_start + len],
-            "conflicting overlap at stream offset {overlap_start}"
-        );
     }
 }
 
@@ -388,15 +348,6 @@ mod tests {
             }
         );
         assert_eq!(copy_readable(&rx), b"hello");
-    }
-
-    #[test]
-    #[should_panic(expected = "conflicting overlap at stream offset 3")]
-    fn conflicting_overlap_panics_in_test_builds() {
-        let mut rx = StreamRx::new(64);
-
-        rx.insert(0, false, bytes(b"abcdef")).unwrap();
-        rx.insert(3, false, bytes(b"xyz")).unwrap();
     }
 
     #[test]

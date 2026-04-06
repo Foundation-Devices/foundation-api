@@ -520,8 +520,7 @@ impl DriverState {
                     } else {
                         let len = bytes.len();
                         let mut bytes = ql_fsm::Bytes::copy_from_slice(bytes);
-                        let accepted =
-                            fsm.write_stream(stream_id, &mut bytes).unwrap_or_default();
+                        let accepted = fsm.write_stream(stream_id, &mut bytes).unwrap_or_default();
                         if accepted > 0 {
                             reader.consume(accepted);
                         }

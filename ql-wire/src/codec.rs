@@ -1,6 +1,6 @@
-use ::bytes::BufMut;
+use bytes::BufMut;
 
-use crate::{ByteSlice, VarInt, WireError};
+use crate::{ByteSlice, WireError};
 
 pub trait WireEncode {
     fn encoded_len(&self) -> usize;
@@ -56,7 +56,7 @@ impl<const N: usize> WireEncode for [u8; N] {
 impl<B: ByteSlice, const N: usize> WireDecode<B> for Box<[u8; N]> {
     fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
         let bytes = reader.take_bytes(N)?;
-        let mut out = Box::<[u8; N]>::new_uninit();
+        let mut out = Self::new_uninit();
         let src = bytes.as_ptr();
         let dst = out.as_mut_ptr().cast::<u8>();
         // SAFETY: `take_bytes(N)` guarantees the source has exactly `N` bytes.
@@ -105,7 +105,7 @@ impl WireEncode for u8 {
 
 impl<B: ByteSlice> WireDecode<B> for u16 {
     fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        Ok(u16::from_be_bytes(reader.decode()?))
+        Ok(Self::from_be_bytes(reader.decode()?))
     }
 }
 
@@ -121,7 +121,7 @@ impl WireEncode for u16 {
 
 impl<B: ByteSlice> WireDecode<B> for u32 {
     fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        Ok(u32::from_be_bytes(reader.decode()?))
+        Ok(Self::from_be_bytes(reader.decode()?))
     }
 }
 
@@ -137,7 +137,7 @@ impl WireEncode for u32 {
 
 impl<B: ByteSlice> WireDecode<B> for u64 {
     fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        Ok(u64::from_be_bytes(reader.decode()?))
+        Ok(Self::from_be_bytes(reader.decode()?))
     }
 }
 
@@ -148,56 +148,6 @@ impl WireEncode for u64 {
 
     fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
         out.put_u64(*self);
-    }
-}
-
-impl<B: ByteSlice> WireDecode<B> for VarInt {
-    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        let first = reader.decode::<u8>()?;
-        let tag = first >> 6;
-        let first = first & 0b0011_1111;
-        let value = match tag {
-            0b00 => u64::from(first),
-            0b01 => {
-                let mut buf = [0; 2];
-                buf[0] = first;
-                buf[1] = reader.decode()?;
-                u64::from(u16::from_be_bytes(buf))
-            }
-            0b10 => {
-                let mut buf = [0; 4];
-                buf[0] = first;
-                buf[1..].copy_from_slice(&reader.decode::<[u8; 3]>()?);
-                u64::from(u32::from_be_bytes(buf))
-            }
-            0b11 => {
-                let mut buf = [0; 8];
-                buf[0] = first;
-                buf[1..].copy_from_slice(&reader.decode::<[u8; 7]>()?);
-                u64::from_be_bytes(buf)
-            }
-            _ => unreachable!(),
-        };
-
-        // SAFETY: the decoded value is guaranteed to fit in the 62-bit varint range.
-        Ok(unsafe { VarInt::from_u64_unchecked(value) })
-    }
-}
-
-impl WireEncode for VarInt {
-    fn encoded_len(&self) -> usize {
-        self.size()
-    }
-
-    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
-        let x = self.into_inner();
-        match self.size() {
-            1 => out.put_u8(x as u8),
-            2 => out.put_u16((0b01 << 14) | x as u16),
-            4 => out.put_u32((0b10 << 30) | x as u32),
-            8 => out.put_u64((0b11 << 62) | x),
-            _ => unreachable!("malformed varint"),
-        }
     }
 }
 

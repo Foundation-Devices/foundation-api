@@ -3,8 +3,10 @@ use std::{
     time::Duration,
 };
 
+extern crate proptest as proptest_crate;
+
 use bytes::Bytes;
-use ::proptest::{collection::vec, prelude::*, test_runner::TestCaseResult};
+use proptest_crate::{collection::vec, prelude::*, test_runner::TestCaseResult};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
 use super::*;
@@ -191,6 +193,7 @@ impl Runner {
         self.assert_quiesced()
     }
 
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     fn apply(&mut self, action: &Action) {
         match action {
             Action::ConnectIkA => {
@@ -314,7 +317,7 @@ impl Runner {
             }
             Action::WriteA { slot, bytes } => {
                 if let Some(stream_id) = self.slots_a[*slot] {
-                    let mut chunk = Bytes::from(bytes.clone());
+                    let mut chunk = Bytes::copy_from_slice(bytes);
                     if let Ok(accepted) = self.harness.a.fsm.write_stream(stream_id, &mut chunk) {
                         self.expected_at_b
                             .entry(stream_id)
@@ -325,7 +328,7 @@ impl Runner {
             }
             Action::WriteB { slot, bytes } => {
                 if let Some(stream_id) = self.slots_b[*slot] {
-                    let mut chunk = Bytes::from(bytes.clone());
+                    let mut chunk = Bytes::copy_from_slice(bytes);
                     if let Ok(accepted) = self.harness.b.fsm.write_stream(stream_id, &mut chunk) {
                         self.expected_at_a
                             .entry(stream_id)
@@ -422,7 +425,7 @@ impl Runner {
     }
 
     fn drain_reads_a(&mut self) {
-        for stream_id in self.known_streams.iter().copied().collect::<Vec<_>>() {
+        for stream_id in self.known_streams.clone() {
             let appended = drain_stream(&mut self.harness.a.fsm, stream_id);
             if !appended.is_empty() {
                 self.received_at_a
@@ -434,7 +437,7 @@ impl Runner {
     }
 
     fn drain_reads_b(&mut self) {
-        for stream_id in self.known_streams.iter().copied().collect::<Vec<_>>() {
+        for stream_id in self.known_streams.clone() {
             let appended = drain_stream(&mut self.harness.b.fsm, stream_id);
             if !appended.is_empty() {
                 self.received_at_b
@@ -528,8 +531,7 @@ impl Runner {
             let expected = self
                 .expected_at_a
                 .get(stream_id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or(&[][..], Vec::as_slice);
             prop_assert!(
                 expected.starts_with(received),
                 "side A observed non-prefix bytes on {stream_id:?}: received={received:?} expected={expected:?}"
@@ -540,8 +542,7 @@ impl Runner {
             let expected = self
                 .expected_at_b
                 .get(stream_id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or(&[][..], Vec::as_slice);
             prop_assert!(
                 expected.starts_with(received),
                 "side B observed non-prefix bytes on {stream_id:?}: received={received:?} expected={expected:?}"
@@ -587,19 +588,17 @@ impl Runner {
 
     fn assert_terminal_semantics(&self) -> TestCaseResult {
         for stream_id in &self.events_a.finished {
-            if self.inbound_aborted(Side::A, stream_id) {
+            if self.inbound_aborted(Side::A, *stream_id) {
                 continue;
             }
             let expected = self
                 .expected_at_a
                 .get(stream_id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or(&[][..], Vec::as_slice);
             let received = self
                 .received_at_a
                 .get(stream_id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or(&[][..], Vec::as_slice);
             prop_assert_eq!(
                 received,
                 expected,
@@ -609,19 +608,17 @@ impl Runner {
         }
 
         for stream_id in &self.events_b.finished {
-            if self.inbound_aborted(Side::B, stream_id) {
+            if self.inbound_aborted(Side::B, *stream_id) {
                 continue;
             }
             let expected = self
                 .expected_at_b
                 .get(stream_id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or(&[][..], Vec::as_slice);
             let received = self
                 .received_at_b
                 .get(stream_id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or(&[][..], Vec::as_slice);
             prop_assert_eq!(
                 received,
                 expected,
@@ -776,11 +773,11 @@ impl Runner {
         }
     }
 
-    fn inbound_aborted(&self, side: Side, stream_id: &StreamId) -> bool {
-        self.events(side).closed.contains(stream_id)
+    fn inbound_aborted(&self, side: Side, stream_id: StreamId) -> bool {
+        self.events(side).closed.contains(&stream_id)
             || match side {
-                Side::A => self.closed_by_a.contains(stream_id),
-                Side::B => self.closed_by_b.contains(stream_id),
+                Side::A => self.closed_by_a.contains(&stream_id),
+                Side::B => self.closed_by_b.contains(&stream_id),
             }
     }
 }
@@ -819,13 +816,19 @@ fn take_confirmed_outbound_b(harness: &mut Harness) -> Option<Vec<u8>> {
 
 fn confirm_taken_a(harness: &mut Harness, write: &TakenWrite) {
     if let Some(write_id) = write.write_id {
-        harness.a.fsm.confirm_session_write(harness.time(), write_id);
+        harness
+            .a
+            .fsm
+            .confirm_session_write(harness.time(), write_id);
     }
 }
 
 fn confirm_taken_b(harness: &mut Harness, write: &TakenWrite) {
     if let Some(write_id) = write.write_id {
-        harness.b.fsm.confirm_session_write(harness.time(), write_id);
+        harness
+            .b
+            .fsm
+            .confirm_session_write(harness.time(), write_id);
     }
 }
 
@@ -977,7 +980,7 @@ fn connected_action_strategy() -> impl Strategy<Value = Action> {
         queue_index.clone().prop_map(Action::DuplicateQueuedAToB),
         queue_index.clone().prop_map(Action::DuplicateQueuedBToA),
         queue_index.clone().prop_map(Action::DropQueuedAToB),
-        queue_index.clone().prop_map(Action::DropQueuedBToA),
+        queue_index.prop_map(Action::DropQueuedBToA),
         slot.clone().prop_map(Action::OpenStreamA),
         slot.clone().prop_map(Action::OpenStreamB),
         (slot.clone(), bytes.clone()).prop_map(|(slot, bytes)| Action::WriteA { slot, bytes }),
@@ -997,7 +1000,7 @@ fn write_tracking_action_strategy() -> impl Strategy<Value = Action> {
         slot.clone().prop_map(Action::OpenStreamA),
         slot.clone().prop_map(Action::OpenStreamB),
         (slot.clone(), bytes.clone()).prop_map(|(slot, bytes)| Action::WriteA { slot, bytes }),
-        (slot.clone(), bytes).prop_map(|(slot, bytes)| Action::WriteB { slot, bytes }),
+        (slot, bytes).prop_map(|(slot, bytes)| Action::WriteB { slot, bytes }),
         Just(Action::TakeNextAToB),
         Just(Action::TakeNextBToA),
         queue_index.clone().prop_map(Action::ConfirmTakenAToB),
@@ -1009,7 +1012,7 @@ fn write_tracking_action_strategy() -> impl Strategy<Value = Action> {
         queue_index.clone().prop_map(Action::DuplicateQueuedAToB),
         queue_index.clone().prop_map(Action::DuplicateQueuedBToA),
         queue_index.clone().prop_map(Action::DropQueuedAToB),
-        queue_index.clone().prop_map(Action::DropQueuedBToA),
+        queue_index.prop_map(Action::DropQueuedBToA),
         Just(Action::Pump),
         Just(Action::OnTimerA),
         Just(Action::OnTimerB),
@@ -1030,7 +1033,7 @@ fn terminal_action_strategy() -> impl Strategy<Value = Action> {
         slot.clone().prop_map(Action::FinishA),
         slot.clone().prop_map(Action::FinishB),
         slot.clone().prop_map(Action::CloseA),
-        slot.clone().prop_map(Action::CloseB),
+        slot.prop_map(Action::CloseB),
         Just(Action::TakeNextAToB),
         Just(Action::TakeNextBToA),
         queue_index.clone().prop_map(Action::ConfirmTakenAToB),
@@ -1042,7 +1045,7 @@ fn terminal_action_strategy() -> impl Strategy<Value = Action> {
         queue_index.clone().prop_map(Action::DuplicateQueuedAToB),
         queue_index.clone().prop_map(Action::DuplicateQueuedBToA),
         queue_index.clone().prop_map(Action::DropQueuedAToB),
-        queue_index.clone().prop_map(Action::DropQueuedBToA),
+        queue_index.prop_map(Action::DropQueuedBToA),
         Just(Action::Pump),
         Just(Action::OnTimerA),
         Just(Action::OnTimerB),
@@ -1051,7 +1054,7 @@ fn terminal_action_strategy() -> impl Strategy<Value = Action> {
     ]
 }
 
-proptest! {
+proptest_crate::proptest! {
     #![proptest_config(ProptestConfig {
         cases: 24,
         max_shrink_iters: 10_000,

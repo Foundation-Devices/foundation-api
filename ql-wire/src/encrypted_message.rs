@@ -1,5 +1,5 @@
 use crate::{
-    codec, ByteSlice, Nonce, QlCrypto, SessionKey, WireEncode, WireError, WireDecode,
+    codec, ByteSlice, Nonce, QlCrypto, SessionKey, WireDecode, WireEncode, WireError,
     ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
