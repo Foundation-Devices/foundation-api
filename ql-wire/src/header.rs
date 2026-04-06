@@ -1,4 +1,4 @@
-use crate::{codec, ByteSlice, VarInt, VarIntBoundsExceeded, QL_WIRE_VERSION};
+use crate::{codec, ByteSlice, VarInt, VarIntBoundsExceeded, WireError, QL_WIRE_VERSION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionHeader {
@@ -46,6 +46,18 @@ impl ConnectionId {
     }
 }
 
+impl<B: ByteSlice> codec::WireParse<B> for RecordSeq {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.parse()?))
+    }
+}
+
+impl<B: ByteSlice> codec::WireParse<B> for ConnectionId {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::from_data(reader.parse()?))
+    }
+}
+
 impl SessionHeader {
     pub const MAX_ENCODED_LEN: usize = ConnectionId::SIZE + RecordSeq::MAX_ENCODED_LEN;
     const AAD_DOMAIN: &[u8] = b"ql-wire:session-aad:v1";
@@ -84,10 +96,10 @@ impl SessionHeader {
 }
 
 impl<B: ByteSlice> codec::WireParse<B> for SessionHeader {
-    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, crate::WireError> {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            connection_id: ConnectionId::from_data(reader.take_array()?),
-            seq: RecordSeq(reader.take_varint()?),
+            connection_id: reader.parse()?,
+            seq: reader.parse()?,
         })
     }
 }

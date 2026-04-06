@@ -44,10 +44,16 @@ impl TryFrom<u8> for RecordType {
     }
 }
 
+impl<B: ByteSlice> WireParse<B> for RecordType {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        reader.parse::<u8>()?.try_into()
+    }
+}
+
 impl<B: ByteSlice> WireParse<B> for RecordHeader {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        let version = reader.take_u8()?;
-        let record_type = RecordType::try_from(reader.take_u8()?)?;
+        let version = reader.parse()?;
+        let record_type = reader.parse()?;
         Ok(Self {
             version,
             record_type,
@@ -75,6 +81,12 @@ impl TryFrom<u8> for HandshakeKind {
             4 => Ok(Self::Kk2),
             _ => Err(WireError::InvalidPayload),
         }
+    }
+}
+
+impl<B: ByteSlice> WireParse<B> for HandshakeKind {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        reader.parse::<u8>()?.try_into()
     }
 }
 
@@ -125,7 +137,7 @@ impl<B: ByteSlice> WireParse<B> for QlHandshakeRecord {
         if header.record_type != RecordType::Handshake {
             return Err(WireError::InvalidPayload);
         }
-        let kind = HandshakeKind::try_from(reader.take_u8()?)?;
+        let kind = reader.parse::<HandshakeKind>()?;
         match kind {
             HandshakeKind::Ik1 => Ok(Self::Ik1(reader.parse()?)),
             HandshakeKind::Ik2 => Ok(Self::Ik2(reader.parse()?)),

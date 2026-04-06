@@ -19,9 +19,9 @@ impl<B: ByteSlice> StreamData<B> {
     pub fn parse(bytes: B) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
         Ok(Self {
-            stream_id: StreamId(reader.take_varint()?),
-            offset: reader.take_varint()?,
-            fin: reader.take_bool()?,
+            stream_id: reader.parse()?,
+            offset: reader.parse()?,
+            fin: reader.parse()?,
             bytes: reader.take_rest(),
         })
     }

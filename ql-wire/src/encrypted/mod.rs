@@ -42,6 +42,12 @@ impl StreamId {
     }
 }
 
+impl<B: ByteSlice> codec::WireParse<B> for StreamId {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.parse()?))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
     pub frames: Vec<SessionFrameVec>,
@@ -215,7 +221,7 @@ where
 
 fn split_variable_frame(bytes: &[u8]) -> Result<(&[u8], &[u8]), WireError> {
     let mut reader = codec::Reader::new(bytes);
-    let len = usize::try_from(reader.take_varint()?.into_inner())
+    let len = usize::try_from(reader.parse::<VarInt>()?.into_inner())
         .map_err(|_| WireError::InvalidPayload)?;
     let bytes = &bytes[bytes.len() - reader.remaining_len()..];
     bytes.split_at_checked(len).ok_or(WireError::InvalidPayload)

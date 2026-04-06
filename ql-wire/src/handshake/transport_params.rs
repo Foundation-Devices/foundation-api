@@ -32,7 +32,7 @@ impl Default for TransportParams {
 impl<B: ByteSlice> codec::WireParse<B> for TransportParams {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            initial_stream_receive_window: reader.take_u32()?,
+            initial_stream_receive_window: reader.parse()?,
         })
     }
 }

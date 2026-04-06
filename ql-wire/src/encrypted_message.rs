@@ -27,7 +27,7 @@ impl<B: ByteSlice> EncryptedMessage<B> {
     pub fn parse(bytes: B) -> Result<Self, WireError> {
         let mut reader = codec::Reader::new(bytes);
         Ok(Self {
-            auth: reader.take_array()?,
+            auth: reader.parse()?,
             ciphertext: reader.take_rest(),
         })
     }

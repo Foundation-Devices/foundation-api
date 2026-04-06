@@ -10,6 +10,12 @@ pub struct HandshakeMeta {
     pub valid_until: u64,
 }
 
+impl<B: ByteSlice> codec::WireParse<B> for HandshakeId {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.parse()?))
+    }
+}
+
 impl HandshakeMeta {
     pub const WIRE_SIZE: usize = size_of::<u32>() + size_of::<u64>();
 
@@ -36,8 +42,8 @@ impl HandshakeMeta {
 impl<B: ByteSlice> codec::WireParse<B> for HandshakeMeta {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            handshake_id: HandshakeId(reader.take_u32()?),
-            valid_until: reader.take_u64()?,
+            handshake_id: reader.parse()?,
+            valid_until: reader.parse()?,
         })
     }
 }

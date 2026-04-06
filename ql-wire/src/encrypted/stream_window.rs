@@ -22,8 +22,8 @@ impl StreamWindow {
 impl<B: ByteSlice> codec::WireParse<B> for StreamWindow {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            stream_id: StreamId(reader.take_varint()?),
-            maximum_offset: reader.take_varint()?,
+            stream_id: reader.parse()?,
+            maximum_offset: reader.parse()?,
         })
     }
 }

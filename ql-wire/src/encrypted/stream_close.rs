@@ -28,9 +28,9 @@ impl StreamClose {
 impl<B: ByteSlice> codec::WireParse<B> for StreamClose {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            stream_id: StreamId(reader.take_varint()?),
-            target: CloseTarget::try_from(reader.take_u8()?)?,
-            code: StreamCloseCode(reader.take_u16()?),
+            stream_id: reader.parse()?,
+            target: reader.parse()?,
+            code: reader.parse()?,
         })
     }
 }
@@ -66,6 +66,18 @@ impl TryFrom<u8> for CloseTarget {
     }
 }
 
+impl<B: ByteSlice> codec::WireParse<B> for CloseTarget {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        reader.parse::<u8>()?.try_into()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct StreamCloseCode(pub u16);
+
+impl<B: ByteSlice> codec::WireParse<B> for StreamCloseCode {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.parse()?))
+    }
+}

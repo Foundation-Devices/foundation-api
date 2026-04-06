@@ -32,10 +32,10 @@ impl PeerBundle {
 impl<B: ByteSlice> codec::WireParse<B> for PeerBundle {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            version: reader.take_u16()?,
-            xid: XID(reader.take_array()?),
-            capabilities: reader.take_u32()?,
-            mlkem_public_key: MlKemPublicKey::new(reader.take_boxed_array()?),
+            version: reader.parse()?,
+            xid: reader.parse()?,
+            capabilities: reader.parse()?,
+            mlkem_public_key: reader.parse()?,
         })
     }
 }

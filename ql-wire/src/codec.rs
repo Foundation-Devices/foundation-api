@@ -64,6 +64,96 @@ pub trait WireParse<B: ByteSlice>: Sized {
     }
 }
 
+impl<B: ByteSlice, const N: usize> WireParse<B> for [u8; N] {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        let bytes = reader.take_bytes(N)?;
+        let mut out = [0u8; N];
+        out.copy_from_slice(&bytes);
+        Ok(out)
+    }
+}
+
+impl<B: ByteSlice, const N: usize> WireParse<B> for Box<[u8; N]> {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        let bytes = reader.take_bytes(N)?;
+        let mut out = Box::<[u8; N]>::new_uninit();
+        let src = bytes.as_ptr();
+        let dst = out.as_mut_ptr().cast::<u8>();
+        // SAFETY: `take_bytes(N)` guarantees the source has exactly `N` bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(src, dst, N);
+            Ok(out.assume_init())
+        }
+    }
+}
+
+impl<B: ByteSlice> WireParse<B> for u8 {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(reader.take_bytes(1)?[0])
+    }
+}
+
+impl<B: ByteSlice> WireParse<B> for u16 {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(u16::from_le_bytes(reader.parse()?))
+    }
+}
+
+impl<B: ByteSlice> WireParse<B> for u32 {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(u32::from_le_bytes(reader.parse()?))
+    }
+}
+
+impl<B: ByteSlice> WireParse<B> for u64 {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(u64::from_le_bytes(reader.parse()?))
+    }
+}
+
+impl<B: ByteSlice> WireParse<B> for VarInt {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        let first = reader.parse::<u8>()?;
+        let tag = first >> 6;
+        let first = first & 0b0011_1111;
+        let value = match tag {
+            0b00 => u64::from(first),
+            0b01 => {
+                let mut buf = [0; 2];
+                buf[0] = first;
+                buf[1] = reader.parse()?;
+                u64::from(u16::from_be_bytes(buf))
+            }
+            0b10 => {
+                let mut buf = [0; 4];
+                buf[0] = first;
+                buf[1..].copy_from_slice(&reader.parse::<[u8; 3]>()?);
+                u64::from(u32::from_be_bytes(buf))
+            }
+            0b11 => {
+                let mut buf = [0; 8];
+                buf[0] = first;
+                buf[1..].copy_from_slice(&reader.parse::<[u8; 7]>()?);
+                u64::from_be_bytes(buf)
+            }
+            _ => unreachable!(),
+        };
+
+        // SAFETY: the decoded value is guaranteed to fit in the 62-bit varint range.
+        Ok(unsafe { VarInt::from_u64_unchecked(value) })
+    }
+}
+
+impl<B: ByteSlice> WireParse<B> for bool {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        match reader.parse::<u8>()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(WireError::InvalidPayload),
+        }
+    }
+}
+
 pub struct Reader<B> {
     remaining: Option<B>,
 }
@@ -99,80 +189,6 @@ impl<B: ByteSlice> Reader<B> {
 
     pub fn take_rest(mut self) -> B {
         self.remaining.take().unwrap()
-    }
-
-    pub fn take_array<const N: usize>(&mut self) -> Result<[u8; N], WireError> {
-        let bytes = self.take_bytes(N)?;
-        let mut out = [0u8; N];
-        out.copy_from_slice(&bytes);
-        Ok(out)
-    }
-
-    pub fn take_boxed_array<const N: usize>(&mut self) -> Result<Box<[u8; N]>, WireError> {
-        let bytes = self.take_bytes(N)?;
-        let mut out = Box::<[u8; N]>::new_uninit();
-        let src = bytes.as_ptr();
-        let dst = out.as_mut_ptr().cast::<u8>();
-        // SAFETY: `take_bytes(N)` guarantees the source has exactly `N` bytes
-        unsafe {
-            std::ptr::copy_nonoverlapping(src, dst, N);
-            Ok(out.assume_init())
-        }
-    }
-
-    pub fn take_u8(&mut self) -> Result<u8, WireError> {
-        Ok(self.take_bytes(1)?[0])
-    }
-
-    pub fn take_u16(&mut self) -> Result<u16, WireError> {
-        Ok(u16::from_le_bytes(self.take_array()?))
-    }
-
-    pub fn take_u32(&mut self) -> Result<u32, WireError> {
-        Ok(u32::from_le_bytes(self.take_array()?))
-    }
-
-    pub fn take_u64(&mut self) -> Result<u64, WireError> {
-        Ok(u64::from_le_bytes(self.take_array()?))
-    }
-
-    pub fn take_varint(&mut self) -> Result<VarInt, WireError> {
-        let first = self.take_u8()?;
-        let tag = first >> 6;
-        let first = first & 0b0011_1111;
-        let value = match tag {
-            0b00 => u64::from(first),
-            0b01 => {
-                let mut buf = [0; 2];
-                buf[0] = first;
-                buf[1] = self.take_u8()?;
-                u64::from(u16::from_be_bytes(buf))
-            }
-            0b10 => {
-                let mut buf = [0; 4];
-                buf[0] = first;
-                buf[1..].copy_from_slice(&self.take_array::<3>()?);
-                u64::from(u32::from_be_bytes(buf))
-            }
-            0b11 => {
-                let mut buf = [0; 8];
-                buf[0] = first;
-                buf[1..].copy_from_slice(&self.take_array::<7>()?);
-                u64::from_be_bytes(buf)
-            }
-            _ => unreachable!(),
-        };
-
-        // SAFETY: the decoded value is guaranteed to fit in the 62-bit varint range.
-        Ok(unsafe { VarInt::from_u64_unchecked(value) })
-    }
-
-    pub fn take_bool(&mut self) -> Result<bool, WireError> {
-        match self.take_u8()? {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(WireError::InvalidPayload),
-        }
     }
 
     #[inline]

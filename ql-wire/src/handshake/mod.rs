@@ -44,8 +44,8 @@ impl HandshakeHeader {
 impl<B: ByteSlice> codec::WireParse<B> for HandshakeHeader {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            sender: XID(reader.take_array()?),
-            recipient: XID(reader.take_array()?),
+            sender: reader.parse()?,
+            recipient: reader.parse()?,
         })
     }
 }
@@ -66,7 +66,7 @@ impl EphemeralPublicKey {
 impl<B: ByteSlice> codec::WireParse<B> for EphemeralPublicKey {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            mlkem_public_key: MlKemPublicKey::new(reader.take_boxed_array()?),
+            mlkem_public_key: reader.parse()?,
         })
     }
 }
@@ -86,6 +86,12 @@ impl EncryptedMlKemCiphertext {
     }
 }
 
+impl<B: ByteSlice> codec::WireParse<B> for EncryptedMlKemCiphertext {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::new(reader.parse()?))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptedPeerBundle(Box<[u8; Self::WIRE_SIZE]>);
 
@@ -98,6 +104,12 @@ impl EncryptedPeerBundle {
 
     pub fn as_bytes(&self) -> &[u8; Self::WIRE_SIZE] {
         self.0.as_ref()
+    }
+}
+
+impl<B: ByteSlice> codec::WireParse<B> for EncryptedPeerBundle {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::new(reader.parse()?))
     }
 }
 

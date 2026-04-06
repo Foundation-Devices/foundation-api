@@ -14,14 +14,6 @@ impl SessionClose {
     }
 }
 
-impl<B: ByteSlice> codec::WireParse<B> for SessionClose {
-    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
-        Ok(Self {
-            code: SessionCloseCode(reader.take_u16()?),
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct SessionCloseCode(pub u16);
@@ -30,4 +22,18 @@ impl SessionCloseCode {
     pub const CANCELLED: Self = Self(0);
     pub const PROTOCOL: Self = Self(1);
     pub const TIMEOUT: Self = Self(2);
+}
+
+impl<B: ByteSlice> codec::WireParse<B> for SessionCloseCode {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.parse()?))
+    }
+}
+
+impl<B: ByteSlice> codec::WireParse<B> for SessionClose {
+    fn parse(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
+            code: reader.parse()?,
+        })
+    }
 }

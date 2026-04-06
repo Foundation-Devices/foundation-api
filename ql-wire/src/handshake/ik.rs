@@ -44,9 +44,9 @@ impl<B: ByteSlice> codec::WireParse<B> for Ik1 {
             header: reader.parse()?,
             meta: reader.parse()?,
             transport_params: reader.parse()?,
-            skem_ciphertext: MlKemCiphertext::new(reader.take_boxed_array()?),
+            skem_ciphertext: reader.parse()?,
             ephemeral: reader.parse()?,
-            static_bundle: EncryptedPeerBundle::new(reader.take_boxed_array()?),
+            static_bundle: reader.parse()?,
         })
     }
 }
@@ -82,8 +82,8 @@ impl<B: ByteSlice> codec::WireParse<B> for Ik2 {
             header: reader.parse()?,
             meta: reader.parse()?,
             transport_params: reader.parse()?,
-            ekem_ciphertext: MlKemCiphertext::new(reader.take_boxed_array()?),
-            skem_ciphertext: EncryptedMlKemCiphertext::new(reader.take_boxed_array()?),
+            ekem_ciphertext: reader.parse()?,
+            skem_ciphertext: reader.parse()?,
         })
     }
 }

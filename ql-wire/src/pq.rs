@@ -1,3 +1,5 @@
+use crate::{codec, ByteSlice, WireError};
+
 pub const ML_KEM_SUITE_TAG: &[u8] = b"ml-kem-1024";
 
 // ql-wire fixes the protocol to ML-KEM-1024 on the wire, but the host
@@ -39,6 +41,12 @@ impl Drop for SessionKey {
     }
 }
 
+impl<B: ByteSlice> codec::WireParse<B> for SessionKey {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::from_data(reader.parse()?))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MlKemPublicKey(Box<[u8; MlKemPublicKey::SIZE]>);
 
@@ -57,6 +65,12 @@ impl MlKemPublicKey {
 impl Drop for MlKemPublicKey {
     fn drop(&mut self) {
         self.0.as_mut().fill(0);
+    }
+}
+
+impl<B: ByteSlice> codec::WireParse<B> for MlKemPublicKey {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::new(reader.parse()?))
     }
 }
 
@@ -99,6 +113,12 @@ impl MlKemCiphertext {
 impl Drop for MlKemCiphertext {
     fn drop(&mut self) {
         self.0.as_mut().fill(0);
+    }
+}
+
+impl<B: ByteSlice> codec::WireParse<B> for MlKemCiphertext {
+    fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self::new(reader.parse()?))
     }
 }
 

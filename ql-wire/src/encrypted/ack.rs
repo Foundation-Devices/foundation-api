@@ -36,8 +36,8 @@ impl RecordAck {
 impl<B: ByteSlice> codec::WireParse<B> for RecordAck {
     fn parse(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            base_seq: RecordSeq(reader.take_varint()?),
-            bits: reader.take_u64()?,
+            base_seq: reader.parse()?,
+            bits: reader.parse()?,
         })
     }
 }
