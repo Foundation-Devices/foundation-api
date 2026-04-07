@@ -1,6 +1,5 @@
 use std::{
-    future::poll_fn,
-    future::Future,
+    future::{poll_fn, Future},
     pin::Pin,
     task::{Context, Poll},
 };
@@ -57,7 +56,10 @@ impl ByteReader {
         }
     }
 
-    pub fn poll_read_chunk(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, QlError>> {
+    pub fn poll_read_chunk(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Bytes>, QlError>> {
         if matches!(self.terminal, TerminalState::Delivered) {
             return Poll::Ready(Ok(None));
         }

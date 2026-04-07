@@ -98,9 +98,7 @@ impl DriverStreamIo {
 }
 
 pub enum OutboundIo {
-    Open {
-        reader: ChunkSlotRx,
-    },
+    Open { reader: ChunkSlotRx },
     Closed,
 }
 

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
@@ -115,7 +116,11 @@ async fn rejected_session_write_is_reissued() {
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.writer.write(Bytes::from_static(b"retry")).await.unwrap();
+        stream
+            .writer
+            .write(Bytes::from_static(b"retry"))
+            .await
+            .unwrap();
         stream.writer.finish().await.unwrap();
         assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
 

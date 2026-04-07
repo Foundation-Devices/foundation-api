@@ -44,9 +44,17 @@ async fn open_stream_duplex_happy_path() {
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.writer.write(Bytes::from_static(&[1, 2])).await.unwrap();
+        stream
+            .writer
+            .write(Bytes::from_static(&[1, 2]))
+            .await
+            .unwrap();
         assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), Some(vec![9]));
-        stream.writer.write(Bytes::from_static(&[3, 4])).await.unwrap();
+        stream
+            .writer
+            .write(Bytes::from_static(&[3, 4]))
+            .await
+            .unwrap();
         stream.writer.finish().await.unwrap();
         assert_eq!(
             next_chunk(&mut stream.reader).await.unwrap(),
@@ -97,7 +105,11 @@ async fn large_stream_payload_round_trips() {
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.writer.write(Bytes::from(payload.clone())).await.unwrap();
+        stream
+            .writer
+            .write(Bytes::from(payload.clone()))
+            .await
+            .unwrap();
         stream.writer.finish().await.unwrap();
         assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
 
@@ -194,7 +206,10 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             let mut writer = stream.writer;
             let mut reader = stream.reader;
             assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
-            writer.write(Bytes::from_static(&[1, 2, 3, 4])).await.unwrap();
+            writer
+                .write(Bytes::from_static(&[1, 2, 3, 4]))
+                .await
+                .unwrap();
             go_rx.recv().await.unwrap();
             let _ = writer.write(Bytes::from(vec![5; 64])).await;
             let _ = writer.finish().await;
@@ -324,13 +339,20 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
             let stream = inbound_b.recv().await.unwrap();
             let received_request = read_all(stream.reader).await.unwrap();
             let mut writer = stream.writer;
-            writer.write(Bytes::from(response_payload.clone())).await.unwrap();
+            writer
+                .write(Bytes::from(response_payload.clone()))
+                .await
+                .unwrap();
             writer.finish().await.unwrap();
             received_request
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.writer.write(Bytes::from(request_payload.clone())).await.unwrap();
+        stream
+            .writer
+            .write(Bytes::from(request_payload.clone()))
+            .await
+            .unwrap();
         stream.writer.finish().await.unwrap();
 
         let mut received_response = Vec::new();

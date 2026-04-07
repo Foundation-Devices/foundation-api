@@ -79,10 +79,7 @@ async fn rpc_request_round_trips() {
             let mut body = request.as_slice();
             let header =
                 <ql_rpc::header::RpcHeader as ql_rpc::RpcCodec>::decode_value(&mut body).unwrap();
-            assert_eq!(
-                header.method,
-                <Echo as ql_rpc::request::Request>::METHOD
-            );
+            assert_eq!(header.method, <Echo as ql_rpc::request::Request>::METHOD);
             assert_eq!(
                 ql_rpc::request::decode_request::<Echo>(body).unwrap(),
                 BytesValue(b"hello".to_vec())

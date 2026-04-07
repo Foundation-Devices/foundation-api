@@ -48,8 +48,10 @@ impl<M: RequestWithProgress> ResponseReader<M> {
     pub fn advance(self) -> Result<ReadStep<M>, RpcCodecError<M::Error>> {
         let mut this = self;
 
-        let Some((kind, mut body)) =
-            this.bytes.try_take_tagged_part().map_err(RpcCodecError::Rpc)?
+        let Some((kind, mut body)) = this
+            .bytes
+            .try_take_tagged_part()
+            .map_err(RpcCodecError::Rpc)?
         else {
             return Ok(ReadStep::NeedMore(this));
         };

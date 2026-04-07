@@ -46,8 +46,7 @@ impl<M: Subscription> ResponseReader<M> {
 
     pub fn advance(self) -> Result<ReadStep<M>, RpcCodecError<M::Error>> {
         let mut this = self;
-        let Some(mut body) = this.bytes.try_take_part().map_err(RpcCodecError::Rpc)?
-        else {
+        let Some(mut body) = this.bytes.try_take_part().map_err(RpcCodecError::Rpc)? else {
             return Ok(ReadStep::NeedMore(this));
         };
 

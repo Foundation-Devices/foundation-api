@@ -2,8 +2,9 @@ mod error;
 mod request_with_progress;
 mod subscription;
 
-use bytes::Bytes;
 use std::future::poll_fn;
+
+use bytes::Bytes;
 use ql_rpc::{
     notification::{self, Notification},
     request::{self, Request as RequestRpc},

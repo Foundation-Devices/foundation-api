@@ -492,7 +492,10 @@ async fn read_all(mut stream: crate::ByteReader) -> Result<Vec<u8>, QlError> {
 }
 
 async fn next_chunk(stream: &mut crate::ByteReader) -> Result<Option<Vec<u8>>, QlError> {
-    stream.read_chunk().await.map(|chunk| chunk.map(|bytes| bytes.to_vec()))
+    stream
+        .read_chunk()
+        .await
+        .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
 }
 
 fn default_runtime_config() -> RuntimeConfig {

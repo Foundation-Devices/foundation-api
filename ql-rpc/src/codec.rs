@@ -94,7 +94,6 @@ impl ChunkQueue {
             }
         }
     }
-
 }
 
 struct ChunkQueuePeek<'a> {
@@ -125,7 +124,10 @@ impl Buf for ChunkQueuePeek<'_> {
         self.remaining -= cnt;
 
         while cnt > 0 {
-            let chunk = self.chunks.get(self.chunk_index).expect("buffered data present");
+            let chunk = self
+                .chunks
+                .get(self.chunk_index)
+                .expect("buffered data present");
             let available = chunk.len() - self.chunk_offset;
             let step = cnt.min(available);
             self.chunk_offset += step;
@@ -161,7 +163,10 @@ pub struct DrainBuf<'a> {
 impl<'a> DrainBuf<'a> {
     pub fn new(bytes: &'a mut ChunkQueue, len: usize) -> Self {
         debug_assert!(bytes.remaining() >= len);
-        Self { bytes, remaining: len }
+        Self {
+            bytes,
+            remaining: len,
+        }
     }
 }
 
@@ -216,7 +221,6 @@ pub fn backpatch_length<B: AsMut<[u8]> + ?Sized>(out: &mut B, start: usize) {
     let out = out.as_mut();
     let payload_start = start + LENGTH_SIZE;
     let payload_len = out.len() - payload_start;
-    let payload_len =
-        u64::try_from(payload_len).expect("rpc payload exceeds u64 length framing");
+    let payload_len = u64::try_from(payload_len).expect("rpc payload exceeds u64 length framing");
     out[start..payload_start].copy_from_slice(&payload_len.to_le_bytes());
 }
