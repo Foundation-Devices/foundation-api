@@ -1,10 +1,8 @@
-# QuantumLink V2 Design Document
+# QuantumLink V2
 
 QuantumLink V2 is a peer-to-peer protocol for authenticated encrypted sessions carrying multiplexed duplex byte streams.
 
 It operates on whole QL records. Packetization, fragmentation, batching, and reassembly belong to the transport adapter, not to QLv2 itself.
-
-The handshake is the setup phase. It authenticates the remote peer, establishes a fresh session, and derives the keys used for steady-state traffic.
 
 ## Design goals
 1. [Ephemeral peer sessions](#handshake): short-lived keys for encryption
@@ -46,7 +44,20 @@ QLv2 has two record types:
 
 Handshake records are large because they carry ML-KEM material. Session records are small and can carry multiple frames, including frames for different streams.
 
-Handshake records are routed by peer identity. Session records are routed by `connection_id`.
+Handshake records are routed by peer identity via visible `sender` and `recipient` XIDs. Session records are routed by `connection_id`.
+
+QLv2 uses QUIC-style variable-length integers for several steady-state fields. A varint is 1, 2, 4, or 8 bytes and can represent values in the range `0..2^62-1`. This keeps small values compact while allowing very large record and stream number spaces.
+
+Today, varints are used for:
+
+- session record `seq`
+- `Ack.base_seq`
+- `StreamData` frame length
+- `StreamData.stream_id`
+- `StreamData.offset`
+- `StreamWindow.stream_id`
+- `StreamWindow.maximum_offset`
+- `StreamClose.stream_id`
 
 ### Handshake records
 
@@ -59,7 +70,7 @@ Handshake records are routed by peer identity. Session records are routed by `co
 
 ### Session records
 
-`session record size = 42 + sum(frame sizes)`
+`session record size = 35..42 + sum(frame sizes)`
 
 There is no explicit AEAD nonce on the wire. The record `seq` is used to derive the nonce.
 
@@ -68,9 +79,9 @@ There is no explicit AEAD nonce on the wire. The record `seq` is used to derive 
 | version | 1 byte | protocol version |
 | record type | 1 byte | identifies a session record |
 | `connection_id` | 16 bytes | route the record to the current session |
-| `seq` | 8 bytes | record identity for ack and retransmit |
+| `seq` | 1..8 bytes | varint record identity for ack and retransmit |
 | AEAD auth tag | 16 bytes | authenticate the encrypted body |
-| fixed overhead total | 42 bytes | overhead before any frames |
+| fixed overhead total | 35..42 bytes | overhead before any frames |
 
 The visible session header is authenticated as AEAD AAD but is not encrypted.
 
@@ -79,23 +90,23 @@ The visible session header is authenticated as AEAD AAD but is not encrypted.
 | Frame | Size | Purpose |
 | --- | ---: | --- |
 | `Ping` | 1 byte | keep the session alive when idle |
-| `Ack` | 17 bytes | acknowledge received session records |
-| `StreamWindow` | 13 bytes | extend per-stream send credit |
-| `StreamClose` | 10 bytes | abort one stream lane or both lanes |
+| `Ack` | `10..17` bytes | acknowledge received session records |
+| `StreamWindow` | `3..17` bytes | extend per-stream send credit |
+| `StreamClose` | `5..12` bytes | abort one stream lane or both lanes |
 | `Close` | 3 bytes | close the whole session |
-| `StreamData` | `16 + payload_len` bytes | carry stream bytes and optional `fin` |
+| `StreamData` | `4..26 + payload_len` bytes | carry stream bytes and optional `fin` |
 
 `StreamData` is the main steady-state frame:
 
-`1 kind + 2 variable-length prefix + 4 stream_id + 8 offset + 1 fin + payload_len`
+`1 kind + varint(frame_len) + varint(stream_id) + varint(offset) + 1 fin + payload_len`
 
-Some useful minimum record sizes:
+Some useful minimum sizes for single-frame records:
 
 | Record | Size | Meaning |
 | --- | ---: | --- |
-| `Ping` only | 43 bytes | idle keepalive |
-| `Close` only | 45 bytes | session shutdown |
-| empty or fin-only `StreamData` | 58 bytes | open or finish a stream lane without payload bytes |
+| `Ping` only | 36 bytes | idle keepalive |
+| `Close` only | 38 bytes | session shutdown |
+| empty `StreamData` | 40 bytes | open or finish a stream lane without payload bytes |
 
 ## Handshake
 
@@ -114,7 +125,7 @@ The handshake does five things:
 4. bind transport parameters into the transcript
 5. produce a `handshake_hash` for the completed exchange
 
-Today, first-contact identity exchange is still partly out of band. `IK` removes the need for the responder to know the initiator in advance, but the initiator still needs the responder bundle before it can start. A future pattern such as `XX` could remove that requirement.
+First-contact identity exchange is still partly out of band. `IK` removes the need for the responder to know the initiator in advance, but the initiator still needs the responder bundle before it can start.
 
 Each handshake carries:
 
@@ -122,11 +133,11 @@ Each handshake carries:
 - `valid_until`: expiration time for that attempt
 - transport parameters: today this is initial per-stream receive credit
 
-Important behavior:
+Handshake rules:
 
 - handshake start messages are replay-checked by `handshake_id`
 - expired handshake messages are rejected
-- simultaneous starts are resolved deterministically
+- simultaneous starts are resolved deterministically: `IK` beats `KK`; otherwise the initial ephemeral key breaks ties
 - handshake attempts time out and are dropped rather than being retransmitted in place
 
 Session establishment is slightly asymmetric:
@@ -171,6 +182,31 @@ Retransmission works at the frame level:
 
 QLv2 does not resend the same logical record identity.
 
+There is no explicit `Nack` frame. Loss is inferred either from timeout or from later selective `Ack` state that makes it clear a record was not accepted.
+
+Example:
+
+`seq = 10`
+
+| Frame | Contents |
+| --- | --- |
+| `StreamData` | `stream_id=4 offset=0 bytes="hello"` |
+
+The sender receives more bytes for that stream before `seq = 10` is acked:
+
+| Pending new frame | Contents |
+| --- | --- |
+| `StreamData` | `stream_id=4 offset=5 bytes=" world"` |
+
+If `seq = 10` is considered lost, its frame is restored and packed again with a new record sequence:
+
+`seq = 11`
+
+| Frame | Contents |
+| --- | --- |
+| `StreamData` | `stream_id=4 offset=0 bytes="hello"` |
+| `StreamData` | `stream_id=4 offset=5 bytes=" world"` |
+
 Receivers track a recent record window so they can:
 - reject duplicates
 - send selective acks with `base_seq + bitmap`
@@ -187,10 +223,13 @@ A stream has two independent lanes:
 Important properties:
 
 - either peer can open a stream
-- stream IDs are split by parity so both peers can open streams without collision
+- stream IDs are split by parity derived from XID ordering, so both peers can open streams without collision
+- stream IDs increase monotonically within each parity namespace and must not repeat within a session
 - ordering is preserved within a stream lane
 - different streams can make progress independently
 - record loss on one stream does not block unrelated streams
+
+A stream opens implicitly on the first valid `StreamData` or `StreamClose` for that remote stream ID. There is no separate open frame.
 
 `StreamData` carries:
 
@@ -208,8 +247,6 @@ Flow control is per stream.
 During the handshake, each peer advertises an initial per-stream receive window. That becomes the initial send credit the remote peer can use on each stream.
 
 `StreamWindow` extends that credit by advertising a larger maximum offset.
-
-Important detail: reading bytes is not what returns credit. Committing those reads is what returns credit and causes window updates to be sent.
 
 In practice, a stream is writable only when both are true:
 
@@ -243,4 +280,3 @@ The current handshake is ML-KEM-based and post-quantum focused.
 Session payloads are encrypted and authenticated. The session header stays visible so the receiver can route the record, but it is still authenticated as AEAD AAD.
 
 QLv2 also provides forward secrecy in the following sense: even if an attacker later obtains a peer's long-term ML-KEM private key, they still cannot decrypt messages from earlier completed sessions.
-
