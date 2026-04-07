@@ -1,10 +1,12 @@
 use std::{
     cell::Cell,
     future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicU8, AtomicUsize, Ordering},
         Arc,
     },
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -17,10 +19,12 @@ use ql_wire::{
     WireDecode, XID,
 };
 use sha2::{Digest, Sha256};
-use tokio::task::LocalSet;
+use tokio::{task::LocalSet, time::Sleep};
 
 use crate::{
-    new_runtime, platform::PlatformFuture, QlError, QlFsmConfig, QlStream, QlStreamError,
+    new_runtime,
+    platform::{PlatformFuture, QlTimer},
+    QlError, QlFsmConfig, QlStream, QlStreamError,
     RuntimeConfig, RuntimeHandle,
 };
 
@@ -232,6 +236,29 @@ impl TestPlatform {
     }
 }
 
+struct TokioTimer {
+    sleep: Pin<Box<Sleep>>,
+}
+
+impl TokioTimer {
+    fn new() -> Self {
+        Self {
+            sleep: Box::pin(tokio::time::sleep_until(parked_deadline())),
+        }
+    }
+}
+
+impl QlTimer for TokioTimer {
+    fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        let deadline = deadline.map_or_else(parked_deadline, tokio::time::Instant::from_std);
+        self.sleep.as_mut().reset(deadline);
+    }
+
+    fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.sleep.as_mut().poll(cx)
+    }
+}
+
 impl QlRandom for TestPlatform {
     fn fill_random_bytes(&self, data: &mut [u8]) {
         let value = self
@@ -318,6 +345,8 @@ impl QlKem for TestPlatform {
 }
 
 impl crate::platform::QlPlatform for TestPlatform {
+    type Timer = TokioTimer;
+
     fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         let outbound = self.outbound.clone();
         let write_delay = self.write_delay;
@@ -358,8 +387,8 @@ impl crate::platform::QlPlatform for TestPlatform {
         })
     }
 
-    fn sleep(&self, duration: Duration) -> PlatformFuture<'_, ()> {
-        Box::pin(tokio::time::sleep(duration))
+    fn timer(&self) -> Self::Timer {
+        TokioTimer::new()
     }
 
     fn load_peer(&self) -> PlatformFuture<'_, Option<PeerBundle>> {
@@ -377,6 +406,10 @@ impl crate::platform::QlPlatform for TestPlatform {
             let _ = tx.try_send(event);
         }
     }
+}
+
+fn parked_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::now() + Duration::from_secs(60 * 60 * 24 * 365 * 100)
 }
 
 fn is_encrypted_payload(bytes: &[u8]) -> bool {
@@ -527,6 +560,7 @@ fn runtime_is_send() {
     let (runtime_a, _handle) = new_runtime(identity_a, platform_a, config);
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .unwrap()
             .block_on(runtime_a.run());
@@ -543,6 +577,7 @@ fn runtime_exits_when_last_handle_drops() {
 
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .unwrap()
             .block_on(runtime.run());

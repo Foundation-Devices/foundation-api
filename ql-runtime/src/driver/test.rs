@@ -1,3 +1,5 @@
+use std::task::{Context, Poll};
+
 use ql_wire::{
     MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, PeerBundle, QlAead, QlHash,
     QlKem, QlRandom, SessionKey, StreamClose, XID,
@@ -11,6 +13,8 @@ use crate::{
 };
 
 struct NoopPlatform;
+
+struct NoopTimer;
 
 impl QlRandom for NoopPlatform {
     fn fill_random_bytes(&self, data: &mut [u8]) {
@@ -71,13 +75,23 @@ impl QlKem for NoopPlatform {
     }
 }
 
+impl crate::platform::QlTimer for NoopTimer {
+    fn set_deadline(&mut self, _deadline: Option<std::time::Instant>) {}
+
+    fn poll_wait(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+        Poll::Pending
+    }
+}
+
 impl QlPlatform for NoopPlatform {
+    type Timer = NoopTimer;
+
     fn write_message(&self, _message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn sleep(&self, _duration: Duration) -> PlatformFuture<'_, ()> {
-        Box::pin(async {})
+    fn timer(&self) -> Self::Timer {
+        NoopTimer
     }
 
     fn load_peer(&self) -> PlatformFuture<'_, Option<PeerBundle>> {
@@ -180,7 +194,6 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
     let stream_id = StreamId(1u32.into());
     let (request_reader, _request_writer) = chunk_slot::new();
     let (request_terminal_tx, _request_terminal_rx) = oneshot::channel();
-    let mut in_flight = Vec::new();
 
     state.streams.insert(
         stream_id,
@@ -199,7 +212,6 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
             code: StreamCloseCode(0),
         },
         &NoopPlatform,
-        &mut in_flight,
     );
 
     assert!(!state.streams.contains_key(&stream_id));

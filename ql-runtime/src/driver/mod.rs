@@ -18,7 +18,7 @@ use crate::{
     chunk_slot,
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
-    platform::{PlatformFuture, QlPlatform},
+    platform::{PlatformFuture, QlPlatform, QlTimer},
     QlError, QlStreamError, Runtime, RuntimeHandle,
 };
 
@@ -48,6 +48,7 @@ impl<P: QlPlatform> Runtime<P> {
             pending_fsm_events: VecDeque::new(),
         };
         let mut in_flight = Vec::new();
+        let mut timer = platform.timer();
 
         loop {
             while state.fill_write_slots(&mut fsm, &platform, &mut in_flight) {}
@@ -56,13 +57,15 @@ impl<P: QlPlatform> Runtime<P> {
                 break;
             }
 
-            match next_driver_event(&rx, &platform, fsm.next_deadline(), &mut in_flight).await {
+            timer.set_deadline(fsm.next_deadline());
+
+            match next_driver_event(&rx, &mut timer, &mut in_flight).await {
                 DriverEvent::Command(command) => {
-                    state.drive_command(&mut fsm, command, &platform, &mut in_flight);
+                    state.drive_command(&mut fsm, command, &platform);
                 }
                 DriverEvent::WriteCompleted { index, success } => {
                     let write = in_flight.swap_remove(index);
-                    state.drive_write_completed(&mut fsm, write.session_write_id, success);
+                    DriverState::drive_write_completed(&mut fsm, write.session_write_id, success);
                 }
                 DriverEvent::TimerExpired => {
                     state.with_fsm_events(&mut fsm, &platform, |fsm, emit| {
@@ -88,17 +91,12 @@ enum DriverEvent {
 }
 
 #[allow(clippy::future_not_send)]
-async fn next_driver_event<P: QlPlatform>(
+async fn next_driver_event<T: QlTimer>(
     rx: &async_channel::Receiver<RuntimeCommand>,
-    platform: &P,
-    next_timer: Option<Instant>,
+    timer: &mut T,
     in_flight: &mut [InFlightWrite<'_>],
 ) -> DriverEvent {
     let mut recv_future = (!rx.is_closed()).then(|| Box::pin(rx.recv()));
-    let mut sleep_future = next_timer.map(|deadline| {
-        let timeout = deadline.saturating_duration_since(Instant::now());
-        platform.sleep(timeout)
-    });
 
     poll_fn(|cx| {
         for (index, write) in in_flight.iter_mut().enumerate() {
@@ -110,10 +108,8 @@ async fn next_driver_event<P: QlPlatform>(
             }
         }
 
-        if let Some(future) = sleep_future.as_mut() {
-            if future.as_mut().poll(cx) == Poll::Ready(()) {
-                return Poll::Ready(DriverEvent::TimerExpired);
-            }
+        if timer.poll_wait(cx) == Poll::Ready(()) {
+            return Poll::Ready(DriverEvent::TimerExpired);
         }
 
         if let Some(future) = recv_future.as_mut() {
@@ -130,12 +126,11 @@ async fn next_driver_event<P: QlPlatform>(
 }
 
 impl DriverState {
-    fn drive_command<'a, P: QlPlatform>(
+    fn drive_command<P: QlPlatform>(
         &mut self,
         fsm: &mut QlFsm,
         command: RuntimeCommand,
-        platform: &'a P,
-        _in_flight: &mut Vec<InFlightWrite<'a>>,
+        platform: &P,
     ) {
         match command {
             RuntimeCommand::BindPeer { peer } => {
@@ -222,12 +217,7 @@ impl DriverState {
         }
     }
 
-    fn drive_write_completed(
-        &self,
-        fsm: &mut QlFsm,
-        session_write_id: Option<SessionWriteId>,
-        success: bool,
-    ) {
+    fn drive_write_completed(fsm: &mut QlFsm, session_write_id: Option<SessionWriteId>, success: bool) {
         if let Some(write_id) = session_write_id {
             if success {
                 fsm.confirm_session_write(now(), write_id);
