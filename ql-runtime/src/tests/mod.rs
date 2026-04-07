@@ -346,8 +346,9 @@ impl QlKem for TestPlatform {
 
 impl crate::platform::QlPlatform for TestPlatform {
     type Timer = TokioTimer;
+    type WriteMessageFut<'a> = PlatformFuture<'a, Result<(), QlError>>;
 
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
+    fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_> {
         let outbound = self.outbound.clone();
         let write_delay = self.write_delay;
         let fail_encrypted_write_at = self.fail_encrypted_write_at;

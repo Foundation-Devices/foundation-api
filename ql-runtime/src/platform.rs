@@ -19,8 +19,11 @@ pub trait QlTimer {
 
 pub trait QlPlatform: QlCrypto {
     type Timer: QlTimer;
+    type WriteMessageFut<'a>: Future<Output = Result<(), QlError>> + Unpin + 'a
+    where
+        Self: 'a;
 
-    fn write_message(&self, message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>>;
+    fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_>;
     fn timer(&self) -> Self::Timer;
 
     fn load_peer(&self) -> PlatformFuture<'_, Option<PeerBundle>>;

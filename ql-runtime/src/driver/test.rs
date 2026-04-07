@@ -9,6 +9,7 @@ use super::*;
 use crate::{
     chunk_slot,
     driver::state::{InboundIo, OutboundIo},
+    platform::PlatformFuture,
     tests::new_identity,
 };
 
@@ -85,9 +86,10 @@ impl crate::platform::QlTimer for NoopTimer {
 
 impl QlPlatform for NoopPlatform {
     type Timer = NoopTimer;
+    type WriteMessageFut<'a> = std::future::Ready<Result<(), QlError>>;
 
-    fn write_message(&self, _message: Vec<u8>) -> PlatformFuture<'_, Result<(), QlError>> {
-        Box::pin(async { Ok(()) })
+    fn write_message(&self, _message: Vec<u8>) -> Self::WriteMessageFut<'_> {
+        std::future::ready(Ok(()))
     }
 
     fn timer(&self) -> Self::Timer {

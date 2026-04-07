@@ -5,6 +5,7 @@ mod test;
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
+    pin::Pin,
     task::Poll,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -18,7 +19,7 @@ use crate::{
     chunk_slot,
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
-    platform::{PlatformFuture, QlPlatform, QlTimer},
+    platform::{QlPlatform, QlTimer},
     QlError, QlStreamError, Runtime, RuntimeHandle,
 };
 
@@ -78,9 +79,9 @@ impl<P: QlPlatform> Runtime<P> {
     }
 }
 
-struct InFlightWrite<'a> {
+struct InFlightWrite<F> {
     session_write_id: Option<SessionWriteId>,
-    future: PlatformFuture<'a, Result<(), QlError>>,
+    future: F,
 }
 
 enum DriverEvent {
@@ -91,16 +92,20 @@ enum DriverEvent {
 }
 
 #[allow(clippy::future_not_send)]
-async fn next_driver_event<T: QlTimer>(
+async fn next_driver_event<T, F>(
     rx: &async_channel::Receiver<RuntimeCommand>,
     timer: &mut T,
-    in_flight: &mut [InFlightWrite<'_>],
-) -> DriverEvent {
+    in_flight: &mut [InFlightWrite<F>],
+) -> DriverEvent
+where
+    T: QlTimer,
+    F: Future<Output = Result<(), QlError>> + Unpin,
+{
     let mut recv_future = (!rx.is_closed()).then(|| Box::pin(rx.recv()));
 
     poll_fn(|cx| {
         for (index, write) in in_flight.iter_mut().enumerate() {
-            if let Poll::Ready(result) = write.future.as_mut().poll(cx) {
+            if let Poll::Ready(result) = Pin::new(&mut write.future).poll(cx) {
                 return Poll::Ready(DriverEvent::WriteCompleted {
                     index,
                     success: result.is_ok(),
@@ -441,11 +446,11 @@ impl DriverState {
         self.streams.clear();
     }
 
-    fn fill_write_slots<'a, P: QlPlatform>(
+    fn fill_write_slots<'a, P: QlPlatform + 'a>(
         &self,
         fsm: &mut QlFsm,
         platform: &'a P,
-        in_flight: &mut Vec<InFlightWrite<'a>>,
+        in_flight: &mut Vec<InFlightWrite<P::WriteMessageFut<'a>>>,
     ) -> bool {
         let mut progressed = false;
 
