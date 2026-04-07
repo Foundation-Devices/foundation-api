@@ -35,9 +35,7 @@ impl<P: QlPlatform> Runtime<P> {
         } = self;
 
         let mut fsm = QlFsm::new(config.fsm, identity, now());
-        let mut peer_xid = None;
         if let Some(peer) = platform.load_peer().await {
-            peer_xid = Some(peer.xid);
             fsm.bind_peer(peer);
         }
 
@@ -45,7 +43,6 @@ impl<P: QlPlatform> Runtime<P> {
             streams: HashMap::new(),
             runtime_tx: tx,
             max_concurrent_message_writes: config.max_concurrent_message_writes,
-            peer_xid,
             pending_fsm_events: VecDeque::new(),
         };
         let mut in_flight = Vec::new();
@@ -136,7 +133,6 @@ impl DriverState {
     ) {
         match command {
             RuntimeCommand::BindPeer { peer } => {
-                self.peer_xid = Some(peer.xid);
                 fsm.bind_peer(peer);
             }
             RuntimeCommand::Connect => {
@@ -263,15 +259,11 @@ impl DriverState {
         match event {
             QlFsmEvent::NewPeer => {
                 if let Some(peer) = fsm.peer().cloned() {
-                    self.peer_xid = Some(peer.xid);
                     platform.persist_peer(peer);
                 }
             }
             QlFsmEvent::PeerStatusChanged(status) => {
-                if self.peer_xid.is_none() {
-                    self.peer_xid = fsm.peer().map(|peer| peer.xid);
-                }
-                if let Some(peer) = self.peer_xid {
+                if let Some(peer) = fsm.peer().map(|peer| peer.xid) {
                     platform.handle_peer_status(peer, status);
                 }
             }

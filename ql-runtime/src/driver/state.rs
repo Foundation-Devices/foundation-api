@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use bytes::Bytes;
 use ql_fsm::QlFsmEvent;
-use ql_wire::{CloseTarget, StreamId, XID};
+use ql_wire::{CloseTarget, StreamId};
 
 use crate::{
     chunk_slot::{ChunkSlotRx, ChunkSlotTx, TrySendError},
@@ -14,7 +14,6 @@ pub struct DriverState {
     pub streams: HashMap<StreamId, DriverStreamIo>,
     pub runtime_tx: async_channel::WeakSender<RuntimeCommand>,
     pub max_concurrent_message_writes: usize,
-    pub peer_xid: Option<XID>,
     pub pending_fsm_events: VecDeque<QlFsmEvent>,
 }
 
