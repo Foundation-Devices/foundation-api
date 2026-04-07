@@ -156,10 +156,8 @@ pub fn write_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamWriter
 }
 
 pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
-    fsm.state
-        .link
-        .connected()
-        .and_then(|state| state.session.stream_read(stream_id))
+    let state = fsm.state.link.connected()?;
+    state.session.stream_read(stream_id)
 }
 
 pub fn stream_read_commit(
