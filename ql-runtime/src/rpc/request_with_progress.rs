@@ -63,12 +63,10 @@ where
                 }
             }
 
-            match this.stream.poll_fill_buf(cx) {
+            match this.stream.poll_read_chunk(cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
-                    let len = chunk.len();
                     let reader = this.reader.take().expect("progress reader is present");
-                    this.reader = Some(reader.push(chunk));
-                    this.stream.consume(len);
+                    this.reader = Some(reader.push(&chunk));
                 }
                 Poll::Ready(Ok(None)) => {
                     this.reader = None;
@@ -117,12 +115,10 @@ where
                 Err(error) => return Poll::Ready(Err(error.into())),
             }
 
-            match this.stream.poll_fill_buf(cx) {
+            match this.stream.poll_read_chunk(cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
-                    let len = chunk.len();
                     let reader = this.reader.take().expect("progress reader is present");
-                    this.reader = Some(reader.push(chunk));
-                    this.stream.consume(len);
+                    this.reader = Some(reader.push(&chunk));
                 }
                 Poll::Ready(Ok(None)) => {
                     this.reader = None;

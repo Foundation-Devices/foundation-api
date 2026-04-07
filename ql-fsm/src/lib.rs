@@ -263,6 +263,11 @@ impl QlFsm {
         implementation::write_stream(self, stream_id, bytes)
     }
 
+    /// returns how many bytes can currently be queued for an open stream
+    pub fn stream_write_capacity(&self, stream_id: StreamId) -> Option<usize> {
+        implementation::stream_write_capacity(self, stream_id)
+    }
+
     /// returns the readable stream bytes as owned `Bytes` views without consuming them
     pub fn stream_read(&self, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
         implementation::stream_read(self, stream_id)

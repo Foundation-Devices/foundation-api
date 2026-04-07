@@ -906,7 +906,7 @@ fn drain_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
 
         let mut read = 0usize;
         for chunk in chunks {
-            out.extend_from_slice(chunk);
+            out.extend_from_slice(&chunk);
             read += chunk.len();
         }
 

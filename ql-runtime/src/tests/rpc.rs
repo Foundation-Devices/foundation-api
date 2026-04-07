@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bytes::Buf;
+use bytes::{Buf, Bytes};
 use futures_lite::StreamExt;
 
 use super::*;
@@ -86,7 +86,7 @@ async fn rpc_request_round_trips() {
             ql_rpc::request::encode_response::<Echo>(&BytesValue(b"world".to_vec()), &mut encoded)
                 .unwrap();
             let mut writer = inbound.writer;
-            writer.write_all(&encoded).await.unwrap();
+            writer.write(Bytes::from(encoded)).await.unwrap();
             writer.finish().await.unwrap();
         });
 
@@ -146,7 +146,7 @@ async fn rpc_subscription_streams_events() {
             ql_rpc::subscription::encode_end(&mut encoded);
 
             let mut writer = inbound.writer;
-            writer.write_all(&encoded).await.unwrap();
+            writer.write(Bytes::from(encoded)).await.unwrap();
             writer.finish().await.unwrap();
         });
 
@@ -225,7 +225,7 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
             .unwrap();
 
             let mut writer = inbound.writer;
-            writer.write_all(&encoded).await.unwrap();
+            writer.write(Bytes::from(encoded)).await.unwrap();
             writer.finish().await.unwrap();
         });
 

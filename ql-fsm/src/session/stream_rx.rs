@@ -278,7 +278,7 @@ mod tests {
         let readable = rx.readable_len();
         let mut out = Vec::with_capacity(readable);
         for chunk in rx.bytes() {
-            out.extend_from_slice(chunk);
+            out.extend_from_slice(&chunk);
         }
         out
     }

@@ -1,5 +1,6 @@
 pub use self::{error::QlError, handle::*, platform::*};
 
+pub mod chunk_slot;
 pub(crate) mod command;
 pub(crate) mod driver;
 mod error;
@@ -65,6 +66,6 @@ where
             rx,
             tx: tx.downgrade(),
         },
-        RuntimeHandle::new(tx, config.stream_send_buffer_bytes),
+        RuntimeHandle::new(tx),
     )
 }

@@ -4,7 +4,11 @@ use ql_wire::{
 };
 
 use super::*;
-use crate::tests::new_identity;
+use crate::{
+    chunk_slot,
+    driver::state::{InboundIo, OutboundIo},
+    tests::new_identity,
+};
 
 struct NoopPlatform;
 
@@ -93,7 +97,6 @@ fn new_driver_state() -> (DriverState, QlFsm) {
         DriverState {
             streams: HashMap::new(),
             runtime_tx: runtime_tx.downgrade(),
-            stream_send_buffer_bytes: 16,
             max_concurrent_message_writes: 1,
             peer_xid: None,
             pending_fsm_events: VecDeque::new(),
@@ -103,7 +106,8 @@ fn new_driver_state() -> (DriverState, QlFsm) {
 }
 
 fn new_inbound_io(capacity: usize) -> InboundIo {
-    let (_reader, writer) = piper::pipe(capacity);
+    let _ = capacity;
+    let (_reader, writer) = chunk_slot::new();
     let (terminal_tx, _terminal_rx) = oneshot::channel();
     InboundIo::new(writer, terminal_tx)
 }
@@ -115,10 +119,7 @@ fn handle_inbound_finished_reaps_closed_initiator_stream() {
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::Initiator {
-            request: OutboundIo::Closed,
-            response: new_inbound_io(1),
-        },
+        DriverStreamIo::new(true, OutboundIo::Closed, new_inbound_io(1)),
     );
 
     state.handle_inbound_finished(&fsm, stream_id);
@@ -130,14 +131,11 @@ fn handle_inbound_finished_reaps_closed_initiator_stream() {
 fn handle_closed_stream_reaps_when_both_halves_close() {
     let (mut state, _fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
-    let (response_reader, _response_writer) = piper::pipe(1);
+    let (response_reader, _response_writer) = chunk_slot::new();
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::Responder {
-            request: new_inbound_io(1),
-            response: OutboundIo::new(response_reader),
-        },
+        DriverStreamIo::new(false, OutboundIo::new(response_reader), new_inbound_io(1)),
     );
 
     state.handle_closed_stream(&StreamClose {
@@ -153,15 +151,12 @@ fn handle_closed_stream_reaps_when_both_halves_close() {
 fn poll_stream_reaps_after_local_finish_when_inbound_is_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
-    let (request_reader, request_writer) = piper::pipe(1);
+    let (request_reader, request_writer) = chunk_slot::new();
 
     drop(request_writer);
     state.streams.insert(
         stream_id,
-        DriverStreamIo::Initiator {
-            request: OutboundIo::new(request_reader),
-            response: InboundIo::Closed,
-        },
+        DriverStreamIo::new(true, OutboundIo::new(request_reader), InboundIo::Closed),
     );
 
     state.poll_stream(&mut fsm, stream_id);
@@ -173,15 +168,12 @@ fn poll_stream_reaps_after_local_finish_when_inbound_is_closed() {
 fn local_close_command_reaps_when_other_half_is_already_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
-    let (request_reader, _request_writer) = piper::pipe(1);
+    let (request_reader, _request_writer) = chunk_slot::new();
     let mut in_flight = Vec::new();
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::Initiator {
-            request: OutboundIo::new(request_reader),
-            response: InboundIo::Closed,
-        },
+        DriverStreamIo::new(true, OutboundIo::new(request_reader), InboundIo::Closed),
     );
 
     state.drive_command(

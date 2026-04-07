@@ -1,12 +1,12 @@
-use futures_lite::future::poll_fn;
+use bytes::Bytes;
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use crate::{command::RuntimeCommand, QlError};
+use crate::{chunk_slot::ChunkSlotTx, command::RuntimeCommand, QlError};
 
 pub struct ByteWriter {
     stream_id: StreamId,
     target: CloseTarget,
-    writer: Option<piper::Writer>,
+    writer: Option<ChunkSlotTx>,
     tx: async_channel::Sender<RuntimeCommand>,
 }
 
@@ -24,7 +24,7 @@ impl ByteWriter {
     pub(crate) fn new(
         stream_id: StreamId,
         target: CloseTarget,
-        writer: piper::Writer,
+        writer: ChunkSlotTx,
         tx: async_channel::Sender<RuntimeCommand>,
     ) -> Self {
         Self {
@@ -43,36 +43,35 @@ impl ByteWriter {
             .map_err(|_| QlError::Cancelled)
     }
 
-    pub async fn write(&mut self, bytes: &[u8]) -> Result<usize, QlError> {
+    pub async fn write(&mut self, bytes: Bytes) -> Result<(), QlError> {
         if bytes.is_empty() {
-            return Ok(0);
+            return Ok(());
         }
+        let writer = self.writer.as_ref().ok_or(QlError::Cancelled)?;
         self.poll_runtime()?;
-        let writer = self.writer.as_mut().expect("stream not finished or closed");
-        let written = poll_fn(|cx| writer.poll_fill_bytes(cx, bytes)).await;
-        if written == 0 {
+        if writer.send(bytes).await.is_err() {
             self.writer.take();
             return Err(QlError::Cancelled);
         }
         self.poll_runtime()?;
-        Ok(written)
+        Ok(())
     }
 
-    pub async fn write_all(&mut self, mut bytes: &[u8]) -> Result<(), QlError> {
-        while !bytes.is_empty() {
-            let written = self.write(bytes).await?;
-            if written == 0 {
-                return Err(QlError::Cancelled);
-            }
-            bytes = &bytes[written..];
+    pub async fn write_all<I>(&mut self, chunks: I) -> Result<(), QlError>
+    where
+        I: IntoIterator<Item = Bytes>,
+    {
+        for chunk in chunks {
+            self.write(chunk).await?;
         }
         Ok(())
     }
 
     pub async fn finish(mut self) -> Result<(), QlError> {
-        if self.writer.take().is_none() {
+        let Some(writer) = self.writer.take() else {
             return Ok(());
-        }
+        };
+        writer.close();
         std::future::ready(self.poll_runtime()).await
     }
 

@@ -176,6 +176,14 @@ impl SessionFsm {
         Ok(accepted)
     }
 
+    pub fn stream_write_capacity(&self, stream_id: StreamId) -> Option<usize> {
+        let stream = self.state.streams.get(&stream_id)?;
+        if !stream.is_writable() {
+            return Some(0);
+        }
+        Some(stream.send_capacity(self.config.stream_send_buffer_size))
+    }
+
     pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), StreamError> {
         self.ensure_session_open()?;
         let stream = self

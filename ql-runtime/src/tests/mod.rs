@@ -5,12 +5,10 @@ use std::{
         atomic::{AtomicU8, AtomicUsize, Ordering},
         Arc,
     },
-    task::Poll,
     time::Duration,
 };
 
 use async_channel::{Receiver, Sender};
-use futures_lite::future::poll_fn;
 use libcrux_aesgcm::AesGcm256Key;
 use ql_fsm::PeerStatus;
 use ql_wire::{
@@ -494,17 +492,7 @@ async fn read_all(mut stream: crate::ByteReader) -> Result<Vec<u8>, QlError> {
 }
 
 async fn next_chunk(stream: &mut crate::ByteReader) -> Result<Option<Vec<u8>>, QlError> {
-    poll_fn(|cx| match stream.poll_fill_buf(cx) {
-        Poll::Pending => Poll::Pending,
-        Poll::Ready(Ok(Some(buf))) => {
-            let (bytes, len) = (buf.to_vec(), buf.len());
-            stream.consume(len);
-            Poll::Ready(Ok(Some(bytes)))
-        }
-        Poll::Ready(Ok(None)) => Poll::Ready(Ok(None)),
-        Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-    })
-    .await
+    stream.read_chunk().await.map(|chunk| chunk.map(|bytes| bytes.to_vec()))
 }
 
 fn default_runtime_config() -> RuntimeConfig {

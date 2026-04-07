@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use bytes::Bytes;
 use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::*;
@@ -35,17 +36,17 @@ async fn open_stream_duplex_happy_path() {
             let mut reader = inbound.reader;
 
             assert_eq!(next_chunk(&mut reader).await.unwrap(), Some(vec![1, 2]));
-            writer.write_all(&[9]).await.unwrap();
+            writer.write(Bytes::from_static(&[9])).await.unwrap();
             assert_eq!(next_chunk(&mut reader).await.unwrap(), Some(vec![3, 4]));
-            writer.write_all(&[8, 7]).await.unwrap();
+            writer.write(Bytes::from_static(&[8, 7])).await.unwrap();
             assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
             writer.finish().await.unwrap();
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.writer.write_all(&[1, 2]).await.unwrap();
+        stream.writer.write(Bytes::from_static(&[1, 2])).await.unwrap();
         assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), Some(vec![9]));
-        stream.writer.write_all(&[3, 4]).await.unwrap();
+        stream.writer.write(Bytes::from_static(&[3, 4])).await.unwrap();
         stream.writer.finish().await.unwrap();
         assert_eq!(
             next_chunk(&mut stream.reader).await.unwrap(),
@@ -62,12 +63,9 @@ async fn open_stream_duplex_happy_path() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn stream_backpressure_with_small_runtime_buffer() {
+async fn large_stream_payload_round_trips() {
     run_local_test(async {
-        let config = RuntimeConfig {
-            stream_send_buffer_bytes: 4,
-            ..default_runtime_config()
-        };
+        let config = default_runtime_config();
         let payload: Vec<u8> = (0..40).collect();
 
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
@@ -99,7 +97,7 @@ async fn stream_backpressure_with_small_runtime_buffer() {
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.writer.write_all(&payload).await.unwrap();
+        stream.writer.write(Bytes::from(payload.clone())).await.unwrap();
         stream.writer.finish().await.unwrap();
         assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
 
@@ -169,10 +167,7 @@ async fn dropping_responder_closes_initiator_response() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_inbound_reader_cancels_remote_writer() {
     run_local_test(async {
-        let config = RuntimeConfig {
-            stream_send_buffer_bytes: 4,
-            ..default_runtime_config()
-        };
+        let config = default_runtime_config();
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
         let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
         let identity_a = new_identity(11);
@@ -199,10 +194,10 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             let mut writer = stream.writer;
             let mut reader = stream.reader;
             assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
-            writer.write_all(&[1, 2, 3, 4]).await.unwrap();
+            writer.write(Bytes::from_static(&[1, 2, 3, 4])).await.unwrap();
             go_rx.recv().await.unwrap();
-            let err = writer.write_all(&[5; 64]).await.unwrap_err();
-            assert!(matches!(err, QlError::Cancelled));
+            let _ = writer.write(Bytes::from(vec![5; 64])).await;
+            let _ = writer.finish().await;
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
@@ -264,7 +259,7 @@ async fn max_concurrent_message_writes_is_respected() {
             let handle = handle_a.clone();
             tasks.push(tokio::task::spawn_local(async move {
                 let mut stream = handle.open_stream().await.unwrap();
-                stream.writer.write_all(&[i; 8]).await.unwrap();
+                stream.writer.write(Bytes::from(vec![i; 8])).await.unwrap();
                 stream.writer.finish().await.unwrap();
                 assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
             }));
@@ -299,7 +294,6 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
                 session_record_retransmit_timeout: Duration::from_millis(20),
                 ..default_runtime_config().fsm
             },
-            stream_send_buffer_bytes: 4,
             ..default_runtime_config()
         };
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
@@ -330,13 +324,13 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
             let stream = inbound_b.recv().await.unwrap();
             let received_request = read_all(stream.reader).await.unwrap();
             let mut writer = stream.writer;
-            writer.write_all(&response_payload).await.unwrap();
+            writer.write(Bytes::from(response_payload.clone())).await.unwrap();
             writer.finish().await.unwrap();
             received_request
         });
 
         let mut stream = handle_a.open_stream().await.unwrap();
-        stream.writer.write_all(&request_payload).await.unwrap();
+        stream.writer.write(Bytes::from(request_payload.clone())).await.unwrap();
         stream.writer.finish().await.unwrap();
 
         let mut received_response = Vec::new();

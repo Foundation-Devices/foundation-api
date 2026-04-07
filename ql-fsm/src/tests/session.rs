@@ -24,7 +24,7 @@ fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
     loop {
         let mut read = 0;
         for chunk in fsm.stream_read(stream_id).unwrap() {
-            out.extend_from_slice(chunk);
+            out.extend_from_slice(&chunk);
             read += chunk.len();
         }
         if read == 0 {

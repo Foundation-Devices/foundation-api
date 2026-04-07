@@ -159,6 +159,13 @@ pub fn write_stream(
     Ok(state.session.write_stream(stream_id, bytes)?)
 }
 
+pub fn stream_write_capacity(fsm: &QlFsm, stream_id: StreamId) -> Option<usize> {
+    fsm.state
+        .link
+        .connected()
+        .and_then(|state| state.session.stream_write_capacity(stream_id))
+}
+
 pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
     fsm.state
         .link

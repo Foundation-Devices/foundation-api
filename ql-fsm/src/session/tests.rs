@@ -31,7 +31,7 @@ fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {
     loop {
         let mut read = 0;
         for chunk in fsm.stream_read(stream_id).unwrap() {
-            out.extend_from_slice(chunk);
+            out.extend_from_slice(&chunk);
             read += chunk.len();
         }
         if read == 0 {
@@ -208,7 +208,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
     let read = fsm
         .stream_read(stream_id)
         .unwrap()
-        .map(<[u8]>::len)
+        .map(|chunk| chunk.len())
         .sum::<usize>();
     assert_eq!(read, 2);
 

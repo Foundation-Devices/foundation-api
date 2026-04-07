@@ -2,9 +2,8 @@ mod error;
 mod request_with_progress;
 mod subscription;
 
-use std::task::Poll;
-
-use futures_lite::future::poll_fn;
+use bytes::Bytes;
+use std::future::poll_fn;
 use ql_rpc::{
     notification::{self, Notification},
     request::{self, Request as RequestRpc},
@@ -88,7 +87,7 @@ impl RpcHandle {
 
     async fn start_request(&self, payload: Vec<u8>) -> Result<ByteReader, QlError> {
         let mut stream = self.inner.open_stream().await?;
-        stream.writer.write_all(&payload).await?;
+        stream.writer.write(Bytes::from(payload)).await?;
         stream.writer.finish().await?;
         Ok(stream.reader)
     }
@@ -96,18 +95,8 @@ impl RpcHandle {
 
 async fn read_all(mut reader: ByteReader) -> Result<Vec<u8>, QlError> {
     let mut bytes = Vec::new();
-    while let Some(len) = poll_fn(|cx| match reader.poll_fill_buf(cx) {
-        Poll::Pending => Poll::Pending,
-        Poll::Ready(Ok(Some(chunk))) => {
-            bytes.extend_from_slice(chunk);
-            Poll::Ready(Ok(Some(chunk.len())))
-        }
-        Poll::Ready(Ok(None)) => Poll::Ready(Ok(None)),
-        Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-    })
-    .await?
-    {
-        reader.consume(len);
+    while let Some(chunk) = poll_fn(|cx| reader.poll_read_chunk(cx)).await? {
+        bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
 }

@@ -1,17 +1,21 @@
 use std::{
+    future::poll_fn,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
 
+use bytes::Bytes;
+use event_listener::EventListener;
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use crate::{command::RuntimeCommand, QlError};
+use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, QlError};
 
 pub struct ByteReader {
     stream_id: StreamId,
     target: CloseTarget,
-    reader: piper::Reader,
+    reader: Option<ChunkSlotRx>,
+    listener: Option<EventListener>,
     terminal: TerminalState,
     tx: async_channel::Sender<RuntimeCommand>,
 }
@@ -39,26 +43,39 @@ impl ByteReader {
     pub(crate) fn new(
         stream_id: StreamId,
         target: CloseTarget,
-        reader: piper::Reader,
+        reader: ChunkSlotRx,
         terminal: oneshot::Receiver<Result<(), QlError>>,
         tx: async_channel::Sender<RuntimeCommand>,
     ) -> Self {
         Self {
             stream_id,
             target,
-            reader,
+            reader: Some(reader),
+            listener: None,
             terminal: TerminalState::Armed(terminal),
             tx,
         }
     }
 
-    pub fn poll_fill_buf(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<&[u8]>, QlError>> {
+    pub fn poll_read_chunk(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, QlError>> {
         if matches!(self.terminal, TerminalState::Delivered) {
             return Poll::Ready(Ok(None));
         }
 
-        if self.reader.poll(cx) == Poll::Ready(true) {
-            return Poll::Ready(Ok(Some(self.reader.peek_buf())));
+        if let Some(reader) = self.reader.as_ref() {
+            match reader.poll_recv(usize::MAX, &mut self.listener, cx) {
+                Poll::Ready(Ok(bytes)) => {
+                    let _ = self.tx.try_send(RuntimeCommand::PollInbound {
+                        stream_id: self.stream_id,
+                    });
+                    return Poll::Ready(Ok(Some(bytes)));
+                }
+                Poll::Ready(Err(_)) => {
+                    self.reader = None;
+                    self.listener = None;
+                }
+                Poll::Pending => {}
+            }
         }
 
         if let TerminalState::Armed(terminal) = &mut self.terminal {
@@ -87,20 +104,16 @@ impl ByteReader {
         }
     }
 
-    pub fn consume(&mut self, amt: usize) {
-        if amt == 0 {
-            return;
-        }
-        self.reader.consume(amt);
-        let _ = self.tx.try_send(RuntimeCommand::PollInbound {
-            stream_id: self.stream_id,
-        });
+    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, QlError> {
+        poll_fn(|cx| self.poll_read_chunk(cx)).await
     }
 
     pub async fn close(mut self, code: StreamCloseCode) -> Result<(), QlError> {
         if matches!(self.terminal, TerminalState::Delivered) {
             return Ok(());
         }
+        self.reader.take();
+        self.listener = None;
         self.terminal = TerminalState::Delivered;
         self.tx
             .send(RuntimeCommand::CloseStream {

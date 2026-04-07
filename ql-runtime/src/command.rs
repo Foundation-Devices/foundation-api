@@ -1,6 +1,6 @@
 use ql_wire::{CloseTarget, PeerBundle, StreamCloseCode, StreamId};
 
-use crate::{ByteReader, QlError};
+use crate::{chunk_slot::ChunkSlotRx, ByteReader, QlError};
 
 pub(crate) enum RuntimeCommand {
     BindPeer {
@@ -8,7 +8,7 @@ pub(crate) enum RuntimeCommand {
     },
     Connect,
     OpenStream {
-        request_reader: piper::Reader,
+        request_reader: ChunkSlotRx,
         start: oneshot::Sender<Result<(StreamId, ByteReader), QlError>>,
     },
     PollInbound {

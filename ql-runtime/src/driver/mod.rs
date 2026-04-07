@@ -5,7 +5,7 @@ mod test;
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    task::{Context, Poll, Waker},
+    task::Poll,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -13,8 +13,9 @@ use futures_lite::future::poll_fn;
 use ql_fsm::{FsmTime, QlFsm, QlFsmEvent, SessionWriteId};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
+use self::state::{DriverState, DriverStreamIo, InboundWriteResult};
 use crate::{
+    chunk_slot,
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
     platform::{PlatformFuture, QlPlatform},
@@ -42,7 +43,6 @@ impl<P: QlPlatform> Runtime<P> {
         let mut state = DriverState {
             streams: HashMap::new(),
             runtime_tx: tx,
-            stream_send_buffer_bytes: config.stream_send_buffer_bytes,
             max_concurrent_message_writes: config.max_concurrent_message_writes,
             peer_xid,
             pending_fsm_events: VecDeque::new(),
@@ -173,8 +173,7 @@ impl DriverState {
 
                 match fsm.open_stream().map_err(QlError::from) {
                     Ok(stream_id) => {
-                        let (response_reader, response_writer) =
-                            piper::pipe(self.stream_send_buffer_bytes);
+                        let (response_reader, response_writer) = chunk_slot::new();
                         let (response_terminal_tx, response_terminal_rx) = oneshot::channel();
                         self.streams.insert(
                             stream_id,
@@ -338,9 +337,9 @@ impl DriverState {
             return;
         };
 
-        let (request_reader, request_writer) = piper::pipe(self.stream_send_buffer_bytes);
+        let (request_reader, request_writer) = chunk_slot::new();
         let (request_terminal_tx, request_terminal_rx) = oneshot::channel();
-        let (response_reader, response_writer) = piper::pipe(self.stream_send_buffer_bytes);
+        let (response_reader, response_writer) = chunk_slot::new();
 
         self.streams.insert(
             stream_id,
@@ -381,13 +380,9 @@ impl DriverState {
                     if chunk.is_empty() {
                         continue;
                     }
-                    match stream.inbound_mut().try_write(&chunk) {
+                    match stream.inbound_mut().try_write(chunk) {
                         InboundWriteResult::Accepted(n) => {
                             accepted += n;
-                            if n < chunk.len() {
-                                blocked = true;
-                                break;
-                            }
                         }
                         InboundWriteResult::Full => {
                             blocked = true;
@@ -496,51 +491,35 @@ impl DriverState {
     }
 
     fn poll_stream(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
-        loop {
-            let mut should_finish = false;
-            let progressed = {
-                let Some(stream) = self.streams.get_mut(&stream_id) else {
-                    return;
-                };
-                let Some((reader, finish_queued)) = stream.outbound_mut().open_mut() else {
-                    return;
-                };
-
-                let ready = with_noop_context(|cx| reader.poll(cx));
-                if matches!(ready, Poll::Pending) {
-                    false
-                } else {
-                    let bytes = reader.peek_buf();
-                    if bytes.is_empty() {
-                        if reader.is_closed() && reader.is_empty() && !*finish_queued {
-                            *finish_queued = true;
-                            should_finish = true;
-                        }
-                        false
-                    } else {
-                        let len = bytes.len();
-                        let mut bytes = ql_fsm::Bytes::copy_from_slice(bytes);
-                        let accepted = fsm.write_stream(stream_id, &mut bytes).unwrap_or_default();
-                        if accepted > 0 {
-                            reader.consume(accepted);
-                        }
-                        accepted > 0 && accepted == len
-                    }
-                }
+        let should_finish = {
+            let Some(stream) = self.streams.get_mut(&stream_id) else {
+                return;
+            };
+            let Some(reader) = stream.outbound_mut().open_mut() else {
+                return;
             };
 
-            if should_finish {
-                let _ = fsm.finish_stream(stream_id);
-                if let Some(stream) = self.streams.get_mut(&stream_id) {
-                    stream.outbound_mut().close();
+            if reader.is_finished() {
+                true
+            } else {
+                let Some(capacity) = fsm.stream_write_capacity(stream_id) else {
+                    return;
+                };
+                if capacity > 0 {
+                    if let Ok(Some(mut bytes)) = reader.try_recv(capacity) {
+                        let _ = fsm.write_stream(stream_id, &mut bytes);
+                    }
                 }
-                self.try_reap_stream(stream_id);
-                break;
+                reader.is_finished()
             }
+        };
 
-            if !progressed {
-                break;
+        if should_finish {
+            let _ = fsm.finish_stream(stream_id);
+            if let Some(stream) = self.streams.get_mut(&stream_id) {
+                stream.outbound_mut().close();
             }
+            self.try_reap_stream(stream_id);
         }
     }
 
@@ -548,14 +527,7 @@ impl DriverState {
         let should_reap = self
             .streams
             .get(&stream_id)
-            .is_some_and(|stream| match stream {
-                DriverStreamIo::Initiator {
-                    request, response, ..
-                } => matches!(request, OutboundIo::Closed) && matches!(response, InboundIo::Closed),
-                DriverStreamIo::Responder {
-                    request, response, ..
-                } => matches!(request, InboundIo::Closed) && matches!(response, OutboundIo::Closed),
-            });
+            .is_some_and(DriverStreamIo::is_closed);
         if should_reap {
             self.streams.remove(&stream_id);
         }
@@ -574,9 +546,4 @@ fn unix_now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs()
-}
-
-fn with_noop_context<T>(f: impl FnOnce(&mut Context<'_>) -> T) -> T {
-    let mut cx = Context::from_waker(Waker::noop());
-    f(&mut cx)
 }

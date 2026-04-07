@@ -4,7 +4,7 @@ mod writer;
 use ql_wire::{CloseTarget, PeerBundle, StreamId};
 
 pub use self::{reader::*, writer::*};
-use crate::{command::RuntimeCommand, QlError};
+use crate::{chunk_slot, command::RuntimeCommand, QlError};
 
 #[derive(Debug)]
 pub struct QlStream {
@@ -16,7 +16,6 @@ pub struct QlStream {
 #[derive(Clone)]
 pub struct RuntimeHandle {
     tx: async_channel::Sender<RuntimeCommand>,
-    stream_send_buffer_bytes: usize,
 }
 
 impl RuntimeHandle {
@@ -33,7 +32,7 @@ impl RuntimeHandle {
     }
 
     pub async fn open_stream(&self) -> Result<QlStream, QlError> {
-        let (request_reader, request_writer) = piper::pipe(self.stream_send_buffer_bytes);
+        let (request_reader, request_writer) = chunk_slot::new();
         let (start_tx, start_rx) = oneshot::channel();
 
         self.send(RuntimeCommand::OpenStream {
@@ -65,14 +64,8 @@ impl RuntimeHandle {
 }
 
 impl RuntimeHandle {
-    pub(crate) fn new(
-        tx: async_channel::Sender<RuntimeCommand>,
-        stream_send_buffer_bytes: usize,
-    ) -> Self {
-        Self {
-            tx,
-            stream_send_buffer_bytes,
-        }
+    pub(crate) fn new(tx: async_channel::Sender<RuntimeCommand>) -> Self {
+        Self { tx }
     }
 
     #[inline]
