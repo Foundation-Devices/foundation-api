@@ -52,7 +52,7 @@ impl<P: QlPlatform> Runtime<P> {
         let mut timer = platform.timer();
 
         loop {
-            while state.fill_write_slots(&mut fsm, &platform, &mut in_flight) {}
+            state.fill_write_slots(&mut fsm, &platform, &mut in_flight);
 
             if rx.is_closed() && in_flight.is_empty() {
                 break;
@@ -222,7 +222,11 @@ impl DriverState {
         }
     }
 
-    fn drive_write_completed(fsm: &mut QlFsm, session_write_id: Option<SessionWriteId>, success: bool) {
+    fn drive_write_completed(
+        fsm: &mut QlFsm,
+        session_write_id: Option<SessionWriteId>,
+        success: bool,
+    ) {
         if let Some(write_id) = session_write_id {
             if success {
                 fsm.confirm_session_write(now(), write_id);
@@ -451,21 +455,16 @@ impl DriverState {
         fsm: &mut QlFsm,
         platform: &'a P,
         in_flight: &mut Vec<InFlightWrite<P::WriteMessageFut<'a>>>,
-    ) -> bool {
-        let mut progressed = false;
-
+    ) {
         while in_flight.len() < self.max_concurrent_message_writes {
             let Some(write) = fsm.take_next_write(now(), platform) else {
                 break;
             };
-            progressed = true;
             in_flight.push(InFlightWrite {
                 session_write_id: write.session_write_id,
                 future: platform.write_message(write.record),
             });
         }
-
-        progressed
     }
 
     fn poll_stream(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
