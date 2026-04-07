@@ -146,6 +146,9 @@ impl StreamTx {
         max_payload: usize,
         peer_max_offset: u64,
     ) -> Option<StreamTxRange> {
+        // TODO: coalesce a lost range with contiguous unsent tail bytes when they fit in the same
+        // transmit budget. That would let a repacked record send one larger StreamData frame
+        // instead of retransmitting the lost prefix first and the new tail later.
         if let Some(range) = self.retransmits.peek_min() {
             let end = range
                 .end
