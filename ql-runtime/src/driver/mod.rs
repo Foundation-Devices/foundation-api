@@ -13,7 +13,7 @@ use futures_lite::future::poll_fn;
 use ql_fsm::{FsmTime, QlFsm, QlFsmEvent, SessionWriteId};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use self::state::{DriverState, DriverStreamIo, InboundWriteResult};
+use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
     chunk_slot,
     command::RuntimeCommand,
@@ -168,11 +168,10 @@ impl DriverState {
                         let (response_terminal_tx, response_terminal_rx) = oneshot::channel();
                         self.streams.insert(
                             stream_id,
-                            DriverStreamIo::new_initiator(
-                                request_reader,
-                                request_terminal,
-                                response_writer,
-                                response_terminal_tx,
+                            DriverStreamIo::new(
+                                true,
+                                Some(OutboundIo::new(request_reader, request_terminal)),
+                                Some(InboundIo::new(response_writer, response_terminal_tx)),
                             ),
                         );
                         let reader = ByteReader::new(
@@ -184,8 +183,8 @@ impl DriverState {
                         );
                         if start.send(Ok((stream_id, reader))).is_err() {
                             if let Some(stream) = self.streams.get_mut(&stream_id) {
-                                stream.inbound_mut().close();
-                                stream.outbound_mut().close();
+                                stream.inbound_close();
+                                stream.outbound_close();
                             }
                             let _ =
                                 fsm.close_stream(stream_id, CloseTarget::Both, StreamCloseCode(0));
@@ -211,10 +210,10 @@ impl DriverState {
             } => {
                 if let Some(stream) = self.streams.get_mut(&stream_id) {
                     if target == CloseTarget::Both || target == stream.inbound_target() {
-                        stream.inbound_mut().close();
+                        stream.inbound_close();
                     }
                     if target == CloseTarget::Both || target == stream.outbound_target() {
-                        stream.outbound_mut().close();
+                        stream.outbound_close();
                     }
                 }
                 let _ = fsm.close_stream(stream_id, target, code);
@@ -320,11 +319,10 @@ impl DriverState {
 
         self.streams.insert(
             stream_id,
-            DriverStreamIo::new_responder(
-                request_writer,
-                request_terminal_tx,
-                response_reader,
-                response_terminal_tx,
+            DriverStreamIo::new(
+                false,
+                Some(OutboundIo::new(response_reader, response_terminal_tx)),
+                Some(InboundIo::new(request_writer, request_terminal_tx)),
             ),
         );
 
@@ -368,7 +366,7 @@ impl DriverState {
                     if chunk.is_empty() {
                         continue;
                     }
-                    match stream.inbound_mut().try_write(chunk) {
+                    match stream.inbound_try_write(chunk) {
                         InboundWriteResult::Accepted(n) => {
                             accepted += n;
                         }
@@ -404,7 +402,7 @@ impl DriverState {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
-        stream.inbound_mut().queue_finish();
+        stream.inbound_queue_finish();
         self.finish_inbound_if_ready(fsm, stream_id);
     }
 
@@ -416,11 +414,11 @@ impl DriverState {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
-        if !stream.inbound_mut().finish_pending() {
+        if !stream.inbound_finish_pending() {
             return;
         }
 
-        stream.inbound_mut().finish();
+        stream.inbound_finish();
         self.try_reap_stream(stream_id);
     }
 
@@ -430,14 +428,10 @@ impl DriverState {
         };
 
         if frame.target == CloseTarget::Both || frame.target == stream.inbound_target() {
-            stream
-                .inbound_mut()
-                .fail(QlStreamError::StreamClosed { code: frame.code });
+            stream.inbound_fail(QlStreamError::StreamClosed { code: frame.code });
         }
         if frame.target == CloseTarget::Both || frame.target == stream.outbound_target() {
-            stream
-                .outbound_mut()
-                .fail(QlStreamError::StreamClosed { code: frame.code });
+            stream.outbound_fail(QlStreamError::StreamClosed { code: frame.code });
         }
         self.try_reap_stream(frame.stream_id);
     }
@@ -446,9 +440,7 @@ impl DriverState {
         let Some(stream) = self.streams.get_mut(&frame.stream_id) else {
             return;
         };
-        stream
-            .outbound_mut()
-            .fail(QlStreamError::StreamClosed { code: frame.code });
+        stream.outbound_fail(QlStreamError::StreamClosed { code: frame.code });
         self.try_reap_stream(frame.stream_id);
     }
 
@@ -486,7 +478,7 @@ impl DriverState {
             let Some(stream) = self.streams.get_mut(&stream_id) else {
                 return;
             };
-            let Some(reader) = stream.outbound_mut().open_mut() else {
+            let Some(reader) = stream.outbound_reader_mut() else {
                 return;
             };
 
@@ -508,7 +500,7 @@ impl DriverState {
         if should_finish {
             let _ = fsm.finish_stream(stream_id);
             if let Some(stream) = self.streams.get_mut(&stream_id) {
-                stream.outbound_mut().close();
+                stream.outbound_close();
             }
             self.try_reap_stream(stream_id);
         }

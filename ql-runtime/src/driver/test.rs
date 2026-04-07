@@ -125,7 +125,7 @@ fn handle_inbound_finished_reaps_closed_initiator_stream() {
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(true, OutboundIo::Closed, new_inbound_io(1)),
+        DriverStreamIo::new(true, None, Some(new_inbound_io(1))),
     );
 
     state.handle_inbound_finished(&fsm, stream_id);
@@ -140,7 +140,7 @@ fn handle_closed_stream_reaps_when_both_halves_close() {
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(false, new_outbound_io(), new_inbound_io(1)),
+        DriverStreamIo::new(false, Some(new_outbound_io()), Some(new_inbound_io(1))),
     );
 
     state.handle_closed_stream(&StreamClose {
@@ -164,8 +164,8 @@ fn poll_stream_reaps_after_local_finish_when_inbound_is_closed() {
         stream_id,
         DriverStreamIo::new(
             true,
-            OutboundIo::new(request_reader, request_terminal_tx),
-            InboundIo::Closed,
+            Some(OutboundIo::new(request_reader, request_terminal_tx)),
+            None,
         ),
     );
 
@@ -186,8 +186,8 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
         stream_id,
         DriverStreamIo::new(
             true,
-            OutboundIo::new(request_reader, request_terminal_tx),
-            InboundIo::Closed,
+            Some(OutboundIo::new(request_reader, request_terminal_tx)),
+            None,
         ),
     );
 

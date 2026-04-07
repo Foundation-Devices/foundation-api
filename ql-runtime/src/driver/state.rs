@@ -20,52 +20,21 @@ pub struct DriverState {
 
 pub struct DriverStreamIo {
     is_initiator: bool,
-    outbound: OutboundIo,
-    inbound: InboundIo,
+    outbound: Option<OutboundIo>,
+    inbound: Option<InboundIo>,
 }
 
 impl DriverStreamIo {
-    #[cfg(test)]
-    pub fn new(is_initiator: bool, outbound: OutboundIo, inbound: InboundIo) -> Self {
+    pub fn new(
+        is_initiator: bool,
+        outbound: Option<OutboundIo>,
+        inbound: Option<InboundIo>,
+    ) -> Self {
         Self {
             is_initiator,
             outbound,
             inbound,
         }
-    }
-
-    pub fn new_initiator(
-        request: ChunkSlotRx,
-        request_terminal: oneshot::Sender<QlStreamError>,
-        response: ChunkSlotTx,
-        response_terminal: oneshot::Sender<Result<(), QlStreamError>>,
-    ) -> Self {
-        Self {
-            is_initiator: true,
-            outbound: OutboundIo::new(request, request_terminal),
-            inbound: InboundIo::new(response, response_terminal),
-        }
-    }
-
-    pub fn new_responder(
-        request: ChunkSlotTx,
-        request_terminal: oneshot::Sender<Result<(), QlStreamError>>,
-        response: ChunkSlotRx,
-        response_terminal: oneshot::Sender<QlStreamError>,
-    ) -> Self {
-        Self {
-            is_initiator: false,
-            outbound: OutboundIo::new(response, response_terminal),
-            inbound: InboundIo::new(request, request_terminal),
-        }
-    }
-
-    pub fn outbound_mut(&mut self) -> &mut OutboundIo {
-        &mut self.outbound
-    }
-
-    pub fn inbound_mut(&mut self) -> &mut InboundIo {
-        &mut self.inbound
     }
 
     pub fn inbound_target(&self) -> CloseTarget {
@@ -85,63 +54,99 @@ impl DriverStreamIo {
     }
 
     pub fn fail_all(&mut self) {
-        if self.is_initiator {
-            self.outbound.fail(QlStreamError::SessionClosed);
-            self.inbound.fail(QlStreamError::SessionClosed);
-        } else {
-            self.inbound.fail(QlStreamError::SessionClosed);
-            self.outbound.fail(QlStreamError::SessionClosed);
-        }
+        self.inbound_fail(QlStreamError::SessionClosed);
+        self.outbound_fail(QlStreamError::SessionClosed);
     }
 
     pub fn is_closed(&self) -> bool {
-        matches!(self.outbound, OutboundIo::Closed) && matches!(self.inbound, InboundIo::Closed)
-    }
-}
-
-pub enum OutboundIo {
-    Open {
-        reader: ChunkSlotRx,
-        terminal: Option<oneshot::Sender<QlStreamError>>,
-    },
-    Closed,
-}
-
-impl OutboundIo {
-    pub fn new(reader: ChunkSlotRx, terminal: oneshot::Sender<QlStreamError>) -> Self {
-        Self::Open {
-            reader,
-            terminal: Some(terminal),
-        }
+        self.outbound.is_none() && self.inbound.is_none()
     }
 
-    pub fn close(&mut self) {
-        *self = Self::Closed;
+    pub fn outbound_close(&mut self) {
+        self.outbound = None;
     }
 
-    pub fn fail(&mut self, error: QlStreamError) {
-        if let Self::Open { mut terminal, .. } = std::mem::replace(self, Self::Closed) {
-            if let Some(terminal) = terminal.take() {
+    pub fn outbound_fail(&mut self, error: QlStreamError) {
+        if let Some(mut outbound) = self.outbound.take() {
+            if let Some(terminal) = outbound.terminal.take() {
                 let _ = terminal.send(error);
             }
         }
     }
 
-    pub fn open_mut(&mut self) -> Option<&mut ChunkSlotRx> {
-        match self {
-            Self::Open { reader, .. } => Some(reader),
-            Self::Closed => None,
+    pub fn outbound_reader_mut(&mut self) -> Option<&mut ChunkSlotRx> {
+        self.outbound.as_mut().map(|outbound| &mut outbound.reader)
+    }
+
+    pub fn inbound_close(&mut self) {
+        self.inbound = None;
+    }
+
+    pub fn inbound_try_write(&mut self, bytes: Bytes) -> InboundWriteResult {
+        let Some(inbound) = self.inbound.as_mut() else {
+            return InboundWriteResult::Closed;
+        };
+
+        let len = bytes.len();
+        match inbound.writer.try_send(bytes) {
+            Ok(()) => InboundWriteResult::Accepted(len),
+            Err(TrySendError::Full(_)) => InboundWriteResult::Full,
+            Err(TrySendError::Closed(_)) => {
+                self.inbound = None;
+                InboundWriteResult::Closed
+            }
+        }
+    }
+
+    pub fn inbound_finish(&mut self) {
+        if let Some(mut inbound) = self.inbound.take() {
+            inbound.writer.close();
+            if let Some(terminal) = inbound.terminal.take() {
+                let _ = terminal.send(Ok(()));
+            }
+        }
+    }
+
+    pub fn inbound_fail(&mut self, error: QlStreamError) {
+        if let Some(mut inbound) = self.inbound.take() {
+            inbound.writer.close();
+            if let Some(terminal) = inbound.terminal.take() {
+                let _ = terminal.send(Err(error));
+            }
+        }
+    }
+
+    pub fn inbound_queue_finish(&mut self) {
+        if let Some(inbound) = self.inbound.as_mut() {
+            inbound.finish_pending = true;
+        }
+    }
+
+    pub fn inbound_finish_pending(&self) -> bool {
+        self.inbound
+            .as_ref()
+            .is_some_and(|inbound| inbound.finish_pending)
+    }
+}
+
+pub struct OutboundIo {
+    reader: ChunkSlotRx,
+    terminal: Option<oneshot::Sender<QlStreamError>>,
+}
+
+impl OutboundIo {
+    pub fn new(reader: ChunkSlotRx, terminal: oneshot::Sender<QlStreamError>) -> Self {
+        Self {
+            reader,
+            terminal: Some(terminal),
         }
     }
 }
 
-pub enum InboundIo {
-    Open {
-        writer: ChunkSlotTx,
-        terminal: Option<oneshot::Sender<Result<(), QlStreamError>>>,
-        finish_pending: bool,
-    },
-    Closed,
+pub struct InboundIo {
+    writer: ChunkSlotTx,
+    terminal: Option<oneshot::Sender<Result<(), QlStreamError>>>,
+    finish_pending: bool,
 }
 
 pub enum InboundWriteResult {
@@ -152,71 +157,10 @@ pub enum InboundWriteResult {
 
 impl InboundIo {
     pub fn new(writer: ChunkSlotTx, terminal: oneshot::Sender<Result<(), QlStreamError>>) -> Self {
-        Self::Open {
+        Self {
             writer,
             terminal: Some(terminal),
             finish_pending: false,
-        }
-    }
-
-    pub fn close(&mut self) {
-        *self = Self::Closed;
-    }
-
-    pub fn try_write(&mut self, bytes: Bytes) -> InboundWriteResult {
-        let Self::Open { writer, .. } = self else {
-            return InboundWriteResult::Closed;
-        };
-
-        let len = bytes.len();
-        match writer.try_send(bytes) {
-            Ok(()) => InboundWriteResult::Accepted(len),
-            Err(TrySendError::Full(_)) => InboundWriteResult::Full,
-            Err(TrySendError::Closed(_)) => {
-                *self = Self::Closed;
-                InboundWriteResult::Closed
-            }
-        }
-    }
-
-    pub fn finish(&mut self) {
-        if let Self::Open {
-            mut terminal,
-            writer,
-            ..
-        } = std::mem::replace(self, Self::Closed)
-        {
-            writer.close();
-            if let Some(terminal) = terminal.take() {
-                let _ = terminal.send(Ok(()));
-            }
-        }
-    }
-
-    pub fn fail(&mut self, error: QlStreamError) {
-        if let Self::Open {
-            mut terminal,
-            writer,
-            ..
-        } = std::mem::replace(self, Self::Closed)
-        {
-            writer.close();
-            if let Some(terminal) = terminal.take() {
-                let _ = terminal.send(Err(error));
-            }
-        }
-    }
-
-    pub fn queue_finish(&mut self) {
-        if let Self::Open { finish_pending, .. } = self {
-            *finish_pending = true;
-        }
-    }
-
-    pub fn finish_pending(&self) -> bool {
-        match self {
-            Self::Open { finish_pending, .. } => *finish_pending,
-            Self::Closed => false,
         }
     }
 }
