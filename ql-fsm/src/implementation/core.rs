@@ -7,7 +7,7 @@ use ql_wire::{
 
 use crate::{
     session::SessionEvent, state::LinkState, OutboundWrite, QlFsm, QlFsmError, QlFsmEvent,
-    SessionWriteId, StreamReadIter,
+    SessionWriteId, StreamReadIter, StreamWriter,
 };
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
@@ -150,20 +150,9 @@ pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, QlFsmError> {
     Ok(state.session.open_stream()?)
 }
 
-pub fn write_stream(
-    fsm: &mut QlFsm,
-    stream_id: StreamId,
-    bytes: &mut Bytes,
-) -> Result<usize, QlFsmError> {
+pub fn write_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamWriter<'_>, QlFsmError> {
     let state = fsm.state.link.connected_mut_or_err()?;
-    Ok(state.session.write_stream(stream_id, bytes)?)
-}
-
-pub fn stream_write_capacity(fsm: &QlFsm, stream_id: StreamId) -> Option<usize> {
-    fsm.state
-        .link
-        .connected()
-        .and_then(|state| state.session.stream_write_capacity(stream_id))
+    Ok(state.session.write_stream(stream_id)?)
 }
 
 pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Option<StreamReadIter<'_>> {

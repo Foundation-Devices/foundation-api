@@ -23,7 +23,8 @@ fn offset(value: u64) -> VarInt {
 
 fn write_stream_bytes(fsm: &mut SessionFsm, stream_id: StreamId, bytes: &[u8]) -> usize {
     let mut bytes = Bytes::copy_from_slice(bytes);
-    fsm.write_stream(stream_id, &mut bytes).unwrap()
+    let mut writer = fsm.write_stream(stream_id).unwrap();
+    writer.write(&mut bytes)
 }
 
 fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {

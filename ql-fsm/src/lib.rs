@@ -33,7 +33,7 @@ use ql_wire::{
     CloseTarget, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose,
     StreamCloseCode, StreamId,
 };
-pub use session::stream_rx::StreamReadIter;
+pub use session::{stream_rx::StreamReadIter, StreamWriter};
 
 use crate::{
     replay_cache::ReplayCache,
@@ -254,18 +254,9 @@ impl QlFsm {
         implementation::open_stream(self)
     }
 
-    /// queues owned bytes for an open stream and returns the accepted count
-    pub fn write_stream(
-        &mut self,
-        stream_id: StreamId,
-        bytes: &mut Bytes,
-    ) -> Result<usize, QlFsmError> {
-        implementation::write_stream(self, stream_id, bytes)
-    }
-
-    /// returns how many bytes can currently be queued for an open stream
-    pub fn stream_write_capacity(&self, stream_id: StreamId) -> Option<usize> {
-        implementation::stream_write_capacity(self, stream_id)
+    /// returns a writer for an open stream
+    pub fn write_stream(&mut self, stream_id: StreamId) -> Result<StreamWriter<'_>, QlFsmError> {
+        implementation::write_stream(self, stream_id)
     }
 
     /// returns the readable stream bytes as owned `Bytes` views without consuming them

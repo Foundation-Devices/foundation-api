@@ -98,6 +98,25 @@ impl std::fmt::Display for StreamError {
 
 impl std::error::Error for StreamError {}
 
+pub struct StreamWriter<'a> {
+    stream: &'a mut StreamState,
+    send_buffer_size: usize,
+}
+
+impl StreamWriter<'_> {
+    pub fn capacity(&self) -> usize {
+        self.stream.send_capacity(self.send_buffer_size)
+    }
+
+    pub fn write(&mut self, bytes: &mut Bytes) -> usize {
+        let accepted = bytes.len().min(self.capacity());
+        if accepted > 0 {
+            self.stream.tx.append(bytes.split_to(accepted));
+        }
+        accepted
+    }
+}
+
 pub struct SessionFsm {
     config: SessionFsmConfig,
     state: SessionFsmState,
@@ -149,15 +168,9 @@ impl SessionFsm {
         Ok(stream_id)
     }
 
-    pub fn write_stream(
-        &mut self,
-        stream_id: StreamId,
-        bytes: &mut Bytes,
-    ) -> Result<usize, StreamError> {
-        // TODO: consider a `BytesSource` abstraction here so callers can provide
-        // different chunk sources while preserving partial-accept semantics and deferring any
-        // required copying until capacity is known
+    pub fn write_stream(&mut self, stream_id: StreamId) -> Result<StreamWriter<'_>, StreamError> {
         self.ensure_session_open()?;
+        let send_buffer_size = self.config.stream_send_buffer_size;
         let stream = self
             .state
             .streams
@@ -167,21 +180,10 @@ impl SessionFsm {
             return Err(StreamError::NotWritable);
         }
 
-        let accepted = bytes
-            .len()
-            .min(stream.send_capacity(self.config.stream_send_buffer_size));
-        if accepted > 0 {
-            stream.tx.append(bytes.split_to(accepted));
-        }
-        Ok(accepted)
-    }
-
-    pub fn stream_write_capacity(&self, stream_id: StreamId) -> Option<usize> {
-        let stream = self.state.streams.get(&stream_id)?;
-        if !stream.is_writable() {
-            return Some(0);
-        }
-        Some(stream.send_capacity(self.config.stream_send_buffer_size))
+        Ok(StreamWriter {
+            stream,
+            send_buffer_size,
+        })
     }
 
     pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), StreamError> {

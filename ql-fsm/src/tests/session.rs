@@ -16,7 +16,8 @@ fn write_stream_bytes(
     bytes: &[u8],
 ) -> Result<usize, QlFsmError> {
     let mut bytes = Bytes::copy_from_slice(bytes);
-    fsm.write_stream(stream_id, &mut bytes)
+    let mut writer = fsm.write_stream(stream_id)?;
+    Ok(writer.write(&mut bytes))
 }
 
 fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {

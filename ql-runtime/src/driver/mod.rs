@@ -479,12 +479,13 @@ impl DriverState {
             if reader.is_finished() {
                 true
             } else {
-                let Some(capacity) = fsm.stream_write_capacity(stream_id) else {
+                let Ok(mut writer) = fsm.write_stream(stream_id) else {
                     return;
                 };
+                let capacity = writer.capacity();
                 if capacity > 0 {
                     if let Ok(Some(mut bytes)) = reader.try_recv(capacity) {
-                        let _ = fsm.write_stream(stream_id, &mut bytes);
+                        let _ = writer.write(&mut bytes);
                     }
                 }
                 reader.is_finished()

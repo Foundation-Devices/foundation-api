@@ -318,7 +318,8 @@ impl Runner {
             Action::WriteA { slot, bytes } => {
                 if let Some(stream_id) = self.slots_a[*slot] {
                     let mut chunk = Bytes::copy_from_slice(bytes);
-                    if let Ok(accepted) = self.harness.a.fsm.write_stream(stream_id, &mut chunk) {
+                    if let Ok(mut writer) = self.harness.a.fsm.write_stream(stream_id) {
+                        let accepted = writer.write(&mut chunk);
                         self.expected_at_b
                             .entry(stream_id)
                             .or_default()
@@ -329,7 +330,8 @@ impl Runner {
             Action::WriteB { slot, bytes } => {
                 if let Some(stream_id) = self.slots_b[*slot] {
                     let mut chunk = Bytes::copy_from_slice(bytes);
-                    if let Ok(accepted) = self.harness.b.fsm.write_stream(stream_id, &mut chunk) {
+                    if let Ok(mut writer) = self.harness.b.fsm.write_stream(stream_id) {
+                        let accepted = writer.write(&mut chunk);
                         self.expected_at_a
                             .entry(stream_id)
                             .or_default()
