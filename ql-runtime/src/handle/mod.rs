@@ -24,7 +24,7 @@ impl RuntimeHandle {
     }
 
     pub fn connect(&self) {
-        self.send(RuntimeCommand::Connect)
+        self.send(RuntimeCommand::Connect);
     }
 
     pub fn send_incoming(&self, bytes: Vec<u8>) {

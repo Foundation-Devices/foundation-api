@@ -33,21 +33,17 @@ impl<B: ByteSlice> WireDecode<B> for SessionFrame<B> {
     fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
         let kind = reader.decode::<SessionFrameKind>()?;
         let frame = match kind {
-            SessionFrameKind::Ping => SessionFrame::Ping,
-            SessionFrameKind::Ack => SessionFrame::Ack(reader.decode::<RecordAck>()?),
+            SessionFrameKind::Ping => Self::Ping,
+            SessionFrameKind::Ack => Self::Ack(reader.decode::<RecordAck>()?),
             SessionFrameKind::StreamData => {
                 let len = usize::try_from(reader.decode::<VarInt>()?.into_inner())
                     .map_err(|_| WireError::InvalidPayload)?;
                 let frame = reader.take_bytes(len)?;
-                SessionFrame::StreamData(StreamData::decode_exact(frame)?)
+                Self::StreamData(StreamData::decode_exact(frame)?)
             }
-            SessionFrameKind::StreamWindow => {
-                SessionFrame::StreamWindow(reader.decode::<StreamWindow>()?)
-            }
-            SessionFrameKind::StreamClose => {
-                SessionFrame::StreamClose(reader.decode::<StreamClose>()?)
-            }
-            SessionFrameKind::Close => SessionFrame::Close(reader.decode::<SessionClose>()?),
+            SessionFrameKind::StreamWindow => Self::StreamWindow(reader.decode::<StreamWindow>()?),
+            SessionFrameKind::StreamClose => Self::StreamClose(reader.decode::<StreamClose>()?),
+            SessionFrameKind::Close => Self::Close(reader.decode::<SessionClose>()?),
         };
         Ok(frame)
     }

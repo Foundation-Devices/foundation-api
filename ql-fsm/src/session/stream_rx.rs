@@ -241,7 +241,7 @@ pub struct StreamReadIter<'a> {
     remaining: usize,
 }
 
-impl<'a> Iterator for StreamReadIter<'a> {
+impl Iterator for StreamReadIter<'_> {
     type Item = Bytes;
 
     fn next(&mut self) -> Option<Self::Item> {
