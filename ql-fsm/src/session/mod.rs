@@ -5,6 +5,7 @@ pub(crate) mod state;
 pub(crate) mod stream_parity;
 pub(crate) mod stream_rx;
 pub(crate) mod stream_tx;
+mod stream_writer;
 pub(crate) mod tracked;
 
 #[cfg(test)]
@@ -20,10 +21,14 @@ use ql_wire::{
     WireError,
 };
 
+pub use self::stream_writer::StreamWriter;
 use self::{
     received_records::{ReceiveOutcome, ReceivedRecords},
     remote_stream_history::RemoteStreamHistory,
-    state::{AckState, InboundState, OutboundState, SessionFsmState, StreamRole, StreamState},
+    state::{
+        AckState, InboundState, OutboundState, SessionFsmState, SessionState, StreamRole,
+        StreamState,
+    },
     stream_parity::StreamParity,
     stream_rx::{StreamReadIter, StreamRxError},
     stream_tx::StreamTxRange,
@@ -69,36 +74,6 @@ pub enum SessionEvent {
     Closed(StreamClose),
     WritableClosed(StreamClose),
     SessionClosed(SessionClose),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionState {
-    Open,
-    Closed,
-}
-
-pub struct StreamWriter<'a> {
-    stream: &'a mut StreamState,
-    send_buffer_size: usize,
-}
-
-impl StreamWriter<'_> {
-    pub fn capacity(&self) -> usize {
-        self.stream.send_capacity(self.send_buffer_size)
-    }
-
-    pub fn write(&mut self, bytes: &mut Bytes) -> usize {
-        let accepted = bytes.len().min(self.capacity());
-        if accepted > 0 {
-            self.stream.tx.append(bytes.split_to(accepted));
-        }
-        accepted
-    }
-
-    pub fn finish(self) {
-        self.stream.tx.queue_fin();
-        self.stream.outbound_state = OutboundState::FinQueued;
-    }
 }
 
 pub struct SessionFsm {
@@ -164,10 +139,7 @@ impl SessionFsm {
             return Err(StreamError::NotWritable);
         }
 
-        Ok(StreamWriter {
-            stream,
-            send_buffer_size,
-        })
+        Ok(StreamWriter::new(stream, send_buffer_size))
     }
 
     pub fn close_stream(

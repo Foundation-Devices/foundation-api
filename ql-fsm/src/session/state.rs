@@ -5,7 +5,7 @@ use ql_wire::{CloseTarget, RecordSeq, SessionClose, StreamClose, StreamId};
 
 use super::{
     received_records::ReceivedRecords, remote_stream_history::RemoteStreamHistory,
-    stream_rx::StreamRx, stream_tx::StreamTx, tracked::TrackedRecord, SessionState,
+    stream_rx::StreamRx, stream_tx::StreamTx, tracked::TrackedRecord,
 };
 
 pub struct SessionFsmState {
@@ -23,6 +23,12 @@ pub struct SessionFsmState {
     pub streams: IndexMap<StreamId, StreamState>,
     pub next_stream_index: usize,
     pub remote_stream_history: RemoteStreamHistory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionState {
+    Open,
+    Closed,
 }
 
 #[derive(Debug)]
