@@ -20,7 +20,7 @@ use crate::{
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
     platform::{QlPlatform, QlTimer},
-    QlError, QlStreamError, Runtime, RuntimeHandle,
+    QlStreamError, Runtime, RuntimeHandle,
 };
 
 impl<P: QlPlatform> Runtime<P> {
@@ -155,11 +155,11 @@ impl DriverState {
                 start,
             } => {
                 let Some(runtime_tx) = self.runtime_tx.upgrade() else {
-                    let _ = start.send(Err(QlError::Cancelled));
+                    let _ = start.send(Err(ql_fsm::NoSessionError));
                     return;
                 };
 
-                match fsm.open_stream().map_err(QlError::from) {
+                match fsm.open_stream() {
                     Ok(stream_id) => {
                         let (response_reader, response_writer) = chunk_slot::new();
                         let (response_terminal_tx, response_terminal_rx) = oneshot::channel();

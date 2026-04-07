@@ -54,8 +54,8 @@ impl DriverStreamIo {
     }
 
     pub fn fail_all(&mut self) {
-        self.inbound_fail(QlStreamError::SessionClosed);
-        self.outbound_fail(QlStreamError::SessionClosed);
+        self.inbound_fail(QlStreamError::NoSession);
+        self.outbound_fail(QlStreamError::NoSession);
     }
 
     pub fn is_closed(&self) -> bool {

@@ -28,7 +28,7 @@ mod tests;
 use std::time::{Duration, Instant};
 
 pub use bytes::Bytes;
-pub use error::QlFsmError;
+pub use error::*;
 use ql_wire::{
     CloseTarget, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose,
     StreamCloseCode, StreamId,
@@ -250,12 +250,12 @@ impl QlFsm {
     }
 
     /// opens a new outgoing stream
-    pub fn open_stream(&mut self) -> Result<StreamId, QlFsmError> {
+    pub fn open_stream(&mut self) -> Result<StreamId, NoSessionError> {
         implementation::open_stream(self)
     }
 
     /// returns a writer for an open stream
-    pub fn write_stream(&mut self, stream_id: StreamId) -> Result<StreamWriter<'_>, QlFsmError> {
+    pub fn write_stream(&mut self, stream_id: StreamId) -> Result<StreamWriter<'_>, StreamError> {
         implementation::write_stream(self, stream_id)
     }
 
@@ -269,7 +269,7 @@ impl QlFsm {
         &mut self,
         stream_id: StreamId,
         len: usize,
-    ) -> Result<(), QlFsmError> {
+    ) -> Result<(), StreamError> {
         implementation::stream_read_commit(self, stream_id, len)
     }
 
@@ -279,7 +279,7 @@ impl QlFsm {
     }
 
     /// marks the local write side as finished
-    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), QlFsmError> {
+    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), StreamError> {
         implementation::finish_stream(self, stream_id)
     }
 
@@ -289,12 +289,12 @@ impl QlFsm {
         stream_id: StreamId,
         target: CloseTarget,
         code: StreamCloseCode,
-    ) -> Result<(), QlFsmError> {
+    ) -> Result<(), StreamError> {
         implementation::close_stream(self, stream_id, target, code)
     }
 
     /// queues a ping on the active session
-    pub fn queue_ping(&mut self) -> Result<(), QlFsmError> {
+    pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
         implementation::queue_ping(self)
     }
 }

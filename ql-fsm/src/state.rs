@@ -5,7 +5,7 @@ use ql_wire::{
     QlHandshakeRecord, SessionKey, TransportParams,
 };
 
-use crate::{replay_cache::ReplayCache, session::SessionFsm, FsmTime, PeerStatus, QlFsmError};
+use crate::{replay_cache::ReplayCache, session::SessionFsm, FsmTime, NoSessionError, PeerStatus};
 
 pub struct QlFsmState {
     pub replay_cache: ReplayCache,
@@ -98,8 +98,8 @@ impl LinkState {
     }
 
     #[inline]
-    pub fn connected_mut_or_err(&mut self) -> Result<&mut ConnectedState, QlFsmError> {
-        self.connected_mut().ok_or(QlFsmError::NoSession)
+    pub fn connected_mut_or_err(&mut self) -> Result<&mut ConnectedState, NoSessionError> {
+        self.connected_mut().ok_or(NoSessionError)
     }
 
     pub fn handshake_deadline(&self) -> Option<Instant> {

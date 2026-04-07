@@ -14,7 +14,7 @@ use ql_rpc::{
 };
 
 pub use self::{error::*, request_with_progress::*, subscription::*};
-use crate::{ByteReader, QlError, RuntimeHandle};
+use crate::{ByteReader, QlStreamError, RuntimeHandle};
 
 #[derive(Clone)]
 pub struct RpcHandle {
@@ -86,7 +86,7 @@ impl RpcHandle {
         })
     }
 
-    async fn start_request(&self, payload: Vec<u8>) -> Result<ByteReader, QlError> {
+    async fn start_request<E>(&self, payload: Vec<u8>) -> Result<ByteReader, RpcCallError<E>> {
         let mut stream = self.inner.open_stream().await?;
         stream.writer.write(Bytes::from(payload)).await?;
         stream.writer.finish();
@@ -94,12 +94,9 @@ impl RpcHandle {
     }
 }
 
-async fn read_all(mut reader: ByteReader) -> Result<Vec<u8>, QlError> {
+async fn read_all(mut reader: ByteReader) -> Result<Vec<u8>, QlStreamError> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = poll_fn(|cx| reader.poll_read_chunk(cx))
-        .await
-        .map_err(QlError::from)?
-    {
+    while let Some(chunk) = poll_fn(|cx| reader.poll_read_chunk(cx)).await? {
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)

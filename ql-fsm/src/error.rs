@@ -1,6 +1,9 @@
-use ql_wire::WireError;
+use std::{
+    error::Error,
+    fmt::{Display, Formatter},
+};
 
-use crate::session::StreamError;
+use ql_wire::WireError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlFsmError {
@@ -9,26 +12,18 @@ pub enum QlFsmError {
     Expired,
     DecryptFailed,
     InvalidXid,
-    MissingStream,
-    NotWritable,
-    InvalidRead,
-    SessionClosed,
     NoPeerBound,
     NoSession,
 }
 
-impl std::fmt::Display for QlFsmError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for QlFsmError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::InvalidPayload => "invalid payload",
             Self::InvalidState => "invalid state",
             Self::Expired => "expired",
             Self::DecryptFailed => "decryption failed",
             Self::InvalidXid => "invalid xid",
-            Self::MissingStream => "missing stream",
-            Self::NotWritable => "stream is not writable",
-            Self::InvalidRead => "invalid read commit",
-            Self::SessionClosed => "session is closed",
             Self::NoPeerBound => "no peer bound",
             Self::NoSession => "no active session",
         };
@@ -49,13 +44,47 @@ impl From<WireError> for QlFsmError {
     }
 }
 
-impl From<StreamError> for QlFsmError {
-    fn from(value: StreamError) -> Self {
-        match value {
-            StreamError::MissingStream => Self::MissingStream,
-            StreamError::NotWritable => Self::NotWritable,
-            StreamError::InvalidRead => Self::InvalidRead,
-            StreamError::SessionClosed => Self::SessionClosed,
-        }
+impl From<NoSessionError> for QlFsmError {
+    fn from(_: NoSessionError) -> Self {
+        Self::NoSession
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoSessionError;
+
+impl Display for NoSessionError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no session")
+    }
+}
+
+impl Error for NoSessionError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamError {
+    MissingStream,
+    NotWritable,
+    InvalidRead,
+    NoSession,
+}
+
+impl Display for StreamError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::MissingStream => "missing stream",
+            Self::NotWritable => "stream is not writable",
+            Self::InvalidRead => "invalid read commit",
+            Self::NoSession => "no session",
+        };
+        f.write_str(message)
+    }
+}
+
+impl Error for StreamError {}
+
+impl From<NoSessionError> for StreamError {
+    fn from(_: NoSessionError) -> Self {
+        Self::NoSession
     }
 }

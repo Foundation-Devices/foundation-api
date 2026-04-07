@@ -24,7 +24,7 @@ use tokio::{task::LocalSet, time::Sleep};
 use crate::{
     new_runtime,
     platform::{PlatformFuture, QlTimer},
-    QlError, QlFsmConfig, QlStream, QlStreamError, RuntimeConfig, RuntimeHandle,
+    NoSessionError, QlFsmConfig, QlStream, QlStreamError, RuntimeConfig, RuntimeHandle,
 };
 
 mod handshake;

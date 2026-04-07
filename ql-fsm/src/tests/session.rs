@@ -4,7 +4,7 @@ use bytes::Bytes;
 use ql_wire::{SessionClose, StreamId, VarInt};
 
 use super::*;
-use crate::{state::LinkState, PeerStatus, QlFsmError, QlFsmEvent};
+use crate::{state::LinkState, NoSessionError, PeerStatus, QlFsmEvent, StreamError};
 
 fn stream_id(value: u32) -> StreamId {
     StreamId(VarInt::from_u32(value))
@@ -14,7 +14,7 @@ fn write_stream_bytes(
     fsm: &mut QlFsm,
     stream_id: StreamId,
     bytes: &[u8],
-) -> Result<usize, QlFsmError> {
+) -> Result<usize, StreamError> {
     let mut bytes = Bytes::copy_from_slice(bytes);
     let mut writer = fsm.write_stream(stream_id)?;
     Ok(writer.write(&mut bytes))
@@ -170,14 +170,14 @@ fn disconnected_stream_operations_fail_with_no_session() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
     let missing = stream_id(0);
 
-    assert_eq!(harness.a.fsm.open_stream(), Err(QlFsmError::NoSession));
+    assert_eq!(harness.a.fsm.open_stream(), Err(NoSessionError));
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, missing, b"queued"),
-        Err(QlFsmError::NoSession)
+        Err(StreamError::NoSession)
     );
     assert_eq!(
         harness.a.fsm.finish_stream(missing),
-        Err(QlFsmError::NoSession)
+        Err(StreamError::NoSession)
     );
     assert_eq!(
         harness.a.fsm.close_stream(
@@ -185,12 +185,12 @@ fn disconnected_stream_operations_fail_with_no_session() {
             ql_wire::CloseTarget::Both,
             ql_wire::StreamCloseCode(0)
         ),
-        Err(QlFsmError::NoSession)
+        Err(StreamError::NoSession)
     );
-    assert_eq!(harness.a.fsm.queue_ping(), Err(QlFsmError::NoSession));
+    assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
     assert_eq!(
         harness.a.fsm.stream_read_commit(missing, 1),
-        Err(QlFsmError::NoSession)
+        Err(StreamError::NoSession)
     );
 }
 

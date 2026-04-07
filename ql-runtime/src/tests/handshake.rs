@@ -49,7 +49,7 @@ async fn opening_stream_requires_connection() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         assert!(matches!(
             handle_a.open_stream().await,
-            Err(QlError::NoSession)
+            Err(NoSessionError)
         ));
     })
     .await;

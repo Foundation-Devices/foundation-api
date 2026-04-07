@@ -29,6 +29,7 @@ use self::{
     stream_tx::StreamTxRange,
     tracked::{TrackedFrame, TrackedRecord, TrackedStreamData},
 };
+use crate::{NoSessionError, StreamError};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionFsmConfig {
@@ -75,28 +76,6 @@ pub enum SessionState {
     Open,
     Closed,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamError {
-    MissingStream,
-    NotWritable,
-    InvalidRead,
-    SessionClosed,
-}
-
-impl std::fmt::Display for StreamError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let message = match self {
-            Self::MissingStream => "missing stream",
-            Self::NotWritable => "stream is not writable",
-            Self::InvalidRead => "invalid read commit",
-            Self::SessionClosed => "session is closed",
-        };
-        f.write_str(message)
-    }
-}
-
-impl std::error::Error for StreamError {}
 
 pub struct StreamWriter<'a> {
     stream: &'a mut StreamState,
@@ -150,7 +129,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn open_stream(&mut self) -> Result<StreamId, StreamError> {
+    pub fn open_stream(&mut self) -> Result<StreamId, NoSessionError> {
         self.ensure_session_open()?;
         let stream_id = self
             .config
@@ -256,7 +235,7 @@ impl SessionFsm {
         Some(stream.readable_bytes())
     }
 
-    pub fn queue_ping(&mut self) -> Result<(), StreamError> {
+    pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
         self.ensure_session_open()?;
         self.state.pending_control.ping = true;
         Ok(())
@@ -613,9 +592,9 @@ impl SessionFsm {
         self.state.next_stream_index = next_index;
     }
 
-    fn ensure_session_open(&self) -> Result<(), StreamError> {
+    fn ensure_session_open(&self) -> Result<(), NoSessionError> {
         if self.state.session_state == SessionState::Closed {
-            Err(StreamError::SessionClosed)
+            Err(NoSessionError)
         } else {
             Ok(())
         }

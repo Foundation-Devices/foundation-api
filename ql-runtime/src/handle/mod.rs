@@ -1,10 +1,11 @@
 mod reader;
 mod writer;
 
+use ql_fsm::NoSessionError;
 use ql_wire::{CloseTarget, PeerBundle, StreamId};
 
 pub use self::{reader::*, writer::*};
-use crate::{chunk_slot, command::RuntimeCommand, QlError};
+use crate::{chunk_slot, command::RuntimeCommand};
 
 #[derive(Debug)]
 pub struct QlStream {
@@ -31,7 +32,7 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::Incoming(bytes));
     }
 
-    pub async fn open_stream(&self) -> Result<QlStream, QlError> {
+    pub async fn open_stream(&self) -> Result<QlStream, NoSessionError> {
         let (request_reader, request_writer) = chunk_slot::new();
         let (request_terminal_tx, request_terminal_rx) = oneshot::channel();
         let (start_tx, start_rx) = oneshot::channel();

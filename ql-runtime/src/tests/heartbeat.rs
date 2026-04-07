@@ -59,7 +59,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
             tokio::time::timeout(Duration::from_millis(300), next_chunk(&mut pending.reader))
                 .await
                 .unwrap();
-        assert!(matches!(result, Err(QlStreamError::SessionClosed)));
+        assert!(matches!(result, Err(QlStreamError::NoSession)));
 
         responder_task.abort();
     })

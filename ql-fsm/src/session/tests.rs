@@ -363,7 +363,7 @@ fn duplicate_remote_close_after_reap_is_ignored() {
         vec![
             SessionEvent::Opened(close.stream_id),
             SessionEvent::Closed(close.clone()),
-            SessionEvent::WritableClosed(close.clone()),
+            SessionEvent::WritableClosed(close),
         ]
     );
 

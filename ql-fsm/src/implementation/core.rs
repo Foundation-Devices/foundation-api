@@ -6,8 +6,8 @@ use ql_wire::{
 };
 
 use crate::{
-    session::SessionEvent, state::LinkState, OutboundWrite, QlFsm, QlFsmError, QlFsmEvent,
-    SessionWriteId, StreamReadIter, StreamWriter,
+    session::SessionEvent, state::LinkState, NoSessionError, OutboundWrite, QlFsm, QlFsmError,
+    QlFsmEvent, SessionWriteId, StreamError, StreamReadIter, StreamWriter,
 };
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
@@ -35,7 +35,11 @@ pub fn receive(
             super::handle_handshake_record(fsm, crypto, &record, &mut emit)
         }
         wire::RecordType::Session => {
-            let state = fsm.state.link.connected_mut_or_err()?;
+            let state = fsm
+                .state
+                .link
+                .connected_mut()
+                .ok_or(QlFsmError::NoSession)?;
             let (decrypt_len, seq) = {
                 let record = wire::QlSessionRecord::decode(&mut reader)?;
                 if record.header.connection_id != state.transport.rx_connection_id {
@@ -145,14 +149,14 @@ pub fn kill_session(fsm: &mut QlFsm, _code: SessionCloseCode) {
     fsm.state.link = crate::state::LinkState::Idle;
 }
 
-pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, QlFsmError> {
+pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, NoSessionError> {
     let state = fsm.state.link.connected_mut_or_err()?;
-    Ok(state.session.open_stream()?)
+    state.session.open_stream()
 }
 
-pub fn write_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamWriter<'_>, QlFsmError> {
+pub fn write_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamWriter<'_>, StreamError> {
     let state = fsm.state.link.connected_mut_or_err()?;
-    Ok(state.session.write_stream(stream_id)?)
+    state.session.write_stream(stream_id)
 }
 
 pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
@@ -164,9 +168,9 @@ pub fn stream_read_commit(
     fsm: &mut QlFsm,
     stream_id: StreamId,
     len: usize,
-) -> Result<(), QlFsmError> {
+) -> Result<(), StreamError> {
     let state = fsm.state.link.connected_mut_or_err()?;
-    Ok(state.session.stream_read_commit(stream_id, len)?)
+    state.session.stream_read_commit(stream_id, len)
 }
 
 pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Option<usize> {
@@ -176,9 +180,9 @@ pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Option<usize>
         .and_then(|state| state.session.stream_available_bytes(stream_id))
 }
 
-pub fn finish_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<(), QlFsmError> {
+pub fn finish_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<(), StreamError> {
     let state = fsm.state.link.connected_mut_or_err()?;
-    Ok(state.session.finish_stream(stream_id)?)
+    state.session.finish_stream(stream_id)
 }
 
 pub fn close_stream(
@@ -186,14 +190,14 @@ pub fn close_stream(
     stream_id: StreamId,
     target: CloseTarget,
     code: StreamCloseCode,
-) -> Result<(), QlFsmError> {
+) -> Result<(), StreamError> {
     let state = fsm.state.link.connected_mut_or_err()?;
-    Ok(state.session.close_stream(stream_id, target, code)?)
+    state.session.close_stream(stream_id, target, code)
 }
 
-pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), QlFsmError> {
+pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), NoSessionError> {
     let state = fsm.state.link.connected_mut_or_err()?;
-    Ok(state.session.queue_ping()?)
+    state.session.queue_ping()
 }
 
 pub fn emit_peer_status(fsm: &QlFsm, emit: &mut impl FnMut(QlFsmEvent)) {

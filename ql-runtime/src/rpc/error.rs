@@ -1,15 +1,28 @@
-use crate::QlError;
+use ql_fsm::NoSessionError;
+use ql_wire::StreamCloseCode;
+
+use crate::QlStreamError;
 
 #[derive(Debug)]
 pub enum RpcCallError<E> {
-    Runtime(QlError),
+    NoSession,
+    StreamClosed(StreamCloseCode),
     Rpc(ql_rpc::RpcError),
     Codec(E),
 }
 
-impl<E> From<QlError> for RpcCallError<E> {
-    fn from(error: QlError) -> Self {
-        Self::Runtime(error)
+impl<E> From<NoSessionError> for RpcCallError<E> {
+    fn from(_: NoSessionError) -> Self {
+        Self::NoSession
+    }
+}
+
+impl<E> From<QlStreamError> for RpcCallError<E> {
+    fn from(error: QlStreamError) -> Self {
+        match error {
+            QlStreamError::StreamClosed { code } => Self::StreamClosed(code),
+            QlStreamError::NoSession => Self::NoSession,
+        }
     }
 }
 
@@ -34,7 +47,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Runtime(error) => write!(f, "{error}"),
+            Self::NoSession => write!(f, "no session"),
+            Self::StreamClosed(code) => write!(f, "stream closed {code:?}"),
             Self::Rpc(error) => write!(f, "{error}"),
             Self::Codec(error) => write!(f, "{error}"),
         }
@@ -47,9 +61,10 @@ where
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Runtime(error) => Some(error),
             Self::Rpc(error) => Some(error),
             Self::Codec(error) => Some(error),
+            RpcCallError::NoSession => None,
+            RpcCallError::StreamClosed(_) => None,
         }
     }
 }
