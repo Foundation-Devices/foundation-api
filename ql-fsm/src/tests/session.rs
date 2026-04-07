@@ -4,10 +4,16 @@ use bytes::Bytes;
 use ql_wire::{SessionClose, StreamId, VarInt};
 
 use super::*;
-use crate::{state::LinkState, NoSessionError, PeerStatus, QlFsmEvent, StreamError};
+use crate::{
+    state::LinkState, CommitReadError, NoSessionError, PeerStatus, QlFsmEvent, StreamError,
+};
 
 fn stream_id(value: u32) -> StreamId {
     StreamId(VarInt::from_u32(value))
+}
+
+fn open_stream_id(fsm: &mut QlFsm) -> StreamId {
+    fsm.open_stream().unwrap().stream_id()
 }
 
 fn write_stream_bytes(
@@ -16,22 +22,28 @@ fn write_stream_bytes(
     bytes: &[u8],
 ) -> Result<usize, StreamError> {
     let mut bytes = Bytes::copy_from_slice(bytes);
-    let mut writer = fsm.write_stream(stream_id)?;
+    let mut stream = fsm.stream(stream_id)?;
+    let Some(mut writer) = stream.writer() else {
+        return Err(StreamError::NotWritable);
+    };
     Ok(writer.write(&mut bytes))
 }
 
 fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();
+    let Ok(mut stream) = fsm.stream(stream_id) else {
+        return out;
+    };
     loop {
         let mut read = 0;
-        for chunk in fsm.stream_read(stream_id).unwrap() {
+        for chunk in stream.read() {
             out.extend_from_slice(&chunk);
             read += chunk.len();
         }
         if read == 0 {
             break;
         }
-        fsm.stream_read_commit(stream_id, read).unwrap();
+        stream.commit_read(read).unwrap();
     }
     out
 }
@@ -40,12 +52,12 @@ fn read_stream_all(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
 fn connected_fsms_deliver_stream_data() {
     let mut harness = Harness::connected(QlFsmConfig::default());
 
-    let stream_id = harness.a.fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut harness.a.fsm);
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, stream_id, b"hello").unwrap(),
         5
     );
-    harness.a.fsm.write_stream(stream_id).unwrap().finish();
+    harness.a.fsm.stream(stream_id).unwrap().writer().unwrap().finish();
 
     harness.pump();
 
@@ -69,7 +81,7 @@ fn session_retransmit_uses_new_record_seq() {
     let config = QlFsmConfig::default();
     let mut harness = Harness::connected(config);
 
-    let stream_id = harness.a.fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut harness.a.fsm);
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, stream_id, b"retry").unwrap(),
         5
@@ -115,8 +127,8 @@ fn session_retransmit_uses_new_record_seq() {
 fn simultaneous_opens_use_even_and_odd_stream_ids() {
     let mut harness = Harness::connected(QlFsmConfig::default());
 
-    let stream_id_a = harness.a.fsm.open_stream().unwrap();
-    let stream_id_b = harness.b.fsm.open_stream().unwrap();
+    let stream_id_a = open_stream_id(&mut harness.a.fsm);
+    let stream_id_b = open_stream_id(&mut harness.b.fsm);
 
     assert_ne!(stream_id_a, stream_id_b);
     assert!(
@@ -170,7 +182,7 @@ fn disconnected_stream_operations_fail_with_no_session() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
     let missing = stream_id(0);
 
-    assert_eq!(harness.a.fsm.open_stream(), Err(NoSessionError));
+    assert!(matches!(harness.a.fsm.open_stream(), Err(NoSessionError)));
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, missing, b"queued"),
         Err(StreamError::NoSession)
@@ -179,39 +191,56 @@ fn disconnected_stream_operations_fail_with_no_session() {
         harness
             .a
             .fsm
-            .write_stream(missing)
-            .map(crate::session::StreamWriter::finish),
+            .stream(missing)
+            .map(|mut stream| stream.writer().unwrap().finish()),
         Err(StreamError::NoSession)
     );
     assert_eq!(
-        harness.a.fsm.close_stream(
-            missing,
-            ql_wire::CloseTarget::Both,
-            ql_wire::StreamCloseCode(0)
-        ),
+        harness
+            .a
+            .fsm
+            .stream(missing)
+            .map(|mut stream| stream.close(ql_wire::CloseTarget::Both, ql_wire::StreamCloseCode(0))),
         Err(StreamError::NoSession)
     );
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
-    assert_eq!(
-        harness.a.fsm.stream_read_commit(missing, 1),
+    assert!(matches!(
+        harness.a.fsm.stream(missing),
         Err(StreamError::NoSession)
-    );
+    ));
 }
 
 #[test]
 fn disconnected_stream_read_accessors_return_none() {
-    let harness = Harness::paired_known(QlFsmConfig::default());
+    let mut harness = Harness::paired_known(QlFsmConfig::default());
     let missing = stream_id(0);
 
-    assert!(harness.a.fsm.stream_read(missing).is_none());
-    assert!(harness.a.fsm.stream_available_bytes(missing).is_none());
+    assert!(matches!(
+        harness.a.fsm.stream(missing),
+        Err(StreamError::NoSession)
+    ));
+}
+
+#[test]
+fn commit_read_rejects_lengths_past_readable_prefix() {
+    let mut harness = Harness::connected(QlFsmConfig::default());
+
+    let stream_id = open_stream_id(&mut harness.a.fsm);
+    assert_eq!(
+        write_stream_bytes(&mut harness.a.fsm, stream_id, b"hi").unwrap(),
+        2
+    );
+    harness.pump();
+
+    let mut stream = harness.b.fsm.stream(stream_id).unwrap();
+    assert_eq!(stream.commit_read(3), Err(CommitReadError));
 }
 
 #[test]
 fn returned_session_write_is_reissued_with_new_record_seq() {
     let mut harness = Harness::connected(QlFsmConfig::default());
 
-    let stream_id = harness.a.fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut harness.a.fsm);
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, stream_id, b"retry").unwrap(),
         5
@@ -254,7 +283,7 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
     let config = QlFsmConfig::default();
     let mut harness = Harness::connected(config);
 
-    let stream_id = harness.a.fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut harness.a.fsm);
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, stream_id, b"retry").unwrap(),
         5
@@ -290,7 +319,7 @@ fn ack_frame_releases_stream_capacity_and_emits_writable() {
     };
     let mut harness = Harness::connected(config);
 
-    let stream_id = harness.a.fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut harness.a.fsm);
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, stream_id, b"abcd").unwrap(),
         4
@@ -331,7 +360,7 @@ fn session_records_contain_ack_frames_after_delivery() {
     let config = QlFsmConfig::default();
     let mut harness = Harness::connected(config);
 
-    let stream_id = harness.a.fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut harness.a.fsm);
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, stream_id, b"x").unwrap(),
         1
@@ -370,7 +399,7 @@ fn first_stream_data_uses_negotiated_initial_peer_credit() {
     let ik2 = harness.next_outbound_b().unwrap();
     harness.deliver_to_a(ik2);
 
-    let stream_id = harness.a.fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut harness.a.fsm);
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, stream_id, b"hello").unwrap(),
         5

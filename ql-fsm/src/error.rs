@@ -65,7 +65,6 @@ impl Error for NoSessionError {}
 pub enum StreamError {
     MissingStream,
     NotWritable,
-    InvalidRead,
     NoSession,
 }
 
@@ -74,7 +73,6 @@ impl Display for StreamError {
         let message = match self {
             Self::MissingStream => "missing stream",
             Self::NotWritable => "stream is not writable",
-            Self::InvalidRead => "invalid read commit",
             Self::NoSession => "no session",
         };
         f.write_str(message)
@@ -88,3 +86,14 @@ impl From<NoSessionError> for StreamError {
         Self::NoSession
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitReadError;
+
+impl Display for CommitReadError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid read commit")
+    }
+}
+
+impl Error for CommitReadError {}

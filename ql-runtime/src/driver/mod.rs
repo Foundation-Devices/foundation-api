@@ -155,40 +155,41 @@ impl DriverState {
                     return;
                 };
 
-                match fsm.open_stream() {
-                    Ok(stream_id) => {
-                        let (response_reader, response_writer) = chunk_slot::new();
-                        let (response_terminal_tx, response_terminal_rx) = oneshot::channel();
-                        self.streams.insert(
-                            stream_id,
-                            DriverStreamIo::new(
-                                true,
-                                Some(OutboundIo::new(request_reader, request_terminal)),
-                                Some(InboundIo::new(response_writer, response_terminal_tx)),
-                            ),
-                        );
-                        let reader = ByteReader::new(
-                            stream_id,
-                            CloseTarget::Return,
-                            response_reader,
-                            response_terminal_rx,
-                            RuntimeHandle::new(runtime_tx),
-                        );
-                        if start.send(Ok((stream_id, reader))).is_err() {
-                            if let Some(stream) = self.streams.get_mut(&stream_id) {
-                                stream.inbound_close();
-                                stream.outbound_close();
-                            }
-                            let _ =
-                                fsm.close_stream(stream_id, CloseTarget::Both, StreamCloseCode(0));
-                            return;
-                        }
-                        self.poll_stream(fsm, stream_id);
-                    }
+                let mut stream_ops = match fsm.open_stream() {
+                    Ok(stream_ops) => stream_ops,
                     Err(error) => {
                         let _ = start.send(Err(error));
+                        return;
                     }
+                };
+                let stream_id = stream_ops.stream_id();
+                let (response_reader, response_writer) = chunk_slot::new();
+                let (response_terminal_tx, response_terminal_rx) = oneshot::channel();
+                self.streams.insert(
+                    stream_id,
+                    DriverStreamIo::new(
+                        true,
+                        Some(OutboundIo::new(request_reader, request_terminal)),
+                        Some(InboundIo::new(response_writer, response_terminal_tx)),
+                    ),
+                );
+                let reader = ByteReader::new(
+                    stream_id,
+                    CloseTarget::Return,
+                    response_reader,
+                    response_terminal_rx,
+                    RuntimeHandle::new(runtime_tx),
+                );
+                if start.send(Ok((stream_id, reader))).is_err() {
+                    if let Some(stream) = self.streams.get_mut(&stream_id) {
+                        stream.inbound_close();
+                        stream.outbound_close();
+                    }
+                    stream_ops.close(CloseTarget::Both, StreamCloseCode(0));
+                    return;
                 }
+                drop(stream_ops);
+                self.poll_stream(fsm, stream_id);
             }
             RuntimeCommand::PollInbound { stream_id } => {
                 self.handle_inbound_readable(fsm, stream_id);
@@ -209,7 +210,9 @@ impl DriverState {
                         stream.outbound_close();
                     }
                 }
-                let _ = fsm.close_stream(stream_id, target, code);
+                if let Ok(mut stream) = fsm.stream(stream_id) {
+                    stream.close(target, code);
+                }
                 self.try_reap_stream(stream_id);
             }
         }
@@ -296,7 +299,9 @@ impl DriverState {
         stream_id: StreamId,
     ) {
         let Some(runtime_tx) = self.runtime_tx.upgrade() else {
-            let _ = fsm.close_stream(stream_id, CloseTarget::Both, StreamCloseCode(0));
+            if let Ok(mut stream) = fsm.stream(stream_id) {
+                stream.close(CloseTarget::Both, StreamCloseCode(0));
+            }
             return;
         };
 
@@ -334,59 +339,52 @@ impl DriverState {
     }
 
     fn handle_inbound_readable(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
-        loop {
-            let Some(_) = fsm.stream_available_bytes(stream_id) else {
+        let Ok(mut stream_ops) = fsm.stream(stream_id) else {
+            return;
+        };
+        if stream_ops.readable_bytes() == 0 {
+            return;
+        }
+        let mut accepted = 0usize;
+        let mut peer_closed = false;
+        let target;
+        {
+            let Some(stream) = self.streams.get_mut(&stream_id) else {
                 return;
             };
-            let mut accepted = 0usize;
-            let mut blocked = false;
-            let mut peer_closed = false;
-            let target;
-            {
-                let Some(stream) = self.streams.get_mut(&stream_id) else {
-                    return;
-                };
-                target = stream.inbound_target();
-                let Some(chunks) = fsm.stream_read(stream_id) else {
-                    return;
-                };
-                for chunk in chunks {
-                    if chunk.is_empty() {
-                        continue;
+            target = stream.inbound_target();
+            for chunk in stream_ops.read() {
+                if chunk.is_empty() {
+                    continue;
+                }
+                match stream.inbound_try_write(chunk) {
+                    InboundWriteResult::Accepted(n) => {
+                        accepted += n;
                     }
-                    match stream.inbound_try_write(chunk) {
-                        InboundWriteResult::Accepted(n) => {
-                            accepted += n;
-                        }
-                        InboundWriteResult::Full => {
-                            blocked = true;
-                            break;
-                        }
-                        InboundWriteResult::Closed => {
-                            peer_closed = true;
-                            break;
-                        }
+                    InboundWriteResult::Full => {
+                        break;
+                    }
+                    InboundWriteResult::Closed => {
+                        peer_closed = true;
+                        break;
                     }
                 }
             }
-
-            if accepted > 0 {
-                fsm.stream_read_commit(stream_id, accepted).unwrap();
-            }
-            if peer_closed {
-                let _ = fsm.close_stream(stream_id, target, StreamCloseCode(0));
-                self.try_reap_stream(stream_id);
-                break;
-            }
-            if accepted == 0 || blocked {
-                break;
-            }
         }
 
+        if accepted > 0 {
+            stream_ops.commit_read(accepted).unwrap();
+        }
+        if peer_closed {
+            stream_ops.close(target, StreamCloseCode(0));
+            self.try_reap_stream(stream_id);
+        }
+
+        drop(stream_ops);
         self.finish_inbound_if_ready(fsm, stream_id);
     }
 
-    fn handle_inbound_finished(&mut self, fsm: &QlFsm, stream_id: StreamId) {
+    fn handle_inbound_finished(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
@@ -394,9 +392,11 @@ impl DriverState {
         self.finish_inbound_if_ready(fsm, stream_id);
     }
 
-    fn finish_inbound_if_ready(&mut self, fsm: &QlFsm, stream_id: StreamId) {
-        if fsm.stream_available_bytes(stream_id).unwrap_or(0) != 0 {
-            return;
+    fn finish_inbound_if_ready(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
+        if let Ok(stream_ops) = fsm.stream(stream_id) {
+            if stream_ops.readable_bytes() != 0 {
+                return;
+            }
         }
 
         let Some(stream) = self.streams.get_mut(&stream_id) else {
@@ -466,8 +466,10 @@ impl DriverState {
         };
 
         if reader.is_finished() {
-            if let Ok(writer) = fsm.write_stream(stream_id) {
-                writer.finish();
+            if let Ok(mut stream_ops) = fsm.stream(stream_id) {
+                if let Some(writer) = stream_ops.writer() {
+                    writer.finish();
+                }
             }
             stream.outbound_close();
             if stream.is_closed() {
@@ -476,7 +478,10 @@ impl DriverState {
             return;
         }
 
-        let Ok(mut writer) = fsm.write_stream(stream_id) else {
+        let Ok(mut stream_ops) = fsm.stream(stream_id) else {
+            return;
+        };
+        let Some(mut writer) = stream_ops.writer() else {
             return;
         };
 

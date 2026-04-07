@@ -2,10 +2,10 @@ pub(crate) mod range_set;
 pub(crate) mod received_records;
 pub(crate) mod remote_stream_history;
 pub(crate) mod state;
+mod stream_ops;
 pub(crate) mod stream_parity;
 pub(crate) mod stream_rx;
 pub(crate) mod stream_tx;
-mod stream_writer;
 pub(crate) mod tracked;
 
 #[cfg(test)]
@@ -17,11 +17,10 @@ use bytes::Bytes;
 use indexmap::{map::Entry, IndexMap};
 use ql_wire::{
     CloseTarget, RecordAck, RecordSeq, SessionClose, SessionCloseCode, SessionFrame,
-    SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamId, StreamWindow, VarInt,
-    WireError,
+    SessionRecordBuilder, StreamClose, StreamData, StreamId, StreamWindow, VarInt, WireError,
 };
 
-pub use self::stream_writer::StreamWriter;
+pub use self::stream_ops::*;
 use self::{
     received_records::{ReceiveOutcome, ReceivedRecords},
     remote_stream_history::RemoteStreamHistory,
@@ -30,7 +29,7 @@ use self::{
         StreamState,
     },
     stream_parity::StreamParity,
-    stream_rx::{StreamReadIter, StreamRxError},
+    stream_rx::StreamRxError,
     stream_tx::StreamTxRange,
     tracked::{TrackedFrame, TrackedRecord, TrackedStreamData},
 };
@@ -109,7 +108,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn open_stream(&mut self) -> Result<StreamId, NoSessionError> {
+    pub fn open_stream(&mut self) -> Result<StreamOps<'_>, NoSessionError> {
         self.ensure_session_open()?;
         let stream_id = self
             .config
@@ -124,77 +123,17 @@ impl SessionFsm {
                 self.config.initial_peer_stream_receive_window,
             ),
         );
-        Ok(stream_id)
+        let stream_index = self.state.streams.len() - 1;
+        Ok(StreamOps::new(self, stream_id, stream_index))
     }
 
-    pub fn write_stream(&mut self, stream_id: StreamId) -> Result<StreamWriter<'_>, StreamError> {
+    pub fn stream(&mut self, stream_id: StreamId) -> Result<StreamOps<'_>, StreamError> {
         self.ensure_session_open()?;
-        let send_buffer_size = self.config.stream_send_buffer_size;
-        let stream = self
-            .state
-            .streams
-            .get_mut(&stream_id)
-            .ok_or(StreamError::MissingStream)?;
-        if !stream.is_writable() {
-            return Err(StreamError::NotWritable);
-        }
+        let Some(stream_index) = self.state.streams.get_index_of(&stream_id) else {
+            return Err(StreamError::MissingStream);
+        };
 
-        Ok(StreamWriter::new(stream, send_buffer_size))
-    }
-
-    pub fn close_stream(
-        &mut self,
-        stream_id: StreamId,
-        target: CloseTarget,
-        code: StreamCloseCode,
-    ) -> Result<(), StreamError> {
-        self.ensure_session_open()?;
-        {
-            let stream = self
-                .state
-                .streams
-                .get_mut(&stream_id)
-                .ok_or(StreamError::MissingStream)?;
-            Self::apply_local_close_to_stream(stream, target);
-            stream.pending_close = Some(StreamClose {
-                stream_id,
-                target,
-                code,
-            });
-        }
-        self.try_reap_stream(stream_id);
-        Ok(())
-    }
-
-    pub fn stream_read(&self, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
-        let stream = self.state.streams.get(&stream_id)?;
-        Some(stream.rx.bytes())
-    }
-
-    pub fn stream_read_commit(
-        &mut self,
-        stream_id: StreamId,
-        len: usize,
-    ) -> Result<(), StreamError> {
-        let stream = self
-            .state
-            .streams
-            .get_mut(&stream_id)
-            .ok_or(StreamError::MissingStream)?;
-        if len > stream.readable_bytes() {
-            return Err(StreamError::InvalidRead);
-        }
-        stream.rx.consume(len);
-        if stream.recv_limit() > stream.advertised_max_offset {
-            stream.pending_window = true;
-        }
-        self.try_reap_stream(stream_id);
-        Ok(())
-    }
-
-    pub fn stream_available_bytes(&self, stream_id: StreamId) -> Option<usize> {
-        let stream = self.state.streams.get(&stream_id)?;
-        Some(stream.readable_bytes())
+        Ok(StreamOps::new(self, stream_id, stream_index))
     }
 
     pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
@@ -856,19 +795,25 @@ impl SessionFsm {
     }
 
     fn try_reap_stream(&mut self, stream_id: StreamId) {
-        let should_reap = self
-            .state
-            .streams
-            .get(&stream_id)
-            .is_some_and(|stream| self.stream_is_reapable(stream_id, stream));
-        if !should_reap {
-            return;
-        }
-
         let Some(index) = self.state.streams.get_index_of(&stream_id) else {
             return;
         };
-        self.state.streams.shift_remove(&stream_id);
+        self.try_reap_stream_at(stream_id, index);
+    }
+
+    fn try_reap_stream_at(&mut self, stream_id: StreamId, index: usize) {
+        let Some((indexed_stream_id, stream)) = self.state.streams.get_index(index) else {
+            return;
+        };
+        debug_assert_eq!(*indexed_stream_id, stream_id);
+        if !self.stream_is_reapable(stream_id, stream) {
+            return;
+        }
+        self.reap_stream_at(index);
+    }
+
+    fn reap_stream_at(&mut self, index: usize) {
+        self.state.streams.shift_remove_index(index);
 
         if self.state.streams.is_empty() {
             self.state.next_stream_index = 0;

@@ -135,7 +135,7 @@ fn new_outbound_io() -> OutboundIo {
 
 #[test]
 fn handle_inbound_finished_reaps_closed_initiator_stream() {
-    let (mut state, fsm) = new_driver_state();
+    let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
 
     state.streams.insert(
@@ -143,7 +143,7 @@ fn handle_inbound_finished_reaps_closed_initiator_stream() {
         DriverStreamIo::new(true, None, Some(new_inbound_io(1))),
     );
 
-    state.handle_inbound_finished(&fsm, stream_id);
+    state.handle_inbound_finished(&mut fsm, stream_id);
 
     assert!(!state.streams.contains_key(&stream_id));
 }

@@ -68,12 +68,8 @@ impl StreamState {
         matches!(self.outbound_state, OutboundState::Open)
     }
 
-    pub fn buffered_send_bytes(&self) -> usize {
-        self.tx.buffered_len()
-    }
-
     pub fn send_capacity(&self, send_buffer_size: usize) -> usize {
-        send_buffer_size.saturating_sub(self.buffered_send_bytes())
+        send_buffer_size.saturating_sub(self.tx.buffered_len())
     }
 
     pub fn readable_bytes(&self) -> usize {

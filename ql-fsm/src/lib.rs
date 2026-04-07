@@ -3,7 +3,7 @@
 //! a caller drives `QlFsm` inside its own event loop
 //!
 //! inputs to that loop usually include
-//! - app actions like `bind_peer`, `connect_ik`, `connect_kk`, `open_stream`, or `write_stream`
+//! - app actions like `bind_peer`, `connect_ik`, `connect_kk`, `open_stream`, or `stream`
 //! - inbound transport bytes passed to `receive`
 //! - a deadline expiring, handled by calling `on_timer`
 //! - transport write results passed to `confirm_session_write` or `reject_session_write`
@@ -30,10 +30,9 @@ use std::time::{Duration, Instant};
 pub use bytes::Bytes;
 pub use error::*;
 use ql_wire::{
-    CloseTarget, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose,
-    StreamCloseCode, StreamId,
+    PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose, StreamId,
 };
-pub use session::{stream_rx::StreamReadIter, StreamWriter};
+pub use session::{stream_rx::StreamReadIter, StreamOps, StreamWriter};
 
 use crate::{
     replay_cache::ReplayCache,
@@ -250,42 +249,13 @@ impl QlFsm {
     }
 
     /// opens a new outgoing stream
-    pub fn open_stream(&mut self) -> Result<StreamId, NoSessionError> {
+    pub fn open_stream(&mut self) -> Result<StreamOps<'_>, NoSessionError> {
         implementation::open_stream(self)
     }
 
-    /// returns a writer for an open stream
-    pub fn write_stream(&mut self, stream_id: StreamId) -> Result<StreamWriter<'_>, StreamError> {
-        implementation::write_stream(self, stream_id)
-    }
-
-    /// returns the readable stream bytes as owned `Bytes` views without consuming them
-    pub fn stream_read(&self, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
-        implementation::stream_read(self, stream_id)
-    }
-
-    /// marks previously read bytes as consumed
-    pub fn stream_read_commit(
-        &mut self,
-        stream_id: StreamId,
-        len: usize,
-    ) -> Result<(), StreamError> {
-        implementation::stream_read_commit(self, stream_id, len)
-    }
-
-    /// returns how many bytes can be read from a stream
-    pub fn stream_available_bytes(&self, stream_id: StreamId) -> Option<usize> {
-        implementation::stream_available_bytes(self, stream_id)
-    }
-
-    /// closes the origin lane, return lane, or both lanes of a stream
-    pub fn close_stream(
-        &mut self,
-        stream_id: StreamId,
-        target: CloseTarget,
-        code: StreamCloseCode,
-    ) -> Result<(), StreamError> {
-        implementation::close_stream(self, stream_id, target, code)
+    /// returns a facade for an open stream
+    pub fn stream(&mut self, stream_id: StreamId) -> Result<StreamOps<'_>, StreamError> {
+        implementation::stream(self, stream_id)
     }
 
     /// queues a ping on the active session

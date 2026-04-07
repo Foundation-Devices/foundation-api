@@ -304,13 +304,15 @@ impl Runner {
                 let _ = take_pending(&mut self.pending_b_to_a, *index);
             }
             Action::OpenStreamA(slot) => {
-                if let Ok(stream_id) = self.harness.a.fsm.open_stream() {
+                if let Ok(stream) = self.harness.a.fsm.open_stream() {
+                    let stream_id = stream.stream_id();
                     self.slots_a[*slot] = Some(stream_id);
                     self.known_streams.insert(stream_id);
                 }
             }
             Action::OpenStreamB(slot) => {
-                if let Ok(stream_id) = self.harness.b.fsm.open_stream() {
+                if let Ok(stream) = self.harness.b.fsm.open_stream() {
+                    let stream_id = stream.stream_id();
                     self.slots_b[*slot] = Some(stream_id);
                     self.known_streams.insert(stream_id);
                 }
@@ -318,52 +320,55 @@ impl Runner {
             Action::WriteA { slot, bytes } => {
                 if let Some(stream_id) = self.slots_a[*slot] {
                     let mut chunk = Bytes::copy_from_slice(bytes);
-                    if let Ok(mut writer) = self.harness.a.fsm.write_stream(stream_id) {
-                        let accepted = writer.write(&mut chunk);
-                        self.expected_at_b
-                            .entry(stream_id)
-                            .or_default()
-                            .extend_from_slice(&bytes[..accepted]);
+                    if let Ok(mut stream) = self.harness.a.fsm.stream(stream_id) {
+                        if let Some(mut writer) = stream.writer() {
+                            let accepted = writer.write(&mut chunk);
+                            self.expected_at_b
+                                .entry(stream_id)
+                                .or_default()
+                                .extend_from_slice(&bytes[..accepted]);
+                        }
                     }
                 }
             }
             Action::WriteB { slot, bytes } => {
                 if let Some(stream_id) = self.slots_b[*slot] {
                     let mut chunk = Bytes::copy_from_slice(bytes);
-                    if let Ok(mut writer) = self.harness.b.fsm.write_stream(stream_id) {
-                        let accepted = writer.write(&mut chunk);
-                        self.expected_at_a
-                            .entry(stream_id)
-                            .or_default()
-                            .extend_from_slice(&bytes[..accepted]);
+                    if let Ok(mut stream) = self.harness.b.fsm.stream(stream_id) {
+                        if let Some(mut writer) = stream.writer() {
+                            let accepted = writer.write(&mut chunk);
+                            self.expected_at_a
+                                .entry(stream_id)
+                                .or_default()
+                                .extend_from_slice(&bytes[..accepted]);
+                        }
                     }
                 }
             }
             Action::FinishA(slot) => {
                 if let Some(stream_id) = self.slots_a[*slot] {
-                    if let Ok(writer) = self.harness.a.fsm.write_stream(stream_id) {
-                        writer.finish();
-                        self.finished_by_a.insert(stream_id);
+                    if let Ok(mut stream) = self.harness.a.fsm.stream(stream_id) {
+                        if let Some(writer) = stream.writer() {
+                            writer.finish();
+                            self.finished_by_a.insert(stream_id);
+                        }
                     }
                 }
             }
             Action::FinishB(slot) => {
                 if let Some(stream_id) = self.slots_b[*slot] {
-                    if let Ok(writer) = self.harness.b.fsm.write_stream(stream_id) {
-                        writer.finish();
-                        self.finished_by_b.insert(stream_id);
+                    if let Ok(mut stream) = self.harness.b.fsm.stream(stream_id) {
+                        if let Some(writer) = stream.writer() {
+                            writer.finish();
+                            self.finished_by_b.insert(stream_id);
+                        }
                     }
                 }
             }
             Action::CloseA(slot) => {
                 if let Some(stream_id) = self.slots_a[*slot] {
-                    if self
-                        .harness
-                        .a
-                        .fsm
-                        .close_stream(stream_id, CloseTarget::Both, StreamCloseCode(0))
-                        .is_ok()
-                    {
+                    if let Ok(mut stream) = self.harness.a.fsm.stream(stream_id) {
+                        stream.close(CloseTarget::Both, StreamCloseCode(0));
                         self.closed_by_a.insert(stream_id);
                         self.slots_a[*slot] = None;
                     }
@@ -371,13 +376,8 @@ impl Runner {
             }
             Action::CloseB(slot) => {
                 if let Some(stream_id) = self.slots_b[*slot] {
-                    if self
-                        .harness
-                        .b
-                        .fsm
-                        .close_stream(stream_id, CloseTarget::Both, StreamCloseCode(0))
-                        .is_ok()
-                    {
+                    if let Ok(mut stream) = self.harness.b.fsm.stream(stream_id) {
+                        stream.close(CloseTarget::Both, StreamCloseCode(0));
                         self.closed_by_b.insert(stream_id);
                         self.slots_b[*slot] = None;
                     }
@@ -903,14 +903,13 @@ fn take_taken(taken: &mut Vec<TakenWrite>, index: usize) -> Option<TakenWrite> {
 
 fn drain_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();
+    let Ok(mut stream) = fsm.stream(stream_id) else {
+        return out;
+    };
 
     loop {
-        let Some(chunks) = fsm.stream_read(stream_id) else {
-            break;
-        };
-
         let mut read = 0usize;
-        for chunk in chunks {
+        for chunk in stream.read() {
             out.extend_from_slice(&chunk);
             read += chunk.len();
         }
@@ -919,7 +918,7 @@ fn drain_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
             break;
         }
 
-        fsm.stream_read_commit(stream_id, read).unwrap();
+        stream.commit_read(read).unwrap();
     }
 
     out

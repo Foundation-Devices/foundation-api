@@ -2,12 +2,12 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ql_wire::{
-    self as wire, CloseTarget, QlCrypto, SessionCloseCode, StreamCloseCode, StreamId, WireDecode,
+    self as wire, QlCrypto, SessionCloseCode, StreamId, WireDecode,
 };
 
 use crate::{
     session::SessionEvent, state::LinkState, NoSessionError, OutboundWrite, QlFsm, QlFsmError,
-    QlFsmEvent, SessionWriteId, StreamError, StreamReadIter, StreamWriter,
+    QlFsmEvent, SessionWriteId, StreamError, StreamOps,
 };
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
@@ -149,45 +149,14 @@ pub fn kill_session(fsm: &mut QlFsm, _code: SessionCloseCode) {
     fsm.state.link = crate::state::LinkState::Idle;
 }
 
-pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamId, NoSessionError> {
+pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamOps<'_>, NoSessionError> {
     let state = fsm.state.link.connected_mut_or_err()?;
     state.session.open_stream()
 }
 
-pub fn write_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamWriter<'_>, StreamError> {
+pub fn stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamOps<'_>, StreamError> {
     let state = fsm.state.link.connected_mut_or_err()?;
-    state.session.write_stream(stream_id)
-}
-
-pub fn stream_read(fsm: &QlFsm, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
-    let state = fsm.state.link.connected()?;
-    state.session.stream_read(stream_id)
-}
-
-pub fn stream_read_commit(
-    fsm: &mut QlFsm,
-    stream_id: StreamId,
-    len: usize,
-) -> Result<(), StreamError> {
-    let state = fsm.state.link.connected_mut_or_err()?;
-    state.session.stream_read_commit(stream_id, len)
-}
-
-pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Option<usize> {
-    fsm.state
-        .link
-        .connected()
-        .and_then(|state| state.session.stream_available_bytes(stream_id))
-}
-
-pub fn close_stream(
-    fsm: &mut QlFsm,
-    stream_id: StreamId,
-    target: CloseTarget,
-    code: StreamCloseCode,
-) -> Result<(), StreamError> {
-    let state = fsm.state.link.connected_mut_or_err()?;
-    state.session.close_stream(stream_id, target, code)
+    state.session.stream(stream_id)
 }
 
 pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), NoSessionError> {

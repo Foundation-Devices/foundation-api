@@ -21,25 +21,21 @@ fn offset(value: u64) -> VarInt {
     VarInt::from_u64(value).unwrap()
 }
 
+fn open_stream_id(fsm: &mut SessionFsm) -> StreamId {
+    fsm.open_stream().unwrap().stream_id()
+}
+
 fn write_stream_bytes(fsm: &mut SessionFsm, stream_id: StreamId, bytes: &[u8]) -> usize {
     let mut bytes = Bytes::copy_from_slice(bytes);
-    let mut writer = fsm.write_stream(stream_id).unwrap();
+    let mut stream = fsm.stream(stream_id).unwrap();
+    let mut writer = stream.writer().unwrap();
     writer.write(&mut bytes)
 }
 
 fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {
-    let mut out = Vec::new();
-    loop {
-        let mut read = 0;
-        for chunk in fsm.stream_read(stream_id).unwrap() {
-            out.extend_from_slice(&chunk);
-            read += chunk.len();
-        }
-        if read == 0 {
-            break;
-        }
-        fsm.stream_read_commit(stream_id, read).unwrap();
-    }
+    let mut stream = fsm.stream(stream_id).unwrap();
+    let out = stream.read().flatten().collect::<Vec<u8>>();
+    stream.commit_read(out.len()).unwrap();
     out
 }
 
@@ -78,7 +74,7 @@ fn receive_events(
 fn outbound_record_seq_increments_monotonically() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
-    let stream_id = fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"one"), 3);
     let (first_seq, _) = next_outbound(&mut fsm, now).unwrap();
@@ -94,7 +90,7 @@ fn outbound_record_seq_increments_monotonically() {
 fn retransmit_uses_new_record_seq() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
-    let stream_id = fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"retry"), 5);
     let (first_seq, first) = next_outbound(&mut fsm, now).unwrap();
@@ -116,8 +112,8 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
         },
         now,
     );
-    let stream_id_a = fsm.open_stream().unwrap();
-    let stream_id_b = fsm.open_stream().unwrap();
+    let stream_id_a = open_stream_id(&mut fsm);
+    let stream_id_b = open_stream_id(&mut fsm);
     let payload_a = vec![b'a'; 40];
     let payload_b = vec![b'b'; 40];
 
@@ -154,7 +150,7 @@ fn ack_reopens_write_capacity() {
         },
         now,
     );
-    let stream_id = fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"abcd"), 4);
     let (record_seq, _record) = next_outbound(&mut fsm, now).unwrap();
@@ -207,15 +203,16 @@ fn commit_stream_read_is_what_advances_stream_window() {
     assert!(matches!(first.as_slice(), [SessionFrame::Ack(_)]));
 
     let read = fsm
-        .stream_read(stream_id)
+        .stream(stream_id)
         .unwrap()
+        .read()
         .map(|chunk| chunk.len())
         .sum::<usize>();
     assert_eq!(read, 2);
 
     assert!(next_outbound(&mut fsm, now + Duration::from_millis(2)).is_none());
 
-    fsm.stream_read_commit(stream_id, 2).unwrap();
+    fsm.stream(stream_id).unwrap().commit_read(2).unwrap();
     let (_second_seq, second) = next_outbound(&mut fsm, now + Duration::from_millis(3)).unwrap();
     assert!(matches!(
         second.as_slice(),
@@ -281,10 +278,11 @@ fn inbound_stream_data_emits_opened_and_readable() {
 fn remote_stream_close_is_reliable_and_retried() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
-    let stream_id = fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut fsm);
 
-    fsm.close_stream(stream_id, CloseTarget::Both, StreamCloseCode(0))
-        .unwrap();
+    fsm.stream(stream_id)
+        .unwrap()
+        .close(CloseTarget::Both, StreamCloseCode(0));
 
     let (write_id, builder) = fsm.take_next_write(now).unwrap();
     fsm.confirm_write(now, write_id.expect("stream close should be tracked"));
@@ -314,7 +312,8 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         now,
     )
     .open_stream()
-    .unwrap();
+    .unwrap()
+    .stream_id();
     let odd_id = SessionFsm::new(
         SessionFsmConfig {
             local_parity: odd,
@@ -323,7 +322,8 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         now,
     )
     .open_stream()
-    .unwrap();
+    .unwrap()
+    .stream_id();
 
     assert_eq!(even_id.into_inner() % 2, 0);
     assert_eq!(odd_id.into_inner() % 2, 1);
@@ -471,7 +471,7 @@ fn initial_peer_stream_receive_window_limits_first_send() {
         },
         now,
     );
-    let stream_id = fsm.open_stream().unwrap();
+    let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"hello"), 5);
     let (_first_seq, first) = next_outbound(&mut fsm, now).unwrap();
