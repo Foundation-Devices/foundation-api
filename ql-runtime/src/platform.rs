@@ -8,7 +8,7 @@ use std::{
 use ql_fsm::PeerStatus;
 use ql_wire::{PeerBundle, QlCrypto, XID};
 
-use crate::{QlError, QlStream};
+use crate::QlStream;
 
 pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -19,7 +19,7 @@ pub trait QlTimer {
 
 pub trait QlPlatform: QlCrypto {
     type Timer: QlTimer;
-    type WriteMessageFut<'a>: Future<Output = Result<(), QlError>> + Unpin + 'a
+    type WriteMessageFut<'a>: Future<Output = bool> + Unpin + 'a
     where
         Self: 'a;
 

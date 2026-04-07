@@ -99,17 +99,14 @@ async fn next_driver_event<T, F>(
 ) -> DriverEvent
 where
     T: QlTimer,
-    F: Future<Output = Result<(), QlError>> + Unpin,
+    F: Future<Output = bool> + Unpin,
 {
     let mut recv_future = (!rx.is_closed()).then(|| Box::pin(rx.recv()));
 
     poll_fn(|cx| {
         for (index, write) in in_flight.iter_mut().enumerate() {
-            if let Poll::Ready(result) = Pin::new(&mut write.future).poll(cx) {
-                return Poll::Ready(DriverEvent::WriteCompleted {
-                    index,
-                    success: result.is_ok(),
-                });
+            if let Poll::Ready(success) = Pin::new(&mut write.future).poll(cx) {
+                return Poll::Ready(DriverEvent::WriteCompleted { index, success });
             }
         }
 

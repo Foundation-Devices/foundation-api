@@ -24,8 +24,7 @@ use tokio::{task::LocalSet, time::Sleep};
 use crate::{
     new_runtime,
     platform::{PlatformFuture, QlTimer},
-    QlError, QlFsmConfig, QlStream, QlStreamError,
-    RuntimeConfig, RuntimeHandle,
+    QlError, QlFsmConfig, QlStream, QlStreamError, RuntimeConfig, RuntimeHandle,
 };
 
 mod handshake;
@@ -346,7 +345,7 @@ impl QlKem for TestPlatform {
 
 impl crate::platform::QlPlatform for TestPlatform {
     type Timer = TokioTimer;
-    type WriteMessageFut<'a> = PlatformFuture<'a, Result<(), QlError>>;
+    type WriteMessageFut<'a> = PlatformFuture<'a, bool>;
 
     fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_> {
         let outbound = self.outbound.clone();
@@ -371,20 +370,17 @@ impl crate::platform::QlPlatform for TestPlatform {
                 false
             };
 
-            let result = if should_fail {
-                Err(QlError::SendFailed)
+            let success = if should_fail {
+                false
             } else {
-                outbound
-                    .send(message)
-                    .await
-                    .map_err(|_| QlError::InvalidPayload)
+                outbound.send(message).await.is_ok()
             };
 
             if let Some(stats) = write_stats.as_ref() {
                 stats.active.fetch_sub(1, Ordering::Relaxed);
             }
 
-            result
+            success
         })
     }
 
