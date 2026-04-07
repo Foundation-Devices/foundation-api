@@ -242,7 +242,7 @@ pub struct StreamReadIter<'a> {
 }
 
 impl<'a> Iterator for StreamReadIter<'a> {
-    type Item = &'a [u8];
+    type Item = Bytes;
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.remaining > 0 {
@@ -258,11 +258,10 @@ impl<'a> Iterator for StreamReadIter<'a> {
                 continue;
             }
 
-            let chunk = &bytes[skip..];
-            let len = chunk.len().min(self.remaining);
+            let len = (bytes.len() - skip).min(self.remaining);
             self.remaining -= len;
             self.cursor += len as u64;
-            return Some(&chunk[..len]);
+            return Some(bytes.slice(skip..skip + len));
         }
 
         None

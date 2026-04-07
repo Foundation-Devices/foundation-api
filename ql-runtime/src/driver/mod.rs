@@ -381,7 +381,7 @@ impl DriverState {
                     if chunk.is_empty() {
                         continue;
                     }
-                    match stream.inbound_mut().try_write(chunk) {
+                    match stream.inbound_mut().try_write(&chunk) {
                         InboundWriteResult::Accepted(n) => {
                             accepted += n;
                             if n < chunk.len() {

@@ -263,7 +263,7 @@ impl QlFsm {
         implementation::write_stream(self, stream_id, bytes)
     }
 
-    /// returns the readable stream bytes as borrowed chunks without consuming them
+    /// returns the readable stream bytes as owned `Bytes` views without consuming them
     pub fn stream_read(&self, stream_id: StreamId) -> Option<StreamReadIter<'_>> {
         implementation::stream_read(self, stream_id)
     }
