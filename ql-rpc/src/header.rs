@@ -1,4 +1,6 @@
-use crate::{MethodId, RpcError, RPC_VERSION};
+use bytes::{Buf, BufMut};
+
+use crate::{MethodId, RpcCodec, RpcError, RPC_VERSION};
 
 const HEADER_SIZE: usize = 1 + 8;
 
@@ -17,25 +19,24 @@ impl RpcHeader {
             method,
         }
     }
+}
 
-    pub fn encode_into(&self, out: &mut Vec<u8>) {
-        out.push(self.version);
-        out.extend_from_slice(&self.method.0.to_le_bytes());
+impl RpcCodec for RpcHeader {
+    type Error = RpcError;
+
+    fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) -> Result<(), Self::Error> {
+        out.put_u8(self.version);
+        out.put_u64_le(self.method.0);
+        Ok(())
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<(Self, &[u8]), RpcError> {
-        if bytes.len() < Self::WIRE_SIZE {
-            return Err(RpcError::Truncated);
-        }
-
-        let version = bytes[0];
+    fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
+        let version = bytes.try_get_u8().map_err(|_| RpcError::Truncated)?;
         if version != RPC_VERSION {
             return Err(RpcError::InvalidVersion(version));
         }
 
-        let method = MethodId(u64::from_le_bytes(
-            bytes[1..Self::WIRE_SIZE].try_into().unwrap(),
-        ));
-        Ok((Self { version, method }, &bytes[Self::WIRE_SIZE..]))
+        let method = MethodId(bytes.try_get_u64_le().map_err(|_| RpcError::Truncated)?);
+        Ok(Self { version, method })
     }
 }

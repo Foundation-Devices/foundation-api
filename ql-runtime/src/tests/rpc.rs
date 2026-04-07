@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 use futures_lite::StreamExt;
 
 use super::*;
@@ -11,8 +11,8 @@ struct BytesValue(Vec<u8>);
 impl ql_rpc::RpcCodec for BytesValue {
     type Error = core::convert::Infallible;
 
-    fn encode_value(&self, out: &mut Vec<u8>) -> Result<(), Self::Error> {
-        out.extend_from_slice(&self.0);
+    fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) -> Result<(), Self::Error> {
+        out.put_slice(&self.0);
         Ok(())
     }
 
@@ -76,9 +76,15 @@ async fn rpc_request_round_trips() {
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
             let request = read_all(inbound.reader).await.unwrap();
-            let rpc_inbound = ql_rpc::parse_inbound(&request).unwrap();
+            let mut body = request.as_slice();
+            let header =
+                <ql_rpc::header::RpcHeader as ql_rpc::RpcCodec>::decode_value(&mut body).unwrap();
             assert_eq!(
-                ql_rpc::request::decode_request::<Echo>(rpc_inbound.body).unwrap(),
+                header.method,
+                <Echo as ql_rpc::request::Request>::METHOD
+            );
+            assert_eq!(
+                ql_rpc::request::decode_request::<Echo>(body).unwrap(),
                 BytesValue(b"hello".to_vec())
             );
 
@@ -132,9 +138,15 @@ async fn rpc_subscription_streams_events() {
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
             let request = read_all(inbound.reader).await.unwrap();
-            let rpc_inbound = ql_rpc::parse_inbound(&request).unwrap();
+            let mut body = request.as_slice();
+            let header =
+                <ql_rpc::header::RpcHeader as ql_rpc::RpcCodec>::decode_value(&mut body).unwrap();
             assert_eq!(
-                ql_rpc::subscription::decode_request::<Feed>(rpc_inbound.body).unwrap(),
+                header.method,
+                <Feed as ql_rpc::subscription::Subscription>::METHOD
+            );
+            assert_eq!(
+                ql_rpc::subscription::decode_request::<Feed>(body).unwrap(),
                 BytesValue(b"watch".to_vec())
             );
 
@@ -200,10 +212,15 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
             let request = read_all(inbound.reader).await.unwrap();
-            let rpc_inbound = ql_rpc::parse_inbound(&request).unwrap();
+            let mut body = request.as_slice();
+            let header =
+                <ql_rpc::header::RpcHeader as ql_rpc::RpcCodec>::decode_value(&mut body).unwrap();
             assert_eq!(
-                ql_rpc::request_with_progress::decode_request::<Download>(rpc_inbound.body)
-                    .unwrap(),
+                header.method,
+                <Download as ql_rpc::request_with_progress::RequestWithProgress>::METHOD
+            );
+            assert_eq!(
+                ql_rpc::request_with_progress::decode_request::<Download>(body).unwrap(),
                 BytesValue(b"logo".to_vec())
             );
 

@@ -1,10 +1,8 @@
-use std::{collections::VecDeque, marker::PhantomData};
+use std::marker::PhantomData;
 
-use bytes::Buf;
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::{codec, MethodId, RpcCodec, RpcCodecError, RpcError};
-
-const ITEM_HEADER_SIZE: usize = core::mem::size_of::<u64>();
 
 pub trait Subscription {
     const METHOD: MethodId;
@@ -23,7 +21,7 @@ pub enum ReadStep<M: Subscription> {
 }
 
 pub struct ResponseReader<M: Subscription> {
-    bytes: VecDeque<u8>,
+    bytes: codec::ChunkQueue,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -36,36 +34,35 @@ impl<M: Subscription> Default for ResponseReader<M> {
 impl<M: Subscription> ResponseReader<M> {
     pub fn new() -> Self {
         Self {
-            bytes: VecDeque::new(),
+            bytes: codec::ChunkQueue::new(),
             marker: PhantomData,
         }
     }
 
-    pub fn push(mut self, chunk: &[u8]) -> Self {
-        self.bytes.extend(chunk);
+    pub fn push(mut self, chunk: Bytes) -> Self {
+        self.bytes.push(chunk);
         self
     }
 
     pub fn advance(self) -> Result<ReadStep<M>, RpcCodecError<M::Error>> {
         let mut this = self;
-        let (first, second) = this.bytes.as_slices();
-        let Some((consumed, payload_len)) =
-            codec::try_measure_next_part(first.chain(second)).map_err(RpcCodecError::Rpc)?
+        let Some(mut body) = this.bytes.try_take_part().map_err(RpcCodecError::Rpc)?
         else {
             return Ok(ReadStep::NeedMore(this));
         };
 
-        if payload_len == 0 {
-            if this.bytes.len() == consumed {
+        if body.remaining() == 0 {
+            drop(body);
+            if this.bytes.remaining() == 0 {
                 return Ok(ReadStep::End);
             }
             return Err(RpcCodecError::Rpc(RpcError::TrailingBytes));
         }
 
-        this.bytes.drain(..ITEM_HEADER_SIZE);
         let item = {
-            let mut body = codec::DrainBuf::new(&mut this.bytes, payload_len);
-            M::Event::decode_value(&mut body).map_err(RpcCodecError::Codec)?
+            let item = M::Event::decode_value(&mut body).map_err(RpcCodecError::Codec)?;
+            drop(body);
+            item
         };
         Ok(ReadStep::Item {
             value: item,
@@ -76,9 +73,11 @@ impl<M: Subscription> ResponseReader<M> {
 
 pub fn encode_request<M: Subscription>(
     request: &M::Request,
-    out: &mut Vec<u8>,
+    out: &mut impl BufMut,
 ) -> Result<(), M::Error> {
-    crate::header::RpcHeader::new(M::METHOD).encode_into(out);
+    crate::header::RpcHeader::new(M::METHOD)
+        .encode_value(out)
+        .expect("rpc header encoding cannot fail");
     request.encode_value(out)
 }
 
@@ -88,24 +87,24 @@ pub fn decode_request<M: Subscription>(mut body: &[u8]) -> Result<M::Request, M:
 
 pub fn encode_item<M: Subscription>(
     item: &M::Event,
-    out: &mut Vec<u8>,
+    out: &mut (impl BufMut + AsMut<[u8]>),
 ) -> Result<(), <M::Event as RpcCodec>::Error> {
     codec::encode_value_part(item, out)
 }
 
-pub fn encode_end(out: &mut Vec<u8>) {
+pub fn encode_end(out: &mut impl BufMut) {
     codec::push_length(out, 0);
 }
 
 #[cfg(test)]
 mod tests {
-    use bytes::Buf;
+    use bytes::{Buf, BufMut, Bytes};
 
     use super::{
         decode_request, encode_end, encode_item, encode_request, ReadStep, ResponseReader,
         Subscription,
     };
-    use crate::{parse_inbound, MethodId, RpcCodec};
+    use crate::{header::RpcHeader, MethodId, RpcCodec};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct BytesValue(Vec<u8>);
@@ -113,8 +112,8 @@ mod tests {
     impl RpcCodec for BytesValue {
         type Error = core::convert::Infallible;
 
-        fn encode_value(&self, out: &mut Vec<u8>) -> Result<(), Self::Error> {
-            out.extend_from_slice(&self.0);
+        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) -> Result<(), Self::Error> {
+            out.put_slice(&self.0);
             Ok(())
         }
 
@@ -137,10 +136,11 @@ mod tests {
         let mut encoded = Vec::new();
         encode_request::<Feed>(&BytesValue(b"watch".to_vec()), &mut encoded).unwrap();
 
-        let inbound = parse_inbound(&encoded).unwrap();
-        assert_eq!(inbound.header.method, Feed::METHOD);
+        let mut body = encoded.as_slice();
+        let header = RpcHeader::decode_value(&mut body).unwrap();
+        assert_eq!(header.method, Feed::METHOD);
         assert_eq!(
-            decode_request::<Feed>(inbound.body).unwrap(),
+            decode_request::<Feed>(body).unwrap(),
             BytesValue(b"watch".to_vec())
         );
     }
@@ -153,7 +153,7 @@ mod tests {
         encode_end(&mut encoded);
 
         let reader = match ResponseReader::<Feed>::new()
-            .push(&encoded)
+            .push(Bytes::from(encoded))
             .advance()
             .unwrap()
         {
@@ -182,8 +182,9 @@ mod tests {
         encode_item::<Feed>(&BytesValue(b"two".to_vec()), &mut encoded).unwrap();
         encode_end(&mut encoded);
 
+        let all = Bytes::from(encoded);
         let reader = match ResponseReader::<Feed>::new()
-            .push(&encoded[..5])
+            .push(all.slice(..5))
             .advance()
             .unwrap()
         {
@@ -191,7 +192,7 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let reader = match reader.push(&encoded[5..]).advance().unwrap() {
+        let reader = match reader.push(all.slice(5..)).advance().unwrap() {
             ReadStep::Item { value, next } => {
                 assert_eq!(value, BytesValue(b"one".to_vec()));
                 next

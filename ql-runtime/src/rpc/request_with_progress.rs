@@ -66,7 +66,7 @@ where
             match this.stream.poll_read_chunk(cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
                     let reader = this.reader.take().expect("progress reader is present");
-                    this.reader = Some(reader.push(&chunk));
+                    this.reader = Some(reader.push(chunk));
                 }
                 Poll::Ready(Ok(None)) => {
                     this.reader = None;
@@ -118,7 +118,7 @@ where
             match this.stream.poll_read_chunk(cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
                     let reader = this.reader.take().expect("progress reader is present");
-                    this.reader = Some(reader.push(&chunk));
+                    this.reader = Some(reader.push(chunk));
                 }
                 Poll::Ready(Ok(None)) => {
                     this.reader = None;

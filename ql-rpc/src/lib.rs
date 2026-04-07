@@ -1,6 +1,6 @@
 //! quantum link rpc protocol traits and framing helpers.
 
-use bytes::Buf;
+use bytes::{Buf, BufMut};
 
 pub(crate) mod codec;
 mod error;
@@ -19,17 +19,6 @@ pub struct MethodId(pub u64);
 pub trait RpcCodec: Sized {
     type Error;
 
-    fn encode_value(&self, out: &mut Vec<u8>) -> Result<(), Self::Error>;
+    fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) -> Result<(), Self::Error>;
     fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error>;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Inbound<'a> {
-    pub header: header::RpcHeader,
-    pub body: &'a [u8],
-}
-
-pub fn parse_inbound(bytes: &[u8]) -> Result<Inbound<'_>, RpcError> {
-    let (header, body) = header::RpcHeader::decode(bytes)?;
-    Ok(Inbound { header, body })
 }
