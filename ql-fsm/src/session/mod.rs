@@ -66,7 +66,7 @@ pub enum SessionEvent {
     Writable(StreamId),
     Finished(StreamId),
     Closed(StreamClose),
-    WritableClosed(StreamId),
+    WritableClosed(StreamClose),
     SessionClosed(SessionClose),
 }
 
@@ -832,7 +832,7 @@ impl SessionFsm {
             stream.outbound_state = OutboundState::Closed;
             stream.tx.clear();
             stream.pending_close = None;
-            emit(SessionEvent::WritableClosed(frame.stream_id));
+            emit(SessionEvent::WritableClosed(frame.clone()));
         }
         self.try_reap_stream(frame.stream_id);
         Ok(())

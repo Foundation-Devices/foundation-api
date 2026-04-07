@@ -19,7 +19,7 @@ use crate::{
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
     platform::{PlatformFuture, QlPlatform},
-    QlError, Runtime, RuntimeHandle,
+    QlError, QlStreamError, Runtime, RuntimeHandle,
 };
 
 impl<P: QlPlatform> Runtime<P> {
@@ -164,6 +164,7 @@ impl DriverState {
             }
             RuntimeCommand::OpenStream {
                 request_reader,
+                request_terminal,
                 start,
             } => {
                 let Some(runtime_tx) = self.runtime_tx.upgrade() else {
@@ -179,6 +180,7 @@ impl DriverState {
                             stream_id,
                             DriverStreamIo::new_initiator(
                                 request_reader,
+                                request_terminal,
                                 response_writer,
                                 response_terminal_tx,
                             ),
@@ -319,10 +321,10 @@ impl DriverState {
             QlFsmEvent::Closed(frame) => {
                 self.handle_closed_stream(&frame);
             }
-            QlFsmEvent::WritableClosed(stream_id) => {
-                self.handle_writable_closed(stream_id);
+            QlFsmEvent::WritableClosed(frame) => {
+                self.handle_writable_closed(&frame);
             }
-            QlFsmEvent::SessionClosed(_) => self.fail_all_streams(&QlError::SessionClosed),
+            QlFsmEvent::SessionClosed(_) => self.fail_all_streams(),
         }
     }
 
@@ -340,10 +342,16 @@ impl DriverState {
         let (request_reader, request_writer) = chunk_slot::new();
         let (request_terminal_tx, request_terminal_rx) = oneshot::channel();
         let (response_reader, response_writer) = chunk_slot::new();
+        let (response_terminal_tx, response_terminal_rx) = oneshot::channel();
 
         self.streams.insert(
             stream_id,
-            DriverStreamIo::new_responder(request_writer, request_terminal_tx, response_reader),
+            DriverStreamIo::new_responder(
+                request_writer,
+                request_terminal_tx,
+                response_reader,
+                response_terminal_tx,
+            ),
         );
 
         platform.handle_inbound(QlStream {
@@ -359,6 +367,7 @@ impl DriverState {
                 stream_id,
                 CloseTarget::Return,
                 response_writer,
+                response_terminal_rx,
                 RuntimeHandle::new(runtime_tx),
             ),
         });
@@ -447,28 +456,31 @@ impl DriverState {
         };
 
         if frame.target == CloseTarget::Both || frame.target == stream.inbound_target() {
-            stream.inbound_mut().fail(QlError::StreamClosed {
-                target: frame.target,
-                code: frame.code,
-            });
+            stream
+                .inbound_mut()
+                .fail(QlStreamError::StreamClosed { code: frame.code });
         }
         if frame.target == CloseTarget::Both || frame.target == stream.outbound_target() {
-            stream.outbound_mut().close();
+            stream
+                .outbound_mut()
+                .fail(QlStreamError::StreamClosed { code: frame.code });
         }
         self.try_reap_stream(frame.stream_id);
     }
 
-    fn handle_writable_closed(&mut self, stream_id: StreamId) {
-        let Some(stream) = self.streams.get_mut(&stream_id) else {
+    fn handle_writable_closed(&mut self, frame: &ql_wire::StreamClose) {
+        let Some(stream) = self.streams.get_mut(&frame.stream_id) else {
             return;
         };
-        stream.outbound_mut().close();
-        self.try_reap_stream(stream_id);
+        stream
+            .outbound_mut()
+            .fail(QlStreamError::StreamClosed { code: frame.code });
+        self.try_reap_stream(frame.stream_id);
     }
 
-    fn fail_all_streams(&mut self, error: &QlError) {
+    fn fail_all_streams(&mut self) {
         for stream in self.streams.values_mut() {
-            stream.fail_all(error);
+            stream.fail_all();
         }
         self.streams.clear();
     }

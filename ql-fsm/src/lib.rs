@@ -78,7 +78,7 @@ pub enum QlFsmEvent {
     /// a stream was closed
     Closed(StreamClose),
     /// local writes on this stream are closed
-    WritableClosed(StreamId),
+    WritableClosed(StreamClose),
     /// the encrypted session was closed
     SessionClosed(SessionClose),
 }

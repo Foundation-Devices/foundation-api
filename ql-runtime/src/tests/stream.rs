@@ -1,9 +1,10 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ql_wire::{CloseTarget, StreamCloseCode};
+use ql_wire::StreamCloseCode;
 
 use super::*;
+use crate::QlStreamError;
 
 #[tokio::test(flavor = "current_thread")]
 async fn open_stream_duplex_happy_path() {
@@ -229,10 +230,7 @@ async fn dropping_responder_closes_initiator_response() {
         let err = next_chunk(&mut stream.reader).await.unwrap_err();
         assert!(matches!(
             err,
-            QlError::StreamClosed {
-                target: CloseTarget::Return,
-                code,
-            } if code == StreamCloseCode(0)
+            QlStreamError::StreamClosed { code } if code == StreamCloseCode(0)
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)

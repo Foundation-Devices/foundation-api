@@ -7,7 +7,7 @@ use ql_wire::{CloseTarget, StreamId, XID};
 use crate::{
     chunk_slot::{ChunkSlotRx, ChunkSlotTx, TrySendError},
     command::RuntimeCommand,
-    QlError,
+    QlStreamError,
 };
 
 pub struct DriverState {
@@ -36,24 +36,26 @@ impl DriverStreamIo {
 
     pub fn new_initiator(
         request: ChunkSlotRx,
+        request_terminal: oneshot::Sender<QlStreamError>,
         response: ChunkSlotTx,
-        response_terminal: oneshot::Sender<Result<(), QlError>>,
+        response_terminal: oneshot::Sender<Result<(), QlStreamError>>,
     ) -> Self {
         Self {
             is_initiator: true,
-            outbound: OutboundIo::new(request),
+            outbound: OutboundIo::new(request, request_terminal),
             inbound: InboundIo::new(response, response_terminal),
         }
     }
 
     pub fn new_responder(
         request: ChunkSlotTx,
-        request_terminal: oneshot::Sender<Result<(), QlError>>,
+        request_terminal: oneshot::Sender<Result<(), QlStreamError>>,
         response: ChunkSlotRx,
+        response_terminal: oneshot::Sender<QlStreamError>,
     ) -> Self {
         Self {
             is_initiator: false,
-            outbound: OutboundIo::new(response),
+            outbound: OutboundIo::new(response, response_terminal),
             inbound: InboundIo::new(request, request_terminal),
         }
     }
@@ -82,13 +84,13 @@ impl DriverStreamIo {
         }
     }
 
-    pub fn fail_all(&mut self, error: &QlError) {
+    pub fn fail_all(&mut self) {
         if self.is_initiator {
-            self.outbound.close();
-            self.inbound.fail(error.clone());
+            self.outbound.fail(QlStreamError::SessionClosed);
+            self.inbound.fail(QlStreamError::SessionClosed);
         } else {
-            self.inbound.fail(error.clone());
-            self.outbound.close();
+            self.inbound.fail(QlStreamError::SessionClosed);
+            self.outbound.fail(QlStreamError::SessionClosed);
         }
     }
 
@@ -98,22 +100,36 @@ impl DriverStreamIo {
 }
 
 pub enum OutboundIo {
-    Open { reader: ChunkSlotRx },
+    Open {
+        reader: ChunkSlotRx,
+        terminal: Option<oneshot::Sender<QlStreamError>>,
+    },
     Closed,
 }
 
 impl OutboundIo {
-    pub fn new(reader: ChunkSlotRx) -> Self {
-        Self::Open { reader }
+    pub fn new(reader: ChunkSlotRx, terminal: oneshot::Sender<QlStreamError>) -> Self {
+        Self::Open {
+            reader,
+            terminal: Some(terminal),
+        }
     }
 
     pub fn close(&mut self) {
         *self = Self::Closed;
     }
 
+    pub fn fail(&mut self, error: QlStreamError) {
+        if let Self::Open { mut terminal, .. } = std::mem::replace(self, Self::Closed) {
+            if let Some(terminal) = terminal.take() {
+                let _ = terminal.send(error);
+            }
+        }
+    }
+
     pub fn open_mut(&mut self) -> Option<&mut ChunkSlotRx> {
         match self {
-            Self::Open { reader } => Some(reader),
+            Self::Open { reader, .. } => Some(reader),
             Self::Closed => None,
         }
     }
@@ -122,7 +138,7 @@ impl OutboundIo {
 pub enum InboundIo {
     Open {
         writer: ChunkSlotTx,
-        terminal: Option<oneshot::Sender<Result<(), QlError>>>,
+        terminal: Option<oneshot::Sender<Result<(), QlStreamError>>>,
         finish_pending: bool,
     },
     Closed,
@@ -135,7 +151,7 @@ pub enum InboundWriteResult {
 }
 
 impl InboundIo {
-    pub fn new(writer: ChunkSlotTx, terminal: oneshot::Sender<Result<(), QlError>>) -> Self {
+    pub fn new(writer: ChunkSlotTx, terminal: oneshot::Sender<Result<(), QlStreamError>>) -> Self {
         Self::Open {
             writer,
             terminal: Some(terminal),
@@ -177,7 +193,7 @@ impl InboundIo {
         }
     }
 
-    pub fn fail(&mut self, error: QlError) {
+    pub fn fail(&mut self, error: QlStreamError) {
         if let Self::Open {
             mut terminal,
             writer,

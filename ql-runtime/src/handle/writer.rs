@@ -1,13 +1,19 @@
 use bytes::Bytes;
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use crate::{chunk_slot::ChunkSlotTx, command::RuntimeCommand, QlError, RuntimeHandle};
+use crate::{chunk_slot::ChunkSlotTx, command::RuntimeCommand, QlStreamError, RuntimeHandle};
 
 pub struct ByteWriter {
     stream_id: StreamId,
     target: CloseTarget,
     writer: Option<ChunkSlotTx>,
+    terminal: WriteTerminalState,
     handle: RuntimeHandle,
+}
+
+enum WriteTerminalState {
+    Armed(oneshot::Receiver<QlStreamError>),
+    Terminal(QlStreamError),
 }
 
 impl std::fmt::Debug for ByteWriter {
@@ -25,12 +31,14 @@ impl ByteWriter {
         stream_id: StreamId,
         target: CloseTarget,
         writer: ChunkSlotTx,
+        terminal: oneshot::Receiver<QlStreamError>,
         handle: RuntimeHandle,
     ) -> Self {
         Self {
             stream_id,
             target,
             writer: Some(writer),
+            terminal: WriteTerminalState::Armed(terminal),
             handle,
         }
     }
@@ -41,14 +49,16 @@ impl ByteWriter {
         });
     }
 
-    pub async fn write(&mut self, bytes: Bytes) -> Result<(), QlError> {
+    pub async fn write(&mut self, bytes: Bytes) -> Result<(), QlStreamError> {
         if bytes.is_empty() {
             return Ok(());
         }
-        let writer = self.writer.as_ref().ok_or(QlError::Cancelled)?;
+        let Some(writer) = self.writer.as_ref() else {
+            return Err(self.terminal_error().await);
+        };
         if writer.send(bytes).await.is_err() {
             self.writer.take();
-            return Err(QlError::Cancelled);
+            return Err(self.terminal_error().await);
         }
         self.poll_runtime();
         Ok(())
@@ -74,6 +84,19 @@ impl Drop for ByteWriter {
 }
 
 impl ByteWriter {
+    async fn terminal_error(&mut self) -> QlStreamError {
+        match &mut self.terminal {
+            WriteTerminalState::Terminal(error) => error.clone(),
+            WriteTerminalState::Armed(receiver) => {
+                let error = receiver
+                    .await
+                    .expect("byte writer terminal dropped before sending a terminal state");
+                self.terminal = WriteTerminalState::Terminal(error.clone());
+                error
+            }
+        }
+    }
+
     fn close_inner(&mut self, code: StreamCloseCode) {
         if self.writer.take().is_none() {
             return;

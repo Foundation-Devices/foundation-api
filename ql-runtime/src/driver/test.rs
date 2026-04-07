@@ -112,6 +112,12 @@ fn new_inbound_io(capacity: usize) -> InboundIo {
     InboundIo::new(writer, terminal_tx)
 }
 
+fn new_outbound_io() -> OutboundIo {
+    let (reader, _writer) = chunk_slot::new();
+    let (terminal_tx, _terminal_rx) = oneshot::channel();
+    OutboundIo::new(reader, terminal_tx)
+}
+
 #[test]
 fn handle_inbound_finished_reaps_closed_initiator_stream() {
     let (mut state, fsm) = new_driver_state();
@@ -131,11 +137,10 @@ fn handle_inbound_finished_reaps_closed_initiator_stream() {
 fn handle_closed_stream_reaps_when_both_halves_close() {
     let (mut state, _fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
-    let (response_reader, _response_writer) = chunk_slot::new();
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(false, OutboundIo::new(response_reader), new_inbound_io(1)),
+        DriverStreamIo::new(false, new_outbound_io(), new_inbound_io(1)),
     );
 
     state.handle_closed_stream(&StreamClose {
@@ -152,11 +157,16 @@ fn poll_stream_reaps_after_local_finish_when_inbound_is_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
     let (request_reader, request_writer) = chunk_slot::new();
+    let (request_terminal_tx, _request_terminal_rx) = oneshot::channel();
 
     drop(request_writer);
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(true, OutboundIo::new(request_reader), InboundIo::Closed),
+        DriverStreamIo::new(
+            true,
+            OutboundIo::new(request_reader, request_terminal_tx),
+            InboundIo::Closed,
+        ),
     );
 
     state.poll_stream(&mut fsm, stream_id);
@@ -169,11 +179,16 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
     let (request_reader, _request_writer) = chunk_slot::new();
+    let (request_terminal_tx, _request_terminal_rx) = oneshot::channel();
     let mut in_flight = Vec::new();
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(true, OutboundIo::new(request_reader), InboundIo::Closed),
+        DriverStreamIo::new(
+            true,
+            OutboundIo::new(request_reader, request_terminal_tx),
+            InboundIo::Closed,
+        ),
     );
 
     state.drive_command(

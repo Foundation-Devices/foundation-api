@@ -1,4 +1,5 @@
 use ql_fsm::QlFsmError;
+use ql_wire::StreamCloseCode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlError {
@@ -14,10 +15,7 @@ pub enum QlError {
     NoPeerBound,
     NoSession,
     SendFailed,
-    StreamClosed {
-        target: ql_wire::CloseTarget,
-        code: ql_wire::StreamCloseCode,
-    },
+    StreamClosed { code: ql_wire::StreamCloseCode },
     Cancelled,
 }
 
@@ -36,13 +34,22 @@ impl std::fmt::Display for QlError {
             Self::NoPeerBound => f.write_str("no peer bound"),
             Self::NoSession => f.write_str("no active session"),
             Self::SendFailed => f.write_str("send failed"),
-            Self::StreamClosed { code, .. } => write!(f, "stream closed {code:?}"),
+            Self::StreamClosed { code } => write!(f, "stream closed {code:?}"),
             Self::Cancelled => f.write_str("cancelled"),
         }
     }
 }
 
 impl std::error::Error for QlError {}
+
+impl From<QlStreamError> for QlError {
+    fn from(value: QlStreamError) -> Self {
+        match value {
+            QlStreamError::StreamClosed { code } => Self::StreamClosed { code },
+            QlStreamError::SessionClosed => Self::SessionClosed,
+        }
+    }
+}
 
 impl From<QlFsmError> for QlError {
     fn from(value: QlFsmError) -> Self {
@@ -61,3 +68,20 @@ impl From<QlFsmError> for QlError {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QlStreamError {
+    StreamClosed { code: StreamCloseCode },
+    SessionClosed,
+}
+
+impl std::fmt::Display for QlStreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StreamClosed { code } => write!(f, "stream closed {code:?}"),
+            Self::SessionClosed => f.write_str("session is closed"),
+        }
+    }
+}
+
+impl std::error::Error for QlStreamError {}

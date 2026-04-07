@@ -96,7 +96,10 @@ impl RpcHandle {
 
 async fn read_all(mut reader: ByteReader) -> Result<Vec<u8>, QlError> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = poll_fn(|cx| reader.poll_read_chunk(cx)).await? {
+    while let Some(chunk) = poll_fn(|cx| reader.poll_read_chunk(cx))
+        .await
+        .map_err(QlError::from)?
+    {
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)

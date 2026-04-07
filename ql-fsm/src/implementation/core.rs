@@ -237,8 +237,8 @@ fn forward_session_event(event: SessionEvent, emit: &mut impl FnMut(QlFsmEvent))
             emit(QlFsmEvent::Closed(frame));
             false
         }
-        SessionEvent::WritableClosed(stream_id) => {
-            emit(QlFsmEvent::WritableClosed(stream_id));
+        SessionEvent::WritableClosed(frame) => {
+            emit(QlFsmEvent::WritableClosed(frame));
             false
         }
         SessionEvent::SessionClosed(close) => {

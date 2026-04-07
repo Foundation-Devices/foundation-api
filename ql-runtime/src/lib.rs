@@ -1,4 +1,8 @@
-pub use self::{error::QlError, handle::*, platform::*};
+pub use self::{
+    error::{QlError, QlStreamError},
+    handle::*,
+    platform::*,
+};
 
 pub mod chunk_slot;
 pub(crate) mod command;

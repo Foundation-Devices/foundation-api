@@ -497,7 +497,8 @@ impl Runner {
                         frame.stream_id
                     );
                 }
-                QlFsmEvent::WritableClosed(stream_id) => {
+                QlFsmEvent::WritableClosed(frame) => {
+                    let stream_id = frame.stream_id;
                     prop_assert!(
                         self.known_streams.contains(&stream_id),
                         "side {side:?} emitted WritableClosed for unknown stream {stream_id:?}"

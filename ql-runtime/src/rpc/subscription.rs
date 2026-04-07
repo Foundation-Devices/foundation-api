@@ -65,7 +65,7 @@ where
                 }
                 Poll::Ready(Err(error)) => {
                     this.reader = None;
-                    return Poll::Ready(Some(Err(RpcCallError::Runtime(error))));
+                    return Poll::Ready(Some(Err(RpcCallError::Runtime(error.into()))));
                 }
                 Poll::Pending => return Poll::Pending,
             }

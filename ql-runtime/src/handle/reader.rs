@@ -8,7 +8,7 @@ use bytes::Bytes;
 use event_listener::EventListener;
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, QlError, RuntimeHandle};
+use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, QlStreamError, RuntimeHandle};
 
 pub struct ByteReader {
     stream_id: StreamId,
@@ -20,8 +20,8 @@ pub struct ByteReader {
 }
 
 enum TerminalState {
-    Armed(oneshot::Receiver<Result<(), QlError>>),
-    Terminal(Result<(), QlError>),
+    Armed(oneshot::Receiver<Result<(), QlStreamError>>),
+    Terminal(Result<(), QlStreamError>),
     Delivered,
 }
 
@@ -43,7 +43,7 @@ impl ByteReader {
         stream_id: StreamId,
         target: CloseTarget,
         reader: ChunkSlotRx,
-        terminal: oneshot::Receiver<Result<(), QlError>>,
+        terminal: oneshot::Receiver<Result<(), QlStreamError>>,
         handle: RuntimeHandle,
     ) -> Self {
         Self {
@@ -60,7 +60,7 @@ impl ByteReader {
         &mut self,
         max_len: usize,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Bytes>, QlError>> {
+    ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
         if matches!(self.terminal, TerminalState::Delivered) {
             return Poll::Ready(Ok(None));
         }
@@ -85,7 +85,9 @@ impl ByteReader {
             let result = match Pin::new(terminal).poll(cx) {
                 Poll::Pending => None,
                 Poll::Ready(Ok(result)) => Some(result),
-                Poll::Ready(Err(_)) => Some(Err(QlError::Cancelled)),
+                Poll::Ready(Err(_)) => {
+                    panic!("byte reader terminal dropped before sending a terminal state")
+                }
             };
             if let Some(result) = result {
                 self.terminal = TerminalState::Terminal(result);
@@ -110,16 +112,16 @@ impl ByteReader {
     pub fn poll_read_chunk(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Bytes>, QlError>> {
+    ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
         self.poll_read(usize::MAX, cx)
     }
 
     /// Returns `Ok(None)` on clean EOF, `Ok(Some(_))` for data, and `Err(_)` for stream failure.
-    pub async fn read(&mut self, max_len: usize) -> Result<Option<Bytes>, QlError> {
+    pub async fn read(&mut self, max_len: usize) -> Result<Option<Bytes>, QlStreamError> {
         poll_fn(|cx| self.poll_read(max_len, cx)).await
     }
 
-    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, QlError> {
+    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, QlStreamError> {
         self.read(usize::MAX).await
     }
 

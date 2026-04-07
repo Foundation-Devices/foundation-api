@@ -33,10 +33,12 @@ impl RuntimeHandle {
 
     pub async fn open_stream(&self) -> Result<QlStream, QlError> {
         let (request_reader, request_writer) = chunk_slot::new();
+        let (request_terminal_tx, request_terminal_rx) = oneshot::channel();
         let (start_tx, start_rx) = oneshot::channel();
 
         self.send(RuntimeCommand::OpenStream {
             request_reader,
+            request_terminal: request_terminal_tx,
             start: start_tx,
         });
 
@@ -45,7 +47,13 @@ impl RuntimeHandle {
 
         Ok(QlStream {
             stream_id,
-            writer: ByteWriter::new(stream_id, CloseTarget::Origin, request_writer, self.clone()),
+            writer: ByteWriter::new(
+                stream_id,
+                CloseTarget::Origin,
+                request_writer,
+                request_terminal_rx,
+                self.clone(),
+            ),
             reader,
         })
     }

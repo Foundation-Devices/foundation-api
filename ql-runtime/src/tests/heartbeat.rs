@@ -7,6 +7,7 @@ use std::{
 };
 
 use super::*;
+use crate::QlStreamError;
 
 #[tokio::test(flavor = "current_thread")]
 async fn session_timeout_disconnects_and_fails_pending_open() {
@@ -58,10 +59,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
             tokio::time::timeout(Duration::from_millis(300), next_chunk(&mut pending.reader))
                 .await
                 .unwrap();
-        assert!(matches!(
-            result,
-            Err(QlError::SessionClosed | QlError::Cancelled)
-        ));
+        assert!(matches!(result, Err(QlStreamError::SessionClosed)));
 
         responder_task.abort();
     })
