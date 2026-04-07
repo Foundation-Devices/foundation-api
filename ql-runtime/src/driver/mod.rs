@@ -19,7 +19,7 @@ use crate::{
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
     platform::{PlatformFuture, QlPlatform},
-    QlError, Runtime,
+    QlError, Runtime, RuntimeHandle,
 };
 
 impl<P: QlPlatform> Runtime<P> {
@@ -188,7 +188,7 @@ impl DriverState {
                             CloseTarget::Return,
                             response_reader,
                             response_terminal_rx,
-                            runtime_tx,
+                            RuntimeHandle::new(runtime_tx),
                         );
                         if start.send(Ok((stream_id, reader))).is_err() {
                             if let Some(stream) = self.streams.get_mut(&stream_id) {
@@ -353,9 +353,14 @@ impl DriverState {
                 CloseTarget::Origin,
                 request_reader,
                 request_terminal_rx,
-                runtime_tx.clone(),
+                RuntimeHandle::new(runtime_tx.clone()),
             ),
-            writer: ByteWriter::new(stream_id, CloseTarget::Return, response_writer, runtime_tx),
+            writer: ByteWriter::new(
+                stream_id,
+                CloseTarget::Return,
+                response_writer,
+                RuntimeHandle::new(runtime_tx),
+            ),
         });
     }
 

@@ -8,7 +8,7 @@ use bytes::Bytes;
 use event_listener::EventListener;
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, QlError};
+use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, QlError, RuntimeHandle};
 
 pub struct ByteReader {
     stream_id: StreamId,
@@ -16,7 +16,7 @@ pub struct ByteReader {
     reader: Option<ChunkSlotRx>,
     listener: Option<EventListener>,
     terminal: TerminalState,
-    tx: async_channel::Sender<RuntimeCommand>,
+    handle: RuntimeHandle,
 }
 
 enum TerminalState {
@@ -44,7 +44,7 @@ impl ByteReader {
         target: CloseTarget,
         reader: ChunkSlotRx,
         terminal: oneshot::Receiver<Result<(), QlError>>,
-        tx: async_channel::Sender<RuntimeCommand>,
+        handle: RuntimeHandle,
     ) -> Self {
         Self {
             stream_id,
@@ -52,7 +52,7 @@ impl ByteReader {
             reader: Some(reader),
             listener: None,
             terminal: TerminalState::Armed(terminal),
-            tx,
+            handle,
         }
     }
 
@@ -67,7 +67,7 @@ impl ByteReader {
         if let Some(reader) = self.reader.as_ref() {
             match reader.poll_recv(usize::MAX, &mut self.listener, cx) {
                 Poll::Ready(Ok(bytes)) => {
-                    let _ = self.tx.try_send(RuntimeCommand::PollInbound {
+                    self.handle.send(RuntimeCommand::PollInbound {
                         stream_id: self.stream_id,
                     });
                     return Poll::Ready(Ok(Some(bytes)));
@@ -110,21 +110,18 @@ impl ByteReader {
         poll_fn(|cx| self.poll_read_chunk(cx)).await
     }
 
-    pub async fn close(mut self, code: StreamCloseCode) -> Result<(), QlError> {
+    pub fn close(mut self, code: StreamCloseCode) {
         if matches!(self.terminal, TerminalState::Delivered) {
-            return Ok(());
+            return;
         }
         self.reader.take();
         self.listener = None;
         self.terminal = TerminalState::Delivered;
-        self.tx
-            .send(RuntimeCommand::CloseStream {
-                stream_id: self.stream_id,
-                target: self.target,
-                code,
-            })
-            .await
-            .map_err(|_| QlError::Cancelled)
+        self.handle.send(RuntimeCommand::CloseStream {
+            stream_id: self.stream_id,
+            target: self.target,
+            code,
+        });
     }
 }
 
@@ -133,7 +130,7 @@ impl Drop for ByteReader {
         if matches!(self.terminal, TerminalState::Delivered) {
             return;
         }
-        let _ = self.tx.try_send(RuntimeCommand::CloseStream {
+        self.handle.send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
             code: StreamCloseCode(0),

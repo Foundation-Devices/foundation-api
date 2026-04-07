@@ -45,12 +45,7 @@ impl RuntimeHandle {
 
         Ok(QlStream {
             stream_id,
-            writer: ByteWriter::new(
-                stream_id,
-                CloseTarget::Origin,
-                request_writer,
-                self.tx.clone(),
-            ),
+            writer: ByteWriter::new(stream_id, CloseTarget::Origin, request_writer, self.clone()),
             reader,
         })
     }
@@ -70,7 +65,7 @@ impl RuntimeHandle {
 
     #[inline]
     #[track_caller]
-    fn send(&self, cmd: RuntimeCommand) {
+    pub(crate) fn send(&self, cmd: RuntimeCommand) {
         self.tx.try_send(cmd).expect("runtime is alive");
     }
 }

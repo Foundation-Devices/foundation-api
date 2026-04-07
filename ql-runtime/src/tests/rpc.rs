@@ -90,7 +90,7 @@ async fn rpc_request_round_trips() {
                 .unwrap();
             let mut writer = inbound.writer;
             writer.write(Bytes::from(encoded)).await.unwrap();
-            writer.finish().await.unwrap();
+            writer.finish();
         });
 
         let rpc = handle_a.rpc();
@@ -156,7 +156,7 @@ async fn rpc_subscription_streams_events() {
 
             let mut writer = inbound.writer;
             writer.write(Bytes::from(encoded)).await.unwrap();
-            writer.finish().await.unwrap();
+            writer.finish();
         });
 
         let rpc = handle_a.rpc();
@@ -240,7 +240,7 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
 
             let mut writer = inbound.writer;
             writer.write(Bytes::from(encoded)).await.unwrap();
-            writer.finish().await.unwrap();
+            writer.finish();
         });
 
         let rpc = handle_a.rpc();

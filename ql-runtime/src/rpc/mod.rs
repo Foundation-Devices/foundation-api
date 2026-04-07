@@ -89,7 +89,7 @@ impl RpcHandle {
     async fn start_request(&self, payload: Vec<u8>) -> Result<ByteReader, QlError> {
         let mut stream = self.inner.open_stream().await?;
         stream.writer.write(Bytes::from(payload)).await?;
-        stream.writer.finish().await?;
+        stream.writer.finish();
         Ok(stream.reader)
     }
 }
