@@ -71,6 +71,73 @@ async fn open_stream_duplex_happy_path() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn reader_exposes_bounded_chunk_reads() {
+    run_local_test(async {
+        let config = default_runtime_config();
+        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
+        let identity_a = new_identity(11);
+        let identity_b = new_identity(73);
+
+        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        spawn_forwarder(outbound_a, handle_b.clone());
+        spawn_forwarder(outbound_b, handle_a.clone());
+
+        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+        handle_a.connect();
+
+        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
+        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+
+        let responder = tokio::task::spawn_local(async move {
+            let inbound = inbound_b.recv().await.unwrap();
+            let mut reader = inbound.reader;
+
+            assert_eq!(
+                next_chunk_max(&mut reader, 2).await.unwrap(),
+                Some(vec![1, 2])
+            );
+            assert_eq!(
+                next_chunk_max(&mut reader, 2).await.unwrap(),
+                Some(vec![3, 4])
+            );
+            assert_eq!(
+                next_chunk_max(&mut reader, 2).await.unwrap(),
+                Some(vec![5, 6])
+            );
+            assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
+
+            inbound.writer.finish();
+        });
+
+        let mut stream = handle_a.open_stream().await.unwrap();
+        stream
+            .writer
+            .write(Bytes::from_static(&[1, 2, 3, 4]))
+            .await
+            .unwrap();
+        stream
+            .writer
+            .write(Bytes::from_static(&[5, 6]))
+            .await
+            .unwrap();
+        stream.writer.finish();
+        assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
+
+        tokio::time::timeout(Duration::from_secs(2), responder)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn large_stream_payload_round_trips() {
     run_local_test(async {
         let config = default_runtime_config();

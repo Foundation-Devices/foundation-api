@@ -56,8 +56,9 @@ impl ByteReader {
         }
     }
 
-    pub fn poll_read_chunk(
+    pub fn poll_read(
         &mut self,
+        max_len: usize,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<Bytes>, QlError>> {
         if matches!(self.terminal, TerminalState::Delivered) {
@@ -65,7 +66,7 @@ impl ByteReader {
         }
 
         if let Some(reader) = self.reader.as_ref() {
-            match reader.poll_recv(usize::MAX, &mut self.listener, cx) {
+            match reader.poll_recv(max_len, &mut self.listener, cx) {
                 Poll::Ready(Ok(bytes)) => {
                     self.handle.send(RuntimeCommand::PollInbound {
                         stream_id: self.stream_id,
@@ -106,8 +107,20 @@ impl ByteReader {
         }
     }
 
+    pub fn poll_read_chunk(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Bytes>, QlError>> {
+        self.poll_read(usize::MAX, cx)
+    }
+
+    /// Returns `Ok(None)` on clean EOF, `Ok(Some(_))` for data, and `Err(_)` for stream failure.
+    pub async fn read(&mut self, max_len: usize) -> Result<Option<Bytes>, QlError> {
+        poll_fn(|cx| self.poll_read(max_len, cx)).await
+    }
+
     pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, QlError> {
-        poll_fn(|cx| self.poll_read_chunk(cx)).await
+        self.read(usize::MAX).await
     }
 
     pub fn close(mut self, code: StreamCloseCode) {
