@@ -50,7 +50,7 @@ impl<P: QlPlatform> Runtime<P> {
         let mut in_flight = Vec::new();
 
         loop {
-            state.finish_step(&mut fsm, &platform, &mut in_flight);
+            while state.fill_write_slots(&mut fsm, &platform, &mut in_flight) {}
 
             if rx.is_closed() && in_flight.is_empty() {
                 break;
@@ -62,19 +62,12 @@ impl<P: QlPlatform> Runtime<P> {
                 }
                 DriverEvent::WriteCompleted { index, success } => {
                     let write = in_flight.swap_remove(index);
-                    state.drive_write_completed(
-                        &mut fsm,
-                        write.session_write_id,
-                        success,
-                        &platform,
-                        &mut in_flight,
-                    );
+                    state.drive_write_completed(&mut fsm, write.session_write_id, success);
                 }
                 DriverEvent::TimerExpired => {
                     state.with_fsm_events(&mut fsm, &platform, |fsm, emit| {
                         fsm.on_timer(now(), emit);
                     });
-                    state.finish_step(&mut fsm, &platform, &mut in_flight);
                 }
                 DriverEvent::CommandsClosed => {}
             }
@@ -142,25 +135,22 @@ impl DriverState {
         fsm: &mut QlFsm,
         command: RuntimeCommand,
         platform: &'a P,
-        in_flight: &mut Vec<InFlightWrite<'a>>,
+        _in_flight: &mut Vec<InFlightWrite<'a>>,
     ) {
         match command {
             RuntimeCommand::BindPeer { peer } => {
                 self.peer_xid = Some(peer.xid);
                 fsm.bind_peer(peer);
-                self.finish_step(fsm, platform, in_flight);
             }
             RuntimeCommand::Connect => {
                 let _ = self.with_fsm_events(fsm, platform, |fsm, emit| {
                     fsm.connect_ik(now(), platform, emit)
                 });
-                self.finish_step(fsm, platform, in_flight);
             }
             RuntimeCommand::Incoming(bytes) => {
                 let _ = self.with_fsm_events(fsm, platform, |fsm, emit| {
                     fsm.receive(now(), bytes, platform, emit)
                 });
-                self.finish_step(fsm, platform, in_flight);
             }
             RuntimeCommand::OpenStream {
                 request_reader,
@@ -202,7 +192,6 @@ impl DriverState {
                             return;
                         }
                         self.poll_stream(fsm, stream_id);
-                        self.finish_step(fsm, platform, in_flight);
                     }
                     Err(error) => {
                         let _ = start.send(Err(error));
@@ -211,11 +200,9 @@ impl DriverState {
             }
             RuntimeCommand::PollInbound { stream_id } => {
                 self.handle_inbound_readable(fsm, stream_id);
-                self.finish_step(fsm, platform, in_flight);
             }
             RuntimeCommand::PollStream { stream_id } => {
                 self.poll_stream(fsm, stream_id);
-                self.finish_step(fsm, platform, in_flight);
             }
             RuntimeCommand::CloseStream {
                 stream_id,
@@ -232,18 +219,15 @@ impl DriverState {
                 }
                 let _ = fsm.close_stream(stream_id, target, code);
                 self.try_reap_stream(stream_id);
-                self.finish_step(fsm, platform, in_flight);
             }
         }
     }
 
-    fn drive_write_completed<'a, P: QlPlatform>(
+    fn drive_write_completed(
         &self,
         fsm: &mut QlFsm,
         session_write_id: Option<SessionWriteId>,
         success: bool,
-        platform: &'a P,
-        in_flight: &mut Vec<InFlightWrite<'a>>,
     ) {
         if let Some(write_id) = session_write_id {
             if success {
@@ -252,16 +236,6 @@ impl DriverState {
                 fsm.reject_session_write(write_id);
             }
         }
-        self.finish_step(fsm, platform, in_flight);
-    }
-
-    fn finish_step<'a, P: QlPlatform>(
-        &self,
-        fsm: &mut QlFsm,
-        platform: &'a P,
-        in_flight: &mut Vec<InFlightWrite<'a>>,
-    ) {
-        while self.fill_write_slots(fsm, platform, in_flight) {}
     }
 
     fn with_fsm_events<P: QlPlatform, T>(
