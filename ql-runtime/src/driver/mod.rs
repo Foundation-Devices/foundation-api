@@ -3,7 +3,7 @@ mod state;
 mod test;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{hash_map::Entry, HashMap, VecDeque},
     future::Future,
     pin::Pin,
     task::Poll,
@@ -457,36 +457,42 @@ impl DriverState {
     }
 
     fn poll_stream(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
-        let should_finish = {
-            let Some(stream) = self.streams.get_mut(&stream_id) else {
-                return;
-            };
-            let Some(reader) = stream.outbound_reader_mut() else {
-                return;
-            };
-
-            if reader.is_finished() {
-                true
-            } else {
-                let Ok(mut writer) = fsm.write_stream(stream_id) else {
-                    return;
-                };
-                let capacity = writer.capacity();
-                if capacity > 0 {
-                    if let Ok(Some(mut bytes)) = reader.try_recv(capacity) {
-                        let _ = writer.write(&mut bytes);
-                    }
-                }
-                reader.is_finished()
-            }
+        let Entry::Occupied(mut entry) = self.streams.entry(stream_id) else {
+            return;
+        };
+        let stream = entry.get_mut();
+        let Some(reader) = stream.outbound_reader_mut() else {
+            return;
         };
 
-        if should_finish {
-            let _ = fsm.finish_stream(stream_id);
-            if let Some(stream) = self.streams.get_mut(&stream_id) {
-                stream.outbound_close();
+        if reader.is_finished() {
+            if let Ok(writer) = fsm.write_stream(stream_id) {
+                writer.finish();
             }
-            self.try_reap_stream(stream_id);
+            stream.outbound_close();
+            if stream.is_closed() {
+                entry.remove();
+            }
+            return;
+        }
+
+        let Ok(mut writer) = fsm.write_stream(stream_id) else {
+            return;
+        };
+
+        let capacity = writer.capacity();
+        if capacity > 0 {
+            if let Ok(Some(mut bytes)) = reader.try_recv(capacity) {
+                let _ = writer.write(&mut bytes);
+            }
+        }
+
+        if reader.is_finished() {
+            writer.finish();
+            stream.outbound_close();
+            if stream.is_closed() {
+                entry.remove();
+            }
         }
     }
 

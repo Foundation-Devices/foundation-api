@@ -341,14 +341,16 @@ impl Runner {
             }
             Action::FinishA(slot) => {
                 if let Some(stream_id) = self.slots_a[*slot] {
-                    if self.harness.a.fsm.finish_stream(stream_id).is_ok() {
+                    if let Ok(writer) = self.harness.a.fsm.write_stream(stream_id) {
+                        writer.finish();
                         self.finished_by_a.insert(stream_id);
                     }
                 }
             }
             Action::FinishB(slot) => {
                 if let Some(stream_id) = self.slots_b[*slot] {
-                    if self.harness.b.fsm.finish_stream(stream_id).is_ok() {
+                    if let Ok(writer) = self.harness.b.fsm.write_stream(stream_id) {
+                        writer.finish();
                         self.finished_by_b.insert(stream_id);
                     }
                 }

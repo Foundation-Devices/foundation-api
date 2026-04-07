@@ -45,7 +45,7 @@ fn connected_fsms_deliver_stream_data() {
         write_stream_bytes(&mut harness.a.fsm, stream_id, b"hello").unwrap(),
         5
     );
-    harness.a.fsm.finish_stream(stream_id).unwrap();
+    harness.a.fsm.write_stream(stream_id).unwrap().finish();
 
     harness.pump();
 
@@ -176,7 +176,11 @@ fn disconnected_stream_operations_fail_with_no_session() {
         Err(StreamError::NoSession)
     );
     assert_eq!(
-        harness.a.fsm.finish_stream(missing),
+        harness
+            .a
+            .fsm
+            .write_stream(missing)
+            .map(crate::session::StreamWriter::finish),
         Err(StreamError::NoSession)
     );
     assert_eq!(

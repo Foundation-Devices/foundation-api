@@ -278,11 +278,6 @@ impl QlFsm {
         implementation::stream_available_bytes(self, stream_id)
     }
 
-    /// marks the local write side as finished
-    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), StreamError> {
-        implementation::finish_stream(self, stream_id)
-    }
-
     /// closes the origin lane, return lane, or both lanes of a stream
     pub fn close_stream(
         &mut self,

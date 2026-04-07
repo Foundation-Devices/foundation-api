@@ -180,11 +180,6 @@ pub fn stream_available_bytes(fsm: &QlFsm, stream_id: StreamId) -> Option<usize>
         .and_then(|state| state.session.stream_available_bytes(stream_id))
 }
 
-pub fn finish_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<(), StreamError> {
-    let state = fsm.state.link.connected_mut_or_err()?;
-    state.session.finish_stream(stream_id)
-}
-
 pub fn close_stream(
     fsm: &mut QlFsm,
     stream_id: StreamId,

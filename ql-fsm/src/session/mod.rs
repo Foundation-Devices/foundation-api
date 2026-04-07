@@ -94,6 +94,11 @@ impl StreamWriter<'_> {
         }
         accepted
     }
+
+    pub fn finish(self) {
+        self.stream.tx.queue_fin();
+        self.stream.outbound_state = OutboundState::FinQueued;
+    }
 }
 
 pub struct SessionFsm {
@@ -163,21 +168,6 @@ impl SessionFsm {
             stream,
             send_buffer_size,
         })
-    }
-
-    pub fn finish_stream(&mut self, stream_id: StreamId) -> Result<(), StreamError> {
-        self.ensure_session_open()?;
-        let stream = self
-            .state
-            .streams
-            .get_mut(&stream_id)
-            .ok_or(StreamError::MissingStream)?;
-        if !stream.is_writable() {
-            return Err(StreamError::NotWritable);
-        }
-        stream.tx.queue_fin();
-        stream.outbound_state = OutboundState::FinQueued;
-        Ok(())
     }
 
     pub fn close_stream(
