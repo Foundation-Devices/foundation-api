@@ -1,9 +1,7 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use ql_wire::{
-    self as wire, QlCrypto, SessionCloseCode, StreamId, WireDecode,
-};
+use ql_wire::{self as wire, QlCrypto, SessionCloseCode, StreamId, WireDecode};
 
 use crate::{
     session::SessionEvent, state::LinkState, NoSessionError, OutboundWrite, QlFsm, QlFsmError,

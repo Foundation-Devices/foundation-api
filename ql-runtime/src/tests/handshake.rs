@@ -47,10 +47,7 @@ async fn opening_stream_requires_connection() {
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        assert!(matches!(
-            handle_a.open_stream().await,
-            Err(NoSessionError)
-        ));
+        assert!(matches!(handle_a.open_stream().await, Err(NoSessionError)));
     })
     .await;
 }

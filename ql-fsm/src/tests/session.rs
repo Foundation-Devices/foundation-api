@@ -57,7 +57,14 @@ fn connected_fsms_deliver_stream_data() {
         write_stream_bytes(&mut harness.a.fsm, stream_id, b"hello").unwrap(),
         5
     );
-    harness.a.fsm.stream(stream_id).unwrap().writer().unwrap().finish();
+    harness
+        .a
+        .fsm
+        .stream(stream_id)
+        .unwrap()
+        .writer()
+        .unwrap()
+        .finish();
 
     harness.pump();
 

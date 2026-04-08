@@ -1,9 +1,6 @@
-pub use self::{
-    error::QlStreamError,
-    handle::*,
-    platform::*,
-};
 pub use ql_fsm::NoSessionError;
+
+pub use self::{error::QlStreamError, handle::*, platform::*};
 
 pub mod chunk_slot;
 pub(crate) mod command;
