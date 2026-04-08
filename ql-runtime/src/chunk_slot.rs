@@ -65,7 +65,7 @@ impl ChunkSlotRx {
         self.inner.try_recv(max_len)
     }
 
-    pub(crate) fn poll_recv(
+    pub fn poll_recv(
         &self,
         max_len: usize,
         listener: &mut Option<EventListener>,
