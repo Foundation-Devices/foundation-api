@@ -171,6 +171,32 @@ impl WireEncode for bool {
     }
 }
 
+impl<T: WireEncode> WireEncode for Option<T> {
+    fn encoded_len(&self) -> usize {
+        1 + self.as_ref().map_or(0, |inner| inner.encoded_len())
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        match self {
+            None => out.put_u8(0),
+            Some(inner) => {
+                out.put_u8(1);
+                inner.encode(out)
+            }
+        }
+    }
+}
+
+impl<B: ByteSlice, T: WireDecode<B>> WireDecode<B> for Option<T> {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        match reader.decode::<u8>()? {
+            0 => Ok(None),
+            1 => Ok(Some(reader.decode::<T>()?)),
+            _ => Err(WireError::InvalidPayload),
+        }
+    }
+}
+
 pub struct Reader<B> {
     remaining: Option<B>,
 }
