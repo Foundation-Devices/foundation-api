@@ -591,12 +591,22 @@ impl SessionFsm {
         };
 
         let frame_offset = frame.offset.into_inner();
+        let frame_end = frame_offset
+            .checked_add(frame.bytes.len() as u64)
+            .ok_or(())?;
         match stream.inbound_state {
             InboundState::Open => {}
-            InboundState::Discarding => return Ok(()),
-            InboundState::Finished | InboundState::Closed(_) => {
-                if frame_offset.saturating_add(frame.bytes.len() as u64) <= stream.rx.start_offset()
-                {
+            InboundState::Discarding | InboundState::Closed(_) => return Ok(()),
+            InboundState::Finished => {
+                // finished stream should always have a final offset
+                let Some(final_offset) = stream.rx.final_offset() else {
+                    debug_assert!(false, "finished stream must retain final offset");
+                    return Ok(());
+                };
+
+                // retransmitted data for an already-finished stream is fine as long as it stays
+                // within the finalized byte range and any repeated FIN lands on that same offset.
+                if (!frame.fin || frame_end == final_offset) && frame_end <= final_offset {
                     return Ok(());
                 }
                 self.fail_session(

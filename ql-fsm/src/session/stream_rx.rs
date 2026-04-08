@@ -52,6 +52,10 @@ impl StreamRx {
             })
     }
 
+    pub fn final_offset(&self) -> Option<u64> {
+        self.final_offset
+    }
+
     pub fn max_buffered(&self) -> usize {
         self.max_buffered
     }

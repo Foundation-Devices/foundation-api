@@ -372,6 +372,45 @@ fn duplicate_remote_close_after_reap_is_ignored() {
 }
 
 #[test]
+fn late_remote_stream_data_after_close_is_ignored() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = stream_id(1);
+    let close = vec![SessionFrame::StreamClose(StreamClose {
+        stream_id,
+        target: CloseTarget::Both,
+        code: StreamCloseCode(9),
+    })];
+    let data = vec![SessionFrame::StreamData(StreamData {
+        stream_id,
+        offset: offset(0),
+        fin: false,
+        bytes: b"hello".to_vec(),
+    })];
+
+    let first = receive_events(&mut fsm, now, seq(1), &close);
+    assert_eq!(
+        first,
+        vec![
+            SessionEvent::Opened(stream_id),
+            SessionEvent::Closed(StreamClose {
+                stream_id,
+                target: CloseTarget::Both,
+                code: StreamCloseCode(9),
+            }),
+            SessionEvent::WritableClosed(StreamClose {
+                stream_id,
+                target: CloseTarget::Both,
+                code: StreamCloseCode(9),
+            }),
+        ]
+    );
+
+    let second = receive_events(&mut fsm, now + Duration::from_millis(1), seq(2), &data);
+    assert!(second.is_empty());
+}
+
+#[test]
 fn duplicate_finished_remote_data_after_reap_is_ignored() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
@@ -396,6 +435,33 @@ fn duplicate_finished_remote_data_after_reap_is_ignored() {
 
     let second = receive_events(&mut fsm, now + Duration::from_millis(1), seq(2), &record);
     assert!(second.is_empty());
+}
+
+#[test]
+fn duplicate_finished_remote_data_before_read_is_ignored() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let stream_id = stream_id(1);
+    let record = vec![SessionFrame::StreamData(StreamData {
+        stream_id,
+        offset: offset(0),
+        fin: true,
+        bytes: b"hello".to_vec(),
+    })];
+
+    let first = receive_events(&mut fsm, now, seq(1), &record);
+    assert_eq!(
+        first,
+        vec![
+            SessionEvent::Opened(stream_id),
+            SessionEvent::Readable(stream_id),
+            SessionEvent::Finished(stream_id),
+        ]
+    );
+
+    let second = receive_events(&mut fsm, now + Duration::from_millis(1), seq(2), &record);
+    assert!(second.is_empty());
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"hello".to_vec());
 }
 
 #[test]
