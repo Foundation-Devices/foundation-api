@@ -39,12 +39,6 @@ struct StatusEvent {
     status: PeerStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PairingRequest {
-    token: PairingToken,
-    peer: PeerBundle,
-}
-
 #[derive(Debug, Clone)]
 struct WriteStats {
     active: Arc<AtomicUsize>,
@@ -166,8 +160,6 @@ struct TestPlatform {
     outbound: Sender<Vec<u8>>,
     status: Sender<StatusEvent>,
     inbound: Option<Sender<QlStream>>,
-    pairing_requests: Option<Sender<PairingRequest>>,
-    pairing_accept: bool,
     nonce_seed: u8,
     nonce_counter: AtomicU8,
     encrypted_write_counter: AtomicUsize,
@@ -178,7 +170,7 @@ struct TestPlatform {
 
 impl TestPlatform {
     fn new(seed: u8) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
-        Self::new_inner(seed, None, None, false, None, Duration::ZERO, None)
+        Self::new_inner(seed, None, None, Duration::ZERO, None)
     }
 
     fn new_with_inbound(
@@ -190,38 +182,9 @@ impl TestPlatform {
         Receiver<QlStream>,
     ) {
         let (inbound_tx, inbound_rx) = async_channel::unbounded();
-        let (platform, outbound_rx, status_rx) = Self::new_inner(
-            seed,
-            Some(inbound_tx),
-            None,
-            false,
-            None,
-            Duration::ZERO,
-            None,
-        );
+        let (platform, outbound_rx, status_rx) =
+            Self::new_inner(seed, Some(inbound_tx), None, Duration::ZERO, None);
         (platform, outbound_rx, status_rx, inbound_rx)
-    }
-
-    fn new_with_pairing(
-        seed: u8,
-        pairing_accept: bool,
-    ) -> (
-        Self,
-        Receiver<Vec<u8>>,
-        Receiver<StatusEvent>,
-        Receiver<PairingRequest>,
-    ) {
-        let (pairing_tx, pairing_rx) = async_channel::unbounded();
-        let (platform, outbound_rx, status_rx) = Self::new_inner(
-            seed,
-            None,
-            Some(pairing_tx),
-            pairing_accept,
-            None,
-            Duration::ZERO,
-            None,
-        );
-        (platform, outbound_rx, status_rx, pairing_rx)
     }
 
     fn new_with_session_write_failure(
@@ -231,8 +194,6 @@ impl TestPlatform {
         Self::new_inner(
             seed,
             None,
-            None,
-            false,
             Some(fail_encrypted_write_at),
             Duration::ZERO,
             None,
@@ -244,14 +205,12 @@ impl TestPlatform {
         delay: Duration,
         write_stats: WriteStats,
     ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
-        Self::new_inner(seed, None, None, false, None, delay, Some(write_stats))
+        Self::new_inner(seed, None, None, delay, Some(write_stats))
     }
 
     fn new_inner(
         seed: u8,
         inbound: Option<Sender<QlStream>>,
-        pairing_requests: Option<Sender<PairingRequest>>,
-        pairing_accept: bool,
         fail_encrypted_write_at: Option<usize>,
         write_delay: Duration,
         write_stats: Option<WriteStats>,
@@ -263,8 +222,6 @@ impl TestPlatform {
                 outbound,
                 status,
                 inbound,
-                pairing_requests,
-                pairing_accept,
                 nonce_seed: seed,
                 nonce_counter: AtomicU8::new(0),
                 encrypted_write_counter: AtomicUsize::new(0),
@@ -389,7 +346,6 @@ impl QlKem for TestPlatform {
 impl crate::platform::QlPlatform for TestPlatform {
     type Timer = TokioTimer;
     type WriteMessageFut<'a> = PlatformFuture<'a, bool>;
-    type PairingDecisionFut<'a> = PlatformFuture<'a, bool>;
 
     fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_> {
         let outbound = self.outbound.clone();
@@ -440,21 +396,6 @@ impl crate::platform::QlPlatform for TestPlatform {
 
     fn handle_peer_status(&self, peer: XID, status: PeerStatus) {
         let _ = self.status.try_send(StatusEvent { peer, status });
-    }
-
-    fn handle_pairing_request(
-        &self,
-        token: PairingToken,
-        peer: PeerBundle,
-    ) -> Self::PairingDecisionFut<'_> {
-        let pairing_requests = self.pairing_requests.clone();
-        let pairing_accept = self.pairing_accept;
-        Box::pin(async move {
-            if let Some(tx) = pairing_requests {
-                let _ = tx.send(PairingRequest { token, peer }).await;
-            }
-            pairing_accept
-        })
     }
 
     fn handle_inbound(&self, event: QlStream) {
@@ -574,13 +515,6 @@ async fn assert_no_status_for(
     })
     .await;
     assert!(res.is_err(), "unexpected status event: {status:?}");
-}
-
-async fn await_pairing_request(receiver: &Receiver<PairingRequest>) -> PairingRequest {
-    tokio::time::timeout(Duration::from_secs(2), receiver.recv())
-        .await
-        .unwrap()
-        .unwrap()
 }
 
 async fn read_all(mut stream: crate::ByteReader) -> Result<Vec<u8>, QlStreamError> {

@@ -141,11 +141,11 @@ async fn rejected_session_write_is_reissued() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn start_pairing_round_trip_uses_platform_decision_to_connect() {
+async fn start_pairing_round_trip_connects_when_armed() {
     run_local_test(async {
         let config = default_runtime_config();
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b, pairing_b) = TestPlatform::new_with_pairing(2, true);
+        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
         let identity_a = new_identity(11);
         let identity_b = new_identity(73);
         let token = pairing_token(7);
@@ -162,10 +162,6 @@ async fn start_pairing_round_trip_uses_platform_decision_to_connect() {
         handle_b.arm_pairing(token);
         handle_a.start_pairing(token);
 
-        let request = await_pairing_request(&pairing_b).await;
-        assert_eq!(request.token, token);
-        assert_eq!(request.peer, identity_a.bundle());
-
         await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
         await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
     })
@@ -173,18 +169,16 @@ async fn start_pairing_round_trip_uses_platform_decision_to_connect() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn start_pairing_rejects_when_platform_returns_false() {
+async fn start_pairing_does_not_connect_when_unarmed() {
     run_local_test(async {
         let config = default_runtime_config();
         let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, _status_b, pairing_b) =
-            TestPlatform::new_with_pairing(2, false);
+        let (platform_b, outbound_b, _status_b) = TestPlatform::new(2);
         let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
         let token = pairing_token(8);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
+        let (runtime_b, handle_b) = new_runtime(new_identity(73), platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
@@ -192,16 +186,11 @@ async fn start_pairing_rejects_when_platform_returns_false() {
         spawn_forwarder(outbound_a, handle_b.clone());
         spawn_forwarder(outbound_b, handle_a.clone());
 
-        handle_b.arm_pairing(token);
         handle_a.start_pairing(token);
-
-        let request = await_pairing_request(&pairing_b).await;
-        assert_eq!(request.token, token);
-        assert_eq!(request.peer, identity_a.bundle());
 
         assert_no_status_for(
             &status_a,
-            identity_b.xid,
+            XID([73; XID::SIZE]),
             PeerStatus::Connected,
             Duration::from_millis(150),
         )

@@ -15,14 +15,14 @@ use std::{
 
 use futures_lite::future::poll_fn;
 use ql_fsm::{FsmTime, QlFsm, QlFsmEvent, SessionWriteId};
-use ql_wire::{CloseTarget, PairingToken, StreamCloseCode, StreamId};
+use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
     chunk_slot,
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
-    platform::{PlatformFuture, QlPlatform, QlTimer},
+    platform::{QlPlatform, QlTimer},
     QlStreamError, Runtime, RuntimeHandle,
 };
 
@@ -49,49 +49,29 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         let mut in_flight = Vec::new();
-        let mut pairing_decision = None;
         let mut timer = platform.timer();
         let recv_future = rx.recv();
         let mut recv_future = pin!(recv_future);
 
         loop {
             state.fill_write_slots(&mut fsm, &platform, &mut in_flight);
-            state.sync_pairing_decision_state(&fsm, &mut pairing_decision);
             timer.set_deadline(fsm.next_deadline());
 
-            match next_driver_event(
-                recv_future.as_mut(),
-                &mut timer,
-                &mut in_flight,
-                &mut pairing_decision,
-            )
-            .await
-            {
+            match next_driver_event(recv_future.as_mut(), &mut timer, &mut in_flight).await {
                 DriverEvent::Command(command) => {
-                    state.drive_command(&mut fsm, command, &platform, &mut pairing_decision);
+                    state.drive_command(&mut fsm, command, &platform);
                 }
                 DriverEvent::WriteCompleted { index, success } => {
                     let write = in_flight.swap_remove(index);
                     DriverState::drive_write_completed(&mut fsm, write.session_write_id, success);
                 }
-                DriverEvent::PairingDecision { token, accept } => {
-                    pairing_decision = None;
-                    let _ =
-                        state.with_fsm_events(&mut fsm, &platform, &mut pairing_decision, |fsm| {
-                            if accept {
-                                fsm.accept_pairing(now(), token, &platform)
-                            } else {
-                                fsm.reject_pairing(token)
-                            }
-                        });
-                }
                 DriverEvent::TimerExpired => {
-                    state.with_fsm_events(&mut fsm, &platform, &mut pairing_decision, |fsm| {
+                    state.with_fsm_events(&mut fsm, &platform, |fsm| {
                         fsm.on_timer(now());
                     });
                 }
                 DriverEvent::CommandsClosed => {
-                    if in_flight.is_empty() && pairing_decision.is_none() {
+                    if in_flight.is_empty() {
                         break;
                     }
                 }
@@ -105,15 +85,9 @@ struct InFlightWrite<F> {
     future: F,
 }
 
-struct InFlightPairingDecision<'a> {
-    token: PairingToken,
-    future: PlatformFuture<'a, bool>,
-}
-
 enum DriverEvent {
     Command(RuntimeCommand),
     WriteCompleted { index: usize, success: bool },
-    PairingDecision { token: PairingToken, accept: bool },
     TimerExpired,
     CommandsClosed,
 }
@@ -123,7 +97,6 @@ async fn next_driver_event<T, F>(
     mut recv_future: Pin<&mut async_channel::Recv<'_, RuntimeCommand>>,
     timer: &mut T,
     in_flight: &mut [InFlightWrite<F>],
-    pairing_decision: &mut Option<InFlightPairingDecision<'_>>,
 ) -> DriverEvent
 where
     T: QlTimer,
@@ -133,15 +106,6 @@ where
         for (index, write) in in_flight.iter_mut().enumerate() {
             if let Poll::Ready(success) = Pin::new(&mut write.future).poll(cx) {
                 return Poll::Ready(DriverEvent::WriteCompleted { index, success });
-            }
-        }
-
-        if let Some(decision) = pairing_decision.as_mut() {
-            if let Poll::Ready(accept) = Pin::new(&mut decision.future).poll(cx) {
-                return Poll::Ready(DriverEvent::PairingDecision {
-                    token: decision.token,
-                    accept,
-                });
             }
         }
 
@@ -158,21 +122,18 @@ where
 }
 
 impl DriverState {
-    fn drive_command<'a, P: QlPlatform + 'a>(
+    fn drive_command<P: QlPlatform>(
         &mut self,
         fsm: &mut QlFsm,
         command: RuntimeCommand,
-        platform: &'a P,
-        pairing_decision: &mut Option<InFlightPairingDecision<'a>>,
+        platform: &P,
     ) {
         match command {
             RuntimeCommand::BindPeer { peer } => {
                 fsm.bind_peer(peer);
             }
             RuntimeCommand::Connect => {
-                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm| {
-                    fsm.connect_ik(now(), platform)
-                });
+                let _ = self.with_fsm_events(fsm, platform, |fsm| fsm.connect_ik(now(), platform));
             }
             RuntimeCommand::ArmPairing { token } => {
                 fsm.arm_pairing(token);
@@ -181,14 +142,12 @@ impl DriverState {
                 fsm.disarm_pairing();
             }
             RuntimeCommand::StartPairing { token } => {
-                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm| {
-                    fsm.connect_xx(now(), token, platform)
-                });
+                let _ = self
+                    .with_fsm_events(fsm, platform, |fsm| fsm.connect_xx(now(), token, platform));
             }
             RuntimeCommand::Incoming(bytes) => {
-                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm| {
-                    fsm.receive(now(), bytes, platform)
-                });
+                let _ =
+                    self.with_fsm_events(fsm, platform, |fsm| fsm.receive(now(), bytes, platform));
             }
             RuntimeCommand::OpenStream {
                 request_reader,
@@ -278,42 +237,29 @@ impl DriverState {
         }
     }
 
-    fn with_fsm_events<'a, P: QlPlatform + 'a, T>(
+    fn with_fsm_events<P: QlPlatform, T>(
         &mut self,
         fsm: &mut QlFsm,
-        platform: &'a P,
-        pairing_decision: &mut Option<InFlightPairingDecision<'a>>,
+        platform: &P,
         run: impl FnOnce(&mut QlFsm) -> T,
     ) -> T {
         let output = run(fsm);
         while let Some(event) = fsm.poll_event() {
-            self.process_fsm_event(fsm, platform, pairing_decision, event);
+            self.process_fsm_event(fsm, platform, event);
         }
         output
     }
 
-    fn process_fsm_event<'a, P: QlPlatform + 'a>(
+    fn process_fsm_event<P: QlPlatform>(
         &mut self,
         fsm: &mut QlFsm,
-        platform: &'a P,
-        pairing_decision: &mut Option<InFlightPairingDecision<'a>>,
+        platform: &P,
         event: QlFsmEvent,
     ) {
         match event {
             QlFsmEvent::NewPeer => {
                 if let Some(peer) = fsm.peer().cloned() {
                     platform.persist_peer(peer);
-                }
-            }
-            QlFsmEvent::PairingPending => {
-                if let Some((token, peer)) = fsm.pending_xx_pairing() {
-                    let peer = peer.clone();
-                    *pairing_decision = Some(InFlightPairingDecision {
-                        token,
-                        future: Box::pin(async move {
-                            platform.handle_pairing_request(token, peer).await
-                        }),
-                    });
                 }
             }
             QlFsmEvent::PeerStatusChanged(status) => {
@@ -493,21 +439,6 @@ impl DriverState {
             stream.fail_all();
         }
         self.streams.clear();
-    }
-
-    fn sync_pairing_decision_state(
-        &self,
-        fsm: &QlFsm,
-        pairing_decision: &mut Option<InFlightPairingDecision<'_>>,
-    ) {
-        if let Some(decision) = pairing_decision.as_ref() {
-            let is_current = fsm
-                .pending_xx_pairing()
-                .is_some_and(|(token, _)| token == decision.token);
-            if !is_current {
-                *pairing_decision = None;
-            }
-        }
     }
 
     fn fill_write_slots<'a, P: QlPlatform + 'a>(

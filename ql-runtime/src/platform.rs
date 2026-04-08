@@ -6,7 +6,7 @@ use std::{
 };
 
 use ql_fsm::PeerStatus;
-use ql_wire::{PairingToken, PeerBundle, QlCrypto, XID};
+use ql_wire::{PeerBundle, QlCrypto, XID};
 
 use crate::QlStream;
 
@@ -22,9 +22,6 @@ pub trait QlPlatform: QlCrypto {
     type WriteMessageFut<'a>: Future<Output = bool> + Unpin + 'a
     where
         Self: 'a;
-    type PairingDecisionFut<'a>: Future<Output = bool> + Unpin + 'a
-    where
-        Self: 'a;
 
     fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_>;
     fn timer(&self) -> Self::Timer;
@@ -33,10 +30,5 @@ pub trait QlPlatform: QlCrypto {
     fn persist_peer(&self, peer: PeerBundle);
 
     fn handle_peer_status(&self, peer: XID, status: PeerStatus);
-    fn handle_pairing_request(
-        &self,
-        token: PairingToken,
-        peer: PeerBundle,
-    ) -> Self::PairingDecisionFut<'_>;
     fn handle_inbound(&self, event: QlStream);
 }

@@ -1,8 +1,8 @@
 use std::task::{Context, Poll};
 
 use ql_wire::{
-    MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, PairingToken, PeerBundle,
-    QlAead, QlHash, QlKem, QlRandom, SessionKey, StreamClose, XID,
+    MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, PeerBundle, QlAead, QlHash,
+    QlKem, QlRandom, SessionKey, StreamClose, XID,
 };
 
 use super::*;
@@ -87,7 +87,6 @@ impl crate::platform::QlTimer for NoopTimer {
 impl QlPlatform for NoopPlatform {
     type Timer = NoopTimer;
     type WriteMessageFut<'a> = std::future::Ready<bool>;
-    type PairingDecisionFut<'a> = std::future::Ready<bool>;
 
     fn write_message(&self, _message: Vec<u8>) -> Self::WriteMessageFut<'_> {
         std::future::ready(true)
@@ -104,14 +103,6 @@ impl QlPlatform for NoopPlatform {
     fn persist_peer(&self, _peer: PeerBundle) {}
 
     fn handle_peer_status(&self, _peer: XID, _status: ql_fsm::PeerStatus) {}
-
-    fn handle_pairing_request(
-        &self,
-        _token: PairingToken,
-        _peer: PeerBundle,
-    ) -> Self::PairingDecisionFut<'_> {
-        std::future::ready(false)
-    }
 
     fn handle_inbound(&self, _event: QlStream) {}
 }
@@ -203,7 +194,6 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
     let stream_id = StreamId(1u32.into());
     let (request_reader, _request_writer) = chunk_slot::new();
     let (request_terminal_tx, _request_terminal_rx) = oneshot::channel();
-    let mut pairing_decision = None;
 
     state.streams.insert(
         stream_id,
@@ -222,7 +212,6 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
             code: StreamCloseCode(0),
         },
         &NoopPlatform,
-        &mut pairing_decision,
     );
 
     assert!(!state.streams.contains_key(&stream_id));
