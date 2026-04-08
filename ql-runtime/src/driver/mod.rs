@@ -3,7 +3,10 @@ mod state;
 mod test;
 
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{
+        hash_map::{Entry, OccupiedEntry},
+        HashMap,
+    },
     future::Future,
     pin::{pin, Pin},
     task::Poll,
@@ -244,18 +247,19 @@ impl DriverState {
                 target,
                 code,
             } => {
-                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                if let Entry::Occupied(mut entry) = self.streams.entry(stream_id) {
+                    let stream = entry.get_mut();
                     if target == CloseTarget::Both || target == stream.inbound_target() {
                         stream.inbound_close();
                     }
                     if target == CloseTarget::Both || target == stream.outbound_target() {
                         stream.outbound_close();
                     }
+                    Self::try_reap_stream(entry);
                 }
                 if let Ok(mut stream) = fsm.stream(stream_id) {
                     stream.close(target, code);
                 }
-                self.try_reap_stream(stream_id);
             }
         }
     }
@@ -424,7 +428,9 @@ impl DriverState {
         }
         if peer_closed {
             stream_ops.close(target, StreamCloseCode(0));
-            self.try_reap_stream(stream_id);
+            if let Entry::Occupied(entry) = self.streams.entry(stream_id) {
+                Self::try_reap_stream(entry);
+            }
         }
 
         drop(stream_ops);
@@ -446,21 +452,23 @@ impl DriverState {
             }
         }
 
-        let Some(stream) = self.streams.get_mut(&stream_id) else {
+        let Entry::Occupied(mut entry) = self.streams.entry(stream_id) else {
             return;
         };
+        let stream = entry.get_mut();
         if !stream.inbound_finish_pending() {
             return;
         }
 
         stream.inbound_finish();
-        self.try_reap_stream(stream_id);
+        Self::try_reap_stream(entry);
     }
 
     fn handle_closed_stream(&mut self, frame: &ql_wire::StreamClose) {
-        let Some(stream) = self.streams.get_mut(&frame.stream_id) else {
+        let Entry::Occupied(mut entry) = self.streams.entry(frame.stream_id) else {
             return;
         };
+        let stream = entry.get_mut();
 
         if frame.target == CloseTarget::Both || frame.target == stream.inbound_target() {
             stream.inbound_fail(QlStreamError::StreamClosed { code: frame.code });
@@ -468,15 +476,16 @@ impl DriverState {
         if frame.target == CloseTarget::Both || frame.target == stream.outbound_target() {
             stream.outbound_fail(QlStreamError::StreamClosed { code: frame.code });
         }
-        self.try_reap_stream(frame.stream_id);
+        Self::try_reap_stream(entry);
     }
 
     fn handle_writable_closed(&mut self, frame: &ql_wire::StreamClose) {
-        let Some(stream) = self.streams.get_mut(&frame.stream_id) else {
+        let Entry::Occupied(mut entry) = self.streams.entry(frame.stream_id) else {
             return;
         };
+        let stream = entry.get_mut();
         stream.outbound_fail(QlStreamError::StreamClosed { code: frame.code });
-        self.try_reap_stream(frame.stream_id);
+        Self::try_reap_stream(entry);
     }
 
     fn fail_all_streams(&mut self) {
@@ -563,13 +572,9 @@ impl DriverState {
         }
     }
 
-    fn try_reap_stream(&mut self, stream_id: StreamId) {
-        let should_reap = self
-            .streams
-            .get(&stream_id)
-            .is_some_and(DriverStreamIo::is_closed);
-        if should_reap {
-            self.streams.remove(&stream_id);
+    fn try_reap_stream(entry: OccupiedEntry<'_, StreamId, DriverStreamIo>) {
+        if entry.get().is_closed() {
+            entry.remove();
         }
     }
 }
