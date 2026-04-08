@@ -5,7 +5,7 @@ use ql_wire::{self as wire, EphemeralPublicKey, HandshakeMeta, QlCrypto, QlHands
 
 use super::emit_peer_status;
 use crate::{
-    session::{stream_parity::StreamParity, SessionFsm, SessionFsmConfig},
+    session::{SessionFsm, SessionFsmConfig, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
     QlFsm, QlFsmError, QlFsmEvent,
 };

@@ -32,7 +32,7 @@ pub use error::*;
 use ql_wire::{
     PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose, StreamId,
 };
-pub use session::{stream_rx::StreamReadIter, StreamOps, StreamWriter};
+pub use session::{StreamOps, StreamReadIter, StreamWriter};
 
 use crate::{
     replay_cache::ReplayCache,

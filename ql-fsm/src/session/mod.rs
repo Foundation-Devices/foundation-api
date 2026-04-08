@@ -1,12 +1,14 @@
-pub(crate) mod range_set;
-pub(crate) mod received_records;
-pub(crate) mod remote_stream_history;
-pub(crate) mod state;
+pub use self::{stream_ops::*, stream_parity::*, stream_rx::*};
+
+mod range_set;
+mod received_records;
+mod remote_stream_history;
+mod state;
 mod stream_ops;
-pub(crate) mod stream_parity;
-pub(crate) mod stream_rx;
-pub(crate) mod stream_tx;
-pub(crate) mod tracked;
+mod stream_parity;
+mod stream_rx;
+mod stream_tx;
+mod tracked;
 
 #[cfg(test)]
 mod tests;
@@ -20,7 +22,6 @@ use ql_wire::{
     SessionRecordBuilder, StreamClose, StreamData, StreamId, StreamWindow, VarInt, WireError,
 };
 
-pub use self::stream_ops::*;
 use self::{
     received_records::{ReceiveOutcome, ReceivedRecords},
     remote_stream_history::RemoteStreamHistory,
@@ -28,8 +29,6 @@ use self::{
         AckState, InboundState, OutboundState, SessionFsmState, SessionState, StreamRole,
         StreamState,
     },
-    stream_parity::StreamParity,
-    stream_rx::StreamRxError,
     stream_tx::StreamTxRange,
     tracked::{TrackedFrame, TrackedRecord, TrackedStreamData},
 };
@@ -945,7 +944,7 @@ fn restore_stream_data(streams: &mut IndexMap<StreamId, StreamState>, frame: Tra
         if matches!(stream.outbound_state, OutboundState::Closed) {
             return;
         }
-        stream.tx.retransmit(StreamTxRange {
+        stream.tx.retransmit(stream_tx::StreamTxRange {
             offset: frame.offset,
             len: frame.len,
             fin: frame.fin,
