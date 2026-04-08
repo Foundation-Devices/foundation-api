@@ -123,7 +123,6 @@ fn new_driver_state() -> (DriverState, QlFsm) {
             streams: HashMap::new(),
             runtime_tx: runtime_tx.downgrade(),
             max_concurrent_message_writes: 1,
-            pending_fsm_events: VecDeque::new(),
         },
         QlFsm::new(ql_fsm::QlFsmConfig::default(), new_identity(7), now()),
     )

@@ -3,7 +3,7 @@ mod state;
 mod test;
 
 use std::{
-    collections::{hash_map::Entry, HashMap, VecDeque},
+    collections::{hash_map::Entry, HashMap},
     future::Future,
     pin::{pin, Pin},
     task::Poll,
@@ -43,7 +43,6 @@ impl<P: QlPlatform> Runtime<P> {
             streams: HashMap::new(),
             runtime_tx: tx,
             max_concurrent_message_writes: config.max_concurrent_message_writes,
-            pending_fsm_events: VecDeque::new(),
         };
 
         let mut in_flight = Vec::new();
@@ -74,26 +73,19 @@ impl<P: QlPlatform> Runtime<P> {
                 }
                 DriverEvent::PairingDecision { token, accept } => {
                     pairing_decision = None;
-                    let _ = state.with_fsm_events(
-                        &mut fsm,
-                        &platform,
-                        &mut pairing_decision,
-                        |fsm, emit| {
+                    let _ =
+                        state.with_fsm_events(&mut fsm, &platform, &mut pairing_decision, |fsm| {
                             if accept {
-                                fsm.accept_pairing(now(), token, &platform, emit)
+                                fsm.accept_pairing(now(), token, &platform)
                             } else {
                                 fsm.reject_pairing(token)
                             }
-                        },
-                    );
+                        });
                 }
                 DriverEvent::TimerExpired => {
-                    state.with_fsm_events(
-                        &mut fsm,
-                        &platform,
-                        &mut pairing_decision,
-                        |fsm, emit| fsm.on_timer(now(), emit),
-                    );
+                    state.with_fsm_events(&mut fsm, &platform, &mut pairing_decision, |fsm| {
+                        fsm.on_timer(now());
+                    });
                 }
                 DriverEvent::CommandsClosed => {
                     if in_flight.is_empty() && pairing_decision.is_none() {
@@ -175,8 +167,8 @@ impl DriverState {
                 fsm.bind_peer(peer);
             }
             RuntimeCommand::Connect => {
-                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm, emit| {
-                    fsm.connect_ik(now(), platform, emit)
+                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm| {
+                    fsm.connect_ik(now(), platform)
                 });
             }
             RuntimeCommand::ArmPairing { token } => {
@@ -186,13 +178,13 @@ impl DriverState {
                 fsm.disarm_pairing();
             }
             RuntimeCommand::StartPairing { token } => {
-                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm, emit| {
-                    fsm.connect_xx(now(), token, platform, emit)
+                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm| {
+                    fsm.connect_xx(now(), token, platform)
                 });
             }
             RuntimeCommand::Incoming(bytes) => {
-                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm, emit| {
-                    fsm.receive(now(), bytes, platform, emit)
+                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm| {
+                    fsm.receive(now(), bytes, platform)
                 });
             }
             RuntimeCommand::OpenStream {
@@ -287,26 +279,13 @@ impl DriverState {
         fsm: &mut QlFsm,
         platform: &'a P,
         pairing_decision: &mut Option<InFlightPairingDecision<'a>>,
-        run: impl FnOnce(&mut QlFsm, &mut dyn FnMut(QlFsmEvent)) -> T,
+        run: impl FnOnce(&mut QlFsm) -> T,
     ) -> T {
-        let output = {
-            let pending = &mut self.pending_fsm_events;
-            let mut emit = |event| pending.push_back(event);
-            run(fsm, &mut emit)
-        };
-        self.process_pending_fsm_events(fsm, platform, pairing_decision);
-        output
-    }
-
-    fn process_pending_fsm_events<'a, P: QlPlatform + 'a>(
-        &mut self,
-        fsm: &mut QlFsm,
-        platform: &'a P,
-        pairing_decision: &mut Option<InFlightPairingDecision<'a>>,
-    ) {
-        while let Some(event) = self.pending_fsm_events.pop_front() {
+        let output = run(fsm);
+        while let Some(event) = fsm.poll_event() {
             self.process_fsm_event(fsm, platform, pairing_decision, event);
         }
+        output
     }
 
     fn process_fsm_event<'a, P: QlPlatform + 'a>(

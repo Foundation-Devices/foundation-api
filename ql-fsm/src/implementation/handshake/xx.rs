@@ -15,7 +15,6 @@ pub fn start_initiator(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     token: PairingToken,
-    emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     let meta = super::next_handshake_meta(fsm);
     let mut handshake = wire::XxHandshake::new_initiator(
@@ -33,7 +32,7 @@ pub fn start_initiator(
         deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
     });
     enqueue_handshake(fsm, QlHandshakeRecord::Xx1(message));
-    emit_peer_status(fsm, emit);
+    emit_peer_status(fsm);
     Ok(())
 }
 
@@ -41,7 +40,6 @@ pub fn handle_xx1(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Xx1,
-    _emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     if should_ignore_inbound(fsm, message) {
         return Ok(());
@@ -77,7 +75,6 @@ pub fn handle_xx2(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Xx2,
-    _emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     {
         let LinkState::XxInitiator(state) = &mut fsm.state.link else {
@@ -103,7 +100,6 @@ pub fn handle_xx3(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Xx3,
-    emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     let LinkState::XxResponder(state) = &mut fsm.state.link else {
         return Ok(());
@@ -126,7 +122,7 @@ pub fn handle_xx3(
         handshake_meta,
         deadline,
     });
-    emit(QlFsmEvent::PairingPending);
+    fsm.pending_events.push_back(QlFsmEvent::PairingPending);
     Ok(())
 }
 
@@ -134,7 +130,6 @@ pub fn handle_xx4(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Xx4,
-    emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     {
         let LinkState::XxInitiator(state) = &mut fsm.state.link else {
@@ -155,14 +150,13 @@ pub fn handle_xx4(
     };
     let (transport, remote_bundle) =
         SessionTransport::from_finalized(state.handshake.finalize(crypto)?);
-    finish_handshake(fsm, transport, remote_bundle, emit)
+    finish_handshake(fsm, transport, remote_bundle)
 }
 
 pub fn accept_pairing(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     token: PairingToken,
-    emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     {
         let LinkState::XxResponderPending(state) = &mut fsm.state.link else {
@@ -181,7 +175,7 @@ pub fn accept_pairing(
     };
     let (transport, remote_bundle) =
         SessionTransport::from_finalized(state.handshake.finalize(crypto)?);
-    finish_handshake(fsm, transport, remote_bundle, emit)
+    finish_handshake(fsm, transport, remote_bundle)
 }
 
 pub fn reject_pairing(fsm: &mut QlFsm, token: PairingToken) -> Result<(), QlFsmError> {

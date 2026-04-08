@@ -11,10 +11,10 @@
 //!
 //! outputs from `QlFsm` are
 //! - outbound session and handshake records from `take_next_write`
-//! - callback-driven `QlFsmEvent`s emitted during `connect_ik`, `connect_kk`, `connect_xx`,
-//!   `receive`, and `on_timer`
+//! - queued `QlFsmEvent`s returned by `poll_event` after `connect_ik`, `connect_kk`,
+//!   `connect_xx`, `accept_pairing`, `receive`, and `on_timer`
 //!
-//! call `next_deadline` after handling current inputs and any emitted outputs
+//! call `next_deadline` after handling current inputs and any queued outputs
 //! use it to decide how long the outer loop can wait before `on_timer` must run
 //! another input may arrive before that deadline, which is fine
 
@@ -26,7 +26,10 @@ pub(crate) mod state;
 #[cfg(test)]
 mod tests;
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 pub use bytes::Bytes;
 pub use error::*;
@@ -143,6 +146,7 @@ pub struct QlFsm {
     /// local identity and private keys
     pub identity: QlIdentity,
     pub(crate) state: QlFsmState,
+    pending_events: VecDeque<QlFsmEvent>,
 }
 
 impl QlFsm {
@@ -160,6 +164,7 @@ impl QlFsm {
                 link: LinkState::Idle,
                 now,
             },
+            pending_events: VecDeque::new(),
         }
     }
 
@@ -190,10 +195,9 @@ impl QlFsm {
         now: FsmTime,
         token: PairingToken,
         crypto: &impl QlCrypto,
-        emit: impl FnMut(QlFsmEvent),
     ) -> Result<(), QlFsmError> {
         self.state.now = now;
-        implementation::handle_connect_xx(self, token, crypto, emit)
+        implementation::handle_connect_xx(self, token, crypto)
     }
 
     /// returns the pending inbound xx candidate token and peer, if any
@@ -207,10 +211,9 @@ impl QlFsm {
         now: FsmTime,
         token: PairingToken,
         crypto: &impl QlCrypto,
-        emit: impl FnMut(QlFsmEvent),
     ) -> Result<(), QlFsmError> {
         self.state.now = now;
-        implementation::handle_accept_pairing(self, token, crypto, emit)
+        implementation::handle_accept_pairing(self, token, crypto)
     }
 
     /// rejects a pending inbound xx pairing for the matching token
@@ -219,25 +222,15 @@ impl QlFsm {
     }
 
     /// starts or replaces an IK handshake with the currently bound peer
-    pub fn connect_ik(
-        &mut self,
-        now: FsmTime,
-        crypto: &impl QlCrypto,
-        emit: impl FnMut(QlFsmEvent),
-    ) -> Result<(), QlFsmError> {
+    pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
         self.state.now = now;
-        implementation::handle_connect_ik(self, crypto, emit)
+        implementation::handle_connect_ik(self, crypto)
     }
 
     /// starts or replaces a KK handshake with the currently bound peer
-    pub fn connect_kk(
-        &mut self,
-        now: FsmTime,
-        crypto: &impl QlCrypto,
-        emit: impl FnMut(QlFsmEvent),
-    ) -> Result<(), QlFsmError> {
+    pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
         self.state.now = now;
-        implementation::handle_connect_kk(self, crypto, emit)
+        implementation::handle_connect_kk(self, crypto)
     }
 
     /// handles one inbound wire message
@@ -246,16 +239,20 @@ impl QlFsm {
         now: FsmTime,
         bytes: Vec<u8>,
         crypto: &impl QlCrypto,
-        emit: impl FnMut(QlFsmEvent),
     ) -> Result<(), QlFsmError> {
         self.state.now = now;
-        implementation::receive(self, bytes, crypto, emit)
+        implementation::receive(self, bytes, crypto)
     }
 
     /// advances time-based state
-    pub fn on_timer(&mut self, now: FsmTime, emit: impl FnMut(QlFsmEvent)) {
+    pub fn on_timer(&mut self, now: FsmTime) {
         self.state.now = now;
-        implementation::on_timer(self, emit);
+        implementation::on_timer(self);
+    }
+
+    /// returns the next queued event, if any
+    pub fn poll_event(&mut self) -> Option<QlFsmEvent> {
+        self.pending_events.pop_front()
     }
 
     /// returns the next timer deadline, if any

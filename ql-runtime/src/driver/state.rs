@@ -1,7 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 use bytes::Bytes;
-use ql_fsm::QlFsmEvent;
 use ql_wire::{CloseTarget, StreamId};
 
 use crate::{
@@ -14,7 +13,6 @@ pub struct DriverState {
     pub streams: HashMap<StreamId, DriverStreamIo>,
     pub runtime_tx: async_channel::WeakSender<RuntimeCommand>,
     pub max_concurrent_message_writes: usize,
-    pub pending_fsm_events: VecDeque<QlFsmEvent>,
 }
 
 pub struct DriverStreamIo {

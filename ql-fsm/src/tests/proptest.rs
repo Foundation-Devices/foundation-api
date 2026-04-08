@@ -851,22 +851,14 @@ fn reject_taken_b(harness: &mut Harness, write: &TakenWrite) {
 
 fn deliver_to_a(harness: &mut Harness, record: Vec<u8>) -> Result<(), QlFsmError> {
     let time = harness.time();
-    let Node {
-        fsm,
-        crypto,
-        events,
-    } = &mut harness.a;
-    fsm.receive(time, record, crypto, |event| events.push_back(event))
+    let Node { fsm, crypto } = &mut harness.a;
+    fsm.receive(time, record, crypto)
 }
 
 fn deliver_to_b(harness: &mut Harness, record: Vec<u8>) -> Result<(), QlFsmError> {
     let time = harness.time();
-    let Node {
-        fsm,
-        crypto,
-        events,
-    } = &mut harness.b;
-    fsm.receive(time, record, crypto, |event| events.push_back(event))
+    let Node { fsm, crypto } = &mut harness.b;
+    fsm.receive(time, record, crypto)
 }
 
 fn take_pending(pending: &mut Vec<Vec<u8>>, index: usize) -> Option<Vec<u8>> {

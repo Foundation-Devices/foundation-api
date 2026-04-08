@@ -14,34 +14,25 @@ use crate::{
     QlFsm, QlFsmError, QlFsmEvent,
 };
 
-pub fn handle_connect_ik(
-    fsm: &mut QlFsm,
-    crypto: &impl QlCrypto,
-    mut emit: impl FnMut(QlFsmEvent),
-) -> Result<(), QlFsmError> {
+pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
     let peer = fsm.state.peer.clone().ok_or(QlFsmError::NoPeerBound)?;
     prepare_for_outbound_connect(fsm);
-    ik::start_initiator(fsm, crypto, peer, &mut emit)
+    ik::start_initiator(fsm, crypto, peer)
 }
 
-pub fn handle_connect_kk(
-    fsm: &mut QlFsm,
-    crypto: &impl QlCrypto,
-    mut emit: impl FnMut(QlFsmEvent),
-) -> Result<(), QlFsmError> {
+pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
     let peer = fsm.state.peer.clone().ok_or(QlFsmError::NoPeerBound)?;
     prepare_for_outbound_connect(fsm);
-    kk::start_initiator(fsm, crypto, peer, &mut emit)
+    kk::start_initiator(fsm, crypto, peer)
 }
 
 pub fn handle_connect_xx(
     fsm: &mut QlFsm,
     token: PairingToken,
     crypto: &impl QlCrypto,
-    mut emit: impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     prepare_for_outbound_connect(fsm);
-    xx::start_initiator(fsm, crypto, token, &mut emit)
+    xx::start_initiator(fsm, crypto, token)
 }
 
 pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
@@ -75,9 +66,8 @@ pub fn handle_accept_pairing(
     fsm: &mut QlFsm,
     token: PairingToken,
     crypto: &impl QlCrypto,
-    mut emit: impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
-    xx::accept_pairing(fsm, crypto, token, &mut emit)
+    xx::accept_pairing(fsm, crypto, token)
 }
 
 pub fn handle_reject_pairing(fsm: &mut QlFsm, token: PairingToken) -> Result<(), QlFsmError> {
@@ -109,21 +99,20 @@ pub fn handle_handshake_record(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     record: &QlHandshakeRecord,
-    emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     match record {
-        QlHandshakeRecord::Ik1(message) => ik::handle_ik1(fsm, crypto, message, emit),
-        QlHandshakeRecord::Ik2(message) => ik::handle_ik2(fsm, crypto, message, emit),
-        QlHandshakeRecord::Kk1(message) => kk::handle_kk1(fsm, crypto, message, emit),
-        QlHandshakeRecord::Kk2(message) => kk::handle_kk2(fsm, crypto, message, emit),
-        QlHandshakeRecord::Xx1(message) => xx::handle_xx1(fsm, crypto, message, emit),
-        QlHandshakeRecord::Xx2(message) => xx::handle_xx2(fsm, crypto, message, emit),
-        QlHandshakeRecord::Xx3(message) => xx::handle_xx3(fsm, crypto, message, emit),
-        QlHandshakeRecord::Xx4(message) => xx::handle_xx4(fsm, crypto, message, emit),
+        QlHandshakeRecord::Ik1(message) => ik::handle_ik1(fsm, crypto, message),
+        QlHandshakeRecord::Ik2(message) => ik::handle_ik2(fsm, crypto, message),
+        QlHandshakeRecord::Kk1(message) => kk::handle_kk1(fsm, crypto, message),
+        QlHandshakeRecord::Kk2(message) => kk::handle_kk2(fsm, crypto, message),
+        QlHandshakeRecord::Xx1(message) => xx::handle_xx1(fsm, crypto, message),
+        QlHandshakeRecord::Xx2(message) => xx::handle_xx2(fsm, crypto, message),
+        QlHandshakeRecord::Xx3(message) => xx::handle_xx3(fsm, crypto, message),
+        QlHandshakeRecord::Xx4(message) => xx::handle_xx4(fsm, crypto, message),
     }
 }
 
-pub fn handle_timer(fsm: &mut QlFsm, emit: &mut impl FnMut(QlFsmEvent)) {
+pub fn handle_timer(fsm: &mut QlFsm) {
     let Some(deadline) = fsm.state.link.handshake_deadline() else {
         return;
     };
@@ -133,7 +122,7 @@ pub fn handle_timer(fsm: &mut QlFsm, emit: &mut impl FnMut(QlFsmEvent)) {
 
     fsm.state.link = LinkState::Idle;
     fsm.state.handshake = None;
-    emit_peer_status(fsm, emit);
+    emit_peer_status(fsm);
 }
 
 pub fn next_handshake_deadline(fsm: &QlFsm) -> Option<std::time::Instant> {
@@ -144,7 +133,6 @@ pub fn finish_handshake(
     fsm: &mut QlFsm,
     transport: SessionTransport,
     remote_bundle: wire::PeerBundle,
-    emit: &mut impl FnMut(QlFsmEvent),
 ) -> Result<(), QlFsmError> {
     let xid = remote_bundle.xid;
     if let Some(peer) = fsm.state.peer.as_ref() {
@@ -153,7 +141,7 @@ pub fn finish_handshake(
         }
     } else {
         fsm.state.peer = Some(remote_bundle);
-        emit(QlFsmEvent::NewPeer);
+        fsm.pending_events.push_back(QlFsmEvent::NewPeer);
     }
 
     let config = &fsm.config;
@@ -174,7 +162,7 @@ pub fn finish_handshake(
         fsm.state.now.instant,
     );
     fsm.state.link = LinkState::Connected(ConnectedState { transport, session });
-    emit_peer_status(fsm, emit);
+    emit_peer_status(fsm);
     Ok(())
 }
 

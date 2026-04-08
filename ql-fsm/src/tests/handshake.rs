@@ -108,19 +108,10 @@ fn connect_methods_require_bound_peer() {
     let mut fsm = QlFsm::new(QlFsmConfig::default(), identity, time);
     let crypto = TestCrypto::new(9);
 
-    assert_eq!(
-        fsm.connect_ik(time, &crypto, |_| {}),
-        Err(QlFsmError::NoPeerBound)
-    );
-    assert_eq!(
-        fsm.connect_kk(time, &crypto, |_| {}),
-        Err(QlFsmError::NoPeerBound)
-    );
+    assert_eq!(fsm.connect_ik(time, &crypto), Err(QlFsmError::NoPeerBound));
+    assert_eq!(fsm.connect_kk(time, &crypto), Err(QlFsmError::NoPeerBound));
 
-    assert_eq!(
-        fsm.connect_xx(time, pairing_token(2), &crypto, |_| {}),
-        Ok(())
-    );
+    assert_eq!(fsm.connect_xx(time, pairing_token(2), &crypto), Ok(()));
 }
 
 #[test]
