@@ -8,15 +8,18 @@ mod ik;
 mod kk;
 mod meta;
 mod transport_params;
+mod xx;
 
 pub use ik::{Ik1, Ik2, IkHandshake};
 pub use kk::{Kk1, Kk2, KkHandshake};
 pub use meta::{HandshakeId, HandshakeMeta};
 pub use transport_params::TransportParams;
+pub use xx::{Xx1, Xx2, Xx3, Xx4, XxHandshake};
 
 const SHA256_BLOCK_LEN: usize = 64;
 const PROTOCOL_IK: &[u8] = b"ql-wire:pq-ik:v1";
 const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
+const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
 const CONNECTION_ID_DOMAIN: &[u8] = b"ql-wire:conn-id:v1";
 const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
 
@@ -46,6 +49,57 @@ impl<B: ByteSlice> codec::WireDecode<B> for HandshakeHeader {
         Ok(Self {
             sender: reader.decode()?,
             recipient: reader.decode()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct PairingToken(pub [u8; Self::SIZE]);
+
+impl PairingToken {
+    pub const SIZE: usize = 16;
+}
+
+impl WireEncode for PairingToken {
+    fn encoded_len(&self) -> usize {
+        Self::SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.encode(out);
+    }
+}
+
+impl<B: ByteSlice> codec::WireDecode<B> for PairingToken {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self(reader.decode()?))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XxHeader {
+    pub pairing_token: PairingToken,
+}
+
+impl XxHeader {
+    pub const WIRE_SIZE: usize = PairingToken::SIZE;
+}
+
+impl WireEncode for XxHeader {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.pairing_token.encode(out);
+    }
+}
+
+impl<B: ByteSlice> codec::WireDecode<B> for XxHeader {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
+            pairing_token: reader.decode()?,
         })
     }
 }
@@ -330,6 +384,10 @@ fn init_ik_symmetric(crypto: &impl QlCrypto, responder_bundle: &PeerBundle) -> S
     symmetric
 }
 
+fn init_xx_symmetric(crypto: &impl QlCrypto) -> SymmetricState {
+    SymmetricState::new(crypto, PROTOCOL_XX)
+}
+
 fn generate_ephemeral_keypair(crypto: &impl QlCrypto) -> EphemeralKeyPair {
     EphemeralKeyPair {
         mlkem: crypto.mlkem_generate_keypair(),
@@ -352,8 +410,44 @@ fn mix_hash_routed_handshake(
     meta: &HandshakeMeta,
     transport_params: TransportParams,
 ) {
+    mix_hash_handshake_preamble(
+        symmetric,
+        crypto,
+        &header.encode_vec(),
+        kind,
+        meta,
+        transport_params,
+    );
+}
+
+fn mix_hash_pairing_handshake(
+    symmetric: &mut SymmetricState,
+    crypto: &impl QlCrypto,
+    header: XxHeader,
+    kind: HandshakeKind,
+    meta: &HandshakeMeta,
+    transport_params: TransportParams,
+) {
+    mix_hash_handshake_preamble(
+        symmetric,
+        crypto,
+        &header.encode_vec(),
+        kind,
+        meta,
+        transport_params,
+    );
+}
+
+fn mix_hash_handshake_preamble(
+    symmetric: &mut SymmetricState,
+    crypto: &impl QlCrypto,
+    header: &[u8],
+    kind: HandshakeKind,
+    meta: &HandshakeMeta,
+    transport_params: TransportParams,
+) {
     symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);
-    symmetric.mix_hash(crypto, &header.encode_vec());
+    symmetric.mix_hash(crypto, header);
     symmetric.mix_hash(crypto, &[kind as u8]);
     symmetric.mix_hash(crypto, &meta.encode_vec());
     symmetric.mix_hash(crypto, &transport_params.encode_vec());
@@ -379,6 +473,30 @@ fn require_handshake_meta(
 ) -> Result<(), WireError> {
     match expected {
         Some(stored) if *stored == meta => Ok(()),
+        _ => Err(WireError::InvalidPayload),
+    }
+}
+
+fn initialize_transport_params(
+    expected: &mut Option<TransportParams>,
+    transport_params: TransportParams,
+) -> Result<(), WireError> {
+    match expected {
+        Some(stored) if *stored != transport_params => Err(WireError::InvalidPayload),
+        Some(_) => Ok(()),
+        None => {
+            *expected = Some(transport_params);
+            Ok(())
+        }
+    }
+}
+
+fn require_transport_params(
+    expected: Option<&TransportParams>,
+    transport_params: TransportParams,
+) -> Result<(), WireError> {
+    match expected {
+        Some(stored) if *stored == transport_params => Ok(()),
         _ => Err(WireError::InvalidPayload),
     }
 }

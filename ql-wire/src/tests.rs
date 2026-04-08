@@ -196,6 +196,16 @@ fn handshake_header(sender: u8, recipient: u8) -> HandshakeHeader {
     }
 }
 
+fn pairing_token(byte: u8) -> PairingToken {
+    PairingToken([byte; PairingToken::SIZE])
+}
+
+fn xx_header(byte: u8) -> XxHeader {
+    XxHeader {
+        pairing_token: pairing_token(byte),
+    }
+}
+
 fn encrypt_record(
     crypto: &impl QlCrypto,
     header: SessionHeader,
@@ -227,7 +237,7 @@ fn peer_bundle_round_trip() {
 }
 
 #[test]
-fn handshake_record_round_trip_supports_ik_and_kk() {
+fn handshake_record_round_trip_supports_ik_kk_and_xx() {
     let ik = QlHandshakeRecord::Ik1(Ik1 {
         header: handshake_header(1, 2),
         meta: handshake_meta(1),
@@ -266,6 +276,24 @@ fn handshake_record_round_trip_supports_ik_and_kk() {
         }
     );
     assert_eq!(decode_handshake_record(kk_encoded.as_slice()), kk);
+
+    let xx = QlHandshakeRecord::Xx1(Xx1 {
+        header: xx_header(3),
+        meta: handshake_meta(3),
+        transport_params: handshake_transport_params(196_608),
+        ephemeral: EphemeralPublicKey {
+            mlkem_public_key: MlKemPublicKey::new(Box::new([17; MlKemPublicKey::SIZE])),
+        },
+    });
+    let xx_encoded = encode_record_vec(RecordType::Handshake, &xx);
+    assert_eq!(
+        RecordHeader::decode_bytes(xx_encoded.as_slice()).unwrap(),
+        RecordHeader {
+            version: QL_WIRE_VERSION,
+            record_type: RecordType::Handshake,
+        }
+    );
+    assert_eq!(decode_handshake_record(xx_encoded.as_slice()), xx);
 }
 
 #[test]
@@ -646,6 +674,135 @@ fn kk_handshake_rejects_tampered_transport_params() {
 }
 
 #[test]
+fn xx_handshake_rejects_tampered_pairing_token() {
+    let crypto = TestCrypto::new(32);
+    let initiator = make_identity(&crypto, 5);
+    let responder = make_identity(&crypto, 6);
+    let token = pairing_token(7);
+
+    let mut initiator_state =
+        XxHandshake::new_initiator(&crypto, initiator, token, TransportParams::default());
+    let mut responder_state =
+        XxHandshake::new_responder(&crypto, responder, token, TransportParams::default());
+
+    let mut m1 = initiator_state
+        .write_1(&crypto, handshake_meta(31))
+        .unwrap();
+    m1.header = xx_header(8);
+
+    assert_eq!(
+        responder_state.read_1(&crypto, 0, &m1),
+        Err(WireError::InvalidPayload)
+    );
+}
+
+#[test]
+fn xx_handshake_rejects_repeated_transport_param_change() {
+    let crypto = TestCrypto::new(33);
+    let initiator = make_identity(&crypto, 5);
+    let responder = make_identity(&crypto, 6);
+    let token = pairing_token(9);
+
+    let mut initiator_state = XxHandshake::new_initiator(
+        &crypto,
+        initiator.clone(),
+        token,
+        handshake_transport_params(12_288),
+    );
+    let mut responder_state = XxHandshake::new_responder(
+        &crypto,
+        responder,
+        token,
+        handshake_transport_params(24_576),
+    );
+
+    let m1 = initiator_state
+        .write_1(&crypto, handshake_meta(32))
+        .unwrap();
+    responder_state.read_1(&crypto, 0, &m1).unwrap();
+
+    let m2 = responder_state
+        .write_2(&crypto, handshake_meta(32))
+        .unwrap();
+    initiator_state.read_2(&crypto, 0, &m2).unwrap();
+
+    let mut m3 = initiator_state
+        .write_3(&crypto, handshake_meta(32))
+        .unwrap();
+    m3.transport_params.initial_stream_receive_window += 1;
+
+    assert_eq!(
+        responder_state.read_3(&crypto, 0, &m3),
+        Err(WireError::InvalidPayload)
+    );
+}
+
+#[test]
+fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
+    let crypto = TestCrypto::new(34);
+    let initiator = make_identity(&crypto, 7);
+    let responder = make_identity(&crypto, 8);
+    let token = pairing_token(10);
+
+    let initiator_params = handshake_transport_params(28_672);
+    let responder_params = handshake_transport_params(57_344);
+    let mut initiator_state =
+        XxHandshake::new_initiator(&crypto, initiator.clone(), token, initiator_params);
+    let mut responder_state =
+        XxHandshake::new_responder(&crypto, responder.clone(), token, responder_params);
+
+    assert_eq!(initiator_state.pairing_token(), token);
+    assert_eq!(responder_state.pairing_token(), token);
+    assert!(initiator_state.remote_bundle().is_none());
+    assert!(responder_state.remote_bundle().is_none());
+
+    let m1 = initiator_state
+        .write_1(&crypto, handshake_meta(33))
+        .unwrap();
+    responder_state.read_1(&crypto, 0, &m1).unwrap();
+
+    let m2 = responder_state
+        .write_2(&crypto, handshake_meta(33))
+        .unwrap();
+    initiator_state.read_2(&crypto, 0, &m2).unwrap();
+    assert_eq!(initiator_state.remote_bundle(), Some(&responder.bundle()));
+    assert!(responder_state.remote_bundle().is_none());
+
+    let m3 = initiator_state
+        .write_3(&crypto, handshake_meta(33))
+        .unwrap();
+    responder_state.read_3(&crypto, 0, &m3).unwrap();
+    assert_eq!(responder_state.remote_bundle(), Some(&initiator.bundle()));
+
+    let m4 = responder_state
+        .write_4(&crypto, handshake_meta(33))
+        .unwrap();
+    initiator_state.read_4(&crypto, 0, &m4).unwrap();
+
+    let initiator_final = initiator_state.finalize(&crypto).unwrap();
+    let responder_final = responder_state.finalize(&crypto).unwrap();
+
+    assert_eq!(
+        initiator_final.handshake_hash,
+        responder_final.handshake_hash
+    );
+    assert_eq!(initiator_final.tx_key, responder_final.rx_key);
+    assert_eq!(initiator_final.rx_key, responder_final.tx_key);
+    assert_eq!(
+        initiator_final.tx_connection_id,
+        responder_final.rx_connection_id
+    );
+    assert_eq!(
+        initiator_final.rx_connection_id,
+        responder_final.tx_connection_id
+    );
+    assert_eq!(initiator_final.remote_bundle, responder.bundle());
+    assert_eq!(responder_final.remote_bundle, initiator.bundle());
+    assert_eq!(initiator_final.remote_transport_params, responder_params);
+    assert_eq!(responder_final.remote_transport_params, initiator_params);
+}
+
+#[test]
 fn encrypted_session_record_round_trip_uses_connection_id_header() {
     let crypto = TestCrypto::new(40);
     let header = SessionHeader {
@@ -786,7 +943,7 @@ fn protocol_record_size_breakdown() {
     );
     let mut kk_responder = KkHandshake::new_responder(
         &crypto,
-        responder,
+        responder.clone(),
         initiator.bundle(),
         TransportParams::default(),
     );
@@ -799,6 +956,37 @@ fn protocol_record_size_breakdown() {
 
     let kk1 = QlHandshakeRecord::Kk1(kk1);
     let kk2 = QlHandshakeRecord::Kk2(kk2);
+
+    let token = pairing_token(0x42);
+    let mut xx_initiator = XxHandshake::new_initiator(
+        &crypto,
+        initiator.clone(),
+        token,
+        TransportParams::default(),
+    );
+    let mut xx_responder = XxHandshake::new_responder(
+        &crypto,
+        responder.clone(),
+        token,
+        TransportParams::default(),
+    );
+
+    let xx1 = xx_initiator.write_1(&crypto, handshake_meta(301)).unwrap();
+    xx_responder.read_1(&crypto, 0, &xx1).unwrap();
+
+    let xx2 = xx_responder.write_2(&crypto, handshake_meta(301)).unwrap();
+    xx_initiator.read_2(&crypto, 0, &xx2).unwrap();
+
+    let xx3 = xx_initiator.write_3(&crypto, handshake_meta(301)).unwrap();
+    xx_responder.read_3(&crypto, 0, &xx3).unwrap();
+
+    let xx4 = xx_responder.write_4(&crypto, handshake_meta(301)).unwrap();
+    xx_initiator.read_4(&crypto, 0, &xx4).unwrap();
+
+    let xx1 = QlHandshakeRecord::Xx1(xx1);
+    let xx2 = QlHandshakeRecord::Xx2(xx2);
+    let xx3 = QlHandshakeRecord::Xx3(xx3);
+    let xx4 = QlHandshakeRecord::Xx4(xx4);
 
     let session = ik_initiator.finalize(&crypto).unwrap();
     let session_ping = encrypt_record(
@@ -843,6 +1031,10 @@ fn protocol_record_size_breakdown() {
     print_size("ql-wire pq ik2", ik2.encode_vec().len());
     print_size("ql-wire pq kk1", kk1.encode_vec().len());
     print_size("ql-wire pq kk2", kk2.encode_vec().len());
+    print_size("ql-wire pq xx1", xx1.encode_vec().len());
+    print_size("ql-wire pq xx2", xx2.encode_vec().len());
+    print_size("ql-wire pq xx3", xx3.encode_vec().len());
+    print_size("ql-wire pq xx4", xx4.encode_vec().len());
     print_size("ql-wire session ping", session_ping.encode_vec().len());
     print_size(
         "ql-wire session stream empty",

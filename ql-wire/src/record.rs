@@ -1,7 +1,7 @@
 use crate::{
     codec,
     encrypted_message::EncryptedMessage,
-    handshake::{Ik1, Ik2, Kk1, Kk2},
+    handshake::{Ik1, Ik2, Kk1, Kk2, Xx1, Xx2, Xx3, Xx4},
     ByteSlice, SessionHeader, WireDecode, WireEncode, WireError, QL_WIRE_VERSION,
 };
 
@@ -104,6 +104,10 @@ pub enum QlHandshakeRecord {
     Ik2(Ik2),
     Kk1(Kk1),
     Kk2(Kk2),
+    Xx1(Xx1),
+    Xx2(Xx2),
+    Xx3(Xx3),
+    Xx4(Xx4),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +117,10 @@ pub enum HandshakeKind {
     Ik2 = 2,
     Kk1 = 3,
     Kk2 = 4,
+    Xx1 = 5,
+    Xx2 = 6,
+    Xx3 = 7,
+    Xx4 = 8,
 }
 
 impl TryFrom<u8> for HandshakeKind {
@@ -124,6 +132,10 @@ impl TryFrom<u8> for HandshakeKind {
             2 => Ok(Self::Ik2),
             3 => Ok(Self::Kk1),
             4 => Ok(Self::Kk2),
+            5 => Ok(Self::Xx1),
+            6 => Ok(Self::Xx2),
+            7 => Ok(Self::Xx3),
+            8 => Ok(Self::Xx4),
             _ => Err(WireError::InvalidPayload),
         }
     }
@@ -152,6 +164,10 @@ impl QlHandshakeRecord {
             Self::Ik2(_) => HandshakeKind::Ik2,
             Self::Kk1(_) => HandshakeKind::Kk1,
             Self::Kk2(_) => HandshakeKind::Kk2,
+            Self::Xx1(_) => HandshakeKind::Xx1,
+            Self::Xx2(_) => HandshakeKind::Xx2,
+            Self::Xx3(_) => HandshakeKind::Xx3,
+            Self::Xx4(_) => HandshakeKind::Xx4,
         }
     }
 }
@@ -164,6 +180,10 @@ impl WireEncode for QlHandshakeRecord {
                 Self::Ik2(message) => message.encoded_len(),
                 Self::Kk1(message) => message.encoded_len(),
                 Self::Kk2(message) => message.encoded_len(),
+                Self::Xx1(message) => message.encoded_len(),
+                Self::Xx2(message) => message.encoded_len(),
+                Self::Xx3(message) => message.encoded_len(),
+                Self::Xx4(message) => message.encoded_len(),
             }
     }
 
@@ -174,6 +194,10 @@ impl WireEncode for QlHandshakeRecord {
             Self::Ik2(message) => message.encode(out),
             Self::Kk1(message) => message.encode(out),
             Self::Kk2(message) => message.encode(out),
+            Self::Xx1(message) => message.encode(out),
+            Self::Xx2(message) => message.encode(out),
+            Self::Xx3(message) => message.encode(out),
+            Self::Xx4(message) => message.encode(out),
         }
     }
 }
@@ -186,6 +210,10 @@ impl<B: ByteSlice> WireDecode<B> for QlHandshakeRecord {
             HandshakeKind::Ik2 => Ok(Self::Ik2(reader.decode()?)),
             HandshakeKind::Kk1 => Ok(Self::Kk1(reader.decode()?)),
             HandshakeKind::Kk2 => Ok(Self::Kk2(reader.decode()?)),
+            HandshakeKind::Xx1 => Ok(Self::Xx1(reader.decode()?)),
+            HandshakeKind::Xx2 => Ok(Self::Xx2(reader.decode()?)),
+            HandshakeKind::Xx3 => Ok(Self::Xx3(reader.decode()?)),
+            HandshakeKind::Xx4 => Ok(Self::Xx4(reader.decode()?)),
         }
     }
 }
