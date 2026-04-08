@@ -103,7 +103,12 @@ pub fn handle_ik2(
 
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Ik1) -> bool {
     match &fsm.state.link {
-        LinkState::Idle | LinkState::Connected(_) | LinkState::KkInitiator(_) => false,
+        LinkState::Idle
+        | LinkState::Connected(_)
+        | LinkState::KkInitiator(_)
+        | LinkState::XxInitiator(_)
+        | LinkState::XxResponder(_)
+        | LinkState::XxResponderPending(_) => false,
         LinkState::IkInitiator(state) => {
             if fsm.state.peer.as_ref().map(|peer| peer.xid) != Some(message.header.sender) {
                 return false;

@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use ql_wire::{
-    ConnectionId, EphemeralPublicKey, HandshakeId, IkHandshake, KkHandshake, PeerBundle,
-    QlHandshakeRecord, SessionKey, TransportParams,
+    ConnectionId, EphemeralPublicKey, HandshakeId, HandshakeMeta, IkHandshake, KkHandshake,
+    PairingToken, PeerBundle, QlHandshakeRecord, SessionKey, TransportParams, XxHandshake,
 };
 
 use crate::{replay_cache::ReplayCache, session::SessionFsm, FsmTime, NoSessionError, PeerStatus};
@@ -11,6 +11,7 @@ pub struct QlFsmState {
     pub replay_cache: ReplayCache,
     pub next_control_id: u32,
     pub peer: Option<PeerBundle>,
+    pub armed_pairing_token: Option<PairingToken>,
     pub handshake: Option<QlHandshakeRecord>,
     pub link: LinkState,
     pub now: FsmTime,
@@ -44,6 +45,9 @@ pub enum LinkState {
     Idle,
     IkInitiator(IkInitiatorState),
     KkInitiator(KkInitiatorState),
+    XxInitiator(XxInitiatorState),
+    XxResponder(XxResponderState),
+    XxResponderPending(XxResponderPendingState),
     Connected(ConnectedState),
 }
 
@@ -68,6 +72,28 @@ pub struct KkInitiatorState {
     pub initial_ephemeral: EphemeralPublicKey,
 }
 
+#[derive(Debug, Clone)]
+pub struct XxInitiatorState {
+    pub handshake: XxHandshake,
+    pub handshake_id: HandshakeId,
+    pub deadline: Instant,
+    pub initial_ephemeral: EphemeralPublicKey,
+}
+
+#[derive(Debug, Clone)]
+pub struct XxResponderState {
+    pub handshake: XxHandshake,
+    pub handshake_meta: HandshakeMeta,
+    pub deadline: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct XxResponderPendingState {
+    pub handshake: XxHandshake,
+    pub handshake_meta: HandshakeMeta,
+    pub deadline: Instant,
+}
+
 impl LinkState {
     pub fn take(&mut self) -> Self {
         std::mem::replace(self, Self::Idle)
@@ -75,8 +101,12 @@ impl LinkState {
 
     pub fn status(&self) -> PeerStatus {
         match self {
-            Self::Idle => PeerStatus::Disconnected,
-            Self::IkInitiator(_) | Self::KkInitiator(_) => PeerStatus::Initiator,
+            Self::Idle | Self::XxResponder(_) | Self::XxResponderPending(_) => {
+                PeerStatus::Disconnected
+            }
+            Self::IkInitiator(_) | Self::KkInitiator(_) | Self::XxInitiator(_) => {
+                PeerStatus::Initiator
+            }
             Self::Connected(_) => PeerStatus::Connected,
         }
     }
@@ -107,6 +137,9 @@ impl LinkState {
             Self::Idle | Self::Connected(_) => None,
             Self::IkInitiator(state) => Some(state.deadline),
             Self::KkInitiator(state) => Some(state.deadline),
+            Self::XxInitiator(state) => Some(state.deadline),
+            Self::XxResponder(state) => Some(state.deadline),
+            Self::XxResponderPending(state) => Some(state.deadline),
         }
     }
 

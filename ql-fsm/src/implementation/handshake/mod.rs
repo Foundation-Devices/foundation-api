@@ -1,7 +1,11 @@
 mod ik;
 mod kk;
+mod xx;
 
-use ql_wire::{self as wire, EphemeralPublicKey, HandshakeMeta, QlCrypto, QlHandshakeRecord};
+use ql_wire::{
+    self as wire, EphemeralPublicKey, HandshakeMeta, PairingToken, PeerBundle, QlCrypto,
+    QlHandshakeRecord,
+};
 
 use super::emit_peer_status;
 use crate::{
@@ -30,6 +34,16 @@ pub fn handle_connect_kk(
     kk::start_initiator(fsm, crypto, peer, &mut emit)
 }
 
+pub fn handle_connect_xx(
+    fsm: &mut QlFsm,
+    token: PairingToken,
+    crypto: &impl QlCrypto,
+    mut emit: impl FnMut(QlFsmEvent),
+) -> Result<(), QlFsmError> {
+    prepare_for_outbound_connect(fsm);
+    xx::start_initiator(fsm, crypto, token, &mut emit)
+}
+
 pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
     let handshake_id = wire::HandshakeId(fsm.state.next_control_id);
     fsm.state.next_control_id = fsm.state.next_control_id.wrapping_add(1);
@@ -45,6 +59,33 @@ pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
 pub fn enqueue_handshake(fsm: &mut QlFsm, record: QlHandshakeRecord) {
     debug_assert!(fsm.state.handshake.is_none());
     fsm.state.handshake = Some(record);
+}
+
+pub fn pending_xx_pairing(fsm: &QlFsm) -> Option<(PairingToken, &PeerBundle)> {
+    match &fsm.state.link {
+        crate::state::LinkState::XxResponderPending(state) => state
+            .handshake
+            .remote_bundle()
+            .map(|peer| (state.handshake.pairing_token(), peer)),
+        _ => None,
+    }
+}
+
+pub fn handle_accept_pairing(
+    fsm: &mut QlFsm,
+    token: PairingToken,
+    crypto: &impl QlCrypto,
+    mut emit: impl FnMut(QlFsmEvent),
+) -> Result<(), QlFsmError> {
+    xx::accept_pairing(fsm, crypto, token, &mut emit)
+}
+
+pub fn handle_reject_pairing(fsm: &mut QlFsm, token: PairingToken) -> Result<(), QlFsmError> {
+    xx::reject_pairing(fsm, token)
+}
+
+pub fn handle_disarm_pairing(fsm: &mut QlFsm) {
+    xx::disarm_pairing(fsm);
 }
 
 fn local_transport_params(fsm: &QlFsm) -> wire::TransportParams {
@@ -75,6 +116,10 @@ pub fn handle_handshake_record(
         QlHandshakeRecord::Ik2(message) => ik::handle_ik2(fsm, crypto, message, emit),
         QlHandshakeRecord::Kk1(message) => kk::handle_kk1(fsm, crypto, message, emit),
         QlHandshakeRecord::Kk2(message) => kk::handle_kk2(fsm, crypto, message, emit),
+        QlHandshakeRecord::Xx1(message) => xx::handle_xx1(fsm, crypto, message, emit),
+        QlHandshakeRecord::Xx2(message) => xx::handle_xx2(fsm, crypto, message, emit),
+        QlHandshakeRecord::Xx3(message) => xx::handle_xx3(fsm, crypto, message, emit),
+        QlHandshakeRecord::Xx4(message) => xx::handle_xx4(fsm, crypto, message, emit),
     }
 }
 

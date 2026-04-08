@@ -455,7 +455,7 @@ impl Runner {
     fn process_events(&mut self, side: Side, events: Vec<QlFsmEvent>) -> TestCaseResult {
         for event in events {
             match event {
-                QlFsmEvent::NewPeer => {}
+                QlFsmEvent::NewPeer | QlFsmEvent::PairingPending => {}
                 QlFsmEvent::PeerStatusChanged(status) => {
                     self.events_mut(side).note_peer_status(status);
                 }

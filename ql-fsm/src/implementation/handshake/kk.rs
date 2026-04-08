@@ -102,7 +102,11 @@ pub fn handle_kk2(
 
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Kk1) -> bool {
     match &fsm.state.link {
-        LinkState::Idle | LinkState::Connected(_) => false,
+        LinkState::Idle
+        | LinkState::Connected(_)
+        | LinkState::XxInitiator(_)
+        | LinkState::XxResponder(_)
+        | LinkState::XxResponderPending(_) => false,
         LinkState::IkInitiator(_) => true,
         LinkState::KkInitiator(state) => {
             if fsm.state.peer.as_ref().map(|peer| peer.xid) != Some(message.header.sender) {

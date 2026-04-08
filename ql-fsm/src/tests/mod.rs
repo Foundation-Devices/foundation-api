@@ -12,8 +12,8 @@ use libcrux_aesgcm::AesGcm256Key;
 use libcrux_ml_kem::mlkem1024;
 use ql_wire::{
     self, generate_identity, ConnectionId, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
-    MlKemPublicKey, Nonce, QlAead, QlCrypto, QlHash, QlIdentity, QlKem, QlRandom, SessionKey,
-    TransportParams, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
+    MlKemPublicKey, Nonce, PairingToken, QlAead, QlCrypto, QlHash, QlIdentity, QlKem, QlRandom,
+    SessionKey, TransportParams, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
 };
 use sha2::{Digest, Sha256};
 
@@ -320,6 +320,50 @@ impl Harness {
         fsm.connect_kk(time, crypto, |event| events.push_back(event))
     }
 
+    fn connect_xx_a(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.a;
+        fsm.connect_xx(time, token, crypto, |event| events.push_back(event))
+    }
+
+    fn connect_xx_b(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.b;
+        fsm.connect_xx(time, token, crypto, |event| events.push_back(event))
+    }
+
+    fn accept_pairing_a(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.a;
+        fsm.accept_pairing(time, token, crypto, |event| events.push_back(event))
+    }
+
+    fn accept_pairing_b(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
+        let time = self.time();
+        let Node {
+            fsm,
+            crypto,
+            events,
+        } = &mut self.b;
+        fsm.accept_pairing(time, token, crypto, |event| events.push_back(event))
+    }
+
+    fn reject_pairing_b(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
+        self.b.fsm.reject_pairing(token)
+    }
+
     fn deliver_to_a(&mut self, record: Vec<u8>) {
         let time = self.time();
         let Node {
@@ -404,6 +448,10 @@ impl Harness {
 fn test_identity(seed: u8) -> QlIdentity {
     let crypto = TestCrypto::new(seed);
     generate_identity(&crypto, XID([seed; XID::SIZE]))
+}
+
+fn pairing_token(byte: u8) -> PairingToken {
+    PairingToken([byte; PairingToken::SIZE])
 }
 
 fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {

@@ -3,15 +3,16 @@
 //! a caller drives `QlFsm` inside its own event loop
 //!
 //! inputs to that loop usually include
-//! - app actions like `bind_peer`, `connect_ik`, `connect_kk`, `open_stream`, or `stream`
+//! - app actions like `bind_peer`, `connect_ik`, `connect_kk`, `connect_xx`, `open_stream`, or
+//!   `stream`
 //! - inbound transport bytes passed to `receive`
 //! - a deadline expiring, handled by calling `on_timer`
 //! - transport write results passed to `confirm_session_write` or `reject_session_write`
 //!
 //! outputs from `QlFsm` are
 //! - outbound session and handshake records from `take_next_write`
-//! - callback-driven `QlFsmEvent`s emitted during `connect_ik`, `connect_kk`, `receive`, and
-//!   `on_timer`
+//! - callback-driven `QlFsmEvent`s emitted during `connect_ik`, `connect_kk`, `connect_xx`,
+//!   `receive`, and `on_timer`
 //!
 //! call `next_deadline` after handling current inputs and any emitted outputs
 //! use it to decide how long the outer loop can wait before `on_timer` must run
@@ -30,7 +31,8 @@ use std::time::{Duration, Instant};
 pub use bytes::Bytes;
 pub use error::*;
 use ql_wire::{
-    PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose, StreamId,
+    PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose,
+    StreamId,
 };
 pub use session::{StreamOps, StreamReadIter, StreamWriter};
 
@@ -64,6 +66,8 @@ pub enum PeerStatus {
 pub enum QlFsmEvent {
     /// a peer was learned during handshake completion
     NewPeer,
+    /// an inbound xx pairing is waiting for an accept or reject decision
+    PairingPending,
     /// the peer changed connection state
     PeerStatusChanged(PeerStatus),
     /// a stream was opened
@@ -151,6 +155,7 @@ impl QlFsm {
                 replay_cache: ReplayCache::default(),
                 next_control_id: 1,
                 peer: None,
+                armed_pairing_token: None,
                 handshake: None,
                 link: LinkState::Idle,
                 now,
@@ -166,6 +171,51 @@ impl QlFsm {
     /// returns the currently bound peer, if any
     pub fn peer(&self) -> Option<&PeerBundle> {
         self.state.peer.as_ref()
+    }
+
+    /// arms acceptance of inbound xx pairings for a single token
+    pub fn arm_pairing(&mut self, token: PairingToken) {
+        self.state.armed_pairing_token = Some(token);
+    }
+
+    /// disarms inbound xx pairing and rejects any in-flight inbound xx responder state
+    pub fn disarm_pairing(&mut self) {
+        self.state.armed_pairing_token = None;
+        implementation::handle_disarm_pairing(self);
+    }
+
+    /// starts or replaces an outbound xx handshake using the supplied pairing token
+    pub fn connect_xx(
+        &mut self,
+        now: FsmTime,
+        token: PairingToken,
+        crypto: &impl QlCrypto,
+        emit: impl FnMut(QlFsmEvent),
+    ) -> Result<(), QlFsmError> {
+        self.state.now = now;
+        implementation::handle_connect_xx(self, token, crypto, emit)
+    }
+
+    /// returns the pending inbound xx candidate token and peer, if any
+    pub fn pending_xx_pairing(&self) -> Option<(PairingToken, &PeerBundle)> {
+        implementation::pending_xx_pairing(self)
+    }
+
+    /// accepts a pending inbound xx pairing for the matching token
+    pub fn accept_pairing(
+        &mut self,
+        now: FsmTime,
+        token: PairingToken,
+        crypto: &impl QlCrypto,
+        emit: impl FnMut(QlFsmEvent),
+    ) -> Result<(), QlFsmError> {
+        self.state.now = now;
+        implementation::handle_accept_pairing(self, token, crypto, emit)
+    }
+
+    /// rejects a pending inbound xx pairing for the matching token
+    pub fn reject_pairing(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
+        implementation::handle_reject_pairing(self, token)
     }
 
     /// starts or replaces an IK handshake with the currently bound peer
