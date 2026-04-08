@@ -28,7 +28,7 @@ fn kk_connect_round_trip_establishes_transport() {
 }
 
 #[test]
-fn xx_connect_round_trip_establishes_transport_after_accept() {
+fn xx_connect_round_trip_establishes_transport_when_armed() {
     let mut harness = Harness::paired(QlFsmConfig::default(), false, false);
     let token = pairing_token(1);
 
@@ -42,14 +42,6 @@ fn xx_connect_round_trip_establishes_transport_after_accept() {
     let xx3 = harness.next_outbound_a().unwrap();
     harness.deliver_to_b(xx3);
 
-    assert_eq!(harness.take_event_b(), Some(QlFsmEvent::PairingPending));
-    assert_eq!(
-        harness.b.fsm.pending_xx_pairing(),
-        Some((token, &harness.a.fsm.identity.bundle()))
-    );
-    assert!(harness.next_outbound_b().is_none());
-
-    harness.accept_pairing_b(token).unwrap();
     let xx4 = harness.next_outbound_b().unwrap();
     harness.deliver_to_a(xx4);
 
@@ -141,28 +133,6 @@ fn inbound_xx1_ignored_when_pairing_token_not_armed() {
 }
 
 #[test]
-fn reject_pairing_drops_pending_xx_candidate() {
-    let mut harness = Harness::paired(QlFsmConfig::default(), false, false);
-    let token = pairing_token(4);
-
-    harness.b.fsm.arm_pairing(token);
-    harness.connect_xx_a(token).unwrap();
-    let xx1 = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(xx1);
-    let xx2 = harness.next_outbound_b().unwrap();
-    harness.deliver_to_a(xx2);
-    let xx3 = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(xx3);
-
-    assert_eq!(harness.take_event_b(), Some(QlFsmEvent::PairingPending));
-    harness.reject_pairing_b(token).unwrap();
-
-    assert!(matches!(harness.b.fsm.state.link, LinkState::Idle));
-    assert!(harness.next_outbound_b().is_none());
-    assert!(harness.b.fsm.pending_xx_pairing().is_none());
-}
-
-#[test]
 fn disarm_pairing_rejects_inflight_inbound_xx_responder() {
     let mut harness = Harness::paired(QlFsmConfig::default(), false, false);
     let token = pairing_token(5);
@@ -174,13 +144,11 @@ fn disarm_pairing_rejects_inflight_inbound_xx_responder() {
     let xx2 = harness.next_outbound_b().unwrap();
     harness.deliver_to_a(xx2);
     let xx3 = harness.next_outbound_a().unwrap();
+    harness.b.fsm.disarm_pairing();
     harness.deliver_to_b(xx3);
 
-    assert_eq!(harness.take_event_b(), Some(QlFsmEvent::PairingPending));
-    harness.b.fsm.disarm_pairing();
-
     assert!(matches!(harness.b.fsm.state.link, LinkState::Idle));
-    assert!(harness.b.fsm.pending_xx_pairing().is_none());
+    assert!(harness.next_outbound_b().is_none());
 }
 
 #[test]
@@ -200,19 +168,6 @@ fn simultaneous_xx_connect_converges() {
         if let Some(record) = harness.next_outbound_b() {
             harness.deliver_to_a(record);
         }
-    }
-
-    let event_a = harness.take_event_a();
-    let event_b = harness.take_event_b();
-    assert!(
-        matches!(event_a, Some(QlFsmEvent::PairingPending))
-            || matches!(event_b, Some(QlFsmEvent::PairingPending))
-    );
-    if matches!(event_a, Some(QlFsmEvent::PairingPending)) {
-        harness.accept_pairing_a(token).unwrap();
-    }
-    if matches!(event_b, Some(QlFsmEvent::PairingPending)) {
-        harness.accept_pairing_b(token).unwrap();
     }
     harness.pump();
 

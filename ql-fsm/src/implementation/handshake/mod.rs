@@ -3,8 +3,7 @@ mod kk;
 mod xx;
 
 use ql_wire::{
-    self as wire, EphemeralPublicKey, HandshakeMeta, PairingToken, PeerBundle, QlCrypto,
-    QlHandshakeRecord,
+    self as wire, EphemeralPublicKey, HandshakeMeta, PairingToken, QlCrypto, QlHandshakeRecord,
 };
 
 use super::emit_peer_status;
@@ -50,28 +49,6 @@ pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
 pub fn enqueue_handshake(fsm: &mut QlFsm, record: QlHandshakeRecord) {
     debug_assert!(fsm.state.handshake.is_none());
     fsm.state.handshake = Some(record);
-}
-
-pub fn pending_xx_pairing(fsm: &QlFsm) -> Option<(PairingToken, &PeerBundle)> {
-    match &fsm.state.link {
-        crate::state::LinkState::XxResponderPending(state) => state
-            .handshake
-            .remote_bundle()
-            .map(|peer| (state.handshake.pairing_token(), peer)),
-        _ => None,
-    }
-}
-
-pub fn handle_accept_pairing(
-    fsm: &mut QlFsm,
-    token: PairingToken,
-    crypto: &impl QlCrypto,
-) -> Result<(), QlFsmError> {
-    xx::accept_pairing(fsm, crypto, token)
-}
-
-pub fn handle_reject_pairing(fsm: &mut QlFsm, token: PairingToken) -> Result<(), QlFsmError> {
-    xx::reject_pairing(fsm, token)
 }
 
 pub fn handle_disarm_pairing(fsm: &mut QlFsm) {

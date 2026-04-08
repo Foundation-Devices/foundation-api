@@ -312,22 +312,6 @@ impl Harness {
         fsm.connect_xx(time, token, crypto)
     }
 
-    fn accept_pairing_a(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
-        let time = self.time();
-        let Node { fsm, crypto } = &mut self.a;
-        fsm.accept_pairing(time, token, crypto)
-    }
-
-    fn accept_pairing_b(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
-        let time = self.time();
-        let Node { fsm, crypto } = &mut self.b;
-        fsm.accept_pairing(time, token, crypto)
-    }
-
-    fn reject_pairing_b(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
-        self.b.fsm.reject_pairing(token)
-    }
-
     fn deliver_to_a(&mut self, record: Vec<u8>) {
         let time = self.time();
         let Node { fsm, crypto } = &mut self.a;

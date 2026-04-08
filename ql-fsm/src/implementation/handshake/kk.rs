@@ -102,8 +102,7 @@ pub fn should_ignore_inbound(fsm: &QlFsm, message: &Kk1) -> bool {
         LinkState::Idle
         | LinkState::Connected(_)
         | LinkState::XxInitiator(_)
-        | LinkState::XxResponder(_)
-        | LinkState::XxResponderPending(_) => false,
+        | LinkState::XxResponder(_) => false,
         LinkState::IkInitiator(_) => true,
         LinkState::KkInitiator(state) => {
             if fsm.state.peer.as_ref().map(|peer| peer.xid) != Some(message.header.sender) {

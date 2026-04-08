@@ -47,7 +47,6 @@ pub enum LinkState {
     KkInitiator(KkInitiatorState),
     XxInitiator(XxInitiatorState),
     XxResponder(XxResponderState),
-    XxResponderPending(XxResponderPendingState),
     Connected(ConnectedState),
 }
 
@@ -87,13 +86,6 @@ pub struct XxResponderState {
     pub deadline: Instant,
 }
 
-#[derive(Debug, Clone)]
-pub struct XxResponderPendingState {
-    pub handshake: XxHandshake,
-    pub handshake_meta: HandshakeMeta,
-    pub deadline: Instant,
-}
-
 impl LinkState {
     pub fn take(&mut self) -> Self {
         std::mem::replace(self, Self::Idle)
@@ -101,9 +93,7 @@ impl LinkState {
 
     pub fn status(&self) -> PeerStatus {
         match self {
-            Self::Idle | Self::XxResponder(_) | Self::XxResponderPending(_) => {
-                PeerStatus::Disconnected
-            }
+            Self::Idle | Self::XxResponder(_) => PeerStatus::Disconnected,
             Self::IkInitiator(_) | Self::KkInitiator(_) | Self::XxInitiator(_) => {
                 PeerStatus::Initiator
             }
@@ -139,7 +129,6 @@ impl LinkState {
             Self::KkInitiator(state) => Some(state.deadline),
             Self::XxInitiator(state) => Some(state.deadline),
             Self::XxResponder(state) => Some(state.deadline),
-            Self::XxResponderPending(state) => Some(state.deadline),
         }
     }
 

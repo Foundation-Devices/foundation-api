@@ -12,7 +12,7 @@
 //! outputs from `QlFsm` are
 //! - outbound session and handshake records from `take_next_write`
 //! - queued `QlFsmEvent`s returned by `poll_event` after `connect_ik`, `connect_kk`,
-//!   `connect_xx`, `accept_pairing`, `receive`, and `on_timer`
+//!   `connect_xx`, `receive`, and `on_timer`
 //!
 //! call `next_deadline` after handling current inputs and any queued outputs
 //! use it to decide how long the outer loop can wait before `on_timer` must run
@@ -69,8 +69,6 @@ pub enum PeerStatus {
 pub enum QlFsmEvent {
     /// a peer was learned during handshake completion
     NewPeer,
-    /// an inbound xx pairing is waiting for an accept or reject decision
-    PairingPending,
     /// the peer changed connection state
     PeerStatusChanged(PeerStatus),
     /// a stream was opened
@@ -198,27 +196,6 @@ impl QlFsm {
     ) -> Result<(), QlFsmError> {
         self.state.now = now;
         implementation::handle_connect_xx(self, token, crypto)
-    }
-
-    /// returns the pending inbound xx candidate token and peer, if any
-    pub fn pending_xx_pairing(&self) -> Option<(PairingToken, &PeerBundle)> {
-        implementation::pending_xx_pairing(self)
-    }
-
-    /// accepts a pending inbound xx pairing for the matching token
-    pub fn accept_pairing(
-        &mut self,
-        now: FsmTime,
-        token: PairingToken,
-        crypto: &impl QlCrypto,
-    ) -> Result<(), QlFsmError> {
-        self.state.now = now;
-        implementation::handle_accept_pairing(self, token, crypto)
-    }
-
-    /// rejects a pending inbound xx pairing for the matching token
-    pub fn reject_pairing(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
-        implementation::handle_reject_pairing(self, token)
     }
 
     /// starts or replaces an IK handshake with the currently bound peer
