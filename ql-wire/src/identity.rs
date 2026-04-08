@@ -50,6 +50,9 @@ pub struct QlIdentity {
 }
 
 impl QlIdentity {
+    pub const WIRE_SIZE: usize =
+        XID::SIZE + MlKemPrivateKey::SIZE + MlKemPublicKey::SIZE + size_of::<u32>();
+
     pub fn new(
         xid: XID,
         mlkem_private_key: MlKemPrivateKey,
@@ -76,6 +79,30 @@ impl QlIdentity {
             capabilities: self.capabilities,
             mlkem_public_key: self.mlkem_public_key.clone(),
         }
+    }
+}
+
+impl WireEncode for QlIdentity {
+    fn encoded_len(&self) -> usize {
+        Self::WIRE_SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.xid.encode(out);
+        self.mlkem_private_key.as_bytes().encode(out);
+        self.mlkem_public_key.encode(out);
+        self.capabilities.encode(out);
+    }
+}
+
+impl<B: ByteSlice> codec::WireDecode<B> for QlIdentity {
+    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+        Ok(Self {
+            xid: reader.decode()?,
+            mlkem_private_key: MlKemPrivateKey::new(reader.decode()?),
+            mlkem_public_key: reader.decode()?,
+            capabilities: reader.decode()?,
+        })
     }
 }
 
