@@ -6,6 +6,7 @@ use crate::{
 mod ack;
 mod builder;
 mod close;
+mod route_id;
 mod stream_close;
 mod stream_data;
 mod stream_id;
@@ -14,6 +15,7 @@ mod stream_window;
 pub use ack::*;
 pub use builder::*;
 pub use close::*;
+pub use route_id::*;
 pub use stream_close::*;
 pub use stream_data::*;
 pub use stream_id::*;

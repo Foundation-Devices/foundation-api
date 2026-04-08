@@ -827,6 +827,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         SessionFrame::StreamData(StreamData {
             stream_id: stream_id(9),
             offset: varint(1024),
+            header: None,
             bytes: b"hello".to_vec(),
             fin: true,
         }),
@@ -894,6 +895,7 @@ fn session_varint_fields_expand_at_expected_boundaries() {
     let frame = StreamData {
         stream_id: stream_id(64),
         offset: varint(16_384),
+        header: None,
         fin: true,
         bytes: b"abc".to_vec(),
     };
@@ -1008,6 +1010,7 @@ fn protocol_record_size_breakdown() {
         &[SessionFrame::StreamData(StreamData {
             stream_id: stream_id(1),
             offset: varint(0),
+            header: None,
             fin: false,
             bytes: Vec::new(),
         })],
