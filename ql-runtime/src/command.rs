@@ -1,5 +1,5 @@
 use ql_fsm::NoSessionError;
-use ql_wire::{CloseTarget, PeerBundle, StreamCloseCode, StreamId};
+use ql_wire::{CloseTarget, PairingToken, PeerBundle, StreamCloseCode, StreamId};
 
 use crate::{chunk_slot::ChunkSlotRx, ByteReader, QlStreamError};
 
@@ -8,6 +8,13 @@ pub(crate) enum RuntimeCommand {
         peer: PeerBundle,
     },
     Connect,
+    ArmPairing {
+        token: PairingToken,
+    },
+    DisarmPairing,
+    StartPairing {
+        token: PairingToken,
+    },
     OpenStream {
         request_reader: ChunkSlotRx,
         request_terminal: oneshot::Sender<QlStreamError>,

@@ -2,7 +2,7 @@ mod reader;
 mod writer;
 
 use ql_fsm::NoSessionError;
-use ql_wire::{CloseTarget, PeerBundle, StreamId};
+use ql_wire::{CloseTarget, PairingToken, PeerBundle, StreamId};
 
 pub use self::{reader::*, writer::*};
 use crate::{chunk_slot, command::RuntimeCommand};
@@ -26,6 +26,18 @@ impl RuntimeHandle {
 
     pub fn connect(&self) {
         self.send(RuntimeCommand::Connect);
+    }
+
+    pub fn arm_pairing(&self, token: PairingToken) {
+        self.send(RuntimeCommand::ArmPairing { token });
+    }
+
+    pub fn disarm_pairing(&self) {
+        self.send(RuntimeCommand::DisarmPairing);
+    }
+
+    pub fn start_pairing(&self, token: PairingToken) {
+        self.send(RuntimeCommand::StartPairing { token });
     }
 
     pub fn send_incoming(&self, bytes: Vec<u8>) {

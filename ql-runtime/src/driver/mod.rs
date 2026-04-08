@@ -5,21 +5,21 @@ mod test;
 use std::{
     collections::{hash_map::Entry, HashMap, VecDeque},
     future::Future,
-    pin::Pin,
+    pin::{pin, Pin},
     task::Poll,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures_lite::future::poll_fn;
 use ql_fsm::{FsmTime, QlFsm, QlFsmEvent, SessionWriteId};
-use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
+use ql_wire::{CloseTarget, PairingToken, StreamCloseCode, StreamId};
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
     chunk_slot,
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
-    platform::{QlPlatform, QlTimer},
+    platform::{PlatformFuture, QlPlatform, QlTimer},
     QlStreamError, Runtime, RuntimeHandle,
 };
 
@@ -45,32 +45,61 @@ impl<P: QlPlatform> Runtime<P> {
             max_concurrent_message_writes: config.max_concurrent_message_writes,
             pending_fsm_events: VecDeque::new(),
         };
+
         let mut in_flight = Vec::new();
+        let mut pairing_decision = None;
         let mut timer = platform.timer();
+        let recv_future = rx.recv();
+        let mut recv_future = pin!(recv_future);
 
         loop {
             state.fill_write_slots(&mut fsm, &platform, &mut in_flight);
-
-            if rx.is_closed() && in_flight.is_empty() {
-                break;
-            }
-
+            state.sync_pairing_decision_state(&fsm, &mut pairing_decision);
             timer.set_deadline(fsm.next_deadline());
 
-            match next_driver_event(&rx, &mut timer, &mut in_flight).await {
+            match next_driver_event(
+                recv_future.as_mut(),
+                &mut timer,
+                &mut in_flight,
+                &mut pairing_decision,
+            )
+            .await
+            {
                 DriverEvent::Command(command) => {
-                    state.drive_command(&mut fsm, command, &platform);
+                    state.drive_command(&mut fsm, command, &platform, &mut pairing_decision);
                 }
                 DriverEvent::WriteCompleted { index, success } => {
                     let write = in_flight.swap_remove(index);
                     DriverState::drive_write_completed(&mut fsm, write.session_write_id, success);
                 }
-                DriverEvent::TimerExpired => {
-                    state.with_fsm_events(&mut fsm, &platform, |fsm, emit| {
-                        fsm.on_timer(now(), emit);
-                    });
+                DriverEvent::PairingDecision { token, accept } => {
+                    pairing_decision = None;
+                    let _ = state.with_fsm_events(
+                        &mut fsm,
+                        &platform,
+                        &mut pairing_decision,
+                        |fsm, emit| {
+                            if accept {
+                                fsm.accept_pairing(now(), token, &platform, emit)
+                            } else {
+                                fsm.reject_pairing(token)
+                            }
+                        },
+                    );
                 }
-                DriverEvent::CommandsClosed => {}
+                DriverEvent::TimerExpired => {
+                    state.with_fsm_events(
+                        &mut fsm,
+                        &platform,
+                        &mut pairing_decision,
+                        |fsm, emit| fsm.on_timer(now(), emit),
+                    );
+                }
+                DriverEvent::CommandsClosed => {
+                    if in_flight.is_empty() && pairing_decision.is_none() {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -81,25 +110,30 @@ struct InFlightWrite<F> {
     future: F,
 }
 
+struct InFlightPairingDecision<'a> {
+    token: PairingToken,
+    future: PlatformFuture<'a, bool>,
+}
+
 enum DriverEvent {
     Command(RuntimeCommand),
     WriteCompleted { index: usize, success: bool },
+    PairingDecision { token: PairingToken, accept: bool },
     TimerExpired,
     CommandsClosed,
 }
 
 #[allow(clippy::future_not_send)]
 async fn next_driver_event<T, F>(
-    rx: &async_channel::Receiver<RuntimeCommand>,
+    mut recv_future: Pin<&mut async_channel::Recv<'_, RuntimeCommand>>,
     timer: &mut T,
     in_flight: &mut [InFlightWrite<F>],
+    pairing_decision: &mut Option<InFlightPairingDecision<'_>>,
 ) -> DriverEvent
 where
     T: QlTimer,
     F: Future<Output = bool> + Unpin,
 {
-    let mut recv_future = (!rx.is_closed()).then(|| Box::pin(rx.recv()));
-
     poll_fn(|cx| {
         for (index, write) in in_flight.iter_mut().enumerate() {
             if let Poll::Ready(success) = Pin::new(&mut write.future).poll(cx) {
@@ -107,41 +141,57 @@ where
             }
         }
 
+        if let Some(decision) = pairing_decision.as_mut() {
+            if let Poll::Ready(accept) = Pin::new(&mut decision.future).poll(cx) {
+                return Poll::Ready(DriverEvent::PairingDecision {
+                    token: decision.token,
+                    accept,
+                });
+            }
+        }
+
         if timer.poll_wait(cx) == Poll::Ready(()) {
             return Poll::Ready(DriverEvent::TimerExpired);
         }
 
-        if let Some(future) = recv_future.as_mut() {
-            if let Poll::Ready(res) = future.as_mut().poll(cx) {
-                return Poll::Ready(
-                    res.map_or_else(|_| DriverEvent::CommandsClosed, DriverEvent::Command),
-                );
-            }
-        }
-
-        Poll::Pending
+        recv_future
+            .as_mut()
+            .poll(cx)
+            .map(|res| res.map_or_else(|_| DriverEvent::CommandsClosed, DriverEvent::Command))
     })
     .await
 }
 
 impl DriverState {
-    fn drive_command<P: QlPlatform>(
+    fn drive_command<'a, P: QlPlatform + 'a>(
         &mut self,
         fsm: &mut QlFsm,
         command: RuntimeCommand,
-        platform: &P,
+        platform: &'a P,
+        pairing_decision: &mut Option<InFlightPairingDecision<'a>>,
     ) {
         match command {
             RuntimeCommand::BindPeer { peer } => {
                 fsm.bind_peer(peer);
             }
             RuntimeCommand::Connect => {
-                let _ = self.with_fsm_events(fsm, platform, |fsm, emit| {
+                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm, emit| {
                     fsm.connect_ik(now(), platform, emit)
                 });
             }
+            RuntimeCommand::ArmPairing { token } => {
+                fsm.arm_pairing(token);
+            }
+            RuntimeCommand::DisarmPairing => {
+                fsm.disarm_pairing();
+            }
+            RuntimeCommand::StartPairing { token } => {
+                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm, emit| {
+                    fsm.connect_xx(now(), token, platform, emit)
+                });
+            }
             RuntimeCommand::Incoming(bytes) => {
-                let _ = self.with_fsm_events(fsm, platform, |fsm, emit| {
+                let _ = self.with_fsm_events(fsm, platform, pairing_decision, |fsm, emit| {
                     fsm.receive(now(), bytes, platform, emit)
                 });
             }
@@ -232,10 +282,11 @@ impl DriverState {
         }
     }
 
-    fn with_fsm_events<P: QlPlatform, T>(
+    fn with_fsm_events<'a, P: QlPlatform + 'a, T>(
         &mut self,
         fsm: &mut QlFsm,
-        platform: &P,
+        platform: &'a P,
+        pairing_decision: &mut Option<InFlightPairingDecision<'a>>,
         run: impl FnOnce(&mut QlFsm, &mut dyn FnMut(QlFsmEvent)) -> T,
     ) -> T {
         let output = {
@@ -243,26 +294,43 @@ impl DriverState {
             let mut emit = |event| pending.push_back(event);
             run(fsm, &mut emit)
         };
-        self.process_pending_fsm_events(fsm, platform);
+        self.process_pending_fsm_events(fsm, platform, pairing_decision);
         output
     }
 
-    fn process_pending_fsm_events<P: QlPlatform>(&mut self, fsm: &mut QlFsm, platform: &P) {
+    fn process_pending_fsm_events<'a, P: QlPlatform + 'a>(
+        &mut self,
+        fsm: &mut QlFsm,
+        platform: &'a P,
+        pairing_decision: &mut Option<InFlightPairingDecision<'a>>,
+    ) {
         while let Some(event) = self.pending_fsm_events.pop_front() {
-            self.process_fsm_event(fsm, platform, event);
+            self.process_fsm_event(fsm, platform, pairing_decision, event);
         }
     }
 
-    fn process_fsm_event<P: QlPlatform>(
+    fn process_fsm_event<'a, P: QlPlatform + 'a>(
         &mut self,
         fsm: &mut QlFsm,
-        platform: &P,
+        platform: &'a P,
+        pairing_decision: &mut Option<InFlightPairingDecision<'a>>,
         event: QlFsmEvent,
     ) {
         match event {
             QlFsmEvent::NewPeer => {
                 if let Some(peer) = fsm.peer().cloned() {
                     platform.persist_peer(peer);
+                }
+            }
+            QlFsmEvent::PairingPending => {
+                if let Some((token, peer)) = fsm.pending_xx_pairing() {
+                    let peer = peer.clone();
+                    *pairing_decision = Some(InFlightPairingDecision {
+                        token,
+                        future: Box::pin(async move {
+                            platform.handle_pairing_request(token, peer).await
+                        }),
+                    });
                 }
             }
             QlFsmEvent::PeerStatusChanged(status) => {
@@ -437,6 +505,21 @@ impl DriverState {
             stream.fail_all();
         }
         self.streams.clear();
+    }
+
+    fn sync_pairing_decision_state(
+        &self,
+        fsm: &QlFsm,
+        pairing_decision: &mut Option<InFlightPairingDecision<'_>>,
+    ) {
+        if let Some(decision) = pairing_decision.as_ref() {
+            let is_current = fsm
+                .pending_xx_pairing()
+                .is_some_and(|(token, _)| token == decision.token);
+            if !is_current {
+                *pairing_decision = None;
+            }
+        }
     }
 
     fn fill_write_slots<'a, P: QlPlatform + 'a>(
