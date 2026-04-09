@@ -173,7 +173,7 @@ impl WireEncode for bool {
 
 impl<T: WireEncode> WireEncode for Option<T> {
     fn encoded_len(&self) -> usize {
-        1 + self.as_ref().map_or(0, |inner| inner.encoded_len())
+        1 + self.as_ref().map_or(0, WireEncode::encoded_len)
     }
 
     fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
@@ -181,7 +181,7 @@ impl<T: WireEncode> WireEncode for Option<T> {
             None => out.put_u8(0),
             Some(inner) => {
                 out.put_u8(1);
-                inner.encode(out)
+                inner.encode(out);
             }
         }
     }

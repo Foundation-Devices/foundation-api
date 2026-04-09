@@ -268,7 +268,10 @@ impl DriverState {
                     platform.handle_peer_status(peer, status);
                 }
             }
-            QlFsmEvent::Opened { stream_id, route_id } => {
+            QlFsmEvent::Opened {
+                stream_id,
+                route_id,
+            } => {
                 self.handle_opened_stream(fsm, platform, stream_id, route_id);
             }
             QlFsmEvent::Readable(stream_id) => {

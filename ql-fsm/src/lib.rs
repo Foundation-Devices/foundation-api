@@ -72,7 +72,10 @@ pub enum QlFsmEvent {
     /// the peer changed connection state
     PeerStatusChanged(PeerStatus),
     /// a stream was opened
-    Opened { stream_id: StreamId, route_id: RouteId },
+    Opened {
+        stream_id: StreamId,
+        route_id: RouteId,
+    },
     /// a stream has bytes ready to read
     Readable(StreamId),
     /// a stream has room for more local writes

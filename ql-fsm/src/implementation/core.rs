@@ -176,8 +176,14 @@ fn forward_session_event(
     pending_events: &mut std::collections::VecDeque<QlFsmEvent>,
 ) -> bool {
     match event {
-        SessionEvent::Opened { stream_id, route_id } => {
-            pending_events.push_back(QlFsmEvent::Opened { stream_id, route_id });
+        SessionEvent::Opened {
+            stream_id,
+            route_id,
+        } => {
+            pending_events.push_back(QlFsmEvent::Opened {
+                stream_id,
+                route_id,
+            });
             false
         }
         SessionEvent::Readable(stream_id) => {

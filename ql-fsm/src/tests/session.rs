@@ -169,10 +169,7 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
 
     harness.pump();
 
-    assert_eq!(
-        harness.take_event_a(),
-        Some(opened(stream_id_b))
-    );
+    assert_eq!(harness.take_event_a(), Some(opened(stream_id_b)));
     assert_eq!(
         harness.take_event_a(),
         Some(QlFsmEvent::Readable(stream_id_b))
@@ -181,10 +178,7 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
         read_stream_all(&mut harness.a.fsm, stream_id_b),
         b"from-b".to_vec()
     );
-    assert_eq!(
-        harness.take_event_b(),
-        Some(opened(stream_id_a))
-    );
+    assert_eq!(harness.take_event_b(), Some(opened(stream_id_a)));
     assert_eq!(
         harness.take_event_b(),
         Some(QlFsmEvent::Readable(stream_id_a))
@@ -200,7 +194,10 @@ fn disconnected_stream_operations_fail_with_no_session() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
     let missing = stream_id(0);
 
-    assert!(matches!(harness.a.fsm.open_stream(route_id(1)), Err(NoSessionError)));
+    assert!(matches!(
+        harness.a.fsm.open_stream(route_id(1)),
+        Err(NoSessionError)
+    ));
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, missing, b"queued"),
         Err(StreamError::NoSession)

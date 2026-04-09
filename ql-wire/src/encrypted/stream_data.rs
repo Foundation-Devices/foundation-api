@@ -60,10 +60,7 @@ impl<B: ByteChunks> WireEncode for StreamData<B> {
         self.stream_id.encoded_len()
             + self.offset.encoded_len()
             + size_of::<u8>()
-            + self
-                .header
-                .as_ref()
-                .map_or(0, |header| header.encoded_len())
+            + self.header.as_ref().map_or(0, WireEncode::encoded_len)
             + self.bytes.len()
     }
 

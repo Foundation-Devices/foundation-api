@@ -159,8 +159,9 @@ pub fn disarm_pairing(fsm: &mut QlFsm) {
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Xx1) -> bool {
     match &fsm.state.link {
         LinkState::Idle | LinkState::Connected(_) => false,
-        LinkState::IkInitiator(_) | LinkState::KkInitiator(_) => true,
-        LinkState::XxResponder(_) => true,
+        LinkState::IkInitiator(_) | LinkState::KkInitiator(_) | LinkState::XxResponder(_) => {
+            true
+        }
         LinkState::XxInitiator(state) => {
             if state.handshake.pairing_token() != message.header.pairing_token {
                 return false;
