@@ -32,5 +32,5 @@ pub(crate) enum RuntimeCommand {
         target: CloseTarget,
         code: StreamCloseCode,
     },
-    Incoming(Vec<u8>),
+    Receive(Vec<u8>),
 }

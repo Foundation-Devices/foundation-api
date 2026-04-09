@@ -441,7 +441,7 @@ fn register_peers(
 fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
     tokio::task::spawn_local(async move {
         while let Ok(bytes) = outbound.recv().await {
-            handle.send_incoming(bytes);
+            handle.receive(bytes);
         }
     });
 }
@@ -460,7 +460,7 @@ fn spawn_drop_every_nth_encrypted_forwarder(
                     continue;
                 }
             }
-            handle.send_incoming(bytes);
+            handle.receive(bytes);
         }
     });
 }
@@ -475,7 +475,7 @@ fn spawn_gated_forwarder(
             if drop_flag.load(Ordering::Relaxed) {
                 continue;
             }
-            handle.send_incoming(bytes);
+            handle.receive(bytes);
         }
     });
 }

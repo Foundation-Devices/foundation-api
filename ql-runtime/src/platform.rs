@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use ql_fsm::PeerStatus;
+use ql_fsm::{PeerStatus, ReceiveError};
 use ql_wire::{PeerBundle, QlCrypto, XID};
 
 use crate::QlStream;
@@ -31,4 +31,5 @@ pub trait QlPlatform: QlCrypto {
 
     fn handle_peer_status(&self, peer: XID, status: PeerStatus);
     fn handle_inbound(&self, event: QlStream);
+    fn handle_recv_error(&self, _error: ReceiveError) {}
 }

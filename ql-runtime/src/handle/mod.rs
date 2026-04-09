@@ -47,8 +47,8 @@ impl RuntimeHandle {
     }
 
     /// hands inbound transport bytes to the runtime
-    pub fn send_incoming(&self, bytes: Vec<u8>) {
-        self.send(RuntimeCommand::Incoming(bytes));
+    pub fn receive(&self, bytes: Vec<u8>) {
+        self.send(RuntimeCommand::Receive(bytes));
     }
 
     /// opens a new stream on the active encrypted session

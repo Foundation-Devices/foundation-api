@@ -144,9 +144,12 @@ impl DriverState {
             RuntimeCommand::StartPairing { token } => {
                 self.with_fsm_events(fsm, platform, |fsm| fsm.connect_xx(now(), token, platform));
             }
-            RuntimeCommand::Incoming(bytes) => {
-                let _ =
-                    self.with_fsm_events(fsm, platform, |fsm| fsm.receive(now(), bytes, platform));
+            RuntimeCommand::Receive(bytes) => {
+                if let Err(e) =
+                    self.with_fsm_events(fsm, platform, |fsm| fsm.receive(now(), bytes, platform))
+                {
+                    platform.handle_recv_error(e);
+                }
             }
             RuntimeCommand::OpenStream {
                 route_id,
