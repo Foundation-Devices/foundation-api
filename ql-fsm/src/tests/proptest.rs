@@ -14,7 +14,7 @@ use super::*;
 fn test_route_id() -> ql_wire::RouteId {
     ql_wire::RouteId(ql_wire::VarInt::from_u32(1))
 }
-use crate::{state::LinkState, PeerStatus, QlFsmError, QlFsmEvent, SessionWriteId};
+use crate::{state::LinkState, PeerStatus, QlFsmEvent, ReceiveError, SessionWriteId};
 
 const SLOT_COUNT: usize = 4;
 
@@ -99,7 +99,7 @@ struct Runner {
     taken_b_to_a: Vec<TakenWrite>,
     pending_a_to_b: Vec<Vec<u8>>,
     pending_b_to_a: Vec<Vec<u8>>,
-    receive_errors: Vec<(Side, QlFsmError)>,
+    receive_errors: Vec<(Side, ReceiveError)>,
     events_a: SideEventState,
     events_b: SideEventState,
     known_streams: BTreeSet<StreamId>,
@@ -582,11 +582,11 @@ impl Runner {
             prop_assert!(
                 matches!(
                     error,
-                    QlFsmError::NoSession
-                        | QlFsmError::InvalidState
-                        | QlFsmError::Expired
-                        | QlFsmError::InvalidPayload
-                        | QlFsmError::DecryptFailed
+                    ReceiveError::NoSession
+                        | ReceiveError::InvalidState
+                        | ReceiveError::Expired
+                        | ReceiveError::InvalidPayload
+                        | ReceiveError::DecryptFailed
                 ),
                 "unexpected receive error on side {side:?}: {error:?}"
             );
@@ -853,13 +853,13 @@ fn reject_taken_b(harness: &mut Harness, write: &TakenWrite) {
     }
 }
 
-fn deliver_to_a(harness: &mut Harness, record: Vec<u8>) -> Result<(), QlFsmError> {
+fn deliver_to_a(harness: &mut Harness, record: Vec<u8>) -> Result<(), ReceiveError> {
     let time = harness.time();
     let Node { fsm, crypto } = &mut harness.a;
     fsm.receive(time, record, crypto)
 }
 
-fn deliver_to_b(harness: &mut Harness, record: Vec<u8>) -> Result<(), QlFsmError> {
+fn deliver_to_b(harness: &mut Harness, record: Vec<u8>) -> Result<(), ReceiveError> {
     let time = harness.time();
     let Node { fsm, crypto } = &mut harness.b;
     fsm.receive(time, record, crypto)

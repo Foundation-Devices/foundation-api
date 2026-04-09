@@ -4,8 +4,8 @@ use bytes::Bytes;
 use ql_wire::{self as wire, QlCrypto, RouteId, SessionCloseCode, StreamId, WireDecode};
 
 use crate::{
-    session::SessionEvent, state::LinkState, NoSessionError, OutboundWrite, QlFsm, QlFsmError,
-    QlFsmEvent, SessionWriteId, StreamError, StreamOps,
+    session::SessionEvent, state::LinkState, NoSessionError, OutboundWrite, QlFsm, QlFsmEvent,
+    ReceiveError, SessionWriteId, StreamError, StreamOps,
 };
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
@@ -18,12 +18,12 @@ pub fn receive(
     fsm: &mut QlFsm,
     mut bytes: Vec<u8>,
     crypto: &impl QlCrypto,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     let mut reader = wire::Reader::new(bytes.as_mut_slice());
     let header = wire::RecordHeader::decode(&mut reader)?;
 
     if header.version != wire::QL_WIRE_VERSION {
-        return Err(QlFsmError::InvalidPayload);
+        return Err(ReceiveError::InvalidPayload);
     }
 
     match header.record_type {
@@ -37,11 +37,11 @@ pub fn receive(
                 .state
                 .link
                 .connected_mut()
-                .ok_or(QlFsmError::NoSession)?;
+                .ok_or(ReceiveError::NoSession)?;
             let (decrypt_len, seq) = {
                 let record = wire::QlSessionRecord::decode(&mut reader)?;
                 if record.header.connection_id != state.transport.rx_connection_id {
-                    return Err(QlFsmError::InvalidPayload);
+                    return Err(ReceiveError::InvalidPayload);
                 }
                 let payload = wire::decrypt_record(
                     crypto,

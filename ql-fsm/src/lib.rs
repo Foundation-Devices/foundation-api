@@ -191,24 +191,19 @@ impl QlFsm {
     }
 
     /// starts an outbound xx handshake using the supplied pairing token
-    pub fn connect_xx(
-        &mut self,
-        now: FsmTime,
-        token: PairingToken,
-        crypto: &impl QlCrypto,
-    ) -> Result<(), QlFsmError> {
+    pub fn connect_xx(&mut self, now: FsmTime, token: PairingToken, crypto: &impl QlCrypto) {
         self.state.now = now;
-        implementation::handle_connect_xx(self, token, crypto)
+        implementation::handle_connect_xx(self, token, crypto);
     }
 
     /// starts an IK handshake with the currently bound peer
-    pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
+    pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
         self.state.now = now;
         implementation::handle_connect_ik(self, crypto)
     }
 
     /// starts a KK handshake with the currently bound peer
-    pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
+    pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
         self.state.now = now;
         implementation::handle_connect_kk(self, crypto)
     }
@@ -219,7 +214,7 @@ impl QlFsm {
         now: FsmTime,
         bytes: Vec<u8>,
         crypto: &impl QlCrypto,
-    ) -> Result<(), QlFsmError> {
+    ) -> Result<(), ReceiveError> {
         self.state.now = now;
         implementation::receive(self, bytes, crypto)
     }

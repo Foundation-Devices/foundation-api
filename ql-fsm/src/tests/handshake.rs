@@ -3,7 +3,7 @@ use std::time::Duration;
 use ql_wire::QlHandshakeRecord;
 
 use super::*;
-use crate::{state::LinkState, PeerStatus, QlFsmError, QlFsmEvent};
+use crate::{state::LinkState, NoPeerError, PeerStatus, QlFsmEvent};
 
 #[test]
 fn ik_connect_round_trip_establishes_transport() {
@@ -33,7 +33,7 @@ fn xx_connect_round_trip_establishes_transport_when_armed() {
     let token = pairing_token(1);
 
     harness.b.fsm.arm_pairing(token);
-    harness.connect_xx_a(token).unwrap();
+    harness.connect_xx_a(token);
 
     let xx1 = harness.next_outbound_a().unwrap();
     harness.deliver_to_b(xx1);
@@ -100,10 +100,10 @@ fn connect_methods_require_bound_peer() {
     let mut fsm = QlFsm::new(QlFsmConfig::default(), identity, time);
     let crypto = TestCrypto::new(9);
 
-    assert_eq!(fsm.connect_ik(time, &crypto), Err(QlFsmError::NoPeerBound));
-    assert_eq!(fsm.connect_kk(time, &crypto), Err(QlFsmError::NoPeerBound));
+    assert_eq!(fsm.connect_ik(time, &crypto), Err(NoPeerError));
+    assert_eq!(fsm.connect_kk(time, &crypto), Err(NoPeerError));
 
-    assert_eq!(fsm.connect_xx(time, pairing_token(2), &crypto), Ok(()));
+    fsm.connect_xx(time, pairing_token(2), &crypto);
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn inbound_xx1_ignored_when_pairing_token_not_armed() {
     let mut harness = Harness::paired(QlFsmConfig::default(), false, false);
     let token = pairing_token(3);
 
-    harness.connect_xx_a(token).unwrap();
+    harness.connect_xx_a(token);
     let xx1 = harness.next_outbound_a().unwrap();
     harness.deliver_to_b(xx1);
 
@@ -138,7 +138,7 @@ fn disarm_pairing_rejects_inflight_inbound_xx_responder() {
     let token = pairing_token(5);
 
     harness.b.fsm.arm_pairing(token);
-    harness.connect_xx_a(token).unwrap();
+    harness.connect_xx_a(token);
     let xx1 = harness.next_outbound_a().unwrap();
     harness.deliver_to_b(xx1);
     let xx2 = harness.next_outbound_b().unwrap();
@@ -158,8 +158,8 @@ fn simultaneous_xx_connect_converges() {
 
     harness.a.fsm.arm_pairing(token);
     harness.b.fsm.arm_pairing(token);
-    harness.connect_xx_a(token).unwrap();
-    harness.connect_xx_b(token).unwrap();
+    harness.connect_xx_a(token);
+    harness.connect_xx_b(token);
 
     for _ in 0..2 {
         if let Some(record) = harness.next_outbound_a() {

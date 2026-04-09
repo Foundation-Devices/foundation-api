@@ -142,8 +142,7 @@ impl DriverState {
                 fsm.disarm_pairing();
             }
             RuntimeCommand::StartPairing { token } => {
-                let _ = self
-                    .with_fsm_events(fsm, platform, |fsm| fsm.connect_xx(now(), token, platform));
+                self.with_fsm_events(fsm, platform, |fsm| fsm.connect_xx(now(), token, platform));
             }
             RuntimeCommand::Incoming(bytes) => {
                 let _ =

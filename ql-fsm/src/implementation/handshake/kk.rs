@@ -6,14 +6,10 @@ use super::{
 };
 use crate::{
     state::{KkInitiatorState, LinkState, SessionTransport},
-    QlFsm, QlFsmError,
+    QlFsm, ReceiveError,
 };
 
-pub fn start_initiator(
-    fsm: &mut QlFsm,
-    crypto: &impl QlCrypto,
-    peer: PeerBundle,
-) -> Result<(), QlFsmError> {
+pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, peer: PeerBundle) {
     let meta = super::next_handshake_meta(fsm);
     let mut handshake = wire::KkHandshake::new_initiator(
         crypto,
@@ -21,7 +17,7 @@ pub fn start_initiator(
         peer,
         super::local_transport_params(fsm),
     );
-    let message = handshake.write_1(crypto, meta)?;
+    let message = handshake.write_1(crypto, meta).unwrap();
 
     fsm.state.link = LinkState::KkInitiator(KkInitiatorState {
         handshake_id: meta.handshake_id,
@@ -31,14 +27,13 @@ pub fn start_initiator(
     });
     enqueue_handshake(fsm, QlHandshakeRecord::Kk1(message));
     emit_peer_status(fsm);
-    Ok(())
 }
 
 pub fn handle_kk1(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Kk1,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     if should_ignore_inbound(fsm, message) {
         return Ok(());
     }
@@ -47,10 +42,10 @@ pub fn handle_kk1(
     }
 
     let Some(peer) = fsm.state.peer.clone() else {
-        return Err(QlFsmError::InvalidPayload);
+        return Err(ReceiveError::InvalidPayload);
     };
     if message.header.recipient != fsm.identity.xid || message.header.sender != peer.xid {
-        return Err(QlFsmError::InvalidXid);
+        return Err(ReceiveError::InvalidXid);
     }
 
     reset_connected_session_if_needed(fsm);
@@ -74,7 +69,7 @@ pub fn handle_kk2(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Kk2,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     {
         let LinkState::KkInitiator(state) = &mut fsm.state.link else {
             return Ok(());

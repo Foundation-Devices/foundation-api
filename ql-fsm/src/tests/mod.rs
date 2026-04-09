@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     session::{SessionFsm, SessionFsmConfig, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
-    FsmTime, OutboundWrite, QlFsm, QlFsmConfig, QlFsmError, QlFsmEvent, SessionWriteId,
+    FsmTime, NoPeerError, OutboundWrite, QlFsm, QlFsmConfig, QlFsmEvent, SessionWriteId,
 };
 
 #[derive(Clone)]
@@ -276,40 +276,40 @@ impl Harness {
         self.a.fsm.take_next_write(self.time(), &self.a.crypto)
     }
 
-    fn connect_ik_a(&mut self) -> Result<(), QlFsmError> {
+    fn connect_ik_a(&mut self) -> Result<(), NoPeerError> {
         let time = self.time();
         let Node { fsm, crypto } = &mut self.a;
         fsm.connect_ik(time, crypto)
     }
 
-    fn connect_ik_b(&mut self) -> Result<(), QlFsmError> {
+    fn connect_ik_b(&mut self) -> Result<(), NoPeerError> {
         let time = self.time();
         let Node { fsm, crypto } = &mut self.b;
         fsm.connect_ik(time, crypto)
     }
 
-    fn connect_kk_a(&mut self) -> Result<(), QlFsmError> {
+    fn connect_kk_a(&mut self) -> Result<(), NoPeerError> {
         let time = self.time();
         let Node { fsm, crypto } = &mut self.a;
         fsm.connect_kk(time, crypto)
     }
 
-    fn connect_kk_b(&mut self) -> Result<(), QlFsmError> {
+    fn connect_kk_b(&mut self) -> Result<(), NoPeerError> {
         let time = self.time();
         let Node { fsm, crypto } = &mut self.b;
         fsm.connect_kk(time, crypto)
     }
 
-    fn connect_xx_a(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
+    fn connect_xx_a(&mut self, token: PairingToken) {
         let time = self.time();
         let Node { fsm, crypto } = &mut self.a;
-        fsm.connect_xx(time, token, crypto)
+        fsm.connect_xx(time, token, crypto);
     }
 
-    fn connect_xx_b(&mut self, token: PairingToken) -> Result<(), QlFsmError> {
+    fn connect_xx_b(&mut self, token: PairingToken) {
         let time = self.time();
         let Node { fsm, crypto } = &mut self.b;
-        fsm.connect_xx(time, token, crypto)
+        fsm.connect_xx(time, token, crypto);
     }
 
     fn deliver_to_a(&mut self, record: Vec<u8>) {

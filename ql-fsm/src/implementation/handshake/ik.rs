@@ -6,14 +6,10 @@ use super::{
 };
 use crate::{
     state::{IkInitiatorState, LinkState, SessionTransport},
-    QlFsm, QlFsmError,
+    QlFsm, ReceiveError,
 };
 
-pub fn start_initiator(
-    fsm: &mut QlFsm,
-    crypto: &impl QlCrypto,
-    peer: PeerBundle,
-) -> Result<(), QlFsmError> {
+pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, peer: PeerBundle) {
     let meta = super::next_handshake_meta(fsm);
     let mut handshake = wire::IkHandshake::new_initiator(
         crypto,
@@ -21,7 +17,7 @@ pub fn start_initiator(
         peer,
         super::local_transport_params(fsm),
     );
-    let message = handshake.write_1(crypto, meta)?;
+    let message = handshake.write_1(crypto, meta).unwrap();
 
     fsm.state.link = LinkState::IkInitiator(IkInitiatorState {
         handshake_id: meta.handshake_id,
@@ -31,14 +27,13 @@ pub fn start_initiator(
     });
     enqueue_handshake(fsm, QlHandshakeRecord::Ik1(message));
     emit_peer_status(fsm);
-    Ok(())
 }
 
 pub fn handle_ik1(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Ik1,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     if should_ignore_inbound(fsm, message) {
         return Ok(());
     }
@@ -46,11 +41,11 @@ pub fn handle_ik1(
         return Ok(());
     }
     if message.header.recipient != fsm.identity.xid {
-        return Err(QlFsmError::InvalidXid);
+        return Err(ReceiveError::InvalidXid);
     }
     if let Some(peer) = fsm.state.peer.as_ref() {
         if message.header.sender != peer.xid {
-            return Err(QlFsmError::InvalidXid);
+            return Err(ReceiveError::InvalidXid);
         }
     }
 
@@ -75,7 +70,7 @@ pub fn handle_ik2(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Ik2,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     {
         let LinkState::IkInitiator(state) = &mut fsm.state.link else {
             return Ok(());

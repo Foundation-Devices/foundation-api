@@ -6,17 +6,16 @@ use std::{
 use ql_wire::WireError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QlFsmError {
+pub enum ReceiveError {
     InvalidPayload,
     InvalidState,
     Expired,
     DecryptFailed,
     InvalidXid,
-    NoPeerBound,
     NoSession,
 }
 
-impl Display for QlFsmError {
+impl Display for ReceiveError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::InvalidPayload => "invalid payload",
@@ -24,16 +23,15 @@ impl Display for QlFsmError {
             Self::Expired => "expired",
             Self::DecryptFailed => "decryption failed",
             Self::InvalidXid => "invalid xid",
-            Self::NoPeerBound => "no peer bound",
             Self::NoSession => "no active session",
         };
         f.write_str(message)
     }
 }
 
-impl std::error::Error for QlFsmError {}
+impl std::error::Error for ReceiveError {}
 
-impl From<WireError> for QlFsmError {
+impl From<WireError> for ReceiveError {
     fn from(value: WireError) -> Self {
         match value {
             WireError::InvalidPayload => Self::InvalidPayload,
@@ -44,11 +42,22 @@ impl From<WireError> for QlFsmError {
     }
 }
 
-impl From<NoSessionError> for QlFsmError {
+impl From<NoSessionError> for ReceiveError {
     fn from(_: NoSessionError) -> Self {
         Self::NoSession
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoPeerError;
+
+impl Display for NoPeerError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no peer bound")
+    }
+}
+
+impl Error for NoPeerError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoSessionError;

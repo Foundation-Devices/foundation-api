@@ -10,28 +10,26 @@ use super::emit_peer_status;
 use crate::{
     session::{SessionFsm, SessionFsmConfig, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
-    QlFsm, QlFsmError, QlFsmEvent,
+    NoPeerError, QlFsm, QlFsmEvent, ReceiveError,
 };
 
-pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
-    let peer = fsm.state.peer.clone().ok_or(QlFsmError::NoPeerBound)?;
+pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+    let peer = fsm.state.peer.clone().ok_or(NoPeerError)?;
     prepare_for_outbound_connect(fsm);
-    ik::start_initiator(fsm, crypto, peer)
+    ik::start_initiator(fsm, crypto, peer);
+    Ok(())
 }
 
-pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
-    let peer = fsm.state.peer.clone().ok_or(QlFsmError::NoPeerBound)?;
+pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+    let peer = fsm.state.peer.clone().ok_or(NoPeerError)?;
     prepare_for_outbound_connect(fsm);
-    kk::start_initiator(fsm, crypto, peer)
+    kk::start_initiator(fsm, crypto, peer);
+    Ok(())
 }
 
-pub fn handle_connect_xx(
-    fsm: &mut QlFsm,
-    token: PairingToken,
-    crypto: &impl QlCrypto,
-) -> Result<(), QlFsmError> {
+pub fn handle_connect_xx(fsm: &mut QlFsm, token: PairingToken, crypto: &impl QlCrypto) {
     prepare_for_outbound_connect(fsm);
-    xx::start_initiator(fsm, crypto, token)
+    xx::start_initiator(fsm, crypto, token);
 }
 
 pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
@@ -76,7 +74,7 @@ pub fn handle_handshake_record(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     record: &QlHandshakeRecord,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     match record {
         QlHandshakeRecord::Ik1(message) => ik::handle_ik1(fsm, crypto, message),
         QlHandshakeRecord::Ik2(message) => ik::handle_ik2(fsm, crypto, message),
@@ -110,11 +108,11 @@ pub fn finish_handshake(
     fsm: &mut QlFsm,
     transport: SessionTransport,
     remote_bundle: wire::PeerBundle,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     let xid = remote_bundle.xid;
     if let Some(peer) = fsm.state.peer.as_ref() {
         if peer != &remote_bundle {
-            return Err(QlFsmError::InvalidPayload);
+            return Err(ReceiveError::InvalidPayload);
         }
     } else {
         fsm.state.peer = Some(remote_bundle);

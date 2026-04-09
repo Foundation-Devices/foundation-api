@@ -6,14 +6,10 @@ use super::{
 };
 use crate::{
     state::{LinkState, SessionTransport, XxInitiatorState, XxResponderState},
-    QlFsm, QlFsmError,
+    QlFsm, ReceiveError,
 };
 
-pub fn start_initiator(
-    fsm: &mut QlFsm,
-    crypto: &impl QlCrypto,
-    token: PairingToken,
-) -> Result<(), QlFsmError> {
+pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, token: PairingToken) {
     let meta = super::next_handshake_meta(fsm);
     let mut handshake = wire::XxHandshake::new_initiator(
         crypto,
@@ -21,7 +17,7 @@ pub fn start_initiator(
         token,
         super::local_transport_params(fsm),
     );
-    let message = handshake.write_1(crypto, meta)?;
+    let message = handshake.write_1(crypto, meta).unwrap();
 
     fsm.state.link = LinkState::XxInitiator(XxInitiatorState {
         handshake_id: meta.handshake_id,
@@ -31,14 +27,13 @@ pub fn start_initiator(
     });
     enqueue_handshake(fsm, QlHandshakeRecord::Xx1(message));
     emit_peer_status(fsm);
-    Ok(())
 }
 
 pub fn handle_xx1(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Xx1,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     if should_ignore_inbound(fsm, message) {
         return Ok(());
     }
@@ -73,7 +68,7 @@ pub fn handle_xx2(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Xx2,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     {
         let LinkState::XxInitiator(state) = &mut fsm.state.link else {
             return Ok(());
@@ -98,7 +93,7 @@ pub fn handle_xx3(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Xx3,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     let LinkState::XxResponder(state) = &mut fsm.state.link else {
         return Ok(());
     };
@@ -126,7 +121,7 @@ pub fn handle_xx4(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
     message: &Xx4,
-) -> Result<(), QlFsmError> {
+) -> Result<(), ReceiveError> {
     {
         let LinkState::XxInitiator(state) = &mut fsm.state.link else {
             return Ok(());
@@ -159,9 +154,7 @@ pub fn disarm_pairing(fsm: &mut QlFsm) {
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Xx1) -> bool {
     match &fsm.state.link {
         LinkState::Idle | LinkState::Connected(_) => false,
-        LinkState::IkInitiator(_) | LinkState::KkInitiator(_) | LinkState::XxResponder(_) => {
-            true
-        }
+        LinkState::IkInitiator(_) | LinkState::KkInitiator(_) | LinkState::XxResponder(_) => true,
         LinkState::XxInitiator(state) => {
             if state.handshake.pairing_token() != message.header.pairing_token {
                 return false;
