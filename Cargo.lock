@@ -2231,7 +2231,6 @@ name = "ql-rpc"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "ql-wire",
 ]
 
 [[package]]

@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use bytes::{Buf, BufMut, Bytes};
 use futures_lite::StreamExt;
+use ql_wire::RouteId;
 
 use super::*;
 
@@ -76,12 +77,12 @@ async fn rpc_request_round_trips() {
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
             let request = read_all(inbound.reader).await.unwrap();
-            let mut body = request.as_slice();
-            let header =
-                <ql_rpc::header::RpcHeader as ql_rpc::RpcCodec>::decode_value(&mut body).unwrap();
-            assert_eq!(header.method, <Echo as ql_rpc::request::Request>::METHOD);
             assert_eq!(
-                ql_rpc::request::decode_request::<Echo>(body).unwrap(),
+                inbound.route_id,
+                route_id(<Echo as ql_rpc::request::Request>::METHOD)
+            );
+            assert_eq!(
+                ql_rpc::request::decode_request::<Echo>(&request).unwrap(),
                 BytesValue(b"hello".to_vec())
             );
 
@@ -135,15 +136,12 @@ async fn rpc_subscription_streams_events() {
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
             let request = read_all(inbound.reader).await.unwrap();
-            let mut body = request.as_slice();
-            let header =
-                <ql_rpc::header::RpcHeader as ql_rpc::RpcCodec>::decode_value(&mut body).unwrap();
             assert_eq!(
-                header.method,
-                <Feed as ql_rpc::subscription::Subscription>::METHOD
+                inbound.route_id,
+                route_id(<Feed as ql_rpc::subscription::Subscription>::METHOD)
             );
             assert_eq!(
-                ql_rpc::subscription::decode_request::<Feed>(body).unwrap(),
+                ql_rpc::subscription::decode_request::<Feed>(&request).unwrap(),
                 BytesValue(b"watch".to_vec())
             );
 
@@ -209,15 +207,12 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
             let request = read_all(inbound.reader).await.unwrap();
-            let mut body = request.as_slice();
-            let header =
-                <ql_rpc::header::RpcHeader as ql_rpc::RpcCodec>::decode_value(&mut body).unwrap();
             assert_eq!(
-                header.method,
-                <Download as ql_rpc::request_with_progress::RequestWithProgress>::METHOD
+                inbound.route_id,
+                route_id(<Download as ql_rpc::request_with_progress::RequestWithProgress>::METHOD)
             );
             assert_eq!(
-                ql_rpc::request_with_progress::decode_request::<Download>(body).unwrap(),
+                ql_rpc::request_with_progress::decode_request::<Download>(&request).unwrap(),
                 BytesValue(b"logo".to_vec())
             );
 
@@ -260,4 +255,8 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
             .unwrap();
     })
     .await;
+}
+
+fn route_id(method: ql_rpc::MethodId) -> RouteId {
+    RouteId(ql_wire::VarInt::from_u32(method.0))
 }

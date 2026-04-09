@@ -81,7 +81,7 @@ impl ChunkQueue {
         &chunk[..chunk.len().min(limit)]
     }
 
-    pub(crate) fn advance_inner(&mut self, mut cnt: usize) {
+    fn advance_inner(&mut self, mut cnt: usize) {
         assert!(cnt <= self.remaining, "advanced past buffered data");
         self.remaining -= cnt;
         while cnt > 0 {

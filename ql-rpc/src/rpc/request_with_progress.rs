@@ -92,9 +92,6 @@ pub fn encode_request<M: RequestWithProgress>(
     request: &M::Request,
     out: &mut impl BufMut,
 ) -> Result<(), M::Error> {
-    crate::header::RpcHeader::new(M::METHOD)
-        .encode_value(out)
-        .expect("rpc header encoding cannot fail");
     request.encode_value(out)
 }
 
@@ -136,7 +133,7 @@ mod tests {
         decode_request, encode_progress, encode_request, encode_response, ReadStep,
         RequestWithProgress, ResponseReader,
     };
-    use crate::{header::RpcHeader, MethodId, RpcCodec, RpcCodecError, RpcError};
+    use crate::{MethodId, RpcCodec, RpcCodecError, RpcError};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct BytesValue(Vec<u8>);
@@ -165,15 +162,11 @@ mod tests {
     }
 
     #[test]
-    fn request_round_trip_preserves_header_and_payload() {
+    fn request_round_trip_preserves_payload() {
         let mut encoded = Vec::new();
         encode_request::<Watch>(&BytesValue(b"watch".to_vec()), &mut encoded).unwrap();
-
-        let mut body = encoded.as_slice();
-        let header = RpcHeader::decode_value(&mut body).unwrap();
-        assert_eq!(header.method, Watch::METHOD);
         assert_eq!(
-            decode_request::<Watch>(body).unwrap(),
+            decode_request::<Watch>(&encoded).unwrap(),
             BytesValue(b"watch".to_vec())
         );
     }

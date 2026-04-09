@@ -12,9 +12,6 @@ pub fn encode_event<M: Notification>(
     event: &M::Event,
     out: &mut impl BufMut,
 ) -> Result<(), M::Error> {
-    crate::header::RpcHeader::new(M::METHOD)
-        .encode_value(out)
-        .expect("rpc header encoding cannot fail");
     event.encode_value(out)
 }
 
@@ -27,7 +24,7 @@ mod tests {
     use bytes::{Buf, BufMut};
 
     use super::{decode_event, encode_event, Notification};
-    use crate::{header::RpcHeader, MethodId, RpcCodec};
+    use crate::{MethodId, RpcCodec};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct BytesValue(Vec<u8>);
@@ -54,15 +51,11 @@ mod tests {
     }
 
     #[test]
-    fn event_round_trip_preserves_header_and_payload() {
+    fn event_round_trip_preserves_payload() {
         let mut encoded = Vec::new();
         encode_event::<Notify>(&BytesValue(b"hello".to_vec()), &mut encoded).unwrap();
-
-        let mut body = encoded.as_slice();
-        let header = RpcHeader::decode_value(&mut body).unwrap();
-        assert_eq!(header.method, Notify::METHOD);
         assert_eq!(
-            decode_event::<Notify>(body).unwrap(),
+            decode_event::<Notify>(&encoded).unwrap(),
             BytesValue(b"hello".to_vec())
         );
     }
