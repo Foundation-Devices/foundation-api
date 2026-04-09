@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use ql_wire::{self as wire, QlCrypto, SessionCloseCode, StreamId, WireDecode};
+use ql_wire::{self as wire, QlCrypto, RouteId, SessionCloseCode, StreamId, WireDecode};
 
 use crate::{
     session::SessionEvent, state::LinkState, NoSessionError, OutboundWrite, QlFsm, QlFsmError,
@@ -149,9 +149,9 @@ pub fn kill_session(fsm: &mut QlFsm, _code: SessionCloseCode) {
     fsm.state.link = crate::state::LinkState::Idle;
 }
 
-pub fn open_stream(fsm: &mut QlFsm) -> Result<StreamOps<'_>, NoSessionError> {
+pub fn open_stream(fsm: &mut QlFsm, route_id: RouteId) -> Result<StreamOps<'_>, NoSessionError> {
     let state = fsm.state.link.connected_mut_or_err()?;
-    state.session.open_stream()
+    state.session.open_stream(route_id)
 }
 
 pub fn stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamOps<'_>, StreamError> {
@@ -176,8 +176,8 @@ fn forward_session_event(
     pending_events: &mut std::collections::VecDeque<QlFsmEvent>,
 ) -> bool {
     match event {
-        SessionEvent::Opened(stream_id) => {
-            pending_events.push_back(QlFsmEvent::Opened(stream_id));
+        SessionEvent::Opened { stream_id, route_id } => {
+            pending_events.push_back(QlFsmEvent::Opened { stream_id, route_id });
             false
         }
         SessionEvent::Readable(stream_id) => {

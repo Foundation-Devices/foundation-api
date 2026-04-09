@@ -50,7 +50,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
 
         drop_flag.store(true, Ordering::Relaxed);
 
-        let mut pending = handle_a.open_stream().await.unwrap();
+        let mut pending = handle_a.open_stream(test_route_id()).await.unwrap();
         pending.writer.finish();
 
         await_status(&status_a, identity_b.xid, PeerStatus::Disconnected).await;

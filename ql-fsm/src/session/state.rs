@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use indexmap::IndexMap;
-use ql_wire::{CloseTarget, RecordSeq, SessionClose, StreamClose, StreamId};
+use ql_wire::{CloseTarget, RecordSeq, RouteId, SessionClose, StreamClose, StreamId};
 
 use super::{
     received_records::ReceivedRecords, remote_stream_history::RemoteStreamHistory,
@@ -34,6 +34,7 @@ pub enum SessionState {
 #[derive(Debug)]
 pub struct StreamState {
     pub role: StreamRole,
+    pub route_id: Option<RouteId>,
     pub rx: StreamRx,
     pub tx: StreamTx,
     pub pending_close: Option<StreamClose>,
@@ -47,12 +48,14 @@ pub struct StreamState {
 impl StreamState {
     pub fn new(
         role: StreamRole,
+        route_id: Option<RouteId>,
         receive_buffer_size: u32,
         initial_peer_stream_receive_window: u32,
     ) -> Self {
         let receive_buffer_size = receive_buffer_size as usize;
         Self {
             role,
+            route_id,
             tx: StreamTx::new(),
             pending_close: None,
             peer_max_offset: u64::from(initial_peer_stream_receive_window),

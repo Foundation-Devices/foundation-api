@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ql_wire::{SessionClose, StreamId, VarInt};
+use ql_wire::{RouteId, SessionClose, StreamId, VarInt};
 
 use super::*;
 use crate::{
@@ -12,8 +12,19 @@ fn stream_id(value: u32) -> StreamId {
     StreamId(VarInt::from_u32(value))
 }
 
+fn route_id(value: u32) -> RouteId {
+    RouteId(VarInt::from_u32(value))
+}
+
+fn opened(stream_id: StreamId) -> QlFsmEvent {
+    QlFsmEvent::Opened {
+        stream_id,
+        route_id: route_id(1),
+    }
+}
+
 fn open_stream_id(fsm: &mut QlFsm) -> StreamId {
-    fsm.open_stream().unwrap().stream_id()
+    fsm.open_stream(route_id(1)).unwrap().stream_id()
 }
 
 fn write_stream_bytes(
@@ -68,7 +79,7 @@ fn connected_fsms_deliver_stream_data() {
 
     harness.pump();
 
-    assert_eq!(harness.take_event_b(), Some(QlFsmEvent::Opened(stream_id)));
+    assert_eq!(harness.take_event_b(), Some(opened(stream_id)));
     assert_eq!(
         harness.take_event_b(),
         Some(QlFsmEvent::Readable(stream_id))
@@ -115,7 +126,7 @@ fn session_retransmit_uses_new_record_seq() {
     harness.on_timer_b();
     harness.pump();
 
-    assert_eq!(harness.take_event_b(), Some(QlFsmEvent::Opened(stream_id)));
+    assert_eq!(harness.take_event_b(), Some(opened(stream_id)));
     assert_eq!(
         harness.take_event_b(),
         Some(QlFsmEvent::Readable(stream_id))
@@ -160,7 +171,7 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
 
     assert_eq!(
         harness.take_event_a(),
-        Some(QlFsmEvent::Opened(stream_id_b))
+        Some(opened(stream_id_b))
     );
     assert_eq!(
         harness.take_event_a(),
@@ -172,7 +183,7 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
     );
     assert_eq!(
         harness.take_event_b(),
-        Some(QlFsmEvent::Opened(stream_id_a))
+        Some(opened(stream_id_a))
     );
     assert_eq!(
         harness.take_event_b(),
@@ -189,7 +200,7 @@ fn disconnected_stream_operations_fail_with_no_session() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
     let missing = stream_id(0);
 
-    assert!(matches!(harness.a.fsm.open_stream(), Err(NoSessionError)));
+    assert!(matches!(harness.a.fsm.open_stream(route_id(1)), Err(NoSessionError)));
     assert_eq!(
         write_stream_bytes(&mut harness.a.fsm, missing, b"queued"),
         Err(StreamError::NoSession)
@@ -274,7 +285,7 @@ fn returned_session_write_is_reissued_with_new_record_seq() {
     harness.deliver_to_b(record);
     harness.pump();
 
-    assert_eq!(harness.take_event_b(), Some(QlFsmEvent::Opened(stream_id)));
+    assert_eq!(harness.take_event_b(), Some(opened(stream_id)));
     assert_eq!(
         harness.take_event_b(),
         Some(QlFsmEvent::Readable(stream_id))

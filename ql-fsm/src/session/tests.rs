@@ -2,8 +2,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ql_wire::{
-    decode_session_frames, parse_session_frames, CloseTarget, RecordAck, RecordSeq, SessionFrame,
-    SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamId, VarInt, XID,
+    decode_session_frames, parse_session_frames, CloseTarget, RecordAck, RecordSeq, RouteId,
+    SessionFrame, SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamHeader,
+    StreamId, VarInt, XID,
 };
 
 use super::{SessionEvent, SessionFsm, SessionFsmConfig};
@@ -21,8 +22,25 @@ fn offset(value: u64) -> VarInt {
     VarInt::from_u64(value).unwrap()
 }
 
+fn route_id(value: u64) -> RouteId {
+    RouteId(VarInt::from_u64(value).unwrap())
+}
+
+fn header(value: u64) -> Option<StreamHeader> {
+    Some(StreamHeader {
+        route_id: route_id(value),
+    })
+}
+
+fn opened(stream_id: StreamId) -> SessionEvent {
+    SessionEvent::Opened {
+        stream_id,
+        route_id: route_id(1),
+    }
+}
+
 fn open_stream_id(fsm: &mut SessionFsm) -> StreamId {
-    fsm.open_stream().unwrap().stream_id()
+    fsm.open_stream(route_id(1)).unwrap().stream_id()
 }
 
 fn write_stream_bytes(fsm: &mut SessionFsm, stream_id: StreamId, bytes: &[u8]) -> usize {
@@ -185,16 +203,14 @@ fn commit_stream_read_is_what_advances_stream_window() {
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
+        header: header(1),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
     let events = receive_events(&mut fsm, now, seq(7), &data);
     assert_eq!(
         events,
-        vec![
-            SessionEvent::Opened(stream_id),
-            SessionEvent::Readable(stream_id)
-        ]
+        vec![opened(stream_id), SessionEvent::Readable(stream_id)]
     );
 
     let (write_id, builder) = fsm.take_next_write(now + Duration::from_millis(1)).unwrap();
@@ -233,6 +249,7 @@ fn pure_ack_only_records_are_fire_and_forget() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
+        header: header(1),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
@@ -258,6 +275,7 @@ fn inbound_stream_data_emits_opened_and_readable() {
     let record = vec![SessionFrame::StreamData(ql_wire::StreamData {
         stream_id,
         offset: offset(0),
+        header: header(1),
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -266,7 +284,7 @@ fn inbound_stream_data_emits_opened_and_readable() {
     assert_eq!(
         events,
         vec![
-            SessionEvent::Opened(stream_id),
+            opened(stream_id),
             SessionEvent::Readable(stream_id),
             SessionEvent::Finished(stream_id)
         ]
@@ -311,7 +329,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream()
+    .open_stream(route_id(1))
     .unwrap()
     .stream_id();
     let odd_id = SessionFsm::new(
@@ -321,7 +339,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream()
+    .open_stream(route_id(1))
     .unwrap()
     .stream_id();
 
@@ -337,6 +355,7 @@ fn duplicate_stream_data_is_not_redelivered() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
+        header: header(1),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
@@ -361,7 +380,6 @@ fn duplicate_remote_close_after_reap_is_ignored() {
     assert_eq!(
         first,
         vec![
-            SessionEvent::Opened(close.stream_id),
             SessionEvent::Closed(close.clone()),
             SessionEvent::WritableClosed(close),
         ]
@@ -384,6 +402,7 @@ fn late_remote_stream_data_after_close_is_ignored() {
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
+        header: header(1),
         fin: false,
         bytes: b"hello".to_vec(),
     })];
@@ -392,7 +411,6 @@ fn late_remote_stream_data_after_close_is_ignored() {
     assert_eq!(
         first,
         vec![
-            SessionEvent::Opened(stream_id),
             SessionEvent::Closed(StreamClose {
                 stream_id,
                 target: CloseTarget::Both,
@@ -418,6 +436,7 @@ fn duplicate_finished_remote_data_after_reap_is_ignored() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
+        header: header(1),
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -426,7 +445,7 @@ fn duplicate_finished_remote_data_after_reap_is_ignored() {
     assert_eq!(
         first,
         vec![
-            SessionEvent::Opened(stream_id),
+            opened(stream_id),
             SessionEvent::Readable(stream_id),
             SessionEvent::Finished(stream_id),
         ]
@@ -445,6 +464,7 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
+        header: header(1),
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -453,7 +473,7 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
     assert_eq!(
         first,
         vec![
-            SessionEvent::Opened(stream_id),
+            opened(stream_id),
             SessionEvent::Readable(stream_id),
             SessionEvent::Finished(stream_id),
         ]
@@ -480,13 +500,61 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
     })];
 
     let first = receive_events(&mut fsm, now, seq(1), &close3);
-    assert!(first.contains(&SessionEvent::Opened(stream_id(3))));
+    assert_eq!(
+        first,
+        vec![
+            SessionEvent::Closed(StreamClose {
+                stream_id: stream_id(3),
+                target: CloseTarget::Both,
+                code: StreamCloseCode(1),
+            }),
+            SessionEvent::WritableClosed(StreamClose {
+                stream_id: stream_id(3),
+                target: CloseTarget::Both,
+                code: StreamCloseCode(1),
+            }),
+        ]
+    );
 
     let second = receive_events(&mut fsm, now + Duration::from_millis(1), seq(2), &close1);
-    assert!(second.contains(&SessionEvent::Opened(stream_id(1))));
+    assert_eq!(
+        second,
+        vec![
+            SessionEvent::Closed(StreamClose {
+                stream_id: stream_id(1),
+                target: CloseTarget::Both,
+                code: StreamCloseCode(2),
+            }),
+            SessionEvent::WritableClosed(StreamClose {
+                stream_id: stream_id(1),
+                target: CloseTarget::Both,
+                code: StreamCloseCode(2),
+            }),
+        ]
+    );
 
     let third = receive_events(&mut fsm, now + Duration::from_millis(2), seq(3), &close3);
     assert!(third.is_empty());
+}
+
+#[test]
+fn invalid_remote_stream_close_closes_session() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+
+    let invalid = vec![SessionFrame::StreamClose(StreamClose {
+        stream_id: stream_id(0),
+        target: CloseTarget::Both,
+        code: StreamCloseCode(9),
+    })];
+    let events = receive_events(&mut fsm, now, seq(1), &invalid);
+
+    assert_eq!(
+        events,
+        vec![SessionEvent::SessionClosed(ql_wire::SessionClose {
+            code: ql_wire::SessionCloseCode::PROTOCOL,
+        })]
+    );
 }
 
 #[test]
@@ -503,6 +571,7 @@ fn close_does_not_ack_rejected_record_seq() {
     let invalid = vec![SessionFrame::StreamData(StreamData {
         stream_id: stream_id(0),
         offset: offset(0),
+        header: header(1),
         fin: false,
         bytes: b"bad".to_vec(),
     })];

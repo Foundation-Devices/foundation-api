@@ -34,8 +34,8 @@ use std::{
 pub use bytes::Bytes;
 pub use error::*;
 use ql_wire::{
-    PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamClose,
-    StreamId,
+    PairingToken, PeerBundle, QlCrypto, QlIdentity, RouteId, SessionClose, SessionCloseCode,
+    StreamClose, StreamId,
 };
 pub use session::{StreamOps, StreamReadIter, StreamWriter};
 
@@ -72,7 +72,7 @@ pub enum QlFsmEvent {
     /// the peer changed connection state
     PeerStatusChanged(PeerStatus),
     /// a stream was opened
-    Opened(StreamId),
+    Opened { stream_id: StreamId, route_id: RouteId },
     /// a stream has bytes ready to read
     Readable(StreamId),
     /// a stream has room for more local writes
@@ -273,8 +273,8 @@ impl QlFsm {
     }
 
     /// opens a new outgoing stream
-    pub fn open_stream(&mut self) -> Result<StreamOps<'_>, NoSessionError> {
-        implementation::open_stream(self)
+    pub fn open_stream(&mut self, route_id: RouteId) -> Result<StreamOps<'_>, NoSessionError> {
+        implementation::open_stream(self, route_id)
     }
 
     /// returns a facade for an open stream

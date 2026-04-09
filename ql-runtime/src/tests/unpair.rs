@@ -32,12 +32,12 @@ async fn unpair_clears_remote_peer_and_aborts_active_stream() {
             assert!(matches!(second, Ok(None) | Err(QlError::Cancelled)));
         });
 
-        let mut stream = handle_a.open_stream().await.unwrap();
+        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
         stream.request.write_all(&[1, 2, 3, 4]).await.unwrap();
 
         handle_a.unpair().unwrap();
         assert!(matches!(
-            handle_a.open_stream().await,
+            handle_a.open_stream(test_route_id()).await,
             Err(QlError::NoPeerBound)
         ));
 
@@ -48,7 +48,7 @@ async fn unpair_clears_remote_peer_and_aborts_active_stream() {
 
         let open_err_b = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                match handle_b.open_stream().await {
+                match handle_b.open_stream(test_route_id()).await {
                     Err(QlError::NoPeerBound) => return,
                     _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
                 }

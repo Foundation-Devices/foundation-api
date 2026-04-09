@@ -44,7 +44,7 @@ async fn open_stream_duplex_happy_path() {
             writer.finish();
         });
 
-        let mut stream = handle_a.open_stream().await.unwrap();
+        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
         stream
             .writer
             .write(Bytes::from_static(&[1, 2]))
@@ -116,7 +116,7 @@ async fn reader_exposes_bounded_chunk_reads() {
             inbound.writer.finish();
         });
 
-        let mut stream = handle_a.open_stream().await.unwrap();
+        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
         stream
             .writer
             .write(Bytes::from_static(&[1, 2, 3, 4]))
@@ -172,7 +172,7 @@ async fn large_stream_payload_round_trips() {
             done_tx.send(request_data).await.unwrap();
         });
 
-        let mut stream = handle_a.open_stream().await.unwrap();
+        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
         stream
             .writer
             .write(Bytes::from(payload.clone()))
@@ -224,7 +224,7 @@ async fn dropping_responder_closes_initiator_response() {
             drop(stream.reader);
         });
 
-        let mut stream = handle_a.open_stream().await.unwrap();
+        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
         stream.writer.finish();
 
         let err = next_chunk(&mut stream.reader).await.unwrap_err();
@@ -280,7 +280,7 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             writer.finish();
         });
 
-        let mut stream = handle_a.open_stream().await.unwrap();
+        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
         stream.writer.finish();
         assert_eq!(
             next_chunk(&mut stream.reader).await.unwrap(),
@@ -338,7 +338,7 @@ async fn max_concurrent_message_writes_is_respected() {
         for i in 0..4u8 {
             let handle = handle_a.clone();
             tasks.push(tokio::task::spawn_local(async move {
-                let mut stream = handle.open_stream().await.unwrap();
+                let mut stream = handle.open_stream(test_route_id()).await.unwrap();
                 stream.writer.write(Bytes::from(vec![i; 8])).await.unwrap();
                 stream.writer.finish();
                 assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
@@ -412,7 +412,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
             received_request
         });
 
-        let mut stream = handle_a.open_stream().await.unwrap();
+        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
         stream
             .writer
             .write(Bytes::from(request_payload.clone()))

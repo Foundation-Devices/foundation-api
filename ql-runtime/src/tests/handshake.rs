@@ -47,7 +47,10 @@ async fn opening_stream_requires_connection() {
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        assert!(matches!(handle_a.open_stream().await, Err(NoSessionError)));
+        assert!(matches!(
+            handle_a.open_stream(test_route_id()).await,
+            Err(NoSessionError)
+        ));
     })
     .await;
 }
@@ -112,7 +115,7 @@ async fn rejected_session_write_is_reissued() {
             request
         });
 
-        let mut stream = handle_a.open_stream().await.unwrap();
+        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
         stream
             .writer
             .write(Bytes::from_static(b"retry"))

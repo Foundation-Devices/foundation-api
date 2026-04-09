@@ -16,10 +16,11 @@ mod tests;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use indexmap::{map::Entry, IndexMap};
+use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, RecordAck, RecordSeq, SessionClose, SessionCloseCode, SessionFrame,
-    SessionRecordBuilder, StreamClose, StreamData, StreamId, StreamWindow, VarInt, WireError,
+    CloseTarget, RecordAck, RecordSeq, RouteId, SessionClose, SessionCloseCode, SessionFrame,
+    SessionRecordBuilder, StreamClose, StreamData, StreamHeader, StreamId, StreamWindow, VarInt,
+    WireError,
 };
 
 use self::{
@@ -65,7 +66,10 @@ impl Default for SessionFsmConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
-    Opened(StreamId),
+    Opened {
+        stream_id: StreamId,
+        route_id: RouteId,
+    },
     Readable(StreamId),
     Writable(StreamId),
     Finished(StreamId),
@@ -107,7 +111,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn open_stream(&mut self) -> Result<StreamOps<'_>, NoSessionError> {
+    pub fn open_stream(&mut self, route_id: RouteId) -> Result<StreamOps<'_>, NoSessionError> {
         self.ensure_session_open()?;
         let stream_id = self
             .config
@@ -118,6 +122,7 @@ impl SessionFsm {
             stream_id,
             StreamState::new(
                 StreamRole::Initiator,
+                Some(route_id),
                 self.config.stream_receive_buffer_size,
                 self.config.initial_peer_stream_receive_window,
             ),
@@ -174,12 +179,7 @@ impl SessionFsm {
 
         for frame in frames {
             let Ok(frame) = frame else {
-                self.fail_session(
-                    SessionClose {
-                        code: SessionCloseCode::PROTOCOL,
-                    },
-                    &mut emit,
-                );
+                self.fail_session(SessionCloseCode::PROTOCOL, &mut emit);
                 return;
             };
             ack_eliciting |= !matches!(frame, SessionFrame::Ack(_));
@@ -188,12 +188,14 @@ impl SessionFsm {
                 SessionFrame::Ack(ack) => self.process_record_ack(&ack, &mut emit),
                 SessionFrame::StreamData(frame) => {
                     if self.handle_stream_data(frame, &mut emit).is_err() {
+                        self.fail_session(SessionCloseCode::PROTOCOL, &mut emit);
                         return;
                     }
                 }
                 SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame, &mut emit),
                 SessionFrame::StreamClose(frame) => {
                     if self.handle_stream_close(&frame, &mut emit).is_err() {
+                        self.fail_session(SessionCloseCode::PROTOCOL, &mut emit);
                         return;
                     }
                 }
@@ -256,12 +258,7 @@ impl SessionFsm {
         if !self.config.peer_timeout.is_zero()
             && self.state.last_inbound_at + self.config.peer_timeout <= self.state.now
         {
-            self.fail_session(
-                SessionClose {
-                    code: SessionCloseCode::TIMEOUT,
-                },
-                &mut emit,
-            );
+            self.fail_session(SessionCloseCode::TIMEOUT, &mut emit);
             return;
         }
         if self.state.session_state == SessionState::Open
@@ -469,6 +466,11 @@ impl SessionFsm {
             let frame = StreamData {
                 stream_id,
                 offset,
+                header: if matches!(stream.role, StreamRole::Initiator) && candidate.offset == 0 {
+                    stream.route_id.map(|route_id| StreamHeader { route_id })
+                } else {
+                    None
+                },
                 fin: candidate.fin,
                 bytes: stream.tx.ranged_bytes(candidate),
             };
@@ -558,42 +560,39 @@ impl SessionFsm {
         frame: StreamData<Bytes>,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
-        let stream_id = frame.stream_id;
-        let stream = match self.state.streams.entry(stream_id) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                match classify_missing_stream(
-                    self.config.local_parity,
-                    self.state.next_stream_ordinal,
-                    stream_id,
-                    &mut self.state.remote_stream_history,
-                ) {
-                    MissingStreamAction::Create => {}
-                    MissingStreamAction::Ignore => return Ok(()),
-                    MissingStreamAction::FailProtocol => {
-                        self.fail_session(
-                            SessionClose {
-                                code: SessionCloseCode::PROTOCOL,
-                            },
-                            emit,
-                        );
-                        return Err(());
-                    }
-                }
-
-                emit(SessionEvent::Opened(stream_id));
-                entry.insert(StreamState::new(
-                    StreamRole::Responder,
-                    self.config.stream_receive_buffer_size,
-                    self.config.initial_peer_stream_receive_window,
-                ))
-            }
+        let StreamData {
+            stream_id,
+            offset,
+            header,
+            fin,
+            bytes,
+        } = frame;
+        let stream = match self.state.streams.get_mut(&stream_id) {
+            Some(stream) => stream,
+            None => match self.create_remote_stream(stream_id)? {
+                Some(stream) => stream,
+                None => return Ok(()),
+            },
         };
 
-        let frame_offset = frame.offset.into_inner();
-        let frame_end = frame_offset
-            .checked_add(frame.bytes.len() as u64)
-            .ok_or(())?;
+        let frame_offset = offset.into_inner();
+        let Some(frame_end) = frame_offset.checked_add(bytes.len() as u64) else {
+            return Err(());
+        };
+        let readable_before = stream.readable_bytes();
+        let was_finished = matches!(stream.inbound_state, InboundState::Finished);
+
+        let opened_route = match (stream.role, stream.route_id, header, frame_offset) {
+            (StreamRole::Responder, None, Some(header), 0) => {
+                stream.route_id = Some(header.route_id);
+                Some(header.route_id)
+            }
+            (StreamRole::Initiator, _, Some(_), _)
+            | (StreamRole::Responder, None, Some(_), _)
+            | (StreamRole::Responder, None, None, 0) => return Err(()),
+            _ => None,
+        };
+
         match stream.inbound_state {
             InboundState::Open => {}
             InboundState::Discarding | InboundState::Closed(_) => return Ok(()),
@@ -607,48 +606,49 @@ impl SessionFsm {
                 // retransmitted data for an already-finished stream is fine as long as it stays
                 // within the finalized byte range and any repeated FIN lands on that same offset.
                 if (!frame.fin || frame_end == final_offset) && frame_end <= final_offset {
+                    if let Some(route_id) = opened_route {
+                        emit(SessionEvent::Opened {
+                            stream_id,
+                            route_id,
+                        });
+                        if readable_before > 0 {
+                            emit(SessionEvent::Readable(stream_id));
+                        }
+                        emit(SessionEvent::Finished(stream_id));
+                    }
                     return Ok(());
                 }
-                self.fail_session(
-                    SessionClose {
-                        code: SessionCloseCode::PROTOCOL,
-                    },
-                    emit,
-                );
+
                 return Err(());
             }
         }
 
-        let was_readable = stream.readable_bytes() > 0;
-        let insert = stream.rx.insert(frame_offset, frame.fin, frame.bytes);
-        match insert {
-            Ok(outcome) => {
-                if !was_readable && outcome.newly_readable_bytes > 0 {
-                    emit(SessionEvent::Readable(stream_id));
-                }
-                if outcome.became_complete {
-                    stream.inbound_state = InboundState::Finished;
-                    emit(SessionEvent::Finished(stream_id));
-                }
-                self.try_reap_stream(stream_id);
-                Ok(())
-            }
-            Err(
-                StreamRxError::OutOfWindow
-                | StreamRxError::InconsistentFinalOffset
-                | StreamRxError::FinalOffsetBeforeBufferedData
-                | StreamRxError::BeyondFinalOffset
-                | StreamRxError::OffsetOverflow,
-            ) => {
-                self.fail_session(
-                    SessionClose {
-                        code: SessionCloseCode::PROTOCOL,
-                    },
-                    emit,
-                );
-                Err(())
-            }
+        let outcome = stream.rx.insert(frame_offset, fin, bytes).map_err(|_| ())?;
+
+        if outcome.became_complete {
+            stream.inbound_state = InboundState::Finished;
         }
+
+        if let Some(route_id) = opened_route {
+            emit(SessionEvent::Opened {
+                stream_id,
+                route_id,
+            });
+        }
+
+        if stream.route_id.is_some() && readable_before == 0 && stream.readable_bytes() > 0 {
+            emit(SessionEvent::Readable(stream_id));
+        }
+
+        if stream.route_id.is_some()
+            && !was_finished
+            && matches!(stream.inbound_state, InboundState::Finished)
+        {
+            emit(SessionEvent::Finished(stream_id));
+        }
+
+        self.try_reap_stream(stream_id);
+        Ok(())
     }
 
     fn handle_stream_window(&mut self, frame: &StreamWindow, emit: &mut impl FnMut(SessionEvent)) {
@@ -671,41 +671,14 @@ impl SessionFsm {
         frame: &StreamClose,
         emit: &mut impl FnMut(SessionEvent),
     ) -> Result<(), ()> {
-        let mut created = false;
-        let stream = match self.state.streams.entry(frame.stream_id) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                match classify_missing_stream(
-                    self.config.local_parity,
-                    self.state.next_stream_ordinal,
-                    frame.stream_id,
-                    &mut self.state.remote_stream_history,
-                ) {
-                    MissingStreamAction::Create => {}
-                    MissingStreamAction::Ignore => return Ok(()),
-                    MissingStreamAction::FailProtocol => {
-                        self.fail_session(
-                            SessionClose {
-                                code: SessionCloseCode::PROTOCOL,
-                            },
-                            emit,
-                        );
-                        return Err(());
-                    }
-                }
-
-                created = true;
-                entry.insert(StreamState::new(
-                    StreamRole::Responder,
-                    self.config.stream_receive_buffer_size,
-                    self.config.initial_peer_stream_receive_window,
-                ))
-            }
+        let stream_id = frame.stream_id;
+        let stream = match self.state.streams.get_mut(&stream_id) {
+            Some(stream) => stream,
+            None => match self.create_remote_stream(stream_id)? {
+                Some(stream) => stream,
+                None => return Ok(()),
+            },
         };
-
-        if created {
-            emit(SessionEvent::Opened(frame.stream_id));
-        }
 
         if Self::target_affects_inbound(stream.role, frame.target)
             && !matches!(
@@ -836,7 +809,7 @@ impl SessionFsm {
         }
     }
 
-    fn fail_session(&mut self, close: SessionClose, emit: &mut impl FnMut(SessionEvent)) {
+    fn fail_session(&mut self, code: SessionCloseCode, emit: &mut impl FnMut(SessionEvent)) {
         if self.state.session_state == SessionState::Closed {
             return;
         }
@@ -844,14 +817,45 @@ impl SessionFsm {
         self.state.session_state = SessionState::Closed;
         self.state.tracked_records.clear();
         self.state.pending_control = Default::default();
-        self.state.pending_control.close = Some(close.clone());
+        self.state.pending_control.close = Some(SessionClose { code });
         self.clear_streams();
-        emit(SessionEvent::SessionClosed(close));
+        emit(SessionEvent::SessionClosed(SessionClose { code }));
     }
 
     fn clear_streams(&mut self) {
         self.state.next_stream_index = 0;
         self.state.streams.clear();
+    }
+
+    fn create_remote_stream(
+        &mut self,
+        stream_id: StreamId,
+    ) -> Result<Option<&mut StreamState>, ()> {
+        match classify_missing_stream(
+            self.config.local_parity,
+            self.state.next_stream_ordinal,
+            stream_id,
+            &mut self.state.remote_stream_history,
+        ) {
+            MissingStreamAction::Create => {}
+            MissingStreamAction::Ignore => return Ok(None),
+            MissingStreamAction::FailProtocol => {
+                return Err(());
+            }
+        }
+
+        let stream = self
+            .state
+            .streams
+            .entry(stream_id)
+            .insert_entry(StreamState::new(
+                StreamRole::Responder,
+                None,
+                self.config.stream_receive_buffer_size,
+                self.config.initial_peer_stream_receive_window,
+            ));
+
+        Ok(Some(stream.into_mut()))
     }
 }
 

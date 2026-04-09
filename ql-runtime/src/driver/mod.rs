@@ -150,6 +150,7 @@ impl DriverState {
                     self.with_fsm_events(fsm, platform, |fsm| fsm.receive(now(), bytes, platform));
             }
             RuntimeCommand::OpenStream {
+                route_id,
                 request_reader,
                 request_terminal,
                 start,
@@ -159,7 +160,7 @@ impl DriverState {
                     return;
                 };
 
-                let mut stream_ops = match fsm.open_stream() {
+                let mut stream_ops = match fsm.open_stream(route_id) {
                     Ok(stream_ops) => stream_ops,
                     Err(error) => {
                         let _ = start.send(Err(error));
@@ -267,8 +268,8 @@ impl DriverState {
                     platform.handle_peer_status(peer, status);
                 }
             }
-            QlFsmEvent::Opened(stream_id) => {
-                self.handle_opened_stream(fsm, platform, stream_id);
+            QlFsmEvent::Opened { stream_id, route_id } => {
+                self.handle_opened_stream(fsm, platform, stream_id, route_id);
             }
             QlFsmEvent::Readable(stream_id) => {
                 self.handle_inbound_readable(fsm, stream_id);
@@ -294,6 +295,7 @@ impl DriverState {
         fsm: &mut QlFsm,
         platform: &P,
         stream_id: StreamId,
+        route_id: ql_wire::RouteId,
     ) {
         let Some(runtime_tx) = self.runtime_tx.upgrade() else {
             if let Ok(mut stream) = fsm.stream(stream_id) {
@@ -318,6 +320,7 @@ impl DriverState {
 
         platform.handle_inbound(QlStream {
             stream_id,
+            route_id,
             reader: ByteReader::new(
                 stream_id,
                 CloseTarget::Origin,

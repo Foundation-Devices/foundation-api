@@ -10,6 +10,10 @@ use proptest_crate::{collection::vec, prelude::*, test_runner::TestCaseResult};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
 use super::*;
+
+fn test_route_id() -> ql_wire::RouteId {
+    ql_wire::RouteId(ql_wire::VarInt::from_u32(1))
+}
 use crate::{state::LinkState, PeerStatus, QlFsmError, QlFsmEvent, SessionWriteId};
 
 const SLOT_COUNT: usize = 4;
@@ -304,14 +308,14 @@ impl Runner {
                 let _ = take_pending(&mut self.pending_b_to_a, *index);
             }
             Action::OpenStreamA(slot) => {
-                if let Ok(stream) = self.harness.a.fsm.open_stream() {
+                if let Ok(stream) = self.harness.a.fsm.open_stream(test_route_id()) {
                     let stream_id = stream.stream_id();
                     self.slots_a[*slot] = Some(stream_id);
                     self.known_streams.insert(stream_id);
                 }
             }
             Action::OpenStreamB(slot) => {
-                if let Ok(stream) = self.harness.b.fsm.open_stream() {
+                if let Ok(stream) = self.harness.b.fsm.open_stream(test_route_id()) {
                     let stream_id = stream.stream_id();
                     self.slots_b[*slot] = Some(stream_id);
                     self.known_streams.insert(stream_id);
@@ -459,7 +463,7 @@ impl Runner {
                 QlFsmEvent::PeerStatusChanged(status) => {
                     self.events_mut(side).note_peer_status(status);
                 }
-                QlFsmEvent::Opened(stream_id) => {
+                QlFsmEvent::Opened { stream_id, .. } => {
                     prop_assert!(
                         self.known_streams.contains(&stream_id),
                         "side {side:?} emitted Opened for unknown stream {stream_id:?}"

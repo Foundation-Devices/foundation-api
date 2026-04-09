@@ -2,7 +2,7 @@ mod reader;
 mod writer;
 
 use ql_fsm::NoSessionError;
-use ql_wire::{CloseTarget, PairingToken, PeerBundle, StreamId};
+use ql_wire::{CloseTarget, PairingToken, PeerBundle, RouteId, StreamId};
 
 pub use self::{reader::*, writer::*};
 use crate::{chunk_slot, command::RuntimeCommand};
@@ -10,6 +10,7 @@ use crate::{chunk_slot, command::RuntimeCommand};
 #[derive(Debug)]
 pub struct QlStream {
     pub stream_id: StreamId,
+    pub route_id: RouteId,
     pub writer: ByteWriter,
     pub reader: ByteReader,
 }
@@ -44,12 +45,13 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::Incoming(bytes));
     }
 
-    pub async fn open_stream(&self) -> Result<QlStream, NoSessionError> {
+    pub async fn open_stream(&self, route_id: RouteId) -> Result<QlStream, NoSessionError> {
         let (request_reader, request_writer) = chunk_slot::new();
         let (request_terminal_tx, request_terminal_rx) = oneshot::channel();
         let (start_tx, start_rx) = oneshot::channel();
 
         self.send(RuntimeCommand::OpenStream {
+            route_id,
             request_reader,
             request_terminal: request_terminal_tx,
             start: start_tx,
@@ -60,6 +62,7 @@ impl RuntimeHandle {
 
         Ok(QlStream {
             stream_id,
+            route_id,
             writer: ByteWriter::new(
                 stream_id,
                 CloseTarget::Origin,

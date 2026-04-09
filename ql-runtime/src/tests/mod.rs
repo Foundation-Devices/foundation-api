@@ -16,7 +16,7 @@ use ql_fsm::PeerStatus;
 use ql_wire::{
     generate_identity, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce,
     PairingToken, PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom, RecordHeader,
-    RecordType, SessionKey, WireDecode, XID,
+    RecordType, RouteId, SessionKey, VarInt, WireDecode, XID,
 };
 use sha2::{Digest, Sha256};
 use tokio::{task::LocalSet, time::Sleep};
@@ -37,6 +37,10 @@ mod stream;
 struct StatusEvent {
     peer: XID,
     status: PeerStatus,
+}
+
+fn test_route_id() -> RouteId {
+    RouteId(VarInt::from_u32(1))
 }
 
 #[derive(Debug, Clone)]
