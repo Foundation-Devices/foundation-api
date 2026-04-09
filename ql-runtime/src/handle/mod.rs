@@ -21,30 +21,37 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
+    /// binds the remote peer
     pub fn bind_peer(&self, peer: PeerBundle) {
         self.send(RuntimeCommand::BindPeer { peer });
     }
 
+    /// starts an IK handshake with the bound peer
     pub fn connect(&self) {
         self.send(RuntimeCommand::Connect);
     }
 
+    /// arms acceptance of inbound xx pairings for a single token
     pub fn arm_pairing(&self, token: PairingToken) {
         self.send(RuntimeCommand::ArmPairing { token });
     }
 
+    /// disarms inbound xx pairing
     pub fn disarm_pairing(&self) {
         self.send(RuntimeCommand::DisarmPairing);
     }
 
+    /// starts an outbound xx handshake using the supplied pairing token
     pub fn start_pairing(&self, token: PairingToken) {
         self.send(RuntimeCommand::StartPairing { token });
     }
 
+    /// hands inbound transport bytes to the runtime
     pub fn send_incoming(&self, bytes: Vec<u8>) {
         self.send(RuntimeCommand::Incoming(bytes));
     }
 
+    /// opens a new stream on the active encrypted session
     pub async fn open_stream(&self, route_id: RouteId) -> Result<QlStream, NoSessionError> {
         let (request_reader, request_writer) = chunk_slot::new();
         let (request_terminal_tx, request_terminal_rx) = oneshot::channel();

@@ -169,7 +169,7 @@ impl QlFsm {
         }
     }
 
-    /// binds or replaces the remote peer
+    /// binds the remote peer
     pub fn bind_peer(&mut self, peer: PeerBundle) {
         implementation::handle_bind_peer(self, peer);
     }
@@ -190,7 +190,7 @@ impl QlFsm {
         implementation::handle_disarm_pairing(self);
     }
 
-    /// starts or replaces an outbound xx handshake using the supplied pairing token
+    /// starts an outbound xx handshake using the supplied pairing token
     pub fn connect_xx(
         &mut self,
         now: FsmTime,
@@ -201,13 +201,13 @@ impl QlFsm {
         implementation::handle_connect_xx(self, token, crypto)
     }
 
-    /// starts or replaces an IK handshake with the currently bound peer
+    /// starts an IK handshake with the currently bound peer
     pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
         self.state.now = now;
         implementation::handle_connect_ik(self, crypto)
     }
 
-    /// starts or replaces a KK handshake with the currently bound peer
+    /// starts a KK handshake with the currently bound peer
     pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), QlFsmError> {
         self.state.now = now;
         implementation::handle_connect_kk(self, crypto)
