@@ -1,80 +1,15 @@
 use std::task::{Context, Poll};
 
-use ql_wire::{
-    MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, PeerBundle, QlAead, QlHash,
-    QlKem, QlRandom, SessionKey, StreamClose, XID,
-};
+use ql_wire::{test_identity, NoopCrypto, PeerBundle, SoftwareCrypto, StreamClose, XID};
 
 use super::*;
 use crate::{
     chunk_slot,
     driver::state::{InboundIo, OutboundIo},
     platform::PlatformFuture,
-    tests::new_identity,
 };
 
-struct NoopPlatform;
-
-struct NoopTimer;
-
-impl QlRandom for NoopPlatform {
-    fn fill_random_bytes(&self, data: &mut [u8]) {
-        data.fill(0);
-    }
-}
-
-impl QlHash for NoopPlatform {
-    fn sha256(&self, _parts: &[&[u8]]) -> [u8; 32] {
-        [0; 32]
-    }
-}
-
-impl QlAead for NoopPlatform {
-    fn aes256_gcm_encrypt(
-        &self,
-        _key: &SessionKey,
-        _nonce: &ql_wire::Nonce,
-        _aad: &[u8],
-        _buffer: &mut [u8],
-    ) -> [u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE] {
-        [0; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE]
-    }
-
-    fn aes256_gcm_decrypt(
-        &self,
-        _key: &SessionKey,
-        _nonce: &ql_wire::Nonce,
-        _aad: &[u8],
-        _buffer: &mut [u8],
-        _auth_tag: &[u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE],
-    ) -> bool {
-        false
-    }
-}
-
-impl QlKem for NoopPlatform {
-    fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
-        MlKemKeyPair {
-            private: MlKemPrivateKey::new(Box::new([0; MlKemPrivateKey::SIZE])),
-            public: MlKemPublicKey::new(Box::new([0; MlKemPublicKey::SIZE])),
-        }
-    }
-
-    fn mlkem_encapsulate(&self, _public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
-        (
-            MlKemCiphertext::new(Box::new([0; MlKemCiphertext::SIZE])),
-            SessionKey::from_data([0; SessionKey::SIZE]),
-        )
-    }
-
-    fn mlkem_decapsulate(
-        &self,
-        _private_key: &MlKemPrivateKey,
-        _ciphertext: &MlKemCiphertext,
-    ) -> SessionKey {
-        SessionKey::from_data([0; SessionKey::SIZE])
-    }
-}
+pub struct NoopTimer;
 
 impl crate::platform::QlTimer for NoopTimer {
     fn set_deadline(&mut self, _deadline: Option<std::time::Instant>) {}
@@ -84,7 +19,7 @@ impl crate::platform::QlTimer for NoopTimer {
     }
 }
 
-impl QlPlatform for NoopPlatform {
+impl QlPlatform for NoopCrypto {
     type Timer = NoopTimer;
     type WriteMessageFut<'a> = std::future::Ready<bool>;
 
@@ -115,7 +50,11 @@ fn new_driver_state() -> (DriverState, QlFsm) {
             runtime_tx: runtime_tx.downgrade(),
             max_concurrent_message_writes: 1,
         },
-        QlFsm::new(ql_fsm::QlFsmConfig::default(), new_identity(7), now()),
+        QlFsm::new(
+            ql_fsm::QlFsmConfig::default(),
+            test_identity(&SoftwareCrypto),
+            now(),
+        ),
     )
 }
 
@@ -211,7 +150,7 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
             target: CloseTarget::Origin,
             code: StreamCloseCode(0),
         },
-        &NoopPlatform,
+        &NoopCrypto,
     );
 
     assert!(!state.streams.contains_key(&stream_id));

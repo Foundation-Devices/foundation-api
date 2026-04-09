@@ -34,14 +34,6 @@ impl Default for RuntimeConfig {
     }
 }
 
-impl RuntimeConfig {
-    pub(crate) fn normalized(mut self) -> Self {
-        self.stream_send_buffer_bytes = self.stream_send_buffer_bytes.max(1);
-        self.max_concurrent_message_writes = self.max_concurrent_message_writes.max(1);
-        self
-    }
-}
-
 pub struct Runtime<P> {
     identity: QlIdentity,
     platform: P,
@@ -58,7 +50,6 @@ pub fn new_runtime<P>(
 where
     P: QlPlatform,
 {
-    let config = config.normalized();
     let (tx, rx) = async_channel::unbounded();
     (
         Runtime {

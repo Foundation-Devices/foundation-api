@@ -1,9 +1,8 @@
 use std::{
-    cell::Cell,
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
         Arc,
     },
     task::{Context, Poll},
@@ -11,14 +10,12 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender};
-use libcrux_aesgcm::AesGcm256Key;
 use ql_fsm::PeerStatus;
 use ql_wire::{
-    generate_identity, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce,
-    PairingToken, PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom, RecordHeader,
-    RecordType, RouteId, SessionKey, VarInt, WireDecode, XID,
+    test_identities, test_identity, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey,
+    Nonce, PairingToken, PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom, RecordHeader,
+    RecordType, RouteId, SessionKey, SoftwareCrypto, VarInt, WireDecode, XID,
 };
-use sha2::{Digest, Sha256};
 use tokio::{task::LocalSet, time::Sleep};
 
 use crate::{
@@ -62,110 +59,11 @@ impl WriteStats {
     }
 }
 
-struct DeterministicCrypto {
-    seed: u8,
-    counter: Cell<u8>,
-}
-
-impl DeterministicCrypto {
-    fn new(seed: u8) -> Self {
-        Self {
-            seed,
-            counter: Cell::new(0),
-        }
-    }
-}
-
-impl QlRandom for DeterministicCrypto {
-    fn fill_random_bytes(&self, data: &mut [u8]) {
-        let value = self.seed.wrapping_add(self.counter.get());
-        self.counter.set(self.counter.get().wrapping_add(1));
-        data.fill(value);
-    }
-}
-
-impl QlHash for DeterministicCrypto {
-    fn sha256(&self, parts: &[&[u8]]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        for part in parts {
-            hasher.update(part);
-        }
-        hasher.finalize().into()
-    }
-}
-
-impl QlAead for DeterministicCrypto {
-    fn aes256_gcm_encrypt(
-        &self,
-        key: &SessionKey,
-        nonce: &Nonce,
-        aad: &[u8],
-        buffer: &mut [u8],
-    ) -> [u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE] {
-        let key: AesGcm256Key = (*key.data()).into();
-        let plaintext = buffer.to_vec();
-        let mut auth = [0u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE];
-        key.encrypt(
-            buffer,
-            (&mut auth).into(),
-            (&nonce.0).into(),
-            aad,
-            &plaintext,
-        )
-        .unwrap();
-        auth
-    }
-
-    fn aes256_gcm_decrypt(
-        &self,
-        key: &SessionKey,
-        nonce: &Nonce,
-        aad: &[u8],
-        buffer: &mut [u8],
-        auth_tag: &[u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE],
-    ) -> bool {
-        let key: AesGcm256Key = (*key.data()).into();
-        let ciphertext = buffer.to_vec();
-        key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
-            .is_ok()
-    }
-}
-
-impl QlKem for DeterministicCrypto {
-    fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
-        let data = Box::new([self.seed; MlKemPublicKey::SIZE]);
-        MlKemKeyPair {
-            private: MlKemPrivateKey::new(Box::new([self.seed; MlKemPrivateKey::SIZE])),
-            public: MlKemPublicKey::new(data),
-        }
-    }
-
-    fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
-        let mut secret = [0u8; SessionKey::SIZE];
-        secret.copy_from_slice(&public_key.as_bytes()[..SessionKey::SIZE]);
-        (
-            MlKemCiphertext::new(Box::new([self.seed; MlKemCiphertext::SIZE])),
-            SessionKey::from_data(secret),
-        )
-    }
-
-    fn mlkem_decapsulate(
-        &self,
-        private_key: &MlKemPrivateKey,
-        _ciphertext: &MlKemCiphertext,
-    ) -> SessionKey {
-        let mut secret = [0u8; SessionKey::SIZE];
-        secret.copy_from_slice(&private_key.as_bytes()[..SessionKey::SIZE]);
-        SessionKey::from_data(secret)
-    }
-}
-
 struct TestPlatform {
     outbound: Sender<Vec<u8>>,
     status: Sender<StatusEvent>,
     inbound: Option<Sender<QlStream>>,
-    nonce_seed: u8,
-    nonce_counter: AtomicU8,
+    crypto: SoftwareCrypto,
     encrypted_write_counter: AtomicUsize,
     fail_encrypted_write_at: Option<usize>,
     write_delay: Duration,
@@ -173,13 +71,11 @@ struct TestPlatform {
 }
 
 impl TestPlatform {
-    fn new(seed: u8) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
-        Self::new_inner(seed, None, None, Duration::ZERO, None)
+    fn new() -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
+        Self::new_inner(None, None, Duration::ZERO, None)
     }
 
-    fn new_with_inbound(
-        seed: u8,
-    ) -> (
+    fn new_with_inbound() -> (
         Self,
         Receiver<Vec<u8>>,
         Receiver<StatusEvent>,
@@ -187,33 +83,24 @@ impl TestPlatform {
     ) {
         let (inbound_tx, inbound_rx) = async_channel::unbounded();
         let (platform, outbound_rx, status_rx) =
-            Self::new_inner(seed, Some(inbound_tx), None, Duration::ZERO, None);
+            Self::new_inner(Some(inbound_tx), None, Duration::ZERO, None);
         (platform, outbound_rx, status_rx, inbound_rx)
     }
 
     fn new_with_session_write_failure(
-        seed: u8,
         fail_encrypted_write_at: usize,
     ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
-        Self::new_inner(
-            seed,
-            None,
-            Some(fail_encrypted_write_at),
-            Duration::ZERO,
-            None,
-        )
+        Self::new_inner(None, Some(fail_encrypted_write_at), Duration::ZERO, None)
     }
 
     fn new_with_delayed_writes(
-        seed: u8,
         delay: Duration,
         write_stats: WriteStats,
     ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
-        Self::new_inner(seed, None, None, delay, Some(write_stats))
+        Self::new_inner(None, None, delay, Some(write_stats))
     }
 
     fn new_inner(
-        seed: u8,
         inbound: Option<Sender<QlStream>>,
         fail_encrypted_write_at: Option<usize>,
         write_delay: Duration,
@@ -226,8 +113,7 @@ impl TestPlatform {
                 outbound,
                 status,
                 inbound,
-                nonce_seed: seed,
-                nonce_counter: AtomicU8::new(0),
+                crypto: SoftwareCrypto,
                 encrypted_write_counter: AtomicUsize::new(0),
                 fail_encrypted_write_at,
                 write_delay,
@@ -264,20 +150,13 @@ impl QlTimer for TokioTimer {
 
 impl QlRandom for TestPlatform {
     fn fill_random_bytes(&self, data: &mut [u8]) {
-        let value = self
-            .nonce_seed
-            .wrapping_add(self.nonce_counter.fetch_add(1, Ordering::Relaxed));
-        data.fill(value);
+        self.crypto.fill_random_bytes(data);
     }
 }
 
 impl QlHash for TestPlatform {
     fn sha256(&self, parts: &[&[u8]]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        for part in parts {
-            hasher.update(part);
-        }
-        hasher.finalize().into()
+        self.crypto.sha256(parts)
     }
 }
 
@@ -289,18 +168,7 @@ impl QlAead for TestPlatform {
         aad: &[u8],
         buffer: &mut [u8],
     ) -> [u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE] {
-        let key: AesGcm256Key = (*key.data()).into();
-        let plaintext = buffer.to_vec();
-        let mut auth = [0u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE];
-        key.encrypt(
-            buffer,
-            (&mut auth).into(),
-            (&nonce.0).into(),
-            aad,
-            &plaintext,
-        )
-        .unwrap();
-        auth
+        self.crypto.aes256_gcm_encrypt(key, nonce, aad, buffer)
     }
 
     fn aes256_gcm_decrypt(
@@ -311,39 +179,22 @@ impl QlAead for TestPlatform {
         buffer: &mut [u8],
         auth_tag: &[u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE],
     ) -> bool {
-        let key: AesGcm256Key = (*key.data()).into();
-        let ciphertext = buffer.to_vec();
-        key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
-            .is_ok()
+        self.crypto
+            .aes256_gcm_decrypt(key, nonce, aad, buffer, auth_tag)
     }
 }
 
 impl QlKem for TestPlatform {
     fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
-        let byte = self.nonce_seed;
-        MlKemKeyPair {
-            private: MlKemPrivateKey::new(Box::new([byte; MlKemPrivateKey::SIZE])),
-            public: MlKemPublicKey::new(Box::new([byte; MlKemPublicKey::SIZE])),
-        }
+        self.crypto.mlkem_generate_keypair()
     }
 
     fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
-        let mut secret = [0u8; SessionKey::SIZE];
-        secret.copy_from_slice(&public_key.as_bytes()[..SessionKey::SIZE]);
-        (
-            MlKemCiphertext::new(Box::new([self.nonce_seed; MlKemCiphertext::SIZE])),
-            SessionKey::from_data(secret),
-        )
+        self.crypto.mlkem_encapsulate(public_key)
     }
 
-    fn mlkem_decapsulate(
-        &self,
-        private_key: &MlKemPrivateKey,
-        _ciphertext: &MlKemCiphertext,
-    ) -> SessionKey {
-        let mut secret = [0u8; SessionKey::SIZE];
-        secret.copy_from_slice(&private_key.as_bytes()[..SessionKey::SIZE]);
-        SessionKey::from_data(secret)
+    fn mlkem_decapsulate(&self, pk: &MlKemPrivateKey, cipher: &MlKemCiphertext) -> SessionKey {
+        self.crypto.mlkem_decapsulate(pk, cipher)
     }
 }
 
@@ -417,11 +268,6 @@ fn is_encrypted_payload(bytes: &[u8]) -> bool {
     RecordHeader::decode_bytes(bytes)
         .ok()
         .is_some_and(|header| header.record_type == RecordType::Session)
-}
-
-pub(crate) fn new_identity(seed: u8) -> QlIdentity {
-    let crypto = DeterministicCrypto::new(seed);
-    generate_identity(&crypto, XID([seed; XID::SIZE]))
 }
 
 fn pairing_token(byte: u8) -> PairingToken {
@@ -560,8 +406,8 @@ fn default_runtime_config() -> RuntimeConfig {
 #[test]
 fn runtime_is_send() {
     let config = default_runtime_config();
-    let identity_a = new_identity(11);
-    let (platform_a, _, _) = TestPlatform::new(1);
+    let identity_a = test_identity(&SoftwareCrypto);
+    let (platform_a, _, _) = TestPlatform::new();
     let (runtime_a, _handle) = new_runtime(identity_a, platform_a, config);
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
@@ -575,8 +421,8 @@ fn runtime_is_send() {
 #[test]
 fn runtime_exits_when_last_handle_drops() {
     let config = default_runtime_config();
-    let identity = new_identity(11);
-    let (platform, _, _) = TestPlatform::new(1);
+    let identity = test_identity(&SoftwareCrypto);
+    let (platform, _, _) = TestPlatform::new();
     let (runtime, handle) = new_runtime(identity, platform, config);
     let (done_tx, done_rx) = oneshot::channel();
 

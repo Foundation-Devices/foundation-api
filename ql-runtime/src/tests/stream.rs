@@ -10,10 +10,9 @@ use crate::QlStreamError;
 async fn open_stream_duplex_happy_path() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -75,10 +74,9 @@ async fn open_stream_duplex_happy_path() {
 async fn reader_exposes_bounded_chunk_reads() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -144,10 +142,9 @@ async fn large_stream_payload_round_trips() {
         let config = default_runtime_config();
         let payload: Vec<u8> = (0..40).collect();
 
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
         let (done_tx, done_rx) = async_channel::bounded(1);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
@@ -199,10 +196,9 @@ async fn large_stream_payload_round_trips() {
 async fn dropping_responder_closes_initiator_response() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -245,10 +241,9 @@ async fn dropping_responder_closes_initiator_response() {
 async fn dropping_inbound_reader_cancels_remote_writer() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
         let (go_tx, go_rx) = async_channel::bounded(1);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
@@ -306,10 +301,9 @@ async fn max_concurrent_message_writes_is_respected() {
             ..default_runtime_config()
         };
         let (platform_a, outbound_a, status_a) =
-            TestPlatform::new_with_delayed_writes(1, Duration::from_millis(40), stats.clone());
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+            TestPlatform::new_with_delayed_writes(Duration::from_millis(40), stats.clone());
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -376,10 +370,9 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
             },
             ..default_runtime_config()
         };
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let request_payload: Vec<u8> = (0..32).collect();
         let response_payload: Vec<u8> = (100..132).collect();

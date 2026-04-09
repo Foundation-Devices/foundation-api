@@ -96,9 +96,9 @@ fn ik_connect_learns_remote_initial_stream_receive_window() {
 #[test]
 fn connect_methods_require_bound_peer() {
     let time = Harness::paired_known(QlFsmConfig::default()).time();
-    let identity = test_identity(55);
+    let identity = test_identity(&SoftwareCrypto);
     let mut fsm = QlFsm::new(QlFsmConfig::default(), identity, time);
-    let crypto = TestCrypto::new(9);
+    let crypto = SoftwareCrypto;
 
     assert_eq!(fsm.connect_ik(time, &crypto), Err(NoPeerError));
     assert_eq!(fsm.connect_kk(time, &crypto), Err(NoPeerError));
@@ -307,7 +307,10 @@ fn bind_peer_clears_queued_handshake_output() {
 
     harness.connect_ik_a().unwrap();
     harness.drain_events_a();
-    harness.a.fsm.bind_peer(test_identity(99).bundle());
+    harness
+        .a
+        .fsm
+        .bind_peer(test_identity(&SoftwareCrypto).bundle());
 
     assert!(harness.drain_events_a().is_empty());
     assert!(harness.next_outbound_a().is_none());

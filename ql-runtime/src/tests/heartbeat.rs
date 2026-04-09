@@ -21,10 +21,9 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
             ..default_runtime_config()
         };
         let config_b = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(2);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(1);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config_a);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config_b);

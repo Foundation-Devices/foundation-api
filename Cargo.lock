@@ -2219,11 +2219,8 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "indexmap",
- "libcrux-aesgcm",
- "libcrux-ml-kem",
  "proptest",
  "ql-wire",
- "sha2",
 ]
 
 [[package]]
@@ -2241,13 +2238,11 @@ dependencies = [
  "bytes",
  "event-listener",
  "futures-lite",
- "libcrux-aesgcm",
  "loom",
  "oneshot",
  "ql-fsm",
  "ql-rpc",
  "ql-wire",
- "sha2",
  "tokio",
 ]
 
@@ -2256,6 +2251,7 @@ name = "ql-wire"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "getrandom 0.2.16",
  "libcrux-aesgcm",
  "libcrux-ml-kem",
  "sha2",

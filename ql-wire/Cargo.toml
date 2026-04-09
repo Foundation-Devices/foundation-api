@@ -5,10 +5,23 @@ edition = "2021"
 description = "Quantum Link wire format types and crypto helpers"
 license = "Proprietary"
 
+[features]
+test-utils = [
+  "dep:getrandom",
+  "dep:libcrux-aesgcm",
+  "dep:libcrux-ml-kem",
+  "dep:sha2",
+]
+
 [dependencies]
 bytes = "1"
+getrandom = { workspace = true, optional = true }
+libcrux-aesgcm = { version = "0.0.7", optional = true }
+libcrux-ml-kem = { version = "0.0.7", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 [dev-dependencies]
+getrandom = { workspace = true }
 libcrux-aesgcm = "0.0.7"
 libcrux-ml-kem = "0.0.7"
 sha2 = "0.10"

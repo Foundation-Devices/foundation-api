@@ -20,8 +20,7 @@ ql-rpc = { path = "../ql-rpc", optional = true }
 ql-wire = { path = "../ql-wire" }
 
 [dev-dependencies]
-libcrux-aesgcm = "0.0.7"
-sha2 = "0.10"
+ql-wire = { path = "../ql-wire", features = ["test-utils"] }
 tokio = { version = "1.44", features = ["macros", "rt", "time", "sync"] }
 
 [target.'cfg(loom)'.dev-dependencies]

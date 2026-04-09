@@ -16,6 +16,8 @@ mod identity;
 mod nonce;
 mod pq;
 mod record;
+#[cfg(any(feature = "test-utils", test))]
+mod testing;
 mod varint;
 mod xid;
 
@@ -31,6 +33,8 @@ pub use identity::*;
 pub use nonce::*;
 pub use pq::*;
 pub use record::*;
+#[cfg(any(feature = "test-utils", test))]
+pub use testing::*;
 pub use varint::*;
 pub use xid::*;
 

@@ -4,10 +4,9 @@ use super::*;
 async fn unpair_clears_remote_peer_and_aborts_active_stream() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);

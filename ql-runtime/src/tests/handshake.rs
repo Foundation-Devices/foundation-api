@@ -8,10 +8,9 @@ use super::*;
 async fn connect_round_trip_changes_peer_status() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b) = TestPlatform::new();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -35,10 +34,9 @@ async fn connect_round_trip_changes_peer_status() {
 async fn opening_stream_requires_connection() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, _outbound_a, _status_a) = TestPlatform::new(1);
-        let (platform_b, _outbound_b, _status_b, _inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, _outbound_a, _status_a) = TestPlatform::new();
+        let (platform_b, _outbound_b, _status_b, _inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -65,10 +63,9 @@ async fn handshake_timeout_disconnects() {
             },
             ..default_runtime_config()
         };
-        let (platform_a, _outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, _outbound_b, _status_b) = TestPlatform::new(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, _outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, _outbound_b, _status_b) = TestPlatform::new();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -88,10 +85,9 @@ async fn handshake_timeout_disconnects() {
 async fn rejected_session_write_is_reissued() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new_with_session_write_failure(1, 1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new_with_session_write_failure(1);
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -147,10 +143,9 @@ async fn rejected_session_write_is_reissued() {
 async fn start_pairing_round_trip_connects_when_armed() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, status_b) = TestPlatform::new(2);
-        let identity_a = new_identity(11);
-        let identity_b = new_identity(73);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, status_b) = TestPlatform::new();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
         let token = pairing_token(7);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
@@ -175,13 +170,13 @@ async fn start_pairing_round_trip_connects_when_armed() {
 async fn start_pairing_does_not_connect_when_unarmed() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new(1);
-        let (platform_b, outbound_b, _status_b) = TestPlatform::new(2);
-        let identity_a = new_identity(11);
+        let (platform_a, outbound_a, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, _status_b) = TestPlatform::new();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
         let token = pairing_token(8);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(new_identity(73), platform_b, config);
+        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
@@ -193,7 +188,7 @@ async fn start_pairing_does_not_connect_when_unarmed() {
 
         assert_no_status_for(
             &status_a,
-            XID([73; XID::SIZE]),
+            identity_b.xid,
             PeerStatus::Connected,
             Duration::from_millis(150),
         )

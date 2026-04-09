@@ -1,14 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use libcrux_aesgcm::AesGcm256Key;
-use libcrux_ml_kem::mlkem1024;
-use sha2::{Digest, Sha256};
-
 use super::*;
-
-struct TestCrypto {
-    counter: AtomicU64,
-}
 
 fn decode_handshake_record(bytes: &[u8]) -> QlHandshakeRecord {
     decode_record(bytes).unwrap().1
@@ -17,143 +7,6 @@ fn decode_handshake_record(bytes: &[u8]) -> QlHandshakeRecord {
 fn decode_session_record(bytes: &[u8]) -> QlSessionRecord<Vec<u8>> {
     let (_, record) = decode_record::<QlSessionRecord<_>, _>(bytes).unwrap();
     record.into_owned()
-}
-
-impl TestCrypto {
-    fn new(seed: u64) -> Self {
-        Self {
-            counter: AtomicU64::new(seed),
-        }
-    }
-
-    fn next_block(&self) -> [u8; 32] {
-        let value = self.counter.fetch_add(1, Ordering::Relaxed).to_le_bytes();
-        sha256_parts(&[b"ql-wire:test-rng:v1", &value])
-    }
-
-    fn random_array<const L: usize>(&self) -> [u8; L] {
-        let mut out = [0u8; L];
-        self.fill_random_bytes(&mut out);
-        out
-    }
-}
-
-impl QlRandom for TestCrypto {
-    fn fill_random_bytes(&self, out: &mut [u8]) {
-        fill_expanded(self, &[b"ql-wire:test-fill:v1"], out);
-    }
-}
-
-impl QlHash for TestCrypto {
-    fn sha256(&self, parts: &[&[u8]]) -> [u8; 32] {
-        sha256_parts(parts)
-    }
-}
-
-impl QlAead for TestCrypto {
-    fn aes256_gcm_encrypt(
-        &self,
-        key: &SessionKey,
-        nonce: &Nonce,
-        aad: &[u8],
-        buffer: &mut [u8],
-    ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE] {
-        let key: AesGcm256Key = (*key.data()).into();
-        let plaintext = buffer.to_vec();
-        let mut auth = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
-        key.encrypt(
-            buffer,
-            (&mut auth).into(),
-            (&nonce.0).into(),
-            aad,
-            &plaintext,
-        )
-        .unwrap();
-        auth
-    }
-
-    fn aes256_gcm_decrypt(
-        &self,
-        key: &SessionKey,
-        nonce: &Nonce,
-        aad: &[u8],
-        buffer: &mut [u8],
-        auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
-    ) -> bool {
-        let key: AesGcm256Key = (*key.data()).into();
-        let ciphertext = buffer.to_vec();
-        key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
-            .is_ok()
-    }
-}
-
-impl QlKem for TestCrypto {
-    fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
-        let key_pair = mlkem1024::generate_key_pair(self.random_array());
-        let mut public = [0u8; MlKemPublicKey::SIZE];
-        public.copy_from_slice(key_pair.pk());
-        let mut private = [0u8; MlKemPrivateKey::SIZE];
-        private.copy_from_slice(key_pair.sk());
-
-        MlKemKeyPair {
-            private: MlKemPrivateKey::new(Box::new(private)),
-            public: MlKemPublicKey::new(Box::new(public)),
-        }
-    }
-
-    fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
-        let public_key = public_key.as_bytes().into();
-        let (ciphertext_value, shared_value) =
-            mlkem1024::encapsulate(&public_key, self.random_array());
-        let mut ciphertext = [0u8; MlKemCiphertext::SIZE];
-        ciphertext.copy_from_slice(ciphertext_value.as_slice());
-        let mut shared = [0u8; SessionKey::SIZE];
-        shared.copy_from_slice(shared_value.as_slice());
-        (
-            MlKemCiphertext::new(Box::new(ciphertext)),
-            SessionKey::from_data(shared),
-        )
-    }
-
-    fn mlkem_decapsulate(
-        &self,
-        private_key: &MlKemPrivateKey,
-        ciphertext: &MlKemCiphertext,
-    ) -> SessionKey {
-        let private_key = private_key.as_bytes().into();
-        let ciphertext = ciphertext.as_bytes().into();
-        let shared = mlkem1024::decapsulate(&private_key, &ciphertext);
-        let mut out = [0u8; SessionKey::SIZE];
-        out.copy_from_slice(shared.as_slice());
-        SessionKey::from_data(out)
-    }
-}
-
-fn sha256_parts(parts: &[&[u8]]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    for part in parts {
-        hasher.update(part);
-    }
-    hasher.finalize().into()
-}
-
-fn fill_expanded(crypto: &TestCrypto, parts: &[&[u8]], out: &mut [u8]) {
-    let mut written = 0usize;
-    let mut counter = 0u64;
-    while written < out.len() {
-        let random = crypto.next_block();
-        let counter_bytes = counter.to_le_bytes();
-        let mut inputs = Vec::with_capacity(parts.len() + 3);
-        inputs.push(b"ql-wire:test-expand:v1".as_slice());
-        inputs.push(&random);
-        inputs.push(&counter_bytes);
-        inputs.extend_from_slice(parts);
-        let block = sha256_parts(&inputs);
-        let take = (out.len() - written).min(block.len());
-        out[written..written + take].copy_from_slice(&block[..take]);
-        written += take;
-        counter = counter.wrapping_add(1);
-    }
 }
 
 fn xid(byte: u8) -> XID {
@@ -183,10 +36,6 @@ fn handshake_transport_params(window: u32) -> TransportParams {
     TransportParams {
         initial_stream_receive_window: window,
     }
-}
-
-fn make_identity(crypto: &impl QlCrypto, byte: u8) -> QlIdentity {
-    generate_identity(crypto, xid(byte))
 }
 
 fn handshake_header(sender: u8, recipient: u8) -> HandshakeHeader {
@@ -226,8 +75,8 @@ fn encrypt_record(
 
 #[test]
 fn peer_bundle_round_trip() {
-    let crypto = TestCrypto::new(1);
-    let identity = make_identity(&crypto, 7).with_capabilities(0x55aa_33cc);
+    let crypto = SoftwareCrypto;
+    let identity = test_identity(&crypto).with_capabilities(0x55aa_33cc);
     let bundle = identity.bundle();
 
     let encoded = bundle.encode_vec();
@@ -298,9 +147,8 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
 
 #[test]
 fn ik_handshake_rejects_tampered_handshake_meta() {
-    let crypto = TestCrypto::new(9);
-    let initiator = make_identity(&crypto, 1);
-    let responder = make_identity(&crypto, 2);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let mut initiator_state = IkHandshake::new_initiator(
         &crypto,
@@ -329,9 +177,8 @@ fn ik_handshake_rejects_tampered_handshake_meta() {
 
 #[test]
 fn kk_handshake_rejects_tampered_handshake_header() {
-    let crypto = TestCrypto::new(10);
-    let initiator = make_identity(&crypto, 1);
-    let responder = make_identity(&crypto, 2);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let mut initiator_state = KkHandshake::new_initiator(
         &crypto,
@@ -364,9 +211,8 @@ fn kk_handshake_rejects_tampered_handshake_header() {
 
 #[test]
 fn ik_handshake_rejects_tampered_transport_params() {
-    let crypto = TestCrypto::new(101);
-    let initiator = make_identity(&crypto, 1);
-    let responder = make_identity(&crypto, 2);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let mut initiator_state = IkHandshake::new_initiator(
         &crypto,
@@ -395,9 +241,8 @@ fn ik_handshake_rejects_tampered_transport_params() {
 
 #[test]
 fn ik_handshake_rejects_tampered_handshake_header() {
-    let crypto = TestCrypto::new(11);
-    let initiator = make_identity(&crypto, 1);
-    let responder = make_identity(&crypto, 2);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let mut initiator_state = IkHandshake::new_initiator(
         &crypto,
@@ -421,10 +266,9 @@ fn ik_handshake_rejects_tampered_handshake_header() {
 
 #[test]
 fn ik_handshake_rejects_bound_remote_bundle_mismatch() {
-    let crypto = TestCrypto::new(12);
-    let initiator = make_identity(&crypto, 1);
-    let bogus = make_identity(&crypto, 1);
-    let responder = make_identity(&crypto, 2);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
+    let bogus = test_identity(&crypto);
 
     let mut initiator_state = IkHandshake::new_initiator(
         &crypto,
@@ -451,9 +295,8 @@ fn ik_handshake_rejects_bound_remote_bundle_mismatch() {
 
 #[test]
 fn ik_handshake_rejects_expired_message() {
-    let crypto = TestCrypto::new(13);
-    let initiator = make_identity(&crypto, 1);
-    let responder = make_identity(&crypto, 2);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let mut initiator_state = IkHandshake::new_initiator(
         &crypto,
@@ -482,9 +325,8 @@ fn ik_handshake_rejects_expired_message() {
 
 #[test]
 fn ik_handshake_round_trip_derives_matching_transport_and_learns_remote() {
-    let crypto = TestCrypto::new(20);
-    let initiator = make_identity(&crypto, 3);
-    let responder = make_identity(&crypto, 4);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let initiator_params = handshake_transport_params(4096);
     let responder_params = handshake_transport_params(8192);
@@ -532,9 +374,8 @@ fn ik_handshake_round_trip_derives_matching_transport_and_learns_remote() {
 
 #[test]
 fn ik_handshake_round_trip_derives_matching_transport_with_bound_responder() {
-    let crypto = TestCrypto::new(21);
-    let initiator = make_identity(&crypto, 3);
-    let responder = make_identity(&crypto, 4);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let initiator_params = handshake_transport_params(16_384);
     let responder_params = handshake_transport_params(32_768);
@@ -586,9 +427,8 @@ fn ik_handshake_round_trip_derives_matching_transport_with_bound_responder() {
 
 #[test]
 fn kk_handshake_round_trip_derives_matching_transport() {
-    let crypto = TestCrypto::new(30);
-    let initiator = make_identity(&crypto, 3);
-    let responder = make_identity(&crypto, 4);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let initiator_params = handshake_transport_params(24_576);
     let responder_params = handshake_transport_params(49_152);
@@ -640,9 +480,8 @@ fn kk_handshake_round_trip_derives_matching_transport() {
 
 #[test]
 fn kk_handshake_rejects_tampered_transport_params() {
-    let crypto = TestCrypto::new(31);
-    let initiator = make_identity(&crypto, 3);
-    let responder = make_identity(&crypto, 4);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let mut initiator_state = KkHandshake::new_initiator(
         &crypto,
@@ -675,9 +514,8 @@ fn kk_handshake_rejects_tampered_transport_params() {
 
 #[test]
 fn xx_handshake_rejects_tampered_pairing_token() {
-    let crypto = TestCrypto::new(32);
-    let initiator = make_identity(&crypto, 5);
-    let responder = make_identity(&crypto, 6);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
     let token = pairing_token(7);
 
     let mut initiator_state =
@@ -698,9 +536,8 @@ fn xx_handshake_rejects_tampered_pairing_token() {
 
 #[test]
 fn xx_handshake_rejects_repeated_transport_param_change() {
-    let crypto = TestCrypto::new(33);
-    let initiator = make_identity(&crypto, 5);
-    let responder = make_identity(&crypto, 6);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
     let token = pairing_token(9);
 
     let mut initiator_state = XxHandshake::new_initiator(
@@ -739,9 +576,8 @@ fn xx_handshake_rejects_repeated_transport_param_change() {
 
 #[test]
 fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
-    let crypto = TestCrypto::new(34);
-    let initiator = make_identity(&crypto, 7);
-    let responder = make_identity(&crypto, 8);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
     let token = pairing_token(10);
 
     let initiator_params = handshake_transport_params(28_672);
@@ -804,7 +640,7 @@ fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
 
 #[test]
 fn encrypted_session_record_round_trip_uses_connection_id_header() {
-    let crypto = TestCrypto::new(40);
+    let crypto = SoftwareCrypto;
     let header = SessionHeader {
         connection_id: ConnectionId::from_data([0x44; ConnectionId::SIZE]),
         seq: record_seq(11),
@@ -915,9 +751,8 @@ fn protocol_record_size_breakdown() {
         println!("{label:<32}: {size} bytes");
     }
 
-    let crypto = TestCrypto::new(50);
-    let initiator = make_identity(&crypto, 1);
-    let responder = make_identity(&crypto, 2);
+    let crypto = SoftwareCrypto;
+    let (initiator, responder) = test_identities(&crypto);
 
     let mut ik_initiator = IkHandshake::new_initiator(
         &crypto,

@@ -2,19 +2,12 @@ mod handshake;
 mod proptest;
 mod session;
 
-use std::{
-    cell::Cell,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
-use libcrux_aesgcm::AesGcm256Key;
-use libcrux_ml_kem::mlkem1024;
 use ql_wire::{
-    self, generate_identity, ConnectionId, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
-    MlKemPublicKey, Nonce, PairingToken, QlAead, QlCrypto, QlHash, QlIdentity, QlKem, QlRandom,
-    SessionKey, TransportParams, ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
+    self, test_identities, test_identity, ConnectionId, PairingToken, QlCrypto, SessionKey,
+    SoftwareCrypto, TransportParams,
 };
-use sha2::{Digest, Sha256};
 
 use crate::{
     session::{SessionFsm, SessionFsmConfig, StreamParity},
@@ -22,123 +15,7 @@ use crate::{
     FsmTime, NoPeerError, OutboundWrite, QlFsm, QlFsmConfig, QlFsmEvent, SessionWriteId,
 };
 
-#[derive(Clone)]
-struct TestCrypto {
-    seed: u8,
-    counter: Cell<u64>,
-}
-
-impl TestCrypto {
-    fn new(seed: u8) -> Self {
-        Self {
-            seed,
-            counter: Cell::new(0),
-        }
-    }
-
-    fn next_block(&self) -> [u8; 32] {
-        let counter = self.counter.get();
-        self.counter.set(counter.wrapping_add(1));
-        sha256_parts(&[b"ql-fsm:test-rng:v1", &[self.seed], &counter.to_le_bytes()])
-    }
-
-    fn random_array<const L: usize>(&self) -> [u8; L] {
-        let mut out = [0u8; L];
-        self.fill_random_bytes(&mut out);
-        out
-    }
-}
-
-impl QlRandom for TestCrypto {
-    fn fill_random_bytes(&self, out: &mut [u8]) {
-        fill_expanded(self, &[b"ql-fsm:test-fill:v1"], out);
-    }
-}
-
-impl QlHash for TestCrypto {
-    fn sha256(&self, parts: &[&[u8]]) -> [u8; 32] {
-        sha256_parts(parts)
-    }
-}
-
-impl QlAead for TestCrypto {
-    fn aes256_gcm_encrypt(
-        &self,
-        key: &SessionKey,
-        nonce: &Nonce,
-        aad: &[u8],
-        buffer: &mut [u8],
-    ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE] {
-        let key: AesGcm256Key = (*key.data()).into();
-        let plaintext = buffer.to_vec();
-        let mut auth = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
-        key.encrypt(
-            buffer,
-            (&mut auth).into(),
-            (&nonce.0).into(),
-            aad,
-            &plaintext,
-        )
-        .unwrap();
-        auth
-    }
-
-    fn aes256_gcm_decrypt(
-        &self,
-        key: &SessionKey,
-        nonce: &Nonce,
-        aad: &[u8],
-        buffer: &mut [u8],
-        auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
-    ) -> bool {
-        let key: AesGcm256Key = (*key.data()).into();
-        let ciphertext = buffer.to_vec();
-        key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
-            .is_ok()
-    }
-}
-
-impl QlKem for TestCrypto {
-    fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
-        let key_pair = mlkem1024::generate_key_pair(self.random_array());
-        let mut public = [0u8; MlKemPublicKey::SIZE];
-        public.copy_from_slice(key_pair.pk());
-        let mut private = [0u8; MlKemPrivateKey::SIZE];
-        private.copy_from_slice(key_pair.sk());
-
-        MlKemKeyPair {
-            private: MlKemPrivateKey::new(Box::new(private)),
-            public: MlKemPublicKey::new(Box::new(public)),
-        }
-    }
-
-    fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
-        let public_key = public_key.as_bytes().into();
-        let (ciphertext_value, shared_value) =
-            mlkem1024::encapsulate(&public_key, self.random_array());
-        let mut ciphertext = [0u8; MlKemCiphertext::SIZE];
-        ciphertext.copy_from_slice(ciphertext_value.as_slice());
-        let mut shared = [0u8; SessionKey::SIZE];
-        shared.copy_from_slice(shared_value.as_slice());
-        (
-            MlKemCiphertext::new(Box::new(ciphertext)),
-            SessionKey::from_data(shared),
-        )
-    }
-
-    fn mlkem_decapsulate(
-        &self,
-        private_key: &MlKemPrivateKey,
-        ciphertext: &MlKemCiphertext,
-    ) -> SessionKey {
-        let private_key = private_key.as_bytes().into();
-        let ciphertext = ciphertext.as_bytes().into();
-        let shared = mlkem1024::decapsulate(&private_key, &ciphertext);
-        let mut out = [0u8; SessionKey::SIZE];
-        out.copy_from_slice(shared.as_slice());
-        SessionKey::from_data(out)
-    }
-}
+type TestCrypto = SoftwareCrypto;
 
 struct Node {
     fsm: QlFsm,
@@ -171,8 +48,7 @@ impl Harness {
         know_a: bool,
         know_b: bool,
     ) -> Self {
-        let identity_a = test_identity(11);
-        let identity_b = test_identity(73);
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
         let now = Instant::now();
         let time = FsmTime {
             instant: now,
@@ -184,11 +60,11 @@ impl Harness {
             unix_secs: time.unix_secs,
             a: Node {
                 fsm: QlFsm::new(config_a, identity_a.clone(), time),
-                crypto: TestCrypto::new(1),
+                crypto: SoftwareCrypto,
             },
             b: Node {
                 fsm: QlFsm::new(config_b, identity_b.clone(), time),
-                crypto: TestCrypto::new(2),
+                crypto: SoftwareCrypto,
             },
         };
 
@@ -389,11 +265,6 @@ impl Harness {
     }
 }
 
-fn test_identity(seed: u8) -> QlIdentity {
-    let crypto = TestCrypto::new(seed);
-    generate_identity(&crypto, XID([seed; XID::SIZE]))
-}
-
 fn pairing_token(byte: u8) -> PairingToken {
     PairingToken([byte; PairingToken::SIZE])
 }
@@ -448,31 +319,4 @@ fn decrypt_record(
         record.header,
         ql_wire::decode_session_frames(&plaintext).unwrap(),
     )
-}
-
-fn sha256_parts(parts: &[&[u8]]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    for part in parts {
-        hasher.update(part);
-    }
-    hasher.finalize().into()
-}
-
-fn fill_expanded(crypto: &TestCrypto, parts: &[&[u8]], out: &mut [u8]) {
-    let mut written = 0usize;
-    let mut counter = 0u64;
-    while written < out.len() {
-        let random = crypto.next_block();
-        let counter_bytes = counter.to_le_bytes();
-        let mut inputs = Vec::with_capacity(parts.len() + 3);
-        inputs.push(b"ql-fsm:test-expand:v1".as_slice());
-        inputs.push(&random);
-        inputs.push(&counter_bytes);
-        inputs.extend_from_slice(parts);
-        let block = sha256_parts(&inputs);
-        let take = (out.len() - written).min(block.len());
-        out[written..written + take].copy_from_slice(&block[..take]);
-        written += take;
-        counter = counter.wrapping_add(1);
-    }
 }
