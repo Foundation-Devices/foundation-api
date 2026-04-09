@@ -79,9 +79,9 @@ fn connected_fsms_deliver_stream_data() {
 
     harness.pump();
 
-    assert_eq!(harness.take_event_b(), Some(opened(stream_id)));
+    assert_eq!(harness.take_event(Side::B), Some(opened(stream_id)));
     assert_eq!(
-        harness.take_event_b(),
+        harness.take_event(Side::B),
         Some(QlFsmEvent::Readable(stream_id))
     );
     assert_eq!(
@@ -89,7 +89,7 @@ fn connected_fsms_deliver_stream_data() {
         b"hello".to_vec()
     );
     assert_eq!(
-        harness.take_event_b(),
+        harness.take_event(Side::B),
         Some(QlFsmEvent::Finished(stream_id))
     );
 }
@@ -105,30 +105,25 @@ fn session_retransmit_uses_new_record_seq() {
         5
     );
 
-    let first = harness.next_outbound_a().unwrap();
-    let first_transport = harness.b.fsm.state.link.transport().unwrap().clone();
-    let (first_header, first_record) =
-        decrypt_record(&harness.b.crypto, &first, &first_transport.rx_key);
+    let first = harness.next_decoded_outbound(Side::A).unwrap();
 
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
-    harness.on_timer_a();
+    harness.on_timer(Side::A);
 
-    let retried = harness.next_outbound_a().unwrap();
-    let (retried_header, retried_record) =
-        decrypt_record(&harness.b.crypto, &retried, &first_transport.rx_key);
+    let retried = harness.next_decoded_outbound(Side::A).unwrap();
 
-    assert_ne!(retried_header.seq, first_header.seq);
-    assert_eq!(retried_record, first_record);
+    assert_ne!(retried.header.seq, first.header.seq);
+    assert_eq!(retried.frames, first.frames);
 
-    harness.deliver_to_b(retried);
+    harness.deliver(Side::B, retried.record);
     harness.advance(config.session_record_ack_delay);
-    harness.on_timer_a();
-    harness.on_timer_b();
+    harness.on_timer(Side::A);
+    harness.on_timer(Side::B);
     harness.pump();
 
-    assert_eq!(harness.take_event_b(), Some(opened(stream_id)));
+    assert_eq!(harness.take_event(Side::B), Some(opened(stream_id)));
     assert_eq!(
-        harness.take_event_b(),
+        harness.take_event(Side::B),
         Some(QlFsmEvent::Readable(stream_id))
     );
     assert_eq!(
@@ -137,8 +132,8 @@ fn session_retransmit_uses_new_record_seq() {
     );
 
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
-    harness.on_timer_a();
-    assert!(harness.next_outbound_a().is_none());
+    harness.on_timer(Side::A);
+    assert!(harness.next_outbound(Side::A).is_none());
 }
 
 #[test]
@@ -169,18 +164,18 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
 
     harness.pump();
 
-    assert_eq!(harness.take_event_a(), Some(opened(stream_id_b)));
+    assert_eq!(harness.take_event(Side::A), Some(opened(stream_id_b)));
     assert_eq!(
-        harness.take_event_a(),
+        harness.take_event(Side::A),
         Some(QlFsmEvent::Readable(stream_id_b))
     );
     assert_eq!(
         read_stream_all(&mut harness.a.fsm, stream_id_b),
         b"from-b".to_vec()
     );
-    assert_eq!(harness.take_event_b(), Some(opened(stream_id_a)));
+    assert_eq!(harness.take_event(Side::B), Some(opened(stream_id_a)));
     assert_eq!(
-        harness.take_event_b(),
+        harness.take_event(Side::B),
         Some(QlFsmEvent::Readable(stream_id_a))
     );
     assert_eq!(
@@ -261,30 +256,25 @@ fn returned_session_write_is_reissued_with_new_record_seq() {
         5
     );
 
-    let write = harness.next_write_a().unwrap();
-    let id = write.session_write_id.expect("expected session write");
-    let record = write.record;
-    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
-    let (first_header, first) = decrypt_record(&harness.b.crypto, &record, &session_key);
+    let first = harness.next_decoded_write(Side::A).unwrap();
+    let id = first.write_id.expect("expected session write");
 
-    harness.return_write_a(id);
+    harness.reject_write(Side::A, id);
 
-    let write = harness.next_write_a().unwrap();
-    let reissued_id = write.session_write_id.expect("expected reissued write");
-    let record = write.record;
-    let (reissued_header, reissued) = decrypt_record(&harness.b.crypto, &record, &session_key);
+    let reissued = harness.next_decoded_write(Side::A).unwrap();
+    let reissued_id = reissued.write_id.expect("expected reissued write");
 
     assert_ne!(reissued_id, id);
-    assert_ne!(reissued_header.seq, first_header.seq);
-    assert_eq!(reissued, first);
+    assert_ne!(reissued.header.seq, first.header.seq);
+    assert_eq!(reissued.frames, first.frames);
 
-    harness.confirm_write_a(reissued_id);
-    harness.deliver_to_b(record);
+    harness.confirm_write(Side::A, reissued_id);
+    harness.deliver(Side::B, reissued.record);
     harness.pump();
 
-    assert_eq!(harness.take_event_b(), Some(opened(stream_id)));
+    assert_eq!(harness.take_event(Side::B), Some(opened(stream_id)));
     assert_eq!(
-        harness.take_event_b(),
+        harness.take_event(Side::B),
         Some(QlFsmEvent::Readable(stream_id))
     );
     assert_eq!(
@@ -304,26 +294,21 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
         5
     );
 
-    let write = harness.next_write_a().unwrap();
-    let id = write.session_write_id.expect("expected session write");
-    let record = write.record;
-    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
-    let (first_header, first) = decrypt_record(&harness.b.crypto, &record, &session_key);
+    let first = harness.next_decoded_write(Side::A).unwrap();
+    let id = first.write_id.expect("expected session write");
 
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
-    harness.on_timer_a();
-    assert!(harness.next_write_a().is_none());
+    harness.on_timer(Side::A);
+    assert!(harness.next_write(Side::A).is_none());
 
-    harness.confirm_write_a(id);
+    harness.confirm_write(Side::A, id);
     harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
-    harness.on_timer_a();
+    harness.on_timer(Side::A);
 
-    let write = harness.next_write_a().unwrap();
-    let record = write.record;
-    let (retried_header, retried) = decrypt_record(&harness.b.crypto, &record, &session_key);
+    let retried = harness.next_decoded_write(Side::A).unwrap();
 
-    assert_ne!(retried_header.seq, first_header.seq);
-    assert_eq!(retried, first);
+    assert_ne!(retried.header.seq, first.header.seq);
+    assert_eq!(retried.frames, first.frames);
 }
 
 #[test]
@@ -344,15 +329,15 @@ fn ack_frame_releases_stream_capacity_and_emits_writable() {
         0
     );
 
-    let record = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(record);
+    let record = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, record);
     harness.advance(config.session_record_ack_delay);
-    harness.on_timer_a();
-    harness.on_timer_b();
+    harness.on_timer(Side::A);
+    harness.on_timer(Side::B);
     harness.pump();
 
     assert_eq!(
-        harness.take_event_a(),
+        harness.take_event(Side::A),
         Some(QlFsmEvent::Writable(stream_id))
     );
 }
@@ -366,7 +351,7 @@ fn close_session_disconnects_locally() {
         .fsm
         .close_session(ql_wire::SessionCloseCode::CANCELLED);
 
-    assert!(matches!(harness.take_event_a(), Some(QlFsmEvent::SessionClosed(SessionClose {
+    assert!(matches!(harness.take_event(Side::A), Some(QlFsmEvent::SessionClosed(SessionClose {
         code: ql_wire::SessionCloseCode::CANCELLED,
     }))));
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
@@ -376,14 +361,12 @@ fn close_session_disconnects_locally() {
     ));
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
 
-    let close = harness.next_outbound_a().unwrap();
-    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
-    let (_header, record) = decrypt_record(&harness.b.crypto, &close, &session_key);
-    assert!(matches!(record.as_slice(), [ql_wire::SessionFrame::Close(_)]));
+    let close = harness.next_decoded_outbound(Side::A).unwrap();
+    assert!(matches!(close.frames.as_slice(), [ql_wire::SessionFrame::Close(_)]));
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
     assert_eq!(
-        harness.take_event_a(),
+        harness.take_event(Side::A),
         Some(QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected))
     );
 }
@@ -399,16 +382,14 @@ fn session_records_contain_ack_frames_after_delivery() {
         1
     );
 
-    let data = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(data);
+    let data = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, data);
     harness.advance(config.session_record_ack_delay);
-    harness.on_timer_b();
+    harness.on_timer(Side::B);
 
-    let ack = harness.next_outbound_b().unwrap();
-    let session_key = harness.a.fsm.state.link.transport().unwrap().rx_key.clone();
-    let (_ack_header, ack_record) = decrypt_record(&harness.a.crypto, &ack, &session_key);
+    let ack = harness.next_decoded_outbound(Side::B).unwrap();
     assert!(matches!(
-        ack_record.as_slice(),
+        ack.frames.as_slice(),
         [ql_wire::SessionFrame::Ack(_)]
     ));
 }
@@ -426,11 +407,11 @@ fn first_stream_data_uses_negotiated_initial_peer_credit() {
         },
     );
 
-    harness.connect_ik_a().unwrap();
-    let ik1 = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(ik1);
-    let ik2 = harness.next_outbound_b().unwrap();
-    harness.deliver_to_a(ik2);
+    harness.connect_ik(Side::A).unwrap();
+    let ik1 = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, ik1);
+    let ik2 = harness.next_outbound(Side::B).unwrap();
+    harness.deliver(Side::A, ik2);
 
     let stream_id = open_stream_id(&mut harness.a.fsm);
     assert_eq!(
@@ -438,12 +419,8 @@ fn first_stream_data_uses_negotiated_initial_peer_credit() {
         5
     );
 
-    let data = harness.next_outbound_a().unwrap();
-    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
-    let (_header, record) = decrypt_record(&harness.b.crypto, &data, &session_key);
-
     assert!(matches!(
-        record.as_slice(),
+        harness.next_decoded_outbound(Side::A).unwrap().frames.as_slice(),
         [ql_wire::SessionFrame::StreamData(frame)] if frame.stream_id == stream_id && frame.bytes.as_slice() == b"hel"
     ));
 }
@@ -457,21 +434,19 @@ fn session_timeout_emits_close_before_disconnect() {
     let mut harness = Harness::connected(config);
 
     harness.advance(config.session_peer_timeout);
-    harness.on_timer_a();
+    harness.on_timer(Side::A);
 
     assert_eq!(
-        harness.drain_events_a(),
+        harness.drain_events(Side::A),
         vec![QlFsmEvent::SessionClosed(SessionClose {
             code: ql_wire::SessionCloseCode::TIMEOUT,
         })]
     );
 
-    let close = harness.next_outbound_a().unwrap();
-    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
-    let (_header, record) = decrypt_record(&harness.b.crypto, &close, &session_key);
-    assert!(matches!(record.as_slice(), [ql_wire::SessionFrame::Close(_)]));
+    let close = harness.next_decoded_outbound(Side::A).unwrap();
+    assert!(matches!(close.frames.as_slice(), [ql_wire::SessionFrame::Close(_)]));
     assert_eq!(
-        harness.take_event_a(),
+        harness.take_event(Side::A),
         Some(QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected))
     );
 }

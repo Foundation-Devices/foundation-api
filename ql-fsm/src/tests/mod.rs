@@ -17,6 +17,21 @@ use crate::{
 
 type TestCrypto = SoftwareCrypto;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    A,
+    B,
+}
+
+impl Side {
+    fn idx(self) -> usize {
+        match self {
+            Side::A => 0,
+            Side::B => 1,
+        }
+    }
+}
+
 struct Node {
     fsm: QlFsm,
     crypto: TestCrypto,
@@ -27,6 +42,13 @@ struct Harness {
     unix_secs: u64,
     a: Node,
     b: Node,
+}
+
+struct DecodedSessionWrite {
+    record: Vec<u8>,
+    write_id: Option<SessionWriteId>,
+    header: ql_wire::SessionHeader,
+    frames: Vec<ql_wire::SessionFrame<Vec<u8>>>,
 }
 
 impl Harness {
@@ -132,111 +154,108 @@ impl Harness {
         self.unix_secs = self.unix_secs.saturating_add(duration.as_secs());
     }
 
-    fn next_outbound_a(&mut self) -> Option<Vec<u8>> {
-        let write = self.a.fsm.take_next_write(self.time(), &self.a.crypto)?;
+    fn node(&self, side: Side) -> &Node {
+        match side {
+            Side::A => &self.a,
+            Side::B => &self.b,
+        }
+    }
+
+    fn node_mut(&mut self, side: Side) -> &mut Node {
+        match side {
+            Side::A => &mut self.a,
+            Side::B => &mut self.b,
+        }
+    }
+
+    fn next_outbound(&mut self, side: Side) -> Option<Vec<u8>> {
+        let write = self.next_write(side)?;
         if let Some(id) = write.session_write_id {
-            self.a.fsm.confirm_session_write(self.time(), id);
+            self.confirm_write(side, id);
         }
         Some(write.record)
     }
 
-    fn next_outbound_b(&mut self) -> Option<Vec<u8>> {
-        let write = self.b.fsm.take_next_write(self.time(), &self.b.crypto)?;
+    fn next_write(&mut self, side: Side) -> Option<OutboundWrite> {
+        let time = self.time();
+        let Node { fsm, crypto } = self.node_mut(side);
+        fsm.take_next_write(time, crypto)
+    }
+
+    fn next_decoded_outbound(&mut self, side: Side) -> Option<DecodedSessionWrite> {
+        let write = self.next_write(side)?;
         if let Some(id) = write.session_write_id {
-            self.b.fsm.confirm_session_write(self.time(), id);
+            self.confirm_write(side, id);
         }
-        Some(write.record)
+        Some(self.decode_session_write(write, side))
     }
 
-    fn next_write_a(&mut self) -> Option<OutboundWrite> {
-        self.a.fsm.take_next_write(self.time(), &self.a.crypto)
+    fn next_decoded_write(&mut self, side: Side) -> Option<DecodedSessionWrite> {
+        let write = self.next_write(side)?;
+        Some(self.decode_session_write(write, side))
     }
 
-    fn connect_ik_a(&mut self) -> Result<(), NoPeerError> {
+    fn connect_ik(&mut self, side: Side) -> Result<(), NoPeerError> {
         let time = self.time();
-        let Node { fsm, crypto } = &mut self.a;
+        let Node { fsm, crypto } = self.node_mut(side);
         fsm.connect_ik(time, crypto)
     }
 
-    fn connect_ik_b(&mut self) -> Result<(), NoPeerError> {
+    fn connect_kk(&mut self, side: Side) -> Result<(), NoPeerError> {
         let time = self.time();
-        let Node { fsm, crypto } = &mut self.b;
-        fsm.connect_ik(time, crypto)
-    }
-
-    fn connect_kk_a(&mut self) -> Result<(), NoPeerError> {
-        let time = self.time();
-        let Node { fsm, crypto } = &mut self.a;
+        let Node { fsm, crypto } = self.node_mut(side);
         fsm.connect_kk(time, crypto)
     }
 
-    fn connect_kk_b(&mut self) -> Result<(), NoPeerError> {
+    fn connect_xx(&mut self, side: Side, token: PairingToken) {
         let time = self.time();
-        let Node { fsm, crypto } = &mut self.b;
-        fsm.connect_kk(time, crypto)
-    }
-
-    fn connect_xx_a(&mut self, token: PairingToken) {
-        let time = self.time();
-        let Node { fsm, crypto } = &mut self.a;
+        let Node { fsm, crypto } = self.node_mut(side);
         fsm.connect_xx(time, token, crypto);
     }
 
-    fn connect_xx_b(&mut self, token: PairingToken) {
+    fn deliver(&mut self, side: Side, record: Vec<u8>) {
         let time = self.time();
-        let Node { fsm, crypto } = &mut self.b;
-        fsm.connect_xx(time, token, crypto);
-    }
-
-    fn deliver_to_a(&mut self, record: Vec<u8>) {
-        let time = self.time();
-        let Node { fsm, crypto } = &mut self.a;
+        let Node { fsm, crypto } = self.node_mut(side);
         fsm.receive(time, record, crypto).unwrap();
     }
 
-    fn deliver_to_b(&mut self, record: Vec<u8>) {
+    fn confirm_write(&mut self, side: Side, write_id: SessionWriteId) {
         let time = self.time();
-        let Node { fsm, crypto } = &mut self.b;
-        fsm.receive(time, record, crypto).unwrap();
+        self.node_mut(side).fsm.confirm_session_write(time, write_id);
     }
 
-    fn confirm_write_a(&mut self, write_id: SessionWriteId) {
-        self.a.fsm.confirm_session_write(self.time(), write_id);
+    fn reject_write(&mut self, side: Side, write_id: SessionWriteId) {
+        self.node_mut(side).fsm.reject_session_write(write_id);
     }
 
-    fn return_write_a(&mut self, write_id: SessionWriteId) {
-        self.a.fsm.reject_session_write(write_id);
-    }
-
-    fn on_timer_a(&mut self) {
-        let time = self.time();
-        self.a.fsm.on_timer(time);
-    }
-
-    fn on_timer_b(&mut self) {
-        let time = self.time();
-        self.b.fsm.on_timer(time);
-    }
-
-    fn take_event_a(&mut self) -> Option<QlFsmEvent> {
-        self.a.fsm.poll_event()
-    }
-
-    fn take_event_b(&mut self) -> Option<QlFsmEvent> {
-        self.b.fsm.poll_event()
-    }
-
-    fn drain_events_a(&mut self) -> Vec<QlFsmEvent> {
-        let mut events = Vec::new();
-        while let Some(event) = self.a.fsm.poll_event() {
-            events.push(event);
+    fn decode_session_write(&self, write: OutboundWrite, side: Side) -> DecodedSessionWrite {
+        let peer = self.node(match side {
+            Side::A => Side::B,
+            Side::B => Side::A,
+        });
+        let crypto = &peer.crypto;
+        let session_key = &peer.fsm.state.link.transport().unwrap().rx_key;
+        let (header, frames) = decrypt_record(crypto, &write.record, session_key);
+        DecodedSessionWrite {
+            record: write.record,
+            write_id: write.session_write_id,
+            header,
+            frames,
         }
-        events
     }
 
-    fn drain_events_b(&mut self) -> Vec<QlFsmEvent> {
+    fn on_timer(&mut self, side: Side) {
+        let time = self.time();
+        self.node_mut(side).fsm.on_timer(time);
+    }
+
+    fn take_event(&mut self, side: Side) -> Option<QlFsmEvent> {
+        self.node_mut(side).fsm.poll_event()
+    }
+
+    fn drain_events(&mut self, side: Side) -> Vec<QlFsmEvent> {
         let mut events = Vec::new();
-        while let Some(event) = self.b.fsm.poll_event() {
+        while let Some(event) = self.take_event(side) {
             events.push(event);
         }
         events
@@ -246,14 +265,14 @@ impl Harness {
         for _ in 0..128 {
             let mut progressed = false;
 
-            while let Some(record) = self.next_outbound_a() {
+            while let Some(record) = self.next_outbound(Side::A) {
                 progressed = true;
-                self.deliver_to_b(record);
+                self.deliver(Side::B, record);
             }
 
-            while let Some(record) = self.next_outbound_b() {
+            while let Some(record) = self.next_outbound(Side::B) {
                 progressed = true;
-                self.deliver_to_a(record);
+                self.deliver(Side::A, record);
             }
 
             if !progressed {

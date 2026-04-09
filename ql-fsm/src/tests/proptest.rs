@@ -18,49 +18,93 @@ use crate::{state::LinkState, PeerStatus, QlFsmEvent, ReceiveError, SessionWrite
 
 const SLOT_COUNT: usize = 4;
 
-#[derive(Clone, Copy, Debug)]
-enum Side {
-    A,
-    B,
-}
-
 #[derive(Clone, Debug)]
 enum Action {
-    ConnectIkA,
-    ConnectIkB,
-    ConnectKkA,
-    ConnectKkB,
+    ConnectIk(Side),
+    ConnectKk(Side),
     AdvanceMs(u8),
-    OnTimerA,
-    OnTimerB,
+    OnTimer(Side),
     OnTimerBoth,
     Pump,
-    TakeNextAToB,
-    TakeNextBToA,
-    ConfirmTakenAToB(usize),
-    ConfirmTakenBToA(usize),
-    RejectTakenAToB(usize),
-    RejectTakenBToA(usize),
-    CaptureNextAToB,
-    CaptureNextBToA,
-    DeliverNextAToB,
-    DeliverNextBToA,
-    DropNextAToB,
-    DropNextBToA,
-    DeliverQueuedAToB(usize),
-    DeliverQueuedBToA(usize),
-    DuplicateQueuedAToB(usize),
-    DuplicateQueuedBToA(usize),
-    DropQueuedAToB(usize),
-    DropQueuedBToA(usize),
-    OpenStreamA(usize),
-    OpenStreamB(usize),
-    WriteA { slot: usize, bytes: Vec<u8> },
-    WriteB { slot: usize, bytes: Vec<u8> },
-    FinishA(usize),
-    FinishB(usize),
-    CloseA(usize),
-    CloseB(usize),
+    TakeNext(Side),
+    ConfirmTaken {
+        side: Side,
+        index: usize,
+    },
+    RejectTaken {
+        side: Side,
+        index: usize,
+    },
+    CaptureNext(Side),
+    DeliverNext(Side),
+    DropNext(Side),
+    DeliverQueued {
+        side: Side,
+        index: usize,
+    },
+    DuplicateQueued {
+        side: Side,
+        index: usize,
+    },
+    DropQueued {
+        side: Side,
+        index: usize,
+    },
+    OpenStream {
+        side: Side,
+        slot: usize,
+    },
+    Write {
+        side: Side,
+        slot: usize,
+        bytes: Vec<u8>,
+    },
+    Finish {
+        side: Side,
+        slot: usize,
+    },
+    Close {
+        side: Side,
+        slot: usize,
+    },
+}
+
+impl Action {
+    fn confirm_taken(side: Side, index: usize) -> Self {
+        Self::ConfirmTaken { side, index }
+    }
+
+    fn reject_taken(side: Side, index: usize) -> Self {
+        Self::RejectTaken { side, index }
+    }
+
+    fn deliver_queued(side: Side, index: usize) -> Self {
+        Self::DeliverQueued { side, index }
+    }
+
+    fn duplicate_queued(side: Side, index: usize) -> Self {
+        Self::DuplicateQueued { side, index }
+    }
+
+    fn drop_queued(side: Side, index: usize) -> Self {
+        Self::DropQueued { side, index }
+    }
+
+    fn open_stream(side: Side, slot: usize) -> Self {
+        Self::OpenStream { side, slot }
+    }
+
+    fn write(side: Side, slot: usize, bytes: Vec<u8>) -> Self {
+        Self::Write { side, slot, bytes }
+    }
+
+    fn finish(side: Side, slot: usize) -> Self {
+        Self::Finish { side, slot }
+    }
+
+    fn close(side: Side, slot: usize) -> Self {
+        Self::Close { side, slot }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -93,24 +137,16 @@ impl SideEventState {
 
 struct Runner {
     harness: Harness,
-    slots_a: [Option<StreamId>; SLOT_COUNT],
-    slots_b: [Option<StreamId>; SLOT_COUNT],
-    taken_a_to_b: Vec<TakenWrite>,
-    taken_b_to_a: Vec<TakenWrite>,
-    pending_a_to_b: Vec<Vec<u8>>,
-    pending_b_to_a: Vec<Vec<u8>>,
+    slots: [[Option<StreamId>; SLOT_COUNT]; 2],
+    taken: [Vec<TakenWrite>; 2],
+    pending: [Vec<Vec<u8>>; 2],
     receive_errors: Vec<(Side, ReceiveError)>,
-    events_a: SideEventState,
-    events_b: SideEventState,
+    events: [SideEventState; 2],
     known_streams: BTreeSet<StreamId>,
-    expected_at_a: BTreeMap<StreamId, Vec<u8>>,
-    expected_at_b: BTreeMap<StreamId, Vec<u8>>,
-    received_at_a: BTreeMap<StreamId, Vec<u8>>,
-    received_at_b: BTreeMap<StreamId, Vec<u8>>,
-    finished_by_a: BTreeSet<StreamId>,
-    finished_by_b: BTreeSet<StreamId>,
-    closed_by_a: BTreeSet<StreamId>,
-    closed_by_b: BTreeSet<StreamId>,
+    expected: [BTreeMap<StreamId, Vec<u8>>; 2],
+    received: [BTreeMap<StreamId, Vec<u8>>; 2],
+    finished_by: [BTreeSet<StreamId>; 2],
+    closed_by: [BTreeSet<StreamId>; 2],
 }
 
 impl Runner {
@@ -125,24 +161,16 @@ impl Runner {
 
         Self {
             harness: Harness::paired_known(config),
-            slots_a: [None; SLOT_COUNT],
-            slots_b: [None; SLOT_COUNT],
-            taken_a_to_b: Vec::new(),
-            taken_b_to_a: Vec::new(),
-            pending_a_to_b: Vec::new(),
-            pending_b_to_a: Vec::new(),
+            slots: [[None; SLOT_COUNT]; 2],
+            taken: [Vec::new(), Vec::new()],
+            pending: [Vec::new(), Vec::new()],
             receive_errors: Vec::new(),
-            events_a: SideEventState::default(),
-            events_b: SideEventState::default(),
+            events: [SideEventState::default(), SideEventState::default()],
             known_streams: BTreeSet::new(),
-            expected_at_a: BTreeMap::new(),
-            expected_at_b: BTreeMap::new(),
-            received_at_a: BTreeMap::new(),
-            received_at_b: BTreeMap::new(),
-            finished_by_a: BTreeSet::new(),
-            finished_by_b: BTreeSet::new(),
-            closed_by_a: BTreeSet::new(),
-            closed_by_b: BTreeSet::new(),
+            expected: [BTreeMap::new(), BTreeMap::new()],
+            received: [BTreeMap::new(), BTreeMap::new()],
+            finished_by: [BTreeSet::new(), BTreeSet::new()],
+            closed_by: [BTreeSet::new(), BTreeSet::new()],
         }
     }
 
@@ -153,35 +181,24 @@ impl Runner {
             session_peer_timeout: Duration::from_secs(5),
             ..QlFsmConfig::default()
         };
+        let connected_events = || SideEventState {
+            last_peer_status: Some(PeerStatus::Connected),
+            session_epoch: 1,
+            ..SideEventState::default()
+        };
 
         Self {
             harness: Harness::connected(config),
-            slots_a: [None; SLOT_COUNT],
-            slots_b: [None; SLOT_COUNT],
-            taken_a_to_b: Vec::new(),
-            taken_b_to_a: Vec::new(),
-            pending_a_to_b: Vec::new(),
-            pending_b_to_a: Vec::new(),
+            slots: [[None; SLOT_COUNT]; 2],
+            taken: [Vec::new(), Vec::new()],
+            pending: [Vec::new(), Vec::new()],
             receive_errors: Vec::new(),
-            events_a: SideEventState {
-                last_peer_status: Some(PeerStatus::Connected),
-                session_epoch: 1,
-                ..SideEventState::default()
-            },
-            events_b: SideEventState {
-                last_peer_status: Some(PeerStatus::Connected),
-                session_epoch: 1,
-                ..SideEventState::default()
-            },
+            events: [connected_events(), connected_events()],
             known_streams: BTreeSet::new(),
-            expected_at_a: BTreeMap::new(),
-            expected_at_b: BTreeMap::new(),
-            received_at_a: BTreeMap::new(),
-            received_at_b: BTreeMap::new(),
-            finished_by_a: BTreeSet::new(),
-            finished_by_b: BTreeSet::new(),
-            closed_by_a: BTreeSet::new(),
-            closed_by_b: BTreeSet::new(),
+            expected: [BTreeMap::new(), BTreeMap::new()],
+            received: [BTreeMap::new(), BTreeMap::new()],
+            finished_by: [BTreeSet::new(), BTreeSet::new()],
+            closed_by: [BTreeSet::new(), BTreeSet::new()],
         }
     }
 
@@ -200,190 +217,131 @@ impl Runner {
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     fn apply(&mut self, action: &Action) {
         match action {
-            Action::ConnectIkA => {
-                let _ = self.harness.connect_ik_a();
+            Action::ConnectIk(side) => {
+                let _ = self.harness.connect_ik(*side);
             }
-            Action::ConnectIkB => {
-                let _ = self.harness.connect_ik_b();
-            }
-            Action::ConnectKkA => {
-                let _ = self.harness.connect_kk_a();
-            }
-            Action::ConnectKkB => {
-                let _ = self.harness.connect_kk_b();
+            Action::ConnectKk(side) => {
+                let _ = self.harness.connect_kk(*side);
             }
             Action::AdvanceMs(ms) => {
                 self.harness
                     .advance(Duration::from_millis(u64::from(*ms) + 1));
             }
-            Action::OnTimerA => self.harness.on_timer_a(),
-            Action::OnTimerB => self.harness.on_timer_b(),
+            Action::OnTimer(side) => self.harness.on_timer(*side),
             Action::OnTimerBoth => {
-                self.harness.on_timer_a();
-                self.harness.on_timer_b();
+                self.harness.on_timer(Side::A);
+                self.harness.on_timer(Side::B);
             }
             Action::Pump => self.capture_all_outbound(),
-            Action::TakeNextAToB => {
-                if let Some(write) = take_unconfirmed_outbound_a(&mut self.harness) {
-                    self.taken_a_to_b.push(write);
+            Action::TakeNext(side) => {
+                if let Some(write) = take_unconfirmed_outbound(&mut self.harness, *side) {
+                    self.taken[side.idx()].push(write);
                 }
             }
-            Action::TakeNextBToA => {
-                if let Some(write) = take_unconfirmed_outbound_b(&mut self.harness) {
-                    self.taken_b_to_a.push(write);
+            Action::ConfirmTaken { side, index } => {
+                if let Some(write) = take_taken(&mut self.taken[side.idx()], *index) {
+                    confirm_taken(&mut self.harness, *side, &write);
+                    self.pending[side.idx()].push(write.record);
                 }
             }
-            Action::ConfirmTakenAToB(index) => {
-                if let Some(write) = take_taken(&mut self.taken_a_to_b, *index) {
-                    confirm_taken_a(&mut self.harness, &write);
-                    self.pending_a_to_b.push(write.record);
+            Action::RejectTaken { side, index } => {
+                if let Some(write) = take_taken(&mut self.taken[side.idx()], *index) {
+                    reject_taken(&mut self.harness, *side, &write);
                 }
             }
-            Action::ConfirmTakenBToA(index) => {
-                if let Some(write) = take_taken(&mut self.taken_b_to_a, *index) {
-                    confirm_taken_b(&mut self.harness, &write);
-                    self.pending_b_to_a.push(write.record);
+            Action::CaptureNext(side) => {
+                if let Some(record) = take_confirmed_outbound(&mut self.harness, *side) {
+                    self.pending[side.idx()].push(record);
                 }
             }
-            Action::RejectTakenAToB(index) => {
-                if let Some(write) = take_taken(&mut self.taken_a_to_b, *index) {
-                    reject_taken_a(&mut self.harness, &write);
+            Action::DeliverNext(side) => {
+                if let Some(record) = take_confirmed_outbound(&mut self.harness, *side) {
+                    self.deliver_to(opposite(*side), record);
                 }
             }
-            Action::RejectTakenBToA(index) => {
-                if let Some(write) = take_taken(&mut self.taken_b_to_a, *index) {
-                    reject_taken_b(&mut self.harness, &write);
+            Action::DropNext(side) => {
+                let _ = take_confirmed_outbound(&mut self.harness, *side);
+            }
+            Action::DeliverQueued { side, index } => {
+                if let Some(record) = take_pending(&mut self.pending[side.idx()], *index) {
+                    self.deliver_to(opposite(*side), record);
                 }
             }
-            Action::CaptureNextAToB => {
-                if let Some(record) = take_confirmed_outbound_a(&mut self.harness) {
-                    self.pending_a_to_b.push(record);
+            Action::DuplicateQueued { side, index } => {
+                if let Some(record) = peek_pending(&self.pending[side.idx()], *index) {
+                    self.deliver_to(opposite(*side), record);
                 }
             }
-            Action::CaptureNextBToA => {
-                if let Some(record) = take_confirmed_outbound_b(&mut self.harness) {
-                    self.pending_b_to_a.push(record);
-                }
+            Action::DropQueued { side, index } => {
+                let _ = take_pending(&mut self.pending[side.idx()], *index);
             }
-            Action::DeliverNextAToB => {
-                if let Some(record) = take_confirmed_outbound_a(&mut self.harness) {
-                    self.deliver_to_b(record);
-                }
-            }
-            Action::DeliverNextBToA => {
-                if let Some(record) = take_confirmed_outbound_b(&mut self.harness) {
-                    self.deliver_to_a(record);
-                }
-            }
-            Action::DropNextAToB => {
-                let _ = take_confirmed_outbound_a(&mut self.harness);
-            }
-            Action::DropNextBToA => {
-                let _ = take_confirmed_outbound_b(&mut self.harness);
-            }
-            Action::DeliverQueuedAToB(index) => {
-                if let Some(record) = take_pending(&mut self.pending_a_to_b, *index) {
-                    self.deliver_to_b(record);
-                }
-            }
-            Action::DeliverQueuedBToA(index) => {
-                if let Some(record) = take_pending(&mut self.pending_b_to_a, *index) {
-                    self.deliver_to_a(record);
-                }
-            }
-            Action::DuplicateQueuedAToB(index) => {
-                if let Some(record) = peek_pending(&self.pending_a_to_b, *index) {
-                    self.deliver_to_b(record);
-                }
-            }
-            Action::DuplicateQueuedBToA(index) => {
-                if let Some(record) = peek_pending(&self.pending_b_to_a, *index) {
-                    self.deliver_to_a(record);
-                }
-            }
-            Action::DropQueuedAToB(index) => {
-                let _ = take_pending(&mut self.pending_a_to_b, *index);
-            }
-            Action::DropQueuedBToA(index) => {
-                let _ = take_pending(&mut self.pending_b_to_a, *index);
-            }
-            Action::OpenStreamA(slot) => {
-                if let Ok(stream) = self.harness.a.fsm.open_stream(test_route_id()) {
-                    let stream_id = stream.stream_id();
-                    self.slots_a[*slot] = Some(stream_id);
+            Action::OpenStream { side, slot } => {
+                let stream_id = self
+                    .harness
+                    .node_mut(*side)
+                    .fsm
+                    .open_stream(test_route_id())
+                    .ok()
+                    .map(|stream| stream.stream_id());
+                if let Some(stream_id) = stream_id {
+                    self.slots[side.idx()][*slot] = Some(stream_id);
                     self.known_streams.insert(stream_id);
                 }
             }
-            Action::OpenStreamB(slot) => {
-                if let Ok(stream) = self.harness.b.fsm.open_stream(test_route_id()) {
-                    let stream_id = stream.stream_id();
-                    self.slots_b[*slot] = Some(stream_id);
-                    self.known_streams.insert(stream_id);
-                }
-            }
-            Action::WriteA { slot, bytes } => {
-                if let Some(stream_id) = self.slots_a[*slot] {
+            Action::Write { side, slot, bytes } => {
+                if let Some(stream_id) = self.slots[side.idx()][*slot] {
                     let mut chunk = Bytes::copy_from_slice(bytes);
-                    if let Ok(mut stream) = self.harness.a.fsm.stream(stream_id) {
+                    let accepted = if let Ok(mut stream) =
+                        self.harness.node_mut(*side).fsm.stream(stream_id)
+                    {
                         if let Some(mut writer) = stream.writer() {
-                            let accepted = writer.write(&mut chunk);
-                            self.expected_at_b
-                                .entry(stream_id)
-                                .or_default()
-                                .extend_from_slice(&bytes[..accepted]);
+                            writer.write(&mut chunk)
+                        } else {
+                            0
                         }
+                    } else {
+                        0
+                    };
+                    if accepted != 0 {
+                        self.expected[opposite(*side).idx()]
+                            .entry(stream_id)
+                            .or_default()
+                            .extend_from_slice(&bytes[..accepted]);
                     }
                 }
             }
-            Action::WriteB { slot, bytes } => {
-                if let Some(stream_id) = self.slots_b[*slot] {
-                    let mut chunk = Bytes::copy_from_slice(bytes);
-                    if let Ok(mut stream) = self.harness.b.fsm.stream(stream_id) {
-                        if let Some(mut writer) = stream.writer() {
-                            let accepted = writer.write(&mut chunk);
-                            self.expected_at_a
-                                .entry(stream_id)
-                                .or_default()
-                                .extend_from_slice(&bytes[..accepted]);
-                        }
-                    }
-                }
-            }
-            Action::FinishA(slot) => {
-                if let Some(stream_id) = self.slots_a[*slot] {
-                    if let Ok(mut stream) = self.harness.a.fsm.stream(stream_id) {
+            Action::Finish { side, slot } => {
+                if let Some(stream_id) = self.slots[side.idx()][*slot] {
+                    let finished = if let Ok(mut stream) =
+                        self.harness.node_mut(*side).fsm.stream(stream_id)
+                    {
                         if let Some(writer) = stream.writer() {
                             writer.finish();
-                            self.finished_by_a.insert(stream_id);
+                            true
+                        } else {
+                            false
                         }
+                    } else {
+                        false
+                    };
+                    if finished {
+                        self.finished_by[side.idx()].insert(stream_id);
                     }
                 }
             }
-            Action::FinishB(slot) => {
-                if let Some(stream_id) = self.slots_b[*slot] {
-                    if let Ok(mut stream) = self.harness.b.fsm.stream(stream_id) {
-                        if let Some(writer) = stream.writer() {
-                            writer.finish();
-                            self.finished_by_b.insert(stream_id);
-                        }
-                    }
-                }
-            }
-            Action::CloseA(slot) => {
-                if let Some(stream_id) = self.slots_a[*slot] {
-                    if let Ok(mut stream) = self.harness.a.fsm.stream(stream_id) {
+            Action::Close { side, slot } => {
+                if let Some(stream_id) = self.slots[side.idx()][*slot] {
+                    let closed = if let Ok(mut stream) =
+                        self.harness.node_mut(*side).fsm.stream(stream_id)
+                    {
                         stream.close(CloseTarget::Both, StreamCloseCode(0));
-                        self.closed_by_a.insert(stream_id);
-                        self.slots_a[*slot] = None;
-                    }
-                }
-            }
-            Action::CloseB(slot) => {
-                if let Some(stream_id) = self.slots_b[*slot] {
-                    if let Ok(mut stream) = self.harness.b.fsm.stream(stream_id) {
-                        stream.close(CloseTarget::Both, StreamCloseCode(0));
-                        self.closed_by_b.insert(stream_id);
-                        self.slots_b[*slot] = None;
+                        true
+                    } else {
+                        false
+                    };
+                    if closed {
+                        self.closed_by[side.idx()].insert(stream_id);
+                        self.slots[side.idx()][*slot] = None;
                     }
                 }
             }
@@ -391,10 +349,10 @@ impl Runner {
     }
 
     fn observe_and_assert(&mut self) -> TestCaseResult {
-        self.drain_reads_a();
-        self.drain_reads_b();
-        let events_a = self.harness.drain_events_a();
-        let events_b = self.harness.drain_events_b();
+        self.drain_reads(Side::A);
+        self.drain_reads(Side::B);
+        let events_a = self.harness.drain_events(Side::A);
+        let events_b = self.harness.drain_events(Side::B);
         self.process_events(Side::A, events_a)?;
         self.process_events(Side::B, events_b)?;
         self.assert_prefix_invariants()?;
@@ -421,8 +379,8 @@ impl Runner {
             self.flush_pending_in_order();
             self.observe_and_assert()?;
             self.harness.advance(tick);
-            self.harness.on_timer_a();
-            self.harness.on_timer_b();
+            self.harness.on_timer(Side::A);
+            self.harness.on_timer(Side::B);
             self.capture_all_outbound();
             self.flush_pending_in_order();
             self.observe_and_assert()?;
@@ -432,23 +390,11 @@ impl Runner {
         Ok(())
     }
 
-    fn drain_reads_a(&mut self) {
+    fn drain_reads(&mut self, side: Side) {
         for stream_id in self.known_streams.clone() {
-            let appended = drain_stream(&mut self.harness.a.fsm, stream_id);
+            let appended = drain_stream(&mut self.harness.node_mut(side).fsm, stream_id);
             if !appended.is_empty() {
-                self.received_at_a
-                    .entry(stream_id)
-                    .or_default()
-                    .extend_from_slice(&appended);
-            }
-        }
-    }
-
-    fn drain_reads_b(&mut self) {
-        for stream_id in self.known_streams.clone() {
-            let appended = drain_stream(&mut self.harness.b.fsm, stream_id);
-            if !appended.is_empty() {
-                self.received_at_b
+                self.received[side.idx()]
                     .entry(stream_id)
                     .or_default()
                     .extend_from_slice(&appended);
@@ -461,7 +407,7 @@ impl Runner {
             match event {
                 QlFsmEvent::NewPeer => {}
                 QlFsmEvent::PeerStatusChanged(status) => {
-                    self.events_mut(side).note_peer_status(status);
+                    self.events[side.idx()].note_peer_status(status);
                 }
                 QlFsmEvent::Opened { stream_id, .. } => {
                     prop_assert!(
@@ -469,7 +415,7 @@ impl Runner {
                         "side {side:?} emitted Opened for unknown stream {stream_id:?}"
                     );
                     prop_assert!(
-                        self.events_mut(side).opened.insert(stream_id),
+                        self.events[side.idx()].opened.insert(stream_id),
                         "side {side:?} emitted duplicate Opened for {stream_id:?}"
                     );
                 }
@@ -485,11 +431,11 @@ impl Runner {
                         "side {side:?} emitted Finished for unknown stream {stream_id:?}"
                     );
                     prop_assert!(
-                        self.events_mut(side).finished.insert(stream_id),
+                        self.events[side.idx()].finished.insert(stream_id),
                         "side {side:?} emitted duplicate Finished for {stream_id:?}"
                     );
                     prop_assert!(
-                        !self.events(side).closed.contains(&stream_id),
+                        !self.events[side.idx()].closed.contains(&stream_id),
                         "side {side:?} emitted Finished after Closed for {stream_id:?}"
                     );
                 }
@@ -500,7 +446,7 @@ impl Runner {
                         frame.stream_id
                     );
                     prop_assert!(
-                        self.events_mut(side).closed.insert(frame.stream_id),
+                        self.events[side.idx()].closed.insert(frame.stream_id),
                         "side {side:?} emitted duplicate Closed for {:?}",
                         frame.stream_id
                     );
@@ -512,12 +458,12 @@ impl Runner {
                         "side {side:?} emitted WritableClosed for unknown stream {stream_id:?}"
                     );
                     prop_assert!(
-                        self.events_mut(side).writable_closed.insert(stream_id),
+                        self.events[side.idx()].writable_closed.insert(stream_id),
                         "side {side:?} emitted duplicate WritableClosed for {stream_id:?}"
                     );
                 }
                 QlFsmEvent::SessionClosed(_) => {
-                    let state = self.events_mut(side);
+                    let state = &mut self.events[side.idx()];
                     prop_assert!(
                         state.session_epoch > 0,
                         "side {side:?} emitted SessionClosed without a connected session"
@@ -536,26 +482,16 @@ impl Runner {
     }
 
     fn assert_prefix_invariants(&self) -> TestCaseResult {
-        for (stream_id, received) in &self.received_at_a {
-            let expected = self
-                .expected_at_a
-                .get(stream_id)
-                .map_or(&[][..], Vec::as_slice);
-            prop_assert!(
-                expected.starts_with(received),
-                "side A observed non-prefix bytes on {stream_id:?}: received={received:?} expected={expected:?}"
-            );
-        }
-
-        for (stream_id, received) in &self.received_at_b {
-            let expected = self
-                .expected_at_b
-                .get(stream_id)
-                .map_or(&[][..], Vec::as_slice);
-            prop_assert!(
-                expected.starts_with(received),
-                "side B observed non-prefix bytes on {stream_id:?}: received={received:?} expected={expected:?}"
-            );
+        for side in [Side::A, Side::B] {
+            for (stream_id, received) in &self.received[side.idx()] {
+                let expected = self.expected[side.idx()]
+                    .get(stream_id)
+                    .map_or(&[][..], Vec::as_slice);
+                prop_assert!(
+                    expected.starts_with(received),
+                    "side {side:?} observed non-prefix bytes on {stream_id:?}: received={received:?} expected={expected:?}"
+                );
+            }
         }
 
         Ok(())
@@ -596,79 +532,48 @@ impl Runner {
     }
 
     fn assert_terminal_semantics(&self) -> TestCaseResult {
-        for stream_id in &self.events_a.finished {
-            if self.inbound_aborted(Side::A, *stream_id) {
-                continue;
-            }
-            let expected = self
-                .expected_at_a
-                .get(stream_id)
-                .map_or(&[][..], Vec::as_slice);
-            let received = self
-                .received_at_a
-                .get(stream_id)
-                .map_or(&[][..], Vec::as_slice);
-            prop_assert_eq!(
-                received,
-                expected,
-                "side A finished {:?} without receiving all expected bytes",
-                stream_id
-            );
-        }
-
-        for stream_id in &self.events_b.finished {
-            if self.inbound_aborted(Side::B, *stream_id) {
-                continue;
-            }
-            let expected = self
-                .expected_at_b
-                .get(stream_id)
-                .map_or(&[][..], Vec::as_slice);
-            let received = self
-                .received_at_b
-                .get(stream_id)
-                .map_or(&[][..], Vec::as_slice);
-            prop_assert_eq!(
-                received,
-                expected,
-                "side B finished {:?} without receiving all expected bytes",
-                stream_id
-            );
-        }
-
         let a_connected = matches!(self.harness.a.fsm.state.link, LinkState::Connected(_));
         let b_connected = matches!(self.harness.b.fsm.state.link, LinkState::Connected(_));
+        let connected = [a_connected, b_connected];
 
-        for stream_id in &self.finished_by_a {
-            prop_assert!(
-                self.events_b.finished.contains(stream_id)
-                    || self.events_b.closed.contains(stream_id)
-                    || !b_connected,
-                "side A finished {stream_id:?} but side B saw neither Finished nor Closed"
-            );
-        }
+        for side in [Side::A, Side::B] {
+            for stream_id in &self.events[side.idx()].finished {
+                if self.inbound_aborted(side, *stream_id) {
+                    continue;
+                }
+                let expected = self.expected[side.idx()]
+                    .get(stream_id)
+                    .map_or(&[][..], Vec::as_slice);
+                let received = self.received[side.idx()]
+                    .get(stream_id)
+                    .map_or(&[][..], Vec::as_slice);
+                prop_assert_eq!(
+                    received,
+                    expected,
+                    "side {:?} finished {:?} without receiving all expected bytes",
+                    side,
+                    stream_id
+                );
+            }
 
-        for stream_id in &self.finished_by_b {
-            prop_assert!(
-                self.events_a.finished.contains(stream_id)
-                    || self.events_a.closed.contains(stream_id)
-                    || !a_connected,
-                "side B finished {stream_id:?} but side A saw neither Finished nor Closed"
-            );
-        }
+            for stream_id in &self.finished_by[side.idx()] {
+                prop_assert!(
+                    self.events[opposite(side).idx()].finished.contains(stream_id)
+                        || self.events[opposite(side).idx()].closed.contains(stream_id)
+                        || !connected[opposite(side).idx()],
+                    "side {side:?} finished {stream_id:?} but side {:?} saw neither Finished nor Closed",
+                    opposite(side)
+                );
+            }
 
-        for stream_id in &self.closed_by_a {
-            prop_assert!(
-                self.events_b.closed.contains(stream_id) || !b_connected,
-                "side A closed {stream_id:?} but side B saw no Closed event"
-            );
-        }
-
-        for stream_id in &self.closed_by_b {
-            prop_assert!(
-                self.events_a.closed.contains(stream_id) || !a_connected,
-                "side B closed {stream_id:?} but side A saw no Closed event"
-            );
+            for stream_id in &self.closed_by[side.idx()] {
+                prop_assert!(
+                    self.events[opposite(side).idx()].closed.contains(stream_id)
+                        || !connected[opposite(side).idx()],
+                    "side {side:?} closed {stream_id:?} but side {:?} saw no Closed event",
+                    opposite(side)
+                );
+            }
         }
 
         Ok(())
@@ -677,14 +582,12 @@ impl Runner {
     fn assert_no_stream_events(&self) -> TestCaseResult {
         prop_assert!(
             self.known_streams.is_empty()
-                && self.events_a.opened.is_empty()
-                && self.events_b.opened.is_empty()
-                && self.events_a.finished.is_empty()
-                && self.events_b.finished.is_empty()
-                && self.events_a.closed.is_empty()
-                && self.events_b.closed.is_empty()
-                && self.events_a.writable_closed.is_empty()
-                && self.events_b.writable_closed.is_empty(),
+                && self.events.iter().all(|events| {
+                    events.opened.is_empty()
+                        && events.finished.is_empty()
+                        && events.closed.is_empty()
+                        && events.writable_closed.is_empty()
+                }),
             "handshake-only property observed stream activity"
         );
         Ok(())
@@ -692,7 +595,7 @@ impl Runner {
 
     fn assert_no_taken_writes(&self) -> TestCaseResult {
         prop_assert!(
-            self.taken_a_to_b.is_empty() && self.taken_b_to_a.is_empty(),
+            self.taken.iter().all(Vec::is_empty),
             "cleanup left taken writes queued"
         );
         Ok(())
@@ -703,7 +606,7 @@ impl Runner {
 
         for _ in 0..8 {
             self.capture_all_outbound();
-            if self.pending_a_to_b.is_empty() && self.pending_b_to_a.is_empty() {
+            if self.pending.iter().all(Vec::is_empty) {
                 break;
             }
             self.flush_pending_in_order();
@@ -712,156 +615,82 @@ impl Runner {
 
         self.capture_all_outbound();
         prop_assert!(
-            self.pending_a_to_b.is_empty()
-                && self.pending_b_to_a.is_empty()
-                && self.taken_a_to_b.is_empty()
-                && self.taken_b_to_a.is_empty(),
+            self.pending.iter().all(Vec::is_empty) && self.taken.iter().all(Vec::is_empty),
             "cleanup did not quiesce: taken_a={} taken_b={} pending_a={} pending_b={}",
-            self.taken_a_to_b.len(),
-            self.taken_b_to_a.len(),
-            self.pending_a_to_b.len(),
-            self.pending_b_to_a.len()
+            self.taken[Side::A.idx()].len(),
+            self.taken[Side::B.idx()].len(),
+            self.pending[Side::A.idx()].len(),
+            self.pending[Side::B.idx()].len()
         );
 
         Ok(())
     }
 
     fn capture_all_outbound(&mut self) {
-        while let Some(record) = take_confirmed_outbound_a(&mut self.harness) {
-            self.pending_a_to_b.push(record);
-        }
-
-        while let Some(record) = take_confirmed_outbound_b(&mut self.harness) {
-            self.pending_b_to_a.push(record);
+        for side in [Side::A, Side::B] {
+            while let Some(record) = take_confirmed_outbound(&mut self.harness, side) {
+                self.pending[side.idx()].push(record);
+            }
         }
     }
 
     fn flush_pending_in_order(&mut self) {
-        while let Some(record) = pop_front_pending(&mut self.pending_a_to_b) {
-            self.deliver_to_b(record);
-        }
-
-        while let Some(record) = pop_front_pending(&mut self.pending_b_to_a) {
-            self.deliver_to_a(record);
+        for side in [Side::A, Side::B] {
+            while let Some(record) = pop_front_pending(&mut self.pending[side.idx()]) {
+                self.deliver_to(opposite(side), record);
+            }
         }
     }
 
     fn reject_all_taken(&mut self) {
-        while let Some(write) = self.taken_a_to_b.pop() {
-            reject_taken_a(&mut self.harness, &write);
-        }
-
-        while let Some(write) = self.taken_b_to_a.pop() {
-            reject_taken_b(&mut self.harness, &write);
+        for side in [Side::A, Side::B] {
+            while let Some(write) = self.taken[side.idx()].pop() {
+                reject_taken(&mut self.harness, side, &write);
+            }
         }
     }
 
-    fn deliver_to_a(&mut self, record: Vec<u8>) {
-        if let Err(error) = deliver_to_a(&mut self.harness, record) {
-            self.receive_errors.push((Side::A, error));
-        }
-    }
-
-    fn deliver_to_b(&mut self, record: Vec<u8>) {
-        if let Err(error) = deliver_to_b(&mut self.harness, record) {
-            self.receive_errors.push((Side::B, error));
-        }
-    }
-
-    fn events_mut(&mut self, side: Side) -> &mut SideEventState {
-        match side {
-            Side::A => &mut self.events_a,
-            Side::B => &mut self.events_b,
-        }
-    }
-
-    fn events(&self, side: Side) -> &SideEventState {
-        match side {
-            Side::A => &self.events_a,
-            Side::B => &self.events_b,
+    fn deliver_to(&mut self, side: Side, record: Vec<u8>) {
+        if let Err(error) = deliver_to(&mut self.harness, side, record) {
+            self.receive_errors.push((side, error));
         }
     }
 
     fn inbound_aborted(&self, side: Side, stream_id: StreamId) -> bool {
-        self.events(side).closed.contains(&stream_id)
-            || match side {
-                Side::A => self.closed_by_a.contains(&stream_id),
-                Side::B => self.closed_by_b.contains(&stream_id),
-            }
+        self.events[side.idx()].closed.contains(&stream_id)
+            || self.closed_by[side.idx()].contains(&stream_id)
     }
 }
 
-fn take_unconfirmed_outbound_a(harness: &mut Harness) -> Option<TakenWrite> {
-    let time = harness.time();
-    let Node { fsm, crypto, .. } = &mut harness.a;
-    let write = fsm.take_next_write(time, crypto)?;
+fn take_unconfirmed_outbound(harness: &mut Harness, side: Side) -> Option<TakenWrite> {
+    let write = harness.next_write(side)?;
     Some(TakenWrite {
         record: write.record,
         write_id: write.session_write_id,
     })
 }
 
-fn take_unconfirmed_outbound_b(harness: &mut Harness) -> Option<TakenWrite> {
-    let time = harness.time();
-    let Node { fsm, crypto, .. } = &mut harness.b;
-    let write = fsm.take_next_write(time, crypto)?;
-    Some(TakenWrite {
-        record: write.record,
-        write_id: write.session_write_id,
-    })
-}
-
-fn take_confirmed_outbound_a(harness: &mut Harness) -> Option<Vec<u8>> {
-    let write = take_unconfirmed_outbound_a(harness)?;
-    confirm_taken_a(harness, &write);
+fn take_confirmed_outbound(harness: &mut Harness, side: Side) -> Option<Vec<u8>> {
+    let write = take_unconfirmed_outbound(harness, side)?;
+    confirm_taken(harness, side, &write);
     Some(write.record)
 }
 
-fn take_confirmed_outbound_b(harness: &mut Harness) -> Option<Vec<u8>> {
-    let write = take_unconfirmed_outbound_b(harness)?;
-    confirm_taken_b(harness, &write);
-    Some(write.record)
-}
-
-fn confirm_taken_a(harness: &mut Harness, write: &TakenWrite) {
+fn confirm_taken(harness: &mut Harness, side: Side, write: &TakenWrite) {
     if let Some(write_id) = write.write_id {
-        harness
-            .a
-            .fsm
-            .confirm_session_write(harness.time(), write_id);
+        harness.confirm_write(side, write_id);
     }
 }
 
-fn confirm_taken_b(harness: &mut Harness, write: &TakenWrite) {
+fn reject_taken(harness: &mut Harness, side: Side, write: &TakenWrite) {
     if let Some(write_id) = write.write_id {
-        harness
-            .b
-            .fsm
-            .confirm_session_write(harness.time(), write_id);
+        harness.reject_write(side, write_id);
     }
 }
 
-fn reject_taken_a(harness: &mut Harness, write: &TakenWrite) {
-    if let Some(write_id) = write.write_id {
-        harness.a.fsm.reject_session_write(write_id);
-    }
-}
-
-fn reject_taken_b(harness: &mut Harness, write: &TakenWrite) {
-    if let Some(write_id) = write.write_id {
-        harness.b.fsm.reject_session_write(write_id);
-    }
-}
-
-fn deliver_to_a(harness: &mut Harness, record: Vec<u8>) -> Result<(), ReceiveError> {
+fn deliver_to(harness: &mut Harness, side: Side, record: Vec<u8>) -> Result<(), ReceiveError> {
     let time = harness.time();
-    let Node { fsm, crypto } = &mut harness.a;
-    fsm.receive(time, record, crypto)
-}
-
-fn deliver_to_b(harness: &mut Harness, record: Vec<u8>) -> Result<(), ReceiveError> {
-    let time = harness.time();
-    let Node { fsm, crypto } = &mut harness.b;
+    let Node { fsm, crypto } = harness.node_mut(side);
     fsm.receive(time, record, crypto)
 }
 
@@ -920,36 +749,54 @@ fn drain_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
     out
 }
 
+fn opposite(side: Side) -> Side {
+    match side {
+        Side::A => Side::B,
+        Side::B => Side::A,
+    }
+}
+
+fn side_strategy() -> impl Strategy<Value = Side> {
+    prop_oneof![Just(Side::A), Just(Side::B)]
+}
+
+fn side_action(f: fn(Side) -> Action) -> impl Strategy<Value = Action> {
+    side_strategy().prop_map(f)
+}
+
+fn side_usize_action(
+    values: impl Strategy<Value = usize>,
+    f: fn(Side, usize) -> Action,
+) -> impl Strategy<Value = Action> {
+    (side_strategy(), values).prop_map(move |(side, value)| f(side, value))
+}
+
+fn side_usize_vec_action(
+    values: impl Strategy<Value = usize>,
+    bytes: impl Strategy<Value = Vec<u8>>,
+    f: fn(Side, usize, Vec<u8>) -> Action,
+) -> impl Strategy<Value = Action> {
+    (side_strategy(), values, bytes).prop_map(move |(side, value, bytes)| f(side, value, bytes))
+}
+
 fn handshake_action_strategy() -> impl Strategy<Value = Action> {
     let queue_index = 0usize..6;
     prop_oneof![
-        Just(Action::ConnectIkA),
-        Just(Action::ConnectIkB),
-        Just(Action::ConnectKkA),
-        Just(Action::ConnectKkB),
+        side_action(Action::ConnectIk),
+        side_action(Action::ConnectKk),
         (0u8..40).prop_map(Action::AdvanceMs),
-        Just(Action::OnTimerA),
-        Just(Action::OnTimerB),
+        side_action(Action::OnTimer),
         Just(Action::OnTimerBoth),
         Just(Action::Pump),
-        Just(Action::TakeNextAToB),
-        Just(Action::TakeNextBToA),
-        queue_index.clone().prop_map(Action::ConfirmTakenAToB),
-        queue_index.clone().prop_map(Action::ConfirmTakenBToA),
-        queue_index.clone().prop_map(Action::RejectTakenAToB),
-        queue_index.clone().prop_map(Action::RejectTakenBToA),
-        Just(Action::CaptureNextAToB),
-        Just(Action::CaptureNextBToA),
-        Just(Action::DeliverNextAToB),
-        Just(Action::DeliverNextBToA),
-        Just(Action::DropNextAToB),
-        Just(Action::DropNextBToA),
-        queue_index.clone().prop_map(Action::DeliverQueuedAToB),
-        queue_index.clone().prop_map(Action::DeliverQueuedBToA),
-        queue_index.clone().prop_map(Action::DuplicateQueuedAToB),
-        queue_index.clone().prop_map(Action::DuplicateQueuedBToA),
-        queue_index.clone().prop_map(Action::DropQueuedAToB),
-        queue_index.prop_map(Action::DropQueuedBToA),
+        side_action(Action::TakeNext),
+        side_usize_action(queue_index.clone(), Action::confirm_taken),
+        side_usize_action(queue_index.clone(), Action::reject_taken),
+        side_action(Action::CaptureNext),
+        side_action(Action::DeliverNext),
+        side_action(Action::DropNext),
+        side_usize_action(queue_index.clone(), Action::deliver_queued),
+        side_usize_action(queue_index.clone(), Action::duplicate_queued),
+        side_usize_action(queue_index, Action::drop_queued),
     ]
 }
 
@@ -959,36 +806,22 @@ fn connected_action_strategy() -> impl Strategy<Value = Action> {
     let queue_index = 0usize..6;
     prop_oneof![
         (0u8..30).prop_map(Action::AdvanceMs),
-        Just(Action::OnTimerA),
-        Just(Action::OnTimerB),
+        side_action(Action::OnTimer),
         Just(Action::OnTimerBoth),
         Just(Action::Pump),
-        Just(Action::TakeNextAToB),
-        Just(Action::TakeNextBToA),
-        queue_index.clone().prop_map(Action::ConfirmTakenAToB),
-        queue_index.clone().prop_map(Action::ConfirmTakenBToA),
-        queue_index.clone().prop_map(Action::RejectTakenAToB),
-        queue_index.clone().prop_map(Action::RejectTakenBToA),
-        Just(Action::CaptureNextAToB),
-        Just(Action::CaptureNextBToA),
-        Just(Action::DeliverNextAToB),
-        Just(Action::DeliverNextBToA),
-        Just(Action::DropNextAToB),
-        Just(Action::DropNextBToA),
-        queue_index.clone().prop_map(Action::DeliverQueuedAToB),
-        queue_index.clone().prop_map(Action::DeliverQueuedBToA),
-        queue_index.clone().prop_map(Action::DuplicateQueuedAToB),
-        queue_index.clone().prop_map(Action::DuplicateQueuedBToA),
-        queue_index.clone().prop_map(Action::DropQueuedAToB),
-        queue_index.prop_map(Action::DropQueuedBToA),
-        slot.clone().prop_map(Action::OpenStreamA),
-        slot.clone().prop_map(Action::OpenStreamB),
-        (slot.clone(), bytes.clone()).prop_map(|(slot, bytes)| Action::WriteA { slot, bytes }),
-        (slot.clone(), bytes).prop_map(|(slot, bytes)| Action::WriteB { slot, bytes }),
-        slot.clone().prop_map(Action::FinishA),
-        slot.clone().prop_map(Action::FinishB),
-        slot.clone().prop_map(Action::CloseA),
-        slot.prop_map(Action::CloseB),
+        side_action(Action::TakeNext),
+        side_usize_action(queue_index.clone(), Action::confirm_taken),
+        side_usize_action(queue_index.clone(), Action::reject_taken),
+        side_action(Action::CaptureNext),
+        side_action(Action::DeliverNext),
+        side_action(Action::DropNext),
+        side_usize_action(queue_index.clone(), Action::deliver_queued),
+        side_usize_action(queue_index.clone(), Action::duplicate_queued),
+        side_usize_action(queue_index.clone(), Action::drop_queued),
+        side_usize_action(slot.clone(), Action::open_stream),
+        side_usize_vec_action(slot.clone(), bytes.clone(), Action::write),
+        side_usize_action(slot.clone(), Action::finish),
+        side_usize_action(slot, Action::close),
     ]
 }
 
@@ -997,25 +830,16 @@ fn write_tracking_action_strategy() -> impl Strategy<Value = Action> {
     let slot = 0usize..SLOT_COUNT;
     let queue_index = 0usize..6;
     prop_oneof![
-        slot.clone().prop_map(Action::OpenStreamA),
-        slot.clone().prop_map(Action::OpenStreamB),
-        (slot.clone(), bytes.clone()).prop_map(|(slot, bytes)| Action::WriteA { slot, bytes }),
-        (slot, bytes).prop_map(|(slot, bytes)| Action::WriteB { slot, bytes }),
-        Just(Action::TakeNextAToB),
-        Just(Action::TakeNextBToA),
-        queue_index.clone().prop_map(Action::ConfirmTakenAToB),
-        queue_index.clone().prop_map(Action::ConfirmTakenBToA),
-        queue_index.clone().prop_map(Action::RejectTakenAToB),
-        queue_index.clone().prop_map(Action::RejectTakenBToA),
-        queue_index.clone().prop_map(Action::DeliverQueuedAToB),
-        queue_index.clone().prop_map(Action::DeliverQueuedBToA),
-        queue_index.clone().prop_map(Action::DuplicateQueuedAToB),
-        queue_index.clone().prop_map(Action::DuplicateQueuedBToA),
-        queue_index.clone().prop_map(Action::DropQueuedAToB),
-        queue_index.prop_map(Action::DropQueuedBToA),
+        side_usize_action(slot.clone(), Action::open_stream),
+        side_usize_vec_action(slot, bytes, Action::write),
+        side_action(Action::TakeNext),
+        side_usize_action(queue_index.clone(), Action::confirm_taken),
+        side_usize_action(queue_index.clone(), Action::reject_taken),
+        side_usize_action(queue_index.clone(), Action::deliver_queued),
+        side_usize_action(queue_index.clone(), Action::duplicate_queued),
+        side_usize_action(queue_index, Action::drop_queued),
         Just(Action::Pump),
-        Just(Action::OnTimerA),
-        Just(Action::OnTimerB),
+        side_action(Action::OnTimer),
         Just(Action::OnTimerBoth),
         (0u8..20).prop_map(Action::AdvanceMs),
     ]
@@ -1026,29 +850,18 @@ fn terminal_action_strategy() -> impl Strategy<Value = Action> {
     let slot = 0usize..SLOT_COUNT;
     let queue_index = 0usize..6;
     prop_oneof![
-        slot.clone().prop_map(Action::OpenStreamA),
-        slot.clone().prop_map(Action::OpenStreamB),
-        (slot.clone(), bytes.clone()).prop_map(|(slot, bytes)| Action::WriteA { slot, bytes }),
-        (slot.clone(), bytes).prop_map(|(slot, bytes)| Action::WriteB { slot, bytes }),
-        slot.clone().prop_map(Action::FinishA),
-        slot.clone().prop_map(Action::FinishB),
-        slot.clone().prop_map(Action::CloseA),
-        slot.prop_map(Action::CloseB),
-        Just(Action::TakeNextAToB),
-        Just(Action::TakeNextBToA),
-        queue_index.clone().prop_map(Action::ConfirmTakenAToB),
-        queue_index.clone().prop_map(Action::ConfirmTakenBToA),
-        queue_index.clone().prop_map(Action::RejectTakenAToB),
-        queue_index.clone().prop_map(Action::RejectTakenBToA),
-        queue_index.clone().prop_map(Action::DeliverQueuedAToB),
-        queue_index.clone().prop_map(Action::DeliverQueuedBToA),
-        queue_index.clone().prop_map(Action::DuplicateQueuedAToB),
-        queue_index.clone().prop_map(Action::DuplicateQueuedBToA),
-        queue_index.clone().prop_map(Action::DropQueuedAToB),
-        queue_index.prop_map(Action::DropQueuedBToA),
+        side_usize_action(slot.clone(), Action::open_stream),
+        side_usize_vec_action(slot.clone(), bytes.clone(), Action::write),
+        side_usize_action(slot.clone(), Action::finish),
+        side_usize_action(slot, Action::close),
+        side_action(Action::TakeNext),
+        side_usize_action(queue_index.clone(), Action::confirm_taken),
+        side_usize_action(queue_index.clone(), Action::reject_taken),
+        side_usize_action(queue_index.clone(), Action::deliver_queued),
+        side_usize_action(queue_index.clone(), Action::duplicate_queued),
+        side_usize_action(queue_index, Action::drop_queued),
         Just(Action::Pump),
-        Just(Action::OnTimerA),
-        Just(Action::OnTimerB),
+        side_action(Action::OnTimer),
         Just(Action::OnTimerBoth),
         (0u8..20).prop_map(Action::AdvanceMs),
     ]

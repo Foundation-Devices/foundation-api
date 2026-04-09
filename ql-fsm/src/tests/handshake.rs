@@ -9,7 +9,7 @@ use crate::{state::LinkState, NoPeerError, PeerStatus, QlFsmEvent};
 fn ik_connect_round_trip_establishes_transport() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
-    harness.connect_ik_a().unwrap();
+    harness.connect_ik(Side::A).unwrap();
     harness.pump();
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
@@ -20,7 +20,7 @@ fn ik_connect_round_trip_establishes_transport() {
 fn kk_connect_round_trip_establishes_transport() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
-    harness.connect_kk_a().unwrap();
+    harness.connect_kk(Side::A).unwrap();
     harness.pump();
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
@@ -33,17 +33,17 @@ fn xx_connect_round_trip_establishes_transport_when_armed() {
     let token = pairing_token(1);
 
     harness.b.fsm.arm_pairing(token);
-    harness.connect_xx_a(token);
+    harness.connect_xx(Side::A, token);
 
-    let xx1 = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(xx1);
-    let xx2 = harness.next_outbound_b().unwrap();
-    harness.deliver_to_a(xx2);
-    let xx3 = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(xx3);
+    let xx1 = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, xx1);
+    let xx2 = harness.next_outbound(Side::B).unwrap();
+    harness.deliver(Side::A, xx2);
+    let xx3 = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, xx3);
 
-    let xx4 = harness.next_outbound_b().unwrap();
-    harness.deliver_to_a(xx4);
+    let xx4 = harness.next_outbound(Side::B).unwrap();
+    harness.deliver(Side::A, xx4);
 
     assert_eq!(harness.a.fsm.peer(), Some(&harness.b.fsm.identity.bundle()));
     assert_eq!(harness.b.fsm.peer(), Some(&harness.a.fsm.identity.bundle()));
@@ -64,7 +64,7 @@ fn ik_connect_learns_remote_initial_stream_receive_window() {
         },
     );
 
-    harness.connect_ik_a().unwrap();
+    harness.connect_ik(Side::A).unwrap();
     harness.pump();
 
     assert_eq!(
@@ -110,10 +110,10 @@ fn connect_methods_require_bound_peer() {
 fn connect_ik_emits_initiator_status() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
-    harness.connect_ik_a().unwrap();
+    harness.connect_ik(Side::A).unwrap();
 
     assert_eq!(
-        harness.drain_events_a(),
+        harness.drain_events(Side::A),
         vec![QlFsmEvent::PeerStatusChanged(PeerStatus::Initiator)]
     );
 }
@@ -123,13 +123,13 @@ fn inbound_xx1_ignored_when_pairing_token_not_armed() {
     let mut harness = Harness::paired(QlFsmConfig::default(), false, false);
     let token = pairing_token(3);
 
-    harness.connect_xx_a(token);
-    let xx1 = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(xx1);
+    harness.connect_xx(Side::A, token);
+    let xx1 = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, xx1);
 
     assert!(matches!(harness.b.fsm.state.link, LinkState::Idle));
-    assert!(harness.drain_events_b().is_empty());
-    assert!(harness.next_outbound_b().is_none());
+    assert!(harness.drain_events(Side::B).is_empty());
+    assert!(harness.next_outbound(Side::B).is_none());
 }
 
 #[test]
@@ -138,17 +138,17 @@ fn disarm_pairing_rejects_inflight_inbound_xx_responder() {
     let token = pairing_token(5);
 
     harness.b.fsm.arm_pairing(token);
-    harness.connect_xx_a(token);
-    let xx1 = harness.next_outbound_a().unwrap();
-    harness.deliver_to_b(xx1);
-    let xx2 = harness.next_outbound_b().unwrap();
-    harness.deliver_to_a(xx2);
-    let xx3 = harness.next_outbound_a().unwrap();
+    harness.connect_xx(Side::A, token);
+    let xx1 = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, xx1);
+    let xx2 = harness.next_outbound(Side::B).unwrap();
+    harness.deliver(Side::A, xx2);
+    let xx3 = harness.next_outbound(Side::A).unwrap();
     harness.b.fsm.disarm_pairing();
-    harness.deliver_to_b(xx3);
+    harness.deliver(Side::B, xx3);
 
     assert!(matches!(harness.b.fsm.state.link, LinkState::Idle));
-    assert!(harness.next_outbound_b().is_none());
+    assert!(harness.next_outbound(Side::B).is_none());
 }
 
 #[test]
@@ -158,15 +158,15 @@ fn simultaneous_xx_connect_converges() {
 
     harness.a.fsm.arm_pairing(token);
     harness.b.fsm.arm_pairing(token);
-    harness.connect_xx_a(token);
-    harness.connect_xx_b(token);
+    harness.connect_xx(Side::A, token);
+    harness.connect_xx(Side::B, token);
 
     for _ in 0..2 {
-        if let Some(record) = harness.next_outbound_a() {
-            harness.deliver_to_b(record);
+        if let Some(record) = harness.next_outbound(Side::A) {
+            harness.deliver(Side::B, record);
         }
-        if let Some(record) = harness.next_outbound_b() {
-            harness.deliver_to_a(record);
+        if let Some(record) = harness.next_outbound(Side::B) {
+            harness.deliver(Side::A, record);
         }
     }
     harness.pump();
@@ -179,28 +179,28 @@ fn simultaneous_xx_connect_converges() {
 fn connect_ik_replaces_in_flight_attempt_and_ignores_stale_reply() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
-    harness.connect_ik_a().unwrap();
-    harness.drain_events_a();
-    let first = harness.next_outbound_a().unwrap();
+    harness.connect_ik(Side::A).unwrap();
+    harness.drain_events(Side::A);
+    let first = harness.next_outbound(Side::A).unwrap();
     let first_id = handshake_id(&first);
 
-    harness.connect_ik_a().unwrap();
-    let second = harness.next_outbound_a().unwrap();
+    harness.connect_ik(Side::A).unwrap();
+    let second = harness.next_outbound(Side::A).unwrap();
     let second_id = handshake_id(&second);
 
     assert_ne!(first_id, second_id);
 
-    harness.deliver_to_b(first);
-    let stale_reply = harness.next_outbound_b().unwrap();
+    harness.deliver(Side::B, first);
+    let stale_reply = harness.next_outbound(Side::B).unwrap();
     assert_eq!(handshake_id(&stale_reply), first_id);
 
-    harness.deliver_to_a(stale_reply);
+    harness.deliver(Side::A, stale_reply);
     assert!(matches!(
         harness.a.fsm.state.link,
         LinkState::IkInitiator(_)
     ));
 
-    harness.deliver_to_b(second);
+    harness.deliver(Side::B, second);
     harness.pump();
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
@@ -211,27 +211,27 @@ fn connect_ik_replaces_in_flight_attempt_and_ignores_stale_reply() {
 fn connect_kk_replaces_in_flight_attempt_and_ignores_stale_reply() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
-    harness.connect_kk_a().unwrap();
-    let first = harness.next_outbound_a().unwrap();
+    harness.connect_kk(Side::A).unwrap();
+    let first = harness.next_outbound(Side::A).unwrap();
     let first_id = handshake_id(&first);
 
-    harness.connect_kk_a().unwrap();
-    let second = harness.next_outbound_a().unwrap();
+    harness.connect_kk(Side::A).unwrap();
+    let second = harness.next_outbound(Side::A).unwrap();
     let second_id = handshake_id(&second);
 
     assert_ne!(first_id, second_id);
 
-    harness.deliver_to_b(first);
-    let stale_reply = harness.next_outbound_b().unwrap();
+    harness.deliver(Side::B, first);
+    let stale_reply = harness.next_outbound(Side::B).unwrap();
     assert_eq!(handshake_id(&stale_reply), first_id);
 
-    harness.deliver_to_a(stale_reply);
+    harness.deliver(Side::A, stale_reply);
     assert!(matches!(
         harness.a.fsm.state.link,
         LinkState::KkInitiator(_)
     ));
 
-    harness.deliver_to_b(second);
+    harness.deliver(Side::B, second);
     harness.pump();
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
@@ -242,13 +242,13 @@ fn connect_kk_replaces_in_flight_attempt_and_ignores_stale_reply() {
 fn inbound_ik1_auto_binds_unbound_responder() {
     let mut harness = Harness::paired(QlFsmConfig::default(), true, false);
 
-    harness.connect_ik_a().unwrap();
+    harness.connect_ik(Side::A).unwrap();
     harness.pump();
 
     let expected_peer = harness.a.fsm.identity.bundle();
     assert_eq!(harness.b.fsm.peer(), Some(&expected_peer));
     assert_eq!(
-        harness.drain_events_b(),
+        harness.drain_events(Side::B),
         vec![
             QlFsmEvent::NewPeer,
             QlFsmEvent::PeerStatusChanged(PeerStatus::Connected),
@@ -266,22 +266,22 @@ fn handshake_timeout_drops_single_ik_attempt_without_resend() {
     };
     let mut harness = Harness::paired_known(config);
 
-    harness.connect_ik_a().unwrap();
-    harness.drain_events_a();
-    let first = harness.next_outbound_a().unwrap();
+    harness.connect_ik(Side::A).unwrap();
+    harness.drain_events(Side::A);
+    let first = harness.next_outbound(Side::A).unwrap();
     let (_, first) = ql_wire::decode_record::<QlHandshakeRecord, _>(first.as_slice()).unwrap();
     assert!(matches!(first, ql_wire::QlHandshakeRecord::Ik1(_)));
-    assert!(harness.next_outbound_a().is_none());
+    assert!(harness.next_outbound(Side::A).is_none());
 
     harness.advance(config.handshake_timeout);
-    harness.on_timer_a();
+    harness.on_timer(Side::A);
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
     assert_eq!(
-        harness.take_event_a(),
+        harness.take_event(Side::A),
         Some(QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected))
     );
-    assert!(harness.next_outbound_a().is_none());
+    assert!(harness.next_outbound(Side::A).is_none());
 }
 
 #[test]
@@ -292,36 +292,36 @@ fn handshake_timeout_clears_queued_kk_output() {
     };
     let mut harness = Harness::paired_known(config);
 
-    harness.connect_kk_a().unwrap();
+    harness.connect_kk(Side::A).unwrap();
 
     harness.advance(config.handshake_timeout);
-    harness.on_timer_a();
+    harness.on_timer(Side::A);
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
-    assert!(harness.next_outbound_a().is_none());
+    assert!(harness.next_outbound(Side::A).is_none());
 }
 
 #[test]
 fn bind_peer_clears_queued_handshake_output() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
-    harness.connect_ik_a().unwrap();
-    harness.drain_events_a();
+    harness.connect_ik(Side::A).unwrap();
+    harness.drain_events(Side::A);
     harness
         .a
         .fsm
         .bind_peer(test_identity(&SoftwareCrypto).bundle());
 
-    assert!(harness.drain_events_a().is_empty());
-    assert!(harness.next_outbound_a().is_none());
+    assert!(harness.drain_events(Side::A).is_empty());
+    assert!(harness.next_outbound(Side::A).is_none());
 }
 
 #[test]
 fn simultaneous_ik_connect_converges() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
-    harness.connect_ik_a().unwrap();
-    harness.connect_ik_b().unwrap();
+    harness.connect_ik(Side::A).unwrap();
+    harness.connect_ik(Side::B).unwrap();
     harness.pump();
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
@@ -332,8 +332,8 @@ fn simultaneous_ik_connect_converges() {
 fn simultaneous_ik_and_kk_connect_prefers_ik() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
-    harness.connect_ik_a().unwrap();
-    harness.connect_kk_b().unwrap();
+    harness.connect_ik(Side::A).unwrap();
+    harness.connect_kk(Side::B).unwrap();
     harness.pump();
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
