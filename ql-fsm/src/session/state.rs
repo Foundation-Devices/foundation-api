@@ -19,16 +19,23 @@ pub struct SessionFsmState {
     pub tracked_records: IndexMap<u64, TrackedRecord>,
     pub received_records: ReceivedRecords,
     pub ack_state: AckState,
-    pub pending_control: PendingSessionControl,
+    pub pending_ping: bool,
     pub streams: IndexMap<StreamId, StreamState>,
     pub next_stream_index: usize,
     pub remote_stream_history: RemoteStreamHistory,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionState {
     Open,
+    Closing(SessionClose),
     Closed,
+}
+
+impl SessionState {
+    pub fn is_open(&self) -> bool {
+        self == &Self::Open
+    }
 }
 
 #[derive(Debug)]
@@ -126,12 +133,6 @@ pub enum InboundState {
     Finished,
     Closed(StreamClose),
     Discarding,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct PendingSessionControl {
-    pub ping: bool,
-    pub close: Option<SessionClose>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

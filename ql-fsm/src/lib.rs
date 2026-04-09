@@ -88,6 +88,10 @@ pub enum QlFsmEvent {
     /// local writes on this stream are closed
     WritableClosed(StreamClose),
     /// the encrypted session was closed
+    ///
+    /// session close is abortive and best-effort. the session ends immediately
+    /// one final write remains: a record containing only `SessionFrame::Close`
+    /// the FSM does not wait for an ack for that record
     SessionClosed(SessionClose),
 }
 
@@ -267,8 +271,12 @@ impl QlFsm {
     }
 
     /// closes the current encrypted session locally
-    pub fn kill_session(&mut self, code: SessionCloseCode) {
-        fsm::kill_session(self, code);
+    ///
+    /// This transition is abortive and best-effort. It ends normal session use immediately and
+    /// may emit one final outbound close record, but it does not wait for the peer to acknowledge
+    /// that close.
+    pub fn close_session(&mut self, code: SessionCloseCode) {
+        fsm::close_session(self, code);
     }
 
     /// opens a new outgoing stream

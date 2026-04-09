@@ -103,7 +103,7 @@ impl SessionFsm {
                 tracked_records: Default::default(),
                 received_records: ReceivedRecords::default(),
                 ack_state: AckState::Idle,
-                pending_control: Default::default(),
+                pending_ping: false,
                 streams: Default::default(),
                 next_stream_index: 0,
                 remote_stream_history: RemoteStreamHistory::new(config.local_parity.remote()),
@@ -142,8 +142,25 @@ impl SessionFsm {
 
     pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
         self.ensure_session_open()?;
-        self.state.pending_control.ping = true;
+        self.state.pending_ping = true;
         Ok(())
+    }
+
+    pub(crate) fn close(&mut self, code: SessionCloseCode, mut emit: impl FnMut(SessionEvent)) {
+        if self.state.session_state != SessionState::Open {
+            return;
+        }
+
+        let close = SessionClose { code };
+        self.state.session_state = SessionState::Closing(close.clone());
+        self.state.tracked_records.clear();
+        self.state.ack_state = AckState::Idle;
+        self.clear_streams();
+        emit(SessionEvent::SessionClosed(close));
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.state.session_state == SessionState::Closed
     }
 
     pub(crate) fn receive<I>(
@@ -156,13 +173,14 @@ impl SessionFsm {
         I: IntoIterator<Item = Result<SessionFrame<Bytes>, WireError>>,
     {
         self.state.now = now;
-        self.collect_timeouts();
         self.state.last_activity_at = self.state.now;
         self.state.last_inbound_at = self.state.now;
 
-        if self.state.session_state == SessionState::Closed {
+        if self.state.session_state != SessionState::Open {
             return;
         }
+
+        self.collect_timeouts();
 
         let mut received_records = self.state.received_records.clone();
         let out_of_order = match received_records.insert(seq) {
@@ -179,7 +197,7 @@ impl SessionFsm {
 
         for frame in frames {
             let Ok(frame) = frame else {
-                self.fail_session(SessionCloseCode::PROTOCOL, &mut emit);
+                self.close(SessionCloseCode::PROTOCOL, &mut emit);
                 return;
             };
             ack_eliciting |= !matches!(frame, SessionFrame::Ack(_));
@@ -188,19 +206,19 @@ impl SessionFsm {
                 SessionFrame::Ack(ack) => self.process_record_ack(&ack, &mut emit),
                 SessionFrame::StreamData(frame) => {
                     if self.handle_stream_data(frame, &mut emit).is_err() {
-                        self.fail_session(SessionCloseCode::PROTOCOL, &mut emit);
+                        self.close(SessionCloseCode::PROTOCOL, &mut emit);
                         return;
                     }
                 }
                 SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame, &mut emit),
                 SessionFrame::StreamClose(frame) => {
                     if self.handle_stream_close(&frame, &mut emit).is_err() {
-                        self.fail_session(SessionCloseCode::PROTOCOL, &mut emit);
+                        self.close(SessionCloseCode::PROTOCOL, &mut emit);
                         return;
                     }
                 }
                 SessionFrame::Close(close) => {
-                    self.handle_session_close(close, &mut emit);
+                    self.close(close.code, &mut emit);
                     handled_close = true;
                     break;
                 }
@@ -221,6 +239,9 @@ impl SessionFsm {
 
     pub fn confirm_write(&mut self, now: Instant, write_id: u64) {
         self.state.now = now;
+        if !self.state.session_state.is_open() {
+            return;
+        }
         let Some(record) = self.state.tracked_records.get_mut(&write_id) else {
             return;
         };
@@ -232,6 +253,9 @@ impl SessionFsm {
     }
 
     pub fn reject_write(&mut self, write_id: u64) {
+        if !self.state.session_state.is_open() {
+            return;
+        }
         if self
             .state
             .tracked_records
@@ -246,7 +270,7 @@ impl SessionFsm {
         restore_tracked_record(
             self.state.now,
             &mut self.state.ack_state,
-            &mut self.state.pending_control,
+            &mut self.state.pending_ping,
             &mut self.state.streams,
             record,
         );
@@ -254,22 +278,28 @@ impl SessionFsm {
 
     pub fn on_timer(&mut self, now: Instant, mut emit: impl FnMut(SessionEvent)) {
         self.state.now = now;
+        if !self.state.session_state.is_open() {
+            return;
+        }
         self.collect_timeouts();
         if !self.config.peer_timeout.is_zero()
             && self.state.last_inbound_at + self.config.peer_timeout <= self.state.now
         {
-            self.fail_session(SessionCloseCode::TIMEOUT, &mut emit);
+            self.close(SessionCloseCode::TIMEOUT, &mut emit);
             return;
         }
         if self.state.session_state == SessionState::Open
             && !self.config.keepalive_interval.is_zero()
             && self.state.last_activity_at + self.config.keepalive_interval <= self.state.now
         {
-            self.state.pending_control.ping = true;
+            self.state.pending_ping = true;
         }
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
+        if !self.state.session_state.is_open() {
+            return None;
+        }
         let ack_deadline = match self.state.ack_state {
             AckState::Idle => None,
             AckState::Dirty { due_at } => Some(due_at),
@@ -286,7 +316,7 @@ impl SessionFsm {
             .min();
         let keepalive_deadline = (self.state.session_state == SessionState::Open
             && !self.config.keepalive_interval.is_zero()
-            && !self.state.pending_control.ping)
+            && !self.state.pending_ping)
             .then_some(self.state.last_activity_at + self.config.keepalive_interval);
         let peer_timeout_deadline = (self.state.session_state == SessionState::Open
             && !self.config.peer_timeout.is_zero())
@@ -304,6 +334,20 @@ impl SessionFsm {
 
     pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
         self.state.now = now;
+        match &self.state.session_state {
+            SessionState::Closing(close) => {
+                let seq = self.state.next_record_seq;
+                next_seq(&mut self.state.next_record_seq);
+                let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
+                assert!(builder.push_close(&close), "builder has capacity");
+                self.state.session_state = SessionState::Closed;
+                return Some((None, builder));
+            }
+            SessionState::Closed => {
+                return None;
+            }
+            SessionState::Open => {}
+        }
         self.collect_timeouts();
 
         let (builder, outbound) = self.build_next_record()?;
@@ -334,18 +378,10 @@ impl SessionFsm {
             sent_at: None,
         };
 
-        if let Some(close) = self.state.pending_control.close.take() {
-            if builder.push_close(&close) {
-                outbound.frames.push(TrackedFrame::Close(close.clone()));
-            } else {
-                self.state.pending_control.close = Some(close);
-            }
-        }
-
         self.push_next_pending_stream_close(&mut builder, &mut outbound);
 
-        if self.state.pending_control.ping && builder.push_ping() {
-            self.state.pending_control.ping = false;
+        if self.state.pending_ping && builder.push_ping() {
+            self.state.pending_ping = false;
             outbound.ping_included = true;
         }
 
@@ -364,11 +400,7 @@ impl SessionFsm {
             return None;
         }
 
-        self.state.next_record_seq = seq
-            .into_inner()
-            .checked_add(1)
-            .and_then(|next| RecordSeq::from_u64(next).ok())
-            .expect("record sequence overflow");
+        next_seq(&mut self.state.next_record_seq);
         Some((builder, outbound))
     }
 
@@ -495,7 +527,7 @@ impl SessionFsm {
     }
 
     fn ensure_session_open(&self) -> Result<(), NoSessionError> {
-        if self.state.session_state == SessionState::Closed {
+        if self.state.session_state != SessionState::Open {
             Err(NoSessionError)
         } else {
             Ok(())
@@ -548,7 +580,7 @@ impl SessionFsm {
             restore_tracked_record(
                 self.state.now,
                 &mut self.state.ack_state,
-                &mut self.state.pending_control,
+                &mut self.state.pending_ping,
                 &mut self.state.streams,
                 record,
             );
@@ -702,18 +734,6 @@ impl SessionFsm {
         Ok(())
     }
 
-    fn handle_session_close(&mut self, close: SessionClose, emit: &mut impl FnMut(SessionEvent)) {
-        if self.state.session_state == SessionState::Closed {
-            return;
-        }
-
-        self.state.session_state = SessionState::Closed;
-        self.state.tracked_records.clear();
-        self.clear_streams();
-        self.state.pending_control = Default::default();
-        emit(SessionEvent::SessionClosed(close));
-    }
-
     fn apply_local_close_to_stream(stream: &mut StreamState, target: CloseTarget) {
         if Self::target_affects_inbound(stream.role, target) {
             stream.inbound_state = InboundState::Discarding;
@@ -739,7 +759,6 @@ impl SessionFsm {
                 || record.frames.iter().any(|frame| match frame {
                     TrackedFrame::StreamData(frame) => frame.stream_id == stream_id,
                     TrackedFrame::StreamClose(frame) => frame.stream_id == stream_id,
-                    TrackedFrame::Close(_) => false,
                 })
         });
         if tracked_refs_stream {
@@ -807,19 +826,6 @@ impl SessionFsm {
         if self.state.next_stream_index >= self.state.streams.len() {
             self.state.next_stream_index %= self.state.streams.len();
         }
-    }
-
-    fn fail_session(&mut self, code: SessionCloseCode, emit: &mut impl FnMut(SessionEvent)) {
-        if self.state.session_state == SessionState::Closed {
-            return;
-        }
-
-        self.state.session_state = SessionState::Closed;
-        self.state.tracked_records.clear();
-        self.state.pending_control = Default::default();
-        self.state.pending_control.close = Some(SessionClose { code });
-        self.clear_streams();
-        emit(SessionEvent::SessionClosed(SessionClose { code }));
     }
 
     fn clear_streams(&mut self) {
@@ -911,7 +917,7 @@ fn local_stream_was_opened(
 fn restore_tracked_record(
     now: Instant,
     ack_state: &mut AckState,
-    pending_control: &mut state::PendingSessionControl,
+    pending_ping: &mut bool,
     streams: &mut IndexMap<StreamId, StreamState>,
     record: TrackedRecord,
 ) {
@@ -919,7 +925,7 @@ fn restore_tracked_record(
         schedule_ack(ack_state, now);
     }
     if record.ping_included {
-        pending_control.ping = true;
+        *pending_ping = true;
     }
     for (stream_id, maximum_offset) in record.window_updates {
         if let Some(stream) = streams.get_mut(&stream_id) {
@@ -929,19 +935,12 @@ fn restore_tracked_record(
         }
     }
     for frame in record.frames {
-        requeue_tracked_frame(pending_control, streams, frame);
+        requeue_tracked_frame(streams, frame);
     }
 }
 
-fn requeue_tracked_frame(
-    pending_control: &mut state::PendingSessionControl,
-    streams: &mut IndexMap<StreamId, StreamState>,
-    frame: TrackedFrame,
-) {
+fn requeue_tracked_frame(streams: &mut IndexMap<StreamId, StreamState>, frame: TrackedFrame) {
     match frame {
-        TrackedFrame::Close(close) => {
-            pending_control.close = Some(close);
-        }
         TrackedFrame::StreamClose(close) => restore_stream_close(streams, close),
         TrackedFrame::StreamData(frame) => restore_stream_data(streams, frame),
     }
@@ -976,7 +975,7 @@ fn acknowledge_tracked_frame(
     emit: &mut impl FnMut(SessionEvent),
 ) {
     match frame {
-        TrackedFrame::Close(_) | TrackedFrame::StreamClose(_) => {}
+        TrackedFrame::StreamClose(_) => {}
         TrackedFrame::StreamData(frame) => {
             let stream_id = frame.stream_id;
             if let Some(stream) = streams.get_mut(&stream_id) {
@@ -992,4 +991,14 @@ fn acknowledge_tracked_frame(
             }
         }
     }
+}
+
+#[inline]
+#[track_caller]
+fn next_seq(seq: &mut RecordSeq) {
+    *seq = seq
+        .into_inner()
+        .checked_add(1)
+        .and_then(|next| RecordSeq::from_u64(next).ok())
+        .expect("record sequence overflow");
 }

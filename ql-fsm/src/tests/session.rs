@@ -358,16 +358,34 @@ fn ack_frame_releases_stream_capacity_and_emits_writable() {
 }
 
 #[test]
-fn kill_session_disconnects_locally() {
+fn close_session_disconnects_locally() {
     let mut harness = Harness::connected(QlFsmConfig::default());
 
     harness
         .a
         .fsm
-        .kill_session(ql_wire::SessionCloseCode::CANCELLED);
+        .close_session(ql_wire::SessionCloseCode::CANCELLED);
+
+    assert!(matches!(harness.take_event_a(), Some(QlFsmEvent::SessionClosed(SessionClose {
+        code: ql_wire::SessionCloseCode::CANCELLED,
+    }))));
+    assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
+    assert!(matches!(
+        harness.a.fsm.open_stream(route_id(1)),
+        Err(NoSessionError)
+    ));
+    assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
+
+    let close = harness.next_outbound_a().unwrap();
+    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
+    let (_header, record) = decrypt_record(&harness.b.crypto, &close, &session_key);
+    assert!(matches!(record.as_slice(), [ql_wire::SessionFrame::Close(_)]));
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
-    assert!(harness.drain_events_a().is_empty());
+    assert_eq!(
+        harness.take_event_a(),
+        Some(QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected))
+    );
 }
 
 #[test]
@@ -443,11 +461,17 @@ fn session_timeout_emits_close_before_disconnect() {
 
     assert_eq!(
         harness.drain_events_a(),
-        vec![
-            QlFsmEvent::SessionClosed(SessionClose {
-                code: ql_wire::SessionCloseCode::TIMEOUT,
-            }),
-            QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected),
-        ]
+        vec![QlFsmEvent::SessionClosed(SessionClose {
+            code: ql_wire::SessionCloseCode::TIMEOUT,
+        })]
+    );
+
+    let close = harness.next_outbound_a().unwrap();
+    let session_key = harness.b.fsm.state.link.transport().unwrap().rx_key.clone();
+    let (_header, record) = decrypt_record(&harness.b.crypto, &close, &session_key);
+    assert!(matches!(record.as_slice(), [ql_wire::SessionFrame::Close(_)]));
+    assert_eq!(
+        harness.take_event_a(),
+        Some(QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected))
     );
 }

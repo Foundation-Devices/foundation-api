@@ -63,7 +63,9 @@ impl<P: QlPlatform> Runtime<P> {
                 }
                 DriverEvent::WriteCompleted { index, success } => {
                     let write = in_flight.swap_remove(index);
-                    DriverState::drive_write_completed(&mut fsm, write.session_write_id, success);
+                    state.with_fsm_events(&mut fsm, &platform, |fsm| {
+                        DriverState::drive_write_completed(fsm, write.session_write_id, success)
+                    })
                 }
                 DriverEvent::TimerExpired => {
                     state.with_fsm_events(&mut fsm, &platform, |fsm| {
