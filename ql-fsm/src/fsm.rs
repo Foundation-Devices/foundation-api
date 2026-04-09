@@ -4,8 +4,8 @@ use bytes::Bytes;
 use ql_wire::{self as wire, QlCrypto, RouteId, SessionCloseCode, StreamId, WireDecode};
 
 use crate::{
-    session::SessionEvent, state::LinkState, NoSessionError, OutboundWrite, QlFsm, QlFsmEvent,
-    ReceiveError, SessionWriteId, StreamError, StreamOps,
+    handshake, session::SessionEvent, state::LinkState, NoSessionError, OutboundWrite, QlFsm,
+    QlFsmEvent, ReceiveError, SessionWriteId, StreamError, StreamOps,
 };
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
@@ -29,10 +29,9 @@ pub fn receive(
     match header.record_type {
         wire::RecordType::Handshake => {
             let record = wire::QlHandshakeRecord::decode(&mut reader)?;
-            super::handle_handshake_record(fsm, crypto, &record)
+            handshake::handle_handshake_record(fsm, crypto, &record)
         }
         wire::RecordType::Session => {
-            let pending_events = &mut fsm.pending_events;
             let state = fsm
                 .state
                 .link
@@ -57,11 +56,12 @@ pub fn receive(
             let frames = wire::parse_session_frames(plaintext);
 
             let mut session_closed = false;
-            state
-                .session
-                .receive(fsm.state.now.instant, seq, frames, |event| {
+            state.session.receive(fsm.state.now.instant, seq, frames, {
+                let pending_events = &mut fsm.pending_events;
+                |event| {
                     session_closed |= forward_session_event(event, pending_events);
-                });
+                }
+            });
 
             if session_closed {
                 apply_session_closed(fsm);
@@ -72,7 +72,7 @@ pub fn receive(
 }
 
 pub fn on_timer(fsm: &mut QlFsm) {
-    super::handle_timer(fsm);
+    handshake::handle_timer(fsm);
 
     let mut session_closed = false;
     if let Some(state) = fsm.state.link.connected_mut() {
@@ -91,7 +91,7 @@ pub fn on_timer(fsm: &mut QlFsm) {
 
 pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
     [
-        super::next_handshake_deadline(fsm),
+        handshake::next_handshake_deadline(fsm),
         fsm.state
             .link
             .connected()

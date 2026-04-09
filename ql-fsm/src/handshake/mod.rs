@@ -6,8 +6,8 @@ use ql_wire::{
     self as wire, EphemeralPublicKey, HandshakeMeta, PairingToken, QlCrypto, QlHandshakeRecord,
 };
 
-use super::emit_peer_status;
 use crate::{
+    fsm::{deadline_after_secs, emit_peer_status},
     session::{SessionFsm, SessionFsmConfig, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
     NoPeerError, QlFsm, QlFsmEvent, ReceiveError,
@@ -37,10 +37,7 @@ pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
     fsm.state.next_control_id = fsm.state.next_control_id.wrapping_add(1);
     HandshakeMeta {
         handshake_id,
-        valid_until: super::deadline_after_secs(
-            fsm.state.now.unix_secs,
-            fsm.config.handshake_timeout,
-        ),
+        valid_until: deadline_after_secs(fsm.state.now.unix_secs, fsm.config.handshake_timeout),
     }
 }
 

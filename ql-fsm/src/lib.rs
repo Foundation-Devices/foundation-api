@@ -19,7 +19,8 @@
 //! another input may arrive before that deadline, which is fine
 
 mod error;
-pub(crate) mod implementation;
+mod fsm;
+mod handshake;
 pub(crate) mod replay_cache;
 mod session;
 pub(crate) mod state;
@@ -171,7 +172,7 @@ impl QlFsm {
 
     /// binds the remote peer
     pub fn bind_peer(&mut self, peer: PeerBundle) {
-        implementation::handle_bind_peer(self, peer);
+        fsm::handle_bind_peer(self, peer);
     }
 
     /// returns the currently bound peer, if any
@@ -187,25 +188,25 @@ impl QlFsm {
     /// disarms inbound xx pairing and rejects any in-flight inbound xx responder state
     pub fn disarm_pairing(&mut self) {
         self.state.armed_pairing_token = None;
-        implementation::handle_disarm_pairing(self);
+        handshake::handle_disarm_pairing(self);
     }
 
     /// starts an outbound xx handshake using the supplied pairing token
     pub fn connect_xx(&mut self, now: FsmTime, token: PairingToken, crypto: &impl QlCrypto) {
         self.state.now = now;
-        implementation::handle_connect_xx(self, token, crypto);
+        handshake::handle_connect_xx(self, token, crypto);
     }
 
     /// starts an IK handshake with the currently bound peer
     pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
         self.state.now = now;
-        implementation::handle_connect_ik(self, crypto)
+        handshake::handle_connect_ik(self, crypto)
     }
 
     /// starts a KK handshake with the currently bound peer
     pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
         self.state.now = now;
-        implementation::handle_connect_kk(self, crypto)
+        handshake::handle_connect_kk(self, crypto)
     }
 
     /// handles one inbound wire message
@@ -216,13 +217,13 @@ impl QlFsm {
         crypto: &impl QlCrypto,
     ) -> Result<(), ReceiveError> {
         self.state.now = now;
-        implementation::receive(self, bytes, crypto)
+        fsm::receive(self, bytes, crypto)
     }
 
     /// advances time-based state
     pub fn on_timer(&mut self, now: FsmTime) {
         self.state.now = now;
-        implementation::on_timer(self);
+        fsm::on_timer(self);
     }
 
     /// returns the next queued event, if any
@@ -232,7 +233,7 @@ impl QlFsm {
 
     /// returns the next timer deadline, if any
     pub fn next_deadline(&self) -> Option<Instant> {
-        implementation::next_deadline(self)
+        fsm::next_deadline(self)
     }
 
     /// returns the next outbound record
@@ -247,7 +248,7 @@ impl QlFsm {
         crypto: &impl QlCrypto,
     ) -> Option<OutboundWrite> {
         self.state.now = now;
-        implementation::take_next_write(self, crypto)
+        fsm::take_next_write(self, crypto)
     }
 
     /// marks a `SessionWriteId` from `take_next_write` as handed to the transport
@@ -255,33 +256,33 @@ impl QlFsm {
     /// call this at most once for each returned `SessionWriteId`
     pub fn confirm_session_write(&mut self, now: FsmTime, write_id: SessionWriteId) {
         self.state.now = now;
-        implementation::confirm_session_write(self, write_id);
+        fsm::confirm_session_write(self, write_id);
     }
 
     /// reports that a `SessionWriteId` from `take_next_write` was not accepted
     ///
     /// call this at most once for each returned `SessionWriteId`
     pub fn reject_session_write(&mut self, write_id: SessionWriteId) {
-        implementation::reject_session_write(self, write_id);
+        fsm::reject_session_write(self, write_id);
     }
 
     /// closes the current encrypted session locally
     pub fn kill_session(&mut self, code: SessionCloseCode) {
-        implementation::kill_session(self, code);
+        fsm::kill_session(self, code);
     }
 
     /// opens a new outgoing stream
     pub fn open_stream(&mut self, route_id: RouteId) -> Result<StreamOps<'_>, NoSessionError> {
-        implementation::open_stream(self, route_id)
+        fsm::open_stream(self, route_id)
     }
 
     /// returns a facade for an open stream
     pub fn stream(&mut self, stream_id: StreamId) -> Result<StreamOps<'_>, StreamError> {
-        implementation::stream(self, stream_id)
+        fsm::stream(self, stream_id)
     }
 
     /// queues a ping on the active session
     pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
-        implementation::queue_ping(self)
+        fsm::queue_ping(self)
     }
 }
