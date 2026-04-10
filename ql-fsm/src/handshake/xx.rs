@@ -38,10 +38,10 @@ pub fn handle_xx1(
         return Ok(());
     }
     if is_replayed_handshake_start(fsm, message.meta) {
-        return Ok(());
+        return Err(ReceiveError::Replay);
     }
     if fsm.state.armed_pairing_token != Some(message.header.pairing_token) {
-        return Ok(());
+        return Err(ReceiveError::InvalidPairingToken);
     }
 
     reset_connected_session_if_needed(fsm);

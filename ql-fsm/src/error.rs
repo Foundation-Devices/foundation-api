@@ -13,6 +13,8 @@ pub enum ReceiveError {
     DecryptFailed,
     InvalidXid,
     NoSession,
+    InvalidPairingToken,
+    Replay,
 }
 
 impl Display for ReceiveError {
@@ -24,6 +26,8 @@ impl Display for ReceiveError {
             Self::DecryptFailed => "decryption failed",
             Self::InvalidXid => "invalid xid",
             Self::NoSession => "no active session",
+            Self::InvalidPairingToken => "invalid pairing token",
+            Self::Replay => "replay",
         };
         f.write_str(message)
     }
