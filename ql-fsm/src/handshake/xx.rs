@@ -40,8 +40,15 @@ pub fn handle_xx1(
     if is_replayed_handshake_start(fsm, message.meta) {
         return Err(ReceiveError::Replay);
     }
-    if fsm.state.armed_pairing_token != Some(message.header.pairing_token) {
-        return Err(ReceiveError::InvalidPairingToken);
+    match fsm.state.armed_pairing_token {
+        Some(expected) if expected != message.header.pairing_token => {
+            return Err(ReceiveError::InvalidPairingToken {
+                expected,
+                actual: message.header.pairing_token,
+            });
+        }
+        Some(_) => {}
+        None => return Err(ReceiveError::NotPairingMode),
     }
 
     reset_connected_session_if_needed(fsm);

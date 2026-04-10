@@ -3,7 +3,7 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-use ql_wire::WireError;
+use ql_wire::{PairingToken, WireError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceiveError {
@@ -13,23 +13,32 @@ pub enum ReceiveError {
     DecryptFailed,
     InvalidXid,
     NoSession,
-    InvalidPairingToken,
+    NotPairingMode,
+    InvalidPairingToken {
+        expected: PairingToken,
+        actual: PairingToken,
+    },
     Replay,
 }
 
 impl Display for ReceiveError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let message = match self {
-            Self::InvalidPayload => "invalid payload",
-            Self::InvalidState => "invalid state",
-            Self::Expired => "expired",
-            Self::DecryptFailed => "decryption failed",
-            Self::InvalidXid => "invalid xid",
-            Self::NoSession => "no active session",
-            Self::InvalidPairingToken => "invalid pairing token",
-            Self::Replay => "replay",
-        };
-        f.write_str(message)
+        match self {
+            Self::InvalidPayload => f.write_str("invalid payload"),
+            Self::InvalidState => f.write_str("invalid state"),
+            Self::Expired => f.write_str("expired"),
+            Self::DecryptFailed => f.write_str("decryption failed"),
+            Self::InvalidXid => f.write_str("invalid xid"),
+            Self::NoSession => f.write_str("no active session"),
+            Self::NotPairingMode => f.write_str("not in pairing mode"),
+            Self::InvalidPairingToken { expected, actual } => {
+                write!(
+                    f,
+                    "invalid pairing token: expected {expected}, actual {actual}"
+                )
+            }
+            Self::Replay => f.write_str("replay"),
+        }
     }
 }
 

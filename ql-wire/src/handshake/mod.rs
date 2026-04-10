@@ -61,6 +61,15 @@ impl PairingToken {
     pub const SIZE: usize = 16;
 }
 
+impl std::fmt::Display for PairingToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 impl WireEncode for PairingToken {
     fn encoded_len(&self) -> usize {
         Self::SIZE
@@ -77,6 +86,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for PairingToken {
     }
 }
 
+// TODO: this should not be exposed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XxHeader {
     pub pairing_token: PairingToken,

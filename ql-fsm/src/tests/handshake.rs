@@ -3,7 +3,7 @@ use std::time::Duration;
 use ql_wire::QlHandshakeRecord;
 
 use super::*;
-use crate::{state::LinkState, Event, NoPeerError, PeerStatus};
+use crate::{state::LinkState, Event, NoPeerError, PeerStatus, ReceiveError};
 
 #[test]
 fn ik_connect_round_trip_establishes_transport() {
@@ -119,17 +119,40 @@ fn connect_ik_emits_initiator_status() {
 }
 
 #[test]
-fn inbound_xx1_ignored_when_pairing_token_not_armed() {
+fn inbound_xx1_rejects_when_not_in_pairing_mode() {
     let mut harness = Harness::paired(QlFsmConfig::default(), false, false);
     let token = pairing_token(3);
 
     harness.connect_xx(Side::A, token);
     let xx1 = harness.next_outbound(Side::A).unwrap();
-    harness.deliver(Side::B, xx1);
+    let time = harness.time();
+    let Node { fsm, crypto } = &mut harness.b;
+    let err = fsm.receive(time, xx1, crypto);
 
+    assert_eq!(err, Err(ReceiveError::NotPairingMode));
     assert!(matches!(harness.b.fsm.state.link, LinkState::Idle));
     assert!(harness.drain_events(Side::B).is_empty());
     assert!(harness.next_outbound(Side::B).is_none());
+}
+
+#[test]
+fn inbound_xx1_rejects_mismatched_pairing_token_with_expected_and_actual() {
+    let mut harness = Harness::paired(QlFsmConfig::default(), false, false);
+    let expected = pairing_token(4);
+    let actual = pairing_token(7);
+
+    harness.b.fsm.arm_pairing(expected);
+    harness.connect_xx(Side::A, actual);
+    let xx1 = harness.next_outbound(Side::A).unwrap();
+
+    let time = harness.time();
+    let Node { fsm, crypto } = &mut harness.b;
+    let err = fsm.receive(time, xx1, crypto);
+
+    assert_eq!(
+        err,
+        Err(ReceiveError::InvalidPairingToken { expected, actual })
+    );
 }
 
 #[test]
