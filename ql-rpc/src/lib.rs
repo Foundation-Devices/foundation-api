@@ -6,6 +6,7 @@ pub(crate) mod codec;
 mod error;
 pub mod rpc;
 
+pub use codec::{ReadValueStep, ValueReader};
 pub use error::*;
 pub use rpc::*;
 

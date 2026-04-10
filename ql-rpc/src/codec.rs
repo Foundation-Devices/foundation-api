@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, marker::PhantomData};
 
 use bytes::{Buf, BufMut, Bytes};
 
-use crate::{RpcCodec, RpcError};
+use crate::{RpcCodec, RpcCodecError, RpcError};
 
 const LENGTH_SIZE: usize = 8;
 
@@ -14,6 +14,50 @@ pub fn encode_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
     value.encode_value(out)?;
     backpatch_length(out, payload_start);
     Ok(())
+}
+
+pub enum ReadValueStep<T: RpcCodec> {
+    NeedMore(ValueReader<T>),
+    Value(T),
+}
+
+pub struct ValueReader<T: RpcCodec> {
+    bytes: ChunkQueue,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T: RpcCodec> Default for ValueReader<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: RpcCodec> ValueReader<T> {
+    pub fn new() -> Self {
+        Self {
+            bytes: ChunkQueue::new(),
+            marker: PhantomData,
+        }
+    }
+
+    pub fn push(mut self, chunk: Bytes) -> Self {
+        self.bytes.push(chunk);
+        self
+    }
+
+    pub fn advance(self) -> Result<ReadValueStep<T>, RpcCodecError<T::Error>> {
+        let mut this = self;
+        let Some(mut body) = this.bytes.try_take_part().map_err(RpcCodecError::Rpc)? else {
+            return Ok(ReadValueStep::NeedMore(this));
+        };
+
+        let value = T::decode_value(&mut body).map_err(RpcCodecError::Codec)?;
+        drop(body);
+        if this.bytes.remaining() > 0 {
+            return Err(RpcCodecError::Rpc(RpcError::TrailingBytes));
+        }
+        Ok(ReadValueStep::Value(value))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -223,4 +267,64 @@ pub fn backpatch_length<B: AsMut<[u8]> + ?Sized>(out: &mut B, start: usize) {
     let payload_len = out.len() - payload_start;
     let payload_len = u64::try_from(payload_len).expect("rpc payload exceeds u64 length framing");
     out[start..payload_start].copy_from_slice(&payload_len.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::{Buf, BufMut, Bytes};
+
+    use super::{encode_value_part, ReadValueStep, ValueReader};
+    use crate::RpcCodec;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct BytesValue(Vec<u8>);
+
+    impl RpcCodec for BytesValue {
+        type Error = core::convert::Infallible;
+
+        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) -> Result<(), Self::Error> {
+            out.put_slice(&self.0);
+            Ok(())
+        }
+
+        fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
+            Ok(Self(bytes.copy_to_bytes(bytes.remaining()).to_vec()))
+        }
+    }
+
+    #[test]
+    fn value_reader_round_trips_framed_values() {
+        let mut encoded = Vec::new();
+        encode_value_part(&BytesValue(b"hello".to_vec()), &mut encoded).unwrap();
+
+        match ValueReader::<BytesValue>::new()
+            .push(Bytes::from(encoded))
+            .advance()
+            .unwrap()
+        {
+            ReadValueStep::Value(value) => assert_eq!(value, BytesValue(b"hello".to_vec())),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn value_reader_waits_for_complete_frame() {
+        let mut encoded = Vec::new();
+        encode_value_part(&BytesValue(b"hello".to_vec()), &mut encoded).unwrap();
+        let encoded = Bytes::from(encoded);
+
+        let reader = match ValueReader::<BytesValue>::new()
+            .push(encoded.slice(..4))
+            .advance()
+            .unwrap()
+        {
+            ReadValueStep::NeedMore(next) => next,
+            _ => unreachable!(),
+        };
+
+        match reader.push(encoded.slice(4..)).advance().unwrap() {
+            ReadValueStep::Value(value) => assert_eq!(value, BytesValue(b"hello".to_vec())),
+            _ => unreachable!(),
+        }
+    }
 }

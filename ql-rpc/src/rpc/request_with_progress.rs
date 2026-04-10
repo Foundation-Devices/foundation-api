@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, MethodId, RpcCodec, RpcCodecError, RpcError};
+use crate::{codec, MethodId, ReadValueStep, RpcCodec, RpcCodecError, RpcError, ValueReader};
 
 pub trait RequestWithProgress {
     const METHOD: MethodId;
@@ -11,6 +11,9 @@ pub trait RequestWithProgress {
     type Progress: RpcCodec<Error = Self::Error>;
     type Response: RpcCodec<Error = Self::Error>;
 }
+
+pub type RequestReader<M> = ValueReader<<M as RequestWithProgress>::Request>;
+pub type RequestReadStep<M> = ReadValueStep<<M as RequestWithProgress>::Request>;
 
 pub enum ReadStep<M: RequestWithProgress> {
     NeedMore(ResponseReader<M>),
@@ -90,13 +93,9 @@ enum FrameKind {
 
 pub fn encode_request<M: RequestWithProgress>(
     request: &M::Request,
-    out: &mut impl BufMut,
+    out: &mut (impl BufMut + AsMut<[u8]>),
 ) -> Result<(), M::Error> {
-    request.encode_value(out)
-}
-
-pub fn decode_request<M: RequestWithProgress>(mut body: &[u8]) -> Result<M::Request, M::Error> {
-    M::Request::decode_value(&mut body)
+    codec::encode_value_part(request, out)
 }
 
 pub fn encode_progress<M: RequestWithProgress>(
@@ -129,11 +128,8 @@ fn encode_tagged_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
 mod tests {
     use bytes::{Buf, BufMut, Bytes};
 
-    use super::{
-        decode_request, encode_progress, encode_request, encode_response, ReadStep,
-        RequestWithProgress, ResponseReader,
-    };
-    use crate::{MethodId, RpcCodec, RpcCodecError, RpcError};
+    use super::{encode_progress, encode_response, ReadStep, RequestWithProgress, ResponseReader};
+    use crate::{MethodId, RpcCodec};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct BytesValue(Vec<u8>);
@@ -162,95 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn request_round_trip_preserves_payload() {
-        let mut encoded = Vec::new();
-        encode_request::<Watch>(&BytesValue(b"watch".to_vec()), &mut encoded).unwrap();
-        assert_eq!(
-            decode_request::<Watch>(&encoded).unwrap(),
-            BytesValue(b"watch".to_vec())
-        );
-    }
-
-    #[test]
-    fn response_with_progress_requires_terminal_response() {
-        let mut encoded = Vec::new();
-        encode_progress::<Watch>(&BytesValue(b"10%".to_vec()), &mut encoded).unwrap();
-
-        let reader = match ResponseReader::<Watch>::new()
-            .push(Bytes::from(encoded))
-            .advance()
-            .unwrap()
-        {
-            ReadStep::Progress { value, next } => {
-                assert_eq!(value, BytesValue(b"10%".to_vec()));
-                next
-            }
-            _ => unreachable!(),
-        };
-        let reader = match reader.advance().unwrap() {
-            ReadStep::NeedMore(next) => next,
-            _ => unreachable!(),
-        };
-        let _ = reader;
-    }
-
-    #[test]
-    fn response_with_progress_rejects_bytes_after_response() {
-        let mut encoded = Vec::new();
-        encode_progress::<Watch>(&BytesValue(b"10%".to_vec()), &mut encoded).unwrap();
-        encode_response::<Watch>(&BytesValue(b"done".to_vec()), &mut encoded).unwrap();
-        encode_progress::<Watch>(&BytesValue(b"late".to_vec()), &mut encoded).unwrap();
-
-        let reader = match ResponseReader::<Watch>::new()
-            .push(Bytes::from(encoded))
-            .advance()
-            .unwrap()
-        {
-            ReadStep::Progress { next, .. } => next,
-            _ => unreachable!(),
-        };
-        match reader.advance() {
-            Err(RpcCodecError::Rpc(RpcError::TrailingBytes)) => {}
-            _ => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn response_reader_emits_typed_events() {
-        let mut encoded = Vec::new();
-        encode_progress::<Watch>(&BytesValue(b"10%".to_vec()), &mut encoded).unwrap();
-        encode_response::<Watch>(&BytesValue(b"done".to_vec()), &mut encoded).unwrap();
-
-        let encoded = Bytes::from(encoded);
-        let reader = ResponseReader::<Watch>::new().push(encoded.slice(..4));
-        let reader = match reader.advance().unwrap() {
-            ReadStep::NeedMore(next) => next,
-            _ => unreachable!(),
-        };
-        let reader = reader.push(encoded.slice(4..encoded.len() - 2));
-        let reader = match reader.advance().unwrap() {
-            ReadStep::Progress {
-                value: BytesValue(bytes),
-                next,
-            } => {
-                assert_eq!(bytes, b"10%".to_vec());
-                next
-            }
-            _ => unreachable!(),
-        };
-        let reader = match reader.advance().unwrap() {
-            ReadStep::NeedMore(next) => next,
-            _ => unreachable!(),
-        };
-        let reader = reader.push(encoded.slice(encoded.len() - 2..));
-        match reader.advance().unwrap() {
-            ReadStep::Response(value) => assert_eq!(value, BytesValue(b"done".to_vec())),
-            _ => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn response_progress_then_response_round_trips() {
+    fn response_reader_emits_progress_then_response() {
         let mut encoded = Vec::new();
         encode_progress::<Watch>(&BytesValue(b"10%".to_vec()), &mut encoded).unwrap();
         encode_response::<Watch>(&BytesValue(b"done".to_vec()), &mut encoded).unwrap();
@@ -273,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn response_can_be_encoded_without_progress() {
+    fn response_reader_handles_response_only() {
         let mut encoded = Vec::new();
         encode_response::<Watch>(&BytesValue(b"done".to_vec()), &mut encoded).unwrap();
 

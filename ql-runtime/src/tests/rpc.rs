@@ -59,15 +59,12 @@ async fn rpc_request_round_trips() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request = read_all(inbound.reader).await.unwrap();
+            let request: BytesValue = read_rpc_value(inbound.reader).await;
             assert_eq!(
                 inbound.route_id,
                 route_id(<Echo as ql_rpc::request::Request>::METHOD)
             );
-            assert_eq!(
-                ql_rpc::request::decode_request::<Echo>(&request).unwrap(),
-                BytesValue(b"hello".to_vec())
-            );
+            assert_eq!(request, BytesValue(b"hello".to_vec()));
 
             let mut encoded = Vec::new();
             ql_rpc::request::encode_response::<Echo>(&BytesValue(b"world".to_vec()), &mut encoded)
@@ -101,15 +98,12 @@ async fn rpc_subscription_streams_events() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request = read_all(inbound.reader).await.unwrap();
+            let request: BytesValue = read_rpc_value(inbound.reader).await;
             assert_eq!(
                 inbound.route_id,
                 route_id(<Feed as ql_rpc::subscription::Subscription>::METHOD)
             );
-            assert_eq!(
-                ql_rpc::subscription::decode_request::<Feed>(&request).unwrap(),
-                BytesValue(b"watch".to_vec())
-            );
+            assert_eq!(request, BytesValue(b"watch".to_vec()));
 
             let mut encoded = Vec::new();
             ql_rpc::subscription::encode_item::<Feed>(&BytesValue(b"one".to_vec()), &mut encoded)
@@ -155,15 +149,12 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request = read_all(inbound.reader).await.unwrap();
+            let request: BytesValue = read_rpc_value(inbound.reader).await;
             assert_eq!(
                 inbound.route_id,
                 route_id(<Download as ql_rpc::request_with_progress::RequestWithProgress>::METHOD)
             );
-            assert_eq!(
-                ql_rpc::request_with_progress::decode_request::<Download>(&request).unwrap(),
-                BytesValue(b"logo".to_vec())
-            );
+            assert_eq!(request, BytesValue(b"logo".to_vec()));
 
             let mut encoded = Vec::new();
             ql_rpc::request_with_progress::encode_progress::<Download>(
@@ -208,4 +199,24 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
 
 fn route_id(method: ql_rpc::MethodId) -> RouteId {
     RouteId(ql_wire::VarInt::from_u32(method.0))
+}
+
+async fn read_rpc_value<T>(mut reader: crate::ByteReader) -> T
+where
+    T: ql_rpc::RpcCodec,
+    T::Error: std::fmt::Debug,
+{
+    let mut value_reader = ql_rpc::ValueReader::<T>::new();
+
+    loop {
+        match value_reader.advance().unwrap() {
+            ql_rpc::ReadValueStep::Value(value) => return value,
+            ql_rpc::ReadValueStep::NeedMore(next) => value_reader = next,
+        }
+
+        match reader.read_chunk().await.unwrap() {
+            Some(chunk) => value_reader = value_reader.push(chunk),
+            None => panic!("truncated rpc value"),
+        }
+    }
 }

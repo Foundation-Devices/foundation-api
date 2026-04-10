@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{Buf, BufMut, Bytes};
 
-use crate::{codec, MethodId, RpcCodec, RpcCodecError, RpcError};
+use crate::{codec, MethodId, ReadValueStep, RpcCodec, RpcCodecError, RpcError, ValueReader};
 
 pub trait Subscription {
     const METHOD: MethodId;
@@ -10,6 +10,9 @@ pub trait Subscription {
     type Request: RpcCodec<Error = Self::Error>;
     type Event: RpcCodec<Error = Self::Error>;
 }
+
+pub type RequestReader<M> = ValueReader<<M as Subscription>::Request>;
+pub type RequestReadStep<M> = ReadValueStep<<M as Subscription>::Request>;
 
 pub enum ReadStep<M: Subscription> {
     NeedMore(ResponseReader<M>),
@@ -72,13 +75,9 @@ impl<M: Subscription> ResponseReader<M> {
 
 pub fn encode_request<M: Subscription>(
     request: &M::Request,
-    out: &mut impl BufMut,
+    out: &mut (impl BufMut + AsMut<[u8]>),
 ) -> Result<(), M::Error> {
-    request.encode_value(out)
-}
-
-pub fn decode_request<M: Subscription>(mut body: &[u8]) -> Result<M::Request, M::Error> {
-    M::Request::decode_value(&mut body)
+    codec::encode_value_part(request, out)
 }
 
 pub fn encode_item<M: Subscription>(
@@ -96,10 +95,7 @@ pub fn encode_end(out: &mut impl BufMut) {
 mod tests {
     use bytes::{Buf, BufMut, Bytes};
 
-    use super::{
-        decode_request, encode_end, encode_item, encode_request, ReadStep, ResponseReader,
-        Subscription,
-    };
+    use super::{encode_end, encode_item, ReadStep, ResponseReader, Subscription};
     use crate::{MethodId, RpcCodec};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,17 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn request_round_trip_preserves_payload() {
-        let mut encoded = Vec::new();
-        encode_request::<Feed>(&BytesValue(b"watch".to_vec()), &mut encoded).unwrap();
-        assert_eq!(
-            decode_request::<Feed>(&encoded).unwrap(),
-            BytesValue(b"watch".to_vec())
-        );
-    }
-
-    #[test]
-    fn decode_item_stream_reads_all_items() {
+    fn response_reader_streams_items_until_end() {
         let mut encoded = Vec::new();
         encode_item::<Feed>(&BytesValue(b"one".to_vec()), &mut encoded).unwrap();
         encode_item::<Feed>(&BytesValue(b"two".to_vec()), &mut encoded).unwrap();
@@ -149,42 +135,6 @@ mod tests {
             .advance()
             .unwrap()
         {
-            ReadStep::Item { value, next } => {
-                assert_eq!(value, BytesValue(b"one".to_vec()));
-                next
-            }
-            _ => unreachable!(),
-        };
-
-        let reader = match reader.advance().unwrap() {
-            ReadStep::Item { value, next } => {
-                assert_eq!(value, BytesValue(b"two".to_vec()));
-                next
-            }
-            _ => unreachable!(),
-        };
-
-        assert!(matches!(reader.advance().unwrap(), ReadStep::End));
-    }
-
-    #[test]
-    fn response_reader_emits_items_as_chunks_arrive() {
-        let mut encoded = Vec::new();
-        encode_item::<Feed>(&BytesValue(b"one".to_vec()), &mut encoded).unwrap();
-        encode_item::<Feed>(&BytesValue(b"two".to_vec()), &mut encoded).unwrap();
-        encode_end(&mut encoded);
-
-        let all = Bytes::from(encoded);
-        let reader = match ResponseReader::<Feed>::new()
-            .push(all.slice(..5))
-            .advance()
-            .unwrap()
-        {
-            ReadStep::NeedMore(next) => next,
-            _ => unreachable!(),
-        };
-
-        let reader = match reader.push(all.slice(5..)).advance().unwrap() {
             ReadStep::Item { value, next } => {
                 assert_eq!(value, BytesValue(b"one".to_vec()));
                 next

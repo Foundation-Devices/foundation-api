@@ -10,11 +10,12 @@ use ql_rpc::{
     request::{self, Request as RequestRpc},
     request_with_progress::{self as rpc_request_with_progress, RequestWithProgress},
     subscription::{self as rpc_subscription, Subscription as SubscriptionRpc},
+    ReadValueStep, RpcCodec, RpcError, ValueReader,
 };
 use ql_wire::{RouteId, VarInt};
 
 pub use self::{error::*, request_with_progress::*, subscription::*};
-use crate::{ByteReader, QlStreamError, RuntimeHandle};
+use crate::{ByteReader, RuntimeHandle};
 
 #[derive(Clone)]
 pub struct RpcHandle {
@@ -45,8 +46,7 @@ impl RpcHandle {
         let mut payload = Vec::new();
         request::encode_request::<M>(request, &mut payload).map_err(RpcCallError::Codec)?;
         let response = self.start_request(M::METHOD, payload).await?;
-        let response = read_all(response).await?;
-        request::decode_response::<M>(&response).map_err(RpcCallError::Codec)
+        read_value::<M::Response>(response).await
     }
 
     pub async fn subscribe<M>(
@@ -97,10 +97,21 @@ impl RpcHandle {
     }
 }
 
-async fn read_all(mut reader: ByteReader) -> Result<Vec<u8>, QlStreamError> {
-    let mut bytes = Vec::new();
-    while let Some(chunk) = poll_fn(|cx| reader.poll_read_chunk(cx)).await? {
-        bytes.extend_from_slice(&chunk);
+async fn read_value<T>(mut reader: ByteReader) -> Result<T, RpcCallError<T::Error>>
+where
+    T: RpcCodec,
+{
+    let mut value_reader = ValueReader::<T>::new();
+
+    loop {
+        match value_reader.advance().map_err(RpcCallError::from)? {
+            ReadValueStep::Value(value) => return Ok(value),
+            ReadValueStep::NeedMore(next) => value_reader = next,
+        }
+
+        match poll_fn(|cx| reader.poll_read_chunk(cx)).await? {
+            Some(chunk) => value_reader = value_reader.push(chunk),
+            None => return Err(RpcError::Truncated.into()),
+        }
     }
-    Ok(bytes)
 }

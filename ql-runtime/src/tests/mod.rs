@@ -214,6 +214,10 @@ impl TestPair {
         .await;
     }
 
+    fn handle(&self, side: Side) -> RuntimeHandle {
+        self.side(side).handle.clone()
+    }
+
     fn take_inbound(&mut self, side: Side) -> Receiver<QlStream> {
         let replacement = async_channel::unbounded().1;
         std::mem::replace(&mut self.side_mut(side).inbound, replacement)
