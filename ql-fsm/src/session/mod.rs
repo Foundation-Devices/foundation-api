@@ -65,6 +65,7 @@ impl Default for SessionConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
+    TimerDirty,
     Opened {
         stream_id: StreamId,
         route_id: RouteId,
@@ -80,7 +81,6 @@ pub enum SessionEvent {
 pub struct SessionFsm {
     config: SessionConfig,
     state: SessionState,
-    timer_dirty: bool,
 }
 
 impl SessionFsm {
@@ -107,7 +107,6 @@ impl SessionFsm {
                 next_stream_index: 0,
                 remote_stream_history: RemoteStreamHistory::new(config.local_parity.remote()),
             },
-            timer_dirty: false,
         }
     }
 
@@ -140,11 +139,11 @@ impl SessionFsm {
         Ok(StreamOps::new(self, stream_id, stream_index))
     }
 
-    pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
+    pub fn queue_ping(&mut self, mut emit: impl FnMut(SessionEvent)) -> Result<(), NoSessionError> {
         self.ensure_session_open()?;
         if !self.state.pending_ping {
             self.state.pending_ping = true;
-            self.timer_dirty = true;
+            emit(SessionEvent::TimerDirty);
         }
         Ok(())
     }
@@ -159,7 +158,7 @@ impl SessionFsm {
         self.state.tracked_records.clear();
         self.state.ack_state = AckState::Idle;
         self.clear_streams();
-        self.timer_dirty = true;
+        emit(SessionEvent::TimerDirty);
         emit(SessionEvent::SessionClosed(close));
     }
 
@@ -183,7 +182,7 @@ impl SessionFsm {
             return;
         }
 
-        self.timer_dirty = true;
+        emit(SessionEvent::TimerDirty);
         self.collect_timeouts(now);
 
         let mut received_records = self.state.received_records.clone();
@@ -241,11 +240,16 @@ impl SessionFsm {
         }
     }
 
-    pub fn complete_write(&mut self, now: Instant, write_id: u64, success: bool) {
+    pub fn complete_write(
+        &mut self,
+        now: Instant,
+        write_id: u64,
+        success: bool,
+        mut emit: impl FnMut(SessionEvent),
+    ) {
         if !self.state.phase.is_open() {
             return;
         }
-        self.timer_dirty = true;
         if success {
             let Some(record) = self.state.tracked_records.get_mut(&write_id) else {
                 return;
@@ -255,6 +259,7 @@ impl SessionFsm {
             }
             self.state.last_activity_at = now;
             record.sent_at = Some(now);
+            emit(SessionEvent::TimerDirty);
         } else {
             if self
                 .state
@@ -274,6 +279,7 @@ impl SessionFsm {
                 &mut self.state.streams,
                 record,
             );
+            emit(SessionEvent::TimerDirty);
         }
     }
 
@@ -281,7 +287,7 @@ impl SessionFsm {
         if !self.state.phase.is_open() {
             return;
         }
-        self.timer_dirty = true;
+        emit(SessionEvent::TimerDirty);
         self.collect_timeouts(now);
         if !self.config.peer_timeout.is_zero()
             && self.state.last_inbound_at + self.config.peer_timeout <= now
@@ -333,7 +339,11 @@ impl SessionFsm {
         .min()
     }
 
-    pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
+    pub fn take_next_write(
+        &mut self,
+        now: Instant,
+        mut emit: impl FnMut(SessionEvent),
+    ) -> Option<(Option<u64>, SessionRecordBuilder)> {
         match &self.state.phase {
             SessionPhase::Closing(close) => {
                 let seq = self.state.next_record_seq;
@@ -341,7 +351,7 @@ impl SessionFsm {
                 let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
                 assert!(builder.push_close(&close), "builder has capacity");
                 self.state.phase = SessionPhase::Closed;
-                self.timer_dirty = true;
+                emit(SessionEvent::TimerDirty);
                 return Some((None, builder));
             }
             SessionPhase::Closed => {
@@ -366,14 +376,10 @@ impl SessionFsm {
         });
 
         if timer_changed {
-            self.timer_dirty = true;
+            emit(SessionEvent::TimerDirty);
         }
 
         Some((write_id, builder))
-    }
-
-    pub fn take_timer_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.timer_dirty)
     }
 
     fn build_next_record(&mut self, now: Instant) -> Option<(SessionRecordBuilder, TrackedRecord)> {

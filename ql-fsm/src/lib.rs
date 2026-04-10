@@ -152,7 +152,7 @@ pub struct QlFsm {
     config: QlFsmConfig,
     identity: QlIdentity,
     state: QlFsmState,
-    pending_events: VecDeque<Event>,
+    events: VecDeque<Event>,
 }
 
 impl QlFsm {
@@ -171,7 +171,7 @@ impl QlFsm {
                 now,
                 timer_dirty: false,
             },
-            pending_events: VecDeque::new(),
+            events: VecDeque::new(),
         }
     }
 

@@ -117,7 +117,7 @@ pub fn finish_handshake(
         }
     } else {
         fsm.state.peer = Some(remote_bundle);
-        fsm.pending_events.push_back(Event::NewPeer);
+        fsm.events.push_back(Event::NewPeer);
     }
 
     let config = &fsm.config;

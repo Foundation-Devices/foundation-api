@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use ql_wire::{self as wire, QlCrypto, RouteId, SessionCloseCode, StreamId, WireDecode};
@@ -58,21 +61,18 @@ pub fn receive(
             })
         }
         wire::RecordType::Session => {
-            let state = fsm
-                .state
-                .link
-                .connected_mut()
-                .ok_or(ReceiveError::NoSession)?;
+            let QlFsm { state, events, .. } = fsm;
+            let conn = state.link.connected_mut().ok_or(ReceiveError::NoSession)?;
             let (decrypt_len, seq) = {
                 let record = wire::QlSessionRecord::decode(&mut reader)?;
-                if record.header.connection_id != state.transport.rx_connection_id {
+                if record.header.connection_id != conn.transport.rx_connection_id {
                     return Err(ReceiveError::InvalidPayload);
                 }
                 let payload = wire::decrypt_record(
                     crypto,
                     &record.header,
                     record.payload,
-                    &state.transport.rx_key,
+                    &conn.transport.rx_key,
                 )?;
                 (payload.len(), record.header.seq)
             };
@@ -81,14 +81,12 @@ pub fn receive(
             let plaintext = Bytes::from(bytes).slice(len - decrypt_len..);
             let frames = wire::parse_session_frames(plaintext);
 
-            state.session.receive(fsm.state.now.instant, seq, frames, {
-                let pending_events = &mut fsm.pending_events;
-                |event| {
-                    forward_session_event(event, pending_events);
-                }
-            });
+            conn.session
+                .receive(state.now.instant, seq, frames, |event| {
+                    forward_session_event(event, events);
+                });
 
-            if state.session.is_closed() {
+            if conn.session.is_closed() {
                 apply_session_closed(fsm);
             }
             fsm.state.mark_timer_dirty();
@@ -102,16 +100,16 @@ pub fn on_timer(fsm: &mut QlFsm) {
         fsm.state.mark_timer_dirty();
     }
 
-    let Some(state) = fsm.state.link.connected_mut() else {
+    let QlFsm { state, events, .. } = fsm;
+    let Some(conn) = state.link.connected_mut() else {
         return;
     };
 
-    let pending_events = &mut fsm.pending_events;
-    state.session.on_timer(fsm.state.now.instant, |event| {
-        forward_session_event(event, pending_events);
+    conn.session.on_timer(state.now.instant, |event| {
+        forward_session_event(event, events);
     });
 
-    if state.session.is_closed() {
+    if conn.session.is_closed() {
         apply_session_closed(fsm);
     }
 }
@@ -138,14 +136,18 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
         });
     }
 
-    let state = fsm.state.link.connected_mut()?;
-    let (write_id, builder) = state.session.take_next_write(fsm.state.now.instant)?;
+    let QlFsm { state, events, .. } = fsm;
+    let conn = state.link.connected_mut()?;
+
+    let (write_id, builder) = conn.session.take_next_write(state.now.instant, |event| {
+        forward_session_event(event, events);
+    })?;
     let record = builder.encrypt(
         crypto,
-        state.transport.tx_connection_id,
-        &state.transport.tx_key,
+        conn.transport.tx_connection_id,
+        &conn.transport.tx_key,
     );
-    if state.session.is_closed() {
+    if conn.session.is_closed() {
         apply_session_closed(fsm);
     }
     Some(OutboundWrite {
@@ -155,93 +157,94 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
 }
 
 pub fn complete_write(fsm: &mut QlFsm, write_id: WriteId, success: bool) {
-    if let Some(state) = fsm.state.link.connected_mut() {
-        state
-            .session
-            .complete_write(fsm.state.now.instant, write_id.0, success);
+    let QlFsm { state, events, .. } = fsm;
+    if let Some(conn) = state.link.connected_mut() {
+        conn.session
+            .complete_write(state.now.instant, write_id.0, success, |event| {
+                forward_session_event(event, events);
+            });
     }
 }
 
 pub fn close_session(fsm: &mut QlFsm, code: SessionCloseCode) {
-    let Some(state) = fsm.state.link.connected_mut() else {
+    let QlFsm { state, events, .. } = fsm;
+    let Some(conn) = state.link.connected_mut() else {
         return;
     };
-    let pending_events = &mut fsm.pending_events;
-    state.session.close(code, |event| {
-        forward_session_event(event, pending_events);
+    conn.session.close(code, |event| {
+        forward_session_event(event, events);
     });
 }
 
 pub fn open_stream(fsm: &mut QlFsm, route_id: RouteId) -> Result<StreamOps<'_>, NoSessionError> {
-    let state = fsm.state.link.connected_mut_or_err()?;
-    state.session.open_stream(route_id)
+    let conn = fsm.state.link.connected_mut_or_err()?;
+    conn.session.open_stream(route_id)
 }
 
 pub fn stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamOps<'_>, StreamError> {
-    let state = fsm.state.link.connected_mut_or_err()?;
-    state.session.stream(stream_id)
+    let conn = fsm.state.link.connected_mut_or_err()?;
+    conn.session.stream(stream_id)
 }
 
 pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), NoSessionError> {
-    let state = fsm.state.link.connected_mut_or_err()?;
-    state.session.queue_ping()
+    let QlFsm { state, events, .. } = fsm;
+    let conn = state.link.connected_mut_or_err()?;
+    conn.session
+        .queue_ping(|event| forward_session_event(event, events))?;
+    Ok(())
 }
 
 pub fn poll_event(fsm: &mut QlFsm) -> Option<Event> {
-    fsm.pending_events.pop_front().or_else(|| {
-        let mut timer_dirty = std::mem::take(&mut fsm.state.timer_dirty);
-        if let Some(state) = fsm.state.link.connected_mut() {
-            timer_dirty |= state.session.take_timer_dirty();
-        }
-        timer_dirty.then_some(Event::TimerDirty)
-    })
+    fsm.events
+        .pop_front()
+        .or_else(|| std::mem::take(&mut fsm.state.timer_dirty).then_some(Event::TimerDirty))
 }
 
 pub fn emit_peer_status(fsm: &mut QlFsm) {
     if fsm.state.peer.is_some() {
-        fsm.pending_events
+        fsm.events
             .push_back(Event::PeerStatusChanged(fsm.state.link.status()));
     }
 }
 
-fn forward_session_event(
-    event: SessionEvent,
-    pending_events: &mut std::collections::VecDeque<Event>,
-) {
+fn forward_session_event(event: SessionEvent, events: &mut VecDeque<Event>) {
     match event {
+        SessionEvent::TimerDirty => {
+            events.push_back(Event::TimerDirty);
+        }
         SessionEvent::Opened {
             stream_id,
             route_id,
         } => {
-            pending_events.push_back(Event::Opened {
+            events.push_back(Event::Opened {
                 stream_id,
                 route_id,
             });
         }
         SessionEvent::Readable(stream_id) => {
-            pending_events.push_back(Event::Readable(stream_id));
+            events.push_back(Event::Readable(stream_id));
         }
         SessionEvent::Writable(stream_id) => {
-            pending_events.push_back(Event::Writable(stream_id));
+            events.push_back(Event::Writable(stream_id));
         }
         SessionEvent::Finished(stream_id) => {
-            pending_events.push_back(Event::Finished(stream_id));
+            events.push_back(Event::Finished(stream_id));
         }
         SessionEvent::Closed(frame) => {
-            pending_events.push_back(Event::Closed(frame));
+            events.push_back(Event::Closed(frame));
         }
         SessionEvent::WritableClosed(frame) => {
-            pending_events.push_back(Event::WritableClosed(frame));
+            events.push_back(Event::WritableClosed(frame));
         }
         SessionEvent::SessionClosed(close) => {
-            pending_events.push_back(Event::SessionClosed(close));
+            events.push_back(Event::SessionClosed(close));
         }
     }
 }
 
 fn apply_session_closed(fsm: &mut QlFsm) {
-    if matches!(fsm.state.link, crate::state::LinkState::Connected(_)) {
-        fsm.state.link = crate::state::LinkState::Idle;
+    if matches!(fsm.state.link, LinkState::Connected(_)) {
+        fsm.state.link = LinkState::Idle;
         fsm.state.mark_timer_dirty();
         emit_peer_status(fsm);
     }
