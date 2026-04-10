@@ -15,30 +15,23 @@ pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
     fsm.state.handshake = None;
     fsm.state.link = LinkState::Idle;
     fsm.state.peer = Some(peer);
-    fsm.state.mark_timer_dirty();
 }
 
 pub fn handle_disarm_pairing(fsm: &mut QlFsm) {
     fsm.state.armed_pairing_token = None;
     handshake::handle_disarm_pairing(fsm);
-    fsm.state.mark_timer_dirty();
 }
 
 pub fn handle_connect_xx(fsm: &mut QlFsm, token: ql_wire::PairingToken, crypto: &impl QlCrypto) {
     handshake::handle_connect_xx(fsm, token, crypto);
-    fsm.state.mark_timer_dirty();
 }
 
 pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
-    handshake::handle_connect_ik(fsm, crypto).inspect(|_| {
-        fsm.state.mark_timer_dirty();
-    })
+    handshake::handle_connect_ik(fsm, crypto)
 }
 
 pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
-    handshake::handle_connect_kk(fsm, crypto).inspect(|_| {
-        fsm.state.mark_timer_dirty();
-    })
+    handshake::handle_connect_kk(fsm, crypto)
 }
 
 pub fn receive(
@@ -56,9 +49,7 @@ pub fn receive(
     match header.record_type {
         wire::RecordType::Handshake => {
             let record = wire::QlHandshakeRecord::decode(&mut reader)?;
-            handshake::handle_handshake_record(fsm, crypto, &record).inspect(|_| {
-                fsm.state.mark_timer_dirty();
-            })
+            handshake::handle_handshake_record(fsm, crypto, &record)
         }
         wire::RecordType::Session => {
             let QlFsm { state, events, .. } = fsm;
@@ -89,16 +80,13 @@ pub fn receive(
             if conn.session.is_closed() {
                 apply_session_closed(fsm);
             }
-            fsm.state.mark_timer_dirty();
             Ok(())
         }
     }
 }
 
 pub fn on_timer(fsm: &mut QlFsm) {
-    if handshake::handle_timer(fsm) {
-        fsm.state.mark_timer_dirty();
-    }
+    handshake::handle_timer(fsm);
 
     let QlFsm { state, events, .. } = fsm;
     let Some(conn) = state.link.connected_mut() else {
@@ -136,12 +124,10 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
         });
     }
 
-    let QlFsm { state, events, .. } = fsm;
+    let QlFsm { state, .. } = fsm;
     let conn = state.link.connected_mut()?;
 
-    let (write_id, builder) = conn.session.take_next_write(state.now.instant, |event| {
-        forward_session_event(event, events);
-    })?;
+    let (write_id, builder) = conn.session.take_next_write(state.now.instant)?;
     let record = builder.encrypt(
         crypto,
         conn.transport.tx_connection_id,
@@ -157,12 +143,10 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
 }
 
 pub fn complete_write(fsm: &mut QlFsm, write_id: WriteId, success: bool) {
-    let QlFsm { state, events, .. } = fsm;
+    let QlFsm { state, .. } = fsm;
     if let Some(conn) = state.link.connected_mut() {
         conn.session
-            .complete_write(state.now.instant, write_id.0, success, |event| {
-                forward_session_event(event, events);
-            });
+            .complete_write(state.now.instant, write_id.0, success);
     }
 }
 
@@ -187,17 +171,12 @@ pub fn stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamOps<'_>, Str
 }
 
 pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), NoSessionError> {
-    let QlFsm { state, events, .. } = fsm;
-    let conn = state.link.connected_mut_or_err()?;
-    conn.session
-        .queue_ping(|event| forward_session_event(event, events))?;
-    Ok(())
+    let conn = fsm.state.link.connected_mut_or_err()?;
+    conn.session.queue_ping()
 }
 
 pub fn poll_event(fsm: &mut QlFsm) -> Option<Event> {
-    fsm.events
-        .pop_front()
-        .or_else(|| std::mem::take(&mut fsm.state.timer_dirty).then_some(Event::TimerDirty))
+    fsm.events.pop_front()
 }
 
 pub fn emit_peer_status(fsm: &mut QlFsm) {
@@ -209,9 +188,6 @@ pub fn emit_peer_status(fsm: &mut QlFsm) {
 
 fn forward_session_event(event: SessionEvent, events: &mut VecDeque<Event>) {
     match event {
-        SessionEvent::TimerDirty => {
-            events.push_back(Event::TimerDirty);
-        }
         SessionEvent::Opened {
             stream_id,
             route_id,
@@ -245,7 +221,6 @@ fn forward_session_event(event: SessionEvent, events: &mut VecDeque<Event>) {
 fn apply_session_closed(fsm: &mut QlFsm) {
     if matches!(fsm.state.link, LinkState::Connected(_)) {
         fsm.state.link = LinkState::Idle;
-        fsm.state.mark_timer_dirty();
         emit_peer_status(fsm);
     }
 }

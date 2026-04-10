@@ -65,7 +65,6 @@ impl Default for SessionConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
-    TimerDirty,
     Opened {
         stream_id: StreamId,
         route_id: RouteId,
@@ -139,12 +138,9 @@ impl SessionFsm {
         Ok(StreamOps::new(self, stream_id, stream_index))
     }
 
-    pub fn queue_ping(&mut self, mut emit: impl FnMut(SessionEvent)) -> Result<(), NoSessionError> {
+    pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
         self.ensure_session_open()?;
-        if !self.state.pending_ping {
-            self.state.pending_ping = true;
-            emit(SessionEvent::TimerDirty);
-        }
+        self.state.pending_ping = true;
         Ok(())
     }
 
@@ -158,7 +154,6 @@ impl SessionFsm {
         self.state.tracked_records.clear();
         self.state.ack_state = AckState::Idle;
         self.clear_streams();
-        emit(SessionEvent::TimerDirty);
         emit(SessionEvent::SessionClosed(close));
     }
 
@@ -182,7 +177,6 @@ impl SessionFsm {
             return;
         }
 
-        emit(SessionEvent::TimerDirty);
         self.collect_timeouts(now);
 
         let mut received_records = self.state.received_records.clone();
@@ -240,13 +234,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn complete_write(
-        &mut self,
-        now: Instant,
-        write_id: u64,
-        success: bool,
-        mut emit: impl FnMut(SessionEvent),
-    ) {
+    pub fn complete_write(&mut self, now: Instant, write_id: u64, success: bool) {
         if !self.state.phase.is_open() {
             return;
         }
@@ -259,7 +247,6 @@ impl SessionFsm {
             }
             self.state.last_activity_at = now;
             record.sent_at = Some(now);
-            emit(SessionEvent::TimerDirty);
         } else {
             if self
                 .state
@@ -279,7 +266,6 @@ impl SessionFsm {
                 &mut self.state.streams,
                 record,
             );
-            emit(SessionEvent::TimerDirty);
         }
     }
 
@@ -287,7 +273,6 @@ impl SessionFsm {
         if !self.state.phase.is_open() {
             return;
         }
-        emit(SessionEvent::TimerDirty);
         self.collect_timeouts(now);
         if !self.config.peer_timeout.is_zero()
             && self.state.last_inbound_at + self.config.peer_timeout <= now
@@ -321,13 +306,12 @@ impl SessionFsm {
                     .map(|sent_at| sent_at + self.config.retransmit_timeout)
             })
             .min();
-        let keepalive_deadline = (self.state.phase == SessionPhase::Open
-            && !self.config.keepalive_interval.is_zero()
-            && !self.state.pending_ping)
-            .then_some(self.state.last_activity_at + self.config.keepalive_interval);
-        let peer_timeout_deadline = (self.state.phase == SessionPhase::Open
-            && !self.config.peer_timeout.is_zero())
-        .then_some(self.state.last_inbound_at + self.config.peer_timeout);
+        let is_open = self.state.phase.is_open();
+        let keepalive_deadline =
+            (is_open && !self.config.keepalive_interval.is_zero() && !self.state.pending_ping)
+                .then_some(self.state.last_activity_at + self.config.keepalive_interval);
+        let peer_timeout_deadline = (is_open && !self.config.peer_timeout.is_zero())
+            .then_some(self.state.last_inbound_at + self.config.peer_timeout);
         [
             ack_deadline,
             retransmit_deadline,
@@ -339,11 +323,7 @@ impl SessionFsm {
         .min()
     }
 
-    pub fn take_next_write(
-        &mut self,
-        now: Instant,
-        mut emit: impl FnMut(SessionEvent),
-    ) -> Option<(Option<u64>, SessionRecordBuilder)> {
+    pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
         match &self.state.phase {
             SessionPhase::Closing(close) => {
                 let seq = self.state.next_record_seq;
@@ -351,7 +331,6 @@ impl SessionFsm {
                 let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
                 assert!(builder.push_close(&close), "builder has capacity");
                 self.state.phase = SessionPhase::Closed;
-                emit(SessionEvent::TimerDirty);
                 return Some((None, builder));
             }
             SessionPhase::Closed => {
@@ -359,25 +338,19 @@ impl SessionFsm {
             }
             SessionPhase::Open => {}
         }
-        let timeouts_changed = self.collect_timeouts(now);
+        self.collect_timeouts(now);
 
         let (builder, outbound) = self.build_next_record(now)?;
 
         let should_track = outbound.ping_included
             || !outbound.window_updates.is_empty()
             || !outbound.frames.is_empty();
-        let timer_changed = timeouts_changed || outbound.ack_included || outbound.ping_included;
-
         let write_id = should_track.then(|| {
             let write_id = self.state.next_write_id;
             self.state.next_write_id = self.state.next_write_id.wrapping_add(1);
             self.state.tracked_records.insert(write_id, outbound);
             write_id
         });
-
-        if timer_changed {
-            emit(SessionEvent::TimerDirty);
-        }
 
         Some((write_id, builder))
     }
@@ -586,15 +559,13 @@ impl SessionFsm {
         }
     }
 
-    fn collect_timeouts(&mut self, now: Instant) -> bool {
+    fn collect_timeouts(&mut self, now: Instant) {
         let retransmit_timeout = self.config.retransmit_timeout;
-        let mut changed = false;
         for (_, record) in self.state.tracked_records.extract_if(.., |_, record| {
             record
                 .sent_at
                 .is_some_and(|sent_at| sent_at + retransmit_timeout <= now)
         }) {
-            changed = true;
             restore_tracked_record(
                 now,
                 &mut self.state.ack_state,
@@ -603,7 +574,6 @@ impl SessionFsm {
                 record,
             );
         }
-        changed
     }
 
     fn handle_stream_data(

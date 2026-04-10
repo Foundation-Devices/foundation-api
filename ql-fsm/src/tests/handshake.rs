@@ -3,7 +3,7 @@ use std::time::Duration;
 use ql_wire::QlHandshakeRecord;
 
 use super::*;
-use crate::{state::LinkState, NoPeerError, PeerStatus, Event};
+use crate::{state::LinkState, Event, NoPeerError, PeerStatus};
 
 #[test]
 fn ik_connect_round_trip_establishes_transport() {

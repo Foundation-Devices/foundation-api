@@ -4,9 +4,7 @@ use bytes::Bytes;
 use ql_wire::{RouteId, SessionClose, StreamId, VarInt};
 
 use super::*;
-use crate::{
-    state::LinkState, CommitReadError, NoSessionError, PeerStatus, Event, StreamError,
-};
+use crate::{state::LinkState, CommitReadError, Event, NoSessionError, PeerStatus, StreamError};
 
 fn stream_id(value: u32) -> StreamId {
     StreamId(VarInt::from_u32(value))
@@ -351,9 +349,12 @@ fn close_session_disconnects_locally() {
         .fsm
         .close_session(ql_wire::SessionCloseCode::CANCELLED);
 
-    assert!(matches!(harness.take_event(Side::A), Some(Event::SessionClosed(SessionClose {
-        code: ql_wire::SessionCloseCode::CANCELLED,
-    }))));
+    assert!(matches!(
+        harness.take_event(Side::A),
+        Some(Event::SessionClosed(SessionClose {
+            code: ql_wire::SessionCloseCode::CANCELLED,
+        }))
+    ));
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
     assert!(matches!(
         harness.a.fsm.open_stream(route_id(1)),
@@ -362,7 +363,10 @@ fn close_session_disconnects_locally() {
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
 
     let close = harness.next_decoded_outbound(Side::A).unwrap();
-    assert!(matches!(close.frames.as_slice(), [ql_wire::SessionFrame::Close(_)]));
+    assert!(matches!(
+        close.frames.as_slice(),
+        [ql_wire::SessionFrame::Close(_)]
+    ));
 
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
     assert_eq!(
@@ -444,7 +448,10 @@ fn session_timeout_emits_close_before_disconnect() {
     );
 
     let close = harness.next_decoded_outbound(Side::A).unwrap();
-    assert!(matches!(close.frames.as_slice(), [ql_wire::SessionFrame::Close(_)]));
+    assert!(matches!(
+        close.frames.as_slice(),
+        [ql_wire::SessionFrame::Close(_)]
+    ));
     assert_eq!(
         harness.take_event(Side::A),
         Some(Event::PeerStatusChanged(PeerStatus::Disconnected))

@@ -55,7 +55,11 @@ impl<P: QlPlatform> Runtime<P> {
         let mut recv_future = pin!(recv_future);
 
         loop {
-            state.drain_events(&mut fsm, &platform, &mut timer, &mut in_flight);
+            state.drain_fsm_events(&mut fsm, &platform);
+            if state.fill_write_slots(&mut fsm, &platform, &mut in_flight) {
+                state.drain_fsm_events(&mut fsm, &platform);
+            }
+            timer.set_deadline(fsm.next_deadline());
 
             let step =
                 poll_fn(|cx| next_step(cx, recv_future.as_mut(), &mut timer, &mut in_flight)).await;
@@ -71,7 +75,7 @@ impl<P: QlPlatform> Runtime<P> {
                 DriverStep::TimerExpired => {
                     fsm.on_timer(now());
                 }
-                DriverStep::CommandsClosed => {
+                DriverStep::Closed => {
                     if in_flight.is_empty() {
                         break;
                     }
@@ -90,7 +94,7 @@ enum DriverStep {
     Command(RuntimeCommand),
     WriteCompleted { index: usize, success: bool },
     TimerExpired,
-    CommandsClosed,
+    Closed,
 }
 
 fn next_step<T, F>(
@@ -116,7 +120,7 @@ where
     recv_future
         .as_mut()
         .poll(cx)
-        .map(|res| res.map_or(DriverStep::CommandsClosed, DriverStep::Command))
+        .map(|res| res.map_or(DriverStep::Closed, DriverStep::Command))
 }
 
 impl DriverState {
@@ -229,27 +233,9 @@ impl DriverState {
         }
     }
 
-    fn drain_events<'a, P: QlPlatform + 'a>(
-        &mut self,
-        fsm: &mut QlFsm,
-        platform: &'a P,
-        timer: &mut impl QlTimer,
-        in_flight: &mut Vec<InFlightWrite<P::WriteMessageFut<'a>>>,
-    ) {
-        let mut timer_dirty = self.drain_fsm_events(fsm, platform);
-        if self.fill_write_slots(fsm, platform, in_flight) {
-            timer_dirty |= self.drain_fsm_events(fsm, platform);
-        }
-        if timer_dirty {
-            timer.set_deadline(fsm.next_deadline());
-        }
-    }
-
-    fn drain_fsm_events<P: QlPlatform>(&mut self, fsm: &mut QlFsm, platform: &P) -> bool {
-        let mut timer_dirty = false;
+    fn drain_fsm_events<P: QlPlatform>(&mut self, fsm: &mut QlFsm, platform: &P) {
         while let Some(event) = fsm.poll_event() {
             match event {
-                Event::TimerDirty => timer_dirty = true,
                 Event::NewPeer => {
                     if let Some(peer) = fsm.peer().cloned() {
                         platform.persist_peer(peer);
@@ -288,7 +274,6 @@ impl DriverState {
                 }
             }
         }
-        timer_dirty
     }
 
     fn handle_opened_stream<P: QlPlatform>(

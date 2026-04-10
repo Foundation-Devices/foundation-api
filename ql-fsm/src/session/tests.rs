@@ -61,9 +61,9 @@ fn next_outbound(
     fsm: &mut SessionFsm,
     now: Instant,
 ) -> Option<(RecordSeq, Vec<SessionFrame<Vec<u8>>>)> {
-    let (write_id, builder) = fsm.take_next_write(now, |_| {})?;
+    let (write_id, builder) = fsm.take_next_write(now)?;
     if let Some(write_id) = write_id {
-        fsm.complete_write(now, write_id, true, |_| {});
+        fsm.complete_write(now, write_id, true);
     }
     Some((
         builder.seq(),
@@ -86,9 +86,6 @@ fn receive_events(
     let mut events = Vec::new();
     fsm.receive(now, seq, frames, |event| events.push(event));
     events
-        .into_iter()
-        .filter(|event| !matches!(event, SessionEvent::TimerDirty))
-        .collect()
 }
 
 #[test]
@@ -216,7 +213,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
         vec![opened(stream_id), SessionEvent::Readable(stream_id)]
     );
 
-    let (write_id, builder) = fsm.take_next_write(now + Duration::from_millis(1), |_| {}).unwrap();
+    let (write_id, builder) = fsm.take_next_write(now + Duration::from_millis(1)).unwrap();
     let first = decode_session_frames(builder.bytes()).unwrap();
     assert!(write_id.is_none());
     assert!(matches!(first.as_slice(), [SessionFrame::Ack(_)]));
@@ -259,14 +256,14 @@ fn pure_ack_only_records_are_fire_and_forget() {
 
     let _ = receive_events(&mut fsm, now, seq(7), &record);
 
-    let (write_id, builder) = fsm.take_next_write(now + Duration::from_millis(1), |_| {}).unwrap();
+    let (write_id, builder) = fsm.take_next_write(now + Duration::from_millis(1)).unwrap();
     let ack = decode_session_frames(builder.bytes()).unwrap();
     assert!(write_id.is_none());
     assert!(matches!(ack.as_slice(), [SessionFrame::Ack(_)]));
 
     fsm.on_timer(now + retransmit_timeout + Duration::from_millis(1), |_| {});
     assert!(fsm
-        .take_next_write(now + retransmit_timeout + Duration::from_millis(1), |_| {})
+        .take_next_write(now + retransmit_timeout + Duration::from_millis(1))
         .is_none());
 }
 
@@ -305,13 +302,8 @@ fn remote_stream_close_is_reliable_and_retried() {
         .unwrap()
         .close(CloseTarget::Both, StreamCloseCode(0));
 
-    let (write_id, builder) = fsm.take_next_write(now, |_| {}).unwrap();
-    fsm.complete_write(
-        now,
-        write_id.expect("stream close should be tracked"),
-        true,
-        |_| {},
-    );
+    let (write_id, builder) = fsm.take_next_write(now).unwrap();
+    fsm.complete_write(now, write_id.expect("stream close should be tracked"), true);
     let first = decode_session_frames(builder.bytes()).unwrap();
     assert!(matches!(
         first.as_slice(),

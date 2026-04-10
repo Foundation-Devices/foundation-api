@@ -68,8 +68,6 @@ pub enum PeerStatus {
 /// events emitted by `QlFsm`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    /// timer-related state changed; recompute the next deadline
-    TimerDirty,
     /// a peer was learned during handshake completion
     NewPeer,
     /// the peer changed connection state
@@ -169,7 +167,6 @@ impl QlFsm {
                 handshake: None,
                 link: LinkState::Idle,
                 now,
-                timer_dirty: false,
             },
             events: VecDeque::new(),
         }

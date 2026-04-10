@@ -405,7 +405,6 @@ impl Runner {
     fn process_events(&mut self, side: Side, events: Vec<Event>) -> TestCaseResult {
         for event in events {
             match event {
-                Event::TimerDirty => {}
                 Event::NewPeer => {}
                 Event::PeerStatusChanged(status) => {
                     self.events[side.idx()].note_peer_status(status);
