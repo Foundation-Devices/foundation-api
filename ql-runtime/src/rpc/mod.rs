@@ -10,7 +10,6 @@ use ql_rpc::{
     request::{self, Request as RequestRpc},
     request_with_progress::{self as rpc_request_with_progress, RequestWithProgress},
     subscription::{self as rpc_subscription, Subscription as SubscriptionRpc},
-    RpcError,
 };
 use ql_wire::{RouteId, VarInt};
 
@@ -29,13 +28,11 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         notification::encode_event::<M>(event, &mut payload).map_err(RpcCallError::Codec)?;
-        let response = self.start_request(M::METHOD, payload).await?;
-        let response = read_all(response).await?;
-        if response.is_empty() {
-            Ok(())
-        } else {
-            Err(RpcCallError::Rpc(RpcError::TrailingBytes))
-        }
+        let route_id = RouteId(VarInt::from_u32(M::METHOD.0));
+        let mut stream = self.inner.open_stream(route_id).await?;
+        stream.reader.close(ql_wire::StreamCloseCode(0));
+        stream.writer.write(Bytes::from(payload)).await?;
+        Ok(())
     }
 
     pub async fn request<M>(
