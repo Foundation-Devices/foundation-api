@@ -14,7 +14,7 @@ use super::*;
 fn test_route_id() -> ql_wire::RouteId {
     ql_wire::RouteId(ql_wire::VarInt::from_u32(1))
 }
-use crate::{state::LinkState, PeerStatus, QlFsmEvent, ReceiveError, SessionWriteId};
+use crate::{state::LinkState, Event, PeerStatus, ReceiveError, WriteId};
 
 const SLOT_COUNT: usize = 4;
 
@@ -110,7 +110,7 @@ impl Action {
 #[derive(Clone, Debug)]
 struct TakenWrite {
     record: Vec<u8>,
-    write_id: Option<SessionWriteId>,
+    write_id: Option<WriteId>,
 }
 
 #[derive(Default)]
@@ -402,14 +402,14 @@ impl Runner {
         }
     }
 
-    fn process_events(&mut self, side: Side, events: Vec<QlFsmEvent>) -> TestCaseResult {
+    fn process_events(&mut self, side: Side, events: Vec<Event>) -> TestCaseResult {
         for event in events {
             match event {
-                QlFsmEvent::NewPeer => {}
-                QlFsmEvent::PeerStatusChanged(status) => {
+                Event::NewPeer => {}
+                Event::PeerStatusChanged(status) => {
                     self.events[side.idx()].note_peer_status(status);
                 }
-                QlFsmEvent::Opened { stream_id, .. } => {
+                Event::Opened { stream_id, .. } => {
                     prop_assert!(
                         self.known_streams.contains(&stream_id),
                         "side {side:?} emitted Opened for unknown stream {stream_id:?}"
@@ -419,13 +419,13 @@ impl Runner {
                         "side {side:?} emitted duplicate Opened for {stream_id:?}"
                     );
                 }
-                QlFsmEvent::Readable(stream_id) | QlFsmEvent::Writable(stream_id) => {
+                Event::Readable(stream_id) | Event::Writable(stream_id) => {
                     prop_assert!(
                         self.known_streams.contains(&stream_id),
                         "side {side:?} emitted readiness for unknown stream {stream_id:?}"
                     );
                 }
-                QlFsmEvent::Finished(stream_id) => {
+                Event::Finished(stream_id) => {
                     prop_assert!(
                         self.known_streams.contains(&stream_id),
                         "side {side:?} emitted Finished for unknown stream {stream_id:?}"
@@ -439,7 +439,7 @@ impl Runner {
                         "side {side:?} emitted Finished after Closed for {stream_id:?}"
                     );
                 }
-                QlFsmEvent::Closed(frame) => {
+                Event::Closed(frame) => {
                     prop_assert!(
                         self.known_streams.contains(&frame.stream_id),
                         "side {side:?} emitted Closed for unknown stream {:?}",
@@ -451,7 +451,7 @@ impl Runner {
                         frame.stream_id
                     );
                 }
-                QlFsmEvent::WritableClosed(frame) => {
+                Event::WritableClosed(frame) => {
                     let stream_id = frame.stream_id;
                     prop_assert!(
                         self.known_streams.contains(&stream_id),
@@ -462,7 +462,7 @@ impl Runner {
                         "side {side:?} emitted duplicate WritableClosed for {stream_id:?}"
                     );
                 }
-                QlFsmEvent::SessionClosed(_) => {
+                Event::SessionClosed(_) => {
                     let state = &mut self.events[side.idx()];
                     prop_assert!(
                         state.session_epoch > 0,

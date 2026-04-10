@@ -5,7 +5,7 @@ use ql_wire::{RouteId, SessionClose, StreamId, VarInt};
 
 use super::*;
 use crate::{
-    state::LinkState, CommitReadError, NoSessionError, PeerStatus, QlFsmEvent, StreamError,
+    state::LinkState, CommitReadError, NoSessionError, PeerStatus, Event, StreamError,
 };
 
 fn stream_id(value: u32) -> StreamId {
@@ -16,8 +16,8 @@ fn route_id(value: u32) -> RouteId {
     RouteId(VarInt::from_u32(value))
 }
 
-fn opened(stream_id: StreamId) -> QlFsmEvent {
-    QlFsmEvent::Opened {
+fn opened(stream_id: StreamId) -> Event {
+    Event::Opened {
         stream_id,
         route_id: route_id(1),
     }
@@ -82,7 +82,7 @@ fn connected_fsms_deliver_stream_data() {
     assert_eq!(harness.take_event(Side::B), Some(opened(stream_id)));
     assert_eq!(
         harness.take_event(Side::B),
-        Some(QlFsmEvent::Readable(stream_id))
+        Some(Event::Readable(stream_id))
     );
     assert_eq!(
         read_stream_all(&mut harness.b.fsm, stream_id),
@@ -90,7 +90,7 @@ fn connected_fsms_deliver_stream_data() {
     );
     assert_eq!(
         harness.take_event(Side::B),
-        Some(QlFsmEvent::Finished(stream_id))
+        Some(Event::Finished(stream_id))
     );
 }
 
@@ -124,7 +124,7 @@ fn session_retransmit_uses_new_record_seq() {
     assert_eq!(harness.take_event(Side::B), Some(opened(stream_id)));
     assert_eq!(
         harness.take_event(Side::B),
-        Some(QlFsmEvent::Readable(stream_id))
+        Some(Event::Readable(stream_id))
     );
     assert_eq!(
         read_stream_all(&mut harness.b.fsm, stream_id),
@@ -167,7 +167,7 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
     assert_eq!(harness.take_event(Side::A), Some(opened(stream_id_b)));
     assert_eq!(
         harness.take_event(Side::A),
-        Some(QlFsmEvent::Readable(stream_id_b))
+        Some(Event::Readable(stream_id_b))
     );
     assert_eq!(
         read_stream_all(&mut harness.a.fsm, stream_id_b),
@@ -176,7 +176,7 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
     assert_eq!(harness.take_event(Side::B), Some(opened(stream_id_a)));
     assert_eq!(
         harness.take_event(Side::B),
-        Some(QlFsmEvent::Readable(stream_id_a))
+        Some(Event::Readable(stream_id_a))
     );
     assert_eq!(
         read_stream_all(&mut harness.b.fsm, stream_id_a),
@@ -275,7 +275,7 @@ fn returned_session_write_is_reissued_with_new_record_seq() {
     assert_eq!(harness.take_event(Side::B), Some(opened(stream_id)));
     assert_eq!(
         harness.take_event(Side::B),
-        Some(QlFsmEvent::Readable(stream_id))
+        Some(Event::Readable(stream_id))
     );
     assert_eq!(
         read_stream_all(&mut harness.b.fsm, stream_id),
@@ -338,7 +338,7 @@ fn ack_frame_releases_stream_capacity_and_emits_writable() {
 
     assert_eq!(
         harness.take_event(Side::A),
-        Some(QlFsmEvent::Writable(stream_id))
+        Some(Event::Writable(stream_id))
     );
 }
 
@@ -351,7 +351,7 @@ fn close_session_disconnects_locally() {
         .fsm
         .close_session(ql_wire::SessionCloseCode::CANCELLED);
 
-    assert!(matches!(harness.take_event(Side::A), Some(QlFsmEvent::SessionClosed(SessionClose {
+    assert!(matches!(harness.take_event(Side::A), Some(Event::SessionClosed(SessionClose {
         code: ql_wire::SessionCloseCode::CANCELLED,
     }))));
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
@@ -367,7 +367,7 @@ fn close_session_disconnects_locally() {
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
     assert_eq!(
         harness.take_event(Side::A),
-        Some(QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected))
+        Some(Event::PeerStatusChanged(PeerStatus::Disconnected))
     );
 }
 
@@ -438,7 +438,7 @@ fn session_timeout_emits_close_before_disconnect() {
 
     assert_eq!(
         harness.drain_events(Side::A),
-        vec![QlFsmEvent::SessionClosed(SessionClose {
+        vec![Event::SessionClosed(SessionClose {
             code: ql_wire::SessionCloseCode::TIMEOUT,
         })]
     );
@@ -447,6 +447,6 @@ fn session_timeout_emits_close_before_disconnect() {
     assert!(matches!(close.frames.as_slice(), [ql_wire::SessionFrame::Close(_)]));
     assert_eq!(
         harness.take_event(Side::A),
-        Some(QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected))
+        Some(Event::PeerStatusChanged(PeerStatus::Disconnected))
     );
 }

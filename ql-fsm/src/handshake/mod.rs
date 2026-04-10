@@ -8,9 +8,9 @@ use ql_wire::{
 
 use crate::{
     fsm::{deadline_after_secs, emit_peer_status},
-    session::{SessionFsm, SessionFsmConfig, StreamParity},
+    session::{SessionConfig, SessionFsm, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
-    NoPeerError, QlFsm, QlFsmEvent, ReceiveError,
+    Event, NoPeerError, QlFsm, ReceiveError,
 };
 
 pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
@@ -113,12 +113,12 @@ pub fn finish_handshake(
         }
     } else {
         fsm.state.peer = Some(remote_bundle);
-        fsm.pending_events.push_back(QlFsmEvent::NewPeer);
+        fsm.pending_events.push_back(Event::NewPeer);
     }
 
     let config = &fsm.config;
     let session = SessionFsm::new(
-        SessionFsmConfig {
+        SessionConfig {
             local_parity: StreamParity::for_local(fsm.identity.xid, xid),
             record_max_size: config.session_record_max_size,
             ack_delay: config.session_record_ack_delay,

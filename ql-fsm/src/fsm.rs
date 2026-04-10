@@ -4,8 +4,8 @@ use bytes::Bytes;
 use ql_wire::{self as wire, QlCrypto, RouteId, SessionCloseCode, StreamId, WireDecode};
 
 use crate::{
-    handshake, session::SessionEvent, state::LinkState, NoSessionError, OutboundWrite, QlFsm,
-    QlFsmEvent, ReceiveError, SessionWriteId, StreamError, StreamOps,
+    handshake, session::SessionEvent, state::LinkState, Event, NoSessionError, OutboundWrite,
+    QlFsm, ReceiveError, StreamError, StreamOps, WriteId,
 };
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
@@ -121,11 +121,11 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     }
     Some(OutboundWrite {
         record,
-        session_write_id: write_id.map(SessionWriteId),
+        session_write_id: write_id.map(WriteId),
     })
 }
 
-pub fn confirm_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
+pub fn confirm_session_write(fsm: &mut QlFsm, write_id: WriteId) {
     if let Some(state) = fsm.state.link.connected_mut() {
         state
             .session
@@ -133,7 +133,7 @@ pub fn confirm_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
     }
 }
 
-pub fn reject_session_write(fsm: &mut QlFsm, write_id: SessionWriteId) {
+pub fn reject_session_write(fsm: &mut QlFsm, write_id: WriteId) {
     if let Some(state) = fsm.state.link.connected_mut() {
         state.session.reject_write(write_id.0);
     }
@@ -167,41 +167,41 @@ pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), NoSessionError> {
 pub fn emit_peer_status(fsm: &mut QlFsm) {
     if fsm.state.peer.is_some() {
         fsm.pending_events
-            .push_back(QlFsmEvent::PeerStatusChanged(fsm.state.link.status()));
+            .push_back(Event::PeerStatusChanged(fsm.state.link.status()));
     }
 }
 
 fn forward_session_event(
     event: SessionEvent,
-    pending_events: &mut std::collections::VecDeque<QlFsmEvent>,
+    pending_events: &mut std::collections::VecDeque<Event>,
 ) {
     match event {
         SessionEvent::Opened {
             stream_id,
             route_id,
         } => {
-            pending_events.push_back(QlFsmEvent::Opened {
+            pending_events.push_back(Event::Opened {
                 stream_id,
                 route_id,
             });
         }
         SessionEvent::Readable(stream_id) => {
-            pending_events.push_back(QlFsmEvent::Readable(stream_id));
+            pending_events.push_back(Event::Readable(stream_id));
         }
         SessionEvent::Writable(stream_id) => {
-            pending_events.push_back(QlFsmEvent::Writable(stream_id));
+            pending_events.push_back(Event::Writable(stream_id));
         }
         SessionEvent::Finished(stream_id) => {
-            pending_events.push_back(QlFsmEvent::Finished(stream_id));
+            pending_events.push_back(Event::Finished(stream_id));
         }
         SessionEvent::Closed(frame) => {
-            pending_events.push_back(QlFsmEvent::Closed(frame));
+            pending_events.push_back(Event::Closed(frame));
         }
         SessionEvent::WritableClosed(frame) => {
-            pending_events.push_back(QlFsmEvent::WritableClosed(frame));
+            pending_events.push_back(Event::WritableClosed(frame));
         }
         SessionEvent::SessionClosed(close) => {
-            pending_events.push_back(QlFsmEvent::SessionClosed(close));
+            pending_events.push_back(Event::SessionClosed(close));
         }
     }
 }

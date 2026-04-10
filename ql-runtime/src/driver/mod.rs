@@ -14,7 +14,7 @@ use std::{
 };
 
 use futures_lite::future::poll_fn;
-use ql_fsm::{FsmTime, QlFsm, QlFsmEvent, SessionWriteId};
+use ql_fsm::{Event, FsmTime, QlFsm, WriteId};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
@@ -83,7 +83,7 @@ impl<P: QlPlatform> Runtime<P> {
 }
 
 struct InFlightWrite<F> {
-    session_write_id: Option<SessionWriteId>,
+    session_write_id: Option<WriteId>,
     future: F,
 }
 
@@ -228,11 +228,7 @@ impl DriverState {
         }
     }
 
-    fn drive_write_completed(
-        fsm: &mut QlFsm,
-        session_write_id: Option<SessionWriteId>,
-        success: bool,
-    ) {
+    fn drive_write_completed(fsm: &mut QlFsm, session_write_id: Option<WriteId>, success: bool) {
         if let Some(write_id) = session_write_id {
             if success {
                 fsm.confirm_session_write(now(), write_id);
@@ -255,45 +251,44 @@ impl DriverState {
         output
     }
 
-    fn process_fsm_event<P: QlPlatform>(
-        &mut self,
-        fsm: &mut QlFsm,
-        platform: &P,
-        event: QlFsmEvent,
-    ) {
+    fn process_fsm_event<P: QlPlatform>(&mut self, fsm: &mut QlFsm, platform: &P, event: Event) {
         match event {
-            QlFsmEvent::NewPeer => {
+            Event::NewPeer => {
                 if let Some(peer) = fsm.peer().cloned() {
                     platform.persist_peer(peer);
                 }
             }
-            QlFsmEvent::PeerStatusChanged(status) => {
+            Event::PeerStatusChanged(status) => {
                 if let Some(peer) = fsm.peer().map(|peer| peer.xid) {
                     platform.handle_peer_status(peer, status);
                 }
             }
-            QlFsmEvent::Opened {
+            Event::Opened {
                 stream_id,
                 route_id,
             } => {
                 self.handle_opened_stream(fsm, platform, stream_id, route_id);
             }
-            QlFsmEvent::Readable(stream_id) => {
+            Event::Readable(stream_id) => {
                 self.handle_inbound_readable(fsm, stream_id);
             }
-            QlFsmEvent::Writable(stream_id) => {
+            Event::Writable(stream_id) => {
                 self.poll_stream(fsm, stream_id);
             }
-            QlFsmEvent::Finished(stream_id) => {
+            Event::Finished(stream_id) => {
                 self.handle_inbound_finished(fsm, stream_id);
             }
-            QlFsmEvent::Closed(frame) => {
+            Event::Closed(frame) => {
                 self.handle_closed_stream(&frame);
             }
-            QlFsmEvent::WritableClosed(frame) => {
+            Event::WritableClosed(frame) => {
                 self.handle_writable_closed(&frame);
             }
-            QlFsmEvent::SessionClosed(_) => self.fail_all_streams(),
+            Event::SessionClosed(_) => {
+                for (_, mut stream) in self.streams.drain() {
+                    stream.fail_all();
+                }
+            }
         }
     }
 
@@ -442,13 +437,6 @@ impl DriverState {
         let stream = entry.get_mut();
         stream.outbound_fail(QlStreamError::StreamClosed { code: frame.code });
         Self::try_reap_stream(entry);
-    }
-
-    fn fail_all_streams(&mut self) {
-        for stream in self.streams.values_mut() {
-            stream.fail_all();
-        }
-        self.streams.clear();
     }
 
     fn fill_write_slots<'a, P: QlPlatform + 'a>(

@@ -10,9 +10,9 @@ use ql_wire::{
 };
 
 use crate::{
-    session::{SessionFsm, SessionFsmConfig, StreamParity},
+    session::{SessionConfig, SessionFsm, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
-    FsmTime, NoPeerError, OutboundWrite, QlFsm, QlFsmConfig, QlFsmEvent, SessionWriteId,
+    Event, FsmTime, NoPeerError, OutboundWrite, QlFsm, QlFsmConfig, WriteId,
 };
 
 type TestCrypto = SoftwareCrypto;
@@ -46,7 +46,7 @@ struct Harness {
 
 struct DecodedSessionWrite {
     record: Vec<u8>,
-    write_id: Option<SessionWriteId>,
+    write_id: Option<WriteId>,
     header: ql_wire::SessionHeader,
     frames: Vec<ql_wire::SessionFrame<Vec<u8>>>,
 }
@@ -219,12 +219,14 @@ impl Harness {
         fsm.receive(time, record, crypto).unwrap();
     }
 
-    fn confirm_write(&mut self, side: Side, write_id: SessionWriteId) {
+    fn confirm_write(&mut self, side: Side, write_id: WriteId) {
         let time = self.time();
-        self.node_mut(side).fsm.confirm_session_write(time, write_id);
+        self.node_mut(side)
+            .fsm
+            .confirm_session_write(time, write_id);
     }
 
-    fn reject_write(&mut self, side: Side, write_id: SessionWriteId) {
+    fn reject_write(&mut self, side: Side, write_id: WriteId) {
         self.node_mut(side).fsm.reject_session_write(write_id);
     }
 
@@ -249,11 +251,11 @@ impl Harness {
         self.node_mut(side).fsm.on_timer(time);
     }
 
-    fn take_event(&mut self, side: Side) -> Option<QlFsmEvent> {
+    fn take_event(&mut self, side: Side) -> Option<Event> {
         self.node_mut(side).fsm.poll_event()
     }
 
-    fn drain_events(&mut self, side: Side) -> Vec<QlFsmEvent> {
+    fn drain_events(&mut self, side: Side) -> Vec<Event> {
         let mut events = Vec::new();
         while let Some(event) = self.take_event(side) {
             events.push(event);
@@ -288,7 +290,7 @@ fn pairing_token(byte: u8) -> PairingToken {
     PairingToken([byte; PairingToken::SIZE])
 }
 
-fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
+fn session_config(harness: &Harness, a: bool) -> SessionConfig {
     let (local, peer, config) = if a {
         (
             harness.a.fsm.identity.xid,
@@ -303,7 +305,7 @@ fn session_config(harness: &Harness, a: bool) -> SessionFsmConfig {
         )
     };
 
-    SessionFsmConfig {
+    SessionConfig {
         local_parity: StreamParity::for_local(local, peer),
         record_max_size: config.session_record_max_size,
         ack_delay: config.session_record_ack_delay,

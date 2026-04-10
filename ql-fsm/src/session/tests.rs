@@ -7,7 +7,7 @@ use ql_wire::{
     StreamId, VarInt, XID,
 };
 
-use super::{SessionEvent, SessionFsm, SessionFsmConfig};
+use super::{SessionEvent, SessionFsm, SessionConfig};
 use crate::session::stream_parity::StreamParity;
 
 fn seq(value: u64) -> RecordSeq {
@@ -91,7 +91,7 @@ fn receive_events(
 #[test]
 fn outbound_record_seq_increments_monotonically() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"one"), 3);
@@ -107,7 +107,7 @@ fn outbound_record_seq_increments_monotonically() {
 #[test]
 fn retransmit_uses_new_record_seq() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"retry"), 5);
@@ -124,9 +124,9 @@ fn retransmit_uses_new_record_seq() {
 fn lost_record_on_one_stream_does_not_block_another_stream() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
-        SessionFsmConfig {
+        SessionConfig {
             record_max_size: 80 + SessionRecordBuilder::MIN_CAPACITY,
-            ..SessionFsmConfig::default()
+            ..SessionConfig::default()
         },
         now,
     );
@@ -162,9 +162,9 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
 fn ack_reopens_write_capacity() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
-        SessionFsmConfig {
+        SessionConfig {
             stream_send_buffer_size: 4,
-            ..SessionFsmConfig::default()
+            ..SessionConfig::default()
         },
         now,
     );
@@ -192,10 +192,10 @@ fn ack_reopens_write_capacity() {
 fn commit_stream_read_is_what_advances_stream_window() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
-        SessionFsmConfig {
+        SessionConfig {
             local_parity: StreamParity::Even,
             ack_delay: Duration::ZERO,
-            ..SessionFsmConfig::default()
+            ..SessionConfig::default()
         },
         now,
     );
@@ -239,9 +239,9 @@ fn commit_stream_read_is_what_advances_stream_window() {
 #[test]
 fn pure_ack_only_records_are_fire_and_forget() {
     let now = Instant::now();
-    let config = SessionFsmConfig {
+    let config = SessionConfig {
         ack_delay: Duration::ZERO,
-        ..SessionFsmConfig::default()
+        ..SessionConfig::default()
     };
     let retransmit_timeout = config.retransmit_timeout;
     let mut fsm = SessionFsm::new(config, now);
@@ -270,7 +270,7 @@ fn pure_ack_only_records_are_fire_and_forget() {
 #[test]
 fn inbound_stream_data_emits_opened_and_readable() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = stream_id(1);
     let record = vec![SessionFrame::StreamData(ql_wire::StreamData {
         stream_id,
@@ -295,7 +295,7 @@ fn inbound_stream_data_emits_opened_and_readable() {
 #[test]
 fn remote_stream_close_is_reliable_and_retried() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = open_stream_id(&mut fsm);
 
     fsm.stream(stream_id)
@@ -323,9 +323,9 @@ fn stream_ids_follow_even_odd_xid_ordering() {
     let odd = StreamParity::for_local(XID([2; XID::SIZE]), XID([1; XID::SIZE]));
 
     let even_id = SessionFsm::new(
-        SessionFsmConfig {
+        SessionConfig {
             local_parity: even,
-            ..SessionFsmConfig::default()
+            ..SessionConfig::default()
         },
         now,
     )
@@ -333,9 +333,9 @@ fn stream_ids_follow_even_odd_xid_ordering() {
     .unwrap()
     .stream_id();
     let odd_id = SessionFsm::new(
-        SessionFsmConfig {
+        SessionConfig {
             local_parity: odd,
-            ..SessionFsmConfig::default()
+            ..SessionConfig::default()
         },
         now,
     )
@@ -350,7 +350,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
 #[test]
 fn duplicate_stream_data_is_not_redelivered() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = stream_id(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -368,7 +368,7 @@ fn duplicate_stream_data_is_not_redelivered() {
 #[test]
 fn duplicate_remote_close_after_reap_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let close = StreamClose {
         stream_id: stream_id(1),
         target: CloseTarget::Both,
@@ -392,7 +392,7 @@ fn duplicate_remote_close_after_reap_is_ignored() {
 #[test]
 fn late_remote_stream_data_after_close_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = stream_id(1);
     let close = vec![SessionFrame::StreamClose(StreamClose {
         stream_id,
@@ -431,7 +431,7 @@ fn late_remote_stream_data_after_close_is_ignored() {
 #[test]
 fn duplicate_finished_remote_data_after_reap_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = stream_id(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -459,7 +459,7 @@ fn duplicate_finished_remote_data_after_reap_is_ignored() {
 #[test]
 fn duplicate_finished_remote_data_before_read_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = stream_id(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -487,7 +487,7 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
 #[test]
 fn out_of_order_remote_stream_first_observations_still_open_once_each() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let close3 = vec![SessionFrame::StreamClose(StreamClose {
         stream_id: stream_id(3),
         target: CloseTarget::Both,
@@ -540,7 +540,7 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
 #[test]
 fn invalid_remote_stream_close_closes_session() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionFsmConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
 
     let invalid = vec![SessionFrame::StreamClose(StreamClose {
         stream_id: stream_id(0),
@@ -561,9 +561,9 @@ fn invalid_remote_stream_close_closes_session() {
 fn close_does_not_ack_rejected_record_seq() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
-        SessionFsmConfig {
+        SessionConfig {
             ack_delay: Duration::ZERO,
-            ..SessionFsmConfig::default()
+            ..SessionConfig::default()
         },
         now,
     );
@@ -600,9 +600,9 @@ fn close_does_not_ack_rejected_record_seq() {
 fn initial_peer_stream_receive_window_limits_first_send() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
-        SessionFsmConfig {
+        SessionConfig {
             initial_peer_stream_receive_window: 3,
-            ..SessionFsmConfig::default()
+            ..SessionConfig::default()
         },
         now,
     );

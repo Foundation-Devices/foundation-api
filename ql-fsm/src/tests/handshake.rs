@@ -3,7 +3,7 @@ use std::time::Duration;
 use ql_wire::QlHandshakeRecord;
 
 use super::*;
-use crate::{state::LinkState, NoPeerError, PeerStatus, QlFsmEvent};
+use crate::{state::LinkState, NoPeerError, PeerStatus, Event};
 
 #[test]
 fn ik_connect_round_trip_establishes_transport() {
@@ -114,7 +114,7 @@ fn connect_ik_emits_initiator_status() {
 
     assert_eq!(
         harness.drain_events(Side::A),
-        vec![QlFsmEvent::PeerStatusChanged(PeerStatus::Initiator)]
+        vec![Event::PeerStatusChanged(PeerStatus::Initiator)]
     );
 }
 
@@ -250,8 +250,8 @@ fn inbound_ik1_auto_binds_unbound_responder() {
     assert_eq!(
         harness.drain_events(Side::B),
         vec![
-            QlFsmEvent::NewPeer,
-            QlFsmEvent::PeerStatusChanged(PeerStatus::Connected),
+            Event::NewPeer,
+            Event::PeerStatusChanged(PeerStatus::Connected),
         ]
     );
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
@@ -279,7 +279,7 @@ fn handshake_timeout_drops_single_ik_attempt_without_resend() {
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
     assert_eq!(
         harness.take_event(Side::A),
-        Some(QlFsmEvent::PeerStatusChanged(PeerStatus::Disconnected))
+        Some(Event::PeerStatusChanged(PeerStatus::Disconnected))
     );
     assert!(harness.next_outbound(Side::A).is_none());
 }

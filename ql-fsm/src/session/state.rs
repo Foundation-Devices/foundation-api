@@ -8,11 +8,11 @@ use super::{
     stream_rx::StreamRx, stream_tx::StreamTx, tracked::TrackedRecord,
 };
 
-pub struct SessionFsmState {
+pub struct SessionState {
     pub now: Instant,
     pub last_activity_at: Instant,
     pub last_inbound_at: Instant,
-    pub session_state: SessionState,
+    pub phase: SessionPhase,
     pub next_stream_ordinal: u32,
     pub next_record_seq: RecordSeq,
     pub next_write_id: u64,
@@ -26,13 +26,13 @@ pub struct SessionFsmState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionState {
+pub enum SessionPhase {
     Open,
     Closing(SessionClose),
     Closed,
 }
 
-impl SessionState {
+impl SessionPhase {
     pub fn is_open(&self) -> bool {
         self == &Self::Open
     }

@@ -67,7 +67,7 @@ pub enum PeerStatus {
 
 /// events emitted by `QlFsm`
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QlFsmEvent {
+pub enum Event {
     /// a peer was learned during handshake completion
     NewPeer,
     /// the peer changed connection state
@@ -97,7 +97,7 @@ pub enum QlFsmEvent {
 
 /// handle for a session write returned by `QlFsm::take_next_write`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SessionWriteId(pub(crate) u64);
+pub struct WriteId(pub(crate) u64);
 
 /// outbound record produced by `QlFsm`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,7 +105,7 @@ pub struct OutboundWrite {
     /// wire bytes to hand to the transport
     pub record: Vec<u8>,
     /// write handle that must be confirmed or rejected
-    pub session_write_id: Option<SessionWriteId>,
+    pub session_write_id: Option<WriteId>,
 }
 
 /// timing and buffering knobs for `QlFsm`
@@ -131,7 +131,7 @@ pub struct QlFsmConfig {
 
 impl Default for QlFsmConfig {
     fn default() -> Self {
-        let s = session::SessionFsmConfig::default();
+        let s = session::SessionConfig::default();
         Self {
             handshake_timeout: Duration::from_secs(5),
             session_record_ack_delay: s.ack_delay,
@@ -148,11 +148,11 @@ impl Default for QlFsmConfig {
 /// synchronous driver for peer binding, handshake, and encrypted streams
 pub struct QlFsm {
     /// active configuration
-    pub config: QlFsmConfig,
+    config: QlFsmConfig,
     /// local identity and private keys
-    pub identity: QlIdentity,
-    pub(crate) state: QlFsmState,
-    pending_events: VecDeque<QlFsmEvent>,
+    identity: QlIdentity,
+    state: QlFsmState,
+    pending_events: VecDeque<Event>,
 }
 
 impl QlFsm {
@@ -231,7 +231,7 @@ impl QlFsm {
     }
 
     /// returns the next queued event, if any
-    pub fn poll_event(&mut self) -> Option<QlFsmEvent> {
+    pub fn poll_event(&mut self) -> Option<Event> {
         self.pending_events.pop_front()
     }
 
@@ -258,7 +258,7 @@ impl QlFsm {
     /// marks a `SessionWriteId` from `take_next_write` as handed to the transport
     ///
     /// call this at most once for each returned `SessionWriteId`
-    pub fn confirm_session_write(&mut self, now: FsmTime, write_id: SessionWriteId) {
+    pub fn confirm_session_write(&mut self, now: FsmTime, write_id: WriteId) {
         self.state.now = now;
         fsm::confirm_session_write(self, write_id);
     }
@@ -266,7 +266,7 @@ impl QlFsm {
     /// reports that a `SessionWriteId` from `take_next_write` was not accepted
     ///
     /// call this at most once for each returned `SessionWriteId`
-    pub fn reject_session_write(&mut self, write_id: SessionWriteId) {
+    pub fn reject_session_write(&mut self, write_id: WriteId) {
         fsm::reject_session_write(self, write_id);
     }
 
