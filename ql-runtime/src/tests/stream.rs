@@ -237,6 +237,47 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn closing_initiator_reader_preserves_initiator_writer() {
+    run_local_test(async {
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
+        let (done_tx, done_rx) = async_channel::bounded(1);
+
+        let responder = tokio::task::spawn_local(async move {
+            let stream = inbound_b.recv().await.unwrap();
+            let request = read_all(stream.reader).await.unwrap();
+            done_tx.send(request).await.unwrap();
+        });
+
+        let stream = pair
+            .side(Side::A)
+            .handle
+            .open_stream(test_route_id())
+            .await
+            .unwrap();
+        let mut writer = stream.writer;
+        stream.reader.close(StreamCloseCode(0));
+
+        writer.write(Bytes::from_static(&[1, 2])).await.unwrap();
+        writer.write(Bytes::from_static(&[3, 4])).await.unwrap();
+        writer.finish();
+
+        let request = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(request, vec![1, 2, 3, 4]);
+
+        tokio::time::timeout(Duration::from_secs(2), responder)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn max_concurrent_message_writes_is_respected() {
     run_local_test(async {
         let stats = WriteStats::new();
