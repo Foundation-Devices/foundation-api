@@ -54,8 +54,7 @@ impl<P: QlPlatform> Runtime<P> {
         let mut recv_future = pin!(recv_future);
 
         loop {
-            state.fill_write_slots(&mut fsm, &platform, &mut in_flight);
-            timer.set_deadline(fsm.next_deadline());
+            state.drain_events(&mut fsm, &platform, &mut timer, &mut in_flight);
 
             match next_driver_event(recv_future.as_mut(), &mut timer, &mut in_flight).await {
                 DriverEvent::Command(command) => {
@@ -63,14 +62,10 @@ impl<P: QlPlatform> Runtime<P> {
                 }
                 DriverEvent::WriteCompleted { index, success } => {
                     let write = in_flight.swap_remove(index);
-                    state.with_fsm_events(&mut fsm, &platform, |fsm| {
-                        DriverState::drive_write_completed(fsm, write.session_write_id, success)
-                    })
+                    DriverState::drive_write_completed(&mut fsm, write.session_write_id, success);
                 }
                 DriverEvent::TimerExpired => {
-                    state.with_fsm_events(&mut fsm, &platform, |fsm| {
-                        fsm.on_timer(now());
-                    });
+                    fsm.on_timer(now());
                 }
                 DriverEvent::CommandsClosed => {
                     if in_flight.is_empty() {
@@ -118,7 +113,7 @@ where
         recv_future
             .as_mut()
             .poll(cx)
-            .map(|res| res.map_or_else(|_| DriverEvent::CommandsClosed, DriverEvent::Command))
+            .map(|res| res.map_or(DriverEvent::CommandsClosed, DriverEvent::Command))
     })
     .await
 }
@@ -135,7 +130,7 @@ impl DriverState {
                 fsm.bind_peer(peer);
             }
             RuntimeCommand::Connect => {
-                let _ = self.with_fsm_events(fsm, platform, |fsm| fsm.connect_ik(now(), platform));
+                let _ = fsm.connect_ik(now(), platform);
             }
             RuntimeCommand::ArmPairing { token } => {
                 fsm.arm_pairing(token);
@@ -144,12 +139,10 @@ impl DriverState {
                 fsm.disarm_pairing();
             }
             RuntimeCommand::StartPairing { token } => {
-                self.with_fsm_events(fsm, platform, |fsm| fsm.connect_xx(now(), token, platform));
+                fsm.connect_xx(now(), token, platform);
             }
             RuntimeCommand::Receive(bytes) => {
-                if let Err(e) =
-                    self.with_fsm_events(fsm, platform, |fsm| fsm.receive(now(), bytes, platform))
-                {
+                if let Err(e) = fsm.receive(now(), bytes, platform) {
                     platform.handle_recv_error(e);
                 }
             }
@@ -195,6 +188,7 @@ impl DriverState {
                         stream.outbound_close();
                     }
                     stream_ops.close(CloseTarget::Both, StreamCloseCode(0));
+                    drop(stream_ops);
                     return;
                 }
                 drop(stream_ops);
@@ -234,58 +228,66 @@ impl DriverState {
         }
     }
 
-    fn with_fsm_events<P: QlPlatform, T>(
+    fn drain_events<'a, P: QlPlatform + 'a>(
         &mut self,
         fsm: &mut QlFsm,
-        platform: &P,
-        run: impl FnOnce(&mut QlFsm) -> T,
-    ) -> T {
-        let output = run(fsm);
-        while let Some(event) = fsm.poll_event() {
-            self.process_fsm_event(fsm, platform, event);
+        platform: &'a P,
+        timer: &mut impl QlTimer,
+        in_flight: &mut Vec<InFlightWrite<P::WriteMessageFut<'a>>>,
+    ) {
+        let mut timer_dirty = self.drain_fsm_events(fsm, platform);
+        if self.fill_write_slots(fsm, platform, in_flight) {
+            timer_dirty |= self.drain_fsm_events(fsm, platform);
         }
-        output
+        if timer_dirty {
+            timer.set_deadline(fsm.next_deadline());
+        }
     }
 
-    fn process_fsm_event<P: QlPlatform>(&mut self, fsm: &mut QlFsm, platform: &P, event: Event) {
-        match event {
-            Event::NewPeer => {
-                if let Some(peer) = fsm.peer().cloned() {
-                    platform.persist_peer(peer);
+    fn drain_fsm_events<P: QlPlatform>(&mut self, fsm: &mut QlFsm, platform: &P) -> bool {
+        let mut timer_dirty = false;
+        while let Some(event) = fsm.poll_event() {
+            match event {
+                Event::TimerDirty => timer_dirty = true,
+                Event::NewPeer => {
+                    if let Some(peer) = fsm.peer().cloned() {
+                        platform.persist_peer(peer);
+                    }
                 }
-            }
-            Event::PeerStatusChanged(status) => {
-                if let Some(peer) = fsm.peer().map(|peer| peer.xid) {
-                    platform.handle_peer_status(peer, status);
+                Event::PeerStatusChanged(status) => {
+                    if let Some(peer) = fsm.peer().map(|peer| peer.xid) {
+                        platform.handle_peer_status(peer, status);
+                    }
                 }
-            }
-            Event::Opened {
-                stream_id,
-                route_id,
-            } => {
-                self.handle_opened_stream(fsm, platform, stream_id, route_id);
-            }
-            Event::Readable(stream_id) => {
-                self.handle_inbound_readable(fsm, stream_id);
-            }
-            Event::Writable(stream_id) => {
-                self.poll_stream(fsm, stream_id);
-            }
-            Event::Finished(stream_id) => {
-                self.handle_inbound_finished(fsm, stream_id);
-            }
-            Event::Closed(frame) => {
-                self.handle_closed_stream(&frame);
-            }
-            Event::WritableClosed(frame) => {
-                self.handle_writable_closed(&frame);
-            }
-            Event::SessionClosed(_) => {
-                for (_, mut stream) in self.streams.drain() {
-                    stream.fail_all();
+                Event::Opened {
+                    stream_id,
+                    route_id,
+                } => {
+                    self.handle_opened_stream(fsm, platform, stream_id, route_id);
+                }
+                Event::Readable(stream_id) => {
+                    self.handle_inbound_readable(fsm, stream_id);
+                }
+                Event::Writable(stream_id) => {
+                    self.poll_stream(fsm, stream_id);
+                }
+                Event::Finished(stream_id) => {
+                    self.handle_inbound_finished(fsm, stream_id);
+                }
+                Event::Closed(frame) => {
+                    self.handle_closed_stream(&frame);
+                }
+                Event::WritableClosed(frame) => {
+                    self.handle_writable_closed(&frame);
+                }
+                Event::SessionClosed(_) => {
+                    for (_, mut stream) in self.streams.drain() {
+                        stream.fail_all();
+                    }
                 }
             }
         }
+        timer_dirty
     }
 
     fn handle_opened_stream<P: QlPlatform>(
@@ -440,16 +442,19 @@ impl DriverState {
         fsm: &mut QlFsm,
         platform: &'a P,
         in_flight: &mut Vec<InFlightWrite<P::WriteMessageFut<'a>>>,
-    ) {
+    ) -> bool {
+        let mut filled = false;
         while in_flight.len() < self.max_concurrent_message_writes {
             let Some(write) = fsm.take_next_write(now(), platform) else {
                 break;
             };
+            filled = true;
             in_flight.push(InFlightWrite {
                 session_write_id: write.write_id,
                 future: platform.write_message(write.record),
             });
         }
+        filled
     }
 
     fn poll_stream(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
