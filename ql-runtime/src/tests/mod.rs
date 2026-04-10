@@ -36,6 +36,21 @@ struct StatusEvent {
     status: PeerStatus,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    A,
+    B,
+}
+
+impl Side {
+    fn opposite(self) -> Self {
+        match self {
+            Side::A => Side::B,
+            Side::B => Side::A,
+        }
+    }
+}
+
 fn test_route_id() -> RouteId {
     RouteId(VarInt::from_u32(1))
 }
@@ -122,6 +137,86 @@ impl TestPlatform {
             outbound_rx,
             status_rx,
         )
+    }
+}
+
+struct TestSide {
+    handle: RuntimeHandle,
+    status: Receiver<StatusEvent>,
+    peer: XID,
+    inbound: Receiver<QlStream>,
+}
+
+struct TestPair {
+    a: TestSide,
+    b: TestSide,
+}
+
+impl TestPair {
+    fn new(config: RuntimeConfig) -> Self {
+        let (platform_a, outbound_a, status_a, inbound_a) = TestPlatform::new_with_inbound();
+        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
+
+        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config.clone());
+        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
+
+        tokio::task::spawn_local(async move { runtime_a.run().await });
+        tokio::task::spawn_local(async move { runtime_b.run().await });
+
+        spawn_forwarder(outbound_a, handle_b.clone());
+        spawn_forwarder(outbound_b, handle_a.clone());
+        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+
+        Self {
+            a: TestSide {
+                handle: handle_a,
+                status: status_a,
+                peer: identity_a.xid,
+                inbound: inbound_a,
+            },
+            b: TestSide {
+                handle: handle_b,
+                status: status_b,
+                peer: identity_b.xid,
+                inbound: inbound_b,
+            },
+        }
+    }
+
+    fn side(&self, side: Side) -> &TestSide {
+        match side {
+            Side::A => &self.a,
+            Side::B => &self.b,
+        }
+    }
+
+    fn side_mut(&mut self, side: Side) -> &mut TestSide {
+        match side {
+            Side::A => &mut self.a,
+            Side::B => &mut self.b,
+        }
+    }
+
+    async fn connect_and_wait(&self, initiator: Side) {
+        self.side(initiator).handle.connect();
+        await_status(
+            &self.side(initiator).status,
+            self.side(initiator.opposite()).peer,
+            PeerStatus::Connected,
+        )
+        .await;
+        await_status(
+            &self.side(initiator.opposite()).status,
+            self.side(initiator).peer,
+            PeerStatus::Connected,
+        )
+        .await;
+    }
+
+    fn take_inbound(&mut self, side: Side) -> Receiver<QlStream> {
+        let replacement = async_channel::unbounded().1;
+        std::mem::replace(&mut self.side_mut(side).inbound, replacement)
     }
 }
 

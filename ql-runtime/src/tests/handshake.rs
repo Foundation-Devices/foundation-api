@@ -7,25 +7,8 @@ use super::*;
 #[tokio::test(flavor = "current_thread")]
 async fn connect_round_trip_changes_peer_status() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b) = TestPlatform::new();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect();
-
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        let pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
     })
     .await;
 }
@@ -33,20 +16,9 @@ async fn connect_round_trip_changes_peer_status() {
 #[tokio::test(flavor = "current_thread")]
 async fn opening_stream_requires_connection() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, _outbound_a, _status_a) = TestPlatform::new();
-        let (platform_b, _outbound_b, _status_b, _inbound_b) = TestPlatform::new_with_inbound();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+        let pair = TestPair::new(default_runtime_config());
         assert!(matches!(
-            handle_a.open_stream(test_route_id()).await,
+            pair.side(Side::A).handle.open_stream(test_route_id()).await,
             Err(NoSessionError)
         ));
     })

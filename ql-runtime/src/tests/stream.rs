@@ -9,25 +9,9 @@ use crate::QlStreamError;
 #[tokio::test(flavor = "current_thread")]
 async fn open_stream_duplex_happy_path() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect();
-
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -43,7 +27,12 @@ async fn open_stream_duplex_happy_path() {
             writer.finish();
         });
 
-        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
+        let mut stream = pair
+            .side(Side::A)
+            .handle
+            .open_stream(test_route_id())
+            .await
+            .unwrap();
         stream
             .writer
             .write(Bytes::from_static(&[1, 2]))
@@ -73,25 +62,9 @@ async fn open_stream_duplex_happy_path() {
 #[tokio::test(flavor = "current_thread")]
 async fn reader_exposes_bounded_chunk_reads() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect();
-
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -114,7 +87,12 @@ async fn reader_exposes_bounded_chunk_reads() {
             inbound.writer.finish();
         });
 
-        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
+        let mut stream = pair
+            .side(Side::A)
+            .handle
+            .open_stream(test_route_id())
+            .await
+            .unwrap();
         stream
             .writer
             .write(Bytes::from_static(&[1, 2, 3, 4]))
@@ -139,28 +117,11 @@ async fn reader_exposes_bounded_chunk_reads() {
 #[tokio::test(flavor = "current_thread")]
 async fn large_stream_payload_round_trips() {
     run_local_test(async {
-        let config = default_runtime_config();
         let payload: Vec<u8> = (0..40).collect();
-
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
+        let mut pair = TestPair::new(default_runtime_config());
         let (done_tx, done_rx) = async_channel::bounded(1);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect();
-
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
@@ -169,7 +130,12 @@ async fn large_stream_payload_round_trips() {
             done_tx.send(request_data).await.unwrap();
         });
 
-        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
+        let mut stream = pair
+            .side(Side::A)
+            .handle
+            .open_stream(test_route_id())
+            .await
+            .unwrap();
         stream
             .writer
             .write(Bytes::from(payload.clone()))
@@ -195,32 +161,21 @@ async fn large_stream_payload_round_trips() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_responder_closes_initiator_response() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect();
-
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
             drop(stream.reader);
         });
 
-        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
+        let mut stream = pair
+            .side(Side::A)
+            .handle
+            .open_stream(test_route_id())
+            .await
+            .unwrap();
         stream.writer.finish();
 
         let err = next_chunk(&mut stream.reader).await.unwrap_err();
@@ -240,26 +195,10 @@ async fn dropping_responder_closes_initiator_response() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_inbound_reader_cancels_remote_writer() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
+        let mut pair = TestPair::new(default_runtime_config());
+        let inbound_b = pair.take_inbound(Side::B);
         let (go_tx, go_rx) = async_channel::bounded(1);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect();
-
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        pair.connect_and_wait(Side::A).await;
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
@@ -275,7 +214,12 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             writer.finish();
         });
 
-        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
+        let mut stream = pair
+            .side(Side::A)
+            .handle
+            .open_stream(test_route_id())
+            .await
+            .unwrap();
         stream.writer.finish();
         assert_eq!(
             next_chunk(&mut stream.reader).await.unwrap(),

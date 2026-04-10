@@ -53,25 +53,9 @@ impl ql_rpc::request_with_progress::RequestWithProgress for Download {
 #[tokio::test(flavor = "current_thread")]
 async fn rpc_request_round_trips() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect();
-
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -93,7 +77,7 @@ async fn rpc_request_round_trips() {
             writer.finish();
         });
 
-        let rpc = handle_a.rpc();
+        let rpc = pair.handle(Side::A).rpc();
         let response = rpc
             .request::<Echo>(&BytesValue(b"hello".to_vec()))
             .await
@@ -111,25 +95,9 @@ async fn rpc_request_round_trips() {
 #[tokio::test(flavor = "current_thread")]
 async fn rpc_subscription_streams_events() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect();
-
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -155,7 +123,7 @@ async fn rpc_subscription_streams_events() {
             writer.finish();
         });
 
-        let rpc = handle_a.rpc();
+        let rpc = pair.handle(Side::A).rpc();
         let mut subscription = rpc
             .subscribe::<Feed>(&BytesValue(b"watch".to_vec()))
             .await
@@ -181,25 +149,9 @@ async fn rpc_subscription_streams_events() {
 #[tokio::test(flavor = "current_thread")]
 async fn rpc_request_with_progress_supports_progress_then_await() {
     run_local_test(async {
-        let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
-        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
-
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
-
-        tokio::task::spawn_local(async move { runtime_a.run().await });
-        tokio::task::spawn_local(async move { runtime_b.run().await });
-
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
-
-        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
-        handle_a.connect();
-
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -235,7 +187,7 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
             writer.finish();
         });
 
-        let rpc = handle_a.rpc();
+        let rpc = pair.handle(Side::A).rpc();
         let mut download = rpc
             .request_with_progress::<Download>(&BytesValue(b"logo".to_vec()))
             .await
