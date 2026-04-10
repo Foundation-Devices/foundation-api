@@ -4,14 +4,38 @@ use bytes::Bytes;
 use ql_wire::{self as wire, QlCrypto, RouteId, SessionCloseCode, StreamId, WireDecode};
 
 use crate::{
-    handshake, session::SessionEvent, state::LinkState, Event, NoSessionError, OutboundWrite,
-    QlFsm, ReceiveError, StreamError, StreamOps, WriteId,
+    handshake, session::SessionEvent, state::LinkState, Event, NoPeerError, NoSessionError,
+    OutboundWrite, QlFsm, ReceiveError, StreamError, StreamOps, WriteId,
 };
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
     fsm.state.handshake = None;
     fsm.state.link = LinkState::Idle;
     fsm.state.peer = Some(peer);
+    fsm.state.mark_timer_dirty();
+}
+
+pub fn handle_disarm_pairing(fsm: &mut QlFsm) {
+    fsm.state.armed_pairing_token = None;
+    handshake::handle_disarm_pairing(fsm);
+    fsm.state.mark_timer_dirty();
+}
+
+pub fn handle_connect_xx(fsm: &mut QlFsm, token: ql_wire::PairingToken, crypto: &impl QlCrypto) {
+    handshake::handle_connect_xx(fsm, token, crypto);
+    fsm.state.mark_timer_dirty();
+}
+
+pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+    handshake::handle_connect_ik(fsm, crypto).inspect(|_| {
+        fsm.state.mark_timer_dirty();
+    })
+}
+
+pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+    handshake::handle_connect_kk(fsm, crypto).inspect(|_| {
+        fsm.state.mark_timer_dirty();
+    })
 }
 
 pub fn receive(
@@ -29,7 +53,9 @@ pub fn receive(
     match header.record_type {
         wire::RecordType::Handshake => {
             let record = wire::QlHandshakeRecord::decode(&mut reader)?;
-            handshake::handle_handshake_record(fsm, crypto, &record)
+            handshake::handle_handshake_record(fsm, crypto, &record).inspect(|_| {
+                fsm.state.mark_timer_dirty();
+            })
         }
         wire::RecordType::Session => {
             let state = fsm
@@ -65,13 +91,16 @@ pub fn receive(
             if state.session.is_closed() {
                 apply_session_closed(fsm);
             }
+            fsm.state.mark_timer_dirty();
             Ok(())
         }
     }
 }
 
 pub fn on_timer(fsm: &mut QlFsm) {
-    handshake::handle_timer(fsm);
+    if handshake::handle_timer(fsm) {
+        fsm.state.mark_timer_dirty();
+    }
 
     let Some(state) = fsm.state.link.connected_mut() else {
         return;
@@ -158,6 +187,16 @@ pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), NoSessionError> {
     state.session.queue_ping()
 }
 
+pub fn poll_event(fsm: &mut QlFsm) -> Option<Event> {
+    fsm.pending_events.pop_front().or_else(|| {
+        let mut timer_dirty = std::mem::take(&mut fsm.state.timer_dirty);
+        if let Some(state) = fsm.state.link.connected_mut() {
+            timer_dirty |= state.session.take_timer_dirty();
+        }
+        timer_dirty.then_some(Event::TimerDirty)
+    })
+}
+
 pub fn emit_peer_status(fsm: &mut QlFsm) {
     if fsm.state.peer.is_some() {
         fsm.pending_events
@@ -203,6 +242,7 @@ fn forward_session_event(
 fn apply_session_closed(fsm: &mut QlFsm) {
     if matches!(fsm.state.link, crate::state::LinkState::Connected(_)) {
         fsm.state.link = crate::state::LinkState::Idle;
+        fsm.state.mark_timer_dirty();
         emit_peer_status(fsm);
     }
 }

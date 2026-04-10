@@ -84,17 +84,21 @@ pub fn handle_handshake_record(
     }
 }
 
-pub fn handle_timer(fsm: &mut QlFsm) {
-    let Some(deadline) = fsm.state.link.handshake_deadline() else {
-        return;
-    };
-    if deadline > fsm.state.now.instant {
-        return;
+pub fn handle_timer(fsm: &mut QlFsm) -> bool {
+    let expired = fsm
+        .state
+        .link
+        .handshake_deadline()
+        .is_some_and(|d| d <= fsm.state.now.instant);
+
+    if !expired {
+        return false;
     }
 
     fsm.state.link = LinkState::Idle;
     fsm.state.handshake = None;
     emit_peer_status(fsm);
+    true
 }
 
 pub fn next_handshake_deadline(fsm: &QlFsm) -> Option<std::time::Instant> {

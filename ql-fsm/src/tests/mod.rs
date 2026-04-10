@@ -253,7 +253,12 @@ impl Harness {
     }
 
     fn take_event(&mut self, side: Side) -> Option<Event> {
-        self.node_mut(side).fsm.poll_event()
+        loop {
+            match self.node_mut(side).fsm.poll_event() {
+                Some(Event::TimerDirty) => {}
+                event => return event,
+            }
+        }
     }
 
     fn drain_events(&mut self, side: Side) -> Vec<Event> {

@@ -68,6 +68,8 @@ pub enum PeerStatus {
 /// events emitted by `QlFsm`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    /// timer-related state changed; recompute the next deadline
+    TimerDirty,
     /// a peer was learned during handshake completion
     NewPeer,
     /// the peer changed connection state
@@ -147,9 +149,7 @@ impl Default for QlFsmConfig {
 
 /// synchronous driver for peer binding, handshake, and encrypted streams
 pub struct QlFsm {
-    /// active configuration
     config: QlFsmConfig,
-    /// local identity and private keys
     identity: QlIdentity,
     state: QlFsmState,
     pending_events: VecDeque<Event>,
@@ -169,6 +169,7 @@ impl QlFsm {
                 handshake: None,
                 link: LinkState::Idle,
                 now,
+                timer_dirty: false,
             },
             pending_events: VecDeque::new(),
         }
@@ -191,26 +192,25 @@ impl QlFsm {
 
     /// disarms inbound xx pairing and rejects any in-flight inbound xx responder state
     pub fn disarm_pairing(&mut self) {
-        self.state.armed_pairing_token = None;
-        handshake::handle_disarm_pairing(self);
+        fsm::handle_disarm_pairing(self);
     }
 
     /// starts an outbound xx handshake using the supplied pairing token
     pub fn connect_xx(&mut self, now: FsmTime, token: PairingToken, crypto: &impl QlCrypto) {
         self.state.now = now;
-        handshake::handle_connect_xx(self, token, crypto);
+        fsm::handle_connect_xx(self, token, crypto);
     }
 
     /// starts an IK handshake with the currently bound peer
     pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
         self.state.now = now;
-        handshake::handle_connect_ik(self, crypto)
+        fsm::handle_connect_ik(self, crypto)
     }
 
     /// starts a KK handshake with the currently bound peer
     pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
         self.state.now = now;
-        handshake::handle_connect_kk(self, crypto)
+        fsm::handle_connect_kk(self, crypto)
     }
 
     /// handles one inbound wire message
@@ -226,7 +226,7 @@ impl QlFsm {
 
     /// returns the next queued event, if any
     pub fn poll_event(&mut self) -> Option<Event> {
-        self.pending_events.pop_front()
+        fsm::poll_event(self)
     }
 
     /// advances time-based state

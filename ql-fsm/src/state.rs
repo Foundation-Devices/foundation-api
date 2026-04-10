@@ -15,6 +15,13 @@ pub struct QlFsmState {
     pub handshake: Option<QlHandshakeRecord>,
     pub link: LinkState,
     pub now: FsmTime,
+    pub timer_dirty: bool,
+}
+
+impl QlFsmState {
+    pub fn mark_timer_dirty(&mut self) {
+        self.timer_dirty = true;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
