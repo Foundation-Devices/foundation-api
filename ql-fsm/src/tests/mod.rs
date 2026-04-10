@@ -170,7 +170,7 @@ impl Harness {
 
     fn next_outbound(&mut self, side: Side) -> Option<Vec<u8>> {
         let write = self.next_write(side)?;
-        if let Some(id) = write.session_write_id {
+        if let Some(id) = write.write_id {
             self.confirm_write(side, id);
         }
         Some(write.record)
@@ -184,7 +184,7 @@ impl Harness {
 
     fn next_decoded_outbound(&mut self, side: Side) -> Option<DecodedSessionWrite> {
         let write = self.next_write(side)?;
-        if let Some(id) = write.session_write_id {
+        if let Some(id) = write.write_id {
             self.confirm_write(side, id);
         }
         Some(self.decode_session_write(write, side))
@@ -221,14 +221,14 @@ impl Harness {
 
     fn confirm_write(&mut self, side: Side, write_id: WriteId) {
         let time = self.time();
-        self.node_mut(side)
-            .fsm
-            .confirm_session_write(time, write_id);
+        self.node_mut(side).fsm.complete_write(time, write_id, true);
     }
 
     fn reject_write(&mut self, side: Side, write_id: WriteId) {
         let time = self.time();
-        self.node_mut(side).fsm.reject_session_write(time, write_id);
+        self.node_mut(side)
+            .fsm
+            .complete_write(time, write_id, false);
     }
 
     fn decode_session_write(&self, write: OutboundWrite, side: Side) -> DecodedSessionWrite {
@@ -241,7 +241,7 @@ impl Harness {
         let (header, frames) = decrypt_record(crypto, &write.record, session_key);
         DecodedSessionWrite {
             record: write.record,
-            write_id: write.session_write_id,
+            write_id: write.write_id,
             header,
             frames,
         }

@@ -666,7 +666,7 @@ fn take_unconfirmed_outbound(harness: &mut Harness, side: Side) -> Option<TakenW
     let write = harness.next_write(side)?;
     Some(TakenWrite {
         record: write.record,
-        write_id: write.session_write_id,
+        write_id: write.write_id,
     })
 }
 

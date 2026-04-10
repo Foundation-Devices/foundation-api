@@ -230,11 +230,7 @@ impl DriverState {
 
     fn drive_write_completed(fsm: &mut QlFsm, session_write_id: Option<WriteId>, success: bool) {
         if let Some(write_id) = session_write_id {
-            if success {
-                fsm.confirm_session_write(now(), write_id);
-            } else {
-                fsm.reject_session_write(now(), write_id);
-            }
+            fsm.complete_write(now(), write_id, success);
         }
     }
 
@@ -450,7 +446,7 @@ impl DriverState {
                 break;
             };
             in_flight.push(InFlightWrite {
-                session_write_id: write.session_write_id,
+                session_write_id: write.write_id,
                 future: platform.write_message(write.record),
             });
         }

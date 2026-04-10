@@ -105,7 +105,7 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
         let record = wire::encode_record_vec(ql_wire::RecordType::Handshake, &record);
         return Some(OutboundWrite {
             record,
-            session_write_id: None,
+            write_id: None,
         });
     }
 
@@ -121,21 +121,15 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     }
     Some(OutboundWrite {
         record,
-        session_write_id: write_id.map(WriteId),
+        write_id: write_id.map(WriteId),
     })
 }
 
-pub fn confirm_session_write(fsm: &mut QlFsm, write_id: WriteId) {
+pub fn complete_write(fsm: &mut QlFsm, write_id: WriteId, success: bool) {
     if let Some(state) = fsm.state.link.connected_mut() {
         state
             .session
-            .confirm_write(fsm.state.now.instant, write_id.0);
-    }
-}
-
-pub fn reject_session_write(fsm: &mut QlFsm, write_id: WriteId) {
-    if let Some(state) = fsm.state.link.connected_mut() {
-        state.session.reject_write(fsm.state.now.instant, write_id.0);
+            .complete_write(fsm.state.now.instant, write_id.0, success);
     }
 }
 

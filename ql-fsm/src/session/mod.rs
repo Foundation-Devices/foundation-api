@@ -234,42 +234,39 @@ impl SessionFsm {
         }
     }
 
-    pub fn confirm_write(&mut self, now: Instant, write_id: u64) {
+    pub fn complete_write(&mut self, now: Instant, write_id: u64, success: bool) {
         if !self.state.phase.is_open() {
             return;
         }
-        let Some(record) = self.state.tracked_records.get_mut(&write_id) else {
-            return;
-        };
-        if record.sent_at.is_some() {
-            return;
+        if success {
+            let Some(record) = self.state.tracked_records.get_mut(&write_id) else {
+                return;
+            };
+            if record.sent_at.is_some() {
+                return;
+            }
+            self.state.last_activity_at = now;
+            record.sent_at = Some(now);
+        } else {
+            if self
+                .state
+                .tracked_records
+                .get(&write_id)
+                .is_some_and(|record| record.sent_at.is_some())
+            {
+                return;
+            }
+            let Some(record) = self.state.tracked_records.shift_remove(&write_id) else {
+                return;
+            };
+            restore_tracked_record(
+                now,
+                &mut self.state.ack_state,
+                &mut self.state.pending_ping,
+                &mut self.state.streams,
+                record,
+            );
         }
-        self.state.last_activity_at = now;
-        record.sent_at = Some(now);
-    }
-
-    pub fn reject_write(&mut self, now: Instant, write_id: u64) {
-        if !self.state.phase.is_open() {
-            return;
-        }
-        if self
-            .state
-            .tracked_records
-            .get(&write_id)
-            .is_some_and(|record| record.sent_at.is_some())
-        {
-            return;
-        }
-        let Some(record) = self.state.tracked_records.shift_remove(&write_id) else {
-            return;
-        };
-        restore_tracked_record(
-            now,
-            &mut self.state.ack_state,
-            &mut self.state.pending_ping,
-            &mut self.state.streams,
-            record,
-        );
     }
 
     pub fn on_timer(&mut self, now: Instant, mut emit: impl FnMut(SessionEvent)) {

@@ -7,7 +7,7 @@
 //!   `stream`
 //! - inbound transport bytes passed to `receive`
 //! - a deadline expiring, handled by calling `on_timer`
-//! - transport write results passed to `confirm_session_write` or `reject_session_write`
+//! - transport write results passed to `complete_write`
 //!
 //! outputs from `QlFsm` are
 //! - outbound session and handshake records from `take_next_write`
@@ -104,8 +104,8 @@ pub struct WriteId(pub(crate) u64);
 pub struct OutboundWrite {
     /// wire bytes to hand to the transport
     pub record: Vec<u8>,
-    /// write handle that must be confirmed or rejected
-    pub session_write_id: Option<WriteId>,
+    /// write handle that must be completed exactly once
+    pub write_id: Option<WriteId>,
 }
 
 /// timing and buffering knobs for `QlFsm`
@@ -224,15 +224,15 @@ impl QlFsm {
         fsm::receive(self, bytes, crypto)
     }
 
+    /// returns the next queued event, if any
+    pub fn poll_event(&mut self) -> Option<Event> {
+        self.pending_events.pop_front()
+    }
+
     /// advances time-based state
     pub fn on_timer(&mut self, now: FsmTime) {
         self.state.now = now;
         fsm::on_timer(self);
-    }
-
-    /// returns the next queued event, if any
-    pub fn poll_event(&mut self) -> Option<Event> {
-        self.pending_events.pop_front()
     }
 
     /// returns the next timer deadline, if any
@@ -242,8 +242,7 @@ impl QlFsm {
 
     /// returns the next outbound record
     ///
-    /// if `session_write_id` is `Some`, call exactly one of
-    /// `confirm_session_write` or `reject_session_write`
+    /// if `write_id` is `Some`, call `complete_write` exactly once
     ///
     /// if it is `None`, the record is fire-and-forget
     pub fn take_next_write(
@@ -255,20 +254,12 @@ impl QlFsm {
         fsm::take_next_write(self, crypto)
     }
 
-    /// marks a `SessionWriteId` from `take_next_write` as handed to the transport
+    /// completes a `SessionWriteId` from `take_next_write` with the transport outcome
     ///
     /// call this at most once for each returned `SessionWriteId`
-    pub fn confirm_session_write(&mut self, now: FsmTime, write_id: WriteId) {
+    pub fn complete_write(&mut self, now: FsmTime, write_id: WriteId, success: bool) {
         self.state.now = now;
-        fsm::confirm_session_write(self, write_id);
-    }
-
-    /// reports that a `SessionWriteId` from `take_next_write` was not accepted
-    ///
-    /// call this at most once for each returned `SessionWriteId`
-    pub fn reject_session_write(&mut self, now: FsmTime, write_id: WriteId) {
-        self.state.now = now;
-        fsm::reject_session_write(self, write_id);
+        fsm::complete_write(self, write_id, success);
     }
 
     /// closes the current encrypted session locally

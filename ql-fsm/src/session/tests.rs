@@ -7,7 +7,7 @@ use ql_wire::{
     StreamId, VarInt, XID,
 };
 
-use super::{SessionEvent, SessionFsm, SessionConfig};
+use super::{SessionConfig, SessionEvent, SessionFsm};
 use crate::session::stream_parity::StreamParity;
 
 fn seq(value: u64) -> RecordSeq {
@@ -63,7 +63,7 @@ fn next_outbound(
 ) -> Option<(RecordSeq, Vec<SessionFrame<Vec<u8>>>)> {
     let (write_id, builder) = fsm.take_next_write(now)?;
     if let Some(write_id) = write_id {
-        fsm.confirm_write(now, write_id);
+        fsm.complete_write(now, write_id, true);
     }
     Some((
         builder.seq(),
@@ -303,7 +303,11 @@ fn remote_stream_close_is_reliable_and_retried() {
         .close(CloseTarget::Both, StreamCloseCode(0));
 
     let (write_id, builder) = fsm.take_next_write(now).unwrap();
-    fsm.confirm_write(now, write_id.expect("stream close should be tracked"));
+    fsm.complete_write(
+        now,
+        write_id.expect("stream close should be tracked"),
+        true,
+    );
     let first = decode_session_frames(builder.bytes()).unwrap();
     assert!(matches!(
         first.as_slice(),
