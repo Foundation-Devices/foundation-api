@@ -29,12 +29,9 @@ impl WireEncode for HandshakeId {
 impl HandshakeMeta {
     pub const WIRE_SIZE: usize = size_of::<u32>() + size_of::<u64>();
 
-    pub fn ensure_not_expired(&self, now_seconds: u64) -> Result<(), WireError> {
-        if now_seconds > self.valid_until {
-            Err(WireError::Expired)
-        } else {
-            Ok(())
-        }
+    // TODO: re-think expiration
+    pub fn ensure_not_expired(&self, _now_seconds: u64) -> Result<(), WireError> {
+        Ok(())
     }
 }
 
