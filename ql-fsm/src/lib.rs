@@ -187,6 +187,10 @@ impl QlFsm {
         self.state.armed_pairing_token = Some(token);
     }
 
+    pub fn pairing_token(&self) -> Option<&PairingToken> {
+        self.state.armed_pairing_token.as_ref()
+    }
+
     /// disarms inbound xx pairing and rejects any in-flight inbound xx responder state
     pub fn disarm_pairing(&mut self) {
         fsm::handle_disarm_pairing(self);
