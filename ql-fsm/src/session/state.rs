@@ -9,7 +9,6 @@ use super::{
 };
 
 pub struct SessionState {
-    pub now: Instant,
     pub last_activity_at: Instant,
     pub last_inbound_at: Instant,
     pub phase: SessionPhase,

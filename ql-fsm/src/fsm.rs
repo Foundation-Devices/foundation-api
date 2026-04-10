@@ -135,7 +135,7 @@ pub fn confirm_session_write(fsm: &mut QlFsm, write_id: WriteId) {
 
 pub fn reject_session_write(fsm: &mut QlFsm, write_id: WriteId) {
     if let Some(state) = fsm.state.link.connected_mut() {
-        state.session.reject_write(write_id.0);
+        state.session.reject_write(fsm.state.now.instant, write_id.0);
     }
 }
 

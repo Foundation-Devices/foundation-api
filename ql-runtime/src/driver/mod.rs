@@ -233,7 +233,7 @@ impl DriverState {
             if success {
                 fsm.confirm_session_write(now(), write_id);
             } else {
-                fsm.reject_session_write(write_id);
+                fsm.reject_session_write(now(), write_id);
             }
         }
     }

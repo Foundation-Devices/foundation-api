@@ -266,7 +266,8 @@ impl QlFsm {
     /// reports that a `SessionWriteId` from `take_next_write` was not accepted
     ///
     /// call this at most once for each returned `SessionWriteId`
-    pub fn reject_session_write(&mut self, write_id: WriteId) {
+    pub fn reject_session_write(&mut self, now: FsmTime, write_id: WriteId) {
+        self.state.now = now;
         fsm::reject_session_write(self, write_id);
     }
 

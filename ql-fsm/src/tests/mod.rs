@@ -227,7 +227,8 @@ impl Harness {
     }
 
     fn reject_write(&mut self, side: Side, write_id: WriteId) {
-        self.node_mut(side).fsm.reject_session_write(write_id);
+        let time = self.time();
+        self.node_mut(side).fsm.reject_session_write(time, write_id);
     }
 
     fn decode_session_write(&self, write: OutboundWrite, side: Side) -> DecodedSessionWrite {

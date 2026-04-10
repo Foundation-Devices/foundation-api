@@ -92,7 +92,6 @@ impl SessionFsm {
         Self {
             config,
             state: SessionState {
-                now,
                 last_activity_at: now,
                 last_inbound_at: now,
                 phase: SessionPhase::Open,
@@ -171,21 +170,20 @@ impl SessionFsm {
     ) where
         I: IntoIterator<Item = Result<SessionFrame<Bytes>, WireError>>,
     {
-        self.state.now = now;
-        self.state.last_activity_at = self.state.now;
-        self.state.last_inbound_at = self.state.now;
+        self.state.last_activity_at = now;
+        self.state.last_inbound_at = now;
 
         if self.state.phase != SessionPhase::Open {
             return;
         }
 
-        self.collect_timeouts();
+        self.collect_timeouts(now);
 
         let mut received_records = self.state.received_records.clone();
         let out_of_order = match received_records.insert(seq) {
             ReceiveOutcome::TooOld => return,
             ReceiveOutcome::Duplicate => {
-                self.schedule_ack(true);
+                self.schedule_ack(now, true);
                 return;
             }
             ReceiveOutcome::New { out_of_order } => out_of_order,
@@ -232,12 +230,11 @@ impl SessionFsm {
         }
 
         if ack_eliciting {
-            self.schedule_ack(out_of_order);
+            self.schedule_ack(now, out_of_order);
         }
     }
 
     pub fn confirm_write(&mut self, now: Instant, write_id: u64) {
-        self.state.now = now;
         if !self.state.phase.is_open() {
             return;
         }
@@ -251,7 +248,7 @@ impl SessionFsm {
         record.sent_at = Some(now);
     }
 
-    pub fn reject_write(&mut self, write_id: u64) {
+    pub fn reject_write(&mut self, now: Instant, write_id: u64) {
         if !self.state.phase.is_open() {
             return;
         }
@@ -267,7 +264,7 @@ impl SessionFsm {
             return;
         };
         restore_tracked_record(
-            self.state.now,
+            now,
             &mut self.state.ack_state,
             &mut self.state.pending_ping,
             &mut self.state.streams,
@@ -276,20 +273,19 @@ impl SessionFsm {
     }
 
     pub fn on_timer(&mut self, now: Instant, mut emit: impl FnMut(SessionEvent)) {
-        self.state.now = now;
         if !self.state.phase.is_open() {
             return;
         }
-        self.collect_timeouts();
+        self.collect_timeouts(now);
         if !self.config.peer_timeout.is_zero()
-            && self.state.last_inbound_at + self.config.peer_timeout <= self.state.now
+            && self.state.last_inbound_at + self.config.peer_timeout <= now
         {
             self.close(SessionCloseCode::TIMEOUT, &mut emit);
             return;
         }
         if self.state.phase == SessionPhase::Open
             && !self.config.keepalive_interval.is_zero()
-            && self.state.last_activity_at + self.config.keepalive_interval <= self.state.now
+            && self.state.last_activity_at + self.config.keepalive_interval <= now
         {
             self.state.pending_ping = true;
         }
@@ -332,7 +328,6 @@ impl SessionFsm {
     }
 
     pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
-        self.state.now = now;
         match &self.state.phase {
             SessionPhase::Closing(close) => {
                 let seq = self.state.next_record_seq;
@@ -347,9 +342,9 @@ impl SessionFsm {
             }
             SessionPhase::Open => {}
         }
-        self.collect_timeouts();
+        self.collect_timeouts(now);
 
-        let (builder, outbound) = self.build_next_record()?;
+        let (builder, outbound) = self.build_next_record(now)?;
 
         let should_track = outbound.ping_included
             || !outbound.window_updates.is_empty()
@@ -365,7 +360,7 @@ impl SessionFsm {
         Some((write_id, builder))
     }
 
-    fn build_next_record(&mut self) -> Option<(SessionRecordBuilder, TrackedRecord)> {
+    fn build_next_record(&mut self, now: Instant) -> Option<(SessionRecordBuilder, TrackedRecord)> {
         let seq = self.state.next_record_seq;
         let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
         let mut outbound = TrackedRecord {
@@ -389,7 +384,7 @@ impl SessionFsm {
         self.push_next_stream_data(&mut builder, &mut outbound);
 
         if let Some((ack, due_at)) = self.pending_ack() {
-            if (!builder.is_empty() || due_at <= self.state.now) && builder.push_ack(&ack) {
+            if (!builder.is_empty() || due_at <= now) && builder.push_ack(&ack) {
                 outbound.ack_included = true;
                 self.state.ack_state = AckState::Idle;
             }
@@ -549,14 +544,10 @@ impl SessionFsm {
         self.reap_reapable_streams();
     }
 
-    fn schedule_ack(&mut self, immediate: bool) {
+    fn schedule_ack(&mut self, now: Instant, immediate: bool) {
         schedule_ack(
             &mut self.state.ack_state,
-            if immediate {
-                self.state.now
-            } else {
-                self.state.now + self.config.ack_delay
-            },
+            if immediate { now } else { now + self.config.ack_delay },
         );
     }
 
@@ -569,15 +560,15 @@ impl SessionFsm {
         }
     }
 
-    fn collect_timeouts(&mut self) {
+    fn collect_timeouts(&mut self, now: Instant) {
         let retransmit_timeout = self.config.retransmit_timeout;
         for (_, record) in self.state.tracked_records.extract_if(.., |_, record| {
             record
                 .sent_at
-                .is_some_and(|sent_at| sent_at + retransmit_timeout <= self.state.now)
+                .is_some_and(|sent_at| sent_at + retransmit_timeout <= now)
         }) {
             restore_tracked_record(
-                self.state.now,
+                now,
                 &mut self.state.ack_state,
                 &mut self.state.pending_ping,
                 &mut self.state.streams,
