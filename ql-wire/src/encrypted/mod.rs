@@ -1,5 +1,5 @@
 use crate::{
-    codec, encrypted_message::EncryptedMessage, ByteChunks, ByteSlice, Nonce, QlCrypto, Reader,
+    codec, encrypted_message::EncryptedMessage, BufView, ByteSlice, Nonce, QlCrypto, Reader,
     SessionHeader, SessionKey, VarInt, WireDecode, WireEncode, WireError,
 };
 
@@ -77,7 +77,7 @@ impl<B: ByteSlice> SessionFrame<B> {
     }
 }
 
-impl<B: ByteChunks> WireEncode for SessionFrame<B> {
+impl<B: BufView> WireEncode for SessionFrame<B> {
     fn encoded_len(&self) -> usize {
         1 + match self {
             Self::Ping => 0,

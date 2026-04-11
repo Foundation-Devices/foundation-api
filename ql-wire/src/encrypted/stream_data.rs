@@ -1,5 +1,7 @@
+use bytes::Buf;
+
 use super::{RouteId, StreamId};
-use crate::{codec, ByteChunks, ByteSlice, VarInt, WireDecode, WireEncode, WireError};
+use crate::{codec, BufView, ByteSlice, VarInt, WireDecode, WireEncode, WireError};
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,13 +57,14 @@ impl<B> StreamData<B> {
     }
 }
 
-impl<B: ByteChunks> WireEncode for StreamData<B> {
+impl<B: BufView> WireEncode for StreamData<B> {
     fn encoded_len(&self) -> usize {
+        let bytes = self.bytes.buf();
         self.stream_id.encoded_len()
             + self.offset.encoded_len()
             + size_of::<u8>()
             + self.header.as_ref().map_or(0, WireEncode::encoded_len)
-            + self.bytes.len()
+            + bytes.remaining()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -83,8 +86,11 @@ impl<B: ByteChunks> WireEncode for StreamData<B> {
         if let Some(header) = &self.header {
             header.encode(out);
         }
-        for chunk in self.bytes.chunks() {
-            chunk.encode(out);
+        let mut bytes = self.bytes.buf();
+        while bytes.has_remaining() {
+            let chunk = bytes.chunk();
+            out.put_slice(chunk);
+            bytes.advance(chunk.len());
         }
     }
 }

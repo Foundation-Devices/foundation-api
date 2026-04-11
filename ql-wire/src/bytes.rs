@@ -1,10 +1,6 @@
-use core::{
-    iter::{once, Chain, Once},
-    ops::{Deref, DerefMut},
-};
-use std::collections::VecDeque;
+use core::ops::{Deref, DerefMut};
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 
 /// A mutable or immutable byte slice owner used by the wire parser.
 pub trait ByteSlice: Deref<Target = [u8]> + Sized {
@@ -17,128 +13,7 @@ pub trait ByteSlice: Deref<Target = [u8]> + Sized {
 /// A mutable reference to bytes.
 pub trait ByteSliceMut: ByteSlice + DerefMut<Target = [u8]> {}
 
-/// A byte container that can be encoded from one or more chunks.
-pub trait ByteChunks {
-    type Chunks<'a>: Iterator<Item = &'a [u8]>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize;
-
-    fn chunks(&self) -> Self::Chunks<'_>;
-
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
 impl<B> ByteSliceMut for B where B: ByteSlice + DerefMut<Target = [u8]> {}
-
-impl<T: ByteChunks + ?Sized> ByteChunks for &T {
-    type Chunks<'a>
-        = T::Chunks<'a>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize {
-        (*self).len()
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        (*self).chunks()
-    }
-}
-
-impl<T: ByteChunks + ?Sized> ByteChunks for &mut T {
-    type Chunks<'a>
-        = T::Chunks<'a>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize {
-        (**self).len()
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        (**self).chunks()
-    }
-}
-
-impl ByteChunks for [u8] {
-    type Chunks<'a>
-        = Once<&'a [u8]>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize {
-        <[u8]>::len(self)
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        once(self)
-    }
-}
-
-impl<const N: usize> ByteChunks for [u8; N] {
-    type Chunks<'a>
-        = Once<&'a [u8]>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize {
-        N
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        once(self.as_slice())
-    }
-}
-
-impl ByteChunks for Vec<u8> {
-    type Chunks<'a>
-        = Once<&'a [u8]>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        once(self.as_slice())
-    }
-}
-
-impl ByteChunks for Bytes {
-    type Chunks<'a>
-        = Once<&'a [u8]>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        once(self.as_ref())
-    }
-}
-
-impl ByteChunks for VecDeque<u8> {
-    type Chunks<'a>
-        = Chain<Once<&'a [u8]>, Once<&'a [u8]>>
-    where
-        Self: 'a;
-
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        let (first, second) = self.as_slices();
-        once(first).chain(once(second))
-    }
-}
 
 impl ByteSlice for &[u8] {
     #[inline]
@@ -173,11 +48,90 @@ impl ByteSlice for Bytes {
     }
 }
 
+/// A byte container that can expose a replayable [`Buf`] view for encoding.
+pub trait BufView {
+    type Buf<'a>: Buf
+    where
+        Self: 'a;
+
+    fn buf(&self) -> Self::Buf<'_>;
+
+    fn is_empty(&self) -> bool {
+        self.buf().remaining() == 0
+    }
+}
+
+impl<T: BufView + ?Sized> BufView for &T {
+    type Buf<'a>
+        = T::Buf<'a>
+    where
+        Self: 'a;
+
+    fn buf(&self) -> Self::Buf<'_> {
+        (*self).buf()
+    }
+}
+
+impl<T: BufView + ?Sized> BufView for &mut T {
+    type Buf<'a>
+        = T::Buf<'a>
+    where
+        Self: 'a;
+
+    fn buf(&self) -> Self::Buf<'_> {
+        (**self).buf()
+    }
+}
+
+impl BufView for [u8] {
+    type Buf<'a>
+        = &'a [u8]
+    where
+        Self: 'a;
+
+    fn buf(&self) -> Self::Buf<'_> {
+        self
+    }
+}
+
+impl<const N: usize> BufView for [u8; N] {
+    type Buf<'a>
+        = &'a [u8]
+    where
+        Self: 'a;
+
+    fn buf(&self) -> Self::Buf<'_> {
+        self.as_slice()
+    }
+}
+
+impl BufView for Vec<u8> {
+    type Buf<'a>
+        = &'a [u8]
+    where
+        Self: 'a;
+
+    fn buf(&self) -> Self::Buf<'_> {
+        self.as_slice()
+    }
+}
+
+impl BufView for Bytes {
+    type Buf<'a>
+        = &'a [u8]
+    where
+        Self: 'a;
+
+    fn buf(&self) -> Self::Buf<'_> {
+        self.as_ref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use bytes::Buf;
 
-    use super::{ByteChunks, ByteSlice, ByteSliceMut};
+    use super::{BufView, ByteSlice, ByteSliceMut};
 
     #[test]
     fn shared_slice_split_at() {
@@ -210,23 +164,12 @@ mod tests {
     }
 
     #[test]
-    fn slice_byte_chunks_are_contiguous() {
+    fn slice_buf_view_is_contiguous() {
         let bytes: &[u8] = b"abcdef";
-        let chunks = ByteChunks::chunks(&bytes).collect::<Vec<_>>();
-        assert_eq!(bytes.len(), 6);
-        assert_eq!(chunks, vec![b"abcdef".as_slice()]);
-    }
-
-    #[test]
-    fn vec_deque_byte_chunks_preserve_split_storage() {
-        let mut bytes = VecDeque::with_capacity(8);
-        bytes.extend(b"abcd".iter().copied());
-        bytes.drain(..2);
-        bytes.extend(b"efgh".iter().copied());
-
-        let chunks = ByteChunks::chunks(&bytes).collect::<Vec<_>>();
-        assert_eq!(bytes.len(), 6);
-        assert_eq!(chunks.concat(), b"cdefgh");
-        assert!(!chunks.is_empty());
+        let mut buf = bytes.buf();
+        assert_eq!(buf.remaining(), 6);
+        assert_eq!(buf.chunk(), b"abcdef");
+        buf.advance(6);
+        assert!(!buf.has_remaining());
     }
 }

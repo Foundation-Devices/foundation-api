@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, ops::Range};
 
 use bytes::{Buf, Bytes};
-use ql_wire::ByteChunks;
+use ql_wire::BufView;
 
 use super::range_set::RangeSet;
 
@@ -44,42 +44,39 @@ pub struct StreamTxBytes<'a> {
     len: usize,
 }
 
-pub struct StreamTxBytesIter<'a> {
+pub struct StreamTxBuf<'a> {
     inner: std::collections::vec_deque::Iter<'a, Bytes>,
     skip: usize,
     remaining: usize,
+    current: &'a [u8],
 }
 
-impl ByteChunks for StreamTxBytes<'_> {
-    type Chunks<'a>
-        = StreamTxBytesIter<'a>
+impl BufView for StreamTxBytes<'_> {
+    type Buf<'a>
+        = StreamTxBuf<'a>
     where
         Self: 'a;
 
-    fn len(&self) -> usize {
-        self.inner
-            .iter()
-            .map(Bytes::len)
-            .sum::<usize>()
-            .saturating_sub(self.offset)
-            .min(self.len)
-    }
-
-    fn chunks(&self) -> Self::Chunks<'_> {
-        StreamTxBytesIter {
+    fn buf(&self) -> Self::Buf<'_> {
+        let mut buf = StreamTxBuf {
             inner: self.inner.iter(),
             skip: self.offset,
-            remaining: self.len(),
-        }
+            remaining: self.len,
+            current: &[],
+        };
+        buf.refill();
+        buf
     }
 }
 
-impl<'a> Iterator for StreamTxBytesIter<'a> {
-    type Item = &'a [u8];
+impl<'a> StreamTxBuf<'a> {
+    fn refill(&mut self) {
+        if self.remaining == 0 {
+            self.current = &[];
+            return;
+        }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.remaining > 0 {
-            let chunk = self.inner.next()?;
+        while let Some(chunk) = self.inner.next() {
             if self.skip >= chunk.len() {
                 self.skip -= chunk.len();
                 continue;
@@ -92,11 +89,45 @@ impl<'a> Iterator for StreamTxBytesIter<'a> {
             }
 
             let len = chunk.len().min(self.remaining);
-            self.remaining -= len;
-            return Some(&chunk[..len]);
+            self.current = &chunk[..len];
+            return;
         }
 
-        None
+        self.current = &[];
+    }
+}
+
+impl Buf for StreamTxBuf<'_> {
+    fn remaining(&self) -> usize {
+        self.remaining
+    }
+
+    fn chunk(&self) -> &[u8] {
+        self.current
+    }
+
+    fn advance(&mut self, cnt: usize) {
+        let remaining = self.remaining;
+        assert!(
+            cnt <= remaining,
+            "cannot advance past remaining bytes: {cnt} > {remaining}",
+        );
+
+        self.remaining -= cnt;
+        let mut cnt = cnt;
+        while cnt > 0 {
+            if cnt < self.current.len() {
+                self.current = &self.current[cnt..];
+                return;
+            }
+
+            cnt -= self.current.len();
+            self.refill();
+        }
+
+        if self.remaining == 0 {
+            self.current = &[];
+        }
     }
 }
 
@@ -197,10 +228,11 @@ impl StreamTx {
 
     pub fn ranged_bytes(&self, range: StreamTxRange) -> StreamTxBytes<'_> {
         let offset = usize::try_from(range.offset - self.base_offset).unwrap();
+        let len = range.len.min(self.buffered_len.saturating_sub(offset));
         StreamTxBytes {
             inner: &self.chunks,
             offset,
-            len: range.len,
+            len,
         }
     }
 

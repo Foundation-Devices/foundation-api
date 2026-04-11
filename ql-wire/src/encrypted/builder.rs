@@ -2,7 +2,7 @@ use bytes::BufMut;
 
 use super::{RecordAck, SessionClose, SessionFrame, StreamClose, StreamData, StreamWindow};
 use crate::{
-    ByteChunks, ConnectionId, Nonce, QlCrypto, RecordSeq, RecordType, SessionHeader, SessionKey,
+    BufView, ConnectionId, Nonce, QlCrypto, RecordSeq, RecordType, SessionHeader, SessionKey,
     VarInt, WireEncode, QL_WIRE_VERSION,
 };
 
@@ -70,7 +70,7 @@ impl SessionRecordBuilder {
         self.push_frame_payload(super::SessionFrameKind::Ack, ack)
     }
 
-    pub fn push_stream_data<B: ByteChunks>(&mut self, frame: &StreamData<B>) -> bool {
+    pub fn push_stream_data<B: BufView>(&mut self, frame: &StreamData<B>) -> bool {
         self.push_len_prefixed_frame(super::SessionFrameKind::StreamData, frame)
     }
 
@@ -86,7 +86,7 @@ impl SessionRecordBuilder {
         self.push_frame_payload(super::SessionFrameKind::Close, close)
     }
 
-    pub fn push_frame<B: ByteChunks>(&mut self, frame: &SessionFrame<B>) -> bool {
+    pub fn push_frame<B: BufView>(&mut self, frame: &SessionFrame<B>) -> bool {
         match frame {
             SessionFrame::Ping => self.push_ping(),
             SessionFrame::Ack(frame) => self.push_ack(frame),
