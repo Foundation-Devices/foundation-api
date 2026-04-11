@@ -192,7 +192,7 @@ impl DriverState {
                         stream.inbound_close();
                         stream.outbound_close();
                     }
-                    stream_ops.close(CloseTarget::Both, StreamCloseCode(0));
+                    stream_ops.close(CloseTarget::Both, StreamCloseCode::CANCELLED);
                     drop(stream_ops);
                     return;
                 }
@@ -285,7 +285,7 @@ impl DriverState {
     ) {
         let Some(runtime_tx) = self.runtime_tx.upgrade() else {
             if let Ok(mut stream) = fsm.stream(stream_id) {
-                stream.close(CloseTarget::Both, StreamCloseCode(0));
+                stream.close(CloseTarget::Both, StreamCloseCode::CANCELLED);
             }
             return;
         };
@@ -362,7 +362,7 @@ impl DriverState {
             stream_ops.commit_read(accepted).unwrap();
         }
         if peer_closed {
-            stream_ops.close(target, StreamCloseCode(0));
+            stream_ops.close(target, StreamCloseCode::CANCELLED);
             if let Entry::Occupied(entry) = self.streams.entry(stream_id) {
                 Self::try_reap_stream(entry);
             }

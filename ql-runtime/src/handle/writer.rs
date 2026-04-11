@@ -79,7 +79,7 @@ impl ByteWriter {
 
 impl Drop for ByteWriter {
     fn drop(&mut self) {
-        self.close_inner(StreamCloseCode(0));
+        self.close_inner(StreamCloseCode::CANCELLED);
     }
 }
 

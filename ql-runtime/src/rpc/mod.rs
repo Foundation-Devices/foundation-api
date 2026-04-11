@@ -31,7 +31,7 @@ impl RpcHandle {
         notification::encode_event::<M>(event, &mut payload).map_err(RpcError::Codec)?;
         let route_id = RouteId(VarInt::from_u32(M::METHOD.0));
         let mut stream = self.inner.open_stream(route_id).await?;
-        stream.reader.close(ql_wire::StreamCloseCode(0));
+        stream.reader.close(ql_wire::StreamCloseCode::CANCELLED);
         stream.writer.write(Bytes::from(payload)).await?;
         Ok(())
     }

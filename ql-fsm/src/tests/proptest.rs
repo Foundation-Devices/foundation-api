@@ -334,7 +334,7 @@ impl Runner {
                     let closed = if let Ok(mut stream) =
                         self.harness.node_mut(*side).fsm.stream(stream_id)
                     {
-                        stream.close(CloseTarget::Both, StreamCloseCode(0));
+                        stream.close(CloseTarget::Both, StreamCloseCode::CANCELLED);
                         true
                     } else {
                         false

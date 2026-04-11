@@ -208,7 +208,12 @@ fn disconnected_stream_operations_fail_with_no_session() {
             .a
             .fsm
             .stream(missing)
-            .map(|mut stream| stream.close(ql_wire::CloseTarget::Both, ql_wire::StreamCloseCode(0))),
+            .map(|mut stream| {
+                stream.close(
+                    ql_wire::CloseTarget::Both,
+                    ql_wire::StreamCloseCode::CANCELLED,
+                )
+            }),
         Err(StreamError::NoSession)
     );
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));

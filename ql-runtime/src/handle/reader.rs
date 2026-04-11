@@ -148,7 +148,7 @@ impl Drop for ByteReader {
         self.handle.send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
-            code: StreamCloseCode(0),
+            code: StreamCloseCode::CANCELLED,
         });
     }
 }

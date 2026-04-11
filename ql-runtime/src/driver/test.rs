@@ -99,7 +99,7 @@ fn handle_closed_stream_reaps_when_both_halves_close() {
     state.handle_closed_stream(&StreamClose {
         stream_id,
         target: CloseTarget::Both,
-        code: StreamCloseCode(0),
+        code: StreamCloseCode::CANCELLED,
     });
 
     assert!(!state.streams.contains_key(&stream_id));
@@ -148,7 +148,7 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
         RuntimeCommand::CloseStream {
             stream_id,
             target: CloseTarget::Origin,
-            code: StreamCloseCode(0),
+            code: StreamCloseCode::CANCELLED,
         },
         &NoopCrypto,
     );

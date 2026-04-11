@@ -670,7 +670,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         SessionFrame::StreamClose(StreamClose {
             stream_id: stream_id(9),
             target: CloseTarget::Both,
-            code: StreamCloseCode(0),
+            code: StreamCloseCode::CANCELLED,
         }),
         SessionFrame::Close(SessionClose {
             code: SessionCloseCode::TIMEOUT,

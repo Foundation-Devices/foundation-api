@@ -181,7 +181,7 @@ async fn dropping_responder_closes_initiator_response() {
         let err = next_chunk(&mut stream.reader).await.unwrap_err();
         assert!(matches!(
             err,
-            QlStreamError::StreamClosed { code } if code == StreamCloseCode(0)
+            QlStreamError::StreamClosed { code } if code == StreamCloseCode::CANCELLED
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -257,7 +257,7 @@ async fn closing_initiator_reader_preserves_initiator_writer() {
             .await
             .unwrap();
         let mut writer = stream.writer;
-        stream.reader.close(StreamCloseCode(0));
+        stream.reader.close(StreamCloseCode::CANCELLED);
 
         writer.write(Bytes::from_static(&[1, 2])).await.unwrap();
         writer.write(Bytes::from_static(&[3, 4])).await.unwrap();

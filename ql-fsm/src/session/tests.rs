@@ -300,7 +300,7 @@ fn remote_stream_close_is_reliable_and_retried() {
 
     fsm.stream(stream_id)
         .unwrap()
-        .close(CloseTarget::Both, StreamCloseCode(0));
+        .close(CloseTarget::Both, StreamCloseCode::CANCELLED);
 
     let (write_id, builder) = fsm.take_next_write(now).unwrap();
     fsm.complete_write(now, write_id.expect("stream close should be tracked"), true);
@@ -491,12 +491,12 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
     let close3 = vec![SessionFrame::StreamClose(StreamClose {
         stream_id: stream_id(3),
         target: CloseTarget::Both,
-        code: StreamCloseCode(1),
+        code: StreamCloseCode::REFUSED,
     })];
     let close1 = vec![SessionFrame::StreamClose(StreamClose {
         stream_id: stream_id(1),
         target: CloseTarget::Both,
-        code: StreamCloseCode(2),
+        code: StreamCloseCode::TIMEOUT,
     })];
 
     let first = receive_events(&mut fsm, now, seq(1), &close3);
@@ -506,12 +506,12 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
             SessionEvent::Closed(StreamClose {
                 stream_id: stream_id(3),
                 target: CloseTarget::Both,
-                code: StreamCloseCode(1),
+                code: StreamCloseCode::REFUSED,
             }),
             SessionEvent::WritableClosed(StreamClose {
                 stream_id: stream_id(3),
                 target: CloseTarget::Both,
-                code: StreamCloseCode(1),
+                code: StreamCloseCode::REFUSED,
             }),
         ]
     );
@@ -523,12 +523,12 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
             SessionEvent::Closed(StreamClose {
                 stream_id: stream_id(1),
                 target: CloseTarget::Both,
-                code: StreamCloseCode(2),
+                code: StreamCloseCode::TIMEOUT,
             }),
             SessionEvent::WritableClosed(StreamClose {
                 stream_id: stream_id(1),
                 target: CloseTarget::Both,
-                code: StreamCloseCode(2),
+                code: StreamCloseCode::TIMEOUT,
             }),
         ]
     );
