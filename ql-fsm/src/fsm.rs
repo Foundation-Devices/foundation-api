@@ -53,7 +53,7 @@ pub fn receive(
         }
         wire::RecordType::Session => {
             let QlFsm { state, events, .. } = fsm;
-            let conn = state.link.connected_mut().ok_or(ReceiveError::NoSession)?;
+            let conn = state.link.connected_mut_or_err()?;
             let (decrypt_len, seq) = {
                 let record = wire::QlSessionRecord::decode(&mut reader)?;
                 if record.header.connection_id != conn.transport.rx_connection_id {
