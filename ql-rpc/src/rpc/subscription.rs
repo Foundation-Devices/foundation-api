@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{Buf, BufMut, Bytes};
 
-use crate::{codec, MethodId, ReadValueStep, RpcCodec, RpcCodecError, RpcError, ValueReader};
+use crate::{codec, CodecError, Error, MethodId, ReadValueStep, RpcCodec, ValueReader};
 
 pub trait Subscription {
     const METHOD: MethodId;
@@ -47,9 +47,9 @@ impl<M: Subscription> ResponseReader<M> {
         self
     }
 
-    pub fn advance(self) -> Result<ReadStep<M>, RpcCodecError<M::Error>> {
+    pub fn advance(self) -> Result<ReadStep<M>, CodecError<M::Error>> {
         let mut this = self;
-        let Some(mut body) = this.bytes.try_take_part().map_err(RpcCodecError::Rpc)? else {
+        let Some(mut body) = this.bytes.try_take_part().map_err(CodecError::Rpc)? else {
             return Ok(ReadStep::NeedMore(this));
         };
 
@@ -58,11 +58,11 @@ impl<M: Subscription> ResponseReader<M> {
             if this.bytes.remaining() == 0 {
                 return Ok(ReadStep::End);
             }
-            return Err(RpcCodecError::Rpc(RpcError::TrailingBytes));
+            return Err(CodecError::Rpc(Error::TrailingBytes));
         }
 
         let item = {
-            let item = M::Event::decode_value(&mut body).map_err(RpcCodecError::Codec)?;
+            let item = M::Event::decode_value(&mut body).map_err(CodecError::Codec)?;
             drop(body);
             item
         };

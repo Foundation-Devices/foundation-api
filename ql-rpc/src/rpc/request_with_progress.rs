@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, MethodId, ReadValueStep, RpcCodec, RpcCodecError, RpcError, ValueReader};
+use crate::{codec, CodecError, Error, MethodId, ReadValueStep, RpcCodec, ValueReader};
 
 pub trait RequestWithProgress {
     const METHOD: MethodId;
@@ -48,13 +48,10 @@ impl<M: RequestWithProgress> ResponseReader<M> {
         self
     }
 
-    pub fn advance(self) -> Result<ReadStep<M>, RpcCodecError<M::Error>> {
+    pub fn advance(self) -> Result<ReadStep<M>, CodecError<M::Error>> {
         let mut this = self;
 
-        let Some((kind, mut body)) = this
-            .bytes
-            .try_take_tagged_part()
-            .map_err(RpcCodecError::Rpc)?
+        let Some((kind, mut body)) = this.bytes.try_take_tagged_part().map_err(CodecError::Rpc)?
         else {
             return Ok(ReadStep::NeedMore(this));
         };
@@ -62,24 +59,22 @@ impl<M: RequestWithProgress> ResponseReader<M> {
         match kind {
             x if x == FrameKind::Progress as u8 => {
                 let value = {
-                    let value =
-                        M::Progress::decode_value(&mut body).map_err(RpcCodecError::Codec)?;
+                    let value = M::Progress::decode_value(&mut body).map_err(CodecError::Codec)?;
                     drop(body);
                     value
                 };
                 Ok(ReadStep::Progress { value, next: this })
             }
             x if x == FrameKind::Response as u8 => {
-                let response =
-                    M::Response::decode_value(&mut body).map_err(RpcCodecError::Codec)?;
+                let response = M::Response::decode_value(&mut body).map_err(CodecError::Codec)?;
                 drop(body);
                 if this.bytes.remaining() > 0 {
-                    Err(RpcCodecError::Rpc(RpcError::TrailingBytes))
+                    Err(CodecError::Rpc(Error::TrailingBytes))
                 } else {
                     Ok(ReadStep::Response(response))
                 }
             }
-            other => Err(RpcCodecError::Rpc(RpcError::UnexpectedFrameKind(other))),
+            other => Err(CodecError::Rpc(Error::UnexpectedFrameKind(other))),
         }
     }
 }

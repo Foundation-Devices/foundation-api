@@ -2,7 +2,7 @@ use std::{collections::VecDeque, marker::PhantomData};
 
 use bytes::{Buf, BufMut, Bytes};
 
-use crate::{RpcCodec, RpcCodecError, RpcError};
+use crate::{CodecError, Error, RpcCodec};
 
 const LENGTH_SIZE: usize = 8;
 
@@ -45,16 +45,16 @@ impl<T: RpcCodec> ValueReader<T> {
         self
     }
 
-    pub fn advance(self) -> Result<ReadValueStep<T>, RpcCodecError<T::Error>> {
+    pub fn advance(self) -> Result<ReadValueStep<T>, CodecError<T::Error>> {
         let mut this = self;
-        let Some(mut body) = this.bytes.try_take_part().map_err(RpcCodecError::Rpc)? else {
+        let Some(mut body) = this.bytes.try_take_part().map_err(CodecError::Rpc)? else {
             return Ok(ReadValueStep::NeedMore(this));
         };
 
-        let value = T::decode_value(&mut body).map_err(RpcCodecError::Codec)?;
+        let value = T::decode_value(&mut body).map_err(CodecError::Codec)?;
         drop(body);
         if this.bytes.remaining() > 0 {
-            return Err(RpcCodecError::Rpc(RpcError::TrailingBytes));
+            return Err(CodecError::Rpc(Error::TrailingBytes));
         }
         Ok(ReadValueStep::Value(value))
     }
@@ -83,7 +83,7 @@ impl ChunkQueue {
         self.remaining
     }
 
-    pub fn try_take_part(&mut self) -> Result<Option<DrainBuf<'_>>, RpcError> {
+    pub fn try_take_part(&mut self) -> Result<Option<DrainBuf<'_>>, Error> {
         let Some(len) = self.peek_next_part_len()? else {
             return Ok(None);
         };
@@ -91,7 +91,7 @@ impl ChunkQueue {
         Ok(Some(DrainBuf::new(self, len)))
     }
 
-    pub fn try_take_tagged_part(&mut self) -> Result<Option<(u8, DrainBuf<'_>)>, RpcError> {
+    pub fn try_take_tagged_part(&mut self) -> Result<Option<(u8, DrainBuf<'_>)>, Error> {
         let mut bytes = self.peek();
         let Ok(kind) = bytes.try_get_u8() else {
             return Ok(None);
@@ -104,7 +104,7 @@ impl ChunkQueue {
         Ok(Some((kind, DrainBuf::new(self, len))))
     }
 
-    fn peek_next_part_len(&self) -> Result<Option<usize>, RpcError> {
+    fn peek_next_part_len(&self) -> Result<Option<usize>, Error> {
         let mut bytes = self.peek();
         read_next_part_len(&mut bytes)
     }
@@ -239,11 +239,11 @@ impl Drop for DrainBuf<'_> {
     }
 }
 
-fn read_next_part_len<B: Buf>(bytes: &mut B) -> Result<Option<usize>, RpcError> {
+fn read_next_part_len<B: Buf>(bytes: &mut B) -> Result<Option<usize>, Error> {
     let Ok(len) = bytes.try_get_u64_le() else {
         return Ok(None);
     };
-    let len: usize = len.try_into().map_err(|_| RpcError::LengthOverflow)?;
+    let len: usize = len.try_into().map_err(|_| Error::LengthOverflow)?;
     if bytes.remaining() < len {
         return Ok(None);
     }

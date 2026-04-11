@@ -7,16 +7,16 @@ use std::{
 use futures_lite::{future::poll_fn, Stream};
 use ql_rpc::{
     request_with_progress::{ReadStep, RequestWithProgress},
-    RpcError,
+    Error,
 };
 
-use super::RpcCallError;
+use super::RpcError;
 use crate::ByteReader;
 
 pub struct ProgressCall<M: RequestWithProgress> {
     pub(super) stream: ByteReader,
     pub(super) reader: Option<ql_rpc::request_with_progress::ResponseReader<M>>,
-    pub(super) terminal: Option<Result<M::Response, RpcCallError<M::Error>>>,
+    pub(super) terminal: Option<Result<M::Response, RpcError<M::Error>>>,
 }
 
 impl<M> Unpin for ProgressCall<M> where M: RequestWithProgress {}
@@ -70,7 +70,7 @@ where
                 }
                 Poll::Ready(Ok(None)) => {
                     this.reader = None;
-                    this.terminal = Some(Err(RpcError::MissingResponse.into()));
+                    this.terminal = Some(Err(Error::MissingResponse.into()));
                     return Poll::Ready(None);
                 }
                 Poll::Ready(Err(error)) => {
@@ -88,7 +88,7 @@ impl<M> Future for ProgressCall<M>
 where
     M: RequestWithProgress,
 {
-    type Output = Result<M::Response, RpcCallError<M::Error>>;
+    type Output = Result<M::Response, RpcError<M::Error>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -122,7 +122,7 @@ where
                 }
                 Poll::Ready(Ok(None)) => {
                     this.reader = None;
-                    return Poll::Ready(Err(RpcError::MissingResponse.into()));
+                    return Poll::Ready(Err(Error::MissingResponse.into()));
                 }
                 Poll::Ready(Err(error)) => {
                     this.reader = None;

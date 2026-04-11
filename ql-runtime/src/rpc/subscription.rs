@@ -6,10 +6,10 @@ use std::{
 use futures_lite::{future::poll_fn, Stream};
 use ql_rpc::{
     subscription::{ReadStep, Subscription as SubscriptionRpc},
-    RpcError,
+    Error,
 };
 
-use super::RpcCallError;
+use super::RpcError;
 use crate::ByteReader;
 
 pub struct Subscription<M: SubscriptionRpc> {
@@ -23,7 +23,7 @@ impl<M> Subscription<M>
 where
     M: SubscriptionRpc,
 {
-    pub async fn next_event(&mut self) -> Option<Result<M::Event, RpcCallError<M::Error>>> {
+    pub async fn next_event(&mut self) -> Option<Result<M::Event, RpcError<M::Error>>> {
         poll_fn(|cx| Pin::new(&mut *self).poll_next(cx)).await
     }
 }
@@ -32,7 +32,7 @@ impl<M> Stream for Subscription<M>
 where
     M: SubscriptionRpc,
 {
-    type Item = Result<M::Event, RpcCallError<M::Error>>;
+    type Item = Result<M::Event, RpcError<M::Error>>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
@@ -61,7 +61,7 @@ where
                 }
                 Poll::Ready(Ok(None)) => {
                     this.reader = None;
-                    return Poll::Ready(Some(Err(RpcError::Truncated.into())));
+                    return Poll::Ready(Some(Err(Error::Truncated.into())));
                 }
                 Poll::Ready(Err(error)) => {
                     this.reader = None;
