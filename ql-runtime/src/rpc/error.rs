@@ -1,12 +1,11 @@
 use ql_fsm::NoSessionError;
-use ql_wire::StreamCloseCode;
 
 use crate::QlStreamError;
 
 #[derive(Debug)]
 pub enum RpcError<E> {
     NoSession,
-    Closed(StreamCloseCode),
+    Closed(ql_rpc::StreamCloseCode),
     Protocol(ql_rpc::Error),
     Codec(E),
 }
@@ -20,7 +19,7 @@ impl<E> From<NoSessionError> for RpcError<E> {
 impl<E> From<QlStreamError> for RpcError<E> {
     fn from(error: QlStreamError) -> Self {
         match error {
-            QlStreamError::StreamClosed { code } => Self::Closed(code),
+            QlStreamError::StreamClosed { code } => Self::Closed(ql_rpc::StreamCloseCode(code.0)),
             QlStreamError::NoSession => Self::NoSession,
         }
     }

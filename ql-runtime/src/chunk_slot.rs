@@ -121,10 +121,39 @@ impl ChunkSlotTx {
         self.inner.try_send(bytes)
     }
 
+    pub fn poll_send(
+        &self,
+        bytes: &mut Bytes,
+        listener: &mut Option<EventListener>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), SendClosed>> {
+        loop {
+            let chunk = std::mem::take(bytes);
+
+            match self.try_send(chunk) {
+                Ok(()) => return Poll::Ready(Ok(())),
+                Err(TrySendError::Closed(chunk)) => {
+                    *bytes = chunk.clone();
+                    return Poll::Ready(Err(SendClosed(chunk)));
+                }
+                Err(TrySendError::Full(chunk)) => *bytes = chunk,
+            }
+
+            if let Some(active_listener) = listener.as_mut() {
+                match Pin::new(active_listener).poll(cx) {
+                    Poll::Ready(()) => *listener = None,
+                    Poll::Pending => return Poll::Pending,
+                }
+            } else {
+                *listener = Some(self.inner.changed.listen());
+            }
+        }
+    }
+
     pub fn send(&self, bytes: Bytes) -> Send<'_> {
         Send {
             tx: self,
-            bytes: Some(bytes),
+            bytes,
             listener: None,
         }
     }
@@ -160,7 +189,7 @@ impl Future for Recv<'_> {
 
 pub struct Send<'a> {
     tx: &'a ChunkSlotTx,
-    bytes: Option<Bytes>,
+    bytes: Bytes,
     listener: Option<EventListener>,
 }
 
@@ -168,27 +197,8 @@ impl Future for Send<'_> {
     type Output = Result<(), SendClosed>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            let bytes = self
-                .bytes
-                .take()
-                .expect("send future polled after completion");
-
-            match self.tx.try_send(bytes) {
-                Ok(()) => return Poll::Ready(Ok(())),
-                Err(TrySendError::Closed(bytes)) => return Poll::Ready(Err(SendClosed(bytes))),
-                Err(TrySendError::Full(bytes)) => self.bytes = Some(bytes),
-            }
-
-            if let Some(listener) = self.listener.as_mut() {
-                match Pin::new(listener).poll(cx) {
-                    Poll::Ready(()) => self.listener = None,
-                    Poll::Pending => return Poll::Pending,
-                }
-            } else {
-                self.listener = Some(self.tx.inner.changed.listen());
-            }
-        }
+        let this = self.as_mut().get_mut();
+        this.tx.poll_send(&mut this.bytes, &mut this.listener, cx)
     }
 }
 

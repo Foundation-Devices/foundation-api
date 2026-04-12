@@ -23,8 +23,11 @@ fn offset(value: u64) -> VarInt {
 }
 
 fn route_id(value: u64) -> RouteId {
-    RouteId(VarInt::from_u64(value).unwrap())
+    RouteId::from_u64(value).unwrap()
 }
+
+const REFUSED: StreamCloseCode = StreamCloseCode(1);
+const TIMEOUT: StreamCloseCode = StreamCloseCode(2);
 
 fn header(value: u64) -> Option<StreamHeader> {
     Some(StreamHeader {
@@ -491,12 +494,12 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
     let close3 = vec![SessionFrame::StreamClose(StreamClose {
         stream_id: stream_id(3),
         target: CloseTarget::Both,
-        code: StreamCloseCode::REFUSED,
+        code: REFUSED,
     })];
     let close1 = vec![SessionFrame::StreamClose(StreamClose {
         stream_id: stream_id(1),
         target: CloseTarget::Both,
-        code: StreamCloseCode::TIMEOUT,
+        code: TIMEOUT,
     })];
 
     let first = receive_events(&mut fsm, now, seq(1), &close3);
@@ -506,12 +509,12 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
             SessionEvent::Closed(StreamClose {
                 stream_id: stream_id(3),
                 target: CloseTarget::Both,
-                code: StreamCloseCode::REFUSED,
+                code: REFUSED,
             }),
             SessionEvent::WritableClosed(StreamClose {
                 stream_id: stream_id(3),
                 target: CloseTarget::Both,
-                code: StreamCloseCode::REFUSED,
+                code: REFUSED,
             }),
         ]
     );
@@ -523,12 +526,12 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
             SessionEvent::Closed(StreamClose {
                 stream_id: stream_id(1),
                 target: CloseTarget::Both,
-                code: StreamCloseCode::TIMEOUT,
+                code: TIMEOUT,
             }),
             SessionEvent::WritableClosed(StreamClose {
                 stream_id: stream_id(1),
                 target: CloseTarget::Both,
-                code: StreamCloseCode::TIMEOUT,
+                code: TIMEOUT,
             }),
         ]
     );

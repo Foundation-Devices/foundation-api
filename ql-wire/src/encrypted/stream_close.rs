@@ -91,14 +91,6 @@ pub struct StreamCloseCode(pub u16);
 impl StreamCloseCode {
     /// the stream was aborted intentionally before graceful completion
     pub const CANCELLED: Self = Self(0);
-    /// the peer declined to service the stream
-    pub const REFUSED: Self = Self(1);
-    /// the stream was aborted because progress took too long
-    pub const TIMEOUT: Self = Self(2);
-    /// the stream exceeded a size, quota, or buffering limit
-    pub const LIMIT: Self = Self(3);
-    /// the stream route was not recognized by the peer
-    pub const UNKNOWN_ROUTE: Self = Self(4);
 }
 
 impl<B: ByteSlice> codec::WireDecode<B> for StreamCloseCode {

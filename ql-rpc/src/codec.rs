@@ -2,18 +2,21 @@ use std::{collections::VecDeque, marker::PhantomData};
 
 use bytes::{Buf, BufMut, Bytes};
 
-use crate::{CodecError, Error, RpcCodec};
+use crate::{CodecError, Error};
+
+pub trait RpcCodec: Sized {
+    type Error;
+
+    fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B);
+    fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error>;
+}
 
 const LENGTH_SIZE: usize = 8;
 
-pub fn encode_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
-    value: &T,
-    out: &mut B,
-) -> Result<(), T::Error> {
+pub fn encode_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(value: &T, out: &mut B) {
     let payload_start = reserve_length(out);
-    value.encode_value(out)?;
+    value.encode_value(out);
     backpatch_length(out, payload_start);
-    Ok(())
 }
 
 pub enum ReadValueStep<T: RpcCodec> {
@@ -282,9 +285,8 @@ mod tests {
     impl RpcCodec for BytesValue {
         type Error = core::convert::Infallible;
 
-        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) -> Result<(), Self::Error> {
+        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) {
             out.put_slice(&self.0);
-            Ok(())
         }
 
         fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
@@ -295,7 +297,7 @@ mod tests {
     #[test]
     fn value_reader_round_trips_framed_values() {
         let mut encoded = Vec::new();
-        encode_value_part(&BytesValue(b"hello".to_vec()), &mut encoded).unwrap();
+        encode_value_part(&BytesValue(b"hello".to_vec()), &mut encoded);
 
         match ValueReader::<BytesValue>::new()
             .push(Bytes::from(encoded))
@@ -310,7 +312,7 @@ mod tests {
     #[test]
     fn value_reader_waits_for_complete_frame() {
         let mut encoded = Vec::new();
-        encode_value_part(&BytesValue(b"hello".to_vec()), &mut encoded).unwrap();
+        encode_value_part(&BytesValue(b"hello".to_vec()), &mut encoded);
         let encoded = Bytes::from(encoded);
 
         let reader = match ValueReader::<BytesValue>::new()

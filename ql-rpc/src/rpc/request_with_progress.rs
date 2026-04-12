@@ -2,18 +2,15 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, CodecError, Error, MethodId, ReadValueStep, RpcCodec, ValueReader};
+use crate::{codec, CodecError, Error, RouteId, RpcCodec};
 
 pub trait RequestWithProgress {
-    const METHOD: MethodId;
+    const METHOD: RouteId;
     type Error;
     type Request: RpcCodec<Error = Self::Error>;
     type Progress: RpcCodec<Error = Self::Error>;
     type Response: RpcCodec<Error = Self::Error>;
 }
-
-pub type RequestReader<M> = ValueReader<<M as RequestWithProgress>::Request>;
-pub type RequestReadStep<M> = ReadValueStep<<M as RequestWithProgress>::Request>;
 
 pub enum ReadStep<M: RequestWithProgress> {
     NeedMore(ResponseReader<M>),
@@ -89,21 +86,21 @@ enum FrameKind {
 pub fn encode_request<M: RequestWithProgress>(
     request: &M::Request,
     out: &mut (impl BufMut + AsMut<[u8]>),
-) -> Result<(), M::Error> {
+) {
     codec::encode_value_part(request, out)
 }
 
 pub fn encode_progress<M: RequestWithProgress>(
     progress: &M::Progress,
     out: &mut (impl BufMut + AsMut<[u8]>),
-) -> Result<(), M::Error> {
+) {
     encode_tagged_value_part(FrameKind::Progress, progress, out)
 }
 
 pub fn encode_response<M: RequestWithProgress>(
     response: &M::Response,
     out: &mut (impl BufMut + AsMut<[u8]>),
-) -> Result<(), M::Error> {
+) {
     encode_tagged_value_part(FrameKind::Response, response, out)
 }
 
@@ -111,12 +108,11 @@ fn encode_tagged_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
     kind: FrameKind,
     value: &T,
     out: &mut B,
-) -> Result<(), T::Error> {
+) {
     out.put_u8(kind as u8);
     let payload_start = codec::reserve_length(out);
-    value.encode_value(out)?;
+    value.encode_value(out);
     codec::backpatch_length(out, payload_start);
-    Ok(())
 }
 
 #[cfg(test)]
@@ -124,7 +120,7 @@ mod tests {
     use bytes::{Buf, BufMut, Bytes};
 
     use super::{encode_progress, encode_response, ReadStep, RequestWithProgress, ResponseReader};
-    use crate::{MethodId, RpcCodec};
+    use crate::{RouteId, RpcCodec};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct BytesValue(Vec<u8>);
@@ -132,9 +128,8 @@ mod tests {
     impl RpcCodec for BytesValue {
         type Error = core::convert::Infallible;
 
-        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) -> Result<(), Self::Error> {
+        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) {
             out.put_slice(&self.0);
-            Ok(())
         }
 
         fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
@@ -145,7 +140,7 @@ mod tests {
     struct Watch;
 
     impl RequestWithProgress for Watch {
-        const METHOD: MethodId = MethodId(11);
+        const METHOD: RouteId = RouteId::from_u32(11);
         type Error = core::convert::Infallible;
         type Request = BytesValue;
         type Progress = BytesValue;
@@ -155,8 +150,8 @@ mod tests {
     #[test]
     fn response_reader_emits_progress_then_response() {
         let mut encoded = Vec::new();
-        encode_progress::<Watch>(&BytesValue(b"10%".to_vec()), &mut encoded).unwrap();
-        encode_response::<Watch>(&BytesValue(b"done".to_vec()), &mut encoded).unwrap();
+        encode_progress::<Watch>(&BytesValue(b"10%".to_vec()), &mut encoded);
+        encode_response::<Watch>(&BytesValue(b"done".to_vec()), &mut encoded);
 
         let reader = match ResponseReader::<Watch>::new()
             .push(Bytes::from(encoded))
@@ -178,7 +173,7 @@ mod tests {
     #[test]
     fn response_reader_handles_response_only() {
         let mut encoded = Vec::new();
-        encode_response::<Watch>(&BytesValue(b"done".to_vec()), &mut encoded).unwrap();
+        encode_response::<Watch>(&BytesValue(b"done".to_vec()), &mut encoded);
 
         match ResponseReader::<Watch>::new()
             .push(Bytes::from(encoded))

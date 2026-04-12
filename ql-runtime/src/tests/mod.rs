@@ -14,7 +14,7 @@ use ql_fsm::PeerStatus;
 use ql_wire::{
     test_identities, test_identity, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey,
     Nonce, PairingToken, PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom, RecordHeader,
-    RecordType, RouteId, SessionKey, SoftwareCrypto, VarInt, WireDecode, XID,
+    RecordType, RouteId, SessionKey, SoftwareCrypto, WireDecode, XID,
 };
 use tokio::{task::LocalSet, time::Sleep};
 
@@ -52,7 +52,7 @@ impl Side {
 }
 
 fn test_route_id() -> RouteId {
-    RouteId(VarInt::from_u32(1))
+    RouteId::from_u32(1)
 }
 
 #[derive(Debug, Clone)]

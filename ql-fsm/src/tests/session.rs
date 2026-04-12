@@ -11,7 +11,7 @@ fn stream_id(value: u32) -> StreamId {
 }
 
 fn route_id(value: u32) -> RouteId {
-    RouteId(VarInt::from_u32(value))
+    RouteId::from_u32(value)
 }
 
 fn opened(stream_id: StreamId) -> Event {
@@ -204,16 +204,12 @@ fn disconnected_stream_operations_fail_with_no_session() {
         Err(StreamError::NoSession)
     );
     assert_eq!(
-        harness
-            .a
-            .fsm
-            .stream(missing)
-            .map(|mut stream| {
-                stream.close(
-                    ql_wire::CloseTarget::Both,
-                    ql_wire::StreamCloseCode::CANCELLED,
-                )
-            }),
+        harness.a.fsm.stream(missing).map(|mut stream| {
+            stream.close(
+                ql_wire::CloseTarget::Both,
+                ql_wire::StreamCloseCode::CANCELLED,
+            )
+        }),
         Err(StreamError::NoSession)
     );
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));

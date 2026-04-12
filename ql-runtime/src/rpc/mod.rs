@@ -1,3 +1,4 @@
+mod adapter;
 mod error;
 mod request_with_progress;
 mod subscription;
@@ -12,9 +13,8 @@ use ql_rpc::{
     subscription::{self as rpc_subscription, Subscription as SubscriptionRpc},
     Error, ReadValueStep, RpcCodec, ValueReader,
 };
-use ql_wire::{RouteId, VarInt};
 
-pub use self::{error::*, request_with_progress::*, subscription::*};
+pub use self::{adapter::*, error::*, request_with_progress::*, subscription::*};
 use crate::{ByteReader, RuntimeHandle};
 
 #[derive(Clone)]
@@ -28,11 +28,14 @@ impl RpcHandle {
         M: Notification,
     {
         let mut payload = Vec::new();
-        notification::encode_event::<M>(event, &mut payload).map_err(RpcError::Codec)?;
-        let route_id = RouteId(VarInt::from_u32(M::METHOD.0));
-        let mut stream = self.inner.open_stream(route_id).await?;
+        notification::encode_event::<M>(event, &mut payload);
+        let mut stream = self
+            .inner
+            .open_stream(adapter::to_wire_route_id(M::METHOD))
+            .await?;
         stream.reader.close(ql_wire::StreamCloseCode::CANCELLED);
         stream.writer.write(Bytes::from(payload)).await?;
+        stream.writer.finish();
         Ok(())
     }
 
@@ -41,7 +44,7 @@ impl RpcHandle {
         M: RequestRpc,
     {
         let mut payload = Vec::new();
-        request::encode_request::<M>(request, &mut payload).map_err(RpcError::Codec)?;
+        request::encode_request::<M>(request, &mut payload);
         let response = self.start_request(M::METHOD, payload).await?;
         read_value::<M::Response>(response).await
     }
@@ -54,7 +57,7 @@ impl RpcHandle {
         M: SubscriptionRpc,
     {
         let mut payload = Vec::new();
-        rpc_subscription::encode_request::<M>(request, &mut payload).map_err(RpcError::Codec)?;
+        rpc_subscription::encode_request::<M>(request, &mut payload);
         let response = self.start_request(M::METHOD, payload).await?;
         Ok(Subscription {
             stream: response,
@@ -70,8 +73,7 @@ impl RpcHandle {
         M: RequestWithProgress,
     {
         let mut payload = Vec::new();
-        rpc_request_with_progress::encode_request::<M>(request, &mut payload)
-            .map_err(RpcError::Codec)?;
+        rpc_request_with_progress::encode_request::<M>(request, &mut payload);
         let response = self.start_request(M::METHOD, payload).await?;
         Ok(ProgressCall {
             stream: response,
@@ -82,11 +84,13 @@ impl RpcHandle {
 
     async fn start_request<E>(
         &self,
-        method: ql_rpc::MethodId,
+        route_id: ql_rpc::RouteId,
         payload: Vec<u8>,
     ) -> Result<ByteReader, RpcError<E>> {
-        let route_id = RouteId(VarInt::from_u32(method.0));
-        let mut stream = self.inner.open_stream(route_id).await?;
+        let mut stream = self
+            .inner
+            .open_stream(adapter::to_wire_route_id(route_id))
+            .await?;
         stream.writer.write(Bytes::from(payload)).await?;
         stream.writer.finish();
         Ok(stream.reader)

@@ -2,17 +2,14 @@ use std::marker::PhantomData;
 
 use bytes::{Buf, BufMut, Bytes};
 
-use crate::{codec, CodecError, Error, MethodId, ReadValueStep, RpcCodec, ValueReader};
+use crate::{codec, CodecError, Error, RouteId, RpcCodec};
 
 pub trait Subscription {
-    const METHOD: MethodId;
+    const METHOD: RouteId;
     type Error;
     type Request: RpcCodec<Error = Self::Error>;
     type Event: RpcCodec<Error = Self::Error>;
 }
-
-pub type RequestReader<M> = ValueReader<<M as Subscription>::Request>;
-pub type RequestReadStep<M> = ReadValueStep<<M as Subscription>::Request>;
 
 pub enum ReadStep<M: Subscription> {
     NeedMore(ResponseReader<M>),
@@ -76,14 +73,11 @@ impl<M: Subscription> ResponseReader<M> {
 pub fn encode_request<M: Subscription>(
     request: &M::Request,
     out: &mut (impl BufMut + AsMut<[u8]>),
-) -> Result<(), M::Error> {
+) {
     codec::encode_value_part(request, out)
 }
 
-pub fn encode_item<M: Subscription>(
-    item: &M::Event,
-    out: &mut (impl BufMut + AsMut<[u8]>),
-) -> Result<(), <M::Event as RpcCodec>::Error> {
+pub fn encode_item<M: Subscription>(item: &M::Event, out: &mut (impl BufMut + AsMut<[u8]>)) {
     codec::encode_value_part(item, out)
 }
 
@@ -96,7 +90,7 @@ mod tests {
     use bytes::{Buf, BufMut, Bytes};
 
     use super::{encode_end, encode_item, ReadStep, ResponseReader, Subscription};
-    use crate::{MethodId, RpcCodec};
+    use crate::{RouteId, RpcCodec};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct BytesValue(Vec<u8>);
@@ -104,9 +98,8 @@ mod tests {
     impl RpcCodec for BytesValue {
         type Error = core::convert::Infallible;
 
-        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) -> Result<(), Self::Error> {
+        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) {
             out.put_slice(&self.0);
-            Ok(())
         }
 
         fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
@@ -117,7 +110,7 @@ mod tests {
     struct Feed;
 
     impl Subscription for Feed {
-        const METHOD: MethodId = MethodId(17);
+        const METHOD: RouteId = RouteId::from_u32(17);
         type Error = core::convert::Infallible;
         type Request = BytesValue;
         type Event = BytesValue;
@@ -126,8 +119,8 @@ mod tests {
     #[test]
     fn response_reader_streams_items_until_end() {
         let mut encoded = Vec::new();
-        encode_item::<Feed>(&BytesValue(b"one".to_vec()), &mut encoded).unwrap();
-        encode_item::<Feed>(&BytesValue(b"two".to_vec()), &mut encoded).unwrap();
+        encode_item::<Feed>(&BytesValue(b"one".to_vec()), &mut encoded);
+        encode_item::<Feed>(&BytesValue(b"two".to_vec()), &mut encoded);
         encode_end(&mut encoded);
 
         let reader = match ResponseReader::<Feed>::new()

@@ -1,19 +1,13 @@
 use bytes::BufMut;
 
-use crate::{codec, MethodId, ReadValueStep, RpcCodec, ValueReader};
+use crate::{codec, RouteId, RpcCodec};
 
 pub trait Notification {
-    const METHOD: MethodId;
+    const METHOD: RouteId;
     type Error;
     type Event: RpcCodec<Error = Self::Error>;
 }
 
-pub type EventReader<M> = ValueReader<<M as Notification>::Event>;
-pub type EventReadStep<M> = ReadValueStep<<M as Notification>::Event>;
-
-pub fn encode_event<M: Notification>(
-    event: &M::Event,
-    out: &mut (impl BufMut + AsMut<[u8]>),
-) -> Result<(), M::Error> {
+pub fn encode_event<M: Notification>(event: &M::Event, out: &mut (impl BufMut + AsMut<[u8]>)) {
     codec::encode_value_part(event, out)
 }

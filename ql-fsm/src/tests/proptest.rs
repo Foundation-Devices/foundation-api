@@ -12,7 +12,7 @@ use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 use super::*;
 
 fn test_route_id() -> ql_wire::RouteId {
-    ql_wire::RouteId(ql_wire::VarInt::from_u32(1))
+    ql_wire::RouteId::from_u32(1)
 }
 use crate::{state::LinkState, Event, PeerStatus, ReceiveError, WriteId};
 
