@@ -25,6 +25,11 @@ enum TerminalState {
     Delivered,
 }
 
+// Safety: `ByteReader` contains a `oneshot::Receiver`, which is `!Sync`, but that receiver is
+// fully encapsulated. No safe API accesses it through `&self`; all access requires `&mut self`
+// or ownership, so shared references cannot race the receiver state across threads.
+unsafe impl Sync for ByteReader {}
+
 impl std::fmt::Debug for ByteReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InboundByteStream")
