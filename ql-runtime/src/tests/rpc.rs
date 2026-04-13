@@ -118,7 +118,9 @@ async fn rpc_router_handles_request() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            router.handle(inbound).await;
+            if let Some((_, fut)) = router.handle(inbound) {
+                fut.await
+            }
         });
 
         let rpc = pair.handle(Side::A).rpc();
@@ -163,7 +165,9 @@ async fn rpc_router_enforces_max_request_bytes() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            router.handle(inbound).await;
+            if let Some((_, fut)) = router.handle(inbound) {
+                fut.await
+            }
         });
 
         let rpc = pair.handle(Side::A).rpc();

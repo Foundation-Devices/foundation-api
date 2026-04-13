@@ -31,15 +31,17 @@ where
         RouterBuilder::<S, St>::new()
     }
 
-    pub async fn handle(&self, stream: St) {
-        let Some(route_id) = stream.route_id() else {
+    pub fn handle(&self, stream: St) -> Option<(RouteId, RouteFuture<'_>)> {
+        let route_id = stream.route_id()?;
+        let Some(route) = stream
+            .route_id()
+            .and_then(|route_id| self.routes.get(&route_id))
+            .copied()
+        else {
             stream::close_stream(stream, StreamCloseCode::UNKNOWN_ROUTE);
-            return;
+            return None;
         };
-        let Some(route) = self.routes.get(&route_id).copied() else {
-            stream::close_stream(stream, StreamCloseCode::UNKNOWN_ROUTE);
-            return;
-        };
-        route(&self.state, self.config, stream).await;
+        let fut = route(&self.state, self.config, stream);
+        Some((route_id, fut))
     }
 }
