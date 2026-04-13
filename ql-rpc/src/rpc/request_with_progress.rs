@@ -5,7 +5,7 @@ use bytes::{BufMut, Bytes};
 use crate::{codec, CodecError, Error, RouteId, RpcCodec};
 
 pub trait RequestWithProgress {
-    const METHOD: RouteId;
+    const ROUTE: RouteId;
     type Error;
     type Request: RpcCodec<Error = Self::Error>;
     type Progress: RpcCodec<Error = Self::Error>;
@@ -140,7 +140,7 @@ mod tests {
     struct Watch;
 
     impl RequestWithProgress for Watch {
-        const METHOD: RouteId = RouteId::from_u32(11);
+        const ROUTE: RouteId = RouteId::from_u32(11);
         type Error = core::convert::Infallible;
         type Request = BytesValue;
         type Progress = BytesValue;

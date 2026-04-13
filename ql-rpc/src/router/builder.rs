@@ -73,7 +73,7 @@ where
         Mode: RequestRouteMode<S, M, St>,
     {
         self.add_route(
-            M::METHOD,
+            M::ROUTE,
             <Mode as RequestRouteMode<S, M, St>>::handle_request,
         )
     }

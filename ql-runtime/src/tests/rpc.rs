@@ -32,7 +32,7 @@ impl ql_rpc::RpcCodec for BytesValue {
 struct Echo;
 
 impl ql_rpc::request::Request for Echo {
-    const METHOD: RouteId = RouteId::from_u32(51);
+    const ROUTE: RouteId = RouteId::from_u32(51);
 
     type Error = Utf8Error;
 
@@ -43,7 +43,7 @@ impl ql_rpc::request::Request for Echo {
 struct Feed;
 
 impl ql_rpc::subscription::Subscription for Feed {
-    const METHOD: RouteId = RouteId::from_u32(52);
+    const ROUTE: RouteId = RouteId::from_u32(52);
     type Error = core::convert::Infallible;
     type Request = BytesValue;
     type Event = BytesValue;
@@ -52,7 +52,7 @@ impl ql_rpc::subscription::Subscription for Feed {
 struct Download;
 
 impl ql_rpc::request_with_progress::RequestWithProgress for Download {
-    const METHOD: RouteId = RouteId::from_u32(53);
+    const ROUTE: RouteId = RouteId::from_u32(53);
     type Error = core::convert::Infallible;
     type Request = BytesValue;
     type Progress = BytesValue;
@@ -75,7 +75,7 @@ async fn rpc_request_round_trips() {
             let request: BytesValue = read_rpc_value(inbound.reader).await;
             assert_eq!(
                 inbound.route_id,
-                to_wire_route_id(<Echo as ql_rpc::request::Request>::METHOD)
+                to_wire_route_id(<Echo as ql_rpc::request::Request>::ROUTE)
             );
             assert_eq!(request, BytesValue(b"hello".to_vec()));
 
@@ -252,7 +252,7 @@ async fn rpc_subscription_streams_events() {
             let request: BytesValue = read_rpc_value(inbound.reader).await;
             assert_eq!(
                 inbound.route_id,
-                to_wire_route_id(<Feed as ql_rpc::subscription::Subscription>::METHOD)
+                to_wire_route_id(<Feed as ql_rpc::subscription::Subscription>::ROUTE)
             );
             assert_eq!(request, BytesValue(b"watch".to_vec()));
 
@@ -302,7 +302,7 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
             assert_eq!(
                 inbound.route_id,
                 to_wire_route_id(
-                    <Download as ql_rpc::request_with_progress::RequestWithProgress>::METHOD
+                    <Download as ql_rpc::request_with_progress::RequestWithProgress>::ROUTE
                 )
             );
             assert_eq!(request, BytesValue(b"logo".to_vec()));

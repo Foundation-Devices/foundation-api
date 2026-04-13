@@ -3,7 +3,7 @@ use bytes::BufMut;
 use crate::{codec, RouteId, RpcCodec};
 
 pub trait Notification {
-    const METHOD: RouteId;
+    const ROUTE: RouteId;
     type Error;
     type Event: RpcCodec<Error = Self::Error>;
 }

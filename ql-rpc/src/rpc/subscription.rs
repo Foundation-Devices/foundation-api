@@ -5,7 +5,7 @@ use bytes::{Buf, BufMut, Bytes};
 use crate::{codec, CodecError, Error, RouteId, RpcCodec};
 
 pub trait Subscription {
-    const METHOD: RouteId;
+    const ROUTE: RouteId;
     type Error;
     type Request: RpcCodec<Error = Self::Error>;
     type Event: RpcCodec<Error = Self::Error>;
@@ -110,7 +110,7 @@ mod tests {
     struct Feed;
 
     impl Subscription for Feed {
-        const METHOD: RouteId = RouteId::from_u32(17);
+        const ROUTE: RouteId = RouteId::from_u32(17);
         type Error = core::convert::Infallible;
         type Request = BytesValue;
         type Event = BytesValue;

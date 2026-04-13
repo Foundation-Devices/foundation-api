@@ -31,7 +31,7 @@ impl RpcHandle {
         notification::encode_event::<M>(event, &mut payload);
         let mut stream = self
             .inner
-            .open_stream(adapter::to_wire_route_id(M::METHOD))
+            .open_stream(adapter::to_wire_route_id(M::ROUTE))
             .await?;
         stream.reader.close(ql_wire::StreamCloseCode::CANCELLED);
         stream.writer.write(Bytes::from(payload)).await?;
@@ -45,7 +45,7 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         request::encode_request::<M>(request, &mut payload);
-        let response = self.start_request(M::METHOD, payload).await?;
+        let response = self.start_request(M::ROUTE, payload).await?;
         read_value::<M::Response>(response).await
     }
 
@@ -58,7 +58,7 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         rpc_subscription::encode_request::<M>(request, &mut payload);
-        let response = self.start_request(M::METHOD, payload).await?;
+        let response = self.start_request(M::ROUTE, payload).await?;
         Ok(Subscription {
             stream: response,
             reader: Some(rpc_subscription::ResponseReader::new()),
@@ -74,7 +74,7 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         rpc_request_with_progress::encode_request::<M>(request, &mut payload);
-        let response = self.start_request(M::METHOD, payload).await?;
+        let response = self.start_request(M::ROUTE, payload).await?;
         Ok(ProgressCall {
             stream: response,
             reader: Some(rpc_request_with_progress::ResponseReader::new()),
