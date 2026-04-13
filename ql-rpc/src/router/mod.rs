@@ -1,47 +1,46 @@
-use std::{collections::HashMap, future::Future, pin::Pin};
+use std::collections::HashMap;
 
 use crate::{RouteId, StreamCloseCode};
 
 mod builder;
 mod config;
+mod mode;
 mod request;
 mod stream;
 
 pub use self::{
     builder::RouterBuilder,
     config::RouterConfig,
-    request::RequestHandler,
+    mode::*,
+    request::{RequestHandler, Response},
     stream::{RpcRead, RpcStream, RpcWrite},
 };
 
-type RouteFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
-type RouteFn<S, St> = for<'a> fn(&'a S, RouterConfig, St) -> RouteFuture<'a>;
-
-pub struct Router<S, St> {
+pub struct Router<S, St, Mode = LocalMode>
+where
+    Mode: RouteMode,
+{
     config: RouterConfig,
     state: S,
-    routes: HashMap<RouteId, RouteFn<S, St>>,
+    routes: HashMap<RouteId, RouteFn<S, St, Mode>>,
 }
 
-impl<S, St> Router<S, St>
+impl<S, St, Mode> Router<S, St, Mode>
 where
+    S: Clone + 'static,
     St: RpcStream,
+    Mode: RouteMode,
 {
-    pub fn builder() -> RouterBuilder<S, St> {
-        RouterBuilder::<S, St>::new()
+    pub fn builder() -> RouterBuilder<S, St, Mode> {
+        RouterBuilder::<S, St, Mode>::new()
     }
 
-    pub fn handle(&self, stream: St) -> Option<(RouteId, RouteFuture<'_>)> {
+    pub fn handle(&self, stream: St) -> Option<(RouteId, Mode::RouteFuture)> {
         let route_id = stream.route_id()?;
-        let Some(route) = stream
-            .route_id()
-            .and_then(|route_id| self.routes.get(&route_id))
-            .copied()
-        else {
+        let Some(route) = self.routes.get(&route_id).copied() else {
             stream::close_stream(stream, StreamCloseCode::UNKNOWN_ROUTE);
             return None;
         };
-        let fut = route(&self.state, self.config, stream);
-        Some((route_id, fut))
+        Some((route_id, route(self.state.clone(), self.config, stream)))
     }
 }

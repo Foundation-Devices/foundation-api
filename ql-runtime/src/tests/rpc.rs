@@ -1,4 +1,9 @@
-use std::{cell::RefCell, future::Ready, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use bytes::{Buf, BufMut, Bytes};
 use futures_lite::StreamExt;
@@ -6,6 +11,7 @@ use ql_rpc::{RouteId, StreamCloseCode};
 use ql_wire::RouteId as WireRouteId;
 
 use super::*;
+use crate::ByteWriter;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BytesValue(Vec<u8>);
@@ -48,6 +54,10 @@ impl ql_rpc::request_with_progress::RequestWithProgress for Download {
     type Request = BytesValue;
     type Progress = BytesValue;
     type Response = BytesValue;
+}
+
+fn assert_send<T: Send>(value: T) -> T {
+    value
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -95,15 +105,17 @@ async fn rpc_router_handles_request() {
         seen: Rc<RefCell<Vec<Vec<u8>>>>,
     }
 
-    impl crate::rpc::RequestHandler<Echo> for RouterState {
-        type Future<'a>
-            = Ready<Result<BytesValue, StreamCloseCode>>
-        where
-            Self: 'a;
-
-        fn handle<'a>(&'a self, request: BytesValue) -> Self::Future<'a> {
-            self.seen.borrow_mut().push(request.0);
-            std::future::ready(Ok(BytesValue(b"world".to_vec())))
+    impl crate::rpc::RequestHandler<Echo, crate::QlStream> for RouterState {
+        fn handle(
+            self,
+            request: BytesValue,
+            response: crate::rpc::Response<BytesValue, crate::ByteWriter>,
+        ) {
+            let seen = self.seen.clone();
+            tokio::task::spawn_local(async move {
+                seen.borrow_mut().push(request.0);
+                let _ = response.respond(BytesValue(b"world".to_vec())).await;
+            });
         }
     }
 
@@ -140,17 +152,73 @@ async fn rpc_router_handles_request() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn rpc_send_router_handles_request() {
+    #[derive(Clone)]
+    struct RouterState {
+        seen: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl crate::rpc::RequestHandler<Echo, QlStream> for RouterState {
+        fn handle(
+            self,
+            request: BytesValue,
+            response: crate::rpc::Response<BytesValue, ByteWriter>,
+        ) {
+            let seen = self.seen.clone();
+            tokio::task::spawn(async move {
+                seen.lock().unwrap().push(request.0);
+                let _ = response.respond(BytesValue(b"world".to_vec())).await;
+            });
+        }
+    }
+
+    run_local_test(async {
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let router = crate::rpc::SendRouter::builder()
+            .request::<Echo>()
+            .build(RouterState { seen: seen.clone() });
+
+        let responder = tokio::task::spawn_local(async move {
+            let inbound = inbound_b.recv().await.unwrap();
+            if let Some((_, fut)) = router.handle(inbound) {
+                let fut = assert_send(fut);
+                fut.await
+            }
+        });
+
+        let rpc = pair.handle(Side::A).rpc();
+        let response = rpc
+            .request::<Echo>(&BytesValue(b"hello".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(response, BytesValue(b"world".to_vec()));
+        assert_eq!(&*seen.lock().unwrap(), &[b"hello".to_vec()]);
+
+        tokio::time::timeout(Duration::from_secs(2), responder)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn rpc_router_enforces_max_request_bytes() {
+    #[derive(Clone)]
     struct LimitedState;
 
-    impl crate::rpc::RequestHandler<Echo> for LimitedState {
-        type Future<'a>
-            = Ready<Result<BytesValue, StreamCloseCode>>
-        where
-            Self: 'a;
-
-        fn handle<'a>(&'a self, request: BytesValue) -> Self::Future<'a> {
-            std::future::ready(Ok(request))
+    impl crate::rpc::RequestHandler<Echo, crate::QlStream> for LimitedState {
+        fn handle(
+            self,
+            request: BytesValue,
+            response: crate::rpc::Response<BytesValue, crate::ByteWriter>,
+        ) {
+            tokio::task::spawn_local(async move {
+                let _ = response.respond(request).await;
+            });
         }
     }
 

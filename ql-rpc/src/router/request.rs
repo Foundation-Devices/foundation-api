@@ -1,68 +1,134 @@
-use std::future::Future;
+use std::marker::PhantomData;
 
 use bytes::Bytes;
 
 use super::{
     stream::{read_bytes, write_bytes, RpcRead, RpcStream, RpcWrite},
-    RouteFuture, RouterConfig,
+    LocalMode, RouteMode, RouterConfig, SendMode,
 };
 use crate::{
-    request::{self, Request as RequestRpc},
-    ReadValueStep, RpcCodec, StreamCloseCode, ValueReader,
+    codec, request::Request as RequestRpc, ReadValueStep, RpcCodec, StreamCloseCode, ValueReader,
 };
 
-pub trait RequestHandler<M>
+pub trait RequestHandler<M, St>
 where
     M: RequestRpc,
+    St: RpcStream,
 {
-    type Future<'a>: Future<Output = Result<M::Response, StreamCloseCode>> + 'a
-    where
-        Self: 'a;
-
-    fn handle<'a>(&'a self, request: M::Request) -> Self::Future<'a>;
+    fn handle(self, message: M::Request, responder: Response<M::Response, St::Writer>);
 }
 
-pub(super) fn handle_request<S, M, St>(
-    state: &S,
-    config: RouterConfig,
-    stream: St,
-) -> RouteFuture<'_>
+pub struct Response<T, W>
 where
-    M: RequestRpc,
-    S: RequestHandler<M>,
-    St: RpcStream + 'static,
+    W: RpcWrite,
 {
-    Box::pin(async move {
-        let (mut reader, mut writer) = stream.split();
+    writer: Option<W>,
+    marker: PhantomData<fn() -> T>,
+}
 
-        let request = match read_value_and_eof::<M::Request, _>(&mut reader, config).await {
-            Ok(request) => request,
-            Err(code) => {
-                reader.close(code);
-                writer.close(code);
-                return;
-            }
-        };
+impl<T, W> Response<T, W>
+where
+    T: RpcCodec,
+    W: RpcWrite,
+{
+    fn new(writer: W) -> Self {
+        Self {
+            writer: Some(writer),
+            marker: PhantomData,
+        }
+    }
 
-        let response = match state.handle(request).await {
-            Ok(response) => response,
-            Err(code) => {
-                writer.close(code);
-                return;
-            }
-        };
-
+    pub async fn respond(mut self, response: T) -> Result<(), StreamCloseCode> {
+        let mut writer = self.writer.take().expect("response writer exists");
         let mut encoded = Vec::new();
-        request::encode_response::<M>(&response, &mut encoded);
-
-        if write_bytes(&mut writer, Bytes::from(encoded))
-            .await
-            .is_err()
-        {
-            return;
+        codec::encode_value_part(&response, &mut encoded);
+        if let Err(code) = write_bytes(&mut writer, Bytes::from(encoded)).await {
+            writer.close(code);
+            return Err(code);
         }
         writer.finish();
-    })
+        Ok(())
+    }
+
+    pub fn close(mut self, code: StreamCloseCode) {
+        if let Some(writer) = self.writer.take() {
+            writer.close(code);
+        }
+    }
+}
+
+impl<T, W> Drop for Response<T, W>
+where
+    W: RpcWrite,
+{
+    fn drop(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            writer.close(StreamCloseCode::CANCELLED);
+        }
+    }
+}
+
+#[doc(hidden)]
+pub trait RequestRouteMode<S, M, St>: RouteMode
+where
+    M: RequestRpc + 'static,
+    S: RequestHandler<M, St> + 'static,
+    St: RpcStream + 'static,
+{
+    fn handle_request(state: S, config: RouterConfig, stream: St) -> Self::RouteFuture;
+}
+
+impl<S, M, St> RequestRouteMode<S, M, St> for LocalMode
+where
+    M: RequestRpc + 'static,
+    S: RequestHandler<M, St> + 'static,
+    St: RpcStream + 'static,
+{
+    fn handle_request(state: S, config: RouterConfig, stream: St) -> Self::RouteFuture {
+        let (reader, writer) = stream.split();
+        Box::pin(handle_request_inner::<S, M, St>(
+            state, config, reader, writer,
+        ))
+    }
+}
+
+impl<S, M, St> RequestRouteMode<S, M, St> for SendMode
+where
+    M: RequestRpc + 'static,
+    M::Request: Send + 'static,
+    S: RequestHandler<M, St> + Send + 'static,
+    St: RpcStream + 'static,
+    St::Reader: Send + 'static,
+    St::Writer: Send + 'static,
+{
+    fn handle_request(state: S, config: RouterConfig, stream: St) -> Self::RouteFuture {
+        let (reader, writer) = stream.split();
+        Box::pin(handle_request_inner::<S, M, St>(
+            state, config, reader, writer,
+        ))
+    }
+}
+
+async fn handle_request_inner<S, M, St>(
+    state: S,
+    config: RouterConfig,
+    mut reader: St::Reader,
+    writer: St::Writer,
+) where
+    M: RequestRpc + 'static,
+    S: RequestHandler<M, St> + 'static,
+    St: RpcStream + 'static,
+{
+    let request = match read_value_and_eof::<M::Request, _>(&mut reader, config).await {
+        Ok(request) => request,
+        Err(code) => {
+            reader.close(code);
+            writer.close(code);
+            return;
+        }
+    };
+
+    state.handle(request, Response::new(writer));
 }
 
 async fn read_value_and_eof<T, R>(

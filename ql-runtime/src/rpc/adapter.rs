@@ -1,7 +1,9 @@
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-pub use ql_rpc::{RequestHandler, RouteId, RouterConfig, StreamCloseCode};
+pub use ql_rpc::{
+    LocalMode, RequestHandler, Response, RouteId, RouterConfig, SendMode, StreamCloseCode,
+};
 use ql_rpc::{RpcRead, RpcStream, RpcWrite};
 use ql_wire::{RouteId as WireRouteId, StreamCloseCode as WireStreamCloseCode};
 
@@ -9,6 +11,8 @@ use crate::{ByteReader, ByteWriter, QlStream, QlStreamError};
 
 pub type Router<S> = ql_rpc::Router<S, QlStream>;
 pub type RouterBuilder<S> = ql_rpc::RouterBuilder<S, QlStream>;
+pub type SendRouter<S> = ql_rpc::Router<S, QlStream, SendMode>;
+pub type SendRouterBuilder<S> = ql_rpc::RouterBuilder<S, QlStream, SendMode>;
 
 impl RpcStream for QlStream {
     type Reader = ByteReader;

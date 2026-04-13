@@ -1,23 +1,32 @@
 use std::collections::HashMap;
 
 use super::{
-    request::{handle_request, RequestHandler},
-    Router, RouterConfig, RpcStream,
+    request::{RequestHandler, RequestRouteMode},
+    LocalMode, RouteMode, Router, RouterConfig, RpcStream,
 };
 use crate::{request::Request as RequestRpc, router::RouteFn, RouteId};
 
-pub struct RouterBuilder<S, St> {
+pub struct RouterBuilder<S, St, Mode = LocalMode>
+where
+    Mode: RouteMode,
+{
     config: RouterConfig,
-    routes: HashMap<RouteId, RouteFn<S, St>>,
+    routes: HashMap<RouteId, RouteFn<S, St, Mode>>,
 }
 
-impl<S, St> Default for RouterBuilder<S, St> {
+impl<S, St, Mode> Default for RouterBuilder<S, St, Mode>
+where
+    Mode: RouteMode,
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S, St> RouterBuilder<S, St> {
+impl<S, St, Mode> RouterBuilder<S, St, Mode>
+where
+    Mode: RouteMode,
+{
     pub fn new() -> Self {
         Self {
             config: RouterConfig::default(),
@@ -35,16 +44,7 @@ impl<S, St> RouterBuilder<S, St> {
         self
     }
 
-    pub fn request<M>(self) -> Self
-    where
-        M: RequestRpc,
-        S: RequestHandler<M>,
-        St: RpcStream + 'static,
-    {
-        self.add_route(M::METHOD, handle_request::<S, M, St>)
-    }
-
-    pub fn build(mut self, state: S) -> Router<S, St> {
+    pub fn build(mut self, state: S) -> Router<S, St, Mode> {
         self.routes.shrink_to_fit();
         Router {
             config: self.config,
@@ -53,10 +53,28 @@ impl<S, St> RouterBuilder<S, St> {
         }
     }
 
-    fn add_route(mut self, route_id: crate::RouteId, route: super::RouteFn<S, St>) -> Self {
+    fn add_route(mut self, route_id: crate::RouteId, route: super::RouteFn<S, St, Mode>) -> Self {
         if self.routes.insert(route_id, route).is_some() {
             panic!("duplicate rpc route {}", route_id.into_inner());
         }
         self
+    }
+}
+
+impl<S, St, Mode> RouterBuilder<S, St, Mode>
+where
+    Mode: RouteMode,
+{
+    pub fn request<M>(self) -> Self
+    where
+        M: RequestRpc + 'static,
+        S: RequestHandler<M, St> + 'static,
+        St: RpcStream + 'static,
+        Mode: RequestRouteMode<S, M, St>,
+    {
+        self.add_route(
+            M::METHOD,
+            <Mode as RequestRouteMode<S, M, St>>::handle_request,
+        )
     }
 }
