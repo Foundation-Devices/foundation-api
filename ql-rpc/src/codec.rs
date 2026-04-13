@@ -47,6 +47,18 @@ impl RpcCodec for Vec<u8> {
     }
 }
 
+impl RpcCodec for Bytes {
+    type Error = Infallible;
+
+    fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) {
+        out.put_slice(self.as_ref());
+    }
+
+    fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
+        Ok(bytes.copy_to_bytes(bytes.remaining()))
+    }
+}
+
 const LENGTH_SIZE: usize = 8;
 
 pub fn encode_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(value: &T, out: &mut B) {
