@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, CodecError, RouteId, RpcCodec};
+use crate::{CodecError, RouteId, RpcCodec, codec};
 
 pub trait Subscription {
     const ROUTE: RouteId;
@@ -78,40 +78,25 @@ pub fn encode_item<M: Subscription>(item: &M::Event, out: &mut (impl BufMut + As
 
 #[cfg(test)]
 mod tests {
-    use bytes::{Buf, BufMut, Bytes};
+    use bytes::Bytes;
 
-    use super::{encode_item, ReadStep, ResponseReader, Subscription};
-    use crate::{RouteId, RpcCodec};
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct BytesValue(Vec<u8>);
-
-    impl RpcCodec for BytesValue {
-        type Error = core::convert::Infallible;
-
-        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) {
-            out.put_slice(&self.0);
-        }
-
-        fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
-            Ok(Self(bytes.copy_to_bytes(bytes.remaining()).to_vec()))
-        }
-    }
+    use super::{ReadStep, ResponseReader, Subscription, encode_item};
+    use crate::RouteId;
 
     struct Feed;
 
     impl Subscription for Feed {
         const ROUTE: RouteId = RouteId::from_u32(17);
         type Error = core::convert::Infallible;
-        type Request = BytesValue;
-        type Event = BytesValue;
+        type Request = Vec<u8>;
+        type Event = Vec<u8>;
     }
 
     #[test]
     fn response_reader_streams_items_until_end() {
         let mut encoded = Vec::new();
-        encode_item::<Feed>(&BytesValue(b"one".to_vec()), &mut encoded);
-        encode_item::<Feed>(&BytesValue(b"two".to_vec()), &mut encoded);
+        encode_item::<Feed>(&b"one".to_vec(), &mut encoded);
+        encode_item::<Feed>(&b"two".to_vec(), &mut encoded);
 
         let reader = match ResponseReader::<Feed>::new()
             .push(Bytes::from(encoded))
@@ -119,7 +104,7 @@ mod tests {
             .unwrap()
         {
             ReadStep::Item { value, next } => {
-                assert_eq!(value, BytesValue(b"one".to_vec()));
+                assert_eq!(value, b"one".to_vec());
                 next
             }
             _ => unreachable!(),
@@ -127,7 +112,7 @@ mod tests {
 
         let reader = match reader.advance().unwrap() {
             ReadStep::Item { value, next } => {
-                assert_eq!(value, BytesValue(b"two".to_vec()));
+                assert_eq!(value, b"two".to_vec());
                 next
             }
             _ => unreachable!(),
@@ -142,7 +127,7 @@ mod tests {
     #[test]
     fn response_reader_waits_for_transport_eof_when_no_end_frame_is_present() {
         let mut encoded = Vec::new();
-        encode_item::<Feed>(&BytesValue(b"one".to_vec()), &mut encoded);
+        encode_item::<Feed>(&b"one".to_vec(), &mut encoded);
 
         let reader = match ResponseReader::<Feed>::new()
             .push(Bytes::from(encoded))
@@ -150,7 +135,7 @@ mod tests {
             .unwrap()
         {
             ReadStep::Item { value, next } => {
-                assert_eq!(value, BytesValue(b"one".to_vec()));
+                assert_eq!(value, b"one".to_vec());
                 next
             }
             _ => unreachable!(),
@@ -165,7 +150,7 @@ mod tests {
     #[test]
     fn response_reader_allows_empty_event_payloads() {
         let mut encoded = Vec::new();
-        encode_item::<Feed>(&BytesValue(Vec::new()), &mut encoded);
+        encode_item::<Feed>(&Vec::new(), &mut encoded);
 
         match ResponseReader::<Feed>::new()
             .push(Bytes::from(encoded))
@@ -173,7 +158,7 @@ mod tests {
             .unwrap()
         {
             ReadStep::Item { value, next } => {
-                assert_eq!(value, BytesValue(Vec::new()));
+                assert_eq!(value, Vec::<u8>::new());
                 assert!(
                     matches!(next.advance().unwrap(), ReadStep::NeedMore(reader) if reader.is_empty())
                 );

@@ -98,7 +98,7 @@ impl<T: RpcCodec> ValueReader<T> {
 
     pub fn advance(self) -> Result<ReadValueStep<T>, CodecError<T::Error>> {
         let mut this = self;
-        let Some(mut body) = this.bytes.try_take_part().map_err(CodecError::Rpc)? else {
+        let Some(mut body) = this.bytes.try_take_part()? else {
             return Ok(ReadValueStep::NeedMore(this));
         };
 
@@ -317,37 +317,21 @@ pub fn backpatch_length<B: AsMut<[u8]> + ?Sized>(out: &mut B, start: usize) {
 
 #[cfg(test)]
 mod tests {
-    use bytes::{Buf, BufMut, Bytes};
+    use bytes::Bytes;
 
     use super::{encode_value_part, ReadValueStep, ValueReader};
-    use crate::RpcCodec;
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct BytesValue(Vec<u8>);
-
-    impl RpcCodec for BytesValue {
-        type Error = core::convert::Infallible;
-
-        fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) {
-            out.put_slice(&self.0);
-        }
-
-        fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
-            Ok(Self(bytes.copy_to_bytes(bytes.remaining()).to_vec()))
-        }
-    }
 
     #[test]
     fn value_reader_round_trips_framed_values() {
         let mut encoded = Vec::new();
-        encode_value_part(&BytesValue(b"hello".to_vec()), &mut encoded);
+        encode_value_part(&b"hello".to_vec(), &mut encoded);
 
-        match ValueReader::<BytesValue>::new()
+        match ValueReader::<Vec<u8>>::new()
             .push(Bytes::from(encoded))
             .advance()
             .unwrap()
         {
-            ReadValueStep::Value(value) => assert_eq!(value, BytesValue(b"hello".to_vec())),
+            ReadValueStep::Value(value) => assert_eq!(value, b"hello".to_vec()),
             _ => unreachable!(),
         }
     }
@@ -355,10 +339,10 @@ mod tests {
     #[test]
     fn value_reader_waits_for_complete_frame() {
         let mut encoded = Vec::new();
-        encode_value_part(&BytesValue(b"hello".to_vec()), &mut encoded);
+        encode_value_part(&b"hello".to_vec(), &mut encoded);
         let encoded = Bytes::from(encoded);
 
-        let reader = match ValueReader::<BytesValue>::new()
+        let reader = match ValueReader::<Vec<u8>>::new()
             .push(encoded.slice(..4))
             .advance()
             .unwrap()
@@ -368,7 +352,7 @@ mod tests {
         };
 
         match reader.push(encoded.slice(4..)).advance().unwrap() {
-            ReadValueStep::Value(value) => assert_eq!(value, BytesValue(b"hello".to_vec())),
+            ReadValueStep::Value(value) => assert_eq!(value, b"hello".to_vec()),
             _ => unreachable!(),
         }
     }

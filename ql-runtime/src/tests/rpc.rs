@@ -6,28 +6,13 @@ use std::{
     time::Duration,
 };
 
-use bytes::{Buf, BufMut, Bytes};
+use bytes::Bytes;
 use futures_lite::StreamExt;
 use ql_rpc::{Response, RouteId, StreamCloseCode, SubscriptionResponder};
 use ql_wire::RouteId as WireRouteId;
 
 use super::*;
 use crate::{rpc::Router, ByteWriter};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BytesValue(Vec<u8>);
-
-impl ql_rpc::RpcCodec for BytesValue {
-    type Error = core::convert::Infallible;
-
-    fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) {
-        out.put_slice(&self.0);
-    }
-
-    fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
-        Ok(Self(bytes.copy_to_bytes(bytes.remaining()).to_vec()))
-    }
-}
 
 struct Echo;
 
@@ -45,8 +30,8 @@ struct Feed;
 impl ql_rpc::subscription::Subscription for Feed {
     const ROUTE: RouteId = RouteId::from_u32(52);
     type Error = core::convert::Infallible;
-    type Request = BytesValue;
-    type Event = BytesValue;
+    type Request = Vec<u8>;
+    type Event = Vec<u8>;
 }
 
 struct Download;
@@ -54,9 +39,9 @@ struct Download;
 impl ql_rpc::request_with_progress::RequestWithProgress for Download {
     const ROUTE: RouteId = RouteId::from_u32(53);
     type Error = core::convert::Infallible;
-    type Request = BytesValue;
-    type Progress = BytesValue;
-    type Response = BytesValue;
+    type Request = Vec<u8>;
+    type Progress = Vec<u8>;
+    type Response = Vec<u8>;
 }
 
 fn assert_send<T: Send>(value: T) -> T {
@@ -72,12 +57,12 @@ async fn rpc_request_round_trips() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request: BytesValue = read_rpc_value(inbound.reader).await;
+            let request: Vec<u8> = read_rpc_value(inbound.reader).await;
             assert_eq!(
                 inbound.route_id,
                 to_wire_route_id(<Echo as ql_rpc::request::Request>::ROUTE)
             );
-            assert_eq!(request, BytesValue(b"hello".to_vec()));
+            assert_eq!(request, b"hello".to_vec());
 
             let mut encoded = Vec::new();
             ql_rpc::request::encode_response::<Echo>(&"world".into(), &mut encoded);
@@ -149,20 +134,20 @@ async fn rpc_router_handles_request() {
 async fn rpc_router_handles_subscription() {
     #[derive(Clone)]
     struct RouterState {
-        seen: Rc<RefCell<Vec<BytesValue>>>,
+        seen: Rc<RefCell<Vec<Vec<u8>>>>,
     }
 
     impl crate::rpc::SubscriptionHandler<Feed, QlStream> for RouterState {
         fn handle(
             self,
-            request: BytesValue,
-            mut response: SubscriptionResponder<BytesValue, ByteWriter>,
+            request: Vec<u8>,
+            mut response: SubscriptionResponder<Vec<u8>, ByteWriter>,
         ) {
             let seen = self.seen.clone();
             tokio::task::spawn_local(async move {
                 seen.borrow_mut().push(request);
-                let _ = response.send(BytesValue(b"one".to_vec())).await;
-                let _ = response.send(BytesValue(b"two".to_vec())).await;
+                let _ = response.send(b"one".to_vec()).await;
+                let _ = response.send(b"two".to_vec()).await;
                 let _ = response.finish().await;
             });
         }
@@ -186,20 +171,11 @@ async fn rpc_router_handles_subscription() {
         });
 
         let rpc = pair.handle(Side::A).rpc();
-        let mut subscription = rpc
-            .subscribe::<Feed>(&BytesValue(b"watch".to_vec()))
-            .await
-            .unwrap();
-        assert_eq!(
-            subscription.next().await.unwrap().unwrap(),
-            BytesValue(b"one".to_vec())
-        );
-        assert_eq!(
-            subscription.next().await.unwrap().unwrap(),
-            BytesValue(b"two".to_vec())
-        );
+        let mut subscription = rpc.subscribe::<Feed>(&b"watch".to_vec()).await.unwrap();
+        assert_eq!(subscription.next().await.unwrap().unwrap(), b"one".to_vec());
+        assert_eq!(subscription.next().await.unwrap().unwrap(), b"two".to_vec());
         assert!(subscription.next().await.is_none());
-        assert_eq!(seen.borrow().as_slice(), &[BytesValue(b"watch".to_vec())]);
+        assert_eq!(seen.borrow().as_slice(), &[b"watch".to_vec()]);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
             .await
@@ -313,16 +289,16 @@ async fn rpc_subscription_streams_events() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request: BytesValue = read_rpc_value(inbound.reader).await;
+            let request: Vec<u8> = read_rpc_value(inbound.reader).await;
             assert_eq!(
                 inbound.route_id,
                 to_wire_route_id(<Feed as ql_rpc::subscription::Subscription>::ROUTE)
             );
-            assert_eq!(request, BytesValue(b"watch".to_vec()));
+            assert_eq!(request, b"watch".to_vec());
 
             let mut encoded = Vec::new();
-            ql_rpc::subscription::encode_item::<Feed>(&BytesValue(b"one".to_vec()), &mut encoded);
-            ql_rpc::subscription::encode_item::<Feed>(&BytesValue(b"two".to_vec()), &mut encoded);
+            ql_rpc::subscription::encode_item::<Feed>(&b"one".to_vec(), &mut encoded);
+            ql_rpc::subscription::encode_item::<Feed>(&b"two".to_vec(), &mut encoded);
 
             let mut writer = inbound.writer;
             writer.write(Bytes::from(encoded)).await.unwrap();
@@ -330,18 +306,9 @@ async fn rpc_subscription_streams_events() {
         });
 
         let rpc = pair.handle(Side::A).rpc();
-        let mut subscription = rpc
-            .subscribe::<Feed>(&BytesValue(b"watch".to_vec()))
-            .await
-            .unwrap();
-        assert_eq!(
-            subscription.next().await.unwrap().unwrap(),
-            BytesValue(b"one".to_vec())
-        );
-        assert_eq!(
-            subscription.next().await.unwrap().unwrap(),
-            BytesValue(b"two".to_vec())
-        );
+        let mut subscription = rpc.subscribe::<Feed>(&b"watch".to_vec()).await.unwrap();
+        assert_eq!(subscription.next().await.unwrap().unwrap(), b"one".to_vec());
+        assert_eq!(subscription.next().await.unwrap().unwrap(), b"two".to_vec());
         assert!(subscription.next().await.is_none());
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -361,26 +328,26 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request: BytesValue = read_rpc_value(inbound.reader).await;
+            let request: Vec<u8> = read_rpc_value(inbound.reader).await;
             assert_eq!(
                 inbound.route_id,
                 to_wire_route_id(
                     <Download as ql_rpc::request_with_progress::RequestWithProgress>::ROUTE
                 )
             );
-            assert_eq!(request, BytesValue(b"logo".to_vec()));
+            assert_eq!(request, b"logo".to_vec());
 
             let mut encoded = Vec::new();
             ql_rpc::request_with_progress::encode_progress::<Download>(
-                &BytesValue(b"10".to_vec()),
+                &b"10".to_vec(),
                 &mut encoded,
             );
             ql_rpc::request_with_progress::encode_progress::<Download>(
-                &BytesValue(b"90".to_vec()),
+                &b"90".to_vec(),
                 &mut encoded,
             );
             ql_rpc::request_with_progress::encode_response::<Download>(
-                &BytesValue(b"done".to_vec()),
+                &b"done".to_vec(),
                 &mut encoded,
             );
 
@@ -391,14 +358,14 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
 
         let rpc = pair.handle(Side::A).rpc();
         let mut download = rpc
-            .request_with_progress::<Download>(&BytesValue(b"logo".to_vec()))
+            .request_with_progress::<Download>(&b"logo".to_vec())
             .await
             .unwrap();
 
-        assert_eq!(download.progress().await, Some(BytesValue(b"10".to_vec())));
-        assert_eq!(download.progress().await, Some(BytesValue(b"90".to_vec())));
+        assert_eq!(download.progress().await, Some(b"10".to_vec()));
+        assert_eq!(download.progress().await, Some(b"90".to_vec()));
         assert_eq!(download.progress().await, None);
-        assert_eq!(download.await.unwrap(), BytesValue(b"done".to_vec()));
+        assert_eq!(download.await.unwrap(), b"done".to_vec());
 
         tokio::time::timeout(Duration::from_secs(2), responder)
             .await
