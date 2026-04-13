@@ -47,7 +47,6 @@ where
                     this.reader = Some(next);
                     return Poll::Ready(Some(Ok(value)));
                 }
-                Ok(ReadStep::End) => return Poll::Ready(None),
                 Ok(ReadStep::NeedMore(next)) => {
                     this.reader = Some(next);
                 }
@@ -60,7 +59,10 @@ where
                     this.reader = Some(reader.push(chunk));
                 }
                 Poll::Ready(Ok(None)) => {
-                    this.reader = None;
+                    let reader = this.reader.take().expect("subscription reader is present");
+                    if reader.is_empty() {
+                        return Poll::Ready(None);
+                    }
                     return Poll::Ready(Some(Err(Error::Truncated.into())));
                 }
                 Poll::Ready(Err(error)) => {

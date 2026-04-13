@@ -131,7 +131,7 @@ async fn handle_request_inner<S, M, St>(
     state.handle(request, Response::new(writer));
 }
 
-async fn read_value_and_eof<T, R>(
+pub(super) async fn read_value_and_eof<T, R>(
     reader: &mut R,
     config: RouterConfig,
 ) -> Result<T, StreamCloseCode>

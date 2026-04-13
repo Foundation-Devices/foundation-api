@@ -2,9 +2,13 @@ use std::collections::HashMap;
 
 use super::{
     request::{RequestHandler, RequestRouteMode},
+    subscription::{SubscriptionHandler, SubscriptionRouteMode},
     LocalMode, RouteMode, Router, RouterConfig, RpcStream,
 };
-use crate::{request::Request as RequestRpc, router::RouteFn, RouteId};
+use crate::{
+    request::Request as RequestRpc, router::RouteFn, subscription::Subscription as SubscriptionRpc,
+    RouteId,
+};
 
 pub struct RouterBuilder<S, St, Mode = LocalMode>
 where
@@ -75,6 +79,19 @@ where
         self.add_route(
             M::ROUTE,
             <Mode as RequestRouteMode<S, M, St>>::handle_request,
+        )
+    }
+
+    pub fn subscription<M>(self) -> Self
+    where
+        M: SubscriptionRpc + 'static,
+        S: SubscriptionHandler<M, St> + 'static,
+        St: RpcStream + 'static,
+        Mode: SubscriptionRouteMode<S, M, St>,
+    {
+        self.add_route(
+            M::ROUTE,
+            <Mode as SubscriptionRouteMode<S, M, St>>::handle_subscription,
         )
     }
 }

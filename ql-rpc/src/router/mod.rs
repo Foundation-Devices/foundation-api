@@ -7,6 +7,7 @@ mod config;
 mod mode;
 mod request;
 mod stream;
+mod subscription;
 
 pub use self::{
     builder::RouterBuilder,
@@ -14,6 +15,7 @@ pub use self::{
     mode::*,
     request::{RequestHandler, Response},
     stream::{RpcRead, RpcStream, RpcWrite},
+    subscription::{SubscriptionHandler, SubscriptionResponder},
 };
 
 pub struct Router<S, St, Mode = LocalMode>

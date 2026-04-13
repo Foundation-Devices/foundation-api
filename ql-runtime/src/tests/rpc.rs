@@ -8,7 +8,7 @@ use std::{
 
 use bytes::{Buf, BufMut, Bytes};
 use futures_lite::StreamExt;
-use ql_rpc::{Response, RouteId, StreamCloseCode};
+use ql_rpc::{Response, RouteId, StreamCloseCode, SubscriptionResponder};
 use ql_wire::RouteId as WireRouteId;
 
 use super::*;
@@ -146,6 +146,70 @@ async fn rpc_router_handles_request() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn rpc_router_handles_subscription() {
+    #[derive(Clone)]
+    struct RouterState {
+        seen: Rc<RefCell<Vec<BytesValue>>>,
+    }
+
+    impl crate::rpc::SubscriptionHandler<Feed, QlStream> for RouterState {
+        fn handle(
+            self,
+            request: BytesValue,
+            mut response: SubscriptionResponder<BytesValue, ByteWriter>,
+        ) {
+            let seen = self.seen.clone();
+            tokio::task::spawn_local(async move {
+                seen.borrow_mut().push(request);
+                let _ = response.send(BytesValue(b"one".to_vec())).await;
+                let _ = response.send(BytesValue(b"two".to_vec())).await;
+                let _ = response.finish().await;
+            });
+        }
+    }
+
+    run_local_test(async {
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let router = crate::rpc::Router::builder()
+            .subscription::<Feed>()
+            .build(RouterState { seen: seen.clone() });
+
+        let responder = tokio::task::spawn_local(async move {
+            let inbound = inbound_b.recv().await.unwrap();
+            if let Some((_, fut)) = router.handle(inbound) {
+                fut.await;
+            }
+        });
+
+        let rpc = pair.handle(Side::A).rpc();
+        let mut subscription = rpc
+            .subscribe::<Feed>(&BytesValue(b"watch".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(
+            subscription.next().await.unwrap().unwrap(),
+            BytesValue(b"one".to_vec())
+        );
+        assert_eq!(
+            subscription.next().await.unwrap().unwrap(),
+            BytesValue(b"two".to_vec())
+        );
+        assert!(subscription.next().await.is_none());
+        assert_eq!(seen.borrow().as_slice(), &[BytesValue(b"watch".to_vec())]);
+
+        tokio::time::timeout(Duration::from_secs(2), responder)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn rpc_send_router_handles_request() {
     #[derive(Clone)]
     struct RouterState {
@@ -259,7 +323,6 @@ async fn rpc_subscription_streams_events() {
             let mut encoded = Vec::new();
             ql_rpc::subscription::encode_item::<Feed>(&BytesValue(b"one".to_vec()), &mut encoded);
             ql_rpc::subscription::encode_item::<Feed>(&BytesValue(b"two".to_vec()), &mut encoded);
-            ql_rpc::subscription::encode_end(&mut encoded);
 
             let mut writer = inbound.writer;
             writer.write(Bytes::from(encoded)).await.unwrap();

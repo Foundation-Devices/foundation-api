@@ -3,6 +3,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 pub use ql_rpc::{
     LocalMode, RequestHandler, Response, RouteId, RouterConfig, SendMode, StreamCloseCode,
+    SubscriptionHandler, SubscriptionResponder,
 };
 use ql_rpc::{RpcRead, RpcStream, RpcWrite};
 use ql_wire::{RouteId as WireRouteId, StreamCloseCode as WireStreamCloseCode};

@@ -289,11 +289,6 @@ fn read_next_part_len<B: Buf>(bytes: &mut B) -> Result<Option<usize>, Error> {
     Ok(Some(len))
 }
 
-pub fn push_length<B: BufMut + ?Sized>(out: &mut B, len: usize) {
-    let len = u64::try_from(len).expect("rpc payload exceeds u64 length framing");
-    out.put_u64_le(len);
-}
-
 pub fn reserve_length<B: BufMut + AsMut<[u8]>>(out: &mut B) -> usize {
     let start = out.as_mut().len();
     out.put_u64_le(0);
