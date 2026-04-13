@@ -49,7 +49,7 @@ where
         Ok(())
     }
 
-    pub async fn finish(mut self) -> Result<(), StreamCloseCode> {
+    pub fn finish(mut self) -> Result<(), StreamCloseCode> {
         let writer = self.writer.take().expect("subscription writer exists");
         writer.finish();
         Ok(())
