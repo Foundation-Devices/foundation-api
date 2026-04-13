@@ -1,17 +1,18 @@
 use std::{
     cell::RefCell,
     rc::Rc,
+    str::Utf8Error,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use bytes::{Buf, BufMut, Bytes};
 use futures_lite::StreamExt;
-use ql_rpc::{RouteId, StreamCloseCode};
+use ql_rpc::{Response, RouteId, StreamCloseCode};
 use ql_wire::RouteId as WireRouteId;
 
 use super::*;
-use crate::ByteWriter;
+use crate::{rpc::Router, ByteWriter};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BytesValue(Vec<u8>);
@@ -32,9 +33,11 @@ struct Echo;
 
 impl ql_rpc::request::Request for Echo {
     const METHOD: RouteId = RouteId::from_u32(51);
-    type Error = core::convert::Infallible;
-    type Request = BytesValue;
-    type Response = BytesValue;
+
+    type Error = Utf8Error;
+
+    type Request = String;
+    type Response = String;
 }
 
 struct Feed;
@@ -77,18 +80,15 @@ async fn rpc_request_round_trips() {
             assert_eq!(request, BytesValue(b"hello".to_vec()));
 
             let mut encoded = Vec::new();
-            ql_rpc::request::encode_response::<Echo>(&BytesValue(b"world".to_vec()), &mut encoded);
+            ql_rpc::request::encode_response::<Echo>(&"world".into(), &mut encoded);
             let mut writer = inbound.writer;
             writer.write(Bytes::from(encoded)).await.unwrap();
             writer.finish();
         });
 
         let rpc = pair.handle(Side::A).rpc();
-        let response = rpc
-            .request::<Echo>(&BytesValue(b"hello".to_vec()))
-            .await
-            .unwrap();
-        assert_eq!(response, BytesValue(b"world".to_vec()));
+        let response = rpc.request::<Echo>(&"hello".into()).await.unwrap();
+        assert_eq!(response, "world");
 
         tokio::time::timeout(Duration::from_secs(2), responder)
             .await
@@ -102,19 +102,15 @@ async fn rpc_request_round_trips() {
 async fn rpc_router_handles_request() {
     #[derive(Clone)]
     struct RouterState {
-        seen: Rc<RefCell<Vec<Vec<u8>>>>,
+        seen: Rc<RefCell<Vec<String>>>,
     }
 
-    impl crate::rpc::RequestHandler<Echo, crate::QlStream> for RouterState {
-        fn handle(
-            self,
-            request: BytesValue,
-            response: crate::rpc::Response<BytesValue, crate::ByteWriter>,
-        ) {
+    impl crate::rpc::RequestHandler<Echo, QlStream> for RouterState {
+        fn handle(self, request: String, response: Response<String, ByteWriter>) {
             let seen = self.seen.clone();
             tokio::task::spawn_local(async move {
-                seen.borrow_mut().push(request.0);
-                let _ = response.respond(BytesValue(b"world".to_vec())).await;
+                seen.borrow_mut().push(request);
+                let _ = response.respond("world".into()).await;
             });
         }
     }
@@ -124,7 +120,8 @@ async fn rpc_router_handles_request() {
         pair.connect_and_wait(Side::A).await;
         let inbound_b = pair.take_inbound(Side::B);
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let router = crate::rpc::Router::builder()
+
+        let router = Router::builder()
             .request::<Echo>()
             .build(RouterState { seen: seen.clone() });
 
@@ -136,12 +133,9 @@ async fn rpc_router_handles_request() {
         });
 
         let rpc = pair.handle(Side::A).rpc();
-        let response = rpc
-            .request::<Echo>(&BytesValue(b"hello".to_vec()))
-            .await
-            .unwrap();
-        assert_eq!(response, BytesValue(b"world".to_vec()));
-        assert_eq!(&*seen.borrow(), &[b"hello".to_vec()]);
+        let response = rpc.request::<Echo>(&"hello".into()).await.unwrap();
+        assert_eq!(response, "world");
+        assert_eq!(&*seen.borrow(), &["hello".to_string()]);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
             .await
@@ -155,19 +149,15 @@ async fn rpc_router_handles_request() {
 async fn rpc_send_router_handles_request() {
     #[derive(Clone)]
     struct RouterState {
-        seen: Arc<Mutex<Vec<Vec<u8>>>>,
+        seen: Arc<Mutex<Vec<String>>>,
     }
 
     impl crate::rpc::RequestHandler<Echo, QlStream> for RouterState {
-        fn handle(
-            self,
-            request: BytesValue,
-            response: crate::rpc::Response<BytesValue, ByteWriter>,
-        ) {
+        fn handle(self, request: String, response: crate::rpc::Response<String, ByteWriter>) {
             let seen = self.seen.clone();
             tokio::task::spawn(async move {
-                seen.lock().unwrap().push(request.0);
-                let _ = response.respond(BytesValue(b"world".to_vec())).await;
+                seen.lock().unwrap().push(request);
+                let _ = response.respond("world".into()).await;
             });
         }
     }
@@ -190,12 +180,9 @@ async fn rpc_send_router_handles_request() {
         });
 
         let rpc = pair.handle(Side::A).rpc();
-        let response = rpc
-            .request::<Echo>(&BytesValue(b"hello".to_vec()))
-            .await
-            .unwrap();
-        assert_eq!(response, BytesValue(b"world".to_vec()));
-        assert_eq!(&*seen.lock().unwrap(), &[b"hello".to_vec()]);
+        let response = rpc.request::<Echo>(&"hello".into()).await.unwrap();
+        assert_eq!(response, "world");
+        assert_eq!(&*seen.lock().unwrap(), &["hello".to_string()]);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
             .await
@@ -213,8 +200,8 @@ async fn rpc_router_enforces_max_request_bytes() {
     impl crate::rpc::RequestHandler<Echo, crate::QlStream> for LimitedState {
         fn handle(
             self,
-            request: BytesValue,
-            response: crate::rpc::Response<BytesValue, crate::ByteWriter>,
+            request: String,
+            response: crate::rpc::Response<String, crate::ByteWriter>,
         ) {
             tokio::task::spawn_local(async move {
                 let _ = response.respond(request).await;
@@ -239,7 +226,7 @@ async fn rpc_router_enforces_max_request_bytes() {
         });
 
         let rpc = pair.handle(Side::A).rpc();
-        let response = rpc.request::<Echo>(&BytesValue(b"hello".to_vec())).await;
+        let response = rpc.request::<Echo>(&"hello".to_string()).await;
         assert!(matches!(
             response,
             Err(crate::rpc::RpcError::Closed(code)) if code == StreamCloseCode::LIMIT
