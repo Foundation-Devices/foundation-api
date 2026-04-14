@@ -197,6 +197,7 @@ impl<B: ByteSlice, T: WireDecode<B>> WireDecode<B> for Option<T> {
     }
 }
 
+#[derive(Clone)]
 pub struct Reader<B> {
     remaining: Option<B>,
 }

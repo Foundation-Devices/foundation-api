@@ -159,6 +159,7 @@ pub fn decode_session_frames(bytes: &[u8]) -> Result<Vec<SessionFrame<Vec<u8>>>,
         .collect()
 }
 
+#[derive(Clone)]
 pub struct SessionFrameIter<B> {
     reader: Reader<B>,
 }
