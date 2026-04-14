@@ -26,6 +26,10 @@ fn route_id(value: u64) -> RouteId {
     RouteId::from_u64(value).unwrap()
 }
 
+fn record_ack(seq: RecordSeq) -> RecordAck {
+    RecordAck::from_ranges([seq..=seq]).unwrap()
+}
+
 const REFUSED: StreamCloseCode = StreamCloseCode(1);
 const TIMEOUT: StreamCloseCode = StreamCloseCode(2);
 
@@ -72,6 +76,22 @@ fn next_outbound(
         builder.seq(),
         decode_session_frames(builder.bytes()).unwrap(),
     ))
+}
+
+fn drain_outbound(
+    fsm: &mut SessionFsm,
+    now: Instant,
+    limit: usize,
+) -> Vec<(RecordSeq, Vec<SessionFrame<Vec<u8>>>)> {
+    let mut records = Vec::new();
+    for _ in 0..limit {
+        let Some(record) = next_outbound(fsm, now) else {
+            return records;
+        };
+        records.push(record);
+    }
+
+    panic!("session did not quiesce within outbound limit");
 }
 
 fn receive_events(
@@ -180,10 +200,7 @@ fn ack_reopens_write_capacity() {
     fsm.receive(
         now + Duration::from_millis(1),
         seq(9),
-        std::iter::once(Ok(SessionFrame::Ack(RecordAck {
-            base_seq: record_seq,
-            bits: 1u64,
-        }))),
+        std::iter::once(Ok(SessionFrame::Ack(record_ack(record_seq)))),
         |event| events.push(event),
     );
 
@@ -268,6 +285,85 @@ fn pure_ack_only_records_are_fire_and_forget() {
     assert!(fsm
         .take_next_write(now + retransmit_timeout + Duration::from_millis(1))
         .is_none());
+}
+
+#[test]
+fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
+    let now = Instant::now();
+    let sender_config = SessionConfig {
+        local_parity: StreamParity::Even,
+        record_max_size: SessionRecordBuilder::MIN_CAPACITY + 40,
+        ack_delay: Duration::from_millis(5),
+        retransmit_timeout: Duration::from_millis(25),
+        stream_send_buffer_size: 8 * 1024,
+        initial_peer_stream_receive_window: 8 * 1024,
+        ..SessionConfig::default()
+    };
+    let receiver_config = SessionConfig {
+        local_parity: StreamParity::Odd,
+        record_max_size: SessionRecordBuilder::MIN_CAPACITY + 10,
+        ack_delay: Duration::from_millis(1),
+        retransmit_timeout: Duration::from_millis(25),
+        pending_ack_range_limit: 512,
+        initial_peer_stream_receive_window: 8 * 1024,
+        ..SessionConfig::default()
+    };
+    let mut sender = SessionFsm::new(sender_config, now);
+    let mut receiver = SessionFsm::new(receiver_config, now);
+
+    let stream_id = open_stream_id(&mut sender);
+    let payload = vec![b'x'; 2048];
+    assert_eq!(
+        write_stream_bytes(&mut sender, stream_id, &payload),
+        payload.len()
+    );
+
+    let originals = drain_outbound(&mut sender, now, 4096);
+    assert!(originals.len() >= 64);
+
+    for (seq, record) in originals
+        .iter()
+        .filter(|(seq, _)| seq.into_inner() % 2 == 1)
+    {
+        let _ = receive_events(&mut receiver, now, *seq, record);
+    }
+
+    let first_ack_time = now + receiver_config.ack_delay;
+    let first_acks = drain_outbound(&mut receiver, first_ack_time, originals.len());
+    assert!(first_acks.len() > 1);
+    assert!(first_acks
+        .iter()
+        .all(|(_, frames)| matches!(frames.as_slice(), [SessionFrame::Ack(_)])));
+
+    for (seq, record) in &first_acks {
+        let _ = receive_events(&mut sender, first_ack_time, *seq, record);
+    }
+
+    let retransmit_time = now + sender_config.retransmit_timeout + Duration::from_millis(1);
+    sender.on_timer(retransmit_time, |_| {});
+    let retransmits = drain_outbound(&mut sender, retransmit_time, originals.len());
+    assert!(!retransmits.is_empty());
+
+    for (seq, record) in &retransmits {
+        let _ = receive_events(&mut receiver, retransmit_time, *seq, record);
+    }
+
+    let second_ack_time = retransmit_time + receiver_config.ack_delay;
+    let second_acks = drain_outbound(&mut receiver, second_ack_time, retransmits.len() + 16);
+    assert!(!second_acks.is_empty());
+    assert!(second_acks
+        .iter()
+        .all(|(_, frames)| matches!(frames.as_slice(), [SessionFrame::Ack(_)])));
+
+    for (seq, record) in &second_acks {
+        let _ = receive_events(&mut sender, second_ack_time, *seq, record);
+    }
+
+    let final_now = second_ack_time + sender_config.retransmit_timeout + Duration::from_millis(1);
+    sender.on_timer(final_now, |_| {});
+    receiver.on_timer(final_now, |_| {});
+    assert!(next_outbound(&mut sender, final_now).is_none());
+    assert!(next_outbound(&mut receiver, final_now).is_none());
 }
 
 #[test]

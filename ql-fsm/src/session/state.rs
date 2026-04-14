@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use ql_wire::{CloseTarget, RecordSeq, RouteId, SessionClose, StreamClose, StreamId};
 
 use super::{
-    received_records::ReceivedRecords, remote_stream_history::RemoteStreamHistory,
+    received_records::RecordRxState, remote_stream_history::RemoteStreamHistory,
     stream_rx::StreamRx, stream_tx::StreamTx, tracked::TrackedRecord,
 };
 
@@ -16,8 +16,7 @@ pub struct SessionState {
     pub next_record_seq: RecordSeq,
     pub next_write_id: u64,
     pub tracked_records: IndexMap<u64, TrackedRecord>,
-    pub received_records: ReceivedRecords,
-    pub ack_state: AckState,
+    pub record_rx: RecordRxState,
     pub pending_ping: bool,
     pub streams: IndexMap<StreamId, StreamState>,
     pub next_stream_index: usize,
@@ -132,12 +131,4 @@ pub enum InboundState {
     Finished,
     Closed(StreamClose),
     Discarding,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AckState {
-    // ack state is not dirty
-    Idle,
-    // ack is dirty. we can wait to piggy back on an outgoing record until this time
-    Dirty { due_at: Instant },
 }

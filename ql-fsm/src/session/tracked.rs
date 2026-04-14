@@ -2,13 +2,13 @@
 
 use std::time::Instant;
 
-use ql_wire::{RecordSeq, StreamClose, StreamId};
+use ql_wire::{RecordAck, RecordSeq, StreamClose, StreamId};
 
 #[derive(Debug, Clone)]
 pub struct TrackedRecord {
     pub seq: RecordSeq,
     pub frames: Vec<TrackedFrame>,
-    pub ack_included: bool,
+    pub ack: Option<RecordAck>,
     pub ping_included: bool,
     pub window_updates: Vec<(StreamId, u64)>,
     pub sent_at: Option<Instant>,

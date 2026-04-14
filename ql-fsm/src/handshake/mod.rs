@@ -127,6 +127,8 @@ pub fn finish_handshake(
             peer_timeout: config.session_peer_timeout,
             stream_send_buffer_size: config.session_stream_send_buffer_size,
             stream_receive_buffer_size: config.session_stream_receive_buffer_size,
+            accepted_record_window: config.session_accepted_record_window,
+            pending_ack_range_limit: config.session_pending_ack_range_limit,
             initial_peer_stream_receive_window: transport
                 .remote_transport_params
                 .initial_stream_receive_window,

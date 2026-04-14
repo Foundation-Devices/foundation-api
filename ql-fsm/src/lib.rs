@@ -127,6 +127,10 @@ pub struct QlFsmConfig {
     pub session_stream_send_buffer_size: usize,
     /// maximum bytes buffered locally for one stream receive side
     pub session_stream_receive_buffer_size: u32,
+    /// how many accepted record sequence numbers to retain for duplicate detection
+    pub session_accepted_record_window: u64,
+    /// maximum disjoint pending ACK ranges to retain before dropping the oldest low ranges
+    pub session_pending_ack_range_limit: usize,
 }
 
 impl Default for QlFsmConfig {
@@ -141,6 +145,8 @@ impl Default for QlFsmConfig {
             session_record_max_size: s.record_max_size,
             session_stream_send_buffer_size: s.stream_send_buffer_size,
             session_stream_receive_buffer_size: s.stream_receive_buffer_size,
+            session_accepted_record_window: s.accepted_record_window,
+            session_pending_ack_range_limit: s.pending_ack_range_limit,
         }
     }
 }

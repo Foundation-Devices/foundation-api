@@ -24,11 +24,9 @@ use ql_wire::{
 };
 
 use self::{
-    received_records::{ReceiveOutcome, ReceivedRecords},
+    received_records::{PendingAck, ReceiveOutcome, RecordRxState},
     remote_stream_history::RemoteStreamHistory,
-    state::{
-        AckState, InboundState, OutboundState, SessionPhase, SessionState, StreamRole, StreamState,
-    },
+    state::{InboundState, OutboundState, SessionPhase, SessionState, StreamRole, StreamState},
     stream_tx::StreamTxRange,
     tracked::{TrackedFrame, TrackedRecord, TrackedStreamData},
 };
@@ -45,6 +43,8 @@ pub struct SessionConfig {
     pub stream_send_buffer_size: usize,
     pub stream_receive_buffer_size: u32,
     pub initial_peer_stream_receive_window: u32,
+    pub accepted_record_window: u64,
+    pub pending_ack_range_limit: usize,
 }
 
 impl Default for SessionConfig {
@@ -59,6 +59,8 @@ impl Default for SessionConfig {
             stream_send_buffer_size: 16 * 1024,
             stream_receive_buffer_size: 16 * 1024,
             initial_peer_stream_receive_window: 16 * 1024,
+            accepted_record_window: 4096,
+            pending_ack_range_limit: 64,
         }
     }
 }
@@ -89,6 +91,8 @@ impl SessionFsm {
             .max(SessionRecordBuilder::MIN_CAPACITY);
         config.stream_send_buffer_size = config.stream_send_buffer_size.max(1);
         config.stream_receive_buffer_size = config.stream_receive_buffer_size.max(1);
+        config.accepted_record_window = config.accepted_record_window.max(1);
+        config.pending_ack_range_limit = config.pending_ack_range_limit.max(1);
         Self {
             config,
             state: SessionState {
@@ -99,8 +103,10 @@ impl SessionFsm {
                 next_record_seq: RecordSeq::from_u32(0),
                 next_write_id: 0,
                 tracked_records: Default::default(),
-                received_records: ReceivedRecords::default(),
-                ack_state: AckState::Idle,
+                record_rx: RecordRxState::new(
+                    config.accepted_record_window,
+                    config.pending_ack_range_limit,
+                ),
                 pending_ping: false,
                 streams: Default::default(),
                 next_stream_index: 0,
@@ -152,7 +158,7 @@ impl SessionFsm {
         let close = SessionClose { code };
         self.state.phase = SessionPhase::Closing(close.clone());
         self.state.tracked_records.clear();
-        self.state.ack_state = AckState::Idle;
+        self.state.record_rx.clear_ack_state();
         self.clear_streams();
         emit(SessionEvent::SessionClosed(close));
     }
@@ -179,14 +185,13 @@ impl SessionFsm {
 
         self.collect_timeouts(now);
 
-        let mut received_records = self.state.received_records.clone();
-        let out_of_order = match received_records.insert(seq) {
+        match self.state.record_rx.insert(seq) {
             ReceiveOutcome::TooOld => return,
             ReceiveOutcome::Duplicate => {
                 self.schedule_ack(now, true);
                 return;
             }
-            ReceiveOutcome::New { out_of_order } => out_of_order,
+            ReceiveOutcome::New => {}
         };
 
         let mut ack_eliciting = false;
@@ -222,15 +227,12 @@ impl SessionFsm {
             }
         }
 
-        // commit after processing
-        self.state.received_records = received_records;
-
         if handled_close {
             return;
         }
 
         if ack_eliciting {
-            self.schedule_ack(now, out_of_order);
+            self.schedule_ack(now, false);
         }
     }
 
@@ -261,7 +263,7 @@ impl SessionFsm {
             };
             restore_tracked_record(
                 now,
-                &mut self.state.ack_state,
+                &mut self.state.record_rx,
                 &mut self.state.pending_ping,
                 &mut self.state.streams,
                 record,
@@ -292,10 +294,7 @@ impl SessionFsm {
         if !self.state.phase.is_open() {
             return None;
         }
-        let ack_deadline = match self.state.ack_state {
-            AckState::Idle => None,
-            AckState::Dirty { due_at } => Some(due_at),
-        };
+        let ack_deadline = self.state.record_rx.ack_deadline();
         let retransmit_deadline = self
             .state
             .tracked_records
@@ -361,7 +360,7 @@ impl SessionFsm {
         let mut outbound = TrackedRecord {
             seq,
             frames: Vec::new(),
-            ack_included: false,
+            ack: None,
             ping_included: false,
             window_updates: Vec::new(),
             sent_at: None,
@@ -378,10 +377,12 @@ impl SessionFsm {
 
         self.push_next_stream_data(&mut builder, &mut outbound);
 
-        if let Some((ack, due_at)) = self.pending_ack() {
-            if (!builder.is_empty() || due_at <= now) && builder.push_ack(&ack) {
-                outbound.ack_included = true;
-                self.state.ack_state = AckState::Idle;
+        if let Some(pending_ack) = self.pending_ack(builder.remaining_capacity()) {
+            if !builder.is_empty() || pending_ack.due_at <= now {
+                if builder.push_ack(&pending_ack.ack) {
+                    self.state.record_rx.on_ack_emitted(&pending_ack);
+                    outbound.ack = Some(pending_ack.ack);
+                }
             }
         }
 
@@ -458,7 +459,7 @@ impl SessionFsm {
         builder: &mut SessionRecordBuilder,
         outbound: &mut TrackedRecord,
     ) {
-        const OVERHEAD: usize = 1 + VarInt::MAX_SIZE + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
+        const OVERHEAD: usize = 1 + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
 
         let len = self.state.streams.len();
         if len == 0 {
@@ -525,38 +526,39 @@ impl SessionFsm {
 
     fn process_record_ack(&mut self, ack: &RecordAck, emit: &mut impl FnMut(SessionEvent)) {
         let stream_send_buffer_size = self.config.stream_send_buffer_size;
-        {
-            let tracked_records = &mut self.state.tracked_records;
-            let streams = &mut self.state.streams;
-            for (_, record) in tracked_records.extract_if(.., |_, record| {
+        let acked_records = self
+            .state
+            .tracked_records
+            .extract_if(.., |_, record| {
                 record.sent_at.is_some() && ack.contains(record.seq.into_inner())
-            }) {
-                for frame in &record.frames {
-                    acknowledge_tracked_frame(streams, stream_send_buffer_size, frame, emit);
-                }
+            })
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
+
+        for record in acked_records {
+            for frame in &record.frames {
+                acknowledge_tracked_frame(
+                    &mut self.state.streams,
+                    stream_send_buffer_size,
+                    frame,
+                    emit,
+                );
             }
         }
         self.reap_reapable_streams();
     }
 
     fn schedule_ack(&mut self, now: Instant, immediate: bool) {
-        schedule_ack(
-            &mut self.state.ack_state,
-            if immediate {
-                now
-            } else {
-                now + self.config.ack_delay
-            },
-        );
+        self.state.record_rx.schedule_ack(if immediate {
+            now
+        } else {
+            now + self.config.ack_delay
+        });
     }
 
-    fn pending_ack(&self) -> Option<(RecordAck, Instant)> {
-        match self.state.ack_state {
-            AckState::Idle => None,
-            AckState::Dirty { due_at } => {
-                self.state.received_records.ack().map(|ack| (ack, due_at))
-            }
-        }
+    fn pending_ack(&self, remaining_capacity: usize) -> Option<PendingAck> {
+        let max_ack_wire_size = remaining_capacity.checked_sub(1)?;
+        self.state.record_rx.pending_ack(max_ack_wire_size)
     }
 
     fn collect_timeouts(&mut self, now: Instant) {
@@ -568,7 +570,7 @@ impl SessionFsm {
         }) {
             restore_tracked_record(
                 now,
-                &mut self.state.ack_state,
+                &mut self.state.record_rx,
                 &mut self.state.pending_ping,
                 &mut self.state.streams,
                 record,
@@ -854,15 +856,6 @@ impl SessionFsm {
     }
 }
 
-fn schedule_ack(ack_state: &mut AckState, due_at: Instant) {
-    *ack_state = match *ack_state {
-        AckState::Dirty { due_at: old } => AckState::Dirty {
-            due_at: due_at.min(old),
-        },
-        AckState::Idle => AckState::Dirty { due_at },
-    };
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingStreamAction {
     Create,
@@ -905,13 +898,13 @@ fn local_stream_was_opened(
 
 fn restore_tracked_record(
     now: Instant,
-    ack_state: &mut AckState,
+    record_rx: &mut RecordRxState,
     pending_ping: &mut bool,
     streams: &mut IndexMap<StreamId, StreamState>,
     record: TrackedRecord,
 ) {
-    if record.ack_included {
-        schedule_ack(ack_state, now);
+    if let Some(ack) = &record.ack {
+        record_rx.restore_acked_ranges(ack, now);
     }
     if record.ping_included {
         *pending_ping = true;

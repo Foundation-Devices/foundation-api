@@ -84,8 +84,26 @@ impl RangeSet {
         self.0.first_key_value().map(|(&start, _)| start)
     }
 
+    pub fn max(&self) -> Option<u64> {
+        self.0
+            .last_key_value()
+            .map(|(_, &end)| end.checked_sub(1).unwrap())
+    }
+
+    pub fn contains(&self, x: u64) -> bool {
+        self.before(x).is_some_and(|(_, end)| end > x)
+    }
+
+    pub fn range_count(&self) -> usize {
+        self.0.len()
+    }
+
     pub fn iter(&self) -> Iter<'_> {
         Iter(self.0.iter())
+    }
+
+    pub fn iter_rev(&self) -> RevIter<'_> {
+        RevIter(self.0.iter().rev())
     }
 
     pub fn peek_min(&self) -> Option<Range<u64>> {
@@ -95,6 +113,19 @@ impl RangeSet {
 
     pub fn pop_min(&mut self) -> Option<Range<u64>> {
         let result = self.peek_min()?;
+        self.0.remove(&result.start);
+        Some(result)
+    }
+
+    #[cfg(test)]
+    pub fn peek_max(&self) -> Option<Range<u64>> {
+        let (&start, &end) = self.0.iter().next_back()?;
+        Some(start..end)
+    }
+
+    #[cfg(test)]
+    pub fn pop_max(&mut self) -> Option<Range<u64>> {
+        let result = self.peek_max()?;
         self.0.remove(&result.start);
         Some(result)
     }
@@ -126,6 +157,16 @@ impl Iterator for Iter<'_> {
     }
 }
 
+pub struct RevIter<'a>(std::iter::Rev<std::collections::btree_map::Iter<'a, u64, u64>>);
+
+impl Iterator for RevIter<'_> {
+    type Item = Range<u64>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|(&start, &end)| start..end)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RangeSet;
@@ -145,5 +186,36 @@ mod tests {
         set.insert(10..40);
         assert!(set.remove(20..30));
         assert_eq!(set.iter().collect::<Vec<_>>(), vec![10..20, 30..40]);
+    }
+
+    #[test]
+    fn reverse_iteration_visits_highest_range_first() {
+        let mut set = RangeSet::new();
+        set.insert(10..20);
+        set.insert(30..40);
+        set.insert(50..60);
+
+        assert_eq!(
+            set.iter_rev().collect::<Vec<_>>(),
+            vec![50..60, 30..40, 10..20]
+        );
+        assert_eq!(set.peek_max(), Some(50..60));
+        assert_eq!(set.pop_max(), Some(50..60));
+        assert_eq!(set.iter().collect::<Vec<_>>(), vec![10..20, 30..40]);
+    }
+
+    #[test]
+    fn contains_and_max_reflect_current_membership() {
+        let mut set = RangeSet::new();
+        set.insert(10..20);
+        set.insert(30..31);
+
+        assert!(!set.contains(9));
+        assert!(set.contains(10));
+        assert!(set.contains(19));
+        assert!(!set.contains(20));
+        assert_eq!(set.min(), Some(10));
+        assert_eq!(set.max(), Some(30));
+        assert_eq!(set.range_count(), 2);
     }
 }

@@ -315,6 +315,8 @@ fn session_config(harness: &Harness, a: bool) -> SessionConfig {
         peer_timeout: config.session_peer_timeout,
         stream_send_buffer_size: config.session_stream_send_buffer_size,
         stream_receive_buffer_size: config.session_stream_receive_buffer_size,
+        accepted_record_window: config.session_accepted_record_window,
+        pending_ack_range_limit: config.session_pending_ack_range_limit,
         initial_peer_stream_receive_window: if a {
             harness.b.fsm.config.session_stream_receive_buffer_size
         } else {
