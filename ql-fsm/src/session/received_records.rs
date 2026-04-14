@@ -1,6 +1,6 @@
 use std::{ops::RangeInclusive, time::Instant};
 
-use ql_wire::{RecordAck, RecordSeq, WireEncode};
+use ql_wire::{RecordAck, RecordAckBuilder, RecordSeq};
 
 use super::range_set::RangeSet;
 
@@ -65,18 +65,6 @@ impl RecordRxState {
         ReceiveOutcome::New
     }
 
-    #[cfg(test)]
-    pub fn contains(&self, seq: RecordSeq) -> bool {
-        self.accepted_records.contains(seq.into_inner())
-    }
-
-    #[cfg(test)]
-    pub fn largest_accepted(&self) -> Option<RecordSeq> {
-        self.accepted_records
-            .max()
-            .map(|largest| RecordSeq::from_u64(largest).unwrap())
-    }
-
     pub fn ack_deadline(&self) -> Option<Instant> {
         match self.ack_state {
             AckState::Idle => None,
@@ -100,26 +88,23 @@ impl RecordRxState {
         }
 
         let total_range_count = self.pending_ack_ranges.range_count();
-        let mut included_range_count = 0usize;
-        let mut ranges = Vec::new();
-        let mut ack = None;
+        let mut ack = RecordAckBuilder::new();
+        let mut selected_range_count = 0usize;
 
         for range in self.pending_ack_ranges.iter_rev() {
-            ranges.push(to_ack_range(range));
-            let candidate = RecordAck::from_ranges(ranges.iter().cloned()).unwrap();
-            if candidate.encoded_len() > max_wire_size {
-                ranges.pop();
+            let pushed = ack
+                .try_push_range(to_ack_range(range), max_wire_size)
+                .unwrap();
+            if !pushed {
                 break;
             }
-
-            included_range_count += 1;
-            ack = Some(candidate);
+            selected_range_count += 1;
         }
 
-        ack.map(|ack| PendingAck {
-            ack,
+        (selected_range_count != 0).then(|| PendingAck {
+            ack: ack.build().unwrap(),
             due_at,
-            includes_all_pending: included_range_count == total_range_count,
+            includes_all_pending: total_range_count == selected_range_count,
         })
     }
 
@@ -244,8 +229,6 @@ mod tests {
         assert_eq!(record_rx.insert(seq(15)), ReceiveOutcome::New);
 
         assert_eq!(record_rx.insert(seq(10)), ReceiveOutcome::TooOld);
-        assert!(!record_rx.contains(seq(10)));
-        assert_eq!(record_rx.largest_accepted(), Some(seq(15)));
     }
 
     #[test]

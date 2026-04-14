@@ -11,8 +11,8 @@ pub struct RecordAck {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordAckBlock {
-    gap: VarInt,
-    range_len: VarInt,
+    pub gap: VarInt,
+    pub range_len: VarInt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,67 +34,14 @@ impl RecordAck {
     where
         I: IntoIterator<Item = RangeInclusive<RecordSeq>>,
     {
-        let mut ranges = ranges.into_iter();
-        let Some(first_range) = ranges.next() else {
-            return Err(RecordAckRangeError::Empty);
-        };
-
-        let first_start = first_range.start().into_inner();
-        let first_end = first_range.end().into_inner();
-        if first_start > first_end {
-            return Err(RecordAckRangeError::InvertedRange);
-        }
-
-        let mut prev_start = first_start;
-        let mut prev_end = first_end;
-        let mut blocks = Vec::new();
-
+        let mut builder = RecordAckBuilder::new();
         for range in ranges {
-            let start = range.start().into_inner();
-            let end = range.end().into_inner();
-            if start > end {
-                return Err(RecordAckRangeError::InvertedRange);
+            let pushed = builder.try_push_range(range, usize::MAX)?;
+            if !pushed {
+                unreachable!("record ack should fit inside usize::MAX");
             }
-            if end >= prev_end || end.saturating_add(1) >= prev_start {
-                return Err(RecordAckRangeError::NotCanonical);
-            }
-
-            let gap = prev_start
-                .checked_sub(end)
-                .and_then(|delta| delta.checked_sub(2))
-                .expect("canonical ack ranges stay separated by at least one sequence");
-            blocks.push(RecordAckBlock {
-                gap: VarInt::from_u64(gap).expect("record ack gap must fit varint"),
-                range_len: VarInt::from_u64(end - start)
-                    .expect("record ack range length must fit varint"),
-            });
-            prev_start = start;
-            prev_end = end;
         }
-
-        Ok(Self {
-            largest_acked: RecordSeq::from_u64(first_end)
-                .expect("record ack range upper bound must fit record sequence"),
-            first_range_len: VarInt::from_u64(first_end - first_start)
-                .expect("record ack first range length must fit varint"),
-            blocks: blocks.into_boxed_slice(),
-        })
-    }
-
-    pub fn largest_acked(&self) -> RecordSeq {
-        self.largest_acked
-    }
-
-    pub fn first_range_len(&self) -> VarInt {
-        self.first_range_len
-    }
-
-    pub fn blocks(&self) -> &[RecordAckBlock] {
-        &self.blocks
-    }
-
-    pub fn range_count(&self) -> usize {
-        1 + self.blocks.len()
+        builder.build()
     }
 
     pub fn ranges(&self) -> RecordAckRangeIter<'_> {
@@ -113,39 +60,14 @@ impl RecordAck {
         self.ranges().any(|range| range.contains(&seq))
     }
 
-    fn validate(&self) -> Result<(), WireError> {
-        let mut previous_start = self
-            .largest_acked
-            .into_inner()
-            .checked_sub(self.first_range_len.into_inner())
-            .ok_or(WireError::InvalidPayload)?;
-
-        for block in self.blocks.iter() {
-            let end = previous_start
-                .checked_sub(
-                    block
-                        .gap
-                        .into_inner()
-                        .checked_add(2)
-                        .ok_or(WireError::InvalidPayload)?,
-                )
-                .ok_or(WireError::InvalidPayload)?;
-            previous_start = end
-                .checked_sub(block.range_len.into_inner())
-                .ok_or(WireError::InvalidPayload)?;
-        }
-
-        Ok(())
+    fn block_count_len(block_count: usize) -> usize {
+        VarInt::try_from(block_count).unwrap().encoded_len()
     }
 }
 
 impl RecordAckBlock {
-    pub fn gap(&self) -> VarInt {
-        self.gap
-    }
-
-    pub fn range_len(&self) -> VarInt {
-        self.range_len
+    fn encoded_len(&self) -> usize {
+        self.gap.encoded_len() + self.range_len.encoded_len()
     }
 }
 
@@ -187,6 +109,7 @@ impl Iterator for RecordAckRangeIter<'_> {
         let previous_start = self
             .previous_start
             .expect("first ack range is always yielded");
+        // gap is encoded as missing_count - 1, so decoding steps back by gap + 2.
         let end = previous_start - block.gap.into_inner() - 2;
         let start = end - block.range_len.into_inner();
         self.previous_start = Some(start);
@@ -197,12 +120,12 @@ impl Iterator for RecordAckRangeIter<'_> {
 impl WireEncode for RecordAck {
     fn encoded_len(&self) -> usize {
         self.largest_acked.encoded_len()
-            + VarInt::try_from(self.blocks.len()).unwrap().encoded_len()
+            + Self::block_count_len(self.blocks.len())
             + self.first_range_len.encoded_len()
             + self
                 .blocks
                 .iter()
-                .map(|block| block.gap.encoded_len() + block.range_len.encoded_len())
+                .map(RecordAckBlock::encoded_len)
                 .sum::<usize>()
     }
 
@@ -236,16 +159,119 @@ impl<B: ByteSlice> codec::WireDecode<B> for RecordAck {
             first_range_len,
             blocks: blocks.into_boxed_slice(),
         };
-        ack.validate()?;
+
+        // validate
+        {
+            let mut previous_start = ack
+                .largest_acked
+                .into_inner()
+                .checked_sub(ack.first_range_len.into_inner())
+                .ok_or(WireError::InvalidPayload)?;
+
+            for block in ack.blocks.iter() {
+                let end = previous_start
+                    .checked_sub(
+                        block
+                            .gap
+                            .into_inner()
+                            .checked_add(2)
+                            .ok_or(WireError::InvalidPayload)?,
+                    )
+                    .ok_or(WireError::InvalidPayload)?;
+                previous_start = end
+                    .checked_sub(block.range_len.into_inner())
+                    .ok_or(WireError::InvalidPayload)?;
+            }
+        }
         Ok(ack)
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecordAckBuilder {
+    largest_acked: Option<RecordSeq>,
+    first_range_len: Option<VarInt>,
+    blocks: Vec<RecordAckBlock>,
+    previous_start: Option<u64>,
+    wire_len: usize,
+}
+
+impl RecordAckBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn try_push_range(
+        &mut self,
+        range: RangeInclusive<RecordSeq>,
+        max_wire_size: usize,
+    ) -> Result<bool, RecordAckRangeError> {
+        let start = range.start().into_inner();
+        let end = range.end().into_inner();
+        if start > end {
+            return Err(RecordAckRangeError::InvertedRange);
+        }
+
+        let range_len = VarInt::from_u64(end - start).unwrap();
+        if let Some(previous_start) = self.previous_start {
+            if end.saturating_add(1) >= previous_start {
+                return Err(RecordAckRangeError::NotCanonical);
+            }
+
+            let gap = previous_start
+                .checked_sub(end)
+                .and_then(|delta| delta.checked_sub(2))
+                .expect("canonical ack ranges stay separated by at least one sequence");
+            let block = RecordAckBlock {
+                gap: VarInt::from_u64(gap).unwrap(),
+                range_len,
+            };
+            let current_block_count_len = RecordAck::block_count_len(self.blocks.len());
+            let next_block_count_len = RecordAck::block_count_len(self.blocks.len() + 1);
+            let next_wire_len = self.wire_len
+                + (next_block_count_len - current_block_count_len)
+                + block.encoded_len();
+            if next_wire_len > max_wire_size {
+                return Ok(false);
+            }
+
+            self.previous_start = Some(start);
+            self.wire_len = next_wire_len;
+            self.blocks.push(block);
+            return Ok(true);
+        }
+
+        let largest_acked = RecordSeq::from_u64(end).unwrap();
+        let wire_len =
+            largest_acked.encoded_len() + RecordAck::block_count_len(0) + range_len.encoded_len();
+        if wire_len > max_wire_size {
+            return Ok(false);
+        }
+
+        self.largest_acked = Some(largest_acked);
+        self.first_range_len = Some(range_len);
+        self.previous_start = Some(start);
+        self.wire_len = wire_len;
+        Ok(true)
+    }
+
+    pub fn build(self) -> Result<RecordAck, RecordAckRangeError> {
+        let Some(largest_acked) = self.largest_acked else {
+            return Err(RecordAckRangeError::Empty);
+        };
+
+        Ok(RecordAck {
+            largest_acked,
+            first_range_len: self.first_range_len.unwrap(),
+            blocks: self.blocks.into_boxed_slice(),
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::ops::RangeInclusive;
 
-    use super::{RecordAck, RecordAckBlock, RecordAckRangeError};
+    use super::{RecordAck, RecordAckBlock, RecordAckBuilder, RecordAckRangeError};
     use crate::{RecordSeq, VarInt, WireDecode, WireEncode, WireError};
 
     fn seq(value: u64) -> RecordSeq {
@@ -276,10 +302,10 @@ mod tests {
             RecordAck::from_ranges([ack_range(95, 100), ack_range(90, 92), ack_range(80, 80)])
                 .unwrap();
 
-        assert_eq!(ack.largest_acked(), seq(100));
-        assert_eq!(ack.first_range_len(), varint(5));
+        assert_eq!(ack.largest_acked, seq(100));
+        assert_eq!(ack.first_range_len, varint(5));
         assert_eq!(
-            ack.blocks(),
+            ack.blocks.as_ref(),
             &[
                 RecordAckBlock {
                     gap: varint(1),
@@ -290,6 +316,52 @@ mod tests {
                     range_len: varint(0),
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn builder_matches_from_ranges() {
+        let mut builder = RecordAckBuilder::new();
+        assert!(builder
+            .try_push_range(ack_range(95, 100), usize::MAX)
+            .unwrap());
+        assert!(builder
+            .try_push_range(ack_range(90, 92), usize::MAX)
+            .unwrap());
+        assert!(builder
+            .try_push_range(ack_range(80, 80), usize::MAX)
+            .unwrap());
+
+        assert_eq!(
+            builder.build().unwrap(),
+            RecordAck::from_ranges([ack_range(95, 100), ack_range(90, 92), ack_range(80, 80)])
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn builder_stops_when_budget_is_exhausted() {
+        let first_only = RecordAck::from_ranges([ack_range(95, 100)]).unwrap();
+        let mut builder = RecordAckBuilder::new();
+
+        assert!(builder
+            .try_push_range(ack_range(95, 100), first_only.encoded_len())
+            .unwrap());
+        assert!(!builder
+            .try_push_range(ack_range(90, 92), first_only.encoded_len())
+            .unwrap());
+        assert_eq!(builder.build().unwrap(), first_only);
+    }
+
+    #[test]
+    fn builder_rejects_non_canonical_ranges() {
+        let mut builder = RecordAckBuilder::new();
+        assert!(builder
+            .try_push_range(ack_range(95, 100), usize::MAX)
+            .unwrap());
+        assert_eq!(
+            builder.try_push_range(ack_range(90, 95), usize::MAX),
+            Err(RecordAckRangeError::NotCanonical)
         );
     }
 
