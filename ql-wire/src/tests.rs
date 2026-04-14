@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use super::*;
 
 fn decode_handshake_record(bytes: &[u8]) -> QlHandshakeRecord {
@@ -19,6 +21,10 @@ fn varint(value: u64) -> VarInt {
 
 fn record_seq(value: u64) -> RecordSeq {
     RecordSeq(varint(value))
+}
+
+fn record_ack_range(start: u64, end: u64) -> RangeInclusive<RecordSeq> {
+    record_seq(start)..=record_seq(end)
 }
 
 fn stream_id(value: u64) -> StreamId {
@@ -647,15 +653,9 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     };
     let body = vec![
         SessionFrame::Ping,
-        SessionFrame::Ack(RecordAck {
-            base_seq: record_seq(12),
-            bits: (1u64 << 0)
-                | (1u64 << 1)
-                | (1u64 << 8)
-                | (1u64 << 9)
-                | (1u64 << 10)
-                | (1u64 << 11),
-        }),
+        SessionFrame::Ack(
+            RecordAck::from_ranges([record_ack_range(20, 23), record_ack_range(12, 13)]).unwrap(),
+        ),
         SessionFrame::StreamWindow(StreamWindow {
             stream_id: stream_id(9),
             maximum_offset: varint(65_536),
@@ -842,10 +842,9 @@ fn protocol_record_size_breakdown() {
             seq: record_seq(2),
         },
         &session.tx_key,
-        &[SessionFrame::Ack(RecordAck {
-            base_seq: record_seq(1),
-            bits: (1u64 << 0) | (1u64 << 1) | (1u64 << 5),
-        })],
+        &[SessionFrame::Ack(
+            RecordAck::from_ranges([record_ack_range(6, 6), record_ack_range(1, 2)]).unwrap(),
+        )],
     );
     let session_stream_empty = encrypt_record(
         &crypto,
