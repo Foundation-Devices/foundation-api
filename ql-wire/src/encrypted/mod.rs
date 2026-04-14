@@ -1,6 +1,6 @@
 use crate::{
     codec, encrypted_message::EncryptedMessage, BufView, ByteSlice, Nonce, QlCrypto, Reader,
-    SessionHeader, SessionKey, VarInt, WireDecode, WireEncode, WireError,
+    SessionHeader, SessionKey, WireDecode, WireEncode, WireError,
 };
 
 mod ack;
@@ -37,12 +37,7 @@ impl<B: ByteSlice> WireDecode<B> for SessionFrame<B> {
         let frame = match kind {
             SessionFrameKind::Ping => Self::Ping,
             SessionFrameKind::Ack => Self::Ack(reader.decode::<RecordAck>()?),
-            SessionFrameKind::StreamData => {
-                let len = usize::try_from(reader.decode::<VarInt>()?.into_inner())
-                    .map_err(|_| WireError::InvalidPayload)?;
-                let frame = reader.take_bytes(len)?;
-                Self::StreamData(StreamData::decode_exact(frame)?)
-            }
+            SessionFrameKind::StreamData => Self::StreamData(reader.decode::<StreamData<B>>()?),
             SessionFrameKind::StreamWindow => Self::StreamWindow(reader.decode::<StreamWindow>()?),
             SessionFrameKind::StreamClose => Self::StreamClose(reader.decode::<StreamClose>()?),
             SessionFrameKind::Close => Self::Close(reader.decode::<SessionClose>()?),
@@ -82,13 +77,7 @@ impl<B: BufView> WireEncode for SessionFrame<B> {
         1 + match self {
             Self::Ping => 0,
             Self::Ack(frame) => frame.encoded_len(),
-            Self::StreamData(frame) => {
-                let payload_len = frame.encoded_len();
-                VarInt::try_from(payload_len)
-                    .unwrap_or(VarInt::MAX)
-                    .encoded_len()
-                    + payload_len
-            }
+            Self::StreamData(frame) => frame.encoded_len(),
             Self::StreamWindow(frame) => frame.encoded_len(),
             Self::StreamClose(frame) => frame.encoded_len(),
             Self::Close(frame) => frame.encoded_len(),
@@ -100,13 +89,7 @@ impl<B: BufView> WireEncode for SessionFrame<B> {
         match self {
             Self::Ping => {}
             Self::Ack(frame) => frame.encode(out),
-            Self::StreamData(frame) => {
-                let payload_len = frame.encoded_len();
-                let payload_len = VarInt::try_from(payload_len)
-                    .expect("stream data frame length must fit ql-wire varint");
-                payload_len.encode(out);
-                frame.encode(out);
-            }
+            Self::StreamData(frame) => frame.encode(out),
             Self::StreamWindow(frame) => frame.encode(out),
             Self::StreamClose(frame) => frame.encode(out),
             Self::Close(frame) => frame.encode(out),

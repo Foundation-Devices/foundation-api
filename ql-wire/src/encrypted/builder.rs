@@ -3,7 +3,7 @@ use bytes::BufMut;
 use super::{RecordAck, SessionClose, SessionFrame, StreamClose, StreamData, StreamWindow};
 use crate::{
     BufView, ConnectionId, Nonce, QlCrypto, RecordSeq, RecordType, SessionHeader, SessionKey,
-    VarInt, WireEncode, QL_WIRE_VERSION,
+    WireEncode, QL_WIRE_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +71,7 @@ impl SessionRecordBuilder {
     }
 
     pub fn push_stream_data<B: BufView>(&mut self, frame: &StreamData<B>) -> bool {
-        self.push_len_prefixed_frame(super::SessionFrameKind::StreamData, frame)
+        self.push_frame_payload(super::SessionFrameKind::StreamData, frame)
     }
 
     pub fn push_stream_window(&mut self, frame: &StreamWindow) -> bool {
@@ -150,22 +150,6 @@ impl SessionRecordBuilder {
         let payload_wire_size = payload.encoded_len();
         self.push_wire_size(1 + payload_wire_size, |out| {
             out.put_u8(kind as u8);
-            payload.encode(out);
-        })
-    }
-
-    fn push_len_prefixed_frame<T: WireEncode + ?Sized>(
-        &mut self,
-        kind: super::SessionFrameKind,
-        payload: &T,
-    ) -> bool {
-        let payload_wire_size = payload.encoded_len();
-        let Ok(prefix_len) = VarInt::try_from(payload_wire_size) else {
-            return false;
-        };
-        self.push_wire_size(1 + prefix_len.encoded_len() + payload_wire_size, |out| {
-            out.put_u8(kind as u8);
-            prefix_len.encode(out);
             payload.encode(out);
         })
     }
