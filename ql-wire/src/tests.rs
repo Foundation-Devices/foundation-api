@@ -835,11 +835,23 @@ fn protocol_record_size_breakdown() {
         &session.tx_key,
         &[SessionFrame::Ping],
     );
-    let session_stream_empty = encrypt_record(
+    let session_ack = encrypt_record(
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
             seq: record_seq(2),
+        },
+        &session.tx_key,
+        &[SessionFrame::Ack(RecordAck {
+            base_seq: record_seq(1),
+            bits: (1u64 << 0) | (1u64 << 1) | (1u64 << 5),
+        })],
+    );
+    let session_stream_empty = encrypt_record(
+        &crypto,
+        SessionHeader {
+            connection_id: session.tx_connection_id,
+            seq: record_seq(3),
         },
         &session.tx_key,
         &[SessionFrame::StreamData(StreamData {
@@ -854,7 +866,7 @@ fn protocol_record_size_breakdown() {
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: record_seq(3),
+            seq: record_seq(4),
         },
         &session.tx_key,
         &[SessionFrame::Close(SessionClose {
@@ -874,6 +886,7 @@ fn protocol_record_size_breakdown() {
     print_size("ql-wire pq xx3", xx3.encode_vec().len());
     print_size("ql-wire pq xx4", xx4.encode_vec().len());
     print_size("ql-wire session ping", session_ping.encode_vec().len());
+    print_size("ql-wire session ack", session_ack.encode_vec().len());
     print_size(
         "ql-wire session stream empty",
         session_stream_empty.encode_vec().len(),
