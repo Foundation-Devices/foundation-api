@@ -181,6 +181,10 @@ impl Runner {
             session_peer_timeout: Duration::from_secs(5),
             ..QlFsmConfig::default()
         };
+        Self::connected_with_config(config)
+    }
+
+    fn connected_with_config(config: QlFsmConfig) -> Self {
         let connected_events = || SideEventState {
             last_peer_status: Some(PeerStatus::Connected),
             session_epoch: 1,
@@ -579,6 +583,23 @@ impl Runner {
         Ok(())
     }
 
+    fn assert_expected_delivered(&self, side: Side) -> TestCaseResult {
+        for (stream_id, expected) in &self.expected[side.idx()] {
+            let received = self.received[side.idx()]
+                .get(stream_id)
+                .map_or(&[][..], Vec::as_slice);
+            prop_assert_eq!(
+                received,
+                expected,
+                "side {:?} did not receive full payload for {:?}",
+                side,
+                stream_id
+            );
+        }
+
+        Ok(())
+    }
+
     fn assert_no_stream_events(&self) -> TestCaseResult {
         prop_assert!(
             self.known_streams.is_empty()
@@ -845,6 +866,19 @@ fn write_tracking_action_strategy() -> impl Strategy<Value = Action> {
     ]
 }
 
+fn packet_loss_recovery_action_strategy() -> impl Strategy<Value = Action> {
+    let queue_index = 0usize..16;
+    prop_oneof![
+        (0u8..20).prop_map(Action::AdvanceMs),
+        side_action(Action::OnTimer),
+        Just(Action::OnTimerBoth),
+        Just(Action::Pump),
+        side_usize_action(queue_index.clone(), Action::deliver_queued),
+        side_usize_action(queue_index.clone(), Action::duplicate_queued),
+        side_usize_action(queue_index, Action::drop_queued),
+    ]
+}
+
 fn terminal_action_strategy() -> impl Strategy<Value = Action> {
     let bytes = vec(any::<u8>(), 0..16);
     let slot = 0usize..SLOT_COUNT;
@@ -892,6 +926,41 @@ proptest_crate::proptest! {
         let mut runner = Runner::connected();
         runner.run(&actions)?;
         runner.assert_no_taken_writes()?;
+    }
+
+    #[test]
+    fn randomized_session_packet_loss_recovers(
+        payload in vec(any::<u8>(), 512..2048),
+        actions in vec(packet_loss_recovery_action_strategy(), 1..96),
+    ) {
+        let config = QlFsmConfig {
+            session_record_ack_delay: Duration::from_millis(1),
+            session_record_retransmit_timeout: Duration::from_millis(10),
+            session_record_max_size: 96,
+            session_pending_ack_range_limit: 512,
+            ..QlFsmConfig::default()
+        };
+        let mut runner = Runner::connected_with_config(config);
+
+        runner.apply(&Action::open_stream(Side::A, 0));
+        runner.observe_and_assert()?;
+
+        runner.apply(&Action::write(Side::A, 0, payload));
+        runner.observe_and_assert()?;
+
+        runner.apply(&Action::finish(Side::A, 0));
+        runner.observe_and_assert()?;
+
+        for action in &actions {
+            runner.apply(action);
+            runner.observe_and_assert()?;
+        }
+
+        runner.cleanup()?;
+        runner.observe_and_assert()?;
+        runner.assert_expected_delivered(Side::B)?;
+        runner.assert_terminal_semantics()?;
+        runner.assert_quiesced()?;
     }
 
     #[test]
