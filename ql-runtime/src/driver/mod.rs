@@ -388,6 +388,11 @@ impl DriverState {
                         break;
                     }
                     InboundWriteResult::Closed => {
+                        debug!(
+                            "runtime inbound consumer closed; sending CANCELLED: stream_id={:?} target={:?}",
+                            stream_id,
+                            target
+                        );
                         peer_closed = true;
                         break;
                     }

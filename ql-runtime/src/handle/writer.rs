@@ -131,12 +131,6 @@ impl ByteWriter {
 
 impl Drop for ByteWriter {
     fn drop(&mut self) {
-        debug!(
-            "byte writer drop close requested: stream_id={:?} target={:?} code={:?}",
-            self.stream_id,
-            self.target,
-            StreamCloseCode::CANCELLED
-        );
         self.close_inner(StreamCloseCode::CANCELLED);
     }
 }
