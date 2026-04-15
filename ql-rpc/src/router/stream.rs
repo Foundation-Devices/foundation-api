@@ -19,23 +19,31 @@ pub trait RpcStream {
 pub trait RpcRead {
     type Error: StreamError;
 
+    /// reads inbound bytes until eof or error
     fn poll_read(
         &mut self,
         max_len: usize,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<Bytes>, Self::Error>>;
+
+    /// aborts the read side
     fn close(self, code: StreamCloseCode);
 }
 
 pub trait RpcWrite {
     type Error: StreamError;
 
+    /// writes outbound bytes before finish or close
     fn poll_write(
         &mut self,
         bytes: &mut Bytes,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>>;
+
+    /// completes the write side and must be polled until ready without further write or close calls
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
+
+    /// aborts the write side before finish
     fn close(self, code: StreamCloseCode);
 }
 
