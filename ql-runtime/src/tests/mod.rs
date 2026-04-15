@@ -3,7 +3,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     task::{Context, Poll},
     time::Duration,
@@ -152,11 +152,63 @@ struct TestPair {
     b: TestSide,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct LinkBehavior {
+    base_delay: Duration,
+    drop_encrypted_every: Option<usize>,
+    duplicate_encrypted_every: Option<usize>,
+    delay_encrypted_every: Option<(usize, Duration)>,
+}
+
+#[derive(Clone, Default)]
+struct LinkController {
+    behavior: Arc<Mutex<LinkBehavior>>,
+}
+
+impl LinkController {
+    fn new(behavior: LinkBehavior) -> Self {
+        Self {
+            behavior: Arc::new(Mutex::new(behavior)),
+        }
+    }
+
+    fn load(&self) -> LinkBehavior {
+        *self.behavior.lock().unwrap()
+    }
+
+    fn store(&self, behavior: LinkBehavior) {
+        *self.behavior.lock().unwrap() = behavior;
+    }
+}
+
+#[derive(Clone)]
+struct ControlledLinks {
+    a_to_b: LinkController,
+    b_to_a: LinkController,
+}
+
 impl TestPair {
     fn new(config: RuntimeConfig) -> Self {
+        Self::new_with_links(config, LinkBehavior::default(), LinkBehavior::default())
+    }
+
+    fn new_with_links(config: RuntimeConfig, a_to_b: LinkBehavior, b_to_a: LinkBehavior) -> Self {
+        let (pair, _links) = Self::new_with_controlled_links(config, a_to_b, b_to_a);
+        pair
+    }
+
+    fn new_with_controlled_links(
+        config: RuntimeConfig,
+        a_to_b: LinkBehavior,
+        b_to_a: LinkBehavior,
+    ) -> (Self, ControlledLinks) {
         let (platform_a, outbound_a, status_a, inbound_a) = TestPlatform::new_with_inbound();
         let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
+        let links = ControlledLinks {
+            a_to_b: LinkController::new(a_to_b),
+            b_to_a: LinkController::new(b_to_a),
+        };
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config.clone());
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
@@ -164,24 +216,27 @@ impl TestPair {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
+        spawn_simulated_forwarder(outbound_a, handle_b.clone(), links.a_to_b.clone());
+        spawn_simulated_forwarder(outbound_b, handle_a.clone(), links.b_to_a.clone());
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
 
-        Self {
-            a: TestSide {
-                handle: handle_a,
-                status: status_a,
-                peer: identity_a.xid,
-                inbound: inbound_a,
+        (
+            Self {
+                a: TestSide {
+                    handle: handle_a,
+                    status: status_a,
+                    peer: identity_a.xid,
+                    inbound: inbound_a,
+                },
+                b: TestSide {
+                    handle: handle_b,
+                    status: status_b,
+                    peer: identity_b.xid,
+                    inbound: inbound_b,
+                },
             },
-            b: TestSide {
-                handle: handle_b,
-                status: status_b,
-                peer: identity_b.xid,
-                inbound: inbound_b,
-            },
-        }
+            links,
+        )
     }
 
     fn side(&self, side: Side) -> &TestSide {
@@ -212,10 +267,6 @@ impl TestPair {
             PeerStatus::Connected,
         )
         .await;
-    }
-
-    fn handle(&self, side: Side) -> RuntimeHandle {
-        self.side(side).handle.clone()
     }
 
     fn take_inbound(&mut self, side: Side) -> Receiver<QlStream> {
@@ -384,9 +435,70 @@ fn register_peers(
 }
 
 fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+    spawn_simulated_forwarder(
+        outbound,
+        handle,
+        LinkController::new(LinkBehavior::default()),
+    );
+}
+
+fn spawn_simulated_forwarder(
+    outbound: Receiver<Vec<u8>>,
+    handle: RuntimeHandle,
+    controller: LinkController,
+) {
     tokio::task::spawn_local(async move {
+        let mut encrypted_count = 0usize;
         while let Ok(bytes) = outbound.recv().await {
-            handle.receive(bytes);
+            let behavior = controller.load();
+            let encrypted = is_encrypted_payload(&bytes);
+            let ordinal = if encrypted {
+                encrypted_count = encrypted_count.saturating_add(1);
+                Some(encrypted_count)
+            } else {
+                None
+            };
+
+            if ordinal.is_some_and(|count| {
+                behavior
+                    .drop_encrypted_every
+                    .is_some_and(|nth| nth != 0 && count % nth == 0)
+            }) {
+                continue;
+            }
+
+            let mut delay = behavior.base_delay;
+            if let Some(count) = ordinal {
+                if let Some((nth, extra_delay)) = behavior.delay_encrypted_every {
+                    if nth != 0 && count % nth == 0 {
+                        delay += extra_delay;
+                    }
+                }
+            }
+
+            let primary = bytes.clone();
+            let primary_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                primary_handle.receive(primary);
+            });
+
+            if ordinal.is_some_and(|count| {
+                behavior
+                    .duplicate_encrypted_every
+                    .is_some_and(|nth| nth != 0 && count % nth == 0)
+            }) {
+                let duplicate_handle = handle.clone();
+                tokio::task::spawn_local(async move {
+                    let duplicate_delay = delay + Duration::from_millis(1);
+                    if !duplicate_delay.is_zero() {
+                        tokio::time::sleep(duplicate_delay).await;
+                    }
+                    duplicate_handle.receive(bytes);
+                });
+            }
         }
     });
 }
@@ -432,6 +544,16 @@ where
 {
     let local = LocalSet::new();
     local.run_until(future).await;
+}
+
+#[allow(clippy::future_not_send)]
+async fn run_local_test_timeout<F>(duration: Duration, future: F)
+where
+    F: Future<Output = ()>,
+{
+    tokio::time::timeout(duration, run_local_test(future))
+        .await
+        .unwrap_or_else(|_| panic!("local runtime test exceeded {:?}", duration));
 }
 
 async fn await_status(receiver: &Receiver<StatusEvent>, peer: XID, stage: PeerStatus) {

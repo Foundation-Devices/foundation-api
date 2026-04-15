@@ -60,7 +60,7 @@ async fn open_stream_duplex_happy_path() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn reader_exposes_bounded_chunk_reads() {
+async fn reader_respects_max_len() {
     run_local_test(async {
         let mut pair = TestPair::new(default_runtime_config());
         pair.connect_and_wait(Side::A).await;
@@ -70,18 +70,12 @@ async fn reader_exposes_bounded_chunk_reads() {
             let inbound = inbound_b.recv().await.unwrap();
             let mut reader = inbound.reader;
 
-            assert_eq!(
-                next_chunk_max(&mut reader, 2).await.unwrap(),
-                Some(vec![1, 2])
-            );
+            assert_eq!(next_chunk_max(&mut reader, 2).await.unwrap(), Some(vec![1, 2]));
             assert_eq!(
                 next_chunk_max(&mut reader, 2).await.unwrap(),
                 Some(vec![3, 4])
             );
-            assert_eq!(
-                next_chunk_max(&mut reader, 2).await.unwrap(),
-                Some(vec![5, 6])
-            );
+            assert_eq!(next_chunk_max(&mut reader, 2).await.unwrap(), Some(vec![5, 6]));
             assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
 
             inbound.writer.finish();
@@ -95,12 +89,7 @@ async fn reader_exposes_bounded_chunk_reads() {
             .unwrap();
         stream
             .writer
-            .write(Bytes::from_static(&[1, 2, 3, 4]))
-            .await
-            .unwrap();
-        stream
-            .writer
-            .write(Bytes::from_static(&[5, 6]))
+            .write(Bytes::from_static(&[1, 2, 3, 4, 5, 6]))
             .await
             .unwrap();
         stream.writer.finish();
@@ -409,6 +398,215 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
             .unwrap()
             .unwrap();
         assert_eq!(received_request, request_payload);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
+    run_local_test_timeout(Duration::from_secs(5), async {
+        let payload_len = 2 * 1024 * 1024;
+        let chunk_len = 16 * 1024;
+        let payload: Vec<u8> = (0..payload_len)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let expected = payload.clone();
+        let config = RuntimeConfig {
+            fsm: QlFsmConfig {
+                session_record_max_size: 16 * 1024,
+                session_record_ack_delay: Duration::from_millis(2),
+                session_record_retransmit_timeout: Duration::from_millis(25),
+                session_stream_send_buffer_size: 4 * 1024 * 1024,
+                session_stream_receive_buffer_size: 4 * 1024 * 1024,
+                session_accepted_record_window: 16 * 1024,
+                session_pending_ack_range_limit: 4 * 1024,
+                ..default_runtime_config().fsm
+            },
+            stream_send_buffer_bytes: 4 * 1024 * 1024,
+            ..default_runtime_config()
+        };
+        let (mut pair, links) = TestPair::new_with_controlled_links(
+            config,
+            LinkBehavior {
+                base_delay: Duration::from_millis(1),
+                drop_encrypted_every: Some(41),
+                delay_encrypted_every: Some((13, Duration::from_millis(12))),
+                ..LinkBehavior::default()
+            },
+            LinkBehavior {
+                base_delay: Duration::from_millis(1),
+                ..LinkBehavior::default()
+            },
+        );
+        pair.connect_and_wait(Side::A).await;
+        links.b_to_a.store(LinkBehavior {
+            base_delay: Duration::from_millis(3),
+            drop_encrypted_every: Some(7),
+            duplicate_encrypted_every: Some(19),
+            delay_encrypted_every: Some((3, Duration::from_millis(25))),
+        });
+        let inbound_b = pair.take_inbound(Side::B);
+
+        let responder = tokio::task::spawn_local(async move {
+            let stream = inbound_b.recv().await.unwrap();
+            eprintln!("responder accepted inbound stream");
+            let mut reader = stream.reader;
+            let mut received = Vec::new();
+            while let Some(chunk) = next_chunk(&mut reader).await.unwrap() {
+                if received.len() >= 36 * chunk_len {
+                    eprintln!("responder received chunk of {} bytes", chunk.len());
+                }
+                received.extend_from_slice(&chunk);
+                if received.len() % (256 * 1024) == 0 {
+                    eprintln!("responder received {} bytes", received.len());
+                }
+            }
+            stream.writer.finish();
+            received
+        });
+
+        let recovery_links = links.clone();
+        let recovery = tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            eprintln!("restoring reverse path");
+            recovery_links.b_to_a.store(LinkBehavior {
+                base_delay: Duration::from_millis(1),
+                delay_encrypted_every: Some((17, Duration::from_millis(8))),
+                ..LinkBehavior::default()
+            });
+        });
+
+        let writer = tokio::task::spawn_local(async move {
+            let mut stream = pair
+                .side(Side::A)
+                .handle
+                .open_stream(test_route_id())
+                .await
+                .unwrap();
+            for (index, chunk) in payload.chunks(chunk_len).enumerate() {
+                if index + 1 >= 40 {
+                    eprintln!("writer attempting chunk {}", index + 1);
+                }
+                stream
+                    .writer
+                    .write(Bytes::copy_from_slice(chunk))
+                    .await
+                    .unwrap();
+                if index + 1 >= 40 {
+                    eprintln!("writer queued chunk {}", index + 1);
+                }
+                if index % 16 == 15 {
+                    eprintln!("writer queued {} chunks", index + 1);
+                }
+            }
+            eprintln!("writer finished queueing");
+            stream.writer.finish();
+            eprintln!("writer waiting for eof");
+            assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
+            eprintln!("writer observed eof");
+        });
+
+        tokio::time::timeout(Duration::from_secs(30), writer)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), recovery)
+            .await
+            .unwrap()
+            .unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(30), responder)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received, expected);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reproducer_writer_stalls_after_reverse_path_impairment() {
+    run_local_test_timeout(Duration::from_secs(5), async {
+        let payload_len = 2 * 1024 * 1024;
+        let chunk_len = 16 * 1024;
+        let payload: Vec<u8> = (0..payload_len)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let config = RuntimeConfig {
+            fsm: QlFsmConfig {
+                session_record_max_size: 16 * 1024,
+                session_record_ack_delay: Duration::from_millis(2),
+                session_record_retransmit_timeout: Duration::from_millis(25),
+                session_stream_send_buffer_size: 4 * 1024 * 1024,
+                session_stream_receive_buffer_size: 4 * 1024 * 1024,
+                session_accepted_record_window: 16 * 1024,
+                session_pending_ack_range_limit: 4 * 1024,
+                ..default_runtime_config().fsm
+            },
+            stream_send_buffer_bytes: 4 * 1024 * 1024,
+            ..default_runtime_config()
+        };
+        let (mut pair, links) = TestPair::new_with_controlled_links(
+            config,
+            LinkBehavior {
+                base_delay: Duration::from_millis(1),
+                drop_encrypted_every: Some(41),
+                delay_encrypted_every: Some((13, Duration::from_millis(12))),
+                ..LinkBehavior::default()
+            },
+            LinkBehavior {
+                base_delay: Duration::from_millis(1),
+                ..LinkBehavior::default()
+            },
+        );
+        pair.connect_and_wait(Side::A).await;
+        links.b_to_a.store(LinkBehavior {
+            base_delay: Duration::from_millis(3),
+            drop_encrypted_every: Some(7),
+            duplicate_encrypted_every: Some(19),
+            delay_encrypted_every: Some((3, Duration::from_millis(25))),
+        });
+        let inbound_b = pair.take_inbound(Side::B);
+
+        let responder = tokio::task::spawn_local(async move {
+            let stream = inbound_b.recv().await.unwrap();
+            let mut reader = stream.reader;
+            let mut received = Vec::new();
+            while let Some(chunk) = next_chunk(&mut reader).await.unwrap() {
+                received.extend_from_slice(&chunk);
+            }
+        });
+
+        let recovery_links = links.clone();
+        let recovery = tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            recovery_links.b_to_a.store(LinkBehavior {
+                base_delay: Duration::from_millis(1),
+                delay_encrypted_every: Some((17, Duration::from_millis(8))),
+                ..LinkBehavior::default()
+            });
+        });
+
+        let writer = tokio::task::spawn_local(async move {
+            let mut stream = pair
+                .side(Side::A)
+                .handle
+                .open_stream(test_route_id())
+                .await
+                .unwrap();
+            for chunk in payload.chunks(chunk_len) {
+                stream
+                    .writer
+                    .write(Bytes::copy_from_slice(chunk))
+                    .await
+                    .unwrap();
+            }
+            stream.writer.finish();
+            let _ = next_chunk(&mut stream.reader).await;
+        });
+
+        let _ = tokio::time::timeout(Duration::from_secs(15), writer).await;
+        recovery.abort();
+        responder.abort();
     })
     .await;
 }
