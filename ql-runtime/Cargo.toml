@@ -14,6 +14,7 @@ async-channel = { version = "2.5" }
 bytes = "1"
 event-listener = "5.4"
 futures-lite = { version = "2.5" }
+log = "0.4"
 oneshot = { version = "0.1.11" }
 ql-fsm = { path = "../ql-fsm" }
 ql-rpc = { path = "../ql-rpc", optional = true }

@@ -6,6 +6,7 @@ use std::{
 
 use bytes::Bytes;
 use event_listener::EventListener;
+use log::{debug, trace};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
 use crate::{
@@ -82,11 +83,21 @@ impl ByteWriter {
 
         match writer.poll_send(bytes, &mut self.listener, cx) {
             Poll::Ready(Ok(())) => {
+                trace!(
+                    "byte writer accepted chunk: stream_id={:?} target={:?}",
+                    self.stream_id,
+                    self.target
+                );
                 self.listener = None;
                 self.poll_runtime();
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(SendClosed(_bytes))) => {
+                debug!(
+                    "byte writer send closed: stream_id={:?} target={:?}",
+                    self.stream_id,
+                    self.target
+                );
                 self.writer.take();
                 self.listener = None;
                 self.poll_terminal_error(cx).map(Err)
@@ -104,6 +115,11 @@ impl ByteWriter {
         let Some(writer) = self.writer.take() else {
             return;
         };
+        debug!(
+            "byte writer finish: stream_id={:?} target={:?}",
+            self.stream_id,
+            self.target
+        );
         writer.close();
         self.poll_runtime();
     }
@@ -115,6 +131,12 @@ impl ByteWriter {
 
 impl Drop for ByteWriter {
     fn drop(&mut self) {
+        debug!(
+            "byte writer drop close requested: stream_id={:?} target={:?} code={:?}",
+            self.stream_id,
+            self.target,
+            StreamCloseCode::CANCELLED
+        );
         self.close_inner(StreamCloseCode::CANCELLED);
     }
 }
@@ -140,6 +162,12 @@ impl ByteWriter {
         if self.writer.take().is_none() {
             return;
         }
+        debug!(
+            "byte writer close: stream_id={:?} target={:?} code={:?}",
+            self.stream_id,
+            self.target,
+            code
+        );
         self.listener = None;
         self.handle.send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
