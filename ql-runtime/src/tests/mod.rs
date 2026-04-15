@@ -588,7 +588,7 @@ async fn assert_no_status_for(
     assert!(res.is_err(), "unexpected status event: {status:?}");
 }
 
-async fn read_all(mut stream: crate::ByteReader) -> Result<Vec<u8>, QlStreamError> {
+async fn read_all(mut stream: crate::StreamReader) -> Result<Vec<u8>, QlStreamError> {
     let mut data = Vec::new();
     while let Some(chunk) = next_chunk(&mut stream).await? {
         data.extend_from_slice(&chunk);
@@ -597,7 +597,7 @@ async fn read_all(mut stream: crate::ByteReader) -> Result<Vec<u8>, QlStreamErro
 }
 
 async fn next_chunk_max(
-    stream: &mut crate::ByteReader,
+    stream: &mut crate::StreamReader,
     max_len: usize,
 ) -> Result<Option<Vec<u8>>, crate::QlStreamError> {
     stream
@@ -606,7 +606,7 @@ async fn next_chunk_max(
         .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
 }
 
-async fn next_chunk(stream: &mut crate::ByteReader) -> Result<Option<Vec<u8>>, QlStreamError> {
+async fn next_chunk(stream: &mut crate::StreamReader) -> Result<Option<Vec<u8>>, QlStreamError> {
     next_chunk_max(stream, usize::MAX).await
 }
 

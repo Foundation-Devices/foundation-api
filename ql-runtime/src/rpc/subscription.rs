@@ -10,10 +10,10 @@ use ql_rpc::{
 };
 
 use super::RpcError;
-use crate::ByteReader;
+use crate::StreamReader;
 
 pub struct Subscription<M: SubscriptionRpc> {
-    pub(super) stream: ByteReader,
+    pub(super) stream: StreamReader,
     pub(super) reader: Option<ql_rpc::subscription::ResponseReader<M>>,
 }
 

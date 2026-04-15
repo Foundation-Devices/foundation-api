@@ -11,8 +11,8 @@ use crate::{chunk_slot, command::RuntimeCommand};
 pub struct QlStream {
     pub stream_id: StreamId,
     pub route_id: RouteId,
-    pub writer: ByteWriter,
-    pub reader: ByteReader,
+    pub writer: StreamWriter,
+    pub reader: StreamReader,
 }
 
 #[derive(Clone)]
@@ -70,7 +70,7 @@ impl RuntimeHandle {
         Ok(QlStream {
             stream_id,
             route_id,
-            writer: ByteWriter::new(
+            writer: StreamWriter::new(
                 stream_id,
                 CloseTarget::Origin,
                 request_writer,

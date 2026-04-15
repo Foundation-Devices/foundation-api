@@ -22,7 +22,7 @@ use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, Ou
 use crate::{
     chunk_slot,
     command::RuntimeCommand,
-    handle::{ByteReader, ByteWriter, QlStream},
+    handle::{QlStream, StreamReader, StreamWriter},
     log,
     platform::{QlPlatform, QlTimer},
     QlStreamError, Runtime, RuntimeHandle,
@@ -235,7 +235,7 @@ impl DriverState {
                         Some(InboundIo::new(response_writer, response_terminal_tx)),
                     ),
                 );
-                let reader = ByteReader::new(
+                let reader = StreamReader::new(
                     stream_id,
                     CloseTarget::Return,
                     response_reader,
@@ -386,14 +386,14 @@ impl DriverState {
         platform.handle_inbound(QlStream {
             stream_id,
             route_id,
-            reader: ByteReader::new(
+            reader: StreamReader::new(
                 stream_id,
                 CloseTarget::Origin,
                 request_reader,
                 request_terminal_rx,
                 RuntimeHandle::new(runtime_tx.clone()),
             ),
-            writer: ByteWriter::new(
+            writer: StreamWriter::new(
                 stream_id,
                 CloseTarget::Return,
                 response_writer,

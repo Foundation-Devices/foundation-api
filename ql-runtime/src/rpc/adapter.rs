@@ -8,12 +8,12 @@ pub use ql_rpc::{
 use ql_rpc::{RpcRead, RpcStream, RpcWrite, StreamError};
 use ql_wire::{RouteId as WireRouteId, StreamCloseCode as WireStreamCloseCode};
 
-use crate::{ByteReader, ByteWriter, QlStream, QlStreamError};
+use crate::{QlStream, QlStreamError, StreamReader, StreamWriter};
 
 impl RpcStream for QlStream {
     type Error = QlStreamError;
-    type Reader = ByteReader;
-    type Writer = ByteWriter;
+    type Reader = StreamReader;
+    type Writer = StreamWriter;
 
     fn route_id(&self) -> Option<RouteId> {
         let route_id = u32::try_from(self.route_id.into_inner()).ok()?;
@@ -25,7 +25,7 @@ impl RpcStream for QlStream {
     }
 }
 
-impl RpcRead for ByteReader {
+impl RpcRead for StreamReader {
     type Error = QlStreamError;
 
     fn poll_read(
@@ -33,15 +33,15 @@ impl RpcRead for ByteReader {
         max_len: usize,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
-        ByteReader::poll_read(self, max_len, cx)
+        StreamReader::poll_read(self, max_len, cx)
     }
 
     fn close(self, code: StreamCloseCode) {
-        ByteReader::close(self, to_wire_close_code(code));
+        StreamReader::close(self, to_wire_close_code(code));
     }
 }
 
-impl RpcWrite for ByteWriter {
+impl RpcWrite for StreamWriter {
     type Error = QlStreamError;
 
     fn poll_write(
@@ -49,15 +49,15 @@ impl RpcWrite for ByteWriter {
         bytes: &mut Bytes,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), QlStreamError>> {
-        ByteWriter::poll_write(self, bytes, cx)
+        StreamWriter::poll_write(self, bytes, cx)
     }
 
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
-        ByteWriter::poll_finish(self, cx)
+        StreamWriter::poll_finish(self, cx)
     }
 
     fn close(self, code: StreamCloseCode) {
-        ByteWriter::close(self, to_wire_close_code(code));
+        StreamWriter::close(self, to_wire_close_code(code));
     }
 }
 

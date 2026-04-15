@@ -8,13 +8,9 @@ use bytes::Bytes;
 use event_listener::EventListener;
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use crate::{
-    chunk_slot::ChunkSlotRx,
-    command::RuntimeCommand,
-    log, QlStreamError, RuntimeHandle,
-};
+use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, log, QlStreamError, RuntimeHandle};
 
-pub struct ByteReader {
+pub struct StreamReader {
     stream_id: StreamId,
     target: CloseTarget,
     reader: Option<ChunkSlotRx>,
@@ -32,9 +28,9 @@ enum TerminalState {
 // Safety: `ByteReader` contains a `oneshot::Receiver`, which is `!Sync`, but that receiver is
 // fully encapsulated. No safe API accesses it through `&self`; all access requires `&mut self`
 // or ownership, so shared references cannot race the receiver state across threads.
-unsafe impl Sync for ByteReader {}
+unsafe impl Sync for StreamReader {}
 
-impl std::fmt::Debug for ByteReader {
+impl std::fmt::Debug for StreamReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InboundByteStream")
             .field("stream_id", &self.stream_id)
@@ -47,7 +43,7 @@ impl std::fmt::Debug for ByteReader {
     }
 }
 
-impl ByteReader {
+impl StreamReader {
     pub(crate) fn new(
         stream_id: StreamId,
         target: CloseTarget,
@@ -177,7 +173,7 @@ impl ByteReader {
     }
 }
 
-impl Drop for ByteReader {
+impl Drop for StreamReader {
     fn drop(&mut self) {
         if matches!(self.terminal, TerminalState::Delivered) {
             return;

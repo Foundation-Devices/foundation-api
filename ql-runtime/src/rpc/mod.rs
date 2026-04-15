@@ -15,7 +15,7 @@ use ql_rpc::{
 };
 
 pub use self::{adapter::*, error::*, request_with_progress::*, subscription::*};
-use crate::{ByteReader, RuntimeHandle};
+use crate::{StreamReader, RuntimeHandle};
 
 #[derive(Clone)]
 pub struct RpcHandle {
@@ -86,7 +86,7 @@ impl RpcHandle {
         &self,
         route_id: ql_rpc::RouteId,
         payload: Vec<u8>,
-    ) -> Result<ByteReader, RpcError<E>> {
+    ) -> Result<StreamReader, RpcError<E>> {
         let mut stream = self
             .inner
             .open_stream(adapter::to_wire_route_id(route_id))
@@ -97,7 +97,7 @@ impl RpcHandle {
     }
 }
 
-async fn read_value<T>(mut reader: ByteReader) -> Result<T, RpcError<T::Error>>
+async fn read_value<T>(mut reader: StreamReader) -> Result<T, RpcError<T::Error>>
 where
     T: RpcCodec,
 {

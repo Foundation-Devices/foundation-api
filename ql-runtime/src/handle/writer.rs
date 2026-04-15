@@ -14,7 +14,7 @@ use crate::{
     log, QlStreamError, RuntimeHandle,
 };
 
-pub struct ByteWriter {
+pub struct StreamWriter {
     stream_id: StreamId,
     target: CloseTarget,
     writer: Option<ChunkSlotTx>,
@@ -31,9 +31,9 @@ enum WriteTerminalState {
 // Safety: `ByteWriter` contains a `oneshot::Receiver`, which is `!Sync`, but that receiver is
 // fully encapsulated. No safe API accesses it through `&self`; all access requires `&mut self`
 // or ownership, so shared references cannot race the receiver state across threads.
-unsafe impl Sync for ByteWriter {}
+unsafe impl Sync for StreamWriter {}
 
-impl std::fmt::Debug for ByteWriter {
+impl std::fmt::Debug for StreamWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OutboundByteStream")
             .field("stream_id", &self.stream_id)
@@ -43,7 +43,7 @@ impl std::fmt::Debug for ByteWriter {
     }
 }
 
-impl ByteWriter {
+impl StreamWriter {
     pub fn poll_write(
         &mut self,
         bytes: &mut Bytes,
@@ -118,13 +118,13 @@ impl ByteWriter {
     }
 }
 
-impl Drop for ByteWriter {
+impl Drop for StreamWriter {
     fn drop(&mut self) {
         self.close_inner(StreamCloseCode::CANCELLED);
     }
 }
 
-impl ByteWriter {
+impl StreamWriter {
     pub(crate) fn new(
         stream_id: StreamId,
         target: CloseTarget,

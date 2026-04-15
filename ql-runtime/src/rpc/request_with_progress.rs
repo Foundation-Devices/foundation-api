@@ -11,10 +11,10 @@ use ql_rpc::{
 };
 
 use super::RpcError;
-use crate::ByteReader;
+use crate::StreamReader;
 
 pub struct ProgressCall<M: RequestWithProgress> {
-    pub(super) stream: ByteReader,
+    pub(super) stream: StreamReader,
     pub(super) reader: Option<ql_rpc::request_with_progress::ResponseReader<M>>,
     pub(super) terminal: Option<Result<M::Response, RpcError<M::Error>>>,
 }

@@ -12,7 +12,7 @@ use ql_rpc::{Response, RouteId, StreamCloseCode, SubscriptionResponder};
 use ql_wire::RouteId as WireRouteId;
 
 use super::*;
-use crate::{ByteWriter, QlStream};
+use crate::{QlStream, StreamWriter};
 
 struct Echo;
 
@@ -91,7 +91,7 @@ async fn rpc_router_handles_request() {
     }
 
     impl crate::rpc::RequestHandler<Echo, QlStream> for RouterState {
-        fn handle(self, request: String, response: Response<String, ByteWriter>) {
+        fn handle(self, request: String, response: Response<String, StreamWriter>) {
             let seen = self.seen.clone();
             tokio::task::spawn_local(async move {
                 seen.borrow_mut().push(request);
@@ -142,7 +142,7 @@ async fn rpc_router_handles_subscription() {
         fn handle(
             self,
             request: Vec<u8>,
-            mut response: SubscriptionResponder<Vec<u8>, ByteWriter>,
+            mut response: SubscriptionResponder<Vec<u8>, StreamWriter>,
         ) {
             let seen = self.seen.clone();
             tokio::task::spawn_local(async move {
@@ -195,7 +195,7 @@ async fn rpc_send_router_handles_request() {
     }
 
     impl crate::rpc::RequestHandler<Echo, QlStream> for RouterState {
-        fn handle(self, request: String, response: crate::rpc::Response<String, ByteWriter>) {
+        fn handle(self, request: String, response: crate::rpc::Response<String, StreamWriter>) {
             let seen = self.seen.clone();
             tokio::task::spawn(async move {
                 seen.lock().unwrap().push(request);
@@ -244,7 +244,7 @@ async fn rpc_router_enforces_max_request_bytes() {
         fn handle(
             self,
             request: String,
-            response: crate::rpc::Response<String, crate::ByteWriter>,
+            response: crate::rpc::Response<String, crate::StreamWriter>,
         ) {
             tokio::task::spawn_local(async move {
                 let _ = response.respond(request).await;
@@ -379,7 +379,7 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
     .await;
 }
 
-async fn read_rpc_value<T>(mut reader: crate::ByteReader) -> T
+async fn read_rpc_value<T>(mut reader: crate::StreamReader) -> T
 where
     T: ql_rpc::RpcCodec,
     T::Error: std::fmt::Debug,
