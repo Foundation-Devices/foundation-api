@@ -246,6 +246,10 @@ impl TestPair {
         }
     }
 
+    fn handle(&self, side: Side) -> &RuntimeHandle {
+        &self.side(side).handle
+    }
+
     fn side_mut(&mut self, side: Side) -> &mut TestSide {
         match side {
             Side::A => &mut self.a,

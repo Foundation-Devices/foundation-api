@@ -148,7 +148,7 @@ async fn rpc_router_handles_subscription() {
                 seen.borrow_mut().push(request);
                 let _ = response.send(b"one".to_vec()).await;
                 let _ = response.send(b"two".to_vec()).await;
-                let _ = response.finish().await;
+                let _ = response.finish();
             });
         }
     }
