@@ -2238,6 +2238,7 @@ dependencies = [
  "bytes",
  "event-listener",
  "futures-lite",
+ "log",
  "loom",
  "oneshot",
  "ql-fsm",
