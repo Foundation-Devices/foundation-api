@@ -90,6 +90,13 @@ fn connected_fsms_deliver_stream_data() {
         harness.take_event(Side::B),
         Some(Event::Finished(stream_id))
     );
+    harness.advance(QlFsmConfig::default().session_record_ack_delay);
+    harness.on_timer(Side::B);
+    harness.pump();
+    assert_eq!(
+        harness.take_event(Side::A),
+        Some(Event::OutboundFinished(stream_id))
+    );
 }
 
 #[test]

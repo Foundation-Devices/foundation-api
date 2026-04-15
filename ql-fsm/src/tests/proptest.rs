@@ -117,6 +117,7 @@ struct TakenWrite {
 struct SideEventState {
     opened: BTreeSet<StreamId>,
     finished: BTreeSet<StreamId>,
+    outbound_finished: BTreeSet<StreamId>,
     writable_closed: BTreeSet<StreamId>,
     closed: BTreeSet<StreamId>,
     peer_statuses: Vec<PeerStatus>,
@@ -443,6 +444,16 @@ impl Runner {
                         "side {side:?} emitted Finished after Closed for {stream_id:?}"
                     );
                 }
+                Event::OutboundFinished(stream_id) => {
+                    prop_assert!(
+                        self.known_streams.contains(&stream_id),
+                        "side {side:?} emitted OutboundFinished for unknown stream {stream_id:?}"
+                    );
+                    prop_assert!(
+                        self.events[side.idx()].outbound_finished.insert(stream_id),
+                        "side {side:?} emitted duplicate OutboundFinished for {stream_id:?}"
+                    );
+                }
                 Event::Closed(frame) => {
                     prop_assert!(
                         self.known_streams.contains(&frame.stream_id),
@@ -606,6 +617,7 @@ impl Runner {
                 && self.events.iter().all(|events| {
                     events.opened.is_empty()
                         && events.finished.is_empty()
+                        && events.outbound_finished.is_empty()
                         && events.closed.is_empty()
                         && events.writable_closed.is_empty()
                 }),

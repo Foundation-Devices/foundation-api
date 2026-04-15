@@ -74,6 +74,7 @@ pub enum SessionEvent {
     Readable(StreamId),
     Writable(StreamId),
     Finished(StreamId),
+    OutboundFinished(StreamId),
     Closed(StreamClose),
     WritableClosed(StreamClose),
     SessionClosed(SessionClose),
@@ -962,6 +963,7 @@ fn acknowledge_tracked_frame(
             let stream_id = frame.stream_id;
             if let Some(stream) = streams.get_mut(&stream_id) {
                 let was_full = stream.send_capacity(stream_send_buffer_size) == 0;
+                let had_unacked_fin = frame.fin && stream.tx.has_unacked_fin();
                 stream.tx.ack(StreamTxRange {
                     offset: frame.offset,
                     len: frame.len,
@@ -969,6 +971,9 @@ fn acknowledge_tracked_frame(
                 });
                 if was_full && stream.send_capacity(stream_send_buffer_size) > 0 {
                     emit(SessionEvent::Writable(stream_id));
+                }
+                if had_unacked_fin && !stream.tx.has_unacked_fin() {
+                    emit(SessionEvent::OutboundFinished(stream_id));
                 }
             }
         }

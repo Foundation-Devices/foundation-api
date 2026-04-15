@@ -83,6 +83,8 @@ pub enum Event {
     Writable(StreamId),
     /// the peer finished writing this stream
     Finished(StreamId),
+    /// our local FIN was acknowledged by the peer at the session layer
+    OutboundFinished(StreamId),
     /// a stream was closed
     Closed(StreamClose),
     /// local writes on this stream are closed

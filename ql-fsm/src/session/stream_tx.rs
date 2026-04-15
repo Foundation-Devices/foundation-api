@@ -172,6 +172,11 @@ impl StreamTx {
         });
     }
 
+    pub fn has_unacked_fin(&self) -> bool {
+        self.final_offset
+            .is_some_and(|final_offset| final_offset.state != SendState::Acked)
+    }
+
     pub fn poll_transmit(
         &mut self,
         max_payload: usize,

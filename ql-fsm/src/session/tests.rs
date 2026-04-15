@@ -209,6 +209,43 @@ fn ack_reopens_write_capacity() {
 }
 
 #[test]
+fn ack_of_fin_emits_outbound_finished_once() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let stream_id = open_stream_id(&mut fsm);
+
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"done"), 4);
+    fsm.stream(stream_id).unwrap().writer().unwrap().finish();
+
+    let (record_seq, record) = next_outbound(&mut fsm, now).unwrap();
+    assert!(matches!(
+        record.as_slice(),
+        [SessionFrame::StreamData(StreamData {
+            stream_id: id,
+            fin: true,
+            ..
+        })] if *id == stream_id
+    ));
+
+    let mut events = Vec::new();
+    fsm.receive(
+        now + Duration::from_millis(1),
+        seq(9),
+        std::iter::once(Ok(SessionFrame::Ack(record_ack(record_seq)))),
+        |event| events.push(event),
+    );
+    assert_eq!(events, vec![SessionEvent::OutboundFinished(stream_id)]);
+
+    fsm.receive(
+        now + Duration::from_millis(2),
+        seq(10),
+        std::iter::once(Ok(SessionFrame::Ack(record_ack(record_seq)))),
+        |event| events.push(event),
+    );
+    assert_eq!(events, vec![SessionEvent::OutboundFinished(stream_id)]);
+}
+
+#[test]
 fn commit_stream_read_is_what_advances_stream_window() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(

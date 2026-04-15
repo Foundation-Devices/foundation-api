@@ -206,6 +206,9 @@ fn forward_session_event(event: SessionEvent, events: &mut VecDeque<Event>) {
         SessionEvent::Finished(stream_id) => {
             events.push_back(Event::Finished(stream_id));
         }
+        SessionEvent::OutboundFinished(stream_id) => {
+            events.push_back(Event::OutboundFinished(stream_id));
+        }
         SessionEvent::Closed(frame) => {
             events.push_back(Event::Closed(frame));
         }
