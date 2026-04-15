@@ -4,7 +4,7 @@ use bytes::Bytes;
 
 use super::{
     request::read_value_and_eof,
-    stream::{write_bytes, RpcRead, RpcStream, RpcWrite},
+    stream::{write_bytes, RpcRead, RpcStream, RpcWrite, StreamError},
     LocalMode, RouteMode, RouterConfig, SendMode,
 };
 use crate::{codec, subscription::Subscription as SubscriptionRpc, RpcCodec, StreamCloseCode};
@@ -15,6 +15,8 @@ where
     St: RpcStream,
 {
     fn handle(self, message: M::Request, responder: SubscriptionResponder<M::Event, St::Writer>);
+
+    fn handle_transport_error(&self, _error: &St::Error) {}
 }
 
 pub struct SubscriptionResponder<T, W>
@@ -37,19 +39,15 @@ where
         }
     }
 
-    pub async fn send(&mut self, event: T) -> Result<(), StreamCloseCode> {
+    pub async fn send(&mut self, event: T) -> Result<(), W::Error> {
         let writer = self.writer.as_mut().expect("subscription writer exists");
         let mut encoded = Vec::new();
         codec::encode_value_part(&event, &mut encoded);
-        if let Err(code) = write_bytes(writer, Bytes::from(encoded)).await {
-            let writer = self.writer.take().expect("subscription writer exists");
-            writer.close(code);
-            return Err(code);
-        }
+        write_bytes(writer, Bytes::from(encoded)).await?;
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<(), StreamCloseCode> {
+    pub fn finish(mut self) -> Result<(), W::Error> {
         let writer = self.writer.take().expect("subscription writer exists");
         writer.finish();
         Ok(())
@@ -126,9 +124,13 @@ async fn handle_subscription_inner<S, M, St>(
 {
     let request = match read_value_and_eof::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
-        Err(code) => {
-            reader.close(code);
-            writer.close(code);
+        Err(error) => {
+            let code = error.close_code();
+            state.handle_transport_error(&error);
+            if let Some(code) = code {
+                reader.close(code);
+                writer.close(code);
+            }
             return;
         }
     };

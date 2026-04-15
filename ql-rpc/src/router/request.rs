@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 
 use super::{
-    stream::{read_bytes, write_bytes, RpcRead, RpcStream, RpcWrite},
+    stream::{read_bytes, write_bytes, RpcRead, RpcStream, RpcWrite, StreamError},
     LocalMode, RouteMode, RouterConfig, SendMode,
 };
 use crate::{
@@ -16,6 +16,8 @@ where
     St: RpcStream,
 {
     fn handle(self, message: M::Request, responder: Response<M::Response, St::Writer>);
+
+    fn handle_transport_error(&self, _error: &St::Error) {}
 }
 
 pub struct Response<T, W>
@@ -38,14 +40,11 @@ where
         }
     }
 
-    pub async fn respond(mut self, response: T) -> Result<(), StreamCloseCode> {
+    pub async fn respond(mut self, response: T) -> Result<(), W::Error> {
         let mut writer = self.writer.take().expect("response writer exists");
         let mut encoded = Vec::new();
         codec::encode_value_part(&response, &mut encoded);
-        if let Err(code) = write_bytes(&mut writer, Bytes::from(encoded)).await {
-            writer.close(code);
-            return Err(code);
-        }
+        write_bytes(&mut writer, Bytes::from(encoded)).await?;
         writer.finish();
         Ok(())
     }
@@ -121,9 +120,13 @@ async fn handle_request_inner<S, M, St>(
 {
     let request = match read_value_and_eof::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
-        Err(code) => {
-            reader.close(code);
-            writer.close(code);
+        Err(error) => {
+            let code = error.close_code();
+            state.handle_transport_error(&error);
+            if let Some(code) = code {
+                reader.close(code);
+                writer.close(code);
+            }
             return;
         }
     };
@@ -134,7 +137,7 @@ async fn handle_request_inner<S, M, St>(
 pub(super) async fn read_value_and_eof<T, R>(
     reader: &mut R,
     config: RouterConfig,
-) -> Result<T, StreamCloseCode>
+) -> Result<T, R::Error>
 where
     T: RpcCodec,
     R: RpcRead,
@@ -146,13 +149,13 @@ where
         match value_reader.advance() {
             Ok(ReadValueStep::Value(value)) => break value,
             Ok(ReadValueStep::NeedMore(next)) => value_reader = next,
-            Err(crate::CodecError::Rpc(_error)) => return Err(StreamCloseCode::REFUSED),
-            Err(crate::CodecError::Codec(_error)) => return Err(StreamCloseCode::REFUSED),
+            Err(crate::CodecError::Rpc(_error)) => return Err(StreamCloseCode::REFUSED.into()),
+            Err(crate::CodecError::Codec(_error)) => return Err(StreamCloseCode::REFUSED.into()),
         }
 
         let remaining = config.max_request_bytes.saturating_sub(total_read);
         if remaining == 0 {
-            return Err(StreamCloseCode::LIMIT);
+            return Err(StreamCloseCode::LIMIT.into());
         }
 
         match read_bytes(reader, remaining).await {
@@ -160,8 +163,8 @@ where
                 total_read += chunk.len();
                 value_reader = value_reader.push(chunk);
             }
-            Ok(None) => return Err(StreamCloseCode::REFUSED),
-            Err(code) => return Err(code),
+            Ok(None) => return Err(StreamCloseCode::REFUSED.into()),
+            Err(error) => return Err(error),
         }
     };
 
@@ -169,8 +172,8 @@ where
     let probe = remaining.max(1);
     match read_bytes(reader, probe).await {
         Ok(None) => Ok(value),
-        Ok(Some(_)) if remaining == 0 => Err(StreamCloseCode::LIMIT),
-        Ok(Some(_)) => Err(StreamCloseCode::REFUSED),
-        Err(code) => Err(code),
+        Ok(Some(_)) if remaining == 0 => Err(StreamCloseCode::LIMIT.into()),
+        Ok(Some(_)) => Err(StreamCloseCode::REFUSED.into()),
+        Err(error) => Err(error),
     }
 }

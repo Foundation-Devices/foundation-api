@@ -14,7 +14,7 @@ pub use self::{
     config::RouterConfig,
     mode::*,
     request::{RequestHandler, Response},
-    stream::{RpcRead, RpcStream, RpcWrite},
+    stream::{RpcRead, RpcStream, RpcWrite, StreamError},
     subscription::{SubscriptionHandler, SubscriptionResponder},
 };
 

@@ -5,7 +5,7 @@ pub use ql_rpc::{
     LocalMode, RequestHandler, Response, RouteId, RouterConfig, SendMode, StreamCloseCode,
     SubscriptionHandler, SubscriptionResponder,
 };
-use ql_rpc::{RpcRead, RpcStream, RpcWrite};
+use ql_rpc::{RpcRead, RpcStream, RpcWrite, StreamError};
 use ql_wire::{RouteId as WireRouteId, StreamCloseCode as WireStreamCloseCode};
 
 use crate::{ByteReader, ByteWriter, QlStream, QlStreamError};
@@ -16,6 +16,7 @@ pub type SendRouter<S> = ql_rpc::Router<S, QlStream, SendMode>;
 pub type SendRouterBuilder<S> = ql_rpc::RouterBuilder<S, QlStream, SendMode>;
 
 impl RpcStream for QlStream {
+    type Error = QlStreamError;
     type Reader = ByteReader;
     type Writer = ByteWriter;
 
@@ -30,12 +31,14 @@ impl RpcStream for QlStream {
 }
 
 impl RpcRead for ByteReader {
+    type Error = QlStreamError;
+
     fn poll_read(
         &mut self,
         max_len: usize,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Bytes>, StreamCloseCode>> {
-        ByteReader::poll_read(self, max_len, cx).map(|result| result.map_err(from_stream_error))
+    ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
+        ByteReader::poll_read(self, max_len, cx)
     }
 
     fn close(self, code: StreamCloseCode) {
@@ -44,12 +47,14 @@ impl RpcRead for ByteReader {
 }
 
 impl RpcWrite for ByteWriter {
+    type Error = QlStreamError;
+
     fn poll_write(
         &mut self,
         bytes: &mut Bytes,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<(), StreamCloseCode>> {
-        ByteWriter::poll_write(self, bytes, cx).map(|result| result.map_err(from_stream_error))
+    ) -> Poll<Result<(), QlStreamError>> {
+        ByteWriter::poll_write(self, bytes, cx)
     }
 
     fn finish(self) {
@@ -69,10 +74,19 @@ pub(super) fn to_wire_close_code(code: StreamCloseCode) -> WireStreamCloseCode {
     WireStreamCloseCode(code.into_inner())
 }
 
-fn from_stream_error(error: QlStreamError) -> StreamCloseCode {
-    let code = match error {
-        QlStreamError::StreamClosed { code } => code,
-        QlStreamError::NoSession => WireStreamCloseCode::CANCELLED,
-    };
-    StreamCloseCode(code.0)
+impl From<StreamCloseCode> for QlStreamError {
+    fn from(code: StreamCloseCode) -> Self {
+        Self::StreamClosed {
+            code: WireStreamCloseCode(code.into_inner()),
+        }
+    }
+}
+
+impl StreamError for QlStreamError {
+    fn close_code(&self) -> Option<StreamCloseCode> {
+        match self {
+            QlStreamError::StreamClosed { code } => Some(StreamCloseCode(code.0)),
+            QlStreamError::NoSession => None,
+        }
+    }
 }
