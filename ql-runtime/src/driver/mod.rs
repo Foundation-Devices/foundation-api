@@ -599,10 +599,12 @@ impl DriverState {
         let capacity = writer.capacity();
         log::trace!("stream write capacity: stream_id={stream_id} capacity={capacity}");
         if capacity > 0 {
-            if let Ok(Some(mut bytes)) = reader.try_recv(capacity) {
-                let _len = bytes.len();
-                log::trace!("writing stream bytes: stream_id={stream_id} len={_len}");
-                let _ = writer.write(&mut bytes);
+            if let Ok(mut bytes) = reader.try_recv(capacity) {
+                if !bytes.is_empty() {
+                    let _len = bytes.len();
+                    log::trace!("writing stream bytes: stream_id={stream_id} len={_len}");
+                    let _ = writer.write(&mut bytes);
+                }
             }
         }
 

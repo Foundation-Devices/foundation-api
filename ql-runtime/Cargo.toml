@@ -13,6 +13,7 @@ rpc = ["dep:ql-rpc"]
 [dependencies]
 async-channel = { version = "2.5" }
 bytes = "1"
+concurrent-queue = { version = "2.5" }
 event-listener = "5.4"
 futures-lite = { version = "2.5" }
 log = { version = "0.4", optional = true }

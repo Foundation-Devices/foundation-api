@@ -18,7 +18,7 @@ pub struct ByteWriter {
     stream_id: StreamId,
     target: CloseTarget,
     writer: Option<ChunkSlotTx>,
-    listener: Option<EventListener>,
+    wait: Option<EventListener>,
     terminal: WriteTerminalState,
     handle: RuntimeHandle,
 }
@@ -57,14 +57,14 @@ impl ByteWriter {
             return self.poll_terminal(cx);
         };
 
-        match writer.poll_send(bytes, &mut self.listener, cx) {
+        match writer.poll_send(bytes, &mut self.wait, cx) {
             Poll::Ready(Ok(())) => {
                 log::trace!(
                     "byte writer accepted chunk: stream_id={:?} target={:?}",
                     self.stream_id,
                     self.target
                 );
-                self.listener = None;
+                self.wait = None;
                 self.poll_runtime();
                 Poll::Ready(Ok(()))
             }
@@ -75,7 +75,7 @@ impl ByteWriter {
                     self.target
                 );
                 self.writer.take();
-                self.listener = None;
+                self.wait = None;
                 self.poll_terminal(cx)
             }
             Poll::Pending => Poll::Pending,
@@ -97,7 +97,7 @@ impl ByteWriter {
             self.target
         );
         writer.close();
-        self.listener = None;
+        self.wait = None;
         self.poll_runtime();
     }
 
@@ -136,7 +136,7 @@ impl ByteWriter {
             stream_id,
             target,
             writer: Some(writer),
-            listener: None,
+            wait: None,
             terminal: WriteTerminalState::Armed(terminal),
             handle,
         }
@@ -174,7 +174,7 @@ impl ByteWriter {
             self.target,
             code
         );
-        self.listener = None;
+        self.wait = None;
         self.handle.try_send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
             target: self.target,

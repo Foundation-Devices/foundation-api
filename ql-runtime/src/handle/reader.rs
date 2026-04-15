@@ -8,13 +8,17 @@ use bytes::Bytes;
 use event_listener::EventListener;
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, log, QlStreamError, RuntimeHandle};
+use crate::{
+    chunk_slot::ChunkSlotRx,
+    command::RuntimeCommand,
+    log, QlStreamError, RuntimeHandle,
+};
 
 pub struct ByteReader {
     stream_id: StreamId,
     target: CloseTarget,
     reader: Option<ChunkSlotRx>,
-    listener: Option<EventListener>,
+    wait: Option<EventListener>,
     terminal: TerminalState,
     handle: RuntimeHandle,
 }
@@ -55,7 +59,7 @@ impl ByteReader {
             stream_id,
             target,
             reader: Some(reader),
-            listener: None,
+            wait: None,
             terminal: TerminalState::Armed(terminal),
             handle,
         }
@@ -70,8 +74,8 @@ impl ByteReader {
             return Poll::Ready(Ok(None));
         }
 
-        if let Some(reader) = self.reader.as_ref() {
-            match reader.poll_recv(max_len, &mut self.listener, cx) {
+        if let Some(reader) = self.reader.as_mut() {
+            match reader.poll_recv(max_len, &mut self.wait, cx) {
                 Poll::Ready(Ok(bytes)) => {
                     log::trace!(
                         "byte reader received chunk: stream_id={:?} target={:?} len={}",
@@ -91,7 +95,7 @@ impl ByteReader {
                         self.target
                     );
                     self.reader = None;
-                    self.listener = None;
+                    self.wait = None;
                 }
                 Poll::Pending => {}
             }
@@ -163,7 +167,7 @@ impl ByteReader {
             code
         );
         self.reader.take();
-        self.listener = None;
+        self.wait = None;
         self.terminal = TerminalState::Delivered;
         self.handle.try_send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
