@@ -14,7 +14,7 @@ use std::{
 };
 
 use async_channel::Recv;
-use futures_lite::future::poll_fn;
+use futures_lite::future::{poll_fn, yield_now};
 use ql_fsm::{Event, FsmTime, QlFsm, WriteId};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
@@ -53,6 +53,7 @@ impl<P: QlPlatform> Runtime<P> {
         let mut timer = platform.timer();
         let recv_future = rx.recv();
         let mut recv_future = pin!(recv_future);
+        let mut poll_cursor = 0usize;
 
         loop {
             state.drain_fsm_events(&mut fsm, &platform);
@@ -61,8 +62,17 @@ impl<P: QlPlatform> Runtime<P> {
             }
             timer.set_deadline(fsm.next_deadline());
 
-            let step =
-                poll_fn(|cx| next_step(cx, recv_future.as_mut(), &mut timer, &mut in_flight)).await;
+            let step = poll_fn(|cx| {
+                next_step(
+                    cx,
+                    recv_future.as_mut(),
+                    &mut timer,
+                    &mut in_flight,
+                    poll_cursor,
+                )
+            })
+            .await;
+            poll_cursor = (poll_cursor + 1) % STEP_COUNT;
 
             match step {
                 DriverStep::Command(command) => {
@@ -71,6 +81,7 @@ impl<P: QlPlatform> Runtime<P> {
                 DriverStep::WriteCompleted { index, success } => {
                     let write = in_flight.swap_remove(index);
                     DriverState::drive_write_completed(&mut fsm, write.session_write_id, success);
+                    yield_now().await;
                 }
                 DriverStep::TimerExpired => {
                     fsm.on_timer(now());
@@ -97,30 +108,49 @@ enum DriverStep {
     Closed,
 }
 
+const STEP_COUNT: usize = 3;
+
 fn next_step<T, F>(
     cx: &mut Context<'_>,
     mut recv_future: Pin<&mut Recv<'_, RuntimeCommand>>,
     timer: &mut T,
     in_flight: &mut [InFlightWrite<F>],
+    start: usize,
 ) -> Poll<DriverStep>
 where
     T: QlTimer,
     F: Future<Output = bool> + Unpin,
 {
-    for (index, write) in in_flight.iter_mut().enumerate() {
-        if let Poll::Ready(success) = Pin::new(&mut write.future).poll(cx) {
-            return Poll::Ready(DriverStep::WriteCompleted { index, success });
+    for offset in 0..STEP_COUNT {
+        let step = (start + offset) % STEP_COUNT;
+        let poll = match step {
+            0 => recv_future
+                .as_mut()
+                .poll(cx)
+                .map(|res| res.map_or(DriverStep::Closed, DriverStep::Command)),
+            1 => {
+                for (index, write) in in_flight.iter_mut().enumerate() {
+                    if let Poll::Ready(success) = Pin::new(&mut write.future).poll(cx) {
+                        return Poll::Ready(DriverStep::WriteCompleted { index, success });
+                    }
+                }
+                Poll::Pending
+            }
+            2 => {
+                if timer.poll_wait(cx) == Poll::Ready(()) {
+                    Poll::Ready(DriverStep::TimerExpired)
+                } else {
+                    Poll::Pending
+                }
+            }
+            _ => unreachable!(),
+        };
+        if poll.is_ready() {
+            return poll;
         }
     }
 
-    if timer.poll_wait(cx) == Poll::Ready(()) {
-        return Poll::Ready(DriverStep::TimerExpired);
-    }
-
-    recv_future
-        .as_mut()
-        .poll(cx)
-        .map(|res| res.map_or(DriverStep::Closed, DriverStep::Command))
+    Poll::Pending
 }
 
 impl DriverState {
