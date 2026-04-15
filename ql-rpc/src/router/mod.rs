@@ -6,7 +6,6 @@ mod builder;
 mod config;
 mod mode;
 mod request;
-mod stream;
 mod subscription;
 
 pub use self::{
@@ -14,9 +13,10 @@ pub use self::{
     config::RouterConfig,
     mode::*,
     request::{RequestHandler, Response},
-    stream::{RpcRead, RpcStream, RpcWrite, StreamError},
     subscription::{SubscriptionHandler, SubscriptionResponder},
 };
+
+use crate::{close_stream, RpcStream};
 
 pub struct Router<S, St, Mode = LocalMode>
 where
@@ -40,7 +40,7 @@ where
     pub fn handle(&self, stream: St) -> Option<(RouteId, Mode::RouteFuture)> {
         let route_id = stream.route_id()?;
         let Some(route) = self.routes.get(&route_id).copied() else {
-            stream::close_stream(stream, StreamCloseCode::UNKNOWN_ROUTE);
+            close_stream(stream, StreamCloseCode::UNKNOWN_ROUTE);
             return None;
         };
         Some((route_id, route(self.state.clone(), self.config, stream)))

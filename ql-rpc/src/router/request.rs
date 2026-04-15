@@ -3,10 +3,10 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 
 use super::{
-    stream::{finish_bytes, read_bytes, write_bytes, RpcRead, RpcStream, RpcWrite, StreamError},
     LocalMode, RouteMode, RouterConfig, SendMode,
 };
 use crate::{
+    finish_bytes, read_bytes, write_bytes, RpcRead, RpcStream, RpcWrite, StreamError,
     codec, request::Request as RequestRpc, ReadValueStep, RpcCodec, StreamCloseCode, ValueReader,
 };
 

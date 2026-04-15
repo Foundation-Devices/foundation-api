@@ -4,11 +4,13 @@ pub(crate) mod codec;
 mod error;
 mod router;
 pub mod rpc;
+mod stream;
 
 pub use codec::{ReadValueStep, RpcCodec, ValueReader};
 pub use error::*;
 pub use router::*;
 pub use rpc::*;
+pub use stream::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]

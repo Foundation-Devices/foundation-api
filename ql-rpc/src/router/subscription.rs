@@ -4,10 +4,12 @@ use bytes::Bytes;
 
 use super::{
     request::read_value_and_eof,
-    stream::{finish_bytes, write_bytes, RpcRead, RpcStream, RpcWrite, StreamError},
     LocalMode, RouteMode, RouterConfig, SendMode,
 };
-use crate::{codec, subscription::Subscription as SubscriptionRpc, RpcCodec, StreamCloseCode};
+use crate::{
+    codec, finish_bytes, subscription::Subscription as SubscriptionRpc, write_bytes, RpcCodec,
+    RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,
+};
 
 pub trait SubscriptionHandler<M, St>
 where
