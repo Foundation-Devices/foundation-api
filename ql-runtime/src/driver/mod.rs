@@ -15,7 +15,6 @@ use std::{
 
 use async_channel::Recv;
 use futures_lite::future::{poll_fn, yield_now};
-use log::debug;
 use ql_fsm::{Event, FsmTime, QlFsm, WriteId};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
@@ -24,6 +23,7 @@ use crate::{
     chunk_slot,
     command::RuntimeCommand,
     handle::{ByteReader, ByteWriter, QlStream},
+    log,
     platform::{QlPlatform, QlTimer},
     QlStreamError, Runtime, RuntimeHandle,
 };
@@ -241,7 +241,7 @@ impl DriverState {
                 target,
                 code,
             } => {
-                debug!(
+                log::debug!(
                     "runtime close stream command: stream_id={stream_id:?} target={target:?} code={code:?}"
                 );
                 if let Entry::Occupied(mut entry) = self.streams.entry(stream_id) {
@@ -388,7 +388,7 @@ impl DriverState {
                         break;
                     }
                     InboundWriteResult::Closed => {
-                        debug!(
+                        log::debug!(
                             "runtime inbound consumer closed; sending CANCELLED: stream_id={stream_id:?} target={target:?}"
                         );
                         peer_closed = true;
@@ -413,7 +413,7 @@ impl DriverState {
     }
 
     fn handle_inbound_finished(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
-        debug!("runtime inbound finished event: stream_id={stream_id:?}");
+        log::debug!("runtime inbound finished event: stream_id={stream_id:?}");
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
@@ -436,13 +436,13 @@ impl DriverState {
             return;
         }
 
-        debug!("runtime delivering clean inbound finish: stream_id={stream_id:?}");
+        log::debug!("runtime delivering clean inbound finish: stream_id={stream_id:?}");
         stream.inbound_finish();
         Self::try_reap_stream(entry);
     }
 
     fn handle_closed_stream(&mut self, frame: &ql_wire::StreamClose) {
-        debug!(
+        log::debug!(
             "runtime inbound close frame: stream_id={:?} target={:?} code={:?}",
             frame.stream_id,
             frame.target,
@@ -463,7 +463,7 @@ impl DriverState {
     }
 
     fn handle_writable_closed(&mut self, frame: &ql_wire::StreamClose) {
-        debug!(
+        log::debug!(
             "runtime writable close frame: stream_id={:?} target={:?} code={:?}",
             frame.stream_id,
             frame.target,
@@ -478,7 +478,7 @@ impl DriverState {
     }
 
     fn handle_outbound_finished(&mut self, stream_id: StreamId) {
-        debug!("runtime outbound finish acknowledged: stream_id={stream_id:?}");
+        log::debug!("runtime outbound finish acknowledged: stream_id={stream_id:?}");
         let Entry::Occupied(mut entry) = self.streams.entry(stream_id) else {
             return;
         };
@@ -520,7 +520,9 @@ impl DriverState {
         };
 
         if reader.is_finished() {
-            debug!("runtime observed outbound reader finished before write: stream_id={stream_id:?}");
+            log::debug!(
+                "runtime observed outbound reader finished before write: stream_id={stream_id:?}"
+            );
             if let Ok(mut stream_ops) = fsm.stream(stream_id) {
                 if let Some(writer) = stream_ops.writer() {
                     writer.finish();
@@ -548,7 +550,9 @@ impl DriverState {
         }
 
         if reader.is_finished() {
-            debug!("runtime observed outbound reader finished after write: stream_id={stream_id:?}");
+            log::debug!(
+                "runtime observed outbound reader finished after write: stream_id={stream_id:?}"
+            );
             writer.finish();
             stream.outbound_queue_finish();
             if stream.is_closed() {

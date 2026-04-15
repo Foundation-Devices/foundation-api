@@ -6,10 +6,9 @@ use std::{
 
 use bytes::Bytes;
 use event_listener::EventListener;
-use log::{debug, trace};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, QlStreamError, RuntimeHandle};
+use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, log, QlStreamError, RuntimeHandle};
 
 pub struct ByteReader {
     stream_id: StreamId,
@@ -74,7 +73,7 @@ impl ByteReader {
         if let Some(reader) = self.reader.as_ref() {
             match reader.poll_recv(max_len, &mut self.listener, cx) {
                 Poll::Ready(Ok(bytes)) => {
-                    trace!(
+                    log::trace!(
                         "byte reader received chunk: stream_id={:?} target={:?} len={}",
                         self.stream_id,
                         self.target,
@@ -86,9 +85,10 @@ impl ByteReader {
                     return Poll::Ready(Ok(Some(bytes)));
                 }
                 Poll::Ready(Err(_)) => {
-                    debug!(
+                    log::debug!(
                         "byte reader channel closed: stream_id={:?} target={:?}",
-                        self.stream_id, self.target
+                        self.stream_id,
+                        self.target
                     );
                     self.reader = None;
                     self.listener = None;
@@ -113,18 +113,21 @@ impl ByteReader {
         match &self.terminal {
             TerminalState::Armed(_) => Poll::Pending,
             TerminalState::Terminal(Ok(())) => {
-                debug!(
+                log::debug!(
                     "byte reader delivered clean eof: stream_id={:?} target={:?}",
-                    self.stream_id, self.target
+                    self.stream_id,
+                    self.target
                 );
                 self.terminal = TerminalState::Delivered;
                 Poll::Ready(Ok(None))
             }
             TerminalState::Terminal(Err(error)) => {
                 let error = error.clone();
-                debug!(
+                log::debug!(
                     "byte reader delivered terminal error: stream_id={:?} target={:?} error={:?}",
-                    self.stream_id, self.target, error
+                    self.stream_id,
+                    self.target,
+                    error
                 );
                 self.terminal = TerminalState::Delivered;
                 Poll::Ready(Err(error))
@@ -153,9 +156,11 @@ impl ByteReader {
         if matches!(self.terminal, TerminalState::Delivered) {
             return;
         }
-        debug!(
+        log::debug!(
             "byte reader explicit close: stream_id={:?} target={:?} code={:?}",
-            self.stream_id, self.target, code
+            self.stream_id,
+            self.target,
+            code
         );
         self.reader.take();
         self.listener = None;
@@ -173,7 +178,7 @@ impl Drop for ByteReader {
         if matches!(self.terminal, TerminalState::Delivered) {
             return;
         }
-        debug!(
+        log::debug!(
             "byte reader drop close: stream_id={:?} target={:?} code={:?}",
             self.stream_id,
             self.target,

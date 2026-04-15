@@ -71,7 +71,7 @@ async fn rpc_request_round_trips() {
             writer.finish().await.unwrap();
         });
 
-        let rpc = pair.handle(Side::A).rpc();
+        let rpc = pair.side_mut(Side::A).handle.rpc();
         let response = rpc.request::<Echo>(&"hello".into()).await.unwrap();
         assert_eq!(response, "world");
 
@@ -106,11 +106,10 @@ async fn rpc_router_handles_request() {
         let inbound_b = pair.take_inbound(Side::B);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let router = ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(
-            crate::rpc::LocalSpawn,
-        )
-            .request::<Echo>()
-            .build(RouterState { seen: seen.clone() });
+        let router =
+            ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(crate::rpc::LocalSpawn)
+                .request::<Echo>()
+                .build(RouterState { seen: seen.clone() });
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -119,7 +118,7 @@ async fn rpc_router_handles_request() {
             }
         });
 
-        let rpc = pair.handle(Side::A).rpc();
+        let rpc = pair.side_mut(Side::A).handle.rpc();
         let response = rpc.request::<Echo>(&"hello".into()).await.unwrap();
         assert_eq!(response, "world");
         assert_eq!(&*seen.borrow(), &["hello".to_string()]);
@@ -161,11 +160,10 @@ async fn rpc_router_handles_subscription() {
         let inbound_b = pair.take_inbound(Side::B);
 
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let router = ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(
-            crate::rpc::LocalSpawn,
-        )
-            .subscription::<Feed>()
-            .build(RouterState { seen: seen.clone() });
+        let router =
+            ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(crate::rpc::LocalSpawn)
+                .subscription::<Feed>()
+                .build(RouterState { seen: seen.clone() });
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -174,7 +172,7 @@ async fn rpc_router_handles_subscription() {
             }
         });
 
-        let rpc = pair.handle(Side::A).rpc();
+        let rpc = pair.side_mut(Side::A).handle.rpc();
         let mut subscription = rpc.subscribe::<Feed>(&b"watch".to_vec()).await.unwrap();
         assert_eq!(subscription.next().await.unwrap().unwrap(), b"one".to_vec());
         assert_eq!(subscription.next().await.unwrap().unwrap(), b"two".to_vec());
@@ -211,11 +209,10 @@ async fn rpc_send_router_handles_request() {
         pair.connect_and_wait(Side::A).await;
         let inbound_b = pair.take_inbound(Side::B);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let router = ql_rpc::Router::<_, QlStream, crate::rpc::SendSpawn>::builder(
-            crate::rpc::SendSpawn,
-        )
-            .request::<Echo>()
-            .build(RouterState { seen: seen.clone() });
+        let router =
+            ql_rpc::Router::<_, QlStream, crate::rpc::SendSpawn>::builder(crate::rpc::SendSpawn)
+                .request::<Echo>()
+                .build(RouterState { seen: seen.clone() });
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -225,7 +222,7 @@ async fn rpc_send_router_handles_request() {
             }
         });
 
-        let rpc = pair.handle(Side::A).rpc();
+        let rpc = pair.side_mut(Side::A).handle.rpc();
         let response = rpc.request::<Echo>(&"hello".into()).await.unwrap();
         assert_eq!(response, "world");
         assert_eq!(&*seen.lock().unwrap(), &["hello".to_string()]);
@@ -259,12 +256,11 @@ async fn rpc_router_enforces_max_request_bytes() {
         let mut pair = TestPair::new(default_runtime_config());
         pair.connect_and_wait(Side::A).await;
         let inbound_b = pair.take_inbound(Side::B);
-        let router = ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(
-            crate::rpc::LocalSpawn,
-        )
-            .max_request_bytes(4)
-            .request::<Echo>()
-            .build(LimitedState);
+        let router =
+            ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(crate::rpc::LocalSpawn)
+                .max_request_bytes(4)
+                .request::<Echo>()
+                .build(LimitedState);
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -273,7 +269,7 @@ async fn rpc_router_enforces_max_request_bytes() {
             }
         });
 
-        let rpc = pair.handle(Side::A).rpc();
+        let rpc = pair.side_mut(Side::A).handle.rpc();
         let response = rpc.request::<Echo>(&"hello".to_string()).await;
         assert!(matches!(
             response,
@@ -313,7 +309,7 @@ async fn rpc_subscription_streams_events() {
             writer.finish().await.unwrap();
         });
 
-        let rpc = pair.handle(Side::A).rpc();
+        let rpc = pair.side_mut(Side::A).handle.rpc();
         let mut subscription = rpc.subscribe::<Feed>(&b"watch".to_vec()).await.unwrap();
         assert_eq!(subscription.next().await.unwrap().unwrap(), b"one".to_vec());
         assert_eq!(subscription.next().await.unwrap().unwrap(), b"two".to_vec());
@@ -364,7 +360,7 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
             writer.finish().await.unwrap();
         });
 
-        let rpc = pair.handle(Side::A).rpc();
+        let rpc = pair.side_mut(Side::A).handle.rpc();
         let mut download = rpc
             .request_with_progress::<Download>(&b"logo".to_vec())
             .await

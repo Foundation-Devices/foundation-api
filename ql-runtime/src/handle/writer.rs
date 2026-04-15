@@ -6,13 +6,12 @@ use std::{
 
 use bytes::Bytes;
 use event_listener::EventListener;
-use log::{debug, trace};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
 use crate::{
     chunk_slot::{ChunkSlotTx, SendClosed},
     command::RuntimeCommand,
-    QlStreamError, RuntimeHandle,
+    log, QlStreamError, RuntimeHandle,
 };
 
 pub struct ByteWriter {
@@ -60,7 +59,7 @@ impl ByteWriter {
 
         match writer.poll_send(bytes, &mut self.listener, cx) {
             Poll::Ready(Ok(())) => {
-                trace!(
+                log::trace!(
                     "byte writer accepted chunk: stream_id={:?} target={:?}",
                     self.stream_id,
                     self.target
@@ -70,9 +69,10 @@ impl ByteWriter {
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(SendClosed(_bytes))) => {
-                debug!(
+                log::debug!(
                     "byte writer send closed: stream_id={:?} target={:?}",
-                    self.stream_id, self.target
+                    self.stream_id,
+                    self.target
                 );
                 self.writer.take();
                 self.listener = None;
@@ -91,9 +91,10 @@ impl ByteWriter {
         let Some(writer) = self.writer.take() else {
             return;
         };
-        debug!(
+        log::debug!(
             "byte writer finish: stream_id={:?} target={:?}",
-            self.stream_id, self.target
+            self.stream_id,
+            self.target
         );
         writer.close();
         self.listener = None;
@@ -167,9 +168,11 @@ impl ByteWriter {
         if self.writer.take().is_none() {
             return;
         }
-        debug!(
+        log::debug!(
             "byte writer close: stream_id={:?} target={:?} code={:?}",
-            self.stream_id, self.target, code
+            self.stream_id,
+            self.target,
+            code
         );
         self.listener = None;
         self.handle.try_send(RuntimeCommand::CloseStream {
