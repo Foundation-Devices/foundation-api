@@ -5,9 +5,9 @@ use ql_wire::{RecordAck, RecordAckBuilder, RecordSeq};
 use super::range_set::RangeSet;
 
 #[derive(Debug, Clone)]
-pub struct RecordRxState {
+pub struct AckTracker {
     accepted_records: RangeSet,
-    pending_ack_ranges: RangeSet,
+    pending_ack: RangeSet,
     ack_state: AckState,
     accepted_record_window: u64,
     pending_ack_range_limit: usize,
@@ -33,11 +33,11 @@ enum AckState {
     Dirty { due_at: Instant },
 }
 
-impl RecordRxState {
+impl AckTracker {
     pub fn new(accepted_record_window: u64, pending_ack_range_limit: usize) -> Self {
         Self {
             accepted_records: RangeSet::new(),
-            pending_ack_ranges: RangeSet::new(),
+            pending_ack: RangeSet::new(),
             ack_state: AckState::Idle,
             accepted_record_window: accepted_record_window.max(1),
             pending_ack_range_limit: pending_ack_range_limit.max(1),
@@ -51,15 +51,15 @@ impl RecordRxState {
             return ReceiveOutcome::TooOld;
         }
         if self.accepted_records.contains(seq) {
-            self.pending_ack_ranges.insert(singleton_range(seq));
+            self.pending_ack.insert(single_range(seq));
             self.trim_pending_ack_ranges();
             return ReceiveOutcome::Duplicate;
         }
 
-        self.accepted_records.insert(singleton_range(seq));
+        self.accepted_records.insert(single_range(seq));
         self.trim_accepted_records();
 
-        self.pending_ack_ranges.insert(singleton_range(seq));
+        self.pending_ack.insert(single_range(seq));
         self.trim_pending_ack_ranges();
 
         ReceiveOutcome::New
@@ -83,15 +83,15 @@ impl RecordRxState {
 
     pub fn pending_ack(&self, max_wire_size: usize) -> Option<PendingAck> {
         let due_at = self.ack_deadline()?;
-        if max_wire_size == 0 || self.pending_ack_ranges.range_count() == 0 {
+        if max_wire_size == 0 || self.pending_ack.range_count() == 0 {
             return None;
         }
 
-        let total_range_count = self.pending_ack_ranges.range_count();
+        let total_range_count = self.pending_ack.range_count();
         let mut ack = RecordAckBuilder::new();
         let mut selected_range_count = 0usize;
 
-        for range in self.pending_ack_ranges.iter_rev() {
+        for range in self.pending_ack.iter_rev() {
             let pushed = ack
                 .try_push_range(to_ack_range(range), max_wire_size)
                 .unwrap();
@@ -110,16 +110,16 @@ impl RecordRxState {
 
     pub fn on_ack_emitted(&mut self, pending_ack: &PendingAck) {
         self.retire_acked_ranges(&pending_ack.ack);
-        if pending_ack.includes_all_pending || self.pending_ack_ranges.range_count() == 0 {
+        if pending_ack.includes_all_pending || self.pending_ack.range_count() == 0 {
             self.ack_state = AckState::Idle;
         }
     }
 
     pub fn retire_acked_ranges(&mut self, ack: &RecordAck) {
         for range in ack.ranges() {
-            self.pending_ack_ranges.remove(from_ack_range(range));
+            self.pending_ack.remove(from_ack_range(range));
         }
-        if self.pending_ack_ranges.range_count() == 0 {
+        if self.pending_ack.range_count() == 0 {
             self.ack_state = AckState::Idle;
         }
     }
@@ -130,7 +130,7 @@ impl RecordRxState {
 
     pub fn restore_acked_ranges(&mut self, ack: &RecordAck, due_at: Instant) {
         for range in ack.ranges() {
-            self.pending_ack_ranges.insert(from_ack_range(range));
+            self.pending_ack.insert(from_ack_range(range));
         }
         self.trim_pending_ack_ranges();
         self.schedule_ack(due_at);
@@ -151,13 +151,13 @@ impl RecordRxState {
     }
 
     fn trim_pending_ack_ranges(&mut self) {
-        while self.pending_ack_ranges.range_count() > self.pending_ack_range_limit {
-            self.pending_ack_ranges.pop_min();
+        while self.pending_ack.range_count() > self.pending_ack_range_limit {
+            self.pending_ack.pop_min();
         }
     }
 }
 
-fn singleton_range(seq: u64) -> std::ops::Range<u64> {
+fn single_range(seq: u64) -> std::ops::Range<u64> {
     seq..seq.checked_add(1).unwrap()
 }
 
@@ -178,7 +178,7 @@ mod tests {
 
     use ql_wire::RecordSeq;
 
-    use super::{PendingAck, ReceiveOutcome, RecordRxState};
+    use super::{AckTracker, PendingAck, ReceiveOutcome};
 
     fn seq(value: u64) -> RecordSeq {
         RecordSeq::from_u64(value).unwrap()
@@ -195,72 +195,72 @@ mod tests {
     #[test]
     fn contiguous_records_emit_one_ack_range() {
         let now = Instant::now();
-        let mut record_rx = RecordRxState::new(128, 8);
+        let mut ack_tracker = AckTracker::new(128, 8);
 
-        assert_eq!(record_rx.insert(seq(10)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(11)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(12)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(10)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(11)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(12)), ReceiveOutcome::New);
 
-        record_rx.schedule_ack(now);
-        let pending_ack = record_rx.pending_ack(usize::MAX).unwrap();
+        ack_tracker.schedule_ack(now);
+        let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
         assert_eq!(ack_ranges(pending_ack), vec![(10, 12)]);
     }
 
     #[test]
     fn sparse_records_emit_descending_ack_ranges() {
         let now = Instant::now();
-        let mut record_rx = RecordRxState::new(128, 8);
+        let mut ack_tracker = AckTracker::new(128, 8);
 
-        assert_eq!(record_rx.insert(seq(10)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(15)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(16)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(12)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(10)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(15)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(16)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(12)), ReceiveOutcome::New);
 
-        record_rx.schedule_ack(now + Duration::from_millis(5));
-        let pending_ack = record_rx.pending_ack(usize::MAX).unwrap();
+        ack_tracker.schedule_ack(now + Duration::from_millis(5));
+        let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
         assert_eq!(ack_ranges(pending_ack), vec![(15, 16), (12, 12), (10, 10)]);
     }
 
     #[test]
     fn accepted_record_window_evicts_old_sequences() {
-        let mut record_rx = RecordRxState::new(4, 8);
+        let mut ack_tracker = AckTracker::new(4, 8);
 
-        assert_eq!(record_rx.insert(seq(10)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(15)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(10)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(15)), ReceiveOutcome::New);
 
-        assert_eq!(record_rx.insert(seq(10)), ReceiveOutcome::TooOld);
+        assert_eq!(ack_tracker.insert(seq(10)), ReceiveOutcome::TooOld);
     }
 
     #[test]
     fn pending_ack_range_limit_drops_oldest_low_ranges() {
         let now = Instant::now();
-        let mut record_rx = RecordRxState::new(128, 2);
+        let mut ack_tracker = AckTracker::new(128, 2);
 
-        assert_eq!(record_rx.insert(seq(1)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(3)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(5)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(1)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(3)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(5)), ReceiveOutcome::New);
 
-        record_rx.schedule_ack(now);
-        let pending_ack = record_rx.pending_ack(usize::MAX).unwrap();
+        ack_tracker.schedule_ack(now);
+        let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
         assert_eq!(ack_ranges(pending_ack), vec![(5, 5), (3, 3)]);
     }
 
     #[test]
     fn retire_acked_ranges_removes_only_exact_snapshot() {
         let now = Instant::now();
-        let mut record_rx = RecordRxState::new(128, 8);
+        let mut ack_tracker = AckTracker::new(128, 8);
 
-        assert_eq!(record_rx.insert(seq(1)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(3)), ReceiveOutcome::New);
-        assert_eq!(record_rx.insert(seq(5)), ReceiveOutcome::New);
-        record_rx.schedule_ack(now);
+        assert_eq!(ack_tracker.insert(seq(1)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(3)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(seq(5)), ReceiveOutcome::New);
+        ack_tracker.schedule_ack(now);
 
-        let first_ack = record_rx.pending_ack(4).unwrap();
+        let first_ack = ack_tracker.pending_ack(4).unwrap();
         assert_eq!(ack_ranges(first_ack.clone()), vec![(5, 5)]);
-        record_rx.on_ack_emitted(&first_ack);
-        record_rx.retire_acked_ranges(&first_ack.ack);
+        ack_tracker.on_ack_emitted(&first_ack);
+        ack_tracker.retire_acked_ranges(&first_ack.ack);
 
-        let second_ack = record_rx.pending_ack(usize::MAX).unwrap();
+        let second_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
         assert_eq!(ack_ranges(second_ack), vec![(3, 3), (1, 1)]);
     }
 }

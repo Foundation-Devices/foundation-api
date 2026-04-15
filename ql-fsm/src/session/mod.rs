@@ -1,7 +1,7 @@
 pub use self::{stream_ops::*, stream_parity::*, stream_rx::*};
 
+mod ack_tracker;
 mod range_set;
-mod received_records;
 mod remote_stream_history;
 mod state;
 mod stream_ops;
@@ -24,7 +24,7 @@ use ql_wire::{
 };
 
 use self::{
-    received_records::{PendingAck, ReceiveOutcome, RecordRxState},
+    ack_tracker::{AckTracker, PendingAck, ReceiveOutcome},
     remote_stream_history::RemoteStreamHistory,
     state::{InboundState, OutboundState, SessionPhase, SessionState, StreamRole, StreamState},
     stream_tx::StreamTxRange,
@@ -103,7 +103,7 @@ impl SessionFsm {
                 next_record_seq: RecordSeq::from_u32(0),
                 next_write_id: 0,
                 tracked_records: Default::default(),
-                record_rx: RecordRxState::new(
+                ack_tracker: AckTracker::new(
                     config.accepted_record_window,
                     config.pending_ack_range_limit,
                 ),
@@ -158,7 +158,7 @@ impl SessionFsm {
         let close = SessionClose { code };
         self.state.phase = SessionPhase::Closing(close.clone());
         self.state.tracked_records.clear();
-        self.state.record_rx.clear_ack_state();
+        self.state.ack_tracker.clear_ack_state();
         self.clear_streams();
         emit(SessionEvent::SessionClosed(close));
     }
@@ -185,7 +185,7 @@ impl SessionFsm {
 
         self.collect_timeouts(now);
 
-        match self.state.record_rx.insert(seq) {
+        match self.state.ack_tracker.insert(seq) {
             ReceiveOutcome::TooOld => return,
             ReceiveOutcome::Duplicate => {
                 self.schedule_ack(now, true);
@@ -263,7 +263,7 @@ impl SessionFsm {
             };
             restore_tracked_record(
                 now,
-                &mut self.state.record_rx,
+                &mut self.state.ack_tracker,
                 &mut self.state.pending_ping,
                 &mut self.state.streams,
                 record,
@@ -294,7 +294,7 @@ impl SessionFsm {
         if !self.state.phase.is_open() {
             return None;
         }
-        let ack_deadline = self.state.record_rx.ack_deadline();
+        let ack_deadline = self.state.ack_tracker.ack_deadline();
         let retransmit_deadline = self
             .state
             .tracked_records
@@ -380,7 +380,7 @@ impl SessionFsm {
         if let Some(pending_ack) = self.pending_ack(builder.remaining_capacity()) {
             if !builder.is_empty() || pending_ack.due_at <= now {
                 if builder.push_ack(&pending_ack.ack) {
-                    self.state.record_rx.on_ack_emitted(&pending_ack);
+                    self.state.ack_tracker.on_ack_emitted(&pending_ack);
                     outbound.ack = Some(pending_ack.ack);
                 }
             }
@@ -549,7 +549,7 @@ impl SessionFsm {
     }
 
     fn schedule_ack(&mut self, now: Instant, immediate: bool) {
-        self.state.record_rx.schedule_ack(if immediate {
+        self.state.ack_tracker.schedule_ack(if immediate {
             now
         } else {
             now + self.config.ack_delay
@@ -558,7 +558,7 @@ impl SessionFsm {
 
     fn pending_ack(&self, remaining_capacity: usize) -> Option<PendingAck> {
         let max_ack_wire_size = remaining_capacity.checked_sub(1)?;
-        self.state.record_rx.pending_ack(max_ack_wire_size)
+        self.state.ack_tracker.pending_ack(max_ack_wire_size)
     }
 
     fn collect_timeouts(&mut self, now: Instant) {
@@ -570,7 +570,7 @@ impl SessionFsm {
         }) {
             restore_tracked_record(
                 now,
-                &mut self.state.record_rx,
+                &mut self.state.ack_tracker,
                 &mut self.state.pending_ping,
                 &mut self.state.streams,
                 record,
@@ -898,13 +898,13 @@ fn local_stream_was_opened(
 
 fn restore_tracked_record(
     now: Instant,
-    record_rx: &mut RecordRxState,
+    ack_tracker: &mut AckTracker,
     pending_ping: &mut bool,
     streams: &mut IndexMap<StreamId, StreamState>,
     record: TrackedRecord,
 ) {
     if let Some(ack) = &record.ack {
-        record_rx.restore_acked_ranges(ack, now);
+        ack_tracker.restore_acked_ranges(ack, now);
     }
     if record.ping_included {
         *pending_ping = true;

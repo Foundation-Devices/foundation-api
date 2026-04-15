@@ -4,8 +4,8 @@ use indexmap::IndexMap;
 use ql_wire::{CloseTarget, RecordSeq, RouteId, SessionClose, StreamClose, StreamId};
 
 use super::{
-    received_records::RecordRxState, remote_stream_history::RemoteStreamHistory,
-    stream_rx::StreamRx, stream_tx::StreamTx, tracked::TrackedRecord,
+    ack_tracker::AckTracker, remote_stream_history::RemoteStreamHistory, stream_rx::StreamRx,
+    stream_tx::StreamTx, tracked::TrackedRecord,
 };
 
 pub struct SessionState {
@@ -16,7 +16,7 @@ pub struct SessionState {
     pub next_record_seq: RecordSeq,
     pub next_write_id: u64,
     pub tracked_records: IndexMap<u64, TrackedRecord>,
-    pub record_rx: RecordRxState,
+    pub ack_tracker: AckTracker,
     pub pending_ping: bool,
     pub streams: IndexMap<StreamId, StreamState>,
     pub next_stream_index: usize,
