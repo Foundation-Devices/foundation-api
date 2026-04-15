@@ -27,3 +27,9 @@ impl<B: ByteSlice> WireDecode<B> for StreamId {
         Ok(Self(reader.decode()?))
     }
 }
+
+impl std::fmt::Display for StreamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}

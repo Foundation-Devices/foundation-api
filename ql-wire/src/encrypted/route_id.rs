@@ -47,3 +47,9 @@ impl From<u32> for RouteId {
         Self::from_u32(value)
     }
 }
+
+impl std::fmt::Display for RouteId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}

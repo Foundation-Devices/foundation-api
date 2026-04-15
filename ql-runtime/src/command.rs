@@ -3,7 +3,7 @@ use ql_wire::{CloseTarget, PairingToken, PeerBundle, RouteId, StreamCloseCode, S
 
 use crate::{chunk_slot::ChunkSlotRx, ByteReader, QlStreamError};
 
-pub(crate) enum RuntimeCommand {
+pub enum RuntimeCommand {
     BindPeer {
         peer: PeerBundle,
     },
@@ -33,4 +33,21 @@ pub(crate) enum RuntimeCommand {
         code: StreamCloseCode,
     },
     Receive(Vec<u8>),
+}
+
+impl RuntimeCommand {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::BindPeer { .. } => "BindPeer",
+            Self::Connect => "Connect",
+            Self::ArmPairing { .. } => "ArmPairing",
+            Self::DisarmPairing => "DisarmPairing",
+            Self::StartPairing { .. } => "StartPairing",
+            Self::OpenStream { .. } => "OpenStream",
+            Self::PollInbound { .. } => "PollInbound",
+            Self::PollStream { .. } => "PollStream",
+            Self::CloseStream { .. } => "CloseStream",
+            Self::Receive(_) => "Receive",
+        }
+    }
 }
