@@ -4,7 +4,7 @@ use bytes::Bytes;
 
 use super::{
     request::read_value_and_eof,
-    LocalMode, RouteMode, RouterConfig, SendMode,
+    RouterConfig,
 };
 use crate::{
     codec, finish_bytes, subscription::Subscription as SubscriptionRpc, write_bytes, RpcCodec,
@@ -72,48 +72,7 @@ where
     }
 }
 
-#[doc(hidden)]
-pub trait SubscriptionRouteMode<S, M, St>: RouteMode
-where
-    M: SubscriptionRpc + 'static,
-    S: SubscriptionHandler<M, St> + 'static,
-    St: RpcStream + 'static,
-{
-    fn handle_subscription(state: S, config: RouterConfig, stream: St) -> Self::RouteFuture;
-}
-
-impl<S, M, St> SubscriptionRouteMode<S, M, St> for LocalMode
-where
-    M: SubscriptionRpc + 'static,
-    S: SubscriptionHandler<M, St> + 'static,
-    St: RpcStream + 'static,
-{
-    fn handle_subscription(state: S, config: RouterConfig, stream: St) -> Self::RouteFuture {
-        let (reader, writer) = stream.split();
-        Box::pin(handle_subscription_inner::<S, M, St>(
-            state, config, reader, writer,
-        ))
-    }
-}
-
-impl<S, M, St> SubscriptionRouteMode<S, M, St> for SendMode
-where
-    M: SubscriptionRpc + 'static,
-    M::Request: Send + 'static,
-    S: SubscriptionHandler<M, St> + Send + 'static,
-    St: RpcStream + 'static,
-    St::Reader: Send + 'static,
-    St::Writer: Send + 'static,
-{
-    fn handle_subscription(state: S, config: RouterConfig, stream: St) -> Self::RouteFuture {
-        let (reader, writer) = stream.split();
-        Box::pin(handle_subscription_inner::<S, M, St>(
-            state, config, reader, writer,
-        ))
-    }
-}
-
-async fn handle_subscription_inner<S, M, St>(
+pub(super) async fn handle_subscription_inner<S, M, St>(
     state: S,
     config: RouterConfig,
     mut reader: St::Reader,

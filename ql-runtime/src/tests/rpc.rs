@@ -12,7 +12,7 @@ use ql_rpc::{Response, RouteId, StreamCloseCode, SubscriptionResponder};
 use ql_wire::RouteId as WireRouteId;
 
 use super::*;
-use crate::{rpc::Router, ByteWriter};
+use crate::{ByteWriter, QlStream};
 
 struct Echo;
 
@@ -106,7 +106,9 @@ async fn rpc_router_handles_request() {
         let inbound_b = pair.take_inbound(Side::B);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let router = Router::builder()
+        let router = ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(
+            crate::rpc::LocalSpawn,
+        )
             .request::<Echo>()
             .build(RouterState { seen: seen.clone() });
 
@@ -159,7 +161,9 @@ async fn rpc_router_handles_subscription() {
         let inbound_b = pair.take_inbound(Side::B);
 
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let router = crate::rpc::Router::builder()
+        let router = ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(
+            crate::rpc::LocalSpawn,
+        )
             .subscription::<Feed>()
             .build(RouterState { seen: seen.clone() });
 
@@ -207,7 +211,9 @@ async fn rpc_send_router_handles_request() {
         pair.connect_and_wait(Side::A).await;
         let inbound_b = pair.take_inbound(Side::B);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let router = crate::rpc::SendRouter::builder()
+        let router = ql_rpc::Router::<_, QlStream, crate::rpc::SendSpawn>::builder(
+            crate::rpc::SendSpawn,
+        )
             .request::<Echo>()
             .build(RouterState { seen: seen.clone() });
 
@@ -253,7 +259,9 @@ async fn rpc_router_enforces_max_request_bytes() {
         let mut pair = TestPair::new(default_runtime_config());
         pair.connect_and_wait(Side::A).await;
         let inbound_b = pair.take_inbound(Side::B);
-        let router = crate::rpc::Router::builder()
+        let router = ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(
+            crate::rpc::LocalSpawn,
+        )
             .max_request_bytes(4)
             .request::<Echo>()
             .build(LimitedState);

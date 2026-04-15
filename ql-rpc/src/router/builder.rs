@@ -1,39 +1,32 @@
 use std::collections::HashMap;
 
 use super::{
-    request::{RequestHandler, RequestRouteMode},
-    subscription::{SubscriptionHandler, SubscriptionRouteMode},
-    LocalMode, RouteMode, Router, RouterConfig, RpcStream,
+    request::{handle_request_inner, RequestHandler},
+    subscription::{handle_subscription_inner, SubscriptionHandler},
+    LocalSpawn, LocalSpawner, RouteFn, Router, RouterConfig, RpcStream, SendSpawn, SendSpawner,
+    Spawner,
 };
 use crate::{
-    request::Request as RequestRpc, router::RouteFn, subscription::Subscription as SubscriptionRpc,
-    RouteId,
+    request::Request as RequestRpc, subscription::Subscription as SubscriptionRpc, RouteId,
 };
 
-pub struct RouterBuilder<S, St, Mode = LocalMode>
+pub struct RouterBuilder<S, St, Sp>
 where
-    Mode: RouteMode,
+    Sp: Spawner,
 {
     config: RouterConfig,
-    routes: HashMap<RouteId, RouteFn<S, St, Mode>>,
+    spawner: Sp,
+    routes: HashMap<RouteId, RouteFn<S, St, Sp>>,
 }
 
-impl<S, St, Mode> Default for RouterBuilder<S, St, Mode>
+impl<S, St, Sp> RouterBuilder<S, St, Sp>
 where
-    Mode: RouteMode,
+    Sp: Spawner,
 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<S, St, Mode> RouterBuilder<S, St, Mode>
-where
-    Mode: RouteMode,
-{
-    pub fn new() -> Self {
+    pub fn new(spawner: Sp) -> Self {
         Self {
             config: RouterConfig::default(),
+            spawner,
             routes: std::collections::HashMap::new(),
         }
     }
@@ -48,16 +41,17 @@ where
         self
     }
 
-    pub fn build(mut self, state: S) -> Router<S, St, Mode> {
+    pub fn build(mut self, state: S) -> Router<S, St, Sp> {
         self.routes.shrink_to_fit();
         Router {
             config: self.config,
             state,
+            spawner: self.spawner,
             routes: self.routes,
         }
     }
 
-    fn add_route(mut self, route_id: crate::RouteId, route: super::RouteFn<S, St, Mode>) -> Self {
+    fn add_route(mut self, route_id: crate::RouteId, route: RouteFn<S, St, Sp>) -> Self {
         if self.routes.insert(route_id, route).is_some() {
             panic!("duplicate rpc route {}", route_id.into_inner());
         }
@@ -65,33 +59,70 @@ where
     }
 }
 
-impl<S, St, Mode> RouterBuilder<S, St, Mode>
+impl<S, St> RouterBuilder<S, St, LocalSpawn>
 where
-    Mode: RouteMode,
+    St: RpcStream + 'static,
 {
     pub fn request<M>(self) -> Self
     where
         M: RequestRpc + 'static,
         S: RequestHandler<M, St> + 'static,
-        St: RpcStream + 'static,
-        Mode: RequestRouteMode<S, M, St>,
     {
-        self.add_route(
-            M::ROUTE,
-            <Mode as RequestRouteMode<S, M, St>>::handle_request,
-        )
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_request_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
     }
 
     pub fn subscription<M>(self) -> Self
     where
         M: SubscriptionRpc + 'static,
         S: SubscriptionHandler<M, St> + 'static,
-        St: RpcStream + 'static,
-        Mode: SubscriptionRouteMode<S, M, St>,
     {
-        self.add_route(
-            M::ROUTE,
-            <Mode as SubscriptionRouteMode<S, M, St>>::handle_subscription,
-        )
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_subscription_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
+    }
+}
+
+impl<S, St> RouterBuilder<S, St, SendSpawn>
+where
+    St: RpcStream + 'static,
+{
+    pub fn request<M>(self) -> Self
+    where
+        M: RequestRpc + 'static,
+        M::Request: Send + 'static,
+        S: RequestHandler<M, St> + Send + 'static,
+        St::Reader: Send + 'static,
+        St::Writer: Send + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_request_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
+    }
+
+    pub fn subscription<M>(self) -> Self
+    where
+        M: SubscriptionRpc + 'static,
+        M::Request: Send + 'static,
+        S: SubscriptionHandler<M, St> + Send + 'static,
+        St::Reader: Send + 'static,
+        St::Writer: Send + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_subscription_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
     }
 }

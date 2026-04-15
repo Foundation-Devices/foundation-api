@@ -18,31 +18,35 @@ pub use self::{
 
 use crate::{close_stream, RpcStream};
 
-pub struct Router<S, St, Mode = LocalMode>
+pub struct Router<S, St, Sp>
 where
-    Mode: RouteMode,
+    Sp: Spawner,
 {
     config: RouterConfig,
     state: S,
-    routes: HashMap<RouteId, RouteFn<S, St, Mode>>,
+    spawner: Sp,
+    routes: HashMap<RouteId, RouteFn<S, St, Sp>>,
 }
 
-impl<S, St, Mode> Router<S, St, Mode>
+impl<S, St, Sp> Router<S, St, Sp>
 where
     S: Clone + 'static,
     St: RpcStream,
-    Mode: RouteMode,
+    Sp: Spawner,
 {
-    pub fn builder() -> RouterBuilder<S, St, Mode> {
-        RouterBuilder::<S, St, Mode>::new()
+    pub fn builder(spawner: Sp) -> RouterBuilder<S, St, Sp> {
+        RouterBuilder::<S, St, Sp>::new(spawner)
     }
 
-    pub fn handle(&self, stream: St) -> Option<(RouteId, Mode::RouteFuture)> {
+    pub fn handle(&self, stream: St) -> Option<(RouteId, Sp::Handle)> {
         let route_id = stream.route_id()?;
         let Some(route) = self.routes.get(&route_id).copied() else {
             close_stream(stream, StreamCloseCode::UNKNOWN_ROUTE);
             return None;
         };
-        Some((route_id, route(self.state.clone(), self.config, stream)))
+        Some((
+            route_id,
+            route(&self.spawner, self.state.clone(), self.config, stream),
+        ))
     }
 }

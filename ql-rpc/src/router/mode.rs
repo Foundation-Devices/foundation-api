@@ -2,24 +2,52 @@ use std::{future::Future, pin::Pin};
 
 use crate::RouterConfig;
 
-pub trait RouteMode {
-    type RouteFuture: Future<Output = ()> + 'static;
+pub type RouteFn<S, St, Sp> = fn(&Sp, S, RouterConfig, St) -> <Sp as Spawner>::Handle;
+
+pub trait Spawner {
+    type Handle: Future<Output = ()> + 'static;
+}
+
+pub trait LocalSpawner: Spawner {
+    fn spawn<F>(&self, fut: F) -> Self::Handle
+    where
+        F: Future<Output = ()> + 'static;
+}
+
+pub trait SendSpawner: Spawner {
+    fn spawn<F>(&self, fut: F) -> Self::Handle
+    where
+        F: Future<Output = ()> + Send + 'static;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct LocalMode;
+pub struct LocalSpawn;
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SendMode;
-
-pub type RouteFn<S, St, Mode> = fn(S, RouterConfig, St) -> <Mode as RouteMode>::RouteFuture;
-pub type LocalFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
-pub type SendFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-
-impl RouteMode for LocalMode {
-    type RouteFuture = LocalFuture;
+impl Spawner for LocalSpawn {
+    type Handle = Pin<Box<dyn Future<Output = ()> + 'static>>;
 }
 
-impl RouteMode for SendMode {
-    type RouteFuture = SendFuture;
+impl LocalSpawner for LocalSpawn {
+    fn spawn<F>(&self, fut: F) -> Self::Handle
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        Box::pin(fut)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SendSpawn;
+
+impl Spawner for SendSpawn {
+    type Handle = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+}
+
+impl SendSpawner for SendSpawn {
+    fn spawn<F>(&self, fut: F) -> Self::Handle
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        Box::pin(fut)
+    }
 }

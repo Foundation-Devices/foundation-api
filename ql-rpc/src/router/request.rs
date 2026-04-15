@@ -2,9 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::Bytes;
 
-use super::{
-    LocalMode, RouteMode, RouterConfig, SendMode,
-};
+use super::RouterConfig;
 use crate::{
     finish_bytes, read_bytes, write_bytes, RpcRead, RpcStream, RpcWrite, StreamError,
     codec, request::Request as RequestRpc, ReadValueStep, RpcCodec, StreamCloseCode, ValueReader,
@@ -67,48 +65,7 @@ where
     }
 }
 
-#[doc(hidden)]
-pub trait RequestRouteMode<S, M, St>: RouteMode
-where
-    M: RequestRpc + 'static,
-    S: RequestHandler<M, St> + 'static,
-    St: RpcStream + 'static,
-{
-    fn handle_request(state: S, config: RouterConfig, stream: St) -> Self::RouteFuture;
-}
-
-impl<S, M, St> RequestRouteMode<S, M, St> for LocalMode
-where
-    M: RequestRpc + 'static,
-    S: RequestHandler<M, St> + 'static,
-    St: RpcStream + 'static,
-{
-    fn handle_request(state: S, config: RouterConfig, stream: St) -> Self::RouteFuture {
-        let (reader, writer) = stream.split();
-        Box::pin(handle_request_inner::<S, M, St>(
-            state, config, reader, writer,
-        ))
-    }
-}
-
-impl<S, M, St> RequestRouteMode<S, M, St> for SendMode
-where
-    M: RequestRpc + 'static,
-    M::Request: Send + 'static,
-    S: RequestHandler<M, St> + Send + 'static,
-    St: RpcStream + 'static,
-    St::Reader: Send + 'static,
-    St::Writer: Send + 'static,
-{
-    fn handle_request(state: S, config: RouterConfig, stream: St) -> Self::RouteFuture {
-        let (reader, writer) = stream.split();
-        Box::pin(handle_request_inner::<S, M, St>(
-            state, config, reader, writer,
-        ))
-    }
-}
-
-async fn handle_request_inner<S, M, St>(
+pub(super) async fn handle_request_inner<S, M, St>(
     state: S,
     config: RouterConfig,
     mut reader: St::Reader,
