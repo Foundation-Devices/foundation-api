@@ -36,10 +36,11 @@ pub struct StreamCloseCode(pub u16);
 
 impl StreamCloseCode {
     pub const CANCELLED: Self = Self(0);
-    pub const REFUSED: Self = Self(1);
-    pub const TIMEOUT: Self = Self(2);
-    pub const LIMIT: Self = Self(3);
-    pub const UNKNOWN_ROUTE: Self = Self(4);
+    pub const INTERNAL: Self = Self(1);
+    pub const REFUSED: Self = Self(2);
+    pub const TIMEOUT: Self = Self(3);
+    pub const LIMIT: Self = Self(4);
+    pub const UNKNOWN_ROUTE: Self = Self(5);
 
     pub const fn into_inner(self) -> u16 {
         self.0
