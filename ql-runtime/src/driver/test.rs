@@ -6,7 +6,6 @@ use super::*;
 use crate::{
     chunk_slot,
     driver::state::{InboundIo, OutboundIo},
-    platform::PlatformFuture,
 };
 
 pub struct NoopTimer;
@@ -29,10 +28,6 @@ impl QlPlatform for NoopCrypto {
 
     fn timer(&self) -> Self::Timer {
         NoopTimer
-    }
-
-    fn load_peer(&self) -> PlatformFuture<'_, Option<PeerBundle>> {
-        Box::pin(async { None })
     }
 
     fn persist_peer(&self, _peer: PeerBundle) {}

@@ -40,9 +40,6 @@ impl<P: QlPlatform> Runtime<P> {
         } = self;
 
         let mut fsm = QlFsm::new(config.fsm, identity, now());
-        if let Some(peer) = platform.load_peer().await {
-            fsm.bind_peer(peer);
-        }
 
         let mut state = DriverState {
             streams: HashMap::new(),

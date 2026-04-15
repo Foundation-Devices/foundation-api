@@ -393,10 +393,6 @@ impl crate::platform::QlPlatform for TestPlatform {
         TokioTimer::new()
     }
 
-    fn load_peer(&self) -> PlatformFuture<'_, Option<PeerBundle>> {
-        Box::pin(async { None })
-    }
-
     fn persist_peer(&self, _peer: PeerBundle) {}
 
     fn handle_peer_status(&self, peer: XID, status: PeerStatus) {

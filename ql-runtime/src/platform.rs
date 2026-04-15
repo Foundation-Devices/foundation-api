@@ -26,7 +26,6 @@ pub trait QlPlatform: QlCrypto {
     fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_>;
     fn timer(&self) -> Self::Timer;
 
-    fn load_peer(&self) -> PlatformFuture<'_, Option<PeerBundle>>;
     fn persist_peer(&self, peer: PeerBundle);
 
     fn handle_peer_status(&self, peer: XID, status: PeerStatus);
