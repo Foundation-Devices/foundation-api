@@ -44,13 +44,15 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
         let responder_task = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
             let _ = read_all(stream.reader).await;
-            stream.writer.finish();
+            let err = stream.writer.finish().await.unwrap_err();
+            assert!(matches!(err, QlStreamError::NoSession));
         });
 
         drop_flag.store(true, Ordering::Relaxed);
 
         let mut pending = handle_a.open_stream(test_route_id()).await.unwrap();
-        pending.writer.finish();
+        let err = pending.writer.finish().await.unwrap_err();
+        assert!(matches!(err, QlStreamError::NoSession));
 
         await_status(&status_a, identity_b.xid, PeerStatus::Disconnected).await;
 

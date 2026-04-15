@@ -18,7 +18,7 @@ pub(crate) enum RuntimeCommand {
     OpenStream {
         route_id: RouteId,
         request_reader: ChunkSlotRx,
-        request_terminal: oneshot::Sender<QlStreamError>,
+        request_terminal: oneshot::Sender<Result<(), QlStreamError>>,
         start: oneshot::Sender<Result<(StreamId, ByteReader), NoSessionError>>,
     },
     PollInbound {

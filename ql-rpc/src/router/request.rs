@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 
 use super::{
-    stream::{read_bytes, write_bytes, RpcRead, RpcStream, RpcWrite, StreamError},
+    stream::{finish_bytes, read_bytes, write_bytes, RpcRead, RpcStream, RpcWrite, StreamError},
     LocalMode, RouteMode, RouterConfig, SendMode,
 };
 use crate::{
@@ -45,7 +45,7 @@ where
         let mut encoded = Vec::new();
         codec::encode_value_part(&response, &mut encoded);
         write_bytes(&mut writer, Bytes::from(encoded)).await?;
-        writer.finish();
+        finish_bytes(&mut writer).await?;
         Ok(())
     }
 

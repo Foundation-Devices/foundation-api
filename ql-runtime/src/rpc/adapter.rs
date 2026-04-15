@@ -57,8 +57,8 @@ impl RpcWrite for ByteWriter {
         ByteWriter::poll_write(self, bytes, cx)
     }
 
-    fn finish(self) {
-        ByteWriter::finish(self);
+    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
+        ByteWriter::poll_finish(self, cx)
     }
 
     fn close(self, code: StreamCloseCode) {

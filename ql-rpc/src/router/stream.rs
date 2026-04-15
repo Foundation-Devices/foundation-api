@@ -35,7 +35,7 @@ pub trait RpcWrite {
         bytes: &mut Bytes,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>>;
-    fn finish(self);
+    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
     fn close(self, code: StreamCloseCode);
 }
 
@@ -62,6 +62,13 @@ where
 {
     let mut bytes = bytes;
     poll_fn(|cx| writer.poll_write(&mut bytes, cx)).await
+}
+
+pub async fn finish_bytes<W>(writer: &mut W) -> Result<(), W::Error>
+where
+    W: RpcWrite,
+{
+    poll_fn(|cx| writer.poll_finish(cx)).await
 }
 
 pub fn close_stream<St>(stream: St, code: StreamCloseCode)

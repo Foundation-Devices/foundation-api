@@ -79,7 +79,7 @@ async fn rejected_session_write_is_reissued() {
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
             let request = read_all(stream.reader).await.unwrap();
-            stream.writer.finish();
+            stream.writer.finish().await.unwrap();
             request
         });
 
@@ -89,7 +89,7 @@ async fn rejected_session_write_is_reissued() {
             .write(Bytes::from_static(b"retry"))
             .await
             .unwrap();
-        stream.writer.finish();
+        stream.writer.finish().await.unwrap();
         assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
 
         assert_eq!(

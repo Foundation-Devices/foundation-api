@@ -106,7 +106,7 @@ fn handle_closed_stream_reaps_when_both_halves_close() {
 }
 
 #[test]
-fn poll_stream_reaps_after_local_finish_when_inbound_is_closed() {
+fn poll_stream_keeps_outbound_pending_after_local_finish_when_inbound_is_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
     let (request_reader, request_writer) = chunk_slot::new();
@@ -124,7 +124,9 @@ fn poll_stream_reaps_after_local_finish_when_inbound_is_closed() {
 
     state.poll_stream(&mut fsm, stream_id);
 
-    assert!(!state.streams.contains_key(&stream_id));
+    let stream = state.streams.get(&stream_id).unwrap();
+    assert!(stream.outbound_finish_pending());
+    assert!(!stream.is_closed());
 }
 
 #[test]

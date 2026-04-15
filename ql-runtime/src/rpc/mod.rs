@@ -35,7 +35,7 @@ impl RpcHandle {
             .await?;
         stream.reader.close(ql_wire::StreamCloseCode::CANCELLED);
         stream.writer.write(Bytes::from(payload)).await?;
-        stream.writer.finish();
+        stream.writer.finish().await?;
         Ok(())
     }
 
@@ -92,7 +92,7 @@ impl RpcHandle {
             .open_stream(adapter::to_wire_route_id(route_id))
             .await?;
         stream.writer.write(Bytes::from(payload)).await?;
-        stream.writer.finish();
+        stream.writer.finish().await?;
         Ok(stream.reader)
     }
 }

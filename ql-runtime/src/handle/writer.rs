@@ -25,8 +25,8 @@ pub struct ByteWriter {
 }
 
 enum WriteTerminalState {
-    Armed(oneshot::Receiver<QlStreamError>),
-    Terminal(QlStreamError),
+    Armed(oneshot::Receiver<Result<(), QlStreamError>>),
+    Terminal(Result<(), QlStreamError>),
 }
 
 // Safety: `ByteWriter` contains a `oneshot::Receiver`, which is `!Sync`, but that receiver is
@@ -45,29 +45,6 @@ impl std::fmt::Debug for ByteWriter {
 }
 
 impl ByteWriter {
-    pub(crate) fn new(
-        stream_id: StreamId,
-        target: CloseTarget,
-        writer: ChunkSlotTx,
-        terminal: oneshot::Receiver<QlStreamError>,
-        handle: RuntimeHandle,
-    ) -> Self {
-        Self {
-            stream_id,
-            target,
-            writer: Some(writer),
-            listener: None,
-            terminal: WriteTerminalState::Armed(terminal),
-            handle,
-        }
-    }
-
-    fn poll_runtime(&self) {
-        self.handle.send(RuntimeCommand::PollStream {
-            stream_id: self.stream_id,
-        });
-    }
-
     pub fn poll_write(
         &mut self,
         bytes: &mut Bytes,
@@ -78,7 +55,7 @@ impl ByteWriter {
         }
 
         let Some(writer) = self.writer.as_ref() else {
-            return self.poll_terminal_error(cx).map(Err);
+            return self.poll_terminal(cx);
         };
 
         match writer.poll_send(bytes, &mut self.listener, cx) {
@@ -95,12 +72,11 @@ impl ByteWriter {
             Poll::Ready(Err(SendClosed(_bytes))) => {
                 debug!(
                     "byte writer send closed: stream_id={:?} target={:?}",
-                    self.stream_id,
-                    self.target
+                    self.stream_id, self.target
                 );
                 self.writer.take();
                 self.listener = None;
-                self.poll_terminal_error(cx).map(Err)
+                self.poll_terminal(cx)
             }
             Poll::Pending => Poll::Pending,
         }
@@ -111,17 +87,29 @@ impl ByteWriter {
         poll_fn(|cx| self.poll_write(&mut bytes, cx)).await
     }
 
-    pub fn finish(mut self) {
+    pub fn queue_finish(&mut self) {
         let Some(writer) = self.writer.take() else {
             return;
         };
         debug!(
             "byte writer finish: stream_id={:?} target={:?}",
-            self.stream_id,
-            self.target
+            self.stream_id, self.target
         );
         writer.close();
+        self.listener = None;
         self.poll_runtime();
+    }
+
+    pub async fn finish(mut self) -> Result<(), QlStreamError> {
+        self.queue_finish();
+        poll_fn(|cx| self.poll_terminal(cx)).await
+    }
+
+    pub fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
+        if self.writer.is_some() {
+            self.queue_finish();
+        }
+        self.poll_terminal(cx)
     }
 
     pub fn close(mut self, code: StreamCloseCode) {
@@ -136,13 +124,36 @@ impl Drop for ByteWriter {
 }
 
 impl ByteWriter {
-    fn poll_terminal_error(&mut self, cx: &mut Context<'_>) -> Poll<QlStreamError> {
+    pub(crate) fn new(
+        stream_id: StreamId,
+        target: CloseTarget,
+        writer: ChunkSlotTx,
+        terminal: oneshot::Receiver<Result<(), QlStreamError>>,
+        handle: RuntimeHandle,
+    ) -> Self {
+        Self {
+            stream_id,
+            target,
+            writer: Some(writer),
+            listener: None,
+            terminal: WriteTerminalState::Armed(terminal),
+            handle,
+        }
+    }
+
+    fn poll_runtime(&self) {
+        self.handle.try_send(RuntimeCommand::PollStream {
+            stream_id: self.stream_id,
+        });
+    }
+
+    fn poll_terminal(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
         match &mut self.terminal {
-            WriteTerminalState::Terminal(error) => Poll::Ready(error.clone()),
+            WriteTerminalState::Terminal(result) => Poll::Ready(result.clone()),
             WriteTerminalState::Armed(receiver) => match Pin::new(receiver).poll(cx) {
-                Poll::Ready(Ok(error)) => {
-                    self.terminal = WriteTerminalState::Terminal(error.clone());
-                    Poll::Ready(error)
+                Poll::Ready(Ok(result)) => {
+                    self.terminal = WriteTerminalState::Terminal(result.clone());
+                    Poll::Ready(result)
                 }
                 Poll::Ready(Err(_)) => {
                     panic!("byte writer terminal dropped before sending a terminal state")
@@ -158,12 +169,10 @@ impl ByteWriter {
         }
         debug!(
             "byte writer close: stream_id={:?} target={:?} code={:?}",
-            self.stream_id,
-            self.target,
-            code
+            self.stream_id, self.target, code
         );
         self.listener = None;
-        self.handle.send(RuntimeCommand::CloseStream {
+        self.handle.try_send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
             code,

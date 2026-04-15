@@ -298,6 +298,9 @@ impl DriverState {
                 Event::Finished(stream_id) => {
                     self.handle_inbound_finished(fsm, stream_id);
                 }
+                Event::OutboundFinished(stream_id) => {
+                    self.handle_outbound_finished(stream_id);
+                }
                 Event::Closed(frame) => {
                     self.handle_closed_stream(&frame);
                 }
@@ -482,6 +485,22 @@ impl DriverState {
         Self::try_reap_stream(entry);
     }
 
+    fn handle_outbound_finished(&mut self, stream_id: StreamId) {
+        debug!(
+            "runtime outbound finish acknowledged: stream_id={:?}",
+            stream_id
+        );
+        let Entry::Occupied(mut entry) = self.streams.entry(stream_id) else {
+            return;
+        };
+        let stream = entry.get_mut();
+        if !stream.outbound_finish_pending() {
+            return;
+        }
+        stream.outbound_finish();
+        Self::try_reap_stream(entry);
+    }
+
     fn fill_write_slots<'a, P: QlPlatform + 'a>(
         &self,
         fsm: &mut QlFsm,
@@ -521,7 +540,7 @@ impl DriverState {
                     writer.finish();
                 }
             }
-            stream.outbound_close();
+            stream.outbound_queue_finish();
             if stream.is_closed() {
                 entry.remove();
             }
@@ -548,7 +567,7 @@ impl DriverState {
                 stream_id
             );
             writer.finish();
-            stream.outbound_close();
+            stream.outbound_queue_finish();
             if stream.is_closed() {
                 entry.remove();
             }

@@ -24,7 +24,7 @@ async fn open_stream_duplex_happy_path() {
             assert_eq!(next_chunk(&mut reader).await.unwrap(), Some(vec![3, 4]));
             writer.write(Bytes::from_static(&[8, 7])).await.unwrap();
             assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
-            writer.finish();
+            writer.finish().await.unwrap();
         });
 
         let mut stream = pair
@@ -44,7 +44,7 @@ async fn open_stream_duplex_happy_path() {
             .write(Bytes::from_static(&[3, 4]))
             .await
             .unwrap();
-        stream.writer.finish();
+        stream.writer.finish().await.unwrap();
         assert_eq!(
             next_chunk(&mut stream.reader).await.unwrap(),
             Some(vec![8, 7])
@@ -78,7 +78,7 @@ async fn reader_respects_max_len() {
             assert_eq!(next_chunk_max(&mut reader, 2).await.unwrap(), Some(vec![5, 6]));
             assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
 
-            inbound.writer.finish();
+            inbound.writer.finish().await.unwrap();
         });
 
         let mut stream = pair
@@ -92,7 +92,7 @@ async fn reader_respects_max_len() {
             .write(Bytes::from_static(&[1, 2, 3, 4, 5, 6]))
             .await
             .unwrap();
-        stream.writer.finish();
+        stream.writer.finish().await.unwrap();
         assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -115,7 +115,7 @@ async fn large_stream_payload_round_trips() {
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
             let request_data = read_all(stream.reader).await.unwrap();
-            stream.writer.finish();
+            stream.writer.finish().await.unwrap();
             done_tx.send(request_data).await.unwrap();
         });
 
@@ -130,7 +130,7 @@ async fn large_stream_payload_round_trips() {
             .write(Bytes::from(payload.clone()))
             .await
             .unwrap();
-        stream.writer.finish();
+        stream.writer.finish().await.unwrap();
         assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
 
         let received = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
@@ -165,7 +165,11 @@ async fn dropping_responder_closes_initiator_response() {
             .open_stream(test_route_id())
             .await
             .unwrap();
-        stream.writer.finish();
+        let err = stream.writer.finish().await.unwrap_err();
+        assert!(matches!(
+            err,
+            QlStreamError::StreamClosed { code } if code == StreamCloseCode::CANCELLED
+        ));
 
         let err = next_chunk(&mut stream.reader).await.unwrap_err();
         assert!(matches!(
@@ -200,7 +204,11 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
                 .unwrap();
             go_rx.recv().await.unwrap();
             let _ = writer.write(Bytes::from(vec![5; 64])).await;
-            writer.finish();
+            let err = writer.finish().await.unwrap_err();
+            assert!(matches!(
+                err,
+                QlStreamError::StreamClosed { code } if code == StreamCloseCode::CANCELLED
+            ));
         });
 
         let mut stream = pair
@@ -209,7 +217,7 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             .open_stream(test_route_id())
             .await
             .unwrap();
-        stream.writer.finish();
+        stream.writer.finish().await.unwrap();
         assert_eq!(
             next_chunk(&mut stream.reader).await.unwrap(),
             Some(vec![1, 2, 3, 4])
@@ -250,7 +258,7 @@ async fn closing_initiator_reader_preserves_initiator_writer() {
 
         writer.write(Bytes::from_static(&[1, 2])).await.unwrap();
         writer.write(Bytes::from_static(&[3, 4])).await.unwrap();
-        writer.finish();
+        writer.finish().await.unwrap();
 
         let request = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
             .await
@@ -298,7 +306,8 @@ async fn max_concurrent_message_writes_is_respected() {
             for _ in 0..4 {
                 let stream = inbound_b.recv().await.unwrap();
                 let _ = read_all(stream.reader).await;
-                stream.writer.finish();
+                let mut writer = stream.writer;
+                writer.queue_finish();
             }
         });
 
@@ -308,7 +317,7 @@ async fn max_concurrent_message_writes_is_respected() {
             tasks.push(tokio::task::spawn_local(async move {
                 let mut stream = handle.open_stream(test_route_id()).await.unwrap();
                 stream.writer.write(Bytes::from(vec![i; 8])).await.unwrap();
-                stream.writer.finish();
+                stream.writer.finish().await.unwrap();
                 assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
             }));
         }
@@ -375,7 +384,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
                 .write(Bytes::from(response_payload.clone()))
                 .await
                 .unwrap();
-            writer.finish();
+            writer.finish().await.unwrap();
             received_request
         });
 
@@ -385,7 +394,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
             .write(Bytes::from(request_payload.clone()))
             .await
             .unwrap();
-        stream.writer.finish();
+        stream.writer.finish().await.unwrap();
 
         let mut received_response = Vec::new();
         while let Some(chunk) = next_chunk(&mut stream.reader).await.unwrap() {
@@ -461,7 +470,7 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
                     eprintln!("responder received {} bytes", received.len());
                 }
             }
-            stream.writer.finish();
+            stream.writer.finish().await.unwrap();
             received
         });
 
@@ -500,7 +509,7 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
                 }
             }
             eprintln!("writer finished queueing");
-            stream.writer.finish();
+            stream.writer.finish().await.unwrap();
             eprintln!("writer waiting for eof");
             assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
             eprintln!("writer observed eof");
@@ -600,7 +609,7 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
                     .await
                     .unwrap();
             }
-            stream.writer.finish();
+            stream.writer.queue_finish();
             let _ = next_chunk(&mut stream.reader).await;
         });
 

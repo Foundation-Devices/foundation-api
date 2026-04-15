@@ -68,7 +68,7 @@ async fn rpc_request_round_trips() {
             ql_rpc::request::encode_response::<Echo>(&"world".into(), &mut encoded);
             let mut writer = inbound.writer;
             writer.write(Bytes::from(encoded)).await.unwrap();
-            writer.finish();
+            writer.finish().await.unwrap();
         });
 
         let rpc = pair.handle(Side::A).rpc();
@@ -148,7 +148,7 @@ async fn rpc_router_handles_subscription() {
                 seen.borrow_mut().push(request);
                 let _ = response.send(b"one".to_vec()).await;
                 let _ = response.send(b"two".to_vec()).await;
-                let _ = response.finish();
+                let _ = response.finish().await;
             });
         }
     }
@@ -302,7 +302,7 @@ async fn rpc_subscription_streams_events() {
 
             let mut writer = inbound.writer;
             writer.write(Bytes::from(encoded)).await.unwrap();
-            writer.finish();
+            writer.finish().await.unwrap();
         });
 
         let rpc = pair.handle(Side::A).rpc();
@@ -353,7 +353,7 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
 
             let mut writer = inbound.writer;
             writer.write(Bytes::from(encoded)).await.unwrap();
-            writer.finish();
+            writer.finish().await.unwrap();
         });
 
         let rpc = pair.handle(Side::A).rpc();

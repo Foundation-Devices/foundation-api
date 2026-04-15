@@ -4,7 +4,7 @@ use bytes::Bytes;
 
 use super::{
     request::read_value_and_eof,
-    stream::{write_bytes, RpcRead, RpcStream, RpcWrite, StreamError},
+    stream::{finish_bytes, write_bytes, RpcRead, RpcStream, RpcWrite, StreamError},
     LocalMode, RouteMode, RouterConfig, SendMode,
 };
 use crate::{codec, subscription::Subscription as SubscriptionRpc, RpcCodec, StreamCloseCode};
@@ -47,10 +47,9 @@ where
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<(), W::Error> {
-        let writer = self.writer.take().expect("subscription writer exists");
-        writer.finish();
-        Ok(())
+    pub async fn finish(mut self) -> Result<(), W::Error> {
+        let mut writer = self.writer.take().expect("subscription writer exists");
+        finish_bytes(&mut writer).await
     }
 
     pub fn close(mut self, code: StreamCloseCode) {

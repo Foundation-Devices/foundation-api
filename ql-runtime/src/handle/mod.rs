@@ -99,4 +99,8 @@ impl RuntimeHandle {
     pub(crate) fn send(&self, cmd: RuntimeCommand) {
         self.tx.try_send(cmd).expect("runtime is alive");
     }
+
+    pub(crate) fn try_send(&self, cmd: RuntimeCommand) -> bool {
+        self.tx.try_send(cmd).is_ok()
+    }
 }

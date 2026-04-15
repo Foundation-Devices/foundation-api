@@ -80,7 +80,7 @@ impl ByteReader {
                         self.target,
                         bytes.len()
                     );
-                    self.handle.send(RuntimeCommand::PollInbound {
+                    self.handle.try_send(RuntimeCommand::PollInbound {
                         stream_id: self.stream_id,
                     });
                     return Poll::Ready(Ok(Some(bytes)));
@@ -88,8 +88,7 @@ impl ByteReader {
                 Poll::Ready(Err(_)) => {
                     debug!(
                         "byte reader channel closed: stream_id={:?} target={:?}",
-                        self.stream_id,
-                        self.target
+                        self.stream_id, self.target
                     );
                     self.reader = None;
                     self.listener = None;
@@ -116,8 +115,7 @@ impl ByteReader {
             TerminalState::Terminal(Ok(())) => {
                 debug!(
                     "byte reader delivered clean eof: stream_id={:?} target={:?}",
-                    self.stream_id,
-                    self.target
+                    self.stream_id, self.target
                 );
                 self.terminal = TerminalState::Delivered;
                 Poll::Ready(Ok(None))
@@ -126,9 +124,7 @@ impl ByteReader {
                 let error = error.clone();
                 debug!(
                     "byte reader delivered terminal error: stream_id={:?} target={:?} error={:?}",
-                    self.stream_id,
-                    self.target,
-                    error
+                    self.stream_id, self.target, error
                 );
                 self.terminal = TerminalState::Delivered;
                 Poll::Ready(Err(error))
@@ -159,14 +155,12 @@ impl ByteReader {
         }
         debug!(
             "byte reader explicit close: stream_id={:?} target={:?} code={:?}",
-            self.stream_id,
-            self.target,
-            code
+            self.stream_id, self.target, code
         );
         self.reader.take();
         self.listener = None;
         self.terminal = TerminalState::Delivered;
-        self.handle.send(RuntimeCommand::CloseStream {
+        self.handle.try_send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
             code,
@@ -185,7 +179,7 @@ impl Drop for ByteReader {
             self.target,
             StreamCloseCode::CANCELLED
         );
-        self.handle.send(RuntimeCommand::CloseStream {
+        self.handle.try_send(RuntimeCommand::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
             code: StreamCloseCode::CANCELLED,

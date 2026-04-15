@@ -63,16 +63,39 @@ impl DriverStreamIo {
         self.outbound = None;
     }
 
+    pub fn outbound_finish(&mut self) {
+        if let Some(mut outbound) = self.outbound.take() {
+            if let Some(terminal) = outbound.terminal.take() {
+                let _ = terminal.send(Ok(()));
+            }
+        }
+    }
+
     pub fn outbound_fail(&mut self, error: QlStreamError) {
         if let Some(mut outbound) = self.outbound.take() {
             if let Some(terminal) = outbound.terminal.take() {
-                let _ = terminal.send(error);
+                let _ = terminal.send(Err(error));
             }
         }
     }
 
     pub fn outbound_reader_mut(&mut self) -> Option<&mut ChunkSlotRx> {
-        self.outbound.as_mut().map(|outbound| &mut outbound.reader)
+        self.outbound
+            .as_mut()
+            .and_then(|outbound| outbound.reader.as_mut())
+    }
+
+    pub fn outbound_queue_finish(&mut self) {
+        if let Some(outbound) = self.outbound.as_mut() {
+            outbound.reader = None;
+            outbound.finish_pending = true;
+        }
+    }
+
+    pub fn outbound_finish_pending(&self) -> bool {
+        self.outbound
+            .as_ref()
+            .is_some_and(|outbound| outbound.finish_pending)
     }
 
     pub fn inbound_close(&mut self) {
@@ -127,15 +150,17 @@ impl DriverStreamIo {
 }
 
 pub struct OutboundIo {
-    reader: ChunkSlotRx,
-    terminal: Option<oneshot::Sender<QlStreamError>>,
+    reader: Option<ChunkSlotRx>,
+    terminal: Option<oneshot::Sender<Result<(), QlStreamError>>>,
+    finish_pending: bool,
 }
 
 impl OutboundIo {
-    pub fn new(reader: ChunkSlotRx, terminal: oneshot::Sender<QlStreamError>) -> Self {
+    pub fn new(reader: ChunkSlotRx, terminal: oneshot::Sender<Result<(), QlStreamError>>) -> Self {
         Self {
-            reader,
+            reader: Some(reader),
             terminal: Some(terminal),
+            finish_pending: false,
         }
     }
 }
