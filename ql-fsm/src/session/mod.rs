@@ -193,7 +193,7 @@ impl SessionFsm {
                 return;
             }
             ReceiveOutcome::New => {}
-        };
+        }
 
         let mut ack_eliciting = false;
         let mut handled_close = false;
@@ -329,7 +329,7 @@ impl SessionFsm {
                 let seq = self.state.next_record_seq;
                 next_seq(&mut self.state.next_record_seq);
                 let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
-                assert!(builder.push_close(&close), "builder has capacity");
+                assert!(builder.push_close(close), "builder has capacity");
                 self.state.phase = SessionPhase::Closed;
                 return Some((None, builder));
             }
@@ -379,11 +379,11 @@ impl SessionFsm {
         self.push_next_stream_data(&mut builder, &mut outbound);
 
         if let Some(pending_ack) = self.pending_ack(builder.remaining_capacity()) {
-            if !builder.is_empty() || pending_ack.due_at <= now {
-                if builder.push_ack(&pending_ack.ack) {
-                    self.state.ack_tracker.on_ack_emitted(&pending_ack);
-                    outbound.ack = Some(pending_ack.ack);
-                }
+            if (!builder.is_empty() || pending_ack.due_at <= now)
+                && builder.push_ack(&pending_ack.ack)
+            {
+                self.state.ack_tracker.on_ack_emitted(&pending_ack);
+                outbound.ack = Some(pending_ack.ack);
             }
         }
 
@@ -518,10 +518,10 @@ impl SessionFsm {
     }
 
     fn ensure_session_open(&self) -> Result<(), NoSessionError> {
-        if self.state.phase != SessionPhase::Open {
-            Err(NoSessionError)
-        } else {
+        if self.state.phase == SessionPhase::Open {
             Ok(())
+        } else {
+            Err(NoSessionError)
         }
     }
 

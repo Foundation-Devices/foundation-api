@@ -2,10 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::Bytes;
 
-use super::{
-    request::read_value_and_eof,
-    RouterConfig,
-};
+use super::{request::read_value_and_eof, RouterConfig};
 use crate::{
     codec, finish_bytes, subscription::Subscription as SubscriptionRpc, write_bytes, RpcCodec,
     RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,

@@ -15,7 +15,6 @@ pub use self::{
     request::{RequestHandler, Response},
     subscription::{SubscriptionHandler, SubscriptionResponder},
 };
-
 use crate::{close_stream, RpcStream};
 
 pub struct Router<S, St, Sp>

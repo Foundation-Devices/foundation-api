@@ -133,7 +133,7 @@ impl WireEncode for RecordAck {
         self.largest_acked.encode(out);
         VarInt::try_from(self.blocks.len()).unwrap().encode(out);
         self.first_range_len.encode(out);
-        for block in self.blocks.iter() {
+        for block in &self.blocks {
             block.gap.encode(out);
             block.range_len.encode(out);
         }
@@ -168,7 +168,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for RecordAck {
                 .checked_sub(ack.first_range_len.into_inner())
                 .ok_or(WireError::InvalidPayload)?;
 
-            for block in ack.blocks.iter() {
+            for block in &ack.blocks {
                 let end = previous_start
                     .checked_sub(
                         block

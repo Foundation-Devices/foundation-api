@@ -242,10 +242,7 @@ impl DriverState {
                 code,
             } => {
                 debug!(
-                    "runtime close stream command: stream_id={:?} target={:?} code={:?}",
-                    stream_id,
-                    target,
-                    code
+                    "runtime close stream command: stream_id={stream_id:?} target={target:?} code={code:?}"
                 );
                 if let Entry::Occupied(mut entry) = self.streams.entry(stream_id) {
                     let stream = entry.get_mut();
@@ -392,9 +389,7 @@ impl DriverState {
                     }
                     InboundWriteResult::Closed => {
                         debug!(
-                            "runtime inbound consumer closed; sending CANCELLED: stream_id={:?} target={:?}",
-                            stream_id,
-                            target
+                            "runtime inbound consumer closed; sending CANCELLED: stream_id={stream_id:?} target={target:?}"
                         );
                         peer_closed = true;
                         break;
@@ -418,7 +413,7 @@ impl DriverState {
     }
 
     fn handle_inbound_finished(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
-        debug!("runtime inbound finished event: stream_id={:?}", stream_id);
+        debug!("runtime inbound finished event: stream_id={stream_id:?}");
         let Some(stream) = self.streams.get_mut(&stream_id) else {
             return;
         };
@@ -441,10 +436,7 @@ impl DriverState {
             return;
         }
 
-        debug!(
-            "runtime delivering clean inbound finish: stream_id={:?}",
-            stream_id
-        );
+        debug!("runtime delivering clean inbound finish: stream_id={stream_id:?}");
         stream.inbound_finish();
         Self::try_reap_stream(entry);
     }
@@ -486,10 +478,7 @@ impl DriverState {
     }
 
     fn handle_outbound_finished(&mut self, stream_id: StreamId) {
-        debug!(
-            "runtime outbound finish acknowledged: stream_id={:?}",
-            stream_id
-        );
+        debug!("runtime outbound finish acknowledged: stream_id={stream_id:?}");
         let Entry::Occupied(mut entry) = self.streams.entry(stream_id) else {
             return;
         };
@@ -531,10 +520,7 @@ impl DriverState {
         };
 
         if reader.is_finished() {
-            debug!(
-                "runtime observed outbound reader finished before write: stream_id={:?}",
-                stream_id
-            );
+            debug!("runtime observed outbound reader finished before write: stream_id={stream_id:?}");
             if let Ok(mut stream_ops) = fsm.stream(stream_id) {
                 if let Some(writer) = stream_ops.writer() {
                     writer.finish();
@@ -562,10 +548,7 @@ impl DriverState {
         }
 
         if reader.is_finished() {
-            debug!(
-                "runtime observed outbound reader finished after write: stream_id={:?}",
-                stream_id
-            );
+            debug!("runtime observed outbound reader finished after write: stream_id={stream_id:?}");
             writer.finish();
             stream.outbound_queue_finish();
             if stream.is_closed() {

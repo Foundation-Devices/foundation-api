@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{CodecError, RouteId, RpcCodec, codec};
+use crate::{codec, CodecError, RouteId, RpcCodec};
 
 pub trait Subscription {
     const ROUTE: RouteId;
@@ -80,7 +80,7 @@ pub fn encode_item<M: Subscription>(item: &M::Event, out: &mut (impl BufMut + As
 mod tests {
     use bytes::Bytes;
 
-    use super::{ReadStep, ResponseReader, Subscription, encode_item};
+    use super::{encode_item, ReadStep, ResponseReader, Subscription};
     use crate::RouteId;
 
     struct Feed;

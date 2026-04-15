@@ -4,8 +4,8 @@ use bytes::Bytes;
 
 use super::RouterConfig;
 use crate::{
-    finish_bytes, read_bytes, write_bytes, RpcRead, RpcStream, RpcWrite, StreamError,
-    codec, request::Request as RequestRpc, ReadValueStep, RpcCodec, StreamCloseCode, ValueReader,
+    codec, finish_bytes, read_bytes, request::Request as RequestRpc, write_bytes, ReadValueStep,
+    RpcCodec, RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError, ValueReader,
 };
 
 pub trait RequestHandler<M, St>

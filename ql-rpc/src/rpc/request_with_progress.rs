@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{CodecError, Error, RouteId, RpcCodec, codec};
+use crate::{codec, CodecError, Error, RouteId, RpcCodec};
 
 pub trait RequestWithProgress {
     const ROUTE: RouteId;
@@ -119,7 +119,7 @@ fn encode_tagged_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
 mod tests {
     use bytes::Bytes;
 
-    use super::{ReadStep, RequestWithProgress, ResponseReader, encode_progress, encode_response};
+    use super::{encode_progress, encode_response, ReadStep, RequestWithProgress, ResponseReader};
     use crate::RouteId;
 
     struct Watch;

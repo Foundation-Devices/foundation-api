@@ -70,12 +70,18 @@ async fn reader_respects_max_len() {
             let inbound = inbound_b.recv().await.unwrap();
             let mut reader = inbound.reader;
 
-            assert_eq!(next_chunk_max(&mut reader, 2).await.unwrap(), Some(vec![1, 2]));
+            assert_eq!(
+                next_chunk_max(&mut reader, 2).await.unwrap(),
+                Some(vec![1, 2])
+            );
             assert_eq!(
                 next_chunk_max(&mut reader, 2).await.unwrap(),
                 Some(vec![3, 4])
             );
-            assert_eq!(next_chunk_max(&mut reader, 2).await.unwrap(), Some(vec![5, 6]));
+            assert_eq!(
+                next_chunk_max(&mut reader, 2).await.unwrap(),
+                Some(vec![5, 6])
+            );
             assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
 
             inbound.writer.finish().await.unwrap();
@@ -411,6 +417,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
     .await;
 }
 
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "current_thread")]
 async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
     run_local_test_timeout(Duration::from_secs(5), async {
@@ -579,10 +586,7 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
             let mut reader = stream.reader;
-            let mut received = Vec::new();
-            while let Some(chunk) = next_chunk(&mut reader).await.unwrap() {
-                received.extend_from_slice(&chunk);
-            }
+            while let Some(_) = next_chunk(&mut reader).await.unwrap() {}
         });
 
         let recovery_links = links.clone();

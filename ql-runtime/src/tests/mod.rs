@@ -45,8 +45,8 @@ enum Side {
 impl Side {
     fn opposite(self) -> Self {
         match self {
-            Side::A => Side::B,
-            Side::B => Side::A,
+            Self::A => Self::B,
+            Self::B => Self::A,
         }
     }
 }
@@ -210,7 +210,7 @@ impl TestPair {
             b_to_a: LinkController::new(b_to_a),
         };
 
-        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config.clone());
+        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
         let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
@@ -244,10 +244,6 @@ impl TestPair {
             Side::A => &self.a,
             Side::B => &self.b,
         }
-    }
-
-    fn handle(&self, side: Side) -> &RuntimeHandle {
-        &self.side(side).handle
     }
 
     fn side_mut(&mut self, side: Side) -> &mut TestSide {
@@ -557,7 +553,7 @@ where
 {
     tokio::time::timeout(duration, run_local_test(future))
         .await
-        .unwrap_or_else(|_| panic!("local runtime test exceeded {:?}", duration));
+        .unwrap_or_else(|_| panic!("local runtime test exceeded {duration:?}"));
 }
 
 async fn await_status(receiver: &Receiver<StatusEvent>, peer: XID, stage: PeerStatus) {

@@ -69,14 +69,14 @@ impl BufView for StreamTxBytes<'_> {
     }
 }
 
-impl<'a> StreamTxBuf<'a> {
+impl StreamTxBuf<'_> {
     fn refill(&mut self) {
         if self.remaining == 0 {
             self.current = &[];
             return;
         }
 
-        while let Some(chunk) = self.inner.next() {
+        for chunk in self.inner.by_ref() {
             if self.skip >= chunk.len() {
                 self.skip -= chunk.len();
                 continue;
