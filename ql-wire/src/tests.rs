@@ -55,9 +55,13 @@ fn pairing_token(byte: u8) -> PairingToken {
     PairingToken([byte; PairingToken::SIZE])
 }
 
+fn pairing_id(byte: u8) -> PairingId {
+    PairingId([byte; PairingId::SIZE])
+}
+
 fn xx_header(byte: u8) -> XxHeader {
     XxHeader {
-        pairing_token: pairing_token(byte),
+        pairing_id: pairing_id(byte),
     }
 }
 
@@ -519,7 +523,7 @@ fn kk_handshake_rejects_tampered_transport_params() {
 }
 
 #[test]
-fn xx_handshake_rejects_tampered_pairing_token() {
+fn xx_handshake_rejects_tampered_pairing_id() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
     let token = pairing_token(7);
@@ -532,7 +536,7 @@ fn xx_handshake_rejects_tampered_pairing_token() {
     let mut m1 = initiator_state
         .write_1(&crypto, handshake_meta(31))
         .unwrap();
-    m1.header = xx_header(8);
+    m1.header.pairing_id = pairing_id(8);
 
     assert_eq!(
         responder_state.read_1(&crypto, 0, &m1),
@@ -595,6 +599,8 @@ fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
 
     assert_eq!(initiator_state.pairing_token(), token);
     assert_eq!(responder_state.pairing_token(), token);
+    assert_eq!(initiator_state.pairing_id(&crypto), token.id(&crypto));
+    assert_eq!(responder_state.pairing_id(&crypto), token.id(&crypto));
     assert!(initiator_state.remote_bundle().is_none());
     assert!(responder_state.remote_bundle().is_none());
 

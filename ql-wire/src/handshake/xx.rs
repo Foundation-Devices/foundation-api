@@ -2,13 +2,13 @@ use super::{
     decrypt_mlkem_ciphertext, decrypt_peer_bundle, encrypt_mlkem_ciphertext, encrypt_peer_bundle,
     finalize_handshake, generate_ephemeral_keypair, init_xx_symmetric, initialize_handshake_meta,
     initialize_transport_params, mix_hash_ephemeral, mix_hash_pairing_handshake,
-    require_handshake_meta, require_transport_params, EncryptedMlKemCiphertext,
-    EncryptedPeerBundle, EphemeralKeyPair, EphemeralPublicKey, FinalizedHandshake, Role,
-    SymmetricState, TransportParams, XxHeader,
+    mix_psk_pairing_token, require_handshake_meta, require_transport_params,
+    EncryptedMlKemCiphertext, EncryptedPeerBundle, EphemeralKeyPair, EphemeralPublicKey,
+    FinalizedHandshake, Role, SymmetricState, TransportParams, XxHeader,
 };
 use crate::{
-    codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PairingToken, PeerBundle,
-    QlCrypto, QlIdentity, WireEncode, WireError,
+    codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PairingId, PairingToken,
+    PeerBundle, QlCrypto, QlIdentity, WireEncode, WireError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,18 +254,26 @@ impl XxHandshake {
         self.pairing_token
     }
 
+    pub fn pairing_id(&self, crypto: &impl QlCrypto) -> PairingId {
+        self.pairing_token.id(crypto)
+    }
+
     pub fn remote_bundle(&self) -> Option<&PeerBundle> {
         self.remote_bundle.as_ref()
     }
 
-    fn header(&self) -> XxHeader {
+    fn header(&self, crypto: &impl QlCrypto) -> XxHeader {
         XxHeader {
-            pairing_token: self.pairing_token,
+            pairing_id: self.pairing_token.id(crypto),
         }
     }
 
-    fn ensure_inbound_header(&self, header: XxHeader) -> Result<(), WireError> {
-        if header == self.header() {
+    fn ensure_inbound_header(
+        &self,
+        crypto: &impl QlCrypto,
+        header: XxHeader,
+    ) -> Result<(), WireError> {
+        if header == self.header(crypto) {
             Ok(())
         } else {
             Err(WireError::InvalidPayload)
@@ -281,7 +289,7 @@ impl XxHandshake {
             return Err(WireError::InvalidState);
         }
         initialize_handshake_meta(&mut self.handshake_meta, meta)?;
-        let header = self.header();
+        let header = self.header(crypto);
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
@@ -290,6 +298,7 @@ impl XxHandshake {
             &meta,
             self.local_transport_params,
         );
+        mix_psk_pairing_token(&mut self.symmetric, crypto, self.pairing_token);
 
         let local_ephemeral = generate_ephemeral_keypair(crypto);
         let ephemeral = local_ephemeral.public();
@@ -316,7 +325,7 @@ impl XxHandshake {
         }
         message.meta.ensure_not_expired(now_seconds)?;
         initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
-        self.ensure_inbound_header(message.header)?;
+        self.ensure_inbound_header(crypto, message.header)?;
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
@@ -325,6 +334,7 @@ impl XxHandshake {
             &message.meta,
             message.transport_params,
         );
+        mix_psk_pairing_token(&mut self.symmetric, crypto, self.pairing_token);
         mix_hash_ephemeral(&mut self.symmetric, crypto, &message.ephemeral);
 
         self.remote_ephemeral = Some(message.ephemeral.clone());
@@ -342,7 +352,7 @@ impl XxHandshake {
             return Err(WireError::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
-        let header = self.header();
+        let header = self.header(crypto);
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
@@ -384,7 +394,7 @@ impl XxHandshake {
         }
         message.meta.ensure_not_expired(now_seconds)?;
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
-        self.ensure_inbound_header(message.header)?;
+        self.ensure_inbound_header(crypto, message.header)?;
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
@@ -421,7 +431,7 @@ impl XxHandshake {
             return Err(WireError::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
-        let header = self.header();
+        let header = self.header(crypto);
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
@@ -462,7 +472,7 @@ impl XxHandshake {
         }
         message.meta.ensure_not_expired(now_seconds)?;
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
-        self.ensure_inbound_header(message.header)?;
+        self.ensure_inbound_header(crypto, message.header)?;
         require_transport_params(
             self.remote_transport_params.as_ref(),
             message.transport_params,
@@ -498,7 +508,7 @@ impl XxHandshake {
             return Err(WireError::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
-        let header = self.header();
+        let header = self.header(crypto);
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
@@ -536,7 +546,7 @@ impl XxHandshake {
         }
         message.meta.ensure_not_expired(now_seconds)?;
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
-        self.ensure_inbound_header(message.header)?;
+        self.ensure_inbound_header(crypto, message.header)?;
         require_transport_params(
             self.remote_transport_params.as_ref(),
             message.transport_params,

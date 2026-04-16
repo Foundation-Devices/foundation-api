@@ -7,12 +7,14 @@ use crate::{
 mod ik;
 mod kk;
 mod meta;
+mod pairing;
 mod transport_params;
 mod xx;
 
 pub use ik::{Ik1, Ik2, IkHandshake};
 pub use kk::{Kk1, Kk2, KkHandshake};
 pub use meta::{HandshakeId, HandshakeMeta};
+pub use pairing::{PairingId, PairingToken};
 pub use transport_params::TransportParams;
 pub use xx::{Xx1, Xx2, Xx3, Xx4, XxHandshake};
 
@@ -53,47 +55,13 @@ impl<B: ByteSlice> codec::WireDecode<B> for HandshakeHeader {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct PairingToken(pub [u8; Self::SIZE]);
-
-impl PairingToken {
-    pub const SIZE: usize = 16;
-}
-
-impl std::fmt::Display for PairingToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for byte in self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
-    }
-}
-
-impl WireEncode for PairingToken {
-    fn encoded_len(&self) -> usize {
-        Self::SIZE
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.0.encode(out);
-    }
-}
-
-impl<B: ByteSlice> codec::WireDecode<B> for PairingToken {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self(reader.decode()?))
-    }
-}
-
-// TODO: this should not be exposed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XxHeader {
-    pub pairing_token: PairingToken,
+    pub pairing_id: PairingId,
 }
 
 impl XxHeader {
-    pub const WIRE_SIZE: usize = PairingToken::SIZE;
+    pub const WIRE_SIZE: usize = PairingId::SIZE;
 }
 
 impl WireEncode for XxHeader {
@@ -102,14 +70,14 @@ impl WireEncode for XxHeader {
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.pairing_token.encode(out);
+        self.pairing_id.encode(out);
     }
 }
 
 impl<B: ByteSlice> codec::WireDecode<B> for XxHeader {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            pairing_token: reader.decode()?,
+            pairing_id: reader.decode()?,
         })
     }
 }
@@ -396,6 +364,14 @@ fn init_ik_symmetric(crypto: &impl QlCrypto, responder_bundle: &PeerBundle) -> S
 
 fn init_xx_symmetric(crypto: &impl QlCrypto) -> SymmetricState {
     SymmetricState::new(crypto, PROTOCOL_XX)
+}
+
+fn mix_psk_pairing_token(
+    symmetric: &mut SymmetricState,
+    crypto: &impl QlCrypto,
+    pairing_token: PairingToken,
+) {
+    symmetric.mix_key_and_hash(crypto, &pairing_token.psk(crypto));
 }
 
 fn generate_ephemeral_keypair(crypto: &impl QlCrypto) -> EphemeralKeyPair {
