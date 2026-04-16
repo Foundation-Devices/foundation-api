@@ -77,8 +77,7 @@ impl RpcHandle {
         rpc_download::encode_request::<M>(request, &mut payload);
         let response = self.start_request(M::ROUTE, payload).await?;
         Ok(DownloadCall {
-            stream: response,
-            reader: Some(rpc_download::ResponseHeaderReader::default()),
+            inner: rpc_download::DownloadCall::new(response),
         })
     }
 
