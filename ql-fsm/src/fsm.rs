@@ -7,9 +7,52 @@ use bytes::Bytes;
 use ql_wire::{self as wire, QlCrypto, RouteId, SessionCloseCode, StreamId, WireDecode};
 
 use crate::{
-    handshake, session::SessionEvent, state::LinkState, Event, NoPeerError, NoSessionError,
-    OutboundWrite, QlFsm, ReceiveError, StreamError, StreamOps, WriteId,
+    handshake,
+    session::{EventSink, SessionEvent},
+    state::LinkState,
+    Event, NoPeerError, NoSessionError, OutboundWrite, QlFsm, ReceiveError, StreamError, WriteId,
 };
+
+pub struct FsmEventEmitter<'a> {
+    events: &'a mut VecDeque<Event>,
+}
+
+impl EventSink for FsmEventEmitter<'_> {
+    fn emit(&mut self, event: SessionEvent) {
+        match event {
+            SessionEvent::Opened {
+                stream_id,
+                route_id,
+            } => {
+                self.events.push_back(Event::Opened {
+                    stream_id,
+                    route_id,
+                });
+            }
+            SessionEvent::Readable(stream_id) => {
+                self.events.push_back(Event::Readable(stream_id));
+            }
+            SessionEvent::Writable(stream_id) => {
+                self.events.push_back(Event::Writable(stream_id));
+            }
+            SessionEvent::Finished(stream_id) => {
+                self.events.push_back(Event::Finished(stream_id));
+            }
+            SessionEvent::OutboundFinished(stream_id) => {
+                self.events.push_back(Event::OutboundFinished(stream_id));
+            }
+            SessionEvent::Closed(frame) => {
+                self.events.push_back(Event::Closed(frame));
+            }
+            SessionEvent::WritableClosed(frame) => {
+                self.events.push_back(Event::WritableClosed(frame));
+            }
+            SessionEvent::SessionClosed(close) => {
+                self.events.push_back(Event::SessionClosed(close));
+            }
+        }
+    }
+}
 
 pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
     fsm.state.handshake = None;
@@ -72,10 +115,9 @@ pub fn receive(
             let plaintext = Bytes::from(bytes).slice(len - decrypt_len..);
             let frames = wire::parse_session_frames(plaintext);
 
+            let mut emit = FsmEventEmitter { events };
             conn.session
-                .receive(state.now.instant, seq, frames, |event| {
-                    forward_session_event(event, events);
-                });
+                .receive(state.now.instant, seq, frames, &mut emit);
 
             if conn.session.is_closed() {
                 apply_session_closed(fsm);
@@ -93,9 +135,8 @@ pub fn on_timer(fsm: &mut QlFsm) {
         return;
     };
 
-    conn.session.on_timer(state.now.instant, |event| {
-        forward_session_event(event, events);
-    });
+    let mut emit = FsmEventEmitter { events };
+    conn.session.on_timer(state.now.instant, &mut emit);
 
     if conn.session.is_closed() {
         apply_session_closed(fsm);
@@ -155,19 +196,27 @@ pub fn close_session(fsm: &mut QlFsm, code: SessionCloseCode) {
     let Some(conn) = state.link.connected_mut() else {
         return;
     };
-    conn.session.close(code, |event| {
-        forward_session_event(event, events);
-    });
+    let mut emit = FsmEventEmitter { events };
+    conn.session.close(code, &mut emit);
 }
 
-pub fn open_stream(fsm: &mut QlFsm, route_id: RouteId) -> Result<StreamOps<'_>, NoSessionError> {
-    let conn = fsm.state.link.connected_mut_or_err()?;
-    conn.session.open_stream(route_id)
+pub fn open_stream(
+    fsm: &mut QlFsm,
+    route_id: RouteId,
+) -> Result<crate::StreamOps<'_>, NoSessionError> {
+    let QlFsm { state, events, .. } = fsm;
+    let conn = state.link.connected_mut_or_err()?;
+    let inner = conn
+        .session
+        .open_stream(route_id, FsmEventEmitter { events })?;
+    Ok(crate::StreamOps { inner })
 }
 
-pub fn stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<StreamOps<'_>, StreamError> {
-    let conn = fsm.state.link.connected_mut_or_err()?;
-    conn.session.stream(stream_id)
+pub fn stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<crate::StreamOps<'_>, StreamError> {
+    let QlFsm { state, events, .. } = fsm;
+    let conn = state.link.connected_mut_or_err()?;
+    let inner = conn.session.stream(stream_id, FsmEventEmitter { events })?;
+    Ok(crate::StreamOps { inner })
 }
 
 pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), NoSessionError> {
@@ -183,41 +232,6 @@ pub fn emit_peer_status(fsm: &mut QlFsm) {
     if fsm.state.peer.is_some() {
         fsm.events
             .push_back(Event::PeerStatusChanged(fsm.state.link.status()));
-    }
-}
-
-fn forward_session_event(event: SessionEvent, events: &mut VecDeque<Event>) {
-    match event {
-        SessionEvent::Opened {
-            stream_id,
-            route_id,
-        } => {
-            events.push_back(Event::Opened {
-                stream_id,
-                route_id,
-            });
-        }
-        SessionEvent::Readable(stream_id) => {
-            events.push_back(Event::Readable(stream_id));
-        }
-        SessionEvent::Writable(stream_id) => {
-            events.push_back(Event::Writable(stream_id));
-        }
-        SessionEvent::Finished(stream_id) => {
-            events.push_back(Event::Finished(stream_id));
-        }
-        SessionEvent::OutboundFinished(stream_id) => {
-            events.push_back(Event::OutboundFinished(stream_id));
-        }
-        SessionEvent::Closed(frame) => {
-            events.push_back(Event::Closed(frame));
-        }
-        SessionEvent::WritableClosed(frame) => {
-            events.push_back(Event::WritableClosed(frame));
-        }
-        SessionEvent::SessionClosed(close) => {
-            events.push_back(Event::SessionClosed(close));
-        }
     }
 }
 

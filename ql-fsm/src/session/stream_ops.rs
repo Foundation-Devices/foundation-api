@@ -1,23 +1,30 @@
 use ql_wire::{CloseTarget, StreamClose, StreamCloseCode, StreamId};
 
-use super::{state::StreamState, stream_rx::StreamReadIter, SessionFsm};
+use super::{
+    state::{InboundState, StreamState},
+    stream_rx::StreamReadIter,
+    SessionEvent, EventSink, SessionFsm,
+};
 use crate::CommitReadError;
 
-pub struct StreamOps<'a> {
+pub struct StreamOps<'a, E> {
     session: &'a mut SessionFsm,
+    emit: E,
     stream_id: StreamId,
     stream_index: usize,
     reap_on_drop: bool,
 }
 
-impl<'a> StreamOps<'a> {
+impl<'a, E: EventSink> StreamOps<'a, E> {
     pub(super) fn new(
         session: &'a mut SessionFsm,
         stream_id: StreamId,
         stream_index: usize,
+        emit: E,
     ) -> Self {
         Self {
             session,
+            emit,
             stream_id,
             stream_index,
             reap_on_drop: false,
@@ -41,13 +48,22 @@ impl<'a> StreamOps<'a> {
 
     /// marks previously read bytes as consumed
     pub fn commit_read(&mut self, len: usize) -> Result<(), CommitReadError> {
-        let stream = self.stream_mut();
-        if len > stream.readable_bytes() {
-            return Err(CommitReadError);
-        }
-        stream.rx.consume(len);
-        if stream.recv_limit() > stream.advertised_max_offset {
-            stream.pending_window = true;
+        let stream_id = self.stream_id;
+        let emit_finished = {
+            let stream = self.stream_mut();
+            if len > stream.readable_bytes() {
+                return Err(CommitReadError);
+            }
+            stream.rx.consume(len);
+            if stream.recv_limit() > stream.advertised_max_offset {
+                stream.pending_window = true;
+            }
+            stream.route_id.is_some()
+                && matches!(stream.inbound_state, InboundState::Finished)
+                && stream.readable_bytes() == 0
+        };
+        if emit_finished {
+            self.emit.emit(SessionEvent::Finished(stream_id));
         }
         self.reap_on_drop = true;
         Ok(())
@@ -85,7 +101,7 @@ impl<'a> StreamOps<'a> {
     }
 }
 
-impl Drop for StreamOps<'_> {
+impl<E> Drop for StreamOps<'_, E> {
     fn drop(&mut self) {
         if !self.reap_on_drop {
             return;

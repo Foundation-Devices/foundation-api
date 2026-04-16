@@ -80,6 +80,19 @@ pub enum SessionEvent {
     SessionClosed(SessionClose),
 }
 
+pub(crate) trait EventSink {
+    fn emit(&mut self, event: SessionEvent);
+}
+
+impl<F> EventSink for F
+where
+    F: FnMut(SessionEvent),
+{
+    fn emit(&mut self, event: SessionEvent) {
+        self(event);
+    }
+}
+
 pub struct SessionFsm {
     config: SessionConfig,
     state: SessionState,
@@ -116,7 +129,14 @@ impl SessionFsm {
         }
     }
 
-    pub fn open_stream(&mut self, route_id: RouteId) -> Result<StreamOps<'_>, NoSessionError> {
+    pub fn open_stream<E>(
+        &mut self,
+        route_id: RouteId,
+        sink: E,
+    ) -> Result<StreamOps<'_, E>, NoSessionError>
+    where
+        E: EventSink,
+    {
         self.ensure_session_open()?;
         let stream_id = self
             .config
@@ -133,16 +153,23 @@ impl SessionFsm {
             ),
         );
         let stream_index = self.state.streams.len() - 1;
-        Ok(StreamOps::new(self, stream_id, stream_index))
+        Ok(StreamOps::new(self, stream_id, stream_index, sink))
     }
 
-    pub fn stream(&mut self, stream_id: StreamId) -> Result<StreamOps<'_>, StreamError> {
+    pub fn stream<E>(
+        &mut self,
+        stream_id: StreamId,
+        sink: E,
+    ) -> Result<StreamOps<'_, E>, StreamError>
+    where
+        E: EventSink,
+    {
         self.ensure_session_open()?;
         let Some(stream_index) = self.state.streams.get_index_of(&stream_id) else {
             return Err(StreamError::MissingStream);
         };
 
-        Ok(StreamOps::new(self, stream_id, stream_index))
+        Ok(StreamOps::new(self, stream_id, stream_index, sink))
     }
 
     pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
@@ -151,7 +178,7 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub(crate) fn close(&mut self, code: SessionCloseCode, mut emit: impl FnMut(SessionEvent)) {
+    pub(crate) fn close(&mut self, code: SessionCloseCode, sink: &mut impl EventSink) {
         if self.state.phase != SessionPhase::Open {
             return;
         }
@@ -161,7 +188,7 @@ impl SessionFsm {
         self.state.tracked_records.clear();
         self.state.ack_tracker.clear_ack_state();
         self.clear_streams();
-        emit(SessionEvent::SessionClosed(close));
+        sink.emit(SessionEvent::SessionClosed(close));
     }
 
     pub(crate) fn is_closed(&self) -> bool {
@@ -173,7 +200,7 @@ impl SessionFsm {
         now: Instant,
         seq: RecordSeq,
         frames: I,
-        mut emit: impl FnMut(SessionEvent),
+        sink: &mut impl EventSink,
     ) where
         I: IntoIterator<Item = Result<SessionFrame<Bytes>, WireError>>,
     {
@@ -200,28 +227,28 @@ impl SessionFsm {
 
         for frame in frames {
             let Ok(frame) = frame else {
-                self.close(SessionCloseCode::PROTOCOL, &mut emit);
+                self.close(SessionCloseCode::PROTOCOL, sink);
                 return;
             };
             ack_eliciting |= !matches!(frame, SessionFrame::Ack(_));
             match frame {
                 SessionFrame::Ping => {}
-                SessionFrame::Ack(ack) => self.process_record_ack(&ack, &mut emit),
+                SessionFrame::Ack(ack) => self.process_record_ack(&ack, sink),
                 SessionFrame::StreamData(frame) => {
-                    if self.handle_stream_data(frame, &mut emit).is_err() {
-                        self.close(SessionCloseCode::PROTOCOL, &mut emit);
+                    if self.handle_stream_data(frame, sink).is_err() {
+                        self.close(SessionCloseCode::PROTOCOL, sink);
                         return;
                     }
                 }
-                SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame, &mut emit),
+                SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame, sink),
                 SessionFrame::StreamClose(frame) => {
-                    if self.handle_stream_close(&frame, &mut emit).is_err() {
-                        self.close(SessionCloseCode::PROTOCOL, &mut emit);
+                    if self.handle_stream_close(&frame, sink).is_err() {
+                        self.close(SessionCloseCode::PROTOCOL, sink);
                         return;
                     }
                 }
                 SessionFrame::Close(close) => {
-                    self.close(close.code, &mut emit);
+                    self.close(close.code, sink);
                     handled_close = true;
                     break;
                 }
@@ -272,7 +299,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn on_timer(&mut self, now: Instant, mut emit: impl FnMut(SessionEvent)) {
+    pub fn on_timer(&mut self, now: Instant, sink: &mut impl EventSink) {
         if !self.state.phase.is_open() {
             return;
         }
@@ -280,7 +307,7 @@ impl SessionFsm {
         if !self.config.peer_timeout.is_zero()
             && self.state.last_inbound_at + self.config.peer_timeout <= now
         {
-            self.close(SessionCloseCode::TIMEOUT, &mut emit);
+            self.close(SessionCloseCode::TIMEOUT, sink);
             return;
         }
         if self.state.phase == SessionPhase::Open
@@ -525,7 +552,7 @@ impl SessionFsm {
         }
     }
 
-    fn process_record_ack(&mut self, ack: &RecordAck, emit: &mut impl FnMut(SessionEvent)) {
+    fn process_record_ack(&mut self, ack: &RecordAck, sink: &mut impl EventSink) {
         let stream_send_buffer_size = self.config.stream_send_buffer_size;
         let acked_records = self
             .state
@@ -542,7 +569,7 @@ impl SessionFsm {
                     &mut self.state.streams,
                     stream_send_buffer_size,
                     frame,
-                    emit,
+                    sink,
                 );
             }
         }
@@ -582,7 +609,7 @@ impl SessionFsm {
     fn handle_stream_data(
         &mut self,
         frame: StreamData<Bytes>,
-        emit: &mut impl FnMut(SessionEvent),
+        sink: &mut impl EventSink,
     ) -> Result<(), ()> {
         let StreamData {
             stream_id,
@@ -631,14 +658,15 @@ impl SessionFsm {
                 // within the finalized byte range and any repeated FIN lands on that same offset.
                 if (!frame.fin || frame_end == final_offset) && frame_end <= final_offset {
                     if let Some(route_id) = opened_route {
-                        emit(SessionEvent::Opened {
+                        sink.emit(SessionEvent::Opened {
                             stream_id,
                             route_id,
                         });
                         if readable_before > 0 {
-                            emit(SessionEvent::Readable(stream_id));
+                            sink.emit(SessionEvent::Readable(stream_id));
+                        } else {
+                            sink.emit(SessionEvent::Finished(stream_id));
                         }
-                        emit(SessionEvent::Finished(stream_id));
                     }
                     return Ok(());
                 }
@@ -654,28 +682,29 @@ impl SessionFsm {
         }
 
         if let Some(route_id) = opened_route {
-            emit(SessionEvent::Opened {
+            sink.emit(SessionEvent::Opened {
                 stream_id,
                 route_id,
             });
         }
 
         if stream.route_id.is_some() && readable_before == 0 && stream.readable_bytes() > 0 {
-            emit(SessionEvent::Readable(stream_id));
+            sink.emit(SessionEvent::Readable(stream_id));
         }
 
         if stream.route_id.is_some()
             && !was_finished
             && matches!(stream.inbound_state, InboundState::Finished)
+            && stream.readable_bytes() == 0
         {
-            emit(SessionEvent::Finished(stream_id));
+            sink.emit(SessionEvent::Finished(stream_id));
         }
 
         self.try_reap_stream(stream_id);
         Ok(())
     }
 
-    fn handle_stream_window(&mut self, frame: &StreamWindow, emit: &mut impl FnMut(SessionEvent)) {
+    fn handle_stream_window(&mut self, frame: &StreamWindow, sink: &mut impl EventSink) {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
             return;
         };
@@ -686,14 +715,14 @@ impl SessionFsm {
             stream.peer_max_offset = maximum_offset;
         }
         if was_full && stream.send_capacity(self.config.stream_send_buffer_size) > 0 {
-            emit(SessionEvent::Writable(frame.stream_id));
+            sink.emit(SessionEvent::Writable(frame.stream_id));
         }
     }
 
     fn handle_stream_close(
         &mut self,
         frame: &StreamClose,
-        emit: &mut impl FnMut(SessionEvent),
+        sink: &mut impl EventSink,
     ) -> Result<(), ()> {
         let stream_id = frame.stream_id;
         let stream = match self.state.streams.get_mut(&stream_id) {
@@ -712,7 +741,7 @@ impl SessionFsm {
         {
             stream.inbound_state = InboundState::Closed(frame.clone());
             stream.reset_recv();
-            emit(SessionEvent::Closed(frame.clone()));
+            sink.emit(SessionEvent::Closed(frame.clone()));
         }
         if Self::target_affects_outbound(stream.role, frame.target)
             && !matches!(stream.outbound_state, OutboundState::Closed)
@@ -720,7 +749,7 @@ impl SessionFsm {
             stream.outbound_state = OutboundState::Closed;
             stream.tx.clear();
             stream.pending_close = None;
-            emit(SessionEvent::WritableClosed(frame.clone()));
+            sink.emit(SessionEvent::WritableClosed(frame.clone()));
         }
         self.try_reap_stream(frame.stream_id);
         Ok(())
@@ -955,7 +984,7 @@ fn acknowledge_tracked_frame(
     streams: &mut IndexMap<StreamId, StreamState>,
     stream_send_buffer_size: usize,
     frame: &TrackedFrame,
-    emit: &mut impl FnMut(SessionEvent),
+    sink: &mut impl EventSink,
 ) {
     match frame {
         TrackedFrame::StreamClose(_) => {}
@@ -970,10 +999,10 @@ fn acknowledge_tracked_frame(
                     fin: frame.fin,
                 });
                 if was_full && stream.send_capacity(stream_send_buffer_size) > 0 {
-                    emit(SessionEvent::Writable(stream_id));
+                    sink.emit(SessionEvent::Writable(stream_id));
                 }
                 if had_unacked_fin && !stream.tx.has_unacked_fin() {
-                    emit(SessionEvent::OutboundFinished(stream_id));
+                    sink.emit(SessionEvent::OutboundFinished(stream_id));
                 }
             }
         }

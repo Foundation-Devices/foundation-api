@@ -38,7 +38,7 @@ use ql_wire::{
     PairingToken, PeerBundle, QlCrypto, QlIdentity, RouteId, SessionClose, SessionCloseCode,
     StreamClose, StreamId,
 };
-pub use session::{StreamOps, StreamReadIter, StreamWriter};
+pub use session::{SessionEvent, StreamReadIter, StreamWriter};
 
 use crate::{
     replay_cache::ReplayCache,
@@ -81,7 +81,7 @@ pub enum Event {
     Readable(StreamId),
     /// a stream has room for more local writes
     Writable(StreamId),
-    /// the peer finished writing this stream
+    /// the peer finished writing this stream and no more bytes remain to read
     Finished(StreamId),
     /// our local FIN was acknowledged by the peer at the session layer
     OutboundFinished(StreamId),
@@ -108,6 +108,42 @@ pub struct OutboundWrite {
     pub record: Vec<u8>,
     /// write handle that must be completed exactly once
     pub write_id: Option<WriteId>,
+}
+
+pub struct StreamOps<'a> {
+    inner: session::StreamOps<'a, fsm::FsmEventEmitter<'a>>,
+}
+
+impl<'a> StreamOps<'a> {
+    /// returns this stream's identifier
+    pub fn stream_id(&self) -> StreamId {
+        self.inner.stream_id()
+    }
+
+    /// returns the readable stream bytes as owned `Bytes` views without consuming them
+    pub fn read(&self) -> StreamReadIter<'_> {
+        self.inner.read()
+    }
+
+    /// returns how many bytes can be read from the stream
+    pub fn readable_bytes(&self) -> usize {
+        self.inner.readable_bytes()
+    }
+
+    /// marks previously read bytes as consumed
+    pub fn commit_read(&mut self, len: usize) -> Result<(), CommitReadError> {
+        self.inner.commit_read(len)
+    }
+
+    /// returns a writer if the local write side is still open
+    pub fn writer(&mut self) -> Option<StreamWriter<'_>> {
+        self.inner.writer()
+    }
+
+    /// closes the origin lane, return lane, or both lanes of the stream
+    pub fn close(&mut self, target: ql_wire::CloseTarget, code: ql_wire::StreamCloseCode) {
+        self.inner.close(target, code);
+    }
 }
 
 /// timing and buffering knobs for `QlFsm`
