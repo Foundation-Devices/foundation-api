@@ -35,8 +35,8 @@ async fn handshake_timeout_disconnects() {
             },
             ..default_runtime_config()
         };
-        let (platform_a, _outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, _outbound_b, _status_b) = TestPlatform::new();
+        let (platform_a, _outbound_a, _inbound_a, status_a) = TestPlatform::new();
+        let (platform_b, _outbound_b, _inbound_b, _status_b) = TestPlatform::new();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
@@ -57,8 +57,10 @@ async fn handshake_timeout_disconnects() {
 async fn rejected_session_write_is_reissued() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new_with_session_write_failure(1);
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (platform_a, outbound_a, inbound_a_tx, status_a) =
+            TestPlatform::new_with_session_write_failure(1);
+        let (platform_b, outbound_b, inbound_b_tx, status_b, inbound_b) =
+            TestPlatform::new_with_inbound();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
@@ -67,8 +69,8 @@ async fn rejected_session_write_is_reissued() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
+        spawn_forwarder(outbound_a, inbound_b_tx);
+        spawn_forwarder(outbound_b, inbound_a_tx);
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
@@ -115,8 +117,8 @@ async fn rejected_session_write_is_reissued() {
 async fn start_pairing_round_trip_connects_when_armed() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b) = TestPlatform::new();
+        let (platform_a, outbound_a, inbound_a_tx, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, inbound_b_tx, status_b) = TestPlatform::new();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
         let token = pairing_token(7);
 
@@ -126,8 +128,8 @@ async fn start_pairing_round_trip_connects_when_armed() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
+        spawn_forwarder(outbound_a, inbound_b_tx);
+        spawn_forwarder(outbound_b, inbound_a_tx);
 
         handle_b.arm_pairing(token);
         handle_a.start_pairing(token);
@@ -142,19 +144,19 @@ async fn start_pairing_round_trip_connects_when_armed() {
 async fn start_pairing_does_not_connect_when_unarmed() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, _status_b) = TestPlatform::new();
+        let (platform_a, outbound_a, inbound_a_tx, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, inbound_b_tx, _status_b) = TestPlatform::new();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
         let token = pairing_token(8);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
-        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
+        let (runtime_b, _handle_b) = new_runtime(identity_b.clone(), platform_b, config);
 
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
+        spawn_forwarder(outbound_a, inbound_b_tx);
+        spawn_forwarder(outbound_b, inbound_a_tx);
 
         handle_a.start_pairing(token);
 

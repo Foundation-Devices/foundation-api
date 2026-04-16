@@ -4,8 +4,9 @@ use super::*;
 async fn unpair_clears_remote_peer_and_aborts_active_stream() {
     run_local_test(async {
         let config = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (platform_a, outbound_a, inbound_a_tx, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, inbound_b_tx, status_b, inbound_b) =
+            TestPlatform::new_with_inbound();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
@@ -14,8 +15,8 @@ async fn unpair_clears_remote_peer_and_aborts_active_stream() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
+        spawn_forwarder(outbound_a, inbound_b_tx);
+        spawn_forwarder(outbound_b, inbound_a_tx);
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect().unwrap();

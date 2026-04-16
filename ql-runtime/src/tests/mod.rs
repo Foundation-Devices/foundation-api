@@ -10,6 +10,7 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender};
+use futures_lite::Stream;
 use ql_fsm::PeerStatus;
 use ql_wire::{
     test_identities, test_identity, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey,
@@ -76,6 +77,8 @@ impl WriteStats {
 
 struct TestPlatform {
     outbound: Sender<Vec<u8>>,
+    _inbound_messages_tx: Sender<Vec<u8>>,
+    inbound_messages: Option<Receiver<Vec<u8>>>,
     status: Sender<StatusEvent>,
     inbound: Option<Sender<QlStream>>,
     crypto: SoftwareCrypto,
@@ -85,33 +88,38 @@ struct TestPlatform {
     write_stats: Option<WriteStats>,
 }
 
+struct TestInbound {
+    receiver: Receiver<Vec<u8>>,
+}
+
 impl TestPlatform {
-    fn new() -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
+    fn new() -> (Self, Receiver<Vec<u8>>, Sender<Vec<u8>>, Receiver<StatusEvent>) {
         Self::new_inner(None, None, Duration::ZERO, None)
     }
 
     fn new_with_inbound() -> (
         Self,
         Receiver<Vec<u8>>,
+        Sender<Vec<u8>>,
         Receiver<StatusEvent>,
         Receiver<QlStream>,
     ) {
         let (inbound_tx, inbound_rx) = async_channel::unbounded();
-        let (platform, outbound_rx, status_rx) =
+        let (platform, outbound_rx, inbound_messages_tx, status_rx) =
             Self::new_inner(Some(inbound_tx), None, Duration::ZERO, None);
-        (platform, outbound_rx, status_rx, inbound_rx)
+        (platform, outbound_rx, inbound_messages_tx, status_rx, inbound_rx)
     }
 
     fn new_with_session_write_failure(
         fail_encrypted_write_at: usize,
-    ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
+    ) -> (Self, Receiver<Vec<u8>>, Sender<Vec<u8>>, Receiver<StatusEvent>) {
         Self::new_inner(None, Some(fail_encrypted_write_at), Duration::ZERO, None)
     }
 
     fn new_with_delayed_writes(
         delay: Duration,
         write_stats: WriteStats,
-    ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
+    ) -> (Self, Receiver<Vec<u8>>, Sender<Vec<u8>>, Receiver<StatusEvent>) {
         Self::new_inner(None, None, delay, Some(write_stats))
     }
 
@@ -120,12 +128,15 @@ impl TestPlatform {
         fail_encrypted_write_at: Option<usize>,
         write_delay: Duration,
         write_stats: Option<WriteStats>,
-    ) -> (Self, Receiver<Vec<u8>>, Receiver<StatusEvent>) {
+    ) -> (Self, Receiver<Vec<u8>>, Sender<Vec<u8>>, Receiver<StatusEvent>) {
         let (outbound, outbound_rx) = async_channel::unbounded();
+        let (inbound_messages_tx, inbound_messages_rx) = async_channel::unbounded();
         let (status, status_rx) = async_channel::unbounded();
         (
             Self {
                 outbound,
+                _inbound_messages_tx: inbound_messages_tx.clone(),
+                inbound_messages: Some(inbound_messages_rx),
                 status,
                 inbound,
                 crypto: SoftwareCrypto,
@@ -135,6 +146,7 @@ impl TestPlatform {
                 write_stats,
             },
             outbound_rx,
+            inbound_messages_tx,
             status_rx,
         )
     }
@@ -202,8 +214,10 @@ impl TestPair {
         a_to_b: LinkBehavior,
         b_to_a: LinkBehavior,
     ) -> (Self, ControlledLinks) {
-        let (platform_a, outbound_a, status_a, inbound_a) = TestPlatform::new_with_inbound();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (platform_a, outbound_a, inbound_a_tx, status_a, inbound_a) =
+            TestPlatform::new_with_inbound();
+        let (platform_b, outbound_b, inbound_b_tx, status_b, inbound_b) =
+            TestPlatform::new_with_inbound();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
         let links = ControlledLinks {
             a_to_b: LinkController::new(a_to_b),
@@ -216,8 +230,8 @@ impl TestPair {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_simulated_forwarder(outbound_a, handle_b.clone(), links.a_to_b.clone());
-        spawn_simulated_forwarder(outbound_b, handle_a.clone(), links.b_to_a.clone());
+        spawn_simulated_forwarder(outbound_a, inbound_b_tx, links.a_to_b.clone());
+        spawn_simulated_forwarder(outbound_b, inbound_a_tx, links.b_to_a.clone());
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
 
         (
@@ -288,13 +302,13 @@ impl TokioTimer {
 }
 
 impl QlTimer for TokioTimer {
-    fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
+    fn set_deadline(mut self: Pin<&mut Self>, deadline: Option<std::time::Instant>) {
         let deadline = deadline.map_or_else(parked_deadline, tokio::time::Instant::from_std);
-        self.sleep.as_mut().reset(deadline);
+        self.as_mut().get_mut().sleep.as_mut().reset(deadline);
     }
 
-    fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        self.sleep.as_mut().poll(cx)
+    fn poll_wait(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.as_mut().get_mut().sleep.as_mut().poll(cx)
     }
 }
 
@@ -351,6 +365,7 @@ impl QlKem for TestPlatform {
 impl crate::platform::QlPlatform for TestPlatform {
     type Timer = TokioTimer;
     type WriteMessageFut<'a> = PlatformFuture<'a, bool>;
+    type Inbound = TestInbound;
 
     fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_> {
         let outbound = self.outbound.clone();
@@ -389,6 +404,15 @@ impl crate::platform::QlPlatform for TestPlatform {
         })
     }
 
+    fn inbound(&mut self) -> Self::Inbound {
+        TestInbound {
+            receiver: self
+                .inbound_messages
+                .take()
+                .expect("TestPlatform::inbound may only be called once"),
+        }
+    }
+
     fn timer(&self) -> Self::Timer {
         TokioTimer::new()
     }
@@ -402,6 +426,16 @@ impl crate::platform::QlPlatform for TestPlatform {
     fn handle_inbound(&self, event: QlStream) {
         if let Some(tx) = &self.inbound {
             let _ = tx.try_send(event);
+        }
+    }
+}
+
+impl crate::platform::QlInbound for TestInbound {
+    fn poll_recv(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<u8>> {
+        match unsafe { self.as_mut().map_unchecked_mut(|this| &mut this.receiver) }.poll_next(cx) {
+            Poll::Ready(Some(bytes)) => Poll::Ready(bytes),
+            Poll::Ready(None) => panic!("TestInbound channel closed"),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -430,17 +464,17 @@ fn register_peers(
     handle_b.bind_peer(id_a.bundle());
 }
 
-fn spawn_forwarder(outbound: Receiver<Vec<u8>>, handle: RuntimeHandle) {
+fn spawn_forwarder(outbound: Receiver<Vec<u8>>, inbound: Sender<Vec<u8>>) {
     spawn_simulated_forwarder(
         outbound,
-        handle,
+        inbound,
         LinkController::new(LinkBehavior::default()),
     );
 }
 
 fn spawn_simulated_forwarder(
     outbound: Receiver<Vec<u8>>,
-    handle: RuntimeHandle,
+    inbound: Sender<Vec<u8>>,
     controller: LinkController,
 ) {
     tokio::task::spawn_local(async move {
@@ -473,12 +507,12 @@ fn spawn_simulated_forwarder(
             }
 
             let primary = bytes.clone();
-            let primary_handle = handle.clone();
+            let primary_inbound = inbound.clone();
             tokio::task::spawn_local(async move {
                 if !delay.is_zero() {
                     tokio::time::sleep(delay).await;
                 }
-                primary_handle.receive(primary);
+                let _ = primary_inbound.try_send(primary);
             });
 
             if ordinal.is_some_and(|count| {
@@ -486,13 +520,13 @@ fn spawn_simulated_forwarder(
                     .duplicate_encrypted_every
                     .is_some_and(|nth| nth != 0 && count % nth == 0)
             }) {
-                let duplicate_handle = handle.clone();
+                let duplicate_inbound = inbound.clone();
                 tokio::task::spawn_local(async move {
                     let duplicate_delay = delay + Duration::from_millis(1);
                     if !duplicate_delay.is_zero() {
                         tokio::time::sleep(duplicate_delay).await;
                     }
-                    duplicate_handle.receive(bytes);
+                    let _ = duplicate_inbound.try_send(bytes);
                 });
             }
         }
@@ -501,7 +535,7 @@ fn spawn_simulated_forwarder(
 
 fn spawn_drop_every_nth_encrypted_forwarder(
     outbound: Receiver<Vec<u8>>,
-    handle: RuntimeHandle,
+    inbound: Sender<Vec<u8>>,
     nth: usize,
 ) {
     tokio::task::spawn_local(async move {
@@ -513,14 +547,14 @@ fn spawn_drop_every_nth_encrypted_forwarder(
                     continue;
                 }
             }
-            handle.receive(bytes);
+            let _ = inbound.try_send(bytes);
         }
     });
 }
 
 fn spawn_gated_forwarder(
     outbound: Receiver<Vec<u8>>,
-    handle: RuntimeHandle,
+    inbound: Sender<Vec<u8>>,
     drop_flag: Arc<std::sync::atomic::AtomicBool>,
 ) {
     tokio::task::spawn_local(async move {
@@ -528,7 +562,7 @@ fn spawn_gated_forwarder(
             if drop_flag.load(Ordering::Relaxed) {
                 continue;
             }
-            handle.receive(bytes);
+            let _ = inbound.try_send(bytes);
         }
     });
 }
@@ -625,7 +659,7 @@ fn default_runtime_config() -> RuntimeConfig {
 fn runtime_is_send() {
     let config = default_runtime_config();
     let identity_a = test_identity(&SoftwareCrypto);
-    let (platform_a, _, _) = TestPlatform::new();
+    let (platform_a, _, _, _) = TestPlatform::new();
     let (runtime_a, _handle) = new_runtime(identity_a, platform_a, config);
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
@@ -640,7 +674,7 @@ fn runtime_is_send() {
 fn runtime_exits_when_last_handle_drops() {
     let config = default_runtime_config();
     let identity = test_identity(&SoftwareCrypto);
-    let (platform, _, _) = TestPlatform::new();
+    let (platform, _, _, _) = TestPlatform::new();
     let (runtime, handle) = new_runtime(identity, platform, config);
     let (done_tx, done_rx) = oneshot::channel();
 

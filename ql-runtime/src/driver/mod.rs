@@ -24,7 +24,7 @@ use crate::{
     command::RuntimeCommand,
     handle::{QlStream, StreamReader, StreamWriter},
     log,
-    platform::{QlPlatform, QlTimer},
+    platform::{QlInbound, QlPlatform, QlTimer},
     QlStreamError, Runtime, RuntimeHandle,
 };
 
@@ -33,7 +33,7 @@ impl<P: QlPlatform> Runtime<P> {
     pub async fn run(self) {
         let Self {
             identity,
-            platform,
+            mut platform,
             config,
             rx,
             tx,
@@ -48,7 +48,10 @@ impl<P: QlPlatform> Runtime<P> {
         };
 
         let mut in_flight = Vec::new();
-        let mut timer = platform.timer();
+        let timer = platform.timer();
+        let mut timer = pin!(timer);
+        let inbound = platform.inbound();
+        let mut inbound = pin!(inbound);
         let recv_future = rx.recv();
         let mut recv_future = pin!(recv_future);
         let mut poll_cursor = 0usize;
@@ -58,13 +61,14 @@ impl<P: QlPlatform> Runtime<P> {
             if state.fill_write_slots(&mut fsm, &platform, &mut in_flight) {
                 state.drain_fsm_events(&mut fsm, &platform);
             }
-            timer.set_deadline(fsm.next_deadline());
+            timer.as_mut().set_deadline(fsm.next_deadline());
 
             let step = poll_fn(|cx| {
                 next_step(
                     cx,
                     recv_future.as_mut(),
-                    &mut timer,
+                    inbound.as_mut(),
+                    timer.as_mut(),
                     &mut in_flight,
                     poll_cursor,
                 )
@@ -76,6 +80,13 @@ impl<P: QlPlatform> Runtime<P> {
                 DriverStep::Command(command) => {
                     log::trace!("processing command: kind={}", command.kind());
                     state.drive_command(&mut fsm, command, &platform);
+                }
+                DriverStep::Inbound(bytes) => {
+                    log::trace!("received transport frame: len={}", bytes.len());
+                    if let Err(e) = fsm.receive(now(), bytes, &platform) {
+                        log::info!("receive rejected frame: error={e:?}");
+                        platform.handle_recv_error(e);
+                    }
                 }
                 DriverStep::WriteCompleted { index, success } => {
                     let write = in_flight.swap_remove(index);
@@ -112,23 +123,26 @@ struct InFlightWrite<F> {
 
 enum DriverStep {
     Command(RuntimeCommand),
+    Inbound(Vec<u8>),
     WriteCompleted { index: usize, success: bool },
     TimerExpired,
     Closed,
 }
 
-const STEP_COUNT: usize = 3;
+const STEP_COUNT: usize = 4;
 
-fn next_step<T, F>(
+fn next_step<T, F, I>(
     cx: &mut Context<'_>,
     mut recv_future: Pin<&mut Recv<'_, RuntimeCommand>>,
-    timer: &mut T,
+    mut inbound: Pin<&mut I>,
+    mut timer: Pin<&mut T>,
     in_flight: &mut [InFlightWrite<F>],
     start: usize,
 ) -> Poll<DriverStep>
 where
     T: QlTimer,
     F: Future<Output = bool> + Unpin,
+    I: QlInbound,
 {
     for offset in 0..STEP_COUNT {
         let step = (start + offset) % STEP_COUNT;
@@ -137,7 +151,8 @@ where
                 .as_mut()
                 .poll(cx)
                 .map(|res| res.map_or(DriverStep::Closed, DriverStep::Command)),
-            1 => {
+            1 => inbound.as_mut().poll_recv(cx).map(DriverStep::Inbound),
+            2 => {
                 for (index, write) in in_flight.iter_mut().enumerate() {
                     if let Poll::Ready(success) = Pin::new(&mut write.future).poll(cx) {
                         return Poll::Ready(DriverStep::WriteCompleted { index, success });
@@ -145,13 +160,7 @@ where
                 }
                 Poll::Pending
             }
-            2 => {
-                if timer.poll_wait(cx) == Poll::Ready(()) {
-                    Poll::Ready(DriverStep::TimerExpired)
-                } else {
-                    Poll::Pending
-                }
-            }
+            3 => timer.as_mut().poll_wait(cx).map(|()| DriverStep::TimerExpired),
             _ => unreachable!(),
         };
         if poll.is_ready() {
@@ -191,13 +200,6 @@ impl DriverState {
             RuntimeCommand::StartPairing { token } => {
                 log::info!(" starting XX pairing");
                 fsm.connect_xx(now(), token, platform);
-            }
-            RuntimeCommand::Receive(bytes) => {
-                log::trace!("received transport frame: len={}", bytes.len());
-                if let Err(e) = fsm.receive(now(), bytes, platform) {
-                    log::info!("receive rejected frame: error={e:?}");
-                    platform.handle_recv_error(e);
-                }
             }
             RuntimeCommand::OpenStream {
                 route_id,

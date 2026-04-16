@@ -1,19 +1,19 @@
-use std::task::{Context, Poll};
-
 use ql_wire::{test_identity, NoopCrypto, PeerBundle, SoftwareCrypto, StreamClose, XID};
 
 use super::*;
 use crate::{
     chunk_slot,
     driver::state::{InboundIo, OutboundIo},
+    platform::QlInbound,
 };
 
 pub struct NoopTimer;
+pub struct NoopInbound;
 
 impl crate::platform::QlTimer for NoopTimer {
-    fn set_deadline(&mut self, _deadline: Option<std::time::Instant>) {}
+    fn set_deadline(self: Pin<&mut Self>, _deadline: Option<Instant>) {}
 
-    fn poll_wait(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_wait(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
         Poll::Pending
     }
 }
@@ -21,9 +21,14 @@ impl crate::platform::QlTimer for NoopTimer {
 impl QlPlatform for NoopCrypto {
     type Timer = NoopTimer;
     type WriteMessageFut<'a> = std::future::Ready<bool>;
+    type Inbound = NoopInbound;
 
     fn write_message(&self, _message: Vec<u8>) -> Self::WriteMessageFut<'_> {
         std::future::ready(true)
+    }
+
+    fn inbound(&mut self) -> Self::Inbound {
+        NoopInbound
     }
 
     fn timer(&self) -> Self::Timer {
@@ -35,6 +40,12 @@ impl QlPlatform for NoopCrypto {
     fn handle_peer_status(&self, _peer: XID, _status: ql_fsm::PeerStatus) {}
 
     fn handle_inbound(&self, _event: QlStream) {}
+}
+
+impl QlInbound for NoopInbound {
+    fn poll_recv(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Vec<u8>> {
+        Poll::Pending
+    }
 }
 
 fn new_driver_state() -> (DriverState, QlFsm) {

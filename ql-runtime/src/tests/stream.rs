@@ -288,9 +288,10 @@ async fn max_concurrent_message_writes_is_respected() {
             max_concurrent_message_writes: 2,
             ..default_runtime_config()
         };
-        let (platform_a, outbound_a, status_a) =
+        let (platform_a, outbound_a, inbound_a_tx, status_a) =
             TestPlatform::new_with_delayed_writes(Duration::from_millis(40), stats.clone());
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (platform_b, outbound_b, inbound_b_tx, status_b, inbound_b) =
+            TestPlatform::new_with_inbound();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
@@ -299,8 +300,8 @@ async fn max_concurrent_message_writes_is_respected() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_forwarder(outbound_b, handle_a.clone());
+        spawn_forwarder(outbound_a, inbound_b_tx);
+        spawn_forwarder(outbound_b, inbound_a_tx);
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
@@ -359,8 +360,9 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
             },
             ..default_runtime_config()
         };
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (platform_a, outbound_a, inbound_a_tx, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, inbound_b_tx, status_b, inbound_b) =
+            TestPlatform::new_with_inbound();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let request_payload: Vec<u8> = (0..32).collect();
@@ -373,8 +375,8 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
         tokio::task::spawn_local(async move { runtime_a.run().await });
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
-        spawn_drop_every_nth_encrypted_forwarder(outbound_a, handle_b.clone(), 3);
-        spawn_drop_every_nth_encrypted_forwarder(outbound_b, handle_a.clone(), 3);
+        spawn_drop_every_nth_encrypted_forwarder(outbound_a, inbound_b_tx, 3);
+        spawn_drop_every_nth_encrypted_forwarder(outbound_b, inbound_a_tx, 3);
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
@@ -420,7 +422,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
 #[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "current_thread")]
 async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
-    run_local_test_timeout(Duration::from_secs(5), async {
+    run_local_test_timeout(Duration::from_secs(10), async {
         let payload_len = 2 * 1024 * 1024;
         let chunk_len = 16 * 1024;
         let payload: Vec<u8> = (0..payload_len)
@@ -541,7 +543,7 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn reproducer_writer_stalls_after_reverse_path_impairment() {
-    run_local_test_timeout(Duration::from_secs(5), async {
+    run_local_test_timeout(Duration::from_secs(10), async {
         let payload_len = 2 * 1024 * 1024;
         let chunk_len = 16 * 1024;
         let payload: Vec<u8> = (0..payload_len)

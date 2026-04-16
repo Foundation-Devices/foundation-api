@@ -32,7 +32,6 @@ pub enum RuntimeCommand {
         target: CloseTarget,
         code: StreamCloseCode,
     },
-    Receive(Vec<u8>),
 }
 
 impl RuntimeCommand {
@@ -48,7 +47,6 @@ impl RuntimeCommand {
             Self::PollInbound { .. } => "PollInbound",
             Self::PollStream { .. } => "PollStream",
             Self::CloseStream { .. } => "CloseStream",
-            Self::Receive(_) => "Receive",
         }
     }
 }

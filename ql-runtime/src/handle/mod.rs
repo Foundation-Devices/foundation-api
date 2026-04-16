@@ -46,11 +46,6 @@ impl RuntimeHandle {
         self.send(RuntimeCommand::StartPairing { token });
     }
 
-    /// hands inbound transport bytes to the runtime
-    pub fn receive(&self, bytes: Vec<u8>) {
-        self.send(RuntimeCommand::Receive(bytes));
-    }
-
     /// opens a new stream on the active encrypted session
     pub async fn open_stream(&self, route_id: RouteId) -> Result<QlStream, NoSessionError> {
         let (request_reader, request_writer) = chunk_slot::new();

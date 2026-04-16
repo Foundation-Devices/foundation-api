@@ -21,8 +21,9 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
             ..default_runtime_config()
         };
         let config_b = default_runtime_config();
-        let (platform_a, outbound_a, status_a) = TestPlatform::new();
-        let (platform_b, outbound_b, status_b, inbound_b) = TestPlatform::new_with_inbound();
+        let (platform_a, outbound_a, inbound_a_tx, status_a) = TestPlatform::new();
+        let (platform_b, outbound_b, inbound_b_tx, status_b, inbound_b) =
+            TestPlatform::new_with_inbound();
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
 
         let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config_a);
@@ -32,8 +33,8 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
         tokio::task::spawn_local(async move { runtime_b.run().await });
 
         let drop_flag = Arc::new(AtomicBool::new(false));
-        spawn_forwarder(outbound_a, handle_b.clone());
-        spawn_gated_forwarder(outbound_b, handle_a.clone(), drop_flag.clone());
+        spawn_forwarder(outbound_a, inbound_b_tx);
+        spawn_gated_forwarder(outbound_b, inbound_a_tx, drop_flag.clone());
 
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
