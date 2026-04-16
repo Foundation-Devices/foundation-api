@@ -2,11 +2,11 @@ use std::marker::PhantomData;
 
 use bytes::Bytes;
 
-use super::{request::read_value_and_eof, RouterConfig};
 use crate::{
     codec, finish_bytes, subscription::Subscription as SubscriptionRpc, write_bytes, RpcCodec,
     RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,
 };
+use crate::{rpc::read_framed_value, RouterConfig};
 
 pub trait SubscriptionHandler<M, St>
 where
@@ -31,7 +31,7 @@ where
     T: RpcCodec,
     W: RpcWrite,
 {
-    fn new(writer: W) -> Self {
+    pub(crate) fn new(writer: W) -> Self {
         Self {
             writer: Some(writer),
             marker: PhantomData,
@@ -69,7 +69,7 @@ where
     }
 }
 
-pub(super) async fn handle_subscription_inner<S, M, St>(
+pub(crate) async fn handle_subscription_inner<S, M, St>(
     state: S,
     config: RouterConfig,
     mut reader: St::Reader,
@@ -79,7 +79,7 @@ pub(super) async fn handle_subscription_inner<S, M, St>(
     S: SubscriptionHandler<M, St> + 'static,
     St: RpcStream + 'static,
 {
-    let request = match read_value_and_eof::<M::Request, _>(&mut reader, config).await {
+    let request = match read_framed_value::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
             let code = error.close_code();

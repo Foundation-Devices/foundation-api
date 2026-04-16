@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
 use super::{
-    download::{handle_download_inner, DownloadHandler},
-    request::{handle_request_inner, RequestHandler},
-    subscription::{handle_subscription_inner, SubscriptionHandler},
     LocalSpawn, LocalSpawner, RouteFn, Router, RouterConfig, RpcStream, SendSpawn, SendSpawner,
     Spawner,
 };
 use crate::{
     download::Download as DownloadRpc,
+    download::server::{handle_download_inner, DownloadHandler},
     request::Request as RequestRpc, subscription::Subscription as SubscriptionRpc, RouteId,
+    request::server::{handle_request_inner, RequestHandler},
+    subscription::server::{handle_subscription_inner, SubscriptionHandler},
 };
 
 pub struct RouterBuilder<S, St, Sp>

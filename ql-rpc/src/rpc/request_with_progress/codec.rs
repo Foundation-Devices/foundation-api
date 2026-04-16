@@ -2,15 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, CodecError, Error, RouteId, RpcCodec};
-
-pub trait RequestWithProgress {
-    const ROUTE: RouteId;
-    type Error;
-    type Request: RpcCodec<Error = Self::Error>;
-    type Progress: RpcCodec<Error = Self::Error>;
-    type Response: RpcCodec<Error = Self::Error>;
-}
+use crate::{codec, request_with_progress::RequestWithProgress, CodecError, Error, RpcCodec};
 
 pub enum ReadStep<M: RequestWithProgress> {
     NeedMore(ResponseReader<M>),
@@ -29,7 +21,7 @@ pub struct ResponseReader<M: RequestWithProgress> {
 impl<M: RequestWithProgress> Default for ResponseReader<M> {
     fn default() -> Self {
         Self {
-            bytes: codec::ChunkQueue::new(),
+            bytes: codec::ChunkQueue::default(),
             marker: PhantomData,
         }
     }
@@ -115,8 +107,8 @@ fn encode_tagged_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
 mod tests {
     use bytes::Bytes;
 
-    use super::{encode_progress, encode_response, ReadStep, RequestWithProgress, ResponseReader};
-    use crate::RouteId;
+    use super::{encode_progress, encode_response, ReadStep, ResponseReader};
+    use crate::{request_with_progress::RequestWithProgress, RouteId};
 
     struct Watch;
 

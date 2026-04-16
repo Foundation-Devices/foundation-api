@@ -1,36 +1,20 @@
 //! quantum link rpc protocol traits and framing helpers.
 
+mod chunk_queue;
 pub(crate) mod codec;
 mod error;
+mod route_id;
 mod router;
-pub mod rpc;
+mod rpc;
 mod stream;
 
-pub use codec::{ChunkQueue, ReadValueStep, RpcCodec, ValueReader};
+pub use chunk_queue::ChunkQueue;
+pub use codec::{FramedValueReader, ReadValueStep, RpcCodec};
 pub use error::*;
+pub use route_id::RouteId;
 pub use router::*;
 pub use rpc::*;
 pub use stream::*;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct RouteId(pub u32);
-
-impl RouteId {
-    pub const fn from_u32(value: u32) -> Self {
-        Self(value)
-    }
-
-    pub const fn into_inner(self) -> u32 {
-        self.0
-    }
-}
-
-impl From<u32> for RouteId {
-    fn from(value: u32) -> Self {
-        Self::from_u32(value)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]

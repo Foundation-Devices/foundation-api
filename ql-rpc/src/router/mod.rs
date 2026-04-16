@@ -4,19 +4,16 @@ use crate::{RouteId, StreamCloseCode};
 
 mod builder;
 mod config;
-mod download;
 mod mode;
-mod request;
-mod subscription;
 
 pub use self::{
     builder::RouterBuilder,
     config::RouterConfig,
-    download::{DownloadHandler, DownloadResponder, DownloadWriter},
     mode::*,
-    request::{RequestHandler, Response},
-    subscription::{SubscriptionHandler, SubscriptionResponder},
 };
+pub use crate::download::{DownloadHandler, DownloadResponder, DownloadWriter};
+pub use crate::request::{RequestHandler, Response};
+pub use crate::subscription::{SubscriptionHandler, SubscriptionResponder};
 use crate::{close_stream, RpcStream};
 
 pub struct Router<S, St, Sp>

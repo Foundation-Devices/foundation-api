@@ -4,8 +4,6 @@ mod error;
 mod request_with_progress;
 mod subscription;
 
-use std::future::poll_fn;
-
 use bytes::Bytes;
 use ql_rpc::{
     download::{self as rpc_download, Download as DownloadRpc},
@@ -13,11 +11,10 @@ use ql_rpc::{
     request::{self, Request as RequestRpc},
     request_with_progress::{self as rpc_request_with_progress, RequestWithProgress},
     subscription::{self as rpc_subscription, Subscription as SubscriptionRpc},
-    Error, ReadValueStep, RpcCodec, ValueReader,
 };
 
 pub use self::{adapter::*, download::*, error::*, request_with_progress::*, subscription::*};
-use crate::{StreamReader, RuntimeHandle};
+use crate::{RuntimeHandle, StreamReader};
 
 #[derive(Clone)]
 pub struct RpcHandle {
@@ -48,7 +45,7 @@ impl RpcHandle {
         let mut payload = Vec::new();
         request::encode_request::<M>(request, &mut payload);
         let response = self.start_request(M::ROUTE, payload).await?;
-        read_value::<M::Response>(response).await
+        Ok(request::read_response::<M, _>(response).await?)
     }
 
     pub async fn subscribe<M>(
@@ -110,24 +107,5 @@ impl RpcHandle {
         stream.writer.write(Bytes::from(payload)).await?;
         stream.writer.finish().await?;
         Ok(stream.reader)
-    }
-}
-
-async fn read_value<T>(mut reader: StreamReader) -> Result<T, RpcError<T::Error>>
-where
-    T: RpcCodec,
-{
-    let mut value_reader = ValueReader::<T>::default();
-
-    loop {
-        match value_reader.advance().map_err(RpcError::from)? {
-            ReadValueStep::Value(value) => return Ok(value),
-            ReadValueStep::NeedMore(next) => value_reader = next,
-        }
-
-        match poll_fn(|cx| reader.poll_read_chunk(cx)).await? {
-            Some(chunk) => value_reader = value_reader.push(chunk),
-            None => return Err(Error::Truncated.into()),
-        }
     }
 }
