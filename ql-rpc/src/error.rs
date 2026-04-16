@@ -60,3 +60,53 @@ impl<E> From<Error> for CodecError<E> {
         Self::Rpc(error)
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallError<C, T> {
+    Protocol(Error),
+    Codec(C),
+    Transport(T),
+}
+
+impl<C, T> std::fmt::Display for CallError<C, T>
+where
+    C: std::fmt::Display,
+    T: std::fmt::Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Protocol(error) => write!(f, "{error}"),
+            Self::Codec(error) => write!(f, "{error}"),
+            Self::Transport(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<C, T> std::error::Error for CallError<C, T>
+where
+    C: std::error::Error + 'static,
+    T: std::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CallError::Protocol(error) => Some(error),
+            CallError::Codec(error) => Some(error),
+            CallError::Transport(error) => Some(error),
+        }
+    }
+}
+
+impl<C, T> From<Error> for CallError<C, T> {
+    fn from(error: Error) -> Self {
+        Self::Protocol(error)
+    }
+}
+
+impl<C, T> From<CodecError<C>> for CallError<C, T> {
+    fn from(error: CodecError<C>) -> Self {
+        match error {
+            CodecError::Rpc(error) => Self::Protocol(error),
+            CodecError::Codec(error) => Self::Codec(error),
+        }
+    }
+}

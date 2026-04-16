@@ -1,8 +1,12 @@
-use std::marker::PhantomData;
+use std::{
+    future::poll_fn,
+    marker::PhantomData,
+    task::{Context, Poll},
+};
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, CodecError, RouteId, RpcCodec};
+use crate::{codec, CallError, CodecError, RouteId, RpcCodec, RpcRead};
 
 pub trait Subscription {
     const ROUTE: RouteId;
@@ -11,17 +15,85 @@ pub trait Subscription {
     type Event: RpcCodec<Error = Self::Error>;
 }
 
-pub enum ReadStep<M: Subscription> {
-    NeedMore(ResponseReader<M>),
-    Item {
-        value: M::Event,
-        next: ResponseReader<M>,
-    },
+pub fn encode_request<M: Subscription>(
+    request: &M::Request,
+    out: &mut (impl BufMut + AsMut<[u8]>),
+) {
+    codec::encode_value_part(request, out)
 }
 
-pub struct ResponseReader<M: Subscription> {
-    bytes: codec::ChunkQueue,
-    marker: PhantomData<fn() -> M>,
+pub fn encode_item<M: Subscription>(item: &M::Event, out: &mut (impl BufMut + AsMut<[u8]>)) {
+    codec::encode_value_part(item, out)
+}
+
+pub struct SubscriptionCall<M, R>
+where
+    M: Subscription,
+    R: RpcRead,
+{
+    stream: R,
+    reader: Option<ResponseReader<M>>,
+}
+
+impl<M, R> SubscriptionCall<M, R>
+where
+    M: Subscription,
+    R: RpcRead,
+{
+    pub fn new(stream: R) -> Self {
+        Self {
+            stream,
+            reader: Some(ResponseReader::default()),
+        }
+    }
+
+    pub async fn next_event(&mut self) -> Option<Result<M::Event, CallError<M::Error, R::Error>>> {
+        poll_fn(|cx| self.poll_next_event(cx)).await
+    }
+
+    pub fn poll_next_event(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<M::Event, CallError<M::Error, R::Error>>>> {
+        loop {
+            let Some(reader) = self.reader.take() else {
+                return Poll::Ready(None);
+            };
+
+            let reader = match reader.advance() {
+                Ok(ReadStep::Item { value, next }) => {
+                    self.reader = Some(next);
+                    return Poll::Ready(Some(Ok(value)));
+                }
+                Ok(ReadStep::NeedMore(next)) => next,
+                Err(error) => return Poll::Ready(Some(Err(error.into()))),
+            };
+
+            match self.stream.poll_read(usize::MAX, cx) {
+                Poll::Ready(Ok(Some(chunk))) => {
+                    self.reader = Some(reader.push(chunk));
+                }
+                Poll::Ready(Ok(None)) => {
+                    if reader.is_empty() {
+                        return Poll::Ready(None);
+                    }
+                    return Poll::Ready(Some(Err(crate::Error::Truncated.into())));
+                }
+                Poll::Ready(Err(error)) => {
+                    self.reader = None;
+                    return Poll::Ready(Some(Err(CallError::Transport(error))));
+                }
+                Poll::Pending => {
+                    self.reader = Some(reader);
+                    return Poll::Pending;
+                }
+            }
+        }
+    }
+
+    pub fn into_inner(self) -> R {
+        self.stream
+    }
 }
 
 impl<M: Subscription> Default for ResponseReader<M> {
@@ -61,15 +133,17 @@ impl<M: Subscription> ResponseReader<M> {
     }
 }
 
-pub fn encode_request<M: Subscription>(
-    request: &M::Request,
-    out: &mut (impl BufMut + AsMut<[u8]>),
-) {
-    codec::encode_value_part(request, out)
+pub enum ReadStep<M: Subscription> {
+    NeedMore(ResponseReader<M>),
+    Item {
+        value: M::Event,
+        next: ResponseReader<M>,
+    },
 }
 
-pub fn encode_item<M: Subscription>(item: &M::Event, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    codec::encode_value_part(item, out)
+pub struct ResponseReader<M: Subscription> {
+    bytes: codec::ChunkQueue,
+    marker: PhantomData<fn() -> M>,
 }
 
 #[cfg(test)]
