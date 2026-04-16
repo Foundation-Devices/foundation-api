@@ -6,7 +6,7 @@ mod router;
 pub mod rpc;
 mod stream;
 
-pub use codec::{ReadValueStep, RpcCodec, ValueReader};
+pub use codec::{ChunkQueue, ReadValueStep, RpcCodec, ValueReader};
 pub use error::*;
 pub use router::*;
 pub use rpc::*;

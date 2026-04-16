@@ -4,6 +4,7 @@ use crate::{RouteId, StreamCloseCode};
 
 mod builder;
 mod config;
+mod download;
 mod mode;
 mod request;
 mod subscription;
@@ -11,6 +12,7 @@ mod subscription;
 pub use self::{
     builder::RouterBuilder,
     config::RouterConfig,
+    download::{DownloadHandler, DownloadResponder, DownloadWriter},
     mode::*,
     request::{RequestHandler, Response},
     subscription::{SubscriptionHandler, SubscriptionResponder},

@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 
 use super::{
+    download::{handle_download_inner, DownloadHandler},
     request::{handle_request_inner, RequestHandler},
     subscription::{handle_subscription_inner, SubscriptionHandler},
     LocalSpawn, LocalSpawner, RouteFn, Router, RouterConfig, RpcStream, SendSpawn, SendSpawner,
     Spawner,
 };
 use crate::{
+    download::Download as DownloadRpc,
     request::Request as RequestRpc, subscription::Subscription as SubscriptionRpc, RouteId,
 };
 
@@ -76,6 +78,19 @@ where
         })
     }
 
+    pub fn download<M>(self) -> Self
+    where
+        M: DownloadRpc + 'static,
+        S: DownloadHandler<M, St> + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_download_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
+    }
+
     pub fn subscription<M>(self) -> Self
     where
         M: SubscriptionRpc + 'static,
@@ -105,6 +120,22 @@ where
         self.add_route(M::ROUTE, |spawner, state, config, stream| {
             let (reader, writer) = stream.split();
             spawner.spawn(handle_request_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
+    }
+
+    pub fn download<M>(self) -> Self
+    where
+        M: DownloadRpc + 'static,
+        M::Request: Send + 'static,
+        S: DownloadHandler<M, St> + Send + 'static,
+        St::Reader: Send + 'static,
+        St::Writer: Send + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_download_inner::<S, M, St>(
                 state, config, reader, writer,
             ))
         })

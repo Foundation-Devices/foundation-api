@@ -28,18 +28,14 @@ pub struct ResponseReader<M: RequestWithProgress> {
 
 impl<M: RequestWithProgress> Default for ResponseReader<M> {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<M: RequestWithProgress> ResponseReader<M> {
-    pub fn new() -> Self {
         Self {
             bytes: codec::ChunkQueue::new(),
             marker: PhantomData,
         }
     }
+}
 
+impl<M: RequestWithProgress> ResponseReader<M> {
     pub fn push(mut self, chunk: Bytes) -> Self {
         self.bytes.push(chunk);
         self
@@ -138,7 +134,7 @@ mod tests {
         encode_progress::<Watch>(&b"10%".to_vec(), &mut encoded);
         encode_response::<Watch>(&b"done".to_vec(), &mut encoded);
 
-        let reader = match ResponseReader::<Watch>::new()
+        let reader = match ResponseReader::<Watch>::default()
             .push(Bytes::from(encoded))
             .advance()
             .unwrap()
@@ -160,7 +156,7 @@ mod tests {
         let mut encoded = Vec::new();
         encode_response::<Watch>(&b"done".to_vec(), &mut encoded);
 
-        match ResponseReader::<Watch>::new()
+        match ResponseReader::<Watch>::default()
             .push(Bytes::from(encoded))
             .advance()
             .unwrap()

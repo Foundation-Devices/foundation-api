@@ -26,18 +26,14 @@ pub struct ResponseReader<M: Subscription> {
 
 impl<M: Subscription> Default for ResponseReader<M> {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<M: Subscription> ResponseReader<M> {
-    pub fn new() -> Self {
         Self {
             bytes: codec::ChunkQueue::new(),
             marker: PhantomData,
         }
     }
+}
 
+impl<M: Subscription> ResponseReader<M> {
     pub fn push(mut self, chunk: Bytes) -> Self {
         self.bytes.push(chunk);
         self
@@ -98,7 +94,7 @@ mod tests {
         encode_item::<Feed>(&b"one".to_vec(), &mut encoded);
         encode_item::<Feed>(&b"two".to_vec(), &mut encoded);
 
-        let reader = match ResponseReader::<Feed>::new()
+        let reader = match ResponseReader::<Feed>::default()
             .push(Bytes::from(encoded))
             .advance()
             .unwrap()
@@ -129,7 +125,7 @@ mod tests {
         let mut encoded = Vec::new();
         encode_item::<Feed>(&b"one".to_vec(), &mut encoded);
 
-        let reader = match ResponseReader::<Feed>::new()
+        let reader = match ResponseReader::<Feed>::default()
             .push(Bytes::from(encoded))
             .advance()
             .unwrap()
@@ -152,7 +148,7 @@ mod tests {
         let mut encoded = Vec::new();
         encode_item::<Feed>(&Vec::new(), &mut encoded);
 
-        match ResponseReader::<Feed>::new()
+        match ResponseReader::<Feed>::default()
             .push(Bytes::from(encoded))
             .advance()
             .unwrap()

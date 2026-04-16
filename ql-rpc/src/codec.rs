@@ -134,6 +134,21 @@ impl ChunkQueue {
         self.remaining
     }
 
+    pub fn pop_front(&mut self, max_len: usize) -> Option<Bytes> {
+        let front = self.chunks.front_mut()?;
+        let chunk = if max_len >= front.len() {
+            self.chunks.pop_front().expect("buffered chunk is present")
+        } else {
+            front.split_to(max_len)
+        };
+        self.remaining -= chunk.len();
+        Some(chunk)
+    }
+
+    pub fn pop_front_chunk(&mut self) -> Option<Bytes> {
+        self.pop_front(usize::MAX)
+    }
+
     pub fn try_take_part(&mut self) -> Result<Option<DrainBuf<'_>>, Error> {
         let Some(len) = self.peek_next_part_len()? else {
             return Ok(None);
