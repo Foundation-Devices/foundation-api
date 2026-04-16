@@ -34,41 +34,41 @@ pub fn handle_xx1(
     crypto: &impl QlCrypto,
     message: &Xx1,
 ) -> Result<(), ReceiveError> {
-    if should_ignore_inbound(fsm, message) {
+    if should_ignore_inbound(fsm, crypto, message) {
         return Ok(());
     }
     if is_replayed_handshake_start(fsm, message.meta) {
         return Err(ReceiveError::Replay);
     }
     match fsm.state.armed_pairing_token {
-        Some(expected) if expected != message.header.pairing_token => {
-            return Err(ReceiveError::InvalidPairingToken {
-                expected,
-                actual: message.header.pairing_token,
+        Some(expected) if expected.id(crypto) != message.header.pairing_id => {
+            return Err(ReceiveError::InvalidPairingId {
+                expected: expected.id(crypto),
+                actual: message.header.pairing_id,
             });
         }
-        Some(_) => {}
+        Some(token) => {
+            reset_connected_session_if_needed(fsm);
+
+            let mut handshake = wire::XxHandshake::new_responder(
+                crypto,
+                fsm.identity.clone(),
+                token,
+                super::local_transport_params(fsm),
+            );
+            handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
+            let outbound = handshake.write_2(crypto, message.meta)?;
+            fsm.state.link = LinkState::XxResponder(XxResponderState {
+                handshake,
+                handshake_meta: message.meta,
+                deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
+            });
+            fsm.state.handshake = None;
+            enqueue_handshake(fsm, QlHandshakeRecord::Xx2(outbound));
+            Ok(())
+        }
         None => return Err(ReceiveError::NotPairingMode),
     }
-
-    reset_connected_session_if_needed(fsm);
-
-    let mut handshake = wire::XxHandshake::new_responder(
-        crypto,
-        fsm.identity.clone(),
-        message.header.pairing_token,
-        super::local_transport_params(fsm),
-    );
-    handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
-    let outbound = handshake.write_2(crypto, message.meta)?;
-    fsm.state.link = LinkState::XxResponder(XxResponderState {
-        handshake,
-        handshake_meta: message.meta,
-        deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
-    });
-    fsm.state.handshake = None;
-    enqueue_handshake(fsm, QlHandshakeRecord::Xx2(outbound));
-    Ok(())
 }
 
 pub fn handle_xx2(
@@ -158,12 +158,12 @@ pub fn disarm_pairing(fsm: &mut QlFsm) {
     }
 }
 
-pub fn should_ignore_inbound(fsm: &QlFsm, message: &Xx1) -> bool {
+pub fn should_ignore_inbound(fsm: &QlFsm, crypto: &impl QlCrypto, message: &Xx1) -> bool {
     match &fsm.state.link {
         LinkState::Idle | LinkState::Connected(_) => false,
         LinkState::IkInitiator(_) | LinkState::KkInitiator(_) | LinkState::XxResponder(_) => true,
         LinkState::XxInitiator(state) => {
-            if state.handshake.pairing_token() != message.header.pairing_token {
+            if state.handshake.pairing_id(crypto) != message.header.pairing_id {
                 return false;
             }
             super::local_start_wins(&state.initial_ephemeral, &message.ephemeral)

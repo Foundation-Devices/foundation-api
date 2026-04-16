@@ -136,7 +136,7 @@ fn inbound_xx1_rejects_when_not_in_pairing_mode() {
 }
 
 #[test]
-fn inbound_xx1_rejects_mismatched_pairing_token_with_expected_and_actual() {
+fn inbound_xx1_rejects_mismatched_pairing_id_with_expected_and_actual() {
     let mut harness = Harness::paired(QlFsmConfig::default(), false, false);
     let expected = pairing_token(4);
     let actual = pairing_token(7);
@@ -151,7 +151,10 @@ fn inbound_xx1_rejects_mismatched_pairing_token_with_expected_and_actual() {
 
     assert_eq!(
         err,
-        Err(ReceiveError::InvalidPairingToken { expected, actual })
+        Err(ReceiveError::InvalidPairingId {
+            expected: expected.id(&SoftwareCrypto),
+            actual: actual.id(&SoftwareCrypto),
+        })
     );
 }
 

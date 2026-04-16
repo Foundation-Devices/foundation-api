@@ -3,7 +3,7 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-use ql_wire::{PairingToken, WireError};
+use ql_wire::{PairingId, WireError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceiveError {
@@ -14,9 +14,9 @@ pub enum ReceiveError {
     InvalidXid,
     NoSession,
     NotPairingMode,
-    InvalidPairingToken {
-        expected: PairingToken,
-        actual: PairingToken,
+    InvalidPairingId {
+        expected: PairingId,
+        actual: PairingId,
     },
     Replay,
 }
@@ -31,11 +31,8 @@ impl Display for ReceiveError {
             Self::InvalidXid => f.write_str("invalid xid"),
             Self::NoSession => f.write_str("no active session"),
             Self::NotPairingMode => f.write_str("not in pairing mode"),
-            Self::InvalidPairingToken { expected, actual } => {
-                write!(
-                    f,
-                    "invalid pairing token: expected {expected}, actual {actual}"
-                )
+            Self::InvalidPairingId { expected, actual } => {
+                write!(f, "invalid pairing id: expected {expected}, actual {actual}")
             }
             Self::Replay => f.write_str("replay"),
         }
