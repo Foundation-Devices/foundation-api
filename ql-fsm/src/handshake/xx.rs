@@ -42,10 +42,10 @@ pub fn handle_xx1(
     }
     match fsm.state.armed_pairing_token {
         Some(expected) if expected.id(crypto) != message.header.pairing_id => {
-            return Err(ReceiveError::InvalidPairingId {
+            Err(ReceiveError::InvalidPairingId {
                 expected: expected.id(crypto),
                 actual: message.header.pairing_id,
-            });
+            })
         }
         Some(token) => {
             reset_connected_session_if_needed(fsm);
@@ -67,7 +67,7 @@ pub fn handle_xx1(
             enqueue_handshake(fsm, QlHandshakeRecord::Xx2(outbound));
             Ok(())
         }
-        None => return Err(ReceiveError::NotPairingMode),
+        None => Err(ReceiveError::NotPairingMode),
     }
 }
 

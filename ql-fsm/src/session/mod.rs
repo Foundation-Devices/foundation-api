@@ -80,7 +80,7 @@ pub enum SessionEvent {
     SessionClosed(SessionClose),
 }
 
-pub(crate) trait EventSink {
+pub trait EventSink {
     fn emit(&mut self, event: SessionEvent);
 }
 

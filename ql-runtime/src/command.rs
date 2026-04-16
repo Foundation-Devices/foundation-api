@@ -35,7 +35,6 @@ pub enum Command {
 }
 
 impl Command {
-    #[cfg(any(feature = "log", test))]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::BindPeer { .. } => "BindPeer",

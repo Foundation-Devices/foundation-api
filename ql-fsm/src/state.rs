@@ -41,6 +41,7 @@ impl SessionTransport {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum LinkState {
     Idle,
     IkInitiator(IkInitiatorState),

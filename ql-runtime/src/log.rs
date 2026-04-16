@@ -1,21 +1,17 @@
 #![allow(unused_imports, unused_macros)]
 
 #[cfg(any(feature = "log", test))]
-macro_rules! with_log {
-    ($($tt:tt)*) => {
-        $($tt)*
+macro_rules! log {
+    ($level:ident, $($arg:tt)*) => {
+        ::log::log!(::log::Level::$level, $($arg)*)
     };
 }
 
 #[cfg(not(any(feature = "log", test)))]
-macro_rules! with_log {
-    ($($tt:tt)*) => {};
-}
-
 macro_rules! log {
     ($level:ident, $($arg:tt)*) => {
-        $crate::log::with_log! {
-            ::log::log!(::log::Level::$level, $($arg)*)
+        if false {
+            let _ = format_args!($($arg)*);
         }
     };
 }
@@ -56,4 +52,3 @@ pub(crate) use info;
 pub(crate) use log;
 pub(crate) use trace;
 pub(crate) use warn_ as warn;
-pub(crate) use with_log;

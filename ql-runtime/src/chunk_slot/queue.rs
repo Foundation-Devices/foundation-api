@@ -3,6 +3,7 @@
 
 use core::mem::MaybeUninit;
 
+#[allow(clippy::wildcard_imports)]
 use super::sync::*;
 
 const LOCKED: usize = 1 << 0;
@@ -27,13 +28,14 @@ pub struct Single<T> {
     slot: UnsafeCell<MaybeUninit<T>>,
 }
 
+#[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T> Send for Single<T> {}
 unsafe impl<T> Sync for Single<T> {}
 
 impl<T> Single<T> {
     /// Creates a new single-element queue.
-    pub fn new() -> Single<T> {
-        Single {
+    pub fn new() -> Self {
+        Self {
             state: AtomicUsize::new(0),
             slot: UnsafeCell::new(MaybeUninit::uninit()),
         }

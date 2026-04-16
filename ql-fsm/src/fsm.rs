@@ -242,7 +242,7 @@ fn apply_session_closed(fsm: &mut QlFsm) {
     }
 }
 
-pub(super) fn deadline_after_secs(now_secs: u64, duration: Duration) -> u64 {
+pub fn deadline_after_secs(now_secs: u64, duration: Duration) -> u64 {
     now_secs.saturating_add(duration_to_secs(duration))
 }
 

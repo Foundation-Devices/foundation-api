@@ -178,6 +178,7 @@ where
 }
 
 impl DriverState {
+    #[allow(clippy::too_many_lines)]
     fn drive_command<P: QlPlatform>(&mut self, fsm: &mut QlFsm, command: Command, platform: &P) {
         match command {
             Command::BindPeer { peer } => {
@@ -339,8 +340,8 @@ impl DriverState {
                 Event::WritableClosed(frame) => {
                     self.handle_writable_closed(&frame);
                 }
-                Event::SessionClosed(_close) => {
-                    log::info!("session closed: frame={_close:?}");
+                Event::SessionClosed(close) => {
+                    log::info!("session closed: frame={close:?}");
                     for (_, mut stream) in self.streams.drain() {
                         stream.fail_all();
                     }
@@ -590,8 +591,10 @@ impl DriverState {
                 break;
             }
 
-            let _len = bytes.len();
-            log::trace!("writing stream bytes: stream_id={stream_id} len={_len}");
+            log::trace!(
+                "writing stream bytes: stream_id={stream_id} len={}",
+                bytes.len()
+            );
             let _ = writer.write(&mut bytes);
         }
 

@@ -104,7 +104,12 @@ struct TestInbound {
 }
 
 impl TestPlatform {
-    fn new() -> (Self, Receiver<Vec<u8>>, Sender<Vec<u8>>, Receiver<StatusEvent>) {
+    fn new() -> (
+        Self,
+        Receiver<Vec<u8>>,
+        Sender<Vec<u8>>,
+        Receiver<StatusEvent>,
+    ) {
         Self::new_inner(None, None, Duration::ZERO, None)
     }
 
@@ -118,19 +123,35 @@ impl TestPlatform {
         let (inbound_tx, inbound_rx) = async_channel::unbounded();
         let (platform, outbound_rx, inbound_messages_tx, status_rx) =
             Self::new_inner(Some(inbound_tx), None, Duration::ZERO, None);
-        (platform, outbound_rx, inbound_messages_tx, status_rx, inbound_rx)
+        (
+            platform,
+            outbound_rx,
+            inbound_messages_tx,
+            status_rx,
+            inbound_rx,
+        )
     }
 
     fn new_with_session_write_failure(
         fail_encrypted_write_at: usize,
-    ) -> (Self, Receiver<Vec<u8>>, Sender<Vec<u8>>, Receiver<StatusEvent>) {
+    ) -> (
+        Self,
+        Receiver<Vec<u8>>,
+        Sender<Vec<u8>>,
+        Receiver<StatusEvent>,
+    ) {
         Self::new_inner(None, Some(fail_encrypted_write_at), Duration::ZERO, None)
     }
 
     fn new_with_delayed_writes(
         delay: Duration,
         write_stats: WriteStats,
-    ) -> (Self, Receiver<Vec<u8>>, Sender<Vec<u8>>, Receiver<StatusEvent>) {
+    ) -> (
+        Self,
+        Receiver<Vec<u8>>,
+        Sender<Vec<u8>>,
+        Receiver<StatusEvent>,
+    ) {
         Self::new_inner(None, None, delay, Some(write_stats))
     }
 
@@ -139,7 +160,12 @@ impl TestPlatform {
         fail_encrypted_write_at: Option<usize>,
         write_delay: Duration,
         write_stats: Option<WriteStats>,
-    ) -> (Self, Receiver<Vec<u8>>, Sender<Vec<u8>>, Receiver<StatusEvent>) {
+    ) -> (
+        Self,
+        Receiver<Vec<u8>>,
+        Sender<Vec<u8>>,
+        Receiver<StatusEvent>,
+    ) {
         let (outbound, outbound_rx) = async_channel::unbounded();
         let (inbound_messages_tx, inbound_messages_rx) = async_channel::unbounded();
         let (status, status_rx) = async_channel::unbounded();
@@ -583,7 +609,7 @@ async fn run_local_test<F>(future: F)
 where
     F: Future<Output = ()>,
 {
-    run_local_test_timeout(Duration::from_secs(5), future).await
+    run_local_test_timeout(Duration::from_secs(5), future).await;
 }
 
 #[allow(clippy::future_not_send)]

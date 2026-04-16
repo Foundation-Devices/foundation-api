@@ -114,7 +114,7 @@ pub struct StreamOps<'a> {
     inner: session::StreamOps<'a, fsm::FsmEventEmitter<'a>>,
 }
 
-impl<'a> StreamOps<'a> {
+impl StreamOps<'_> {
     /// returns this stream's identifier
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()

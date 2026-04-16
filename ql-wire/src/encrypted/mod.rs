@@ -99,7 +99,7 @@ impl<B: BufView> WireEncode for SessionFrame<B> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum SessionFrameKind {
+pub enum SessionFrameKind {
     Ping = 1,
     Ack = 2,
     StreamData = 3,

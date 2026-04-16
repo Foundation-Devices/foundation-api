@@ -586,7 +586,7 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
             let mut reader = stream.reader;
-            while let Some(_) = next_chunk(&mut reader).await.unwrap() {}
+            while next_chunk(&mut reader).await.unwrap().is_some() {}
         });
 
         let recovery_links = links.clone();
@@ -640,7 +640,10 @@ async fn responder_drains_multiple_local_chunks_per_writable_wake() {
 
             let mut writer = inbound.writer;
             for _ in 0..chunk_count {
-                writer.write(Bytes::from(vec![0x5a; chunk_len])).await.unwrap();
+                writer
+                    .write(Bytes::from(vec![0x5a; chunk_len]))
+                    .await
+                    .unwrap();
             }
             writer.finish().await.unwrap();
         });
@@ -651,7 +654,11 @@ async fn responder_drains_multiple_local_chunks_per_writable_wake() {
             .open_stream(test_route_id())
             .await
             .unwrap();
-        stream.writer.write(Bytes::from_static(b"request")).await.unwrap();
+        stream
+            .writer
+            .write(Bytes::from_static(b"request"))
+            .await
+            .unwrap();
         stream.writer.finish().await.unwrap();
 
         let received = read_all(stream.reader).await.unwrap();

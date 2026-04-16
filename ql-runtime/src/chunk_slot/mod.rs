@@ -12,7 +12,7 @@ use self::queue::{PopError, PushError, Single};
 mod queue;
 mod sync;
 
-use sync::*;
+use sync::Arc;
 
 /// creates a single-chunk handoff pair
 /// receiver-side partial reads keep the remainder locally
