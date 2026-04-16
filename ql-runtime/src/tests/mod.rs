@@ -3,7 +3,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, Once,
     },
     task::{Context, Poll},
     time::Duration,
@@ -30,6 +30,17 @@ mod heartbeat;
 #[cfg(feature = "rpc")]
 mod rpc;
 mod stream;
+
+fn init_test_logger() {
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        let env = env_logger::Env::default().default_filter_or("ql_runtime=info");
+        let mut builder = env_logger::Builder::from_env(env);
+        builder.is_test(true);
+        let _ = builder.try_init();
+    });
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatusEvent {
@@ -580,6 +591,7 @@ async fn run_local_test_timeout<F>(duration: Duration, future: F)
 where
     F: Future<Output = ()>,
 {
+    init_test_logger();
     let local = LocalSet::new();
     let future = local.run_until(future);
     tokio::time::timeout(duration, future)

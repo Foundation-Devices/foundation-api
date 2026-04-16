@@ -1,13 +1,13 @@
 #![allow(unused_imports, unused_macros)]
 
-#[cfg(feature = "log")]
+#[cfg(any(feature = "log", test))]
 macro_rules! with_log {
     ($($tt:tt)*) => {
         $($tt)*
     };
 }
 
-#[cfg(not(feature = "log"))]
+#[cfg(not(any(feature = "log", test)))]
 macro_rules! with_log {
     ($($tt:tt)*) => {};
 }
