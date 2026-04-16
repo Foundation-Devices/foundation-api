@@ -285,6 +285,13 @@ impl QlFsm {
         fsm::next_deadline(self)
     }
 
+    pub fn has_shutdown_work(&self) -> bool {
+        self.state
+            .link
+            .connected()
+            .is_some_and(|state| state.session.has_shutdown_work())
+    }
+
     /// returns the next outbound record
     ///
     /// if `write_id` is `Some`, call `complete_write` exactly once

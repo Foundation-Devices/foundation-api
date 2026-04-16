@@ -53,7 +53,7 @@ impl<P: QlPlatform> Runtime<P> {
         let inbound = platform.inbound();
         let mut inbound = pin!(inbound);
         let recv_future = rx.recv();
-        let mut recv_future = pin!(recv_future);
+        let mut recv_future = Some(pin!(recv_future));
         let mut poll_cursor = 0usize;
 
         loop {
@@ -66,7 +66,7 @@ impl<P: QlPlatform> Runtime<P> {
             let step = poll_fn(|cx| {
                 next_step(
                     cx,
-                    recv_future.as_mut(),
+                    recv_future.as_mut().map(|future| future.as_mut()),
                     inbound.as_mut(),
                     timer.as_mut(),
                     &mut in_flight,
@@ -106,7 +106,8 @@ impl<P: QlPlatform> Runtime<P> {
                         "command channel closed: in_flight_writes={}",
                         in_flight.len()
                     );
-                    if in_flight.is_empty() {
+                    recv_future = None;
+                    if in_flight.is_empty() && !fsm.has_shutdown_work() {
                         break;
                     }
                 }
@@ -133,7 +134,7 @@ const STEP_COUNT: usize = 4;
 
 fn next_step<T, F, I>(
     cx: &mut Context<'_>,
-    mut recv_future: Pin<&mut Recv<'_, Command>>,
+    mut recv_future: Option<Pin<&mut Recv<'_, Command>>>,
     mut inbound: Pin<&mut I>,
     mut timer: Pin<&mut T>,
     in_flight: &mut [InFlightWrite<F>],
@@ -147,10 +148,12 @@ where
     for offset in 0..STEP_COUNT {
         let step = (start + offset) % STEP_COUNT;
         let poll = match step {
-            0 => recv_future
-                .as_mut()
-                .poll(cx)
-                .map(|res| res.map_or(DriverStep::Closed, DriverStep::Command)),
+            0 => recv_future.as_mut().map_or(Poll::Pending, |recv_future| {
+                recv_future
+                    .as_mut()
+                    .poll(cx)
+                    .map(|res| res.map_or(DriverStep::Closed, DriverStep::Command))
+            }),
             1 => inbound.as_mut().poll_recv(cx).map(DriverStep::Inbound),
             2 => {
                 for (index, write) in in_flight.iter_mut().enumerate() {

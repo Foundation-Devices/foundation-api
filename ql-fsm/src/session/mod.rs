@@ -350,6 +350,10 @@ impl SessionFsm {
         .min()
     }
 
+    pub fn has_shutdown_work(&self) -> bool {
+        self.state.ack_tracker.ack_deadline().is_some() || !self.state.tracked_records.is_empty()
+    }
+
     pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
         match &self.state.phase {
             SessionPhase::Closing(close) => {
