@@ -5,16 +5,12 @@ use std::{
 };
 
 use bytes::Bytes;
-use concurrent_queue::{ConcurrentQueue, PopError, PushError};
 use event_listener::{Event, EventListener};
 
-mod sync {
-    #[cfg(not(all(test, loom)))]
-    pub use std::sync::Arc;
+use self::queue::{PopError, PushError, Single};
 
-    #[cfg(all(test, loom))]
-    pub use loom::sync::Arc;
-}
+mod queue;
+mod sync;
 
 use sync::*;
 
@@ -22,7 +18,7 @@ use sync::*;
 /// receiver-side partial reads keep the remainder locally
 pub fn new() -> (ChunkSlotRx, ChunkSlotTx) {
     let shared = Arc::new(Shared {
-        queue: ConcurrentQueue::bounded(1),
+        queue: Single::new(),
         changed: Event::new(),
     });
 
@@ -45,7 +41,7 @@ pub struct ChunkSlotTx {
 }
 
 struct Shared {
-    queue: ConcurrentQueue<Bytes>,
+    queue: Single<Bytes>,
     changed: Event,
 }
 
@@ -319,8 +315,8 @@ mod tests {
 
         rx.close();
 
-        let error = tx.send(Bytes::from_static(b"abc")).await.unwrap_err();
-        assert_eq!(error.0, Bytes::from_static(b"abc"));
+        let err = tx.send(Bytes::from_static(b"abc")).await.unwrap_err();
+        assert_eq!(err.0, Bytes::from_static(b"abc"));
     }
 
     #[test]
@@ -357,8 +353,7 @@ mod loom_tests {
     }
 
     fn check_model(f: impl Fn() + Sync + Send + 'static) {
-        let mut builder = model::Builder::new();
-        builder.preemption_bound = Some(3);
+        let builder = model::Builder::new();
         builder.check(f);
     }
 
