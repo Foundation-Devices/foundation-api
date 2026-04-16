@@ -62,8 +62,7 @@ impl RpcHandle {
         rpc_subscription::encode_request::<M>(request, &mut payload);
         let response = self.start_request(M::ROUTE, payload).await?;
         Ok(Subscription {
-            stream: response,
-            reader: Some(rpc_subscription::ResponseReader::default()),
+            inner: rpc_subscription::SubscriptionCall::new(response),
         })
     }
 

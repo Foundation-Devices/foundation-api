@@ -4,17 +4,13 @@ use std::{
 };
 
 use futures_lite::{future::poll_fn, Stream};
-use ql_rpc::{
-    subscription::{ReadStep, Subscription as SubscriptionRpc},
-    Error,
-};
+use ql_rpc::subscription::Subscription as SubscriptionRpc;
 
 use super::RpcError;
 use crate::StreamReader;
 
 pub struct Subscription<M: SubscriptionRpc> {
-    pub(super) stream: StreamReader,
-    pub(super) reader: Option<ql_rpc::subscription::ResponseReader<M>>,
+    pub(super) inner: ql_rpc::subscription::SubscriptionCall<M, StreamReader>,
 }
 
 impl<M> Unpin for Subscription<M> where M: SubscriptionRpc {}
@@ -35,42 +31,9 @@ where
     type Item = Result<M::Event, RpcError<M::Error>>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-
-        loop {
-            let Some(reader) = this.reader.take() else {
-                return Poll::Ready(None);
-            };
-
-            match reader.advance() {
-                Ok(ReadStep::Item { value, next }) => {
-                    this.reader = Some(next);
-                    return Poll::Ready(Some(Ok(value)));
-                }
-                Ok(ReadStep::NeedMore(next)) => {
-                    this.reader = Some(next);
-                }
-                Err(error) => return Poll::Ready(Some(Err(error.into()))),
-            }
-
-            match this.stream.poll_read_chunk(cx) {
-                Poll::Ready(Ok(Some(chunk))) => {
-                    let reader = this.reader.take().expect("subscription reader is present");
-                    this.reader = Some(reader.push(chunk));
-                }
-                Poll::Ready(Ok(None)) => {
-                    let reader = this.reader.take().expect("subscription reader is present");
-                    if reader.is_empty() {
-                        return Poll::Ready(None);
-                    }
-                    return Poll::Ready(Some(Err(Error::Truncated.into())));
-                }
-                Poll::Ready(Err(error)) => {
-                    this.reader = None;
-                    return Poll::Ready(Some(Err(error.into())));
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
+        self.get_mut()
+            .inner
+            .poll_next_event(cx)
+            .map(|item| item.map(|result| Ok(result?)))
     }
 }
