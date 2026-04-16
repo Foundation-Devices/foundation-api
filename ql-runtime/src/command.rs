@@ -1,7 +1,7 @@
 use ql_fsm::NoSessionError;
 use ql_wire::{CloseTarget, PairingToken, PeerBundle, RouteId, StreamCloseCode, StreamId};
 
-use crate::{chunk_slot::ChunkSlotRx, StreamReader, QlStreamError};
+use crate::{chunk_slot::ChunkSlotRx, QlStreamError, StreamReader};
 
 pub enum RuntimeCommand {
     BindPeer {
@@ -36,6 +36,7 @@ pub enum RuntimeCommand {
 }
 
 impl RuntimeCommand {
+    #[cfg(feature = "log")]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::BindPeer { .. } => "BindPeer",
