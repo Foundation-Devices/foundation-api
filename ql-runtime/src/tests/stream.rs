@@ -440,7 +440,6 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
                 session_pending_ack_range_limit: 4 * 1024,
                 ..default_runtime_config().fsm
             },
-            stream_send_buffer_bytes: 4 * 1024 * 1024,
             ..default_runtime_config()
         };
         let (mut pair, links) = TestPair::new_with_controlled_links(
@@ -560,7 +559,6 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
                 session_pending_ack_range_limit: 4 * 1024,
                 ..default_runtime_config().fsm
             },
-            stream_send_buffer_bytes: 4 * 1024 * 1024,
             ..default_runtime_config()
         };
         let (mut pair, links) = TestPair::new_with_controlled_links(

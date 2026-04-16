@@ -21,7 +21,6 @@ use ql_wire::QlIdentity;
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
     pub fsm: QlFsmConfig,
-    pub stream_send_buffer_bytes: usize,
     pub max_concurrent_message_writes: usize,
 }
 
@@ -29,7 +28,6 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             fsm: QlFsmConfig::default(),
-            stream_send_buffer_bytes: 16 * 1024,
             max_concurrent_message_writes: 4,
         }
     }
