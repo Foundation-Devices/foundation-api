@@ -5,13 +5,13 @@ use ql_wire::{CloseTarget, StreamId};
 
 use crate::{
     chunk_slot::{ChunkSlotRx, ChunkSlotTx, TrySendError},
-    command::RuntimeCommand,
+    command::Command,
     QlStreamError,
 };
 
 pub struct DriverState {
     pub streams: HashMap<StreamId, DriverStreamIo>,
-    pub runtime_tx: async_channel::WeakSender<RuntimeCommand>,
+    pub runtime_tx: async_channel::WeakSender<Command>,
     pub max_concurrent_message_writes: usize,
 }
 

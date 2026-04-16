@@ -153,7 +153,7 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
 
     state.drive_command(
         &mut fsm,
-        RuntimeCommand::CloseStream {
+        Command::CloseStream {
             stream_id,
             target: CloseTarget::Origin,
             code: StreamCloseCode::CANCELLED,

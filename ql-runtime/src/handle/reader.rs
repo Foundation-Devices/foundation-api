@@ -8,7 +8,7 @@ use bytes::Bytes;
 use event_listener::EventListener;
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
-use crate::{chunk_slot::ChunkSlotRx, command::RuntimeCommand, log, QlStreamError, RuntimeHandle};
+use crate::{chunk_slot::ChunkSlotRx, command::Command, log, QlStreamError, RuntimeHandle};
 
 pub struct StreamReader {
     stream_id: StreamId,
@@ -79,7 +79,7 @@ impl StreamReader {
                         self.target,
                         bytes.len()
                     );
-                    self.handle.try_send(RuntimeCommand::PollInbound {
+                    self.handle.try_send(Command::PollInbound {
                         stream_id: self.stream_id,
                     });
                     return Poll::Ready(Ok(Some(bytes)));
@@ -165,7 +165,7 @@ impl StreamReader {
         self.reader.take();
         self.wait = None;
         self.terminal = TerminalState::Delivered;
-        self.handle.try_send(RuntimeCommand::CloseStream {
+        self.handle.try_send(Command::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
             code,
@@ -184,7 +184,7 @@ impl Drop for StreamReader {
             self.target,
             StreamCloseCode::CANCELLED
         );
-        self.handle.try_send(RuntimeCommand::CloseStream {
+        self.handle.try_send(Command::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
             code: StreamCloseCode::CANCELLED,

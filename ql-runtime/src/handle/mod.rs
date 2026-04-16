@@ -5,7 +5,7 @@ use ql_fsm::NoSessionError;
 use ql_wire::{CloseTarget, PairingToken, PeerBundle, RouteId, StreamId};
 
 pub use self::{reader::*, writer::*};
-use crate::{chunk_slot, command::RuntimeCommand};
+use crate::{chunk_slot, command::Command};
 
 #[derive(Debug)]
 pub struct QlStream {
@@ -17,33 +17,33 @@ pub struct QlStream {
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    tx: async_channel::Sender<RuntimeCommand>,
+    tx: async_channel::Sender<Command>,
 }
 
 impl RuntimeHandle {
     /// binds the remote peer
     pub fn bind_peer(&self, peer: PeerBundle) {
-        self.send(RuntimeCommand::BindPeer { peer });
+        self.send(Command::BindPeer { peer });
     }
 
     /// starts an IK handshake with the bound peer
     pub fn connect(&self) {
-        self.send(RuntimeCommand::Connect);
+        self.send(Command::Connect);
     }
 
     /// arms acceptance of inbound xx pairings for a single token
     pub fn arm_pairing(&self, token: PairingToken) {
-        self.send(RuntimeCommand::ArmPairing { token });
+        self.send(Command::ArmPairing { token });
     }
 
     /// disarms inbound xx pairing
     pub fn disarm_pairing(&self) {
-        self.send(RuntimeCommand::DisarmPairing);
+        self.send(Command::DisarmPairing);
     }
 
     /// starts an outbound xx handshake using the supplied pairing token
     pub fn start_pairing(&self, token: PairingToken) {
-        self.send(RuntimeCommand::StartPairing { token });
+        self.send(Command::StartPairing { token });
     }
 
     /// opens a new stream on the active encrypted session
@@ -52,7 +52,7 @@ impl RuntimeHandle {
         let (request_terminal_tx, request_terminal_rx) = oneshot::channel();
         let (start_tx, start_rx) = oneshot::channel();
 
-        self.send(RuntimeCommand::OpenStream {
+        self.send(Command::OpenStream {
             route_id,
             request_reader,
             request_terminal: request_terminal_tx,
@@ -85,17 +85,17 @@ impl RuntimeHandle {
 }
 
 impl RuntimeHandle {
-    pub(crate) fn new(tx: async_channel::Sender<RuntimeCommand>) -> Self {
+    pub(crate) fn new(tx: async_channel::Sender<Command>) -> Self {
         Self { tx }
     }
 
     #[inline]
     #[track_caller]
-    pub(crate) fn send(&self, cmd: RuntimeCommand) {
+    pub(crate) fn send(&self, cmd: Command) {
         self.tx.try_send(cmd).expect("runtime is alive");
     }
 
-    pub(crate) fn try_send(&self, cmd: RuntimeCommand) -> bool {
+    pub(crate) fn try_send(&self, cmd: Command) -> bool {
         self.tx.try_send(cmd).is_ok()
     }
 }

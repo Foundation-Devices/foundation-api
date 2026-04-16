@@ -39,8 +39,8 @@ pub struct Runtime<P> {
     identity: QlIdentity,
     platform: P,
     config: RuntimeConfig,
-    rx: async_channel::Receiver<command::RuntimeCommand>,
-    tx: async_channel::WeakSender<command::RuntimeCommand>,
+    rx: async_channel::Receiver<command::Command>,
+    tx: async_channel::WeakSender<command::Command>,
 }
 
 pub fn new_runtime<P>(

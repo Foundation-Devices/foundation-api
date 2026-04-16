@@ -10,7 +10,7 @@ use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
 use crate::{
     chunk_slot::{ChunkSlotTx, SendClosed},
-    command::RuntimeCommand,
+    command::Command,
     log, QlStreamError, RuntimeHandle,
 };
 
@@ -143,7 +143,7 @@ impl StreamWriter {
     }
 
     fn poll_runtime(&self) {
-        self.handle.try_send(RuntimeCommand::PollStream {
+        self.handle.try_send(Command::PollStream {
             stream_id: self.stream_id,
         });
     }
@@ -175,7 +175,7 @@ impl StreamWriter {
             code
         );
         self.wait = None;
-        self.handle.try_send(RuntimeCommand::CloseStream {
+        self.handle.try_send(Command::CloseStream {
             stream_id: self.stream_id,
             target: self.target,
             code,

@@ -3,7 +3,7 @@ use ql_wire::{CloseTarget, PairingToken, PeerBundle, RouteId, StreamCloseCode, S
 
 use crate::{chunk_slot::ChunkSlotRx, QlStreamError, StreamReader};
 
-pub enum RuntimeCommand {
+pub enum Command {
     BindPeer {
         peer: PeerBundle,
     },
@@ -34,7 +34,7 @@ pub enum RuntimeCommand {
     },
 }
 
-impl RuntimeCommand {
+impl Command {
     #[cfg(feature = "log")]
     pub fn kind(&self) -> &'static str {
         match self {

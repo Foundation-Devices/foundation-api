@@ -21,7 +21,7 @@ use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
     chunk_slot,
-    command::RuntimeCommand,
+    command::Command,
     handle::{QlStream, StreamReader, StreamWriter},
     log,
     platform::{QlInbound, QlPlatform, QlTimer},
@@ -122,7 +122,7 @@ struct InFlightWrite<F> {
 }
 
 enum DriverStep {
-    Command(RuntimeCommand),
+    Command(Command),
     Inbound(Vec<u8>),
     WriteCompleted { index: usize, success: bool },
     TimerExpired,
@@ -133,7 +133,7 @@ const STEP_COUNT: usize = 4;
 
 fn next_step<T, F, I>(
     cx: &mut Context<'_>,
-    mut recv_future: Pin<&mut Recv<'_, RuntimeCommand>>,
+    mut recv_future: Pin<&mut Recv<'_, Command>>,
     mut inbound: Pin<&mut I>,
     mut timer: Pin<&mut T>,
     in_flight: &mut [InFlightWrite<F>],
@@ -160,7 +160,10 @@ where
                 }
                 Poll::Pending
             }
-            3 => timer.as_mut().poll_wait(cx).map(|()| DriverStep::TimerExpired),
+            3 => timer
+                .as_mut()
+                .poll_wait(cx)
+                .map(|()| DriverStep::TimerExpired),
             _ => unreachable!(),
         };
         if poll.is_ready() {
@@ -172,36 +175,31 @@ where
 }
 
 impl DriverState {
-    fn drive_command<P: QlPlatform>(
-        &mut self,
-        fsm: &mut QlFsm,
-        command: RuntimeCommand,
-        platform: &P,
-    ) {
+    fn drive_command<P: QlPlatform>(&mut self, fsm: &mut QlFsm, command: Command, platform: &P) {
         match command {
-            RuntimeCommand::BindPeer { peer } => {
+            Command::BindPeer { peer } => {
                 log::info!("binding peer");
                 fsm.bind_peer(peer);
             }
-            RuntimeCommand::Connect => {
+            Command::Connect => {
                 log::info!("starting IK connect");
                 if fsm.connect_ik(now(), platform).is_err() {
                     log::warn!("IK connect ignored: no bound peer");
                 }
             }
-            RuntimeCommand::ArmPairing { token } => {
+            Command::ArmPairing { token } => {
                 log::info!("arming inbound pairing");
                 fsm.arm_pairing(token);
             }
-            RuntimeCommand::DisarmPairing => {
+            Command::DisarmPairing => {
                 log::info!("disarming inbound pairing");
                 fsm.disarm_pairing();
             }
-            RuntimeCommand::StartPairing { token } => {
+            Command::StartPairing { token } => {
                 log::info!(" starting XX pairing");
                 fsm.connect_xx(now(), token, platform);
             }
-            RuntimeCommand::OpenStream {
+            Command::OpenStream {
                 route_id,
                 request_reader,
                 request_terminal,
@@ -254,15 +252,15 @@ impl DriverState {
                 drop(stream_ops);
                 self.poll_stream(fsm, stream_id);
             }
-            RuntimeCommand::PollInbound { stream_id } => {
+            Command::PollInbound { stream_id } => {
                 log::trace!("poll inbound requested: stream_id={stream_id}");
                 self.handle_inbound_readable(fsm, stream_id);
             }
-            RuntimeCommand::PollStream { stream_id } => {
+            Command::PollStream { stream_id } => {
                 log::trace!("poll stream requested: stream_id={stream_id}");
                 self.poll_stream(fsm, stream_id);
             }
-            RuntimeCommand::CloseStream {
+            Command::CloseStream {
                 stream_id,
                 target,
                 code,
