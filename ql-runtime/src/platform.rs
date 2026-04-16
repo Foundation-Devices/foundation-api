@@ -10,8 +10,6 @@ use ql_wire::{PeerBundle, QlCrypto, XID};
 
 use crate::QlStream;
 
-pub type PlatformFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
-
 pub trait QlTimer {
     fn set_deadline(self: Pin<&mut Self>, deadline: Option<Instant>);
     fn poll_wait(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()>;

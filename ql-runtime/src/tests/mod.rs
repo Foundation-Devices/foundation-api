@@ -20,9 +20,8 @@ use ql_wire::{
 use tokio::{task::LocalSet, time::Sleep};
 
 use crate::{
-    new_runtime,
-    platform::{PlatformFuture, QlTimer},
-    NoSessionError, QlFsmConfig, QlStream, QlStreamError, RuntimeConfig, RuntimeHandle,
+    new_runtime, platform::QlTimer, NoSessionError, QlFsmConfig, QlStream, QlStreamError,
+    RuntimeConfig, RuntimeHandle,
 };
 
 mod handshake;
@@ -401,7 +400,7 @@ impl QlKem for TestPlatform {
 
 impl crate::platform::QlPlatform for TestPlatform {
     type Timer = TokioTimer;
-    type WriteMessageFut<'a> = PlatformFuture<'a, bool>;
+    type WriteMessageFut<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
     type Inbound = TestInbound;
 
     fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_> {
@@ -692,20 +691,14 @@ fn default_runtime_config() -> RuntimeConfig {
     }
 }
 
-// runtime is send, though the Runtime::run future itself is not
+// runtime is send, if platform is send
 #[test]
 fn runtime_is_send() {
     let config = default_runtime_config();
-    let identity_a = test_identity(&SoftwareCrypto);
-    let (platform_a, _, _, _) = TestPlatform::new();
-    let (runtime_a, _handle) = new_runtime(identity_a, platform_a, config);
-    std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap()
-            .block_on(runtime_a.run());
-    });
+    let identity = test_identity(&SoftwareCrypto);
+    let (platform, _, _, _) = TestPlatform::new();
+    let (runtime, _handle) = new_runtime(identity, platform, config);
+    let _run: Box<dyn Future<Output = ()> + Send> = Box::new(runtime.run());
 }
 
 #[test]
