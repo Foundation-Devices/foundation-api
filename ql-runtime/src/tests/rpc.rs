@@ -8,7 +8,9 @@ use std::{
 
 use bytes::Bytes;
 use futures_lite::StreamExt;
-use ql_rpc::{Response, RouteId, StreamCloseCode, SubscriptionResponder};
+use ql_rpc::{
+    DownloadResponder, DownloadWriter, Response, RouteId, StreamCloseCode, SubscriptionResponder,
+};
 use ql_wire::RouteId as WireRouteId;
 
 use super::*;
@@ -42,6 +44,15 @@ impl ql_rpc::request_with_progress::RequestWithProgress for Download {
     type Request = Vec<u8>;
     type Progress = Vec<u8>;
     type Response = Vec<u8>;
+}
+
+struct BlobDownload;
+
+impl ql_rpc::download::Download for BlobDownload {
+    const ROUTE: RouteId = RouteId::from_u32(54);
+    type Error = core::convert::Infallible;
+    type Request = Vec<u8>;
+    type ResponseHeader = Vec<u8>;
 }
 
 fn assert_send<T: Send>(value: T) -> T {
@@ -379,12 +390,72 @@ async fn rpc_request_with_progress_supports_progress_then_await() {
     .await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn rpc_router_handles_download() {
+    #[derive(Clone)]
+    struct RouterState {
+        seen: Rc<RefCell<Vec<Vec<u8>>>>,
+    }
+
+    impl crate::rpc::DownloadHandler<BlobDownload, QlStream> for RouterState {
+        fn handle(
+            self,
+            request: Vec<u8>,
+            responder: DownloadResponder<Vec<u8>, StreamWriter>,
+        ) {
+            let seen = self.seen.clone();
+            tokio::task::spawn_local(async move {
+                seen.borrow_mut().push(request);
+                let mut writer: DownloadWriter<StreamWriter> =
+                    responder.respond(b"image/png".to_vec()).await.unwrap();
+                writer.send(Bytes::from_static(b"abc")).await.unwrap();
+                writer.send(Bytes::from_static(b"def")).await.unwrap();
+                writer.finish().await.unwrap();
+            });
+        }
+    }
+
+    run_local_test(async {
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+
+        let router =
+            ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(crate::rpc::LocalSpawn)
+                .download::<BlobDownload>()
+                .build(RouterState { seen: seen.clone() });
+
+        let responder = tokio::task::spawn_local(async move {
+            let inbound = inbound_b.recv().await.unwrap();
+            if let Some((_, fut)) = router.handle(inbound) {
+                fut.await;
+            }
+        });
+
+        let rpc = pair.side_mut(Side::A).handle.rpc();
+        let download = rpc.download::<BlobDownload>(&b"logo".to_vec()).await.unwrap();
+        let (header, mut reader) = download.into_reader().await.unwrap();
+        assert_eq!(header, b"image/png".to_vec());
+        assert_eq!(reader.read_chunk().await.unwrap(), Some(Bytes::from_static(b"abc")));
+        assert_eq!(reader.read_chunk().await.unwrap(), Some(Bytes::from_static(b"def")));
+        assert_eq!(reader.read_chunk().await.unwrap(), None);
+        assert_eq!(seen.borrow().as_slice(), &[b"logo".to_vec()]);
+
+        tokio::time::timeout(Duration::from_secs(2), responder)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
+
 async fn read_rpc_value<T>(mut reader: crate::StreamReader) -> T
 where
     T: ql_rpc::RpcCodec,
     T::Error: std::fmt::Debug,
 {
-    let mut value_reader = ql_rpc::ValueReader::<T>::new();
+    let mut value_reader = ql_rpc::ValueReader::<T>::default();
 
     loop {
         match value_reader.advance().unwrap() {

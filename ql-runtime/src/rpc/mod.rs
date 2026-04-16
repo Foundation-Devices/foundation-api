@@ -1,4 +1,5 @@
 mod adapter;
+mod download;
 mod error;
 mod request_with_progress;
 mod subscription;
@@ -7,6 +8,7 @@ use std::future::poll_fn;
 
 use bytes::Bytes;
 use ql_rpc::{
+    download::{self as rpc_download, Download as DownloadRpc},
     notification::{self, Notification},
     request::{self, Request as RequestRpc},
     request_with_progress::{self as rpc_request_with_progress, RequestWithProgress},
@@ -14,7 +16,7 @@ use ql_rpc::{
     Error, ReadValueStep, RpcCodec, ValueReader,
 };
 
-pub use self::{adapter::*, error::*, request_with_progress::*, subscription::*};
+pub use self::{adapter::*, download::*, error::*, request_with_progress::*, subscription::*};
 use crate::{StreamReader, RuntimeHandle};
 
 #[derive(Clone)]
@@ -61,7 +63,23 @@ impl RpcHandle {
         let response = self.start_request(M::ROUTE, payload).await?;
         Ok(Subscription {
             stream: response,
-            reader: Some(rpc_subscription::ResponseReader::new()),
+            reader: Some(rpc_subscription::ResponseReader::default()),
+        })
+    }
+
+    pub async fn download<M>(
+        &self,
+        request: &M::Request,
+    ) -> Result<DownloadCall<M>, RpcError<M::Error>>
+    where
+        M: DownloadRpc,
+    {
+        let mut payload = Vec::new();
+        rpc_download::encode_request::<M>(request, &mut payload);
+        let response = self.start_request(M::ROUTE, payload).await?;
+        Ok(DownloadCall {
+            stream: response,
+            reader: Some(rpc_download::ResponseHeaderReader::default()),
         })
     }
 
@@ -77,7 +95,7 @@ impl RpcHandle {
         let response = self.start_request(M::ROUTE, payload).await?;
         Ok(ProgressCall {
             stream: response,
-            reader: Some(rpc_request_with_progress::ResponseReader::new()),
+            reader: Some(rpc_request_with_progress::ResponseReader::default()),
             terminal: None,
         })
     }
@@ -101,7 +119,7 @@ async fn read_value<T>(mut reader: StreamReader) -> Result<T, RpcError<T::Error>
 where
     T: RpcCodec,
 {
-    let mut value_reader = ValueReader::<T>::new();
+    let mut value_reader = ValueReader::<T>::default();
 
     loop {
         match value_reader.advance().map_err(RpcError::from)? {
