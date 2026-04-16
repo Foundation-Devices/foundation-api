@@ -538,8 +538,7 @@ async fn run_local_test<F>(future: F)
 where
     F: Future<Output = ()>,
 {
-    let local = LocalSet::new();
-    local.run_until(future).await;
+    run_local_test_timeout(Duration::from_secs(5), future).await
 }
 
 #[allow(clippy::future_not_send)]
@@ -547,7 +546,9 @@ async fn run_local_test_timeout<F>(duration: Duration, future: F)
 where
     F: Future<Output = ()>,
 {
-    tokio::time::timeout(duration, run_local_test(future))
+    let local = LocalSet::new();
+    let future = local.run_until(future);
+    tokio::time::timeout(duration, future)
         .await
         .unwrap_or_else(|_| panic!("local runtime test exceeded {duration:?}"));
 }
