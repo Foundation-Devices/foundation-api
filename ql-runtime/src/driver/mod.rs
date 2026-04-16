@@ -324,7 +324,7 @@ impl DriverState {
                 }
                 Event::Finished(stream_id) => {
                     log::info!("peer finished stream writes: stream_id={stream_id}");
-                    self.handle_inbound_finished(fsm, stream_id);
+                    self.handle_inbound_finished(stream_id);
                 }
                 Event::OutboundFinished(stream_id) => {
                     log::info!("outbound finish acknowledged: stream_id={stream_id}");
@@ -455,35 +455,15 @@ impl DriverState {
         }
 
         drop(stream_ops);
-        self.finish_inbound_if_ready(fsm, stream_id);
     }
 
-    fn handle_inbound_finished(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
+    fn handle_inbound_finished(&mut self, stream_id: StreamId) {
         log::info!("inbound finished event: stream_id={stream_id}");
-        let Some(stream) = self.streams.get_mut(&stream_id) else {
-            return;
-        };
-        stream.inbound_queue_finish();
-        self.finish_inbound_if_ready(fsm, stream_id);
-    }
-
-    fn finish_inbound_if_ready(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
-        if let Ok(stream_ops) = fsm.stream(stream_id) {
-            if stream_ops.readable_bytes() != 0 {
-                return;
-            }
-        }
-
         let Entry::Occupied(mut entry) = self.streams.entry(stream_id) else {
             return;
         };
-        let stream = entry.get_mut();
-        if !stream.inbound_finish_pending() {
-            return;
-        }
-
         log::info!("delivering clean inbound finish: stream_id={stream_id}");
-        stream.inbound_finish();
+        entry.get_mut().inbound_finish();
         Self::try_reap_stream(entry);
     }
 

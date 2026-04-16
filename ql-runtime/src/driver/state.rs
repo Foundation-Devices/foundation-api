@@ -135,18 +135,6 @@ impl DriverStreamIo {
             }
         }
     }
-
-    pub fn inbound_queue_finish(&mut self) {
-        if let Some(inbound) = self.inbound.as_mut() {
-            inbound.finish_pending = true;
-        }
-    }
-
-    pub fn inbound_finish_pending(&self) -> bool {
-        self.inbound
-            .as_ref()
-            .is_some_and(|inbound| inbound.finish_pending)
-    }
 }
 
 pub struct OutboundIo {
@@ -168,7 +156,6 @@ impl OutboundIo {
 pub struct InboundIo {
     writer: ChunkSlotTx,
     terminal: Option<oneshot::Sender<Result<(), QlStreamError>>>,
-    finish_pending: bool,
 }
 
 pub enum InboundWriteResult {
@@ -182,7 +169,6 @@ impl InboundIo {
         Self {
             writer,
             terminal: Some(terminal),
-            finish_pending: false,
         }
     }
 }
