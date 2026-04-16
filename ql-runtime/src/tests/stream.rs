@@ -623,3 +623,44 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn responder_drains_multiple_local_chunks_per_writable_wake() {
+    run_local_test(async {
+        let chunk_len = 4104usize;
+        let chunk_count = 5usize;
+        let expected = vec![0x5a; chunk_len * chunk_count];
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
+
+        let responder = tokio::task::spawn_local(async move {
+            let inbound = inbound_b.recv().await.unwrap();
+            let _ = read_all(inbound.reader).await.unwrap();
+
+            let mut writer = inbound.writer;
+            for _ in 0..chunk_count {
+                writer.write(Bytes::from(vec![0x5a; chunk_len])).await.unwrap();
+            }
+            writer.finish().await.unwrap();
+        });
+
+        let mut stream = pair
+            .side(Side::A)
+            .handle
+            .open_stream(test_route_id())
+            .await
+            .unwrap();
+        stream.writer.write(Bytes::from_static(b"request")).await.unwrap();
+        stream.writer.finish().await.unwrap();
+
+        let received = read_all(stream.reader).await.unwrap();
+        assert_eq!(received, expected);
+
+        tokio::time::timeout(Duration::from_secs(2), responder)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
