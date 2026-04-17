@@ -64,24 +64,15 @@ impl<M: Progress> ResponseReader<M> {
     }
 }
 
-pub fn encode_request<M: Progress>(
-    request: &M::Request,
-    out: &mut (impl BufMut + AsMut<[u8]>),
-) {
+pub fn encode_request<M: Progress>(request: &M::Request, out: &mut (impl BufMut + AsMut<[u8]>)) {
     codec::encode_value_part(request, out)
 }
 
-pub fn encode_progress<M: Progress>(
-    progress: &M::Progress,
-    out: &mut (impl BufMut + AsMut<[u8]>),
-) {
+pub fn encode_progress<M: Progress>(progress: &M::Progress, out: &mut (impl BufMut + AsMut<[u8]>)) {
     encode_tagged_value_part(FrameKind::Progress, progress, out)
 }
 
-pub fn encode_response<M: Progress>(
-    response: &M::Response,
-    out: &mut (impl BufMut + AsMut<[u8]>),
-) {
+pub fn encode_response<M: Progress>(response: &M::Response, out: &mut (impl BufMut + AsMut<[u8]>)) {
     encode_tagged_value_part(FrameKind::Response, response, out)
 }
 

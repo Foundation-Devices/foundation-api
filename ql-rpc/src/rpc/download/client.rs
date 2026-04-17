@@ -5,8 +5,10 @@ use std::{
 
 use bytes::Bytes;
 
-use crate::{CallError, ChunkQueue, RpcRead};
-use crate::download::{Download, ReadStep, ResponseHeaderReader};
+use crate::{
+    download::{Download, ReadStep, ResponseHeaderReader},
+    CallError, ChunkQueue, RpcRead,
+};
 
 pub struct DownloadCall<M, R>
 where

@@ -5,15 +5,27 @@ use super::{
     Spawner,
 };
 use crate::{
-    download::Download as DownloadRpc,
-    download::server::{handle_download_inner, DownloadHandler},
-    notification::Notification as NotificationRpc,
-    notification::server::{NotificationHandler, handle_notification_inner},
-    progress::Progress as ProgressRpc,
-    progress::server::{ProgressHandler, handle_progress_inner},
-    request::Request as RequestRpc, subscription::Subscription as SubscriptionRpc, RouteId,
-    request::server::{handle_request_inner, RequestHandler},
-    subscription::server::{handle_subscription_inner, SubscriptionHandler},
+    download::{
+        server::{handle_download_inner, DownloadHandler},
+        Download as DownloadRpc,
+    },
+    notification::{
+        server::{handle_notification_inner, NotificationHandler},
+        Notification as NotificationRpc,
+    },
+    progress::{
+        server::{handle_progress_inner, ProgressHandler},
+        Progress as ProgressRpc,
+    },
+    request::{
+        server::{handle_request_inner, RequestHandler},
+        Request as RequestRpc,
+    },
+    subscription::{
+        server::{handle_subscription_inner, SubscriptionHandler},
+        Subscription as SubscriptionRpc,
+    },
+    RouteId,
 };
 
 pub struct RouterBuilder<S, St, Sp>
@@ -128,7 +140,9 @@ where
     {
         self.add_route(M::ROUTE, |spawner, state, config, stream| {
             let (reader, writer) = stream.split();
-            spawner.spawn(handle_progress_inner::<S, M, St>(state, config, reader, writer))
+            spawner.spawn(handle_progress_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
         })
     }
 }
@@ -211,7 +225,9 @@ where
     {
         self.add_route(M::ROUTE, |spawner, state, config, stream| {
             let (reader, writer) = stream.split();
-            spawner.spawn(handle_progress_inner::<S, M, St>(state, config, reader, writer))
+            spawner.spawn(handle_progress_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
         })
     }
 }

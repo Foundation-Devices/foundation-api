@@ -1,15 +1,12 @@
 use bytes::BufMut;
 
-use crate::{CallError, ChunkQueue, RpcCodec, RpcRead, read_bytes, request::Request};
+use crate::{read_bytes, request::Request, CallError, ChunkQueue, RpcCodec, RpcRead};
 
 pub fn encode_request<M: Request>(request: &M::Request, out: &mut (impl BufMut + AsMut<[u8]>)) {
     request.encode_value(out)
 }
 
-pub fn encode_response<M: Request>(
-    response: &M::Response,
-    out: &mut (impl BufMut + AsMut<[u8]>),
-) {
+pub fn encode_response<M: Request>(response: &M::Response, out: &mut (impl BufMut + AsMut<[u8]>)) {
     response.encode_value(out)
 }
 

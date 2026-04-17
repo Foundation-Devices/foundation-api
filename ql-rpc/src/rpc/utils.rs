@@ -49,7 +49,10 @@ where
 }
 
 /// reads one eof-delimited value up to the configured request limit
-pub(crate) async fn read_eof_request<T, R>(reader: &mut R, config: RouterConfig) -> Result<T, R::Error>
+pub(crate) async fn read_eof_request<T, R>(
+    reader: &mut R,
+    config: RouterConfig,
+) -> Result<T, R::Error>
 where
     T: RpcCodec,
     R: RpcRead,

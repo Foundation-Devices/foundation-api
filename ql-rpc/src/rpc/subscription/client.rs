@@ -3,8 +3,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{CallError, RpcRead};
-use crate::subscription::{ReadStep, ResponseReader, Subscription};
+use crate::{
+    subscription::{ReadStep, ResponseReader, Subscription},
+    CallError, RpcRead,
+};
 
 pub struct SubscriptionCall<M, R>
 where

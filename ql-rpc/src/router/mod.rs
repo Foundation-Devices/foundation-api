@@ -6,17 +6,15 @@ mod builder;
 mod config;
 mod mode;
 
-pub use self::{
-    builder::RouterBuilder,
-    config::RouterConfig,
-    mode::*,
-};
-pub use crate::download::{DownloadHandler, DownloadResponder, DownloadWriter};
-pub use crate::notification::NotificationHandler;
-pub use crate::progress::{ProgressHandler, ProgressResponder};
-pub use crate::request::{RequestHandler, Response};
-pub use crate::subscription::{SubscriptionHandler, SubscriptionResponder};
+pub use self::{builder::RouterBuilder, config::RouterConfig, mode::*};
 use crate::{close_stream, RpcStream};
+pub use crate::{
+    download::{DownloadHandler, DownloadResponder, DownloadWriter},
+    notification::NotificationHandler,
+    progress::{ProgressHandler, ProgressResponder},
+    request::{RequestHandler, Response},
+    subscription::{SubscriptionHandler, SubscriptionResponder},
+};
 
 pub struct Router<S, St, Sp>
 where
