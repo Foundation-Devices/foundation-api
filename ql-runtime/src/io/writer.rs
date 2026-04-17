@@ -9,7 +9,7 @@ use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
     queue::{PopError, PushError},
-    shared::{StreamShared, WriterItem},
+    shared::{Item, StreamShared, WriterShared},
     sync::Arc,
 };
 use crate::{command::Command, log, QlStreamError, RuntimeHandle};
@@ -17,7 +17,7 @@ use crate::{command::Command, log, QlStreamError, RuntimeHandle};
 pub struct StreamWriter {
     shared: Arc<StreamShared>,
     target: CloseTarget,
-    wait: Option<EventListener>,
+    listener: Option<EventListener>,
     open: bool,
     terminal: WriterTerminalState,
     handle: RuntimeHandle,
@@ -41,15 +41,11 @@ impl std::fmt::Debug for StreamWriter {
 }
 
 impl StreamWriter {
-    pub(crate) fn new(
-        shared: Arc<StreamShared>,
-        target: CloseTarget,
-        handle: RuntimeHandle,
-    ) -> Self {
+    pub fn new(shared: Arc<StreamShared>, target: CloseTarget, handle: RuntimeHandle) -> Self {
         Self {
             shared,
             target,
-            wait: None,
+            listener: None,
             open: true,
             terminal: WriterTerminalState::Pending,
             handle,
@@ -77,14 +73,14 @@ impl StreamWriter {
                         self.shared.stream_id,
                         self.target
                     );
-                    self.wait = None;
+                    self.listener = None;
                     self.poll_runtime();
                     return Poll::Ready(Ok(()));
                 }
                 Err(PushError::Closed(chunk)) => {
                     *bytes = chunk;
                     self.open = false;
-                    self.wait = None;
+                    self.listener = None;
                     return self.poll_terminal(cx);
                 }
                 Err(PushError::Full(chunk)) => {
@@ -92,9 +88,11 @@ impl StreamWriter {
                 }
             }
 
-            let active_listener = self.wait.get_or_insert_with(|| self.shared.writer.listen());
+            let active_listener = self
+                .listener
+                .get_or_insert_with(|| self.shared.writer.listen());
             match std::pin::Pin::new(active_listener).poll(cx) {
-                Poll::Ready(()) => self.wait = None,
+                Poll::Ready(()) => self.listener = None,
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -115,7 +113,7 @@ impl StreamWriter {
             self.target
         );
         self.open = false;
-        self.wait = None;
+        self.listener = None;
         self.shared.writer.request_finish();
         self.poll_runtime();
     }
@@ -149,18 +147,19 @@ impl StreamWriter {
         }
 
         loop {
-            if self.shared.writer.terminal_ready() {
-                if self.shared.writer.terminal_ok() {
+            let state = self.shared.writer.load_state();
+            if WriterShared::terminal_ready(state) {
+                if WriterShared::terminal_ok(state) {
                     self.terminal = WriterTerminalState::Terminal(Ok(()));
                     return Poll::Ready(Ok(()));
                 }
 
                 match self.shared.writer.pop() {
-                    Ok(WriterItem::Error(error)) => {
+                    Ok(Item::Error(error)) => {
                         self.terminal = WriterTerminalState::Terminal(Err(error.clone()));
                         return Poll::Ready(Err(error));
                     }
-                    Ok(WriterItem::Chunk(_)) => {
+                    Ok(Item::Chunk(_)) => {
                         panic!("writer terminal phase contained chunk data")
                     }
                     Err(PopError::Empty) => {}
@@ -168,9 +167,11 @@ impl StreamWriter {
                 }
             }
 
-            let active_listener = self.wait.get_or_insert_with(|| self.shared.writer.listen());
+            let active_listener = self
+                .listener
+                .get_or_insert_with(|| self.shared.writer.listen());
             match std::pin::Pin::new(active_listener).poll(cx) {
-                Poll::Ready(()) => self.wait = None,
+                Poll::Ready(()) => self.listener = None,
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -187,7 +188,6 @@ impl StreamWriter {
             self.target,
             code
         );
-        self.wait = None;
         self.handle.try_send(Command::CloseStream {
             stream_id: self.shared.stream_id,
             target: self.target,

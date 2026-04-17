@@ -9,7 +9,7 @@ use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
     queue::PopError,
-    shared::{ReaderItem, StreamShared},
+    shared::{Item, ReaderShared, StreamShared},
     sync::Arc,
 };
 use crate::{command::Command, log, QlStreamError, RuntimeHandle};
@@ -18,7 +18,7 @@ pub struct StreamReader {
     shared: Arc<StreamShared>,
     target: CloseTarget,
     pending: Bytes,
-    wait: Option<EventListener>,
+    listener: Option<EventListener>,
     terminal: ReaderTerminalState,
     handle: RuntimeHandle,
 }
@@ -44,16 +44,12 @@ impl std::fmt::Debug for StreamReader {
 }
 
 impl StreamReader {
-    pub(crate) fn new(
-        shared: Arc<StreamShared>,
-        target: CloseTarget,
-        handle: RuntimeHandle,
-    ) -> Self {
+    pub fn new(shared: Arc<StreamShared>, target: CloseTarget, handle: RuntimeHandle) -> Self {
         Self {
             shared,
             target,
             pending: Bytes::new(),
-            wait: None,
+            listener: None,
             terminal: ReaderTerminalState::Open,
             handle,
         }
@@ -83,7 +79,7 @@ impl StreamReader {
             }
 
             match self.shared.reader.pop() {
-                Ok(ReaderItem::Chunk(mut bytes)) => {
+                Ok(Item::Chunk(mut bytes)) => {
                     log::trace!(
                         "byte reader received chunk: stream_id={:?} target={:?} len={}",
                         self.shared.stream_id,
@@ -100,7 +96,7 @@ impl StreamReader {
                     self.pending = bytes;
                     return Poll::Ready(Ok(Some(head)));
                 }
-                Ok(ReaderItem::Error(error)) => {
+                Ok(Item::Error(error)) => {
                     log::debug!(
                         "byte reader delivered terminal error: stream_id={:?} target={:?} error={:?}",
                         self.shared.stream_id,
@@ -111,7 +107,7 @@ impl StreamReader {
                     return Poll::Ready(Err(error));
                 }
                 Err(PopError::Empty) => {
-                    if self.shared.reader.is_finished() {
+                    if ReaderShared::is_finished(self.shared.reader.load_state()) {
                         log::debug!(
                             "byte reader delivered clean eof: stream_id={:?} target={:?}",
                             self.shared.stream_id,
@@ -124,9 +120,11 @@ impl StreamReader {
                 Err(PopError::Closed) => panic!("reader endpoint closed unexpectedly"),
             }
 
-            let active_listener = self.wait.get_or_insert_with(|| self.shared.reader.listen());
+            let active_listener = self
+                .listener
+                .get_or_insert_with(|| self.shared.reader.listen());
             match std::pin::Pin::new(active_listener).poll(cx) {
-                Poll::Ready(()) => self.wait = None,
+                Poll::Ready(()) => self.listener = None,
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -161,8 +159,6 @@ impl StreamReader {
             self.target,
             code
         );
-        self.pending = Bytes::new();
-        self.wait = None;
         self.terminal = ReaderTerminalState::Delivered;
         self.handle.try_send(Command::CloseStream {
             stream_id: self.shared.stream_id,

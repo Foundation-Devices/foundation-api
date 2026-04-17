@@ -3,7 +3,7 @@ mod inner {
     pub use std::{
         cell::UnsafeCell,
         sync::{
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicU8, AtomicUsize, Ordering},
             Arc,
         },
     };
@@ -49,6 +49,17 @@ mod inner {
             f(self.get_mut())
         }
     }
+
+    impl AtomicExt for AtomicU8 {
+        type Value = u8;
+
+        fn with_mut<R, F>(&mut self, f: F) -> R
+        where
+            F: FnOnce(&mut Self::Value) -> R,
+        {
+            f(self.get_mut())
+        }
+    }
 }
 
 #[cfg(all(test, loom))]
@@ -56,7 +67,7 @@ mod inner {
     pub use loom::{
         cell::UnsafeCell,
         sync::{
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicU8, AtomicUsize, Ordering},
             Arc,
         },
         thread::yield_now as busy_wait,
