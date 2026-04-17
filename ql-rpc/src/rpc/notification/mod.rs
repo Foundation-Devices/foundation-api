@@ -1,8 +1,10 @@
 use crate::{RouteId, RpcCodec};
 
-pub(crate) mod codec;
+pub(crate) mod client;
+pub(crate) mod server;
 
-pub use codec::encode_notification;
+pub use client::encode_notification;
+pub use server::NotificationHandler;
 
 pub trait Notification {
     const ROUTE: RouteId;

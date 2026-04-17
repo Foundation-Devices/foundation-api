@@ -9,11 +9,13 @@ use std::{
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use ql_rpc::{
-    DownloadResponder, DownloadWriter, ProgressResponder, Response, RouteId, StreamCloseCode,
-    SubscriptionResponder,
+    DownloadHandler, DownloadResponder, DownloadWriter, LocalSpawn, NotificationHandler,
+    ProgressHandler, ProgressResponder, RequestHandler, Response, RouteId, SendSpawn,
+    StreamCloseCode, SubscriptionHandler, SubscriptionResponder,
 };
 
 use super::*;
+use crate::rpc::RpcError;
 use crate::{QlStream, StreamWriter};
 
 struct Echo;
@@ -34,6 +36,14 @@ impl ql_rpc::subscription::Subscription for Feed {
     type Error = core::convert::Infallible;
     type Request = Vec<u8>;
     type Event = Vec<u8>;
+}
+
+struct Notice;
+
+impl ql_rpc::notification::Notification for Notice {
+    const ROUTE: RouteId = RouteId::from_u32(521);
+    type Error = core::convert::Infallible;
+    type Payload = Vec<u8>;
 }
 
 struct Download;
@@ -62,7 +72,7 @@ async fn rpc_request() {
         seen: Arc<Mutex<Vec<String>>>,
     }
 
-    impl crate::rpc::RequestHandler<Echo, QlStream> for RouterState {
+    impl RequestHandler<Echo, QlStream> for RouterState {
         fn handle(self, request: String, response: Response<String, StreamWriter>) {
             let seen = self.seen.clone();
             tokio::task::spawn(async move {
@@ -78,10 +88,9 @@ async fn rpc_request() {
         let inbound_b = pair.take_inbound(Side::B);
         let seen = Arc::new(Mutex::new(Vec::new()));
 
-        let router =
-            ql_rpc::Router::<_, QlStream, crate::rpc::SendSpawn>::builder(crate::rpc::SendSpawn)
-                .request::<Echo>()
-                .build(RouterState { seen: seen.clone() });
+        let router = ql_rpc::Router::<_, QlStream, SendSpawn>::builder(SendSpawn)
+            .request::<Echo>()
+            .build(RouterState { seen: seen.clone() });
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -109,13 +118,55 @@ fn assert_send<T: Send>(value: T) -> T {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn rpc_notification() {
+    #[derive(Clone)]
+    struct RouterState {
+        seen: Rc<RefCell<Vec<Vec<u8>>>>,
+    }
+
+    impl NotificationHandler<Notice, QlStream> for RouterState {
+        fn handle(self, payload: Vec<u8>) {
+            self.seen.borrow_mut().push(payload);
+        }
+    }
+
+    run_local_test(async {
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+
+        let router = ql_rpc::Router::<_, QlStream, LocalSpawn>::builder(LocalSpawn)
+            .notification::<Notice>()
+            .build(RouterState { seen: seen.clone() });
+
+        let responder = tokio::task::spawn_local(async move {
+            let inbound = inbound_b.recv().await.unwrap();
+            if let Some((_, fut)) = router.handle(inbound) {
+                fut.await;
+            }
+        });
+
+        let rpc = pair.side_mut(Side::A).handle.rpc();
+        rpc.event::<Notice>(&b"hello".to_vec()).await.unwrap();
+        assert_eq!(seen.borrow().as_slice(), &[b"hello".to_vec()]);
+
+        tokio::time::timeout(Duration::from_secs(2), responder)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn rpc_subscrption() {
     #[derive(Clone)]
     struct RouterState {
         seen: Rc<RefCell<Vec<Vec<u8>>>>,
     }
 
-    impl crate::rpc::SubscriptionHandler<Feed, QlStream> for RouterState {
+    impl SubscriptionHandler<Feed, QlStream> for RouterState {
         fn handle(
             self,
             request: Vec<u8>,
@@ -137,10 +188,9 @@ async fn rpc_subscrption() {
         let inbound_b = pair.take_inbound(Side::B);
 
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let router =
-            ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(crate::rpc::LocalSpawn)
-                .subscription::<Feed>()
-                .build(RouterState { seen: seen.clone() });
+        let router = ql_rpc::Router::<_, QlStream, LocalSpawn>::builder(LocalSpawn)
+            .subscription::<Feed>()
+            .build(RouterState { seen: seen.clone() });
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -169,12 +219,8 @@ async fn rpc_router_enforces_max_request_bytes() {
     #[derive(Clone)]
     struct LimitedState;
 
-    impl crate::rpc::RequestHandler<Echo, crate::QlStream> for LimitedState {
-        fn handle(
-            self,
-            request: String,
-            response: crate::rpc::Response<String, crate::StreamWriter>,
-        ) {
+    impl RequestHandler<Echo, QlStream> for LimitedState {
+        fn handle(self, request: String, response: Response<String, StreamWriter>) {
             tokio::task::spawn_local(async move {
                 let _ = response.respond(request).await;
             });
@@ -185,11 +231,10 @@ async fn rpc_router_enforces_max_request_bytes() {
         let mut pair = TestPair::new(default_runtime_config());
         pair.connect_and_wait(Side::A).await;
         let inbound_b = pair.take_inbound(Side::B);
-        let router =
-            ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(crate::rpc::LocalSpawn)
-                .max_request_bytes(4)
-                .request::<Echo>()
-                .build(LimitedState);
+        let router = ql_rpc::Router::<_, QlStream, LocalSpawn>::builder(LocalSpawn)
+            .max_request_bytes(4)
+            .request::<Echo>()
+            .build(LimitedState);
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -202,7 +247,7 @@ async fn rpc_router_enforces_max_request_bytes() {
         let response = rpc.request::<Echo>(&"hello".to_string()).await;
         assert!(matches!(
             response,
-            Err(crate::rpc::RpcError::Closed(code)) if code == StreamCloseCode::LIMIT
+            Err(RpcError::Closed(code)) if code == StreamCloseCode::LIMIT
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -220,7 +265,7 @@ async fn rpc_progress() {
         seen: Rc<RefCell<Vec<Vec<u8>>>>,
     }
 
-    impl ql_rpc::ProgressHandler<Download, QlStream> for RouterState {
+    impl ProgressHandler<Download, QlStream> for RouterState {
         fn handle(
             self,
             request: Vec<u8>,
@@ -242,10 +287,9 @@ async fn rpc_progress() {
         let inbound_b = pair.take_inbound(Side::B);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let router =
-            ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(crate::rpc::LocalSpawn)
-                .progress::<Download>()
-                .build(RouterState { seen: seen.clone() });
+        let router = ql_rpc::Router::<_, QlStream, LocalSpawn>::builder(LocalSpawn)
+            .progress::<Download>()
+            .build(RouterState { seen: seen.clone() });
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
@@ -255,10 +299,7 @@ async fn rpc_progress() {
         });
 
         let rpc = pair.side_mut(Side::A).handle.rpc();
-        let mut download = rpc
-            .progress::<Download>(&b"logo".to_vec())
-            .await
-            .unwrap();
+        let mut download = rpc.progress::<Download>(&b"logo".to_vec()).await.unwrap();
 
         assert_eq!(download.next().await, Some(b"10".to_vec()));
         assert_eq!(download.next().await, Some(b"90".to_vec()));
@@ -281,7 +322,7 @@ async fn rpc_download() {
         seen: Rc<RefCell<Vec<Vec<u8>>>>,
     }
 
-    impl crate::rpc::DownloadHandler<BlobDownload, QlStream> for RouterState {
+    impl DownloadHandler<BlobDownload, QlStream> for RouterState {
         fn handle(self, request: Vec<u8>, responder: DownloadResponder<Vec<u8>, StreamWriter>) {
             let seen = self.seen.clone();
             tokio::task::spawn_local(async move {
@@ -301,10 +342,9 @@ async fn rpc_download() {
         let inbound_b = pair.take_inbound(Side::B);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let router =
-            ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(crate::rpc::LocalSpawn)
-                .download::<BlobDownload>()
-                .build(RouterState { seen: seen.clone() });
+        let router = ql_rpc::Router::<_, QlStream, LocalSpawn>::builder(LocalSpawn)
+            .download::<BlobDownload>()
+            .build(RouterState { seen: seen.clone() });
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();

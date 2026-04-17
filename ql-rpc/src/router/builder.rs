@@ -7,6 +7,8 @@ use super::{
 use crate::{
     download::Download as DownloadRpc,
     download::server::{handle_download_inner, DownloadHandler},
+    notification::Notification as NotificationRpc,
+    notification::server::{NotificationHandler, handle_notification_inner},
     progress::Progress as ProgressRpc,
     progress::server::{ProgressHandler, handle_progress_inner},
     request::Request as RequestRpc, subscription::Subscription as SubscriptionRpc, RouteId,
@@ -80,6 +82,19 @@ where
         })
     }
 
+    pub fn notification<M>(self) -> Self
+    where
+        M: NotificationRpc + 'static,
+        S: NotificationHandler<M, St> + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_notification_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
+    }
+
     pub fn download<M>(self) -> Self
     where
         M: DownloadRpc + 'static,
@@ -133,6 +148,22 @@ where
         self.add_route(M::ROUTE, |spawner, state, config, stream| {
             let (reader, writer) = stream.split();
             spawner.spawn(handle_request_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
+    }
+
+    pub fn notification<M>(self) -> Self
+    where
+        M: NotificationRpc + 'static,
+        M::Payload: Send + 'static,
+        S: NotificationHandler<M, St> + Send + 'static,
+        St::Reader: Send + 'static,
+        St::Writer: Send + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_notification_inner::<S, M, St>(
                 state, config, reader, writer,
             ))
         })

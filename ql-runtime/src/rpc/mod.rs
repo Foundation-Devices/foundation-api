@@ -1,3 +1,5 @@
+pub use self::{download::*, error::*, progress::*, subscription::*};
+
 mod adapter;
 mod download;
 mod error;
@@ -13,7 +15,6 @@ use ql_rpc::{
     subscription::{self as rpc_subscription, Subscription as SubscriptionRpc},
 };
 
-pub use self::{adapter::*, download::*, error::*, progress::*, subscription::*};
 use crate::{RuntimeHandle, StreamReader};
 
 #[derive(Clone)]
