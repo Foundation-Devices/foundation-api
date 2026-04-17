@@ -25,7 +25,7 @@ pub struct RpcHandle {
 }
 
 impl RpcHandle {
-    pub async fn event<M>(&self, event: &M::Payload) -> Result<(), RpcError<M::Error>>
+    pub async fn notification<M>(&self, event: &M::Payload) -> Result<(), RpcError<M::Error>>
     where
         M: Notification,
     {

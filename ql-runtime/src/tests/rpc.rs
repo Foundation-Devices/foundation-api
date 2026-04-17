@@ -16,8 +16,7 @@ use ql_rpc::{
 };
 
 use super::*;
-use crate::rpc::RpcError;
-use crate::{QlStream, StreamWriter};
+use crate::{rpc::RpcError, QlStream, StreamWriter};
 
 struct Echo;
 
@@ -158,7 +157,9 @@ async fn rpc_notification() {
         });
 
         let rpc = pair.side_mut(Side::A).handle.rpc();
-        rpc.event::<Notice>(&b"hello".to_vec()).await.unwrap();
+        rpc.notification::<Notice>(&b"hello".to_vec())
+            .await
+            .unwrap();
         assert_eq!(seen.borrow().as_slice(), &[b"hello".to_vec()]);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
