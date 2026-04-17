@@ -48,6 +48,51 @@ where
     }
 }
 
+/// reads one length-delimited value and returns any bytes already buffered
+pub(crate) async fn read_framed_request_prefix<T, R>(
+    reader: &mut R,
+    config: RouterConfig,
+) -> Result<(T, ChunkQueue), R::Error>
+where
+    T: RpcCodec,
+    R: RpcRead,
+{
+    let mut bytes = ChunkQueue::default();
+    let mut total_read = 0usize;
+
+    loop {
+        let maybe_value = {
+            match bytes.try_take_part() {
+                Ok(Some(mut body)) => {
+                    let value =
+                        T::decode_value(&mut body).map_err(|_error| StreamCloseCode::REFUSED)?;
+                    drop(body);
+                    Some(value)
+                }
+                Ok(None) => None,
+                Err(_error) => return Err(StreamCloseCode::REFUSED.into()),
+            }
+        };
+        if let Some(value) = maybe_value {
+            return Ok((value, bytes));
+        }
+
+        let remaining = config.max_request_bytes.saturating_sub(total_read);
+        if remaining == 0 {
+            return Err(StreamCloseCode::LIMIT.into());
+        }
+
+        match read_bytes(reader, remaining).await {
+            Ok(Some(chunk)) => {
+                total_read += chunk.len();
+                bytes.push(chunk);
+            }
+            Ok(None) => return Err(StreamCloseCode::REFUSED.into()),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// reads one eof-delimited value up to the configured request limit
 pub(crate) async fn read_eof_request<T, R>(
     reader: &mut R,

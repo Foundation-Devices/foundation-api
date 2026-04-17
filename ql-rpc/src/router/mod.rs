@@ -14,6 +14,7 @@ pub use crate::{
     progress::{ProgressHandler, ProgressResponder},
     request::{RequestHandler, Response},
     subscription::{SubscriptionHandler, SubscriptionResponder},
+    upload::{UploadHandler, UploadReader, UploadResponder},
 };
 
 pub struct Router<S, St, Sp>

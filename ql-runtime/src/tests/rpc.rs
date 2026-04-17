@@ -11,7 +11,8 @@ use futures_lite::StreamExt;
 use ql_rpc::{
     DownloadHandler, DownloadResponder, DownloadWriter, LocalSpawn, NotificationHandler,
     ProgressHandler, ProgressResponder, RequestHandler, Response, RouteId, SendSpawn,
-    StreamCloseCode, SubscriptionHandler, SubscriptionResponder,
+    StreamCloseCode, SubscriptionHandler, SubscriptionResponder, UploadHandler, UploadReader,
+    UploadResponder,
 };
 
 use super::*;
@@ -63,6 +64,15 @@ impl ql_rpc::download::Download for BlobDownload {
     type Error = core::convert::Infallible;
     type Request = Vec<u8>;
     type ResponseHeader = Vec<u8>;
+}
+
+struct BlobUpload;
+
+impl ql_rpc::upload::Upload for BlobUpload {
+    const ROUTE: RouteId = RouteId::from_u32(55);
+    type Error = core::convert::Infallible;
+    type Request = Vec<u8>;
+    type Response = Vec<u8>;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -370,6 +380,76 @@ async fn rpc_download() {
         );
         assert_eq!(reader.read_chunk().await.unwrap(), None);
         assert_eq!(seen.borrow().as_slice(), &[b"logo".to_vec()]);
+
+        tokio::time::timeout(Duration::from_secs(2), responder)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rpc_upload() {
+    #[derive(Clone)]
+    struct RouterState {
+        requests: Rc<RefCell<Vec<Vec<u8>>>>,
+        uploads: Rc<RefCell<Vec<Vec<u8>>>>,
+    }
+
+    impl UploadHandler<BlobUpload, QlStream> for RouterState {
+        fn handle(
+            self,
+            request: Vec<u8>,
+            mut upload: UploadReader<crate::StreamReader>,
+            responder: UploadResponder<Vec<u8>, StreamWriter>,
+        ) {
+            let requests = self.requests.clone();
+            let uploads = self.uploads.clone();
+            tokio::task::spawn_local(async move {
+                requests.borrow_mut().push(request);
+
+                let mut body = Vec::new();
+                while let Some(chunk) = upload.read_chunk().await.unwrap() {
+                    body.extend_from_slice(&chunk);
+                }
+                uploads.borrow_mut().push(body.clone());
+
+                responder.respond(body).await.unwrap();
+            });
+        }
+    }
+
+    run_local_test(async {
+        let mut pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+        let inbound_b = pair.take_inbound(Side::B);
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let uploads = Rc::new(RefCell::new(Vec::new()));
+
+        let router = ql_rpc::Router::<_, QlStream, LocalSpawn>::builder(LocalSpawn)
+            .upload::<BlobUpload>()
+            .build(RouterState {
+                requests: requests.clone(),
+                uploads: uploads.clone(),
+            });
+
+        let responder = tokio::task::spawn_local(async move {
+            let inbound = inbound_b.recv().await.unwrap();
+            if let Some((_, fut)) = router.handle(inbound) {
+                fut.await;
+            }
+        });
+
+        let rpc = pair.side_mut(Side::A).handle.rpc();
+        let mut upload = rpc.upload::<BlobUpload>(&b"logo".to_vec()).await.unwrap();
+        upload.send(Bytes::from_static(b"abc")).await.unwrap();
+        upload.send(Bytes::from_static(b"def")).await.unwrap();
+        let response = upload.finish().await.unwrap();
+
+        assert_eq!(response, b"abcdef".to_vec());
+        assert_eq!(requests.borrow().as_slice(), &[b"logo".to_vec()]);
+        assert_eq!(uploads.borrow().as_slice(), &[b"abcdef".to_vec()]);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
             .await

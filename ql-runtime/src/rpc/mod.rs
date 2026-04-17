@@ -1,10 +1,11 @@
-pub use self::{download::*, error::*, progress::*, subscription::*};
+pub use self::{download::*, error::*, progress::*, subscription::*, upload::*};
 
 mod adapter;
 mod download;
 mod error;
 mod progress;
 mod subscription;
+mod upload;
 
 use bytes::Bytes;
 use ql_rpc::{
@@ -13,6 +14,7 @@ use ql_rpc::{
     progress::{self as rpc_progress, Progress},
     request::{self, Request as RequestRpc},
     subscription::{self as rpc_subscription, Subscription as SubscriptionRpc},
+    upload::{self as rpc_upload, Upload as UploadRpc},
 };
 
 use crate::{RuntimeHandle, StreamReader};
@@ -91,6 +93,22 @@ impl RpcHandle {
         let response = self.start_request(M::ROUTE, payload).await?;
         Ok(ProgressCall {
             inner: rpc_progress::ProgressCall::new(response),
+        })
+    }
+
+    pub async fn upload<M>(&self, request: &M::Request) -> Result<UploadCall<M>, RpcError<M::Error>>
+    where
+        M: UploadRpc,
+    {
+        let mut payload = Vec::new();
+        rpc_upload::encode_request::<M>(request, &mut payload);
+        let mut stream = self
+            .inner
+            .open_stream(adapter::to_wire_route_id(M::ROUTE))
+            .await?;
+        stream.writer.write(Bytes::from(payload)).await?;
+        Ok(UploadCall {
+            inner: rpc_upload::UploadCall::new(stream.writer, stream.reader),
         })
     }
 }

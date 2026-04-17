@@ -94,6 +94,10 @@ impl<T: RpcCodec> FramedValueReader<T> {
         self
     }
 
+    pub fn into_bytes(self) -> ChunkQueue {
+        self.bytes
+    }
+
     pub fn advance(self) -> Result<ReadValueStep<T>, CodecError<T::Error>> {
         let mut this = self;
         let Some(mut body) = this.bytes.try_take_part()? else {

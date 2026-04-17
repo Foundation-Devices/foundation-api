@@ -25,6 +25,10 @@ use crate::{
         server::{handle_subscription_inner, SubscriptionHandler},
         Subscription as SubscriptionRpc,
     },
+    upload::{
+        server::{handle_upload_inner, UploadHandler},
+        Upload as UploadRpc,
+    },
     RouteId,
 };
 
@@ -145,6 +149,19 @@ where
             ))
         })
     }
+
+    pub fn upload<M>(self) -> Self
+    where
+        M: UploadRpc + 'static,
+        S: UploadHandler<M, St> + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_upload_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
+    }
 }
 
 impl<S, St> RouterBuilder<S, St, SendSpawn>
@@ -226,6 +243,22 @@ where
         self.add_route(M::ROUTE, |spawner, state, config, stream| {
             let (reader, writer) = stream.split();
             spawner.spawn(handle_progress_inner::<S, M, St>(
+                state, config, reader, writer,
+            ))
+        })
+    }
+
+    pub fn upload<M>(self) -> Self
+    where
+        M: UploadRpc + 'static,
+        M::Request: Send + 'static,
+        S: UploadHandler<M, St> + Send + 'static,
+        St::Reader: Send + 'static,
+        St::Writer: Send + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_upload_inner::<S, M, St>(
                 state, config, reader, writer,
             ))
         })
