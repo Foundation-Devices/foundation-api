@@ -51,7 +51,7 @@ where
         poll_fn(|cx| self.poll_next_progress(cx)).await
     }
 
-    pub fn poll_next_progress(&mut self, cx: &mut Context<'_>) -> Poll<Option<M::Progress>> {
+    fn poll_step(&mut self, cx: &mut Context<'_>) -> Poll<Option<M::Progress>> {
         loop {
             let reader = match std::mem::replace(&mut self.state, State::Invalid) {
                 State::Reading(reader) => reader,
@@ -100,6 +100,10 @@ where
             }
         }
     }
+
+    pub fn poll_next_progress(&mut self, cx: &mut Context<'_>) -> Poll<Option<M::Progress>> {
+        self.poll_step(cx)
+    }
 }
 
 impl<M, R> Future for ProgressCall<M, R>
@@ -113,49 +117,19 @@ where
         let this = self.get_mut();
 
         loop {
-            let reader = match std::mem::replace(&mut this.state, State::Invalid) {
-                State::Reading(reader) => reader,
-                State::Terminal(result) => {
-                    this.state = State::Done;
-                    return Poll::Ready(result);
-                }
-                State::Done => panic!("polled after completion"),
-                State::Invalid => panic!("polled during state transition"),
-            };
-
-            match reader.advance() {
-                Ok(ReadStep::Progress { next, .. }) => {
-                    this.state = State::Reading(next);
-                }
-                Ok(ReadStep::Response(response)) => {
-                    this.state = State::Done;
-                    return Poll::Ready(Ok(response));
-                }
-                Ok(ReadStep::NeedMore(next)) => {
-                    this.state = State::Reading(next);
-                }
-                Err(error) => {
-                    this.state = State::Done;
-                    return Poll::Ready(Err(error.into()));
-                }
-            }
-
-            match this.stream.poll_read(usize::MAX, cx) {
-                Poll::Ready(Ok(Some(chunk))) => {
-                    let State::Reading(reader) = std::mem::replace(&mut this.state, State::Invalid)
-                    else {
-                        panic!("progress reader is not present");
-                    };
-                    this.state = State::Reading(reader.push(chunk));
-                }
-                Poll::Ready(Ok(None)) => {
-                    this.state = State::Done;
-                    return Poll::Ready(Err(Error::MissingResponse.into()));
-                }
-                Poll::Ready(Err(error)) => {
-                    this.state = State::Done;
-                    return Poll::Ready(Err(CallError::Transport(error)));
-                }
+            match this.poll_step(cx) {
+                Poll::Ready(Some(_)) => {}
+                Poll::Ready(None) => match std::mem::replace(&mut this.state, State::Invalid) {
+                    State::Terminal(result) => {
+                        this.state = State::Done;
+                        return Poll::Ready(result);
+                    }
+                    State::Done => panic!("polled after completion"),
+                    State::Invalid => panic!("polled during state transition"),
+                    State::Reading(_) => {
+                        panic!("progress call reached terminal step without result")
+                    }
+                },
                 Poll::Pending => return Poll::Pending,
             }
         }
