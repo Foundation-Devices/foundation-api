@@ -2,7 +2,7 @@ use bytes::Bytes;
 use ql_rpc::download::Download as DownloadRpc;
 
 use super::RpcError;
-use crate::StreamReader;
+use crate::{QlStreamError, StreamReader};
 
 pub struct DownloadCall<M: DownloadRpc> {
     pub(super) inner: ql_rpc::download::DownloadCall<M, StreamReader>,
@@ -25,11 +25,11 @@ where
 }
 
 impl DownloadReader {
-    pub async fn read(&mut self, max_len: usize) -> Result<Option<Bytes>, crate::QlStreamError> {
+    pub async fn read(&mut self, max_len: usize) -> Result<Option<Bytes>, QlStreamError> {
         self.inner.read(max_len).await
     }
 
-    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, crate::QlStreamError> {
+    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, QlStreamError> {
         self.inner.read_chunk().await
     }
 
