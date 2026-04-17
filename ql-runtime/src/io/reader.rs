@@ -8,13 +8,13 @@ use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
     queue::PopError,
-    shared::{Item, ReaderShared, StreamShared},
-    sync::Arc,
+    shared::{Item, RxInner},
+    Rx,
 };
 use crate::{command::Command, log, QlStreamError, RuntimeHandle};
 
 pub struct StreamReader {
-    shared: Arc<StreamShared>,
+    rx: Rx,
     target: CloseTarget,
     pending: Bytes,
     terminal: ReaderTerminalState,
@@ -31,7 +31,7 @@ unsafe impl Sync for StreamReader {}
 impl std::fmt::Debug for StreamReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InboundByteStream")
-            .field("stream_id", &self.shared.stream_id)
+            .field("stream_id", &self.rx.stream_id())
             .field("target", &self.target)
             .field(
                 "terminal",
@@ -42,9 +42,9 @@ impl std::fmt::Debug for StreamReader {
 }
 
 impl StreamReader {
-    pub fn new(shared: Arc<StreamShared>, target: CloseTarget, handle: RuntimeHandle) -> Self {
+    pub(crate) fn new(shared: Rx, target: CloseTarget, handle: RuntimeHandle) -> Self {
         Self {
-            shared,
+            rx: shared,
             target,
             pending: Bytes::new(),
             terminal: ReaderTerminalState::Open,
@@ -67,11 +67,11 @@ impl StreamReader {
                 Poll::Pending => {}
             }
 
-            self.shared.reader.register_waiter(cx.waker());
+            self.rx.register_waiter(cx.waker());
 
             match self.try_read_ready(max_len) {
                 Poll::Ready(result) => {
-                    self.shared.reader.unregister_waiter();
+                    self.rx.unregister_waiter();
                     return Poll::Ready(result);
                 }
                 Poll::Pending => return Poll::Pending,
@@ -88,21 +88,21 @@ impl StreamReader {
                 pending.split_to(max_len)
             };
             self.handle.try_send(Command::PollInbound {
-                stream_id: self.shared.stream_id,
+                stream_id: self.rx.stream_id(),
             });
             return Poll::Ready(Ok(Some(bytes)));
         }
 
-        match self.shared.reader.pop() {
+        match self.rx.pop() {
             Ok(Item::Chunk(mut bytes)) => {
                 log::trace!(
                     "byte reader received chunk: stream_id={:?} target={:?} len={}",
-                    self.shared.stream_id,
+                    self.rx.stream_id(),
                     self.target,
                     bytes.len()
                 );
                 self.handle.try_send(Command::PollInbound {
-                    stream_id: self.shared.stream_id,
+                    stream_id: self.rx.stream_id(),
                 });
                 if bytes.len() <= max_len {
                     return Poll::Ready(Ok(Some(bytes)));
@@ -114,7 +114,7 @@ impl StreamReader {
             Ok(Item::Error(error)) => {
                 log::debug!(
                     "byte reader delivered terminal error: stream_id={:?} target={:?} error={:?}",
-                    self.shared.stream_id,
+                    self.rx.stream_id(),
                     self.target,
                     error
                 );
@@ -122,10 +122,10 @@ impl StreamReader {
                 Poll::Ready(Err(error))
             }
             Err(PopError::Empty) => {
-                if ReaderShared::is_finished(self.shared.reader.load_state()) {
+                if RxInner::is_finished(self.rx.load_state()) {
                     log::debug!(
                         "byte reader delivered clean eof: stream_id={:?} target={:?}",
-                        self.shared.stream_id,
+                        self.rx.stream_id(),
                         self.target
                     );
                     self.terminal = ReaderTerminalState::Delivered;
@@ -162,13 +162,13 @@ impl StreamReader {
         }
         log::debug!(
             "byte reader explicit close: stream_id={:?} target={:?} code={:?}",
-            self.shared.stream_id,
+            self.rx.stream_id(),
             self.target,
             code
         );
         self.terminal = ReaderTerminalState::Delivered;
         self.handle.try_send(Command::CloseStream {
-            stream_id: self.shared.stream_id,
+            stream_id: self.rx.stream_id(),
             target: self.target,
             code,
         });
@@ -182,12 +182,12 @@ impl Drop for StreamReader {
         }
         log::debug!(
             "byte reader drop close: stream_id={:?} target={:?} code={:?}",
-            self.shared.stream_id,
+            self.rx.stream_id(),
             self.target,
             StreamCloseCode::CANCELLED
         );
         self.handle.try_send(Command::CloseStream {
-            stream_id: self.shared.stream_id,
+            stream_id: self.rx.stream_id(),
             target: self.target,
             code: StreamCloseCode::CANCELLED,
         });

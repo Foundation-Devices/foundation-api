@@ -5,7 +5,7 @@ use ql_wire::{CloseTarget, StreamId};
 
 use crate::{
     command::Command,
-    io::{PushError, ReaderIo, WriterIo},
+    io::{PushError, Rx, Tx},
     QlStreamError,
 };
 
@@ -65,18 +65,18 @@ impl DriverStreamIo {
 
     pub fn outbound_finish(&mut self) {
         if let Some(outbound) = self.outbound.take() {
-            outbound.writer.finish();
+            outbound.tx.finish();
         }
     }
 
     pub fn outbound_fail(&mut self, error: QlStreamError) {
         if let Some(outbound) = self.outbound.take() {
-            let _ = outbound.writer.fail(error);
+            let _ = outbound.tx.fail(error);
         }
     }
 
-    pub fn outbound_writer_mut(&mut self) -> Option<&mut WriterIo> {
-        self.outbound.as_mut().map(|outbound| &mut outbound.writer)
+    pub fn outbound_writer_mut(&mut self) -> Option<&mut OutboundIo> {
+        self.outbound.as_mut()
     }
 
     pub fn outbound_queue_finish(&mut self) {
@@ -101,7 +101,7 @@ impl DriverStreamIo {
         };
 
         let len = bytes.len();
-        match inbound.reader.try_write(bytes) {
+        match inbound.rx.try_write(bytes) {
             Ok(()) => InboundWriteResult::Accepted(len),
             Err(PushError::Full(_)) => InboundWriteResult::Full,
             Err(PushError::Closed(_)) => {
@@ -113,33 +113,43 @@ impl DriverStreamIo {
 
     pub fn inbound_finish(&mut self) {
         if let Some(inbound) = self.inbound.take() {
-            inbound.reader.finish();
+            inbound.rx.finish();
         }
     }
 
     pub fn inbound_fail(&mut self, error: QlStreamError) {
         if let Some(inbound) = self.inbound.take() {
-            let _ = inbound.reader.fail(error);
+            let _ = inbound.rx.fail(error);
         }
     }
 }
 
 pub struct OutboundIo {
-    writer: WriterIo,
+    tx: Tx,
+    pending: Bytes,
     finish_pending: bool,
 }
 
 impl OutboundIo {
-    pub fn new(writer: WriterIo) -> Self {
+    pub fn new(tx: Tx) -> Self {
         Self {
-            writer,
+            tx,
+            pending: Bytes::new(),
             finish_pending: false,
         }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.pending.is_empty() && self.tx.is_finished()
+    }
+
+    pub fn try_read(&mut self, max_len: usize) -> Result<Bytes, ()> {
+        self.tx.try_read(&mut self.pending, max_len)
     }
 }
 
 pub struct InboundIo {
-    reader: ReaderIo,
+    rx: Rx,
 }
 
 pub enum InboundWriteResult {
@@ -149,7 +159,7 @@ pub enum InboundWriteResult {
 }
 
 impl InboundIo {
-    pub fn new(reader: ReaderIo) -> Self {
-        Self { reader }
+    pub fn new(rx: Rx) -> Self {
+        Self { rx }
     }
 }

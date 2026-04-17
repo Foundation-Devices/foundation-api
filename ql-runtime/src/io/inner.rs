@@ -6,7 +6,7 @@ use ql_wire::StreamId;
 
 use super::{
     queue::{ForcePushError, PopError, PushError, Single},
-    sync::{Arc, AtomicU8, Ordering},
+    sync::{AtomicU8, Ordering},
 };
 use crate::QlStreamError;
 
@@ -16,20 +16,18 @@ const WRITER_FINISH_REQUESTED: u8 = 1 << 0;
 const WRITER_TERMINAL_READY: u8 = 1 << 1;
 const WRITER_TERMINAL_OK: u8 = 1 << 2;
 
-pub struct StreamShared {
-    pub stream_id: StreamId,
-    pub reader: ReaderShared,
-    pub writer: WriterShared,
+pub(super) fn new(stream_id: StreamId) -> Inner {
+    Inner {
+        stream_id,
+        reader: RxInner::new(),
+        writer: TxInner::new(),
+    }
 }
 
-impl StreamShared {
-    pub fn new(stream_id: StreamId) -> Arc<Self> {
-        Arc::new(Self {
-            stream_id,
-            reader: ReaderShared::new(),
-            writer: WriterShared::new(),
-        })
-    }
+pub(super) struct Inner {
+    pub(super) stream_id: StreamId,
+    pub(super) reader: RxInner,
+    pub(super) writer: TxInner,
 }
 
 pub enum Item {
@@ -46,15 +44,13 @@ impl Item {
     }
 }
 
-pub struct ReaderShared {
+pub struct RxInner {
     slot: Single<Item>,
-    // Sound because StreamShared creates exactly one StreamReader for this side,
-    // and that reader is the only task that registers or unregisters wakers.
     changed: DiatomicWaker,
     state: AtomicU8,
 }
 
-impl ReaderShared {
+impl RxInner {
     fn new() -> Self {
         Self {
             slot: Single::new(),
@@ -135,15 +131,13 @@ impl ReaderShared {
     }
 }
 
-pub struct WriterShared {
+pub struct TxInner {
     slot: Single<Item>,
-    // Sound because StreamShared creates exactly one StreamWriter for this side,
-    // and that writer is the only task that registers or unregisters wakers.
     changed: DiatomicWaker,
     state: AtomicU8,
 }
 
-impl WriterShared {
+impl TxInner {
     fn new() -> Self {
         Self {
             slot: Single::new(),
@@ -277,97 +271,40 @@ impl WriterShared {
         // shared state, so register/unregister never run concurrently.
         unsafe { self.changed.unregister() };
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RecvClosed;
-
-pub struct ReaderIo {
-    shared: Arc<StreamShared>,
-}
-
-impl ReaderIo {
-    pub fn new(shared: Arc<StreamShared>) -> Self {
-        Self { shared }
-    }
-
-    pub fn try_write(&self, bytes: Bytes) -> Result<(), PushError<Bytes>> {
-        self.shared.reader.try_write(bytes)
-    }
-
-    pub fn finish(&self) {
-        self.shared.reader.finish();
-    }
-
-    pub fn fail(
-        &self,
-        error: QlStreamError,
-    ) -> Result<Option<Bytes>, ForcePushError<QlStreamError>> {
-        self.shared.reader.fail(error)
-    }
-}
-
-pub struct WriterIo {
-    shared: Arc<StreamShared>,
-    pending: Bytes,
-}
-
-impl WriterIo {
-    pub fn new(shared: Arc<StreamShared>) -> Self {
-        Self {
-            shared,
-            pending: Bytes::new(),
-        }
-    }
 
     pub fn is_finished(&self) -> bool {
-        let state = self.shared.writer.load_state();
-        self.pending.is_empty()
-            && WriterShared::finish_requested(state)
-            && self.shared.writer.is_empty()
+        let state = self.load_state();
+        TxInner::finish_requested(state) && self.is_empty()
     }
 
-    pub fn try_read(&mut self, max_len: usize) -> Result<Bytes, RecvClosed> {
-        if !self.pending.is_empty() {
-            let pending = &mut self.pending;
-            let bytes = if pending.len() <= max_len {
+    pub fn try_read(&self, pending: &mut Bytes, max_len: usize) -> Result<Bytes, ()> {
+        if !pending.is_empty() {
+            return Ok(if pending.len() <= max_len {
                 std::mem::take(pending)
             } else {
                 pending.split_to(max_len)
-            };
-            return Ok(bytes);
+            });
         }
 
-        let state = self.shared.writer.load_state();
-        if WriterShared::terminal_ready(state) {
-            return Err(RecvClosed);
+        let state = self.load_state();
+        if TxInner::terminal_ready(state) {
+            return Err(());
         }
 
-        match self.shared.writer.pop() {
+        match self.pop() {
             Ok(Item::Chunk(mut bytes)) => {
                 if bytes.len() <= max_len {
                     Ok(bytes)
                 } else {
                     let head = bytes.split_to(max_len);
-                    self.pending = bytes;
+                    *pending = bytes;
                     Ok(head)
                 }
             }
-            Ok(Item::Error(_)) => Err(RecvClosed),
+            Ok(Item::Error(_)) => Err(()),
             Err(PopError::Empty) => Ok(Bytes::new()),
-            Err(PopError::Closed) => Err(RecvClosed),
+            Err(PopError::Closed) => Err(()),
         }
-    }
-
-    pub fn finish(&self) {
-        self.shared.writer.finish();
-    }
-
-    pub fn fail(
-        &self,
-        error: QlStreamError,
-    ) -> Result<Option<Bytes>, ForcePushError<QlStreamError>> {
-        self.shared.writer.fail(error)
     }
 }
 
@@ -379,16 +316,16 @@ mod loom_tests {
     use loom::{model, thread};
     use ql_wire::{StreamCloseCode, StreamId};
 
-    use super::{Item, PopError, PushError, ReaderShared, StreamShared, WriterIo, WriterShared};
-    use crate::QlStreamError;
+    use super::*;
+    use crate::{io::Tx, QlStreamError};
 
     fn check_model(f: impl Fn() + Sync + Send + 'static) {
         let builder = model::Builder::new();
         builder.check(f);
     }
 
-    fn shared() -> super::super::sync::Arc<StreamShared> {
-        StreamShared::new(StreamId(1u32.into()))
+    fn shared() -> super::super::sync::Arc<Inner> {
+        super::super::sync::Arc::new(new(StreamId(1u32.into())))
     }
 
     #[test]
@@ -405,7 +342,7 @@ mod loom_tests {
             };
 
             finisher.join().unwrap();
-            assert!(ReaderShared::is_finished(shared.reader.load_state()));
+            assert!(RxInner::is_finished(shared.reader.load_state()));
 
             shared.reader.unregister_waiter();
         });
@@ -430,7 +367,7 @@ mod loom_tests {
                 Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
                 _ => panic!("expected buffered reader chunk"),
             }
-            assert!(ReaderShared::is_finished(shared.reader.load_state()));
+            assert!(RxInner::is_finished(shared.reader.load_state()));
             assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
         });
     }
@@ -446,7 +383,7 @@ mod loom_tests {
                 shared.reader.try_write(Bytes::from_static(b"abc")),
                 Err(PushError::Closed(Bytes::from_static(b"abc")))
             );
-            assert!(ReaderShared::is_finished(shared.reader.load_state()));
+            assert!(RxInner::is_finished(shared.reader.load_state()));
             assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
         });
     }
@@ -468,7 +405,7 @@ mod loom_tests {
             let write_result = writer.join().unwrap();
             finisher.join().unwrap();
 
-            assert!(ReaderShared::is_finished(shared.reader.load_state()));
+            assert!(RxInner::is_finished(shared.reader.load_state()));
             match write_result {
                 Ok(()) => match shared.reader.pop() {
                     Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
@@ -531,16 +468,17 @@ mod loom_tests {
     fn writer_is_finished_only_after_drain() {
         check_model(|| {
             let shared = shared();
-            let mut writer_io = WriterIo::new(shared.clone());
+            let tx = Tx(shared.clone());
+            let mut pending = Bytes::new();
 
             shared.writer.try_write(Bytes::from_static(b"abc")).unwrap();
             shared.writer.request_finish();
 
-            assert!(!writer_io.is_finished());
-            assert_eq!(writer_io.try_read(2), Ok(Bytes::from_static(b"ab")));
-            assert!(!writer_io.is_finished());
-            assert_eq!(writer_io.try_read(8), Ok(Bytes::from_static(b"c")));
-            assert!(writer_io.is_finished());
+            assert!(!(pending.is_empty() && tx.is_finished()));
+            assert_eq!(tx.try_read(&mut pending, 2), Ok(Bytes::from_static(b"ab")));
+            assert!(!(pending.is_empty() && tx.is_finished()));
+            assert_eq!(tx.try_read(&mut pending, 8), Ok(Bytes::from_static(b"c")));
+            assert!(pending.is_empty() && tx.is_finished());
         });
     }
 
@@ -548,7 +486,8 @@ mod loom_tests {
     fn writer_write_races_with_request_finish() {
         check_model(|| {
             let shared = shared();
-            let mut writer_io = WriterIo::new(shared.clone());
+            let tx = Tx(shared.clone());
+            let mut pending = Bytes::new();
 
             let writer = {
                 let shared = shared.clone();
@@ -562,15 +501,15 @@ mod loom_tests {
             let write_result = writer.join().unwrap();
             finisher.join().unwrap();
 
-            assert!(WriterShared::finish_requested(shared.writer.load_state()));
+            assert!(TxInner::finish_requested(shared.writer.load_state()));
             match write_result {
                 Ok(()) => {
-                    assert_eq!(writer_io.try_read(8), Ok(Bytes::from_static(b"abc")));
-                    assert!(writer_io.is_finished());
+                    assert_eq!(tx.try_read(&mut pending, 8), Ok(Bytes::from_static(b"abc")));
+                    assert!(pending.is_empty() && tx.is_finished());
                 }
                 Err(PushError::Closed(bytes)) => {
                     assert_eq!(bytes, Bytes::from_static(b"abc"));
-                    assert!(writer_io.is_finished());
+                    assert!(pending.is_empty() && tx.is_finished());
                 }
                 Err(PushError::Full(_)) => panic!("empty writer slot must not report full"),
             }
@@ -596,7 +535,7 @@ mod loom_tests {
 
             failer.join().unwrap();
 
-            assert!(WriterShared::terminal_ready(shared.writer.load_state()));
+            assert!(TxInner::terminal_ready(shared.writer.load_state()));
             shared.writer.unregister_waiter();
             match shared.writer.pop() {
                 Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
@@ -621,7 +560,7 @@ mod loom_tests {
 
             shared.reader.register_waiter(Waker::noop());
             shared.reader.finish();
-            assert!(ReaderShared::is_finished(shared.reader.load_state()));
+            assert!(RxInner::is_finished(shared.reader.load_state()));
             shared.reader.unregister_waiter();
         });
     }
@@ -640,7 +579,7 @@ mod loom_tests {
 
             shared.writer.register_waiter(Waker::noop());
             shared.writer.finish();
-            assert!(WriterShared::terminal_ready(shared.writer.load_state()));
+            assert!(TxInner::terminal_ready(shared.writer.load_state()));
             shared.writer.unregister_waiter();
         });
     }
@@ -666,7 +605,7 @@ mod loom_tests {
             let write_result = writer.join().unwrap();
             let fail_result = failer.join().unwrap();
 
-            assert!(WriterShared::terminal_ready(shared.writer.load_state()));
+            assert!(TxInner::terminal_ready(shared.writer.load_state()));
             match (&write_result, &fail_result) {
                 (Ok(()), Ok(Some(bytes))) => {
                     assert_eq!(Bytes::from_static(b"abc"), bytes.clone());
@@ -712,13 +651,13 @@ mod loom_tests {
             finisher.join().unwrap();
             let fail_result = failer.join().unwrap();
 
-            assert!(WriterShared::terminal_ready(shared.writer.load_state()));
+            assert!(TxInner::terminal_ready(shared.writer.load_state()));
             match fail_result {
                 Err(_) => {
-                    assert!(WriterShared::terminal_ok(shared.writer.load_state()));
+                    assert!(TxInner::terminal_ok(shared.writer.load_state()));
                 }
                 Ok(_) => {
-                    assert!(!WriterShared::terminal_ok(shared.writer.load_state()));
+                    assert!(!TxInner::terminal_ok(shared.writer.load_state()));
                     match shared.writer.pop() {
                         Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
                             assert_eq!(code, StreamCloseCode::CANCELLED);

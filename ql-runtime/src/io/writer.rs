@@ -8,13 +8,13 @@ use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
     queue::{PopError, PushError},
-    shared::{Item, StreamShared, WriterShared},
-    sync::Arc,
+    shared::{Item, TxInner},
+    Tx,
 };
 use crate::{command::Command, log, QlStreamError, RuntimeHandle};
 
 pub struct StreamWriter {
-    shared: Arc<StreamShared>,
+    tx: Tx,
     target: CloseTarget,
     open: bool,
     terminal: WriterTerminalState,
@@ -31,7 +31,7 @@ unsafe impl Sync for StreamWriter {}
 impl std::fmt::Debug for StreamWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OutboundByteStream")
-            .field("stream_id", &self.shared.stream_id)
+            .field("stream_id", &self.tx.stream_id())
             .field("target", &self.target)
             .field("closed", &!self.open)
             .finish_non_exhaustive()
@@ -39,9 +39,9 @@ impl std::fmt::Debug for StreamWriter {
 }
 
 impl StreamWriter {
-    pub fn new(shared: Arc<StreamShared>, target: CloseTarget, handle: RuntimeHandle) -> Self {
+    pub(crate) fn new(shared: Tx, target: CloseTarget, handle: RuntimeHandle) -> Self {
         Self {
-            shared,
+            tx: shared,
             target,
             open: true,
             terminal: WriterTerminalState::Pending,
@@ -63,11 +63,11 @@ impl StreamWriter {
         }
 
         loop {
-            match self.shared.writer.try_write(std::mem::take(bytes)) {
+            match self.tx.try_write(std::mem::take(bytes)) {
                 Ok(()) => {
                     log::trace!(
                         "byte writer accepted chunk: stream_id={:?} target={:?}",
-                        self.shared.stream_id,
+                        self.tx.stream_id(),
                         self.target
                     );
                     self.poll_runtime();
@@ -83,21 +83,21 @@ impl StreamWriter {
                 }
             }
 
-            self.shared.writer.register_waiter(cx.waker());
+            self.tx.register_waiter(cx.waker());
 
-            match self.shared.writer.try_write(std::mem::take(bytes)) {
+            match self.tx.try_write(std::mem::take(bytes)) {
                 Ok(()) => {
-                    self.shared.writer.unregister_waiter();
+                    self.tx.unregister_waiter();
                     log::trace!(
                         "byte writer accepted chunk: stream_id={:?} target={:?}",
-                        self.shared.stream_id,
+                        self.tx.stream_id(),
                         self.target
                     );
                     self.poll_runtime();
                     return Poll::Ready(Ok(()));
                 }
                 Err(PushError::Closed(chunk)) => {
-                    self.shared.writer.unregister_waiter();
+                    self.tx.unregister_waiter();
                     *bytes = chunk;
                     self.open = false;
                     return self.poll_terminal(cx);
@@ -121,11 +121,11 @@ impl StreamWriter {
         }
         log::debug!(
             "byte writer finish: stream_id={:?} target={:?}",
-            self.shared.stream_id,
+            self.tx.stream_id(),
             self.target
         );
         self.open = false;
-        self.shared.writer.request_finish();
+        self.tx.request_finish();
         self.poll_runtime();
     }
 
@@ -147,7 +147,7 @@ impl StreamWriter {
 
     fn poll_runtime(&self) {
         self.handle.try_send(Command::PollStream {
-            stream_id: self.shared.stream_id,
+            stream_id: self.tx.stream_id(),
         });
     }
 
@@ -163,11 +163,11 @@ impl StreamWriter {
                 Poll::Pending => {}
             }
 
-            self.shared.writer.register_waiter(cx.waker());
+            self.tx.register_waiter(cx.waker());
 
             match self.try_poll_terminal_ready() {
                 Poll::Ready(result) => {
-                    self.shared.writer.unregister_waiter();
+                    self.tx.unregister_waiter();
                     return Poll::Ready(result);
                 }
                 Poll::Pending => return Poll::Pending,
@@ -176,14 +176,14 @@ impl StreamWriter {
     }
 
     fn try_poll_terminal_ready(&mut self) -> Poll<Result<(), QlStreamError>> {
-        let state = self.shared.writer.load_state();
-        if WriterShared::terminal_ready(state) {
-            if WriterShared::terminal_ok(state) {
+        let state = self.tx.load_state();
+        if TxInner::terminal_ready(state) {
+            if TxInner::terminal_ok(state) {
                 self.terminal = WriterTerminalState::Terminal(Ok(()));
                 return Poll::Ready(Ok(()));
             }
 
-            match self.shared.writer.pop() {
+            match self.tx.pop() {
                 Ok(Item::Error(error)) => {
                     self.terminal = WriterTerminalState::Terminal(Err(error.clone()));
                     return Poll::Ready(Err(error));
@@ -206,12 +206,12 @@ impl StreamWriter {
         self.open = false;
         log::debug!(
             "byte writer close: stream_id={:?} target={:?} code={:?}",
-            self.shared.stream_id,
+            self.tx.stream_id(),
             self.target,
             code
         );
         self.handle.try_send(Command::CloseStream {
-            stream_id: self.shared.stream_id,
+            stream_id: self.tx.stream_id(),
             target: self.target,
             code,
         });

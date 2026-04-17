@@ -220,7 +220,7 @@ impl DriverState {
                 };
                 let stream_id = stream_ops.stream_id();
                 log::info!("open stream allocated: route_id={route_id} stream_id={stream_id}");
-                let stream = io::new_stream(
+                let (reader, writer, reader_io, writer_io) = io::new_stream(
                     stream_id,
                     CloseTarget::Return,
                     CloseTarget::Origin,
@@ -230,12 +230,12 @@ impl DriverState {
                     stream_id,
                     DriverStreamIo::new(
                         true,
-                        Some(OutboundIo::new(stream.writer_io)),
-                        Some(InboundIo::new(stream.reader_io)),
+                        Some(OutboundIo::new(writer_io)),
+                        Some(InboundIo::new(reader_io)),
                     ),
                 );
                 if start
-                    .send(Ok((stream_id, stream.reader, stream.writer)))
+                    .send(Ok((stream_id, reader, writer)))
                     .is_err()
                 {
                     log::warn!("open stream cancelled before delivery: stream_id={stream_id}");
@@ -361,7 +361,7 @@ impl DriverState {
             return;
         };
 
-        let stream = io::new_stream(
+        let (reader, writer, reader_io, writer_io) = io::new_stream(
             stream_id,
             CloseTarget::Origin,
             CloseTarget::Return,
@@ -372,8 +372,8 @@ impl DriverState {
             stream_id,
             DriverStreamIo::new(
                 false,
-                Some(OutboundIo::new(stream.writer_io)),
-                Some(InboundIo::new(stream.reader_io)),
+                Some(OutboundIo::new(writer_io)),
+                Some(InboundIo::new(reader_io)),
             ),
         );
 
@@ -383,8 +383,8 @@ impl DriverState {
         platform.handle_inbound(QlStream {
             stream_id,
             route_id,
-            reader: stream.reader,
-            writer: stream.writer,
+            reader,
+            writer,
         });
     }
 

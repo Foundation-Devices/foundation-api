@@ -73,7 +73,8 @@ fn new_inbound_io(capacity: usize) -> InboundIo {
         CloseTarget::Return,
         RuntimeHandle::new(runtime_tx),
     );
-    InboundIo::new(stream.reader_io)
+    let (_, _, reader_io, _) = stream;
+    InboundIo::new(reader_io)
 }
 
 fn new_outbound_io() -> OutboundIo {
@@ -84,7 +85,8 @@ fn new_outbound_io() -> OutboundIo {
         CloseTarget::Origin,
         RuntimeHandle::new(runtime_tx),
     );
-    OutboundIo::new(stream.writer_io)
+    let (_, _, _, writer_io) = stream;
+    OutboundIo::new(writer_io)
 }
 
 #[test]
@@ -126,16 +128,16 @@ fn poll_stream_keeps_outbound_pending_after_local_finish_when_inbound_is_closed(
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
-    let mut stream = io::new_stream(
+    let (_, mut writer, _, writer_io) = io::new_stream(
         stream_id,
         CloseTarget::Return,
         CloseTarget::Origin,
         RuntimeHandle::new(runtime_tx),
     );
-    stream.writer.queue_finish();
+    writer.queue_finish();
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(true, Some(OutboundIo::new(stream.writer_io)), None),
+        DriverStreamIo::new(true, Some(OutboundIo::new(writer_io)), None),
     );
 
     state.poll_stream(&mut fsm, stream_id);
@@ -150,7 +152,7 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
-    let stream = io::new_stream(
+    let (_, _, _, writer_io) = io::new_stream(
         stream_id,
         CloseTarget::Return,
         CloseTarget::Origin,
@@ -159,7 +161,7 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(true, Some(OutboundIo::new(stream.writer_io)), None),
+        DriverStreamIo::new(true, Some(OutboundIo::new(writer_io)), None),
     );
 
     state.drive_command(
