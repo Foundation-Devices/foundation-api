@@ -1,11 +1,8 @@
-mod reader;
-mod writer;
-
 use ql_fsm::NoSessionError;
-use ql_wire::{CloseTarget, PairingToken, PeerBundle, RouteId, StreamId};
+use ql_wire::{PairingToken, PeerBundle, RouteId, StreamId};
 
-pub use self::{reader::*, writer::*};
-use crate::{chunk_slot, command::Command};
+use crate::command::Command;
+pub use crate::io::{StreamReader, StreamWriter};
 
 #[derive(Debug)]
 pub struct QlStream {
@@ -48,30 +45,20 @@ impl RuntimeHandle {
 
     /// opens a new stream on the active encrypted session
     pub async fn open_stream(&self, route_id: RouteId) -> Result<QlStream, NoSessionError> {
-        let (request_reader, request_writer) = chunk_slot::new();
-        let (request_terminal_tx, request_terminal_rx) = oneshot::channel();
         let (start_tx, start_rx) = oneshot::channel();
 
         self.send(Command::OpenStream {
             route_id,
-            request_reader,
-            request_terminal: request_terminal_tx,
             start: start_tx,
         });
 
         // runtime cannot be shutdown while we have a handle
-        let (stream_id, reader) = start_rx.await.unwrap()?;
+        let (stream_id, reader, writer) = start_rx.await.unwrap()?;
 
         Ok(QlStream {
             stream_id,
             route_id,
-            writer: StreamWriter::new(
-                stream_id,
-                CloseTarget::Origin,
-                request_writer,
-                request_terminal_rx,
-                self.clone(),
-            ),
+            writer,
             reader,
         })
     }

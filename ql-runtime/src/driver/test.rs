@@ -2,8 +2,8 @@ use ql_wire::{test_identity, NoopCrypto, PeerBundle, SoftwareCrypto, StreamClose
 
 use super::*;
 use crate::{
-    chunk_slot,
     driver::state::{InboundIo, OutboundIo},
+    io,
     platform::QlInbound,
 };
 
@@ -66,15 +66,25 @@ fn new_driver_state() -> (DriverState, QlFsm) {
 
 fn new_inbound_io(capacity: usize) -> InboundIo {
     let _ = capacity;
-    let (_reader, writer) = chunk_slot::new();
-    let (terminal_tx, _terminal_rx) = oneshot::channel();
-    InboundIo::new(writer, terminal_tx)
+    let (runtime_tx, _runtime_rx) = async_channel::unbounded();
+    let stream = io::new_stream(
+        StreamId(99u32.into()),
+        CloseTarget::Origin,
+        CloseTarget::Return,
+        RuntimeHandle::new(runtime_tx),
+    );
+    InboundIo::new(stream.reader_io)
 }
 
 fn new_outbound_io() -> OutboundIo {
-    let (reader, _writer) = chunk_slot::new();
-    let (terminal_tx, _terminal_rx) = oneshot::channel();
-    OutboundIo::new(reader, terminal_tx)
+    let (runtime_tx, _runtime_rx) = async_channel::unbounded();
+    let stream = io::new_stream(
+        StreamId(100u32.into()),
+        CloseTarget::Return,
+        CloseTarget::Origin,
+        RuntimeHandle::new(runtime_tx),
+    );
+    OutboundIo::new(stream.writer_io)
 }
 
 #[test]
@@ -115,17 +125,17 @@ fn handle_closed_stream_reaps_when_both_halves_close() {
 fn poll_stream_keeps_outbound_pending_after_local_finish_when_inbound_is_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
-    let (request_reader, request_writer) = chunk_slot::new();
-    let (request_terminal_tx, _request_terminal_rx) = oneshot::channel();
-
-    drop(request_writer);
+    let (runtime_tx, _runtime_rx) = async_channel::unbounded();
+    let mut stream = io::new_stream(
+        stream_id,
+        CloseTarget::Return,
+        CloseTarget::Origin,
+        RuntimeHandle::new(runtime_tx),
+    );
+    stream.writer.queue_finish();
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(
-            true,
-            Some(OutboundIo::new(request_reader, request_terminal_tx)),
-            None,
-        ),
+        DriverStreamIo::new(true, Some(OutboundIo::new(stream.writer_io)), None),
     );
 
     state.poll_stream(&mut fsm, stream_id);
@@ -139,16 +149,17 @@ fn poll_stream_keeps_outbound_pending_after_local_finish_when_inbound_is_closed(
 fn local_close_command_reaps_when_other_half_is_already_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
-    let (request_reader, _request_writer) = chunk_slot::new();
-    let (request_terminal_tx, _request_terminal_rx) = oneshot::channel();
+    let (runtime_tx, _runtime_rx) = async_channel::unbounded();
+    let stream = io::new_stream(
+        stream_id,
+        CloseTarget::Return,
+        CloseTarget::Origin,
+        RuntimeHandle::new(runtime_tx),
+    );
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(
-            true,
-            Some(OutboundIo::new(request_reader, request_terminal_tx)),
-            None,
-        ),
+        DriverStreamIo::new(true, Some(OutboundIo::new(stream.writer_io)), None),
     );
 
     state.drive_command(

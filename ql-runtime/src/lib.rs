@@ -2,11 +2,11 @@ pub use ql_fsm::NoSessionError;
 
 pub use self::{error::QlStreamError, handle::*, platform::*};
 
-pub mod chunk_slot;
 pub(crate) mod command;
 pub(crate) mod driver;
 mod error;
 pub mod handle;
+pub(crate) mod io;
 pub mod log;
 pub mod platform;
 #[cfg(feature = "rpc")]

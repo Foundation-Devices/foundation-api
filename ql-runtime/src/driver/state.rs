@@ -4,8 +4,8 @@ use bytes::Bytes;
 use ql_wire::{CloseTarget, StreamId};
 
 use crate::{
-    chunk_slot::{ChunkSlotRx, ChunkSlotTx, TrySendError},
     command::Command,
+    io::{PushError, ReaderIo, WriterIo},
     QlStreamError,
 };
 
@@ -64,30 +64,23 @@ impl DriverStreamIo {
     }
 
     pub fn outbound_finish(&mut self) {
-        if let Some(mut outbound) = self.outbound.take() {
-            if let Some(terminal) = outbound.terminal.take() {
-                let _ = terminal.send(Ok(()));
-            }
+        if let Some(outbound) = self.outbound.take() {
+            outbound.writer.finish();
         }
     }
 
     pub fn outbound_fail(&mut self, error: QlStreamError) {
-        if let Some(mut outbound) = self.outbound.take() {
-            if let Some(terminal) = outbound.terminal.take() {
-                let _ = terminal.send(Err(error));
-            }
+        if let Some(outbound) = self.outbound.take() {
+            let _ = outbound.writer.fail(error);
         }
     }
 
-    pub fn outbound_reader_mut(&mut self) -> Option<&mut ChunkSlotRx> {
-        self.outbound
-            .as_mut()
-            .and_then(|outbound| outbound.reader.as_mut())
+    pub fn outbound_writer_mut(&mut self) -> Option<&mut WriterIo> {
+        self.outbound.as_mut().map(|outbound| &mut outbound.writer)
     }
 
     pub fn outbound_queue_finish(&mut self) {
         if let Some(outbound) = self.outbound.as_mut() {
-            outbound.reader = None;
             outbound.finish_pending = true;
         }
     }
@@ -108,10 +101,10 @@ impl DriverStreamIo {
         };
 
         let len = bytes.len();
-        match inbound.writer.try_send(bytes) {
+        match inbound.reader.try_write(bytes) {
             Ok(()) => InboundWriteResult::Accepted(len),
-            Err(TrySendError::Full(_)) => InboundWriteResult::Full,
-            Err(TrySendError::Closed(_)) => {
+            Err(PushError::Full(_)) => InboundWriteResult::Full,
+            Err(PushError::Closed(_)) => {
                 self.inbound = None;
                 InboundWriteResult::Closed
             }
@@ -119,43 +112,34 @@ impl DriverStreamIo {
     }
 
     pub fn inbound_finish(&mut self) {
-        if let Some(mut inbound) = self.inbound.take() {
-            inbound.writer.close();
-            if let Some(terminal) = inbound.terminal.take() {
-                let _ = terminal.send(Ok(()));
-            }
+        if let Some(inbound) = self.inbound.take() {
+            inbound.reader.finish();
         }
     }
 
     pub fn inbound_fail(&mut self, error: QlStreamError) {
-        if let Some(mut inbound) = self.inbound.take() {
-            inbound.writer.close();
-            if let Some(terminal) = inbound.terminal.take() {
-                let _ = terminal.send(Err(error));
-            }
+        if let Some(inbound) = self.inbound.take() {
+            let _ = inbound.reader.fail(error);
         }
     }
 }
 
 pub struct OutboundIo {
-    reader: Option<ChunkSlotRx>,
-    terminal: Option<oneshot::Sender<Result<(), QlStreamError>>>,
+    writer: WriterIo,
     finish_pending: bool,
 }
 
 impl OutboundIo {
-    pub fn new(reader: ChunkSlotRx, terminal: oneshot::Sender<Result<(), QlStreamError>>) -> Self {
+    pub fn new(writer: WriterIo) -> Self {
         Self {
-            reader: Some(reader),
-            terminal: Some(terminal),
+            writer,
             finish_pending: false,
         }
     }
 }
 
 pub struct InboundIo {
-    writer: ChunkSlotTx,
-    terminal: Option<oneshot::Sender<Result<(), QlStreamError>>>,
+    reader: ReaderIo,
 }
 
 pub enum InboundWriteResult {
@@ -165,10 +149,7 @@ pub enum InboundWriteResult {
 }
 
 impl InboundIo {
-    pub fn new(writer: ChunkSlotTx, terminal: oneshot::Sender<Result<(), QlStreamError>>) -> Self {
-        Self {
-            writer,
-            terminal: Some(terminal),
-        }
+    pub fn new(reader: ReaderIo) -> Self {
+        Self { reader }
     }
 }

@@ -20,10 +20,9 @@ use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
-    chunk_slot,
     command::Command,
-    handle::{QlStream, StreamReader, StreamWriter},
-    log,
+    handle::QlStream,
+    io, log,
     platform::{QlInbound, QlPlatform, QlTimer},
     QlStreamError, Runtime, RuntimeHandle,
 };
@@ -203,12 +202,7 @@ impl DriverState {
                 log::info!(" starting XX pairing");
                 fsm.connect_xx(now(), token, platform);
             }
-            Command::OpenStream {
-                route_id,
-                request_reader,
-                request_terminal,
-                start,
-            } => {
+            Command::OpenStream { route_id, start } => {
                 log::info!("open stream requested: route_id={route_id}");
                 let Some(runtime_tx) = self.runtime_tx.upgrade() else {
                     log::warn!("open stream aborted: runtime channel unavailable");
@@ -226,24 +220,24 @@ impl DriverState {
                 };
                 let stream_id = stream_ops.stream_id();
                 log::info!("open stream allocated: route_id={route_id} stream_id={stream_id}");
-                let (response_reader, response_writer) = chunk_slot::new();
-                let (response_terminal_tx, response_terminal_rx) = oneshot::channel();
+                let stream = io::new_stream(
+                    stream_id,
+                    CloseTarget::Return,
+                    CloseTarget::Origin,
+                    RuntimeHandle::new(runtime_tx),
+                );
                 self.streams.insert(
                     stream_id,
                     DriverStreamIo::new(
                         true,
-                        Some(OutboundIo::new(request_reader, request_terminal)),
-                        Some(InboundIo::new(response_writer, response_terminal_tx)),
+                        Some(OutboundIo::new(stream.writer_io)),
+                        Some(InboundIo::new(stream.reader_io)),
                     ),
                 );
-                let reader = StreamReader::new(
-                    stream_id,
-                    CloseTarget::Return,
-                    response_reader,
-                    response_terminal_rx,
-                    RuntimeHandle::new(runtime_tx),
-                );
-                if start.send(Ok((stream_id, reader))).is_err() {
+                if start
+                    .send(Ok((stream_id, stream.reader, stream.writer)))
+                    .is_err()
+                {
                     log::warn!("open stream cancelled before delivery: stream_id={stream_id}");
                     if let Some(stream) = self.streams.get_mut(&stream_id) {
                         stream.inbound_close();
@@ -367,17 +361,19 @@ impl DriverState {
             return;
         };
 
-        let (request_reader, request_writer) = chunk_slot::new();
-        let (request_terminal_tx, request_terminal_rx) = oneshot::channel();
-        let (response_reader, response_writer) = chunk_slot::new();
-        let (response_terminal_tx, response_terminal_rx) = oneshot::channel();
+        let stream = io::new_stream(
+            stream_id,
+            CloseTarget::Origin,
+            CloseTarget::Return,
+            RuntimeHandle::new(runtime_tx),
+        );
 
         self.streams.insert(
             stream_id,
             DriverStreamIo::new(
                 false,
-                Some(OutboundIo::new(response_reader, response_terminal_tx)),
-                Some(InboundIo::new(request_writer, request_terminal_tx)),
+                Some(OutboundIo::new(stream.writer_io)),
+                Some(InboundIo::new(stream.reader_io)),
             ),
         );
 
@@ -387,20 +383,8 @@ impl DriverState {
         platform.handle_inbound(QlStream {
             stream_id,
             route_id,
-            reader: StreamReader::new(
-                stream_id,
-                CloseTarget::Origin,
-                request_reader,
-                request_terminal_rx,
-                RuntimeHandle::new(runtime_tx.clone()),
-            ),
-            writer: StreamWriter::new(
-                stream_id,
-                CloseTarget::Return,
-                response_writer,
-                response_terminal_rx,
-                RuntimeHandle::new(runtime_tx),
-            ),
+            reader: stream.reader,
+            writer: stream.writer,
         });
     }
 
@@ -550,13 +534,13 @@ impl DriverState {
             return;
         };
         let stream = entry.get_mut();
-        let Some(reader) = stream.outbound_reader_mut() else {
-            log::trace!("poll stream skipped without outbound reader: stream_id={stream_id}");
+        let Some(writer_io) = stream.outbound_writer_mut() else {
+            log::trace!("poll stream skipped without outbound writer: stream_id={stream_id}");
             return;
         };
 
-        if reader.is_finished() {
-            log::info!("observed outbound reader finished before write: stream_id={stream_id}");
+        if writer_io.is_finished() {
+            log::info!("observed outbound writer finished before write: stream_id={stream_id}");
             if let Ok(mut stream_ops) = fsm.stream(stream_id) {
                 if let Some(writer) = stream_ops.writer() {
                     writer.finish();
@@ -584,7 +568,7 @@ impl DriverState {
                 break;
             }
 
-            let Ok(mut bytes) = reader.try_recv(capacity) else {
+            let Ok(mut bytes) = writer_io.try_read(capacity) else {
                 break;
             };
             if bytes.is_empty() {
@@ -598,8 +582,8 @@ impl DriverState {
             let _ = writer.write(&mut bytes);
         }
 
-        if reader.is_finished() {
-            log::info!("observed outbound reader finished after write: stream_id={stream_id}");
+        if writer_io.is_finished() {
+            log::info!("observed outbound writer finished after write: stream_id={stream_id}");
             writer.finish();
             stream.outbound_queue_finish();
             if stream.is_closed() {

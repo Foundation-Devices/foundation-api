@@ -1,0 +1,203 @@
+use std::{
+    future::{poll_fn, Future},
+    task::{Context, Poll},
+};
+
+use bytes::Bytes;
+use event_listener::EventListener;
+use ql_wire::{CloseTarget, StreamCloseCode};
+
+use super::{
+    queue::{PopError, PushError},
+    shared::{StreamShared, WriterItem},
+    sync::Arc,
+};
+use crate::{command::Command, log, QlStreamError, RuntimeHandle};
+
+pub struct StreamWriter {
+    shared: Arc<StreamShared>,
+    target: CloseTarget,
+    wait: Option<EventListener>,
+    open: bool,
+    terminal: WriterTerminalState,
+    handle: RuntimeHandle,
+}
+
+enum WriterTerminalState {
+    Pending,
+    Terminal(Result<(), QlStreamError>),
+}
+
+unsafe impl Sync for StreamWriter {}
+
+impl std::fmt::Debug for StreamWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutboundByteStream")
+            .field("stream_id", &self.shared.stream_id)
+            .field("target", &self.target)
+            .field("closed", &!self.open)
+            .finish_non_exhaustive()
+    }
+}
+
+impl StreamWriter {
+    pub(crate) fn new(
+        shared: Arc<StreamShared>,
+        target: CloseTarget,
+        handle: RuntimeHandle,
+    ) -> Self {
+        Self {
+            shared,
+            target,
+            wait: None,
+            open: true,
+            terminal: WriterTerminalState::Pending,
+            handle,
+        }
+    }
+
+    pub fn poll_write(
+        &mut self,
+        bytes: &mut Bytes,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), QlStreamError>> {
+        if bytes.is_empty() {
+            return Poll::Ready(Ok(()));
+        }
+
+        if !self.open {
+            return self.poll_terminal(cx);
+        }
+
+        loop {
+            match self.shared.writer.try_write(std::mem::take(bytes)) {
+                Ok(()) => {
+                    log::trace!(
+                        "byte writer accepted chunk: stream_id={:?} target={:?}",
+                        self.shared.stream_id,
+                        self.target
+                    );
+                    self.wait = None;
+                    self.poll_runtime();
+                    return Poll::Ready(Ok(()));
+                }
+                Err(PushError::Closed(chunk)) => {
+                    *bytes = chunk;
+                    self.open = false;
+                    self.wait = None;
+                    return self.poll_terminal(cx);
+                }
+                Err(PushError::Full(chunk)) => {
+                    *bytes = chunk;
+                }
+            }
+
+            let active_listener = self.wait.get_or_insert_with(|| self.shared.writer.listen());
+            match std::pin::Pin::new(active_listener).poll(cx) {
+                Poll::Ready(()) => self.wait = None,
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    pub async fn write(&mut self, bytes: Bytes) -> Result<(), QlStreamError> {
+        let mut bytes = bytes;
+        poll_fn(|cx| self.poll_write(&mut bytes, cx)).await
+    }
+
+    pub fn queue_finish(&mut self) {
+        if !self.open {
+            return;
+        }
+        log::debug!(
+            "byte writer finish: stream_id={:?} target={:?}",
+            self.shared.stream_id,
+            self.target
+        );
+        self.open = false;
+        self.wait = None;
+        self.shared.writer.request_finish();
+        self.poll_runtime();
+    }
+
+    pub async fn finish(mut self) -> Result<(), QlStreamError> {
+        self.queue_finish();
+        poll_fn(|cx| self.poll_terminal(cx)).await
+    }
+
+    pub fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
+        if self.open {
+            self.queue_finish();
+        }
+        self.poll_terminal(cx)
+    }
+
+    pub fn close(mut self, code: StreamCloseCode) {
+        self.close_inner(code);
+    }
+
+    fn poll_runtime(&self) {
+        self.handle.try_send(Command::PollStream {
+            stream_id: self.shared.stream_id,
+        });
+    }
+
+    fn poll_terminal(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
+        match &self.terminal {
+            WriterTerminalState::Terminal(result) => return Poll::Ready(result.clone()),
+            WriterTerminalState::Pending => {}
+        }
+
+        loop {
+            if self.shared.writer.terminal_ready() {
+                if self.shared.writer.terminal_ok() {
+                    self.terminal = WriterTerminalState::Terminal(Ok(()));
+                    return Poll::Ready(Ok(()));
+                }
+
+                match self.shared.writer.pop() {
+                    Ok(WriterItem::Error(error)) => {
+                        self.terminal = WriterTerminalState::Terminal(Err(error.clone()));
+                        return Poll::Ready(Err(error));
+                    }
+                    Ok(WriterItem::Chunk(_)) => {
+                        panic!("writer terminal phase contained chunk data")
+                    }
+                    Err(PopError::Empty) => {}
+                    Err(PopError::Closed) => panic!("writer endpoint closed unexpectedly"),
+                }
+            }
+
+            let active_listener = self.wait.get_or_insert_with(|| self.shared.writer.listen());
+            match std::pin::Pin::new(active_listener).poll(cx) {
+                Poll::Ready(()) => self.wait = None,
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    fn close_inner(&mut self, code: StreamCloseCode) {
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        log::debug!(
+            "byte writer close: stream_id={:?} target={:?} code={:?}",
+            self.shared.stream_id,
+            self.target,
+            code
+        );
+        self.wait = None;
+        self.handle.try_send(Command::CloseStream {
+            stream_id: self.shared.stream_id,
+            target: self.target,
+            code,
+        });
+    }
+}
+
+impl Drop for StreamWriter {
+    fn drop(&mut self) {
+        self.close_inner(StreamCloseCode::CANCELLED);
+    }
+}

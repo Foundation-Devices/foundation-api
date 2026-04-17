@@ -1,7 +1,7 @@
 use ql_fsm::NoSessionError;
 use ql_wire::{CloseTarget, PairingToken, PeerBundle, RouteId, StreamCloseCode, StreamId};
 
-use crate::{chunk_slot::ChunkSlotRx, QlStreamError, StreamReader};
+use crate::{StreamReader, StreamWriter};
 
 pub enum Command {
     BindPeer {
@@ -17,9 +17,7 @@ pub enum Command {
     },
     OpenStream {
         route_id: RouteId,
-        request_reader: ChunkSlotRx,
-        request_terminal: oneshot::Sender<Result<(), QlStreamError>>,
-        start: oneshot::Sender<Result<(StreamId, StreamReader), NoSessionError>>,
+        start: oneshot::Sender<Result<(StreamId, StreamReader, StreamWriter), NoSessionError>>,
     },
     PollInbound {
         stream_id: StreamId,

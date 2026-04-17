@@ -1,4 +1,4 @@
-//! local single-slot queue for `chunk_slot` to avoid `ConcurrentQueue<Bytes>` taking 512 bytes instead of 40
+//! local single-slot queue for stream io
 //! copied from `concurrent_queue::single::Single<T>` in `concurrent-queue`
 
 use core::mem::MaybeUninit;
@@ -21,6 +21,9 @@ pub enum PushError<T> {
     Full(T),
     Closed(T),
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ForcePushError<T>(pub T);
 
 /// A single-element queue.
 pub struct Single<T> {
@@ -63,6 +66,61 @@ impl<T> Single<T> {
         }
     }
 
+    /// Attempts to push an item into the queue, displacing another if necessary.
+    pub fn force_push(&self, value: T) -> Result<Option<T>, ForcePushError<T>> {
+        // Attempt to lock the slot.
+        let mut state = 0;
+
+        loop {
+            // Lock the slot.
+            let prev = self
+                .state
+                .compare_exchange(state, LOCKED | PUSHED, Ordering::SeqCst, Ordering::SeqCst)
+                .unwrap_or_else(|x| x);
+
+            if prev & CLOSED != 0 {
+                return Err(ForcePushError(value));
+            }
+
+            if prev == state {
+                // If the value was pushed, swap out the value.
+                let prev_value = if prev & PUSHED == 0 {
+                    // SAFETY: write is safe because we have locked the state.
+                    self.slot.with_mut(|slot| unsafe {
+                        slot.write(MaybeUninit::new(value));
+                    });
+                    None
+                } else {
+                    // SAFETY: replace is safe because we have locked the state, and
+                    // assume_init is safe because we have checked that the value was pushed.
+                    self.slot.with_mut(move |slot| unsafe {
+                        Some(std::ptr::replace(slot, MaybeUninit::new(value)).assume_init())
+                    })
+                };
+
+                if let Some(prev_value) = prev_value {
+                    // We can unlock the slot now.
+                    self.state.fetch_and(!LOCKED, Ordering::Release);
+                    // Return the old value.
+                    return Ok(Some(prev_value));
+                }
+
+                // We can unlock the slot now.
+                self.state.fetch_and(!LOCKED, Ordering::Release);
+                return Ok(None);
+            }
+
+            // Try to go for the current (pushed) state.
+            if prev & LOCKED == 0 {
+                state = prev;
+            } else {
+                // State is locked.
+                busy_wait();
+                state = prev & !LOCKED;
+            }
+        }
+    }
+
     /// Attempts to pop an item from the queue.
     pub fn pop(&self) -> Result<T, PopError> {
         let mut state = PUSHED;
@@ -88,11 +146,11 @@ impl<T> Single<T> {
             }
 
             if prev & PUSHED == 0 {
-                if prev & CLOSED == 0 {
-                    return Err(PopError::Empty);
+                return if prev & CLOSED == 0 {
+                    Err(PopError::Empty)
                 } else {
-                    return Err(PopError::Closed);
-                }
+                    Err(PopError::Closed)
+                };
             }
 
             if prev & LOCKED == 0 {
@@ -112,19 +170,6 @@ impl<T> Single<T> {
     /// Returns `true` if the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    /// Closes the queue.
-    ///
-    /// Returns `true` if this call closed the queue.
-    pub fn close(&self) -> bool {
-        let state = self.state.fetch_or(CLOSED, Ordering::SeqCst);
-        state & CLOSED == 0
-    }
-
-    /// Returns `true` if the queue is closed.
-    pub fn is_closed(&self) -> bool {
-        self.state.load(Ordering::SeqCst) & CLOSED != 0
     }
 }
 
