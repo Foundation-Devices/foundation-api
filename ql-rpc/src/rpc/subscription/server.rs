@@ -3,10 +3,10 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 
 use crate::{
-    codec, finish_bytes, subscription::Subscription as SubscriptionRpc, write_bytes, RpcCodec,
-    RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,
+    codec, finish_bytes, rpc::read_eof_request, subscription::Subscription as SubscriptionRpc,
+    write_bytes, RouterConfig, RpcCodec, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
+    StreamError,
 };
-use crate::{rpc::read_framed_value, RouterConfig};
 
 pub trait SubscriptionHandler<M, St>
 where
@@ -79,7 +79,7 @@ pub(crate) async fn handle_subscription_inner<S, M, St>(
     S: SubscriptionHandler<M, St> + 'static,
     St: RpcStream + 'static,
 {
-    let request = match read_framed_value::<M::Request, _>(&mut reader, config).await {
+    let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
             let code = error.close_code();

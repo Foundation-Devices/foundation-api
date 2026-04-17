@@ -5,7 +5,7 @@ use bytes::{BufMut, Bytes};
 use crate::{codec, download::Download, ChunkQueue, CodecError, RpcCodec};
 
 pub fn encode_request<M: Download>(request: &M::Request, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    codec::encode_value_part(request, out)
+    request.encode_value(out)
 }
 
 pub fn encode_response_header<M: Download>(

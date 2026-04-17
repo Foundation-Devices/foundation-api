@@ -8,7 +8,7 @@ pub fn encode_request<M: Subscription>(
     request: &M::Request,
     out: &mut (impl BufMut + AsMut<[u8]>),
 ) {
-    codec::encode_value_part(request, out)
+    request.encode_value(out)
 }
 
 pub fn encode_item<M: Subscription>(item: &M::Event, out: &mut (impl BufMut + AsMut<[u8]>)) {

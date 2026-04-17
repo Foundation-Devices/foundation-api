@@ -1,6 +1,6 @@
 use crate::{
-    read_bytes, CallError, ChunkQueue, CodecError, FramedValueReader, ReadValueStep, RouterConfig,
-    RpcCodec, RpcRead, StreamCloseCode,
+    read_bytes, ChunkQueue, CodecError, FramedValueReader, ReadValueStep, RouterConfig, RpcCodec,
+    RpcRead, StreamCloseCode,
 };
 
 pub mod download;
@@ -18,7 +18,7 @@ pub use subscription::Subscription;
 pub use upload::Upload;
 
 /// reads one length-delimited value and rejects trailing bytes
-async fn read_framed_value<T, R>(reader: &mut R, config: RouterConfig) -> Result<T, R::Error>
+async fn read_framed_request<T, R>(reader: &mut R, config: RouterConfig) -> Result<T, R::Error>
 where
     T: RpcCodec,
     R: RpcRead,
@@ -59,24 +59,34 @@ where
     }
 }
 
-/// reads one eof-delimited value and rejects trailing bytes
-async fn read_whole_value<T, R>(reader: &mut R) -> Result<T, CallError<T::Error, R::Error>>
+/// reads one eof-delimited value up to the configured request limit
+async fn read_eof_request<T, R>(reader: &mut R, config: RouterConfig) -> Result<T, R::Error>
 where
     T: RpcCodec,
     R: RpcRead,
 {
     let mut bytes = ChunkQueue::default();
+    let mut total_read = 0usize;
 
-    while let Some(chunk) = read_bytes(reader, usize::MAX)
-        .await
-        .map_err(CallError::Transport)?
-    {
-        bytes.push(chunk);
+    loop {
+        let remaining = config.max_request_bytes.saturating_sub(total_read);
+        let probe = remaining.max(1);
+        match read_bytes(reader, probe).await {
+            Ok(Some(chunk)) => {
+                if chunk.len() > remaining {
+                    return Err(StreamCloseCode::LIMIT.into());
+                }
+                total_read += chunk.len();
+                bytes.push(chunk);
+            }
+            Ok(None) => break,
+            Err(error) => return Err(error),
+        }
     }
 
-    let value = T::decode_value(&mut bytes).map_err(CallError::Codec)?;
+    let value = T::decode_value(&mut bytes).map_err(|_error| StreamCloseCode::REFUSED)?;
     if bytes.remaining() > 0 {
-        return Err(crate::Error::TrailingBytes.into());
+        return Err(StreamCloseCode::REFUSED.into());
     }
     Ok(value)
 }

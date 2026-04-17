@@ -1,6 +1,6 @@
 use bytes::BufMut;
 
-use crate::{request::Request, rpc::read_whole_value, CallError, RpcCodec, RpcRead};
+use crate::{CallError, ChunkQueue, RpcCodec, RpcRead, read_bytes, request::Request};
 
 pub fn encode_request<M: Request>(request: &M::Request, out: &mut (impl BufMut + AsMut<[u8]>)) {
     request.encode_value(out)
@@ -20,5 +20,18 @@ where
     M: Request,
     R: RpcRead,
 {
-    read_whole_value::<M::Response, _>(&mut reader).await
+    let mut bytes = ChunkQueue::default();
+
+    while let Some(chunk) = read_bytes(&mut reader, usize::MAX)
+        .await
+        .map_err(CallError::Transport)?
+    {
+        bytes.push(chunk);
+    }
+
+    let value = M::Response::decode_value(&mut bytes).map_err(CallError::Codec)?;
+    if bytes.remaining() > 0 {
+        return Err(crate::Error::TrailingBytes.into());
+    }
+    Ok(value)
 }

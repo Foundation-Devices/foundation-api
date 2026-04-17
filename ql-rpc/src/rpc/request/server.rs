@@ -3,11 +3,9 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 
 use crate::{
-    finish_bytes, read_bytes, request::Request as RequestRpc, write_bytes, ChunkQueue,
+    finish_bytes, request::Request as RequestRpc, rpc::read_eof_request, write_bytes, RouterConfig,
     RpcCodec, RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,
 };
-
-use crate::RouterConfig;
 
 pub trait RequestHandler<M, St>
 where
@@ -76,7 +74,7 @@ pub(crate) async fn handle_request_inner<S, M, St>(
     S: RequestHandler<M, St> + 'static,
     St: RpcStream + 'static,
 {
-    let request = match read_whole_value::<M::Request, _>(&mut reader, config).await {
+    let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
             let code = error.close_code();
@@ -90,38 +88,4 @@ pub(crate) async fn handle_request_inner<S, M, St>(
     };
 
     state.handle(request, Response::new(writer));
-}
-
-pub(crate) async fn read_whole_value<T, R>(
-    reader: &mut R,
-    config: RouterConfig,
-) -> Result<T, R::Error>
-where
-    T: RpcCodec,
-    R: RpcRead,
-{
-    let mut bytes = ChunkQueue::default();
-    let mut total_read = 0usize;
-
-    loop {
-        let remaining = config.max_request_bytes.saturating_sub(total_read);
-        let probe = remaining.max(1);
-        match read_bytes(reader, probe).await {
-            Ok(Some(chunk)) => {
-                if chunk.len() > remaining {
-                    return Err(StreamCloseCode::LIMIT.into());
-                }
-                total_read += chunk.len();
-                bytes.push(chunk);
-            }
-            Ok(None) => break,
-            Err(error) => return Err(error),
-        }
-    }
-
-    let value = T::decode_value(&mut bytes).map_err(|_error| StreamCloseCode::REFUSED)?;
-    if bytes.remaining() > 0 {
-        return Err(StreamCloseCode::REFUSED.into());
-    }
-    Ok(value)
 }

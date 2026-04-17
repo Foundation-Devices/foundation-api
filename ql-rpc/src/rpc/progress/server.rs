@@ -3,11 +3,11 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 
 use crate::{
-    RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError, finish_bytes,
-    progress::{Progress, encode_progress, encode_response},
-    write_bytes,
+    finish_bytes,
+    progress::{encode_progress, encode_response, Progress},
+    rpc::read_framed_request,
+    write_bytes, RouterConfig, RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,
 };
-use crate::{RouterConfig, rpc::read_framed_value};
 
 pub trait ProgressHandler<M, St>
 where
@@ -84,7 +84,7 @@ pub(crate) async fn handle_progress_inner<S, M, St>(
     S: ProgressHandler<M, St> + 'static,
     St: RpcStream + 'static,
 {
-    let request = match read_framed_value::<M::Request, _>(&mut reader, config).await {
+    let request = match read_framed_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
             let code = error.close_code();

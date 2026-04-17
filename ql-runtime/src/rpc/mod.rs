@@ -22,12 +22,12 @@ pub struct RpcHandle {
 }
 
 impl RpcHandle {
-    pub async fn event<M>(&self, event: &M::Event) -> Result<(), RpcError<M::Error>>
+    pub async fn event<M>(&self, event: &M::Payload) -> Result<(), RpcError<M::Error>>
     where
         M: Notification,
     {
         let mut payload = Vec::new();
-        notification::encode_event::<M>(event, &mut payload);
+        notification::encode_notification::<M>(event, &mut payload);
         let mut stream = self
             .inner
             .open_stream(adapter::to_wire_route_id(M::ROUTE))

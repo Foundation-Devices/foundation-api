@@ -3,10 +3,9 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 
 use crate::{
-    codec, download::Download as DownloadRpc, finish_bytes, write_bytes, RpcCodec, RpcRead,
-    RpcStream, RpcWrite, StreamCloseCode, StreamError,
+    codec, download::Download as DownloadRpc, finish_bytes, rpc::read_eof_request, write_bytes,
+    RouterConfig, RpcCodec, RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,
 };
-use crate::{rpc::read_framed_value, RouterConfig};
 
 pub trait DownloadHandler<M, St>
 where
@@ -119,7 +118,7 @@ pub(crate) async fn handle_download_inner<S, M, St>(
     S: DownloadHandler<M, St> + 'static,
     St: RpcStream + 'static,
 {
-    let request = match read_framed_value::<M::Request, _>(&mut reader, config).await {
+    let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
             let code = error.close_code();
