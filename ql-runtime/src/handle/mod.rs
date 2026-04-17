@@ -78,9 +78,7 @@ impl RuntimeHandle {
 
     #[cfg(feature = "rpc")]
     pub fn rpc(&self) -> crate::rpc::RpcHandle {
-        crate::rpc::RpcHandle {
-            inner: self.clone(),
-        }
+        crate::rpc::RpcHandle::new(self.clone())
     }
 }
 

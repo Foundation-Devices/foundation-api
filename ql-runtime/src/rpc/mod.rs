@@ -19,7 +19,7 @@ use crate::{RuntimeHandle, StreamReader};
 
 #[derive(Clone)]
 pub struct RpcHandle {
-    pub(crate) inner: RuntimeHandle,
+    inner: RuntimeHandle,
 }
 
 impl RpcHandle {
@@ -92,6 +92,12 @@ impl RpcHandle {
         Ok(ProgressCall {
             inner: rpc_progress::ProgressCall::new(response),
         })
+    }
+}
+
+impl RpcHandle {
+    pub(super) fn new(inner: RuntimeHandle) -> Self {
+        Self { inner }
     }
 
     async fn start_request<E>(
