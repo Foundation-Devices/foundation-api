@@ -1,19 +1,19 @@
 mod adapter;
 mod download;
 mod error;
-mod request_with_progress;
+mod progress;
 mod subscription;
 
 use bytes::Bytes;
 use ql_rpc::{
     download::{self as rpc_download, Download as DownloadRpc},
     notification::{self, Notification},
+    progress::{self as rpc_progress, Progress},
     request::{self, Request as RequestRpc},
-    request_with_progress::{self as rpc_request_with_progress, RequestWithProgress},
     subscription::{self as rpc_subscription, Subscription as SubscriptionRpc},
 };
 
-pub use self::{adapter::*, download::*, error::*, request_with_progress::*, subscription::*};
+pub use self::{adapter::*, download::*, error::*, progress::*, subscription::*};
 use crate::{RuntimeHandle, StreamReader};
 
 #[derive(Clone)]
@@ -78,20 +78,18 @@ impl RpcHandle {
         })
     }
 
-    pub async fn request_with_progress<M>(
+    pub async fn progress<M>(
         &self,
         request: &M::Request,
     ) -> Result<ProgressCall<M>, RpcError<M::Error>>
     where
-        M: RequestWithProgress,
+        M: Progress,
     {
         let mut payload = Vec::new();
-        rpc_request_with_progress::encode_request::<M>(request, &mut payload);
+        rpc_progress::encode_request::<M>(request, &mut payload);
         let response = self.start_request(M::ROUTE, payload).await?;
         Ok(ProgressCall {
-            stream: response,
-            reader: Some(rpc_request_with_progress::ResponseReader::default()),
-            terminal: None,
+            inner: rpc_progress::ProgressCall::new(response),
         })
     }
 

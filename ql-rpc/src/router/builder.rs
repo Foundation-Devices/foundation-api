@@ -7,6 +7,8 @@ use super::{
 use crate::{
     download::Download as DownloadRpc,
     download::server::{handle_download_inner, DownloadHandler},
+    progress::Progress as ProgressRpc,
+    progress::server::{ProgressHandler, handle_progress_inner},
     request::Request as RequestRpc, subscription::Subscription as SubscriptionRpc, RouteId,
     request::server::{handle_request_inner, RequestHandler},
     subscription::server::{handle_subscription_inner, SubscriptionHandler},
@@ -103,6 +105,17 @@ where
             ))
         })
     }
+
+    pub fn progress<M>(self) -> Self
+    where
+        M: ProgressRpc + 'static,
+        S: ProgressHandler<M, St> + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_progress_inner::<S, M, St>(state, config, reader, writer))
+        })
+    }
 }
 
 impl<S, St> RouterBuilder<S, St, SendSpawn>
@@ -154,6 +167,20 @@ where
             spawner.spawn(handle_subscription_inner::<S, M, St>(
                 state, config, reader, writer,
             ))
+        })
+    }
+
+    pub fn progress<M>(self) -> Self
+    where
+        M: ProgressRpc + 'static,
+        M::Request: Send + 'static,
+        S: ProgressHandler<M, St> + Send + 'static,
+        St::Reader: Send + 'static,
+        St::Writer: Send + 'static,
+    {
+        self.add_route(M::ROUTE, |spawner, state, config, stream| {
+            let (reader, writer) = stream.split();
+            spawner.spawn(handle_progress_inner::<S, M, St>(state, config, reader, writer))
         })
     }
 }

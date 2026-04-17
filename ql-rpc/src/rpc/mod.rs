@@ -1,27 +1,24 @@
 use crate::{
-    read_bytes, CallError, ChunkQueue, FramedValueReader, ReadValueStep, RouterConfig, RpcCodec, RpcRead,
-    StreamCloseCode,
+    read_bytes, CallError, ChunkQueue, CodecError, FramedValueReader, ReadValueStep, RouterConfig,
+    RpcCodec, RpcRead, StreamCloseCode,
 };
 
 pub mod download;
 pub mod notification;
+pub mod progress;
 pub mod request;
-pub mod request_with_progress;
 pub mod subscription;
 pub mod upload;
 
 pub use download::Download;
 pub use notification::Notification;
+pub use progress::Progress;
 pub use request::Request;
-pub use request_with_progress::RequestWithProgress;
 pub use subscription::Subscription;
 pub use upload::Upload;
 
 /// reads one length-delimited value and rejects trailing bytes
-async fn read_framed_value<T, R>(
-    reader: &mut R,
-    config: RouterConfig,
-) -> Result<T, R::Error>
+async fn read_framed_value<T, R>(reader: &mut R, config: RouterConfig) -> Result<T, R::Error>
 where
     T: RpcCodec,
     R: RpcRead,
@@ -33,8 +30,8 @@ where
         match value_reader.advance() {
             Ok(ReadValueStep::Value(value)) => break value,
             Ok(ReadValueStep::NeedMore(next)) => value_reader = next,
-            Err(crate::CodecError::Rpc(_error)) => return Err(StreamCloseCode::REFUSED.into()),
-            Err(crate::CodecError::Codec(_error)) => return Err(StreamCloseCode::REFUSED.into()),
+            Err(CodecError::Rpc(_error)) => return Err(StreamCloseCode::REFUSED.into()),
+            Err(CodecError::Codec(_error)) => return Err(StreamCloseCode::REFUSED.into()),
         }
 
         let remaining = config.max_request_bytes.saturating_sub(total_read);

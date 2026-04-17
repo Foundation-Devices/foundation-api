@@ -12,6 +12,7 @@ pub use self::{
     mode::*,
 };
 pub use crate::download::{DownloadHandler, DownloadResponder, DownloadWriter};
+pub use crate::progress::{ProgressHandler, ProgressResponder};
 pub use crate::request::{RequestHandler, Response};
 pub use crate::subscription::{SubscriptionHandler, SubscriptionResponder};
 use crate::{close_stream, RpcStream};

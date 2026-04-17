@@ -2,9 +2,9 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, request_with_progress::RequestWithProgress, CodecError, Error, RpcCodec};
+use crate::{codec, progress::Progress, CodecError, Error, RpcCodec};
 
-pub enum ReadStep<M: RequestWithProgress> {
+pub enum ReadStep<M: Progress> {
     NeedMore(ResponseReader<M>),
     Progress {
         value: M::Progress,
@@ -13,12 +13,12 @@ pub enum ReadStep<M: RequestWithProgress> {
     Response(M::Response),
 }
 
-pub struct ResponseReader<M: RequestWithProgress> {
+pub struct ResponseReader<M: Progress> {
     bytes: codec::ChunkQueue,
     marker: PhantomData<fn() -> M>,
 }
 
-impl<M: RequestWithProgress> Default for ResponseReader<M> {
+impl<M: Progress> Default for ResponseReader<M> {
     fn default() -> Self {
         Self {
             bytes: codec::ChunkQueue::default(),
@@ -27,7 +27,7 @@ impl<M: RequestWithProgress> Default for ResponseReader<M> {
     }
 }
 
-impl<M: RequestWithProgress> ResponseReader<M> {
+impl<M: Progress> ResponseReader<M> {
     pub fn push(mut self, chunk: Bytes) -> Self {
         self.bytes.push(chunk);
         self
@@ -64,32 +64,32 @@ impl<M: RequestWithProgress> ResponseReader<M> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-enum FrameKind {
-    Progress = 1,
-    Response = 2,
-}
-
-pub fn encode_request<M: RequestWithProgress>(
+pub fn encode_request<M: Progress>(
     request: &M::Request,
     out: &mut (impl BufMut + AsMut<[u8]>),
 ) {
     codec::encode_value_part(request, out)
 }
 
-pub fn encode_progress<M: RequestWithProgress>(
+pub fn encode_progress<M: Progress>(
     progress: &M::Progress,
     out: &mut (impl BufMut + AsMut<[u8]>),
 ) {
     encode_tagged_value_part(FrameKind::Progress, progress, out)
 }
 
-pub fn encode_response<M: RequestWithProgress>(
+pub fn encode_response<M: Progress>(
     response: &M::Response,
     out: &mut (impl BufMut + AsMut<[u8]>),
 ) {
     encode_tagged_value_part(FrameKind::Response, response, out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum FrameKind {
+    Progress = 1,
+    Response = 2,
 }
 
 fn encode_tagged_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
@@ -108,11 +108,11 @@ mod tests {
     use bytes::Bytes;
 
     use super::{encode_progress, encode_response, ReadStep, ResponseReader};
-    use crate::{request_with_progress::RequestWithProgress, RouteId};
+    use crate::{progress::Progress, RouteId};
 
     struct Watch;
 
-    impl RequestWithProgress for Watch {
+    impl Progress for Watch {
         const ROUTE: RouteId = RouteId::from_u32(11);
         type Error = core::convert::Infallible;
         type Request = Vec<u8>;

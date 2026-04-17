@@ -9,9 +9,9 @@ use std::{
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use ql_rpc::{
-    DownloadResponder, DownloadWriter, Response, RouteId, StreamCloseCode, SubscriptionResponder,
+    DownloadResponder, DownloadWriter, ProgressResponder, Response, RouteId, StreamCloseCode,
+    SubscriptionResponder,
 };
-use ql_wire::RouteId as WireRouteId;
 
 use super::*;
 use crate::{QlStream, StreamWriter};
@@ -38,7 +38,7 @@ impl ql_rpc::subscription::Subscription for Feed {
 
 struct Download;
 
-impl ql_rpc::request_with_progress::RequestWithProgress for Download {
+impl ql_rpc::progress::Progress for Download {
     const ROUTE: RouteId = RouteId::from_u32(53);
     type Error = core::convert::Infallible;
     type Request = Vec<u8>;
@@ -214,68 +214,57 @@ async fn rpc_router_enforces_max_request_bytes() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rpc_request_with_progress() {
+async fn rpc_progress() {
+    #[derive(Clone)]
+    struct RouterState {
+        seen: Rc<RefCell<Vec<Vec<u8>>>>,
+    }
+
+    impl ql_rpc::ProgressHandler<Download, QlStream> for RouterState {
+        fn handle(
+            self,
+            request: Vec<u8>,
+            mut responder: ProgressResponder<Download, StreamWriter>,
+        ) {
+            let seen = self.seen.clone();
+            tokio::task::spawn_local(async move {
+                seen.borrow_mut().push(request);
+                responder.send(b"10".to_vec()).await.unwrap();
+                responder.send(b"90".to_vec()).await.unwrap();
+                responder.finish(b"done".to_vec()).await.unwrap();
+            });
+        }
+    }
+
     run_local_test(async {
         let mut pair = TestPair::new(default_runtime_config());
         pair.connect_and_wait(Side::A).await;
         let inbound_b = pair.take_inbound(Side::B);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+
+        let router =
+            ql_rpc::Router::<_, QlStream, crate::rpc::LocalSpawn>::builder(crate::rpc::LocalSpawn)
+                .progress::<Download>()
+                .build(RouterState { seen: seen.clone() });
 
         let responder = tokio::task::spawn_local(async move {
             let inbound = inbound_b.recv().await.unwrap();
-            let request: Vec<u8> = {
-                let mut reader = inbound.reader;
-                let mut value_reader = ql_rpc::FramedValueReader::<Vec<u8>>::default();
-
-                loop {
-                    match value_reader.advance().unwrap() {
-                        ql_rpc::ReadValueStep::Value(value) => break value,
-                        ql_rpc::ReadValueStep::NeedMore(next) => value_reader = next,
-                    }
-
-                    match reader.read_chunk().await.unwrap() {
-                        Some(chunk) => value_reader = value_reader.push(chunk),
-                        None => panic!("truncated rpc value"),
-                    }
-                }
-            };
-            assert_eq!(
-                inbound.route_id,
-                WireRouteId::from_u32(
-                    <Download as ql_rpc::request_with_progress::RequestWithProgress>::ROUTE
-                        .into_inner()
-                )
-            );
-            assert_eq!(request, b"logo".to_vec());
-
-            let mut encoded = Vec::new();
-            ql_rpc::request_with_progress::encode_progress::<Download>(
-                &b"10".to_vec(),
-                &mut encoded,
-            );
-            ql_rpc::request_with_progress::encode_progress::<Download>(
-                &b"90".to_vec(),
-                &mut encoded,
-            );
-            ql_rpc::request_with_progress::encode_response::<Download>(
-                &b"done".to_vec(),
-                &mut encoded,
-            );
-
-            let mut writer = inbound.writer;
-            writer.write(Bytes::from(encoded)).await.unwrap();
-            writer.finish().await.unwrap();
+            if let Some((_, fut)) = router.handle(inbound) {
+                fut.await;
+            }
         });
 
         let rpc = pair.side_mut(Side::A).handle.rpc();
         let mut download = rpc
-            .request_with_progress::<Download>(&b"logo".to_vec())
+            .progress::<Download>(&b"logo".to_vec())
             .await
             .unwrap();
 
-        assert_eq!(download.progress().await, Some(b"10".to_vec()));
-        assert_eq!(download.progress().await, Some(b"90".to_vec()));
-        assert_eq!(download.progress().await, None);
+        assert_eq!(download.next().await, Some(b"10".to_vec()));
+        assert_eq!(download.next().await, Some(b"90".to_vec()));
+        assert_eq!(download.next().await, None);
         assert_eq!(download.await.unwrap(), b"done".to_vec());
+        assert_eq!(seen.borrow().as_slice(), &[b"logo".to_vec()]);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
             .await
