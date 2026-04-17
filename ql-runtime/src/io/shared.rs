@@ -60,6 +60,10 @@ impl ReaderShared {
     }
 
     pub fn try_write(&self, bytes: Bytes) -> Result<(), PushError<Bytes>> {
+        if Self::is_finished(self.load_state()) {
+            return Err(PushError::Closed(bytes));
+        }
+
         match self.slot.push(Item::Chunk(bytes)) {
             Ok(()) => {
                 self.changed.notify(usize::MAX);
@@ -417,7 +421,23 @@ mod loom_tests {
     }
 
     #[test]
-    fn reader_write_races_with_finish_preserves_chunk() {
+    fn reader_rejects_write_after_finish() {
+        check_model(|| {
+            let shared = shared();
+
+            shared.reader.finish();
+
+            assert_eq!(
+                shared.reader.try_write(Bytes::from_static(b"abc")),
+                Err(PushError::Closed(Bytes::from_static(b"abc")))
+            );
+            assert!(ReaderShared::is_finished(shared.reader.load_state()));
+            assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
+        });
+    }
+
+    #[test]
+    fn reader_write_races_with_finish_has_coherent_outcome() {
         check_model(|| {
             let shared = shared();
 
@@ -430,13 +450,21 @@ mod loom_tests {
                 thread::spawn(move || shared.reader.finish())
             };
 
-            assert_eq!(writer.join().unwrap(), Ok(()));
+            let write_result = writer.join().unwrap();
             finisher.join().unwrap();
 
             assert!(ReaderShared::is_finished(shared.reader.load_state()));
-            match shared.reader.pop() {
-                Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
-                _ => panic!("expected buffered reader chunk"),
+            match write_result {
+                Ok(()) => match shared.reader.pop() {
+                    Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
+                    _ => panic!("expected buffered reader chunk"),
+                },
+                Err(PushError::Closed(bytes)) => {
+                    assert_eq!(bytes, Bytes::from_static(b"abc"));
+                    assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
+                    return;
+                }
+                Err(PushError::Full(_)) => panic!("empty reader slot must not report full"),
             }
             assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
         });
