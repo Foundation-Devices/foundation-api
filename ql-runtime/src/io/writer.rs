@@ -1,10 +1,9 @@
 use std::{
-    future::{poll_fn, Future},
+    future::poll_fn,
     task::{Context, Poll},
 };
 
 use bytes::Bytes;
-use event_listener::EventListener;
 use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
@@ -17,7 +16,6 @@ use crate::{command::Command, log, QlStreamError, RuntimeHandle};
 pub struct StreamWriter {
     shared: Arc<StreamShared>,
     target: CloseTarget,
-    listener: Option<EventListener>,
     open: bool,
     terminal: WriterTerminalState,
     handle: RuntimeHandle,
@@ -45,7 +43,6 @@ impl StreamWriter {
         Self {
             shared,
             target,
-            listener: None,
             open: true,
             terminal: WriterTerminalState::Pending,
             handle,
@@ -73,14 +70,12 @@ impl StreamWriter {
                         self.shared.stream_id,
                         self.target
                     );
-                    self.listener = None;
                     self.poll_runtime();
                     return Poll::Ready(Ok(()));
                 }
                 Err(PushError::Closed(chunk)) => {
                     *bytes = chunk;
                     self.open = false;
-                    self.listener = None;
                     return self.poll_terminal(cx);
                 }
                 Err(PushError::Full(chunk)) => {
@@ -88,12 +83,29 @@ impl StreamWriter {
                 }
             }
 
-            let active_listener = self
-                .listener
-                .get_or_insert_with(|| self.shared.writer.listen());
-            match std::pin::Pin::new(active_listener).poll(cx) {
-                Poll::Ready(()) => self.listener = None,
-                Poll::Pending => return Poll::Pending,
+            self.shared.writer.register_waiter(cx.waker());
+
+            match self.shared.writer.try_write(std::mem::take(bytes)) {
+                Ok(()) => {
+                    self.shared.writer.unregister_waiter();
+                    log::trace!(
+                        "byte writer accepted chunk: stream_id={:?} target={:?}",
+                        self.shared.stream_id,
+                        self.target
+                    );
+                    self.poll_runtime();
+                    return Poll::Ready(Ok(()));
+                }
+                Err(PushError::Closed(chunk)) => {
+                    self.shared.writer.unregister_waiter();
+                    *bytes = chunk;
+                    self.open = false;
+                    return self.poll_terminal(cx);
+                }
+                Err(PushError::Full(chunk)) => {
+                    *bytes = chunk;
+                    return Poll::Pending;
+                }
             }
         }
     }
@@ -113,7 +125,6 @@ impl StreamWriter {
             self.target
         );
         self.open = false;
-        self.listener = None;
         self.shared.writer.request_finish();
         self.poll_runtime();
     }
@@ -147,34 +158,45 @@ impl StreamWriter {
         }
 
         loop {
-            let state = self.shared.writer.load_state();
-            if WriterShared::terminal_ready(state) {
-                if WriterShared::terminal_ok(state) {
-                    self.terminal = WriterTerminalState::Terminal(Ok(()));
-                    return Poll::Ready(Ok(()));
-                }
-
-                match self.shared.writer.pop() {
-                    Ok(Item::Error(error)) => {
-                        self.terminal = WriterTerminalState::Terminal(Err(error.clone()));
-                        return Poll::Ready(Err(error));
-                    }
-                    Ok(Item::Chunk(_)) => {
-                        panic!("writer terminal phase contained chunk data")
-                    }
-                    Err(PopError::Empty) => {}
-                    Err(PopError::Closed) => panic!("writer endpoint closed unexpectedly"),
-                }
+            match self.try_poll_terminal_ready() {
+                Poll::Ready(result) => return Poll::Ready(result),
+                Poll::Pending => {}
             }
 
-            let active_listener = self
-                .listener
-                .get_or_insert_with(|| self.shared.writer.listen());
-            match std::pin::Pin::new(active_listener).poll(cx) {
-                Poll::Ready(()) => self.listener = None,
+            self.shared.writer.register_waiter(cx.waker());
+
+            match self.try_poll_terminal_ready() {
+                Poll::Ready(result) => {
+                    self.shared.writer.unregister_waiter();
+                    return Poll::Ready(result);
+                }
                 Poll::Pending => return Poll::Pending,
             }
         }
+    }
+
+    fn try_poll_terminal_ready(&mut self) -> Poll<Result<(), QlStreamError>> {
+        let state = self.shared.writer.load_state();
+        if WriterShared::terminal_ready(state) {
+            if WriterShared::terminal_ok(state) {
+                self.terminal = WriterTerminalState::Terminal(Ok(()));
+                return Poll::Ready(Ok(()));
+            }
+
+            match self.shared.writer.pop() {
+                Ok(Item::Error(error)) => {
+                    self.terminal = WriterTerminalState::Terminal(Err(error.clone()));
+                    return Poll::Ready(Err(error));
+                }
+                Ok(Item::Chunk(_)) => {
+                    panic!("writer terminal phase contained chunk data")
+                }
+                Err(PopError::Empty) => {}
+                Err(PopError::Closed) => panic!("writer endpoint closed unexpectedly"),
+            }
+        }
+
+        Poll::Pending
     }
 
     fn close_inner(&mut self, code: StreamCloseCode) {

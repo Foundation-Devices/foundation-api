@@ -13,7 +13,7 @@ rpc = ["dep:ql-rpc"]
 [dependencies]
 async-channel = { version = "2.5" }
 bytes = "1"
-event-listener = "5.4"
+diatomic-waker = { version = "0.2.3", default-features = false }
 futures-lite = { version = "2.5" }
 log = { version = "0.4", optional = true }
 oneshot = { version = "0.1.11" }

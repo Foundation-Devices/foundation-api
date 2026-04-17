@@ -1,10 +1,9 @@
 use std::{
-    future::{poll_fn, Future},
+    future::poll_fn,
     task::{Context, Poll},
 };
 
 use bytes::Bytes;
-use event_listener::EventListener;
 use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
@@ -18,7 +17,6 @@ pub struct StreamReader {
     shared: Arc<StreamShared>,
     target: CloseTarget,
     pending: Bytes,
-    listener: Option<EventListener>,
     terminal: ReaderTerminalState,
     handle: RuntimeHandle,
 }
@@ -49,7 +47,6 @@ impl StreamReader {
             shared,
             target,
             pending: Bytes::new(),
-            listener: None,
             terminal: ReaderTerminalState::Open,
             handle,
         }
@@ -65,68 +62,78 @@ impl StreamReader {
         }
 
         loop {
-            if !self.pending.is_empty() {
-                let pending = &mut self.pending;
-                let bytes = if pending.len() <= max_len {
-                    std::mem::take(pending)
-                } else {
-                    pending.split_to(max_len)
-                };
+            match self.try_read_ready(max_len) {
+                Poll::Ready(result) => return Poll::Ready(result),
+                Poll::Pending => {}
+            }
+
+            self.shared.reader.register_waiter(cx.waker());
+
+            match self.try_read_ready(max_len) {
+                Poll::Ready(result) => {
+                    self.shared.reader.unregister_waiter();
+                    return Poll::Ready(result);
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    fn try_read_ready(&mut self, max_len: usize) -> Poll<Result<Option<Bytes>, QlStreamError>> {
+        if !self.pending.is_empty() {
+            let pending = &mut self.pending;
+            let bytes = if pending.len() <= max_len {
+                std::mem::take(pending)
+            } else {
+                pending.split_to(max_len)
+            };
+            self.handle.try_send(Command::PollInbound {
+                stream_id: self.shared.stream_id,
+            });
+            return Poll::Ready(Ok(Some(bytes)));
+        }
+
+        match self.shared.reader.pop() {
+            Ok(Item::Chunk(mut bytes)) => {
+                log::trace!(
+                    "byte reader received chunk: stream_id={:?} target={:?} len={}",
+                    self.shared.stream_id,
+                    self.target,
+                    bytes.len()
+                );
                 self.handle.try_send(Command::PollInbound {
                     stream_id: self.shared.stream_id,
                 });
-                return Poll::Ready(Ok(Some(bytes)));
-            }
-
-            match self.shared.reader.pop() {
-                Ok(Item::Chunk(mut bytes)) => {
-                    log::trace!(
-                        "byte reader received chunk: stream_id={:?} target={:?} len={}",
-                        self.shared.stream_id,
-                        self.target,
-                        bytes.len()
-                    );
-                    self.handle.try_send(Command::PollInbound {
-                        stream_id: self.shared.stream_id,
-                    });
-                    if bytes.len() <= max_len {
-                        return Poll::Ready(Ok(Some(bytes)));
-                    }
-                    let head = bytes.split_to(max_len);
-                    self.pending = bytes;
-                    return Poll::Ready(Ok(Some(head)));
+                if bytes.len() <= max_len {
+                    return Poll::Ready(Ok(Some(bytes)));
                 }
-                Ok(Item::Error(error)) => {
+                let head = bytes.split_to(max_len);
+                self.pending = bytes;
+                Poll::Ready(Ok(Some(head)))
+            }
+            Ok(Item::Error(error)) => {
+                log::debug!(
+                    "byte reader delivered terminal error: stream_id={:?} target={:?} error={:?}",
+                    self.shared.stream_id,
+                    self.target,
+                    error
+                );
+                self.terminal = ReaderTerminalState::Delivered;
+                Poll::Ready(Err(error))
+            }
+            Err(PopError::Empty) => {
+                if ReaderShared::is_finished(self.shared.reader.load_state()) {
                     log::debug!(
-                        "byte reader delivered terminal error: stream_id={:?} target={:?} error={:?}",
+                        "byte reader delivered clean eof: stream_id={:?} target={:?}",
                         self.shared.stream_id,
-                        self.target,
-                        error
+                        self.target
                     );
                     self.terminal = ReaderTerminalState::Delivered;
-                    return Poll::Ready(Err(error));
+                    return Poll::Ready(Ok(None));
                 }
-                Err(PopError::Empty) => {
-                    if ReaderShared::is_finished(self.shared.reader.load_state()) {
-                        log::debug!(
-                            "byte reader delivered clean eof: stream_id={:?} target={:?}",
-                            self.shared.stream_id,
-                            self.target
-                        );
-                        self.terminal = ReaderTerminalState::Delivered;
-                        return Poll::Ready(Ok(None));
-                    }
-                }
-                Err(PopError::Closed) => panic!("reader endpoint closed unexpectedly"),
+                Poll::Pending
             }
-
-            let active_listener = self
-                .listener
-                .get_or_insert_with(|| self.shared.reader.listen());
-            match std::pin::Pin::new(active_listener).poll(cx) {
-                Poll::Ready(()) => self.listener = None,
-                Poll::Pending => return Poll::Pending,
-            }
+            Err(PopError::Closed) => panic!("reader endpoint closed unexpectedly"),
         }
     }
 

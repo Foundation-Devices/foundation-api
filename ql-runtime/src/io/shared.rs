@@ -1,5 +1,7 @@
+use std::task::Waker;
+
 use bytes::Bytes;
-use event_listener::{Event, EventListener};
+use diatomic_waker::DiatomicWaker;
 use ql_wire::StreamId;
 
 use super::{
@@ -46,7 +48,9 @@ impl Item {
 
 pub struct ReaderShared {
     slot: Single<Item>,
-    changed: Event,
+    // Sound because StreamShared creates exactly one StreamReader for this side,
+    // and that reader is the only task that registers or unregisters wakers.
+    changed: DiatomicWaker,
     state: AtomicU8,
 }
 
@@ -54,7 +58,7 @@ impl ReaderShared {
     fn new() -> Self {
         Self {
             slot: Single::new(),
-            changed: Event::new(),
+            changed: DiatomicWaker::new(),
             state: AtomicU8::new(0),
         }
     }
@@ -66,7 +70,7 @@ impl ReaderShared {
 
         match self.slot.push(Item::Chunk(bytes)) {
             Ok(()) => {
-                self.changed.notify(usize::MAX);
+                self.changed.notify();
                 Ok(())
             }
             Err(PushError::Closed(Item::Chunk(bytes))) => Err(PushError::Closed(bytes)),
@@ -79,7 +83,7 @@ impl ReaderShared {
 
     pub fn finish(&self) {
         if self.state.fetch_or(READER_FINISHED, Ordering::Release) & READER_FINISHED == 0 {
-            self.changed.notify(usize::MAX);
+            self.changed.notify();
         }
     }
 
@@ -89,7 +93,7 @@ impl ReaderShared {
     ) -> Result<Option<Bytes>, ForcePushError<QlStreamError>> {
         match self.slot.force_push(Item::Error(error)) {
             Ok(displaced) => {
-                self.changed.notify(usize::MAX);
+                self.changed.notify();
                 Ok(displaced.and_then(Item::into_chunk))
             }
             Err(ForcePushError(Item::Error(error))) => Err(ForcePushError(error)),
@@ -110,7 +114,7 @@ impl ReaderShared {
     pub fn pop(&self) -> Result<Item, PopError> {
         match self.slot.pop() {
             Ok(Item::Chunk(bytes)) => {
-                self.changed.notify(usize::MAX);
+                self.changed.notify();
                 Ok(Item::Chunk(bytes))
             }
             Ok(Item::Error(error)) => Ok(Item::Error(error)),
@@ -118,14 +122,24 @@ impl ReaderShared {
         }
     }
 
-    pub fn listen(&self) -> EventListener {
-        self.changed.listen()
+    pub fn register_waiter(&self, waker: &Waker) {
+        // Safety: StreamReader is the only reader-side registrar for this
+        // shared state, so register/unregister never run concurrently.
+        unsafe { self.changed.register(waker) };
+    }
+
+    pub fn unregister_waiter(&self) {
+        // Safety: StreamReader is the only reader-side registrar for this
+        // shared state, so register/unregister never run concurrently.
+        unsafe { self.changed.unregister() };
     }
 }
 
 pub struct WriterShared {
     slot: Single<Item>,
-    changed: Event,
+    // Sound because StreamShared creates exactly one StreamWriter for this side,
+    // and that writer is the only task that registers or unregisters wakers.
+    changed: DiatomicWaker,
     state: AtomicU8,
 }
 
@@ -133,7 +147,7 @@ impl WriterShared {
     fn new() -> Self {
         Self {
             slot: Single::new(),
-            changed: Event::new(),
+            changed: DiatomicWaker::new(),
             state: AtomicU8::new(0),
         }
     }
@@ -162,7 +176,7 @@ impl WriterShared {
 
         match self.slot.push(Item::Chunk(bytes)) {
             Ok(()) => {
-                self.changed.notify(usize::MAX);
+                self.changed.notify();
                 Ok(())
             }
             Err(PushError::Closed(Item::Chunk(bytes))) => Err(PushError::Closed(bytes)),
@@ -180,7 +194,7 @@ impl WriterShared {
             & WRITER_FINISH_REQUESTED
             == 0
         {
-            self.changed.notify(usize::MAX);
+            self.changed.notify();
         }
     }
 
@@ -197,7 +211,7 @@ impl WriterShared {
                 .compare_exchange(state, new_state, Ordering::AcqRel, Ordering::Acquire)
             {
                 Ok(_) => {
-                    self.changed.notify(usize::MAX);
+                    self.changed.notify();
                     return;
                 }
                 Err(actual) => state = actual,
@@ -227,7 +241,7 @@ impl WriterShared {
 
         match self.slot.force_push(Item::Error(error)) {
             Ok(displaced) => {
-                self.changed.notify(usize::MAX);
+                self.changed.notify();
                 Ok(displaced.and_then(Item::into_chunk))
             }
             Err(ForcePushError(Item::Error(error))) => Err(ForcePushError(error)),
@@ -244,7 +258,7 @@ impl WriterShared {
     pub fn pop(&self) -> Result<Item, PopError> {
         match self.slot.pop() {
             Ok(Item::Chunk(bytes)) => {
-                self.changed.notify(usize::MAX);
+                self.changed.notify();
                 Ok(Item::Chunk(bytes))
             }
             Ok(Item::Error(error)) => Ok(Item::Error(error)),
@@ -252,8 +266,16 @@ impl WriterShared {
         }
     }
 
-    pub fn listen(&self) -> EventListener {
-        self.changed.listen()
+    pub fn register_waiter(&self, waker: &Waker) {
+        // Safety: StreamWriter is the only writer-side registrar for this
+        // shared state, so register/unregister never run concurrently.
+        unsafe { self.changed.register(waker) };
+    }
+
+    pub fn unregister_waiter(&self) {
+        // Safety: StreamWriter is the only writer-side registrar for this
+        // shared state, so register/unregister never run concurrently.
+        unsafe { self.changed.unregister() };
     }
 }
 
@@ -351,11 +373,7 @@ impl WriterIo {
 
 #[cfg(all(test, loom))]
 mod loom_tests {
-    use std::{
-        future::Future,
-        pin::pin,
-        task::{Context, Poll, Waker},
-    };
+    use std::task::Waker;
 
     use bytes::Bytes;
     use loom::{model, thread};
@@ -374,14 +392,10 @@ mod loom_tests {
     }
 
     #[test]
-    fn reader_listener_observes_finish_after_pending() {
+    fn reader_waiter_registration_survives_finish() {
         check_model(|| {
             let shared = shared();
-            let waker = Waker::noop();
-            let mut cx = Context::from_waker(waker);
-            let mut listener = pin!(shared.reader.listen());
-
-            assert!(matches!(listener.as_mut().poll(&mut cx), Poll::Pending));
+            shared.reader.register_waiter(Waker::noop());
 
             let finisher = {
                 let shared = shared.clone();
@@ -392,7 +406,8 @@ mod loom_tests {
 
             finisher.join().unwrap();
             assert!(ReaderShared::is_finished(shared.reader.load_state()));
-            assert!(matches!(listener.as_mut().poll(&mut cx), Poll::Ready(())));
+
+            shared.reader.unregister_waiter();
         });
     }
 
@@ -563,15 +578,11 @@ mod loom_tests {
     }
 
     #[test]
-    fn writer_fail_overwrites_buffered_chunk_and_wakes_listener() {
+    fn writer_fail_overwrites_buffered_chunk_and_keeps_terminal_state_observable() {
         check_model(|| {
             let shared = shared();
             shared.writer.try_write(Bytes::from_static(b"abc")).unwrap();
-
-            let waker = Waker::noop();
-            let mut cx = Context::from_waker(waker);
-            let mut listener = pin!(shared.writer.listen());
-            assert!(matches!(listener.as_mut().poll(&mut cx), Poll::Pending));
+            shared.writer.register_waiter(Waker::noop());
 
             let failer = {
                 let shared = shared.clone();
@@ -586,13 +597,51 @@ mod loom_tests {
             failer.join().unwrap();
 
             assert!(WriterShared::terminal_ready(shared.writer.load_state()));
-            assert!(matches!(listener.as_mut().poll(&mut cx), Poll::Ready(())));
+            shared.writer.unregister_waiter();
             match shared.writer.pop() {
                 Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
                     assert_eq!(code, StreamCloseCode::CANCELLED);
                 }
                 _ => panic!("expected terminal writer error"),
             }
+        });
+    }
+
+    #[test]
+    fn reader_waiter_registration_can_be_reused_after_notification() {
+        check_model(|| {
+            let shared = shared();
+
+            shared.reader.register_waiter(Waker::noop());
+            shared.reader.try_write(Bytes::from_static(b"abc")).unwrap();
+            match shared.reader.pop() {
+                Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
+                _ => panic!("expected buffered reader chunk"),
+            }
+
+            shared.reader.register_waiter(Waker::noop());
+            shared.reader.finish();
+            assert!(ReaderShared::is_finished(shared.reader.load_state()));
+            shared.reader.unregister_waiter();
+        });
+    }
+
+    #[test]
+    fn writer_waiter_registration_can_be_reused_after_notification() {
+        check_model(|| {
+            let shared = shared();
+
+            shared.writer.register_waiter(Waker::noop());
+            shared.writer.try_write(Bytes::from_static(b"abc")).unwrap();
+            match shared.writer.pop() {
+                Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
+                _ => panic!("expected buffered writer chunk"),
+            }
+
+            shared.writer.register_waiter(Waker::noop());
+            shared.writer.finish();
+            assert!(WriterShared::terminal_ready(shared.writer.load_state()));
+            shared.writer.unregister_waiter();
         });
     }
 
