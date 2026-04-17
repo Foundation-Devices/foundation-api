@@ -3,14 +3,16 @@
 mod chunk_queue;
 pub(crate) mod codec;
 mod error;
+mod framed_value;
 mod route_id;
 mod router;
 mod rpc;
 mod stream;
 
 pub use chunk_queue::ChunkQueue;
-pub use codec::{FramedValueReader, ReadValueStep, RpcCodec};
+pub use codec::RpcCodec;
 pub use error::*;
+use framed_value::*;
 pub use route_id::RouteId;
 pub use router::*;
 pub use rpc::*;

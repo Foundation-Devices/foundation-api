@@ -1,5 +1,5 @@
 use crate::{
-    read_bytes, ChunkQueue, CodecError, FramedValueReader, ReadValueStep, RouterConfig, RpcCodec,
+    read_bytes, ChunkQueue, CodecError, FramedReadStep, FramedReader, RouterConfig, RpcCodec,
     RpcRead, StreamCloseCode,
 };
 
@@ -12,13 +12,13 @@ where
     T: RpcCodec,
     R: RpcRead,
 {
-    let mut value_reader = FramedValueReader::<T>::default();
+    let mut value_reader = FramedReader::<T>::default();
     let mut total_read = 0usize;
 
     let value = loop {
         match value_reader.advance() {
-            Ok(ReadValueStep::Value(value)) => break value,
-            Ok(ReadValueStep::NeedMore(next)) => value_reader = next,
+            Ok(FramedReadStep::Value(value)) => break value,
+            Ok(FramedReadStep::NeedMore(next)) => value_reader = next,
             Err(CodecError::Rpc(_error)) => return Err(StreamCloseCode::REFUSED.into()),
             Err(CodecError::Codec(_error)) => return Err(StreamCloseCode::REFUSED.into()),
         }
