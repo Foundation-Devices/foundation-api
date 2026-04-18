@@ -119,7 +119,7 @@ impl DriverStreamIo {
 
     pub fn inbound_fail(&mut self, error: QlStreamError) {
         if let Some(inbound) = self.inbound.take() {
-            let _ = inbound.rx.fail(error);
+            inbound.rx.fail(error);
         }
     }
 }

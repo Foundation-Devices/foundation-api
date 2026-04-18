@@ -8,7 +8,7 @@ use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
     inner::{Item, RxInner},
-    queue::PopError,
+    slot::PopError,
     Rx,
 };
 use crate::{command::Command, log, QlStreamError, RuntimeHandle};
@@ -61,21 +61,19 @@ impl StreamReader {
             return Poll::Ready(Ok(None));
         }
 
-        loop {
-            match self.try_read_ready(max_len) {
-                Poll::Ready(result) => return Poll::Ready(result),
-                Poll::Pending => {}
-            }
+        match self.try_read_ready(max_len) {
+            Poll::Ready(result) => return Poll::Ready(result),
+            Poll::Pending => {}
+        }
 
-            self.rx.register_waiter(cx.waker());
+        self.rx.register_waiter(cx.waker());
 
-            match self.try_read_ready(max_len) {
-                Poll::Ready(result) => {
-                    self.rx.unregister_waiter();
-                    return Poll::Ready(result);
-                }
-                Poll::Pending => return Poll::Pending,
+        match self.try_read_ready(max_len) {
+            Poll::Ready(result) => {
+                self.rx.unregister_waiter();
+                Poll::Ready(result)
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -121,7 +119,7 @@ impl StreamReader {
                 self.terminal = ReaderTerminalState::Delivered;
                 Poll::Ready(Err(error))
             }
-            Err(PopError::Empty) => {
+            Err(PopError) => {
                 if RxInner::is_finished(self.rx.load_state()) {
                     log::debug!(
                         "byte reader delivered clean eof: stream_id={} target={:?}",
@@ -133,7 +131,6 @@ impl StreamReader {
                 }
                 Poll::Pending
             }
-            Err(PopError::Closed) => panic!("reader endpoint closed unexpectedly"),
         }
     }
 
@@ -215,7 +212,7 @@ mod loom_tests {
             let producer = {
                 let inner = inner.clone();
                 thread::spawn(move || {
-                    inner.reader.try_write(Bytes::from_static(b"abc")).unwrap();
+                    inner.rx.try_write(Bytes::from_static(b"abc")).unwrap();
                 })
             };
 

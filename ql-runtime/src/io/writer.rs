@@ -8,8 +8,8 @@ use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
     inner::{Item, TxInner},
-    queue::{PopError, PushError},
-    Tx,
+    slot::PopError,
+    PushError, Tx,
 };
 use crate::{command::Command, log, QlStreamError, RuntimeHandle};
 
@@ -62,50 +62,48 @@ impl StreamWriter {
             return self.poll_terminal(cx);
         }
 
-        loop {
-            match self.tx.try_write(std::mem::take(bytes)) {
-                Ok(()) => {
-                    log::trace!(
-                        "byte writer accepted chunk: stream_id={} target={:?}",
-                        self.tx.stream_id(),
-                        self.target
-                    );
-                    self.poll_runtime();
-                    return Poll::Ready(Ok(()));
-                }
-                Err(PushError::Closed(chunk)) => {
-                    *bytes = chunk;
-                    self.open = false;
-                    return self.poll_terminal(cx);
-                }
-                Err(PushError::Full(chunk)) => {
-                    *bytes = chunk;
-                }
+        match self.tx.try_write(std::mem::take(bytes)) {
+            Ok(()) => {
+                log::trace!(
+                    "byte writer accepted chunk: stream_id={} target={:?}",
+                    self.tx.stream_id(),
+                    self.target
+                );
+                self.poll_runtime();
+                return Poll::Ready(Ok(()));
             }
+            Err(PushError::Closed(chunk)) => {
+                *bytes = chunk;
+                self.open = false;
+                return self.poll_terminal(cx);
+            }
+            Err(PushError::Full(chunk)) => {
+                *bytes = chunk;
+            }
+        }
 
-            self.tx.register_waiter(cx.waker());
+        self.tx.register_waiter(cx.waker());
 
-            match self.tx.try_write(std::mem::take(bytes)) {
-                Ok(()) => {
-                    self.tx.unregister_waiter();
-                    log::trace!(
-                        "byte writer accepted chunk: stream_id={} target={:?}",
-                        self.tx.stream_id(),
-                        self.target
-                    );
-                    self.poll_runtime();
-                    return Poll::Ready(Ok(()));
-                }
-                Err(PushError::Closed(chunk)) => {
-                    self.tx.unregister_waiter();
-                    *bytes = chunk;
-                    self.open = false;
-                    return self.poll_terminal(cx);
-                }
-                Err(PushError::Full(chunk)) => {
-                    *bytes = chunk;
-                    return Poll::Pending;
-                }
+        match self.tx.try_write(std::mem::take(bytes)) {
+            Ok(()) => {
+                self.tx.unregister_waiter();
+                log::trace!(
+                    "byte writer accepted chunk: stream_id={} target={:?}",
+                    self.tx.stream_id(),
+                    self.target
+                );
+                self.poll_runtime();
+                Poll::Ready(Ok(()))
+            }
+            Err(PushError::Closed(chunk)) => {
+                self.tx.unregister_waiter();
+                *bytes = chunk;
+                self.open = false;
+                self.poll_terminal(cx)
+            }
+            Err(PushError::Full(chunk)) => {
+                *bytes = chunk;
+                Poll::Pending
             }
         }
     }
@@ -151,27 +149,25 @@ impl StreamWriter {
         });
     }
 
-    fn poll_terminal(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
+    fn poll_terminal(&mut self, cx: &Context<'_>) -> Poll<Result<(), QlStreamError>> {
         match &self.terminal {
             WriterTerminalState::Terminal(result) => return Poll::Ready(result.clone()),
             WriterTerminalState::Pending => {}
         }
 
-        loop {
-            match self.try_poll_terminal_ready() {
-                Poll::Ready(result) => return Poll::Ready(result),
-                Poll::Pending => {}
-            }
+        match self.try_poll_terminal_ready() {
+            Poll::Ready(result) => return Poll::Ready(result),
+            Poll::Pending => {}
+        }
 
-            self.tx.register_waiter(cx.waker());
+        self.tx.register_waiter(cx.waker());
 
-            match self.try_poll_terminal_ready() {
-                Poll::Ready(result) => {
-                    self.tx.unregister_waiter();
-                    return Poll::Ready(result);
-                }
-                Poll::Pending => return Poll::Pending,
+        match self.try_poll_terminal_ready() {
+            Poll::Ready(result) => {
+                self.tx.unregister_waiter();
+                Poll::Ready(result)
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -191,8 +187,7 @@ impl StreamWriter {
                 Ok(Item::Chunk(_)) => {
                     panic!("writer terminal phase contained chunk data")
                 }
-                Err(PopError::Empty) => {}
-                Err(PopError::Closed) => panic!("writer endpoint closed unexpectedly"),
+                Err(PopError) => {}
             }
         }
 
@@ -239,7 +234,7 @@ mod loom_tests {
     fn poll_write_observes_capacity_racing_with_registration() {
         check_model(|| {
             let inner = shared();
-            inner.writer.try_write(Bytes::from_static(b"abc")).unwrap();
+            inner.tx.try_write(Bytes::from_static(b"abc")).unwrap();
 
             let mut writer = StreamWriter::new(Tx(inner.clone()), CloseTarget::Origin, handle());
             let mut bytes = Bytes::from_static(b"xyz");
@@ -248,7 +243,7 @@ mod loom_tests {
             let drainer = {
                 let inner = inner.clone();
                 thread::spawn(move || {
-                    assert!(matches!(inner.writer.pop(), Ok(Item::Chunk(_))));
+                    assert!(matches!(inner.tx.pop(), Ok(Item::Chunk(_))));
                 })
             };
 
@@ -280,7 +275,7 @@ mod loom_tests {
             let finisher = {
                 let inner = inner.clone();
                 thread::spawn(move || {
-                    inner.writer.finish();
+                    inner.tx.finish();
                 })
             };
 

@@ -383,8 +383,8 @@ impl DriverState {
         platform.handle_inbound(QlStream {
             stream_id,
             route_id,
-            reader,
             writer,
+            reader,
         });
     }
 

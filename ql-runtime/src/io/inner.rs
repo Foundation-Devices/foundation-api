@@ -1,3 +1,7 @@
+//! per-stream shared io state
+//! each lane has one slot and one waker
+//! the low slot bits belong to `slot.rs` and the higher bits here carry lane-specific flags
+
 use std::task::Waker;
 
 use bytes::Bytes;
@@ -5,29 +9,23 @@ use diatomic_waker::DiatomicWaker;
 use ql_wire::StreamId;
 
 use super::{
-    queue::{ForcePushError, PopError, PushError, Single},
-    sync::{AtomicU8, Ordering},
+    slot::{PopError, PushError, Slot},
+    sync::Arc,
 };
 use crate::QlStreamError;
 
-const READER_FINISHED: u8 = 1 << 0;
-
-const WRITER_FINISH_REQUESTED: u8 = 1 << 0;
-const WRITER_TERMINAL_READY: u8 = 1 << 1;
-const WRITER_TERMINAL_OK: u8 = 1 << 2;
-
-pub(super) fn new(stream_id: StreamId) -> Inner {
-    Inner {
+pub(super) fn new(stream_id: StreamId) -> Arc<Inner> {
+    Arc::new(Inner {
         stream_id,
-        reader: RxInner::new(),
-        writer: TxInner::new(),
-    }
+        rx: RxInner::new(),
+        tx: TxInner::new(),
+    })
 }
 
 pub(super) struct Inner {
     pub(super) stream_id: StreamId,
-    pub(super) reader: RxInner,
-    pub(super) writer: TxInner,
+    pub(super) rx: RxInner,
+    pub(super) tx: TxInner,
 }
 
 pub enum Item {
@@ -35,176 +33,137 @@ pub enum Item {
     Error(QlStreamError),
 }
 
-impl Item {
-    fn into_chunk(self) -> Option<Bytes> {
-        match self {
-            Self::Chunk(bytes) => Some(bytes),
-            Self::Error(_) => None,
-        }
-    }
-}
+#[derive(Debug, PartialEq, Eq)]
+pub struct ForcePushError<T>(pub T);
 
+/// reader-lane shared state
 pub struct RxInner {
-    slot: Single<Item>,
+    slot: Slot<Item>,
     changed: DiatomicWaker,
-    state: AtomicU8,
 }
 
 impl RxInner {
+    const FINISHED: usize = 1 << 2;
+
     fn new() -> Self {
         Self {
-            slot: Single::new(),
+            slot: Slot::new(),
             changed: DiatomicWaker::new(),
-            state: AtomicU8::new(0),
         }
     }
 
     pub fn try_write(&self, bytes: Bytes) -> Result<(), PushError<Bytes>> {
-        if Self::is_finished(self.load_state()) {
-            return Err(PushError::Closed(bytes));
-        }
-
-        match self.slot.push(Item::Chunk(bytes)) {
-            Ok(()) => {
-                self.changed.notify();
-                Ok(())
-            }
-            Err(PushError::Closed(Item::Chunk(bytes))) => Err(PushError::Closed(bytes)),
-            Err(PushError::Full(Item::Chunk(bytes))) => Err(PushError::Full(bytes)),
-            Err(PushError::Closed(Item::Error(_))) | Err(PushError::Full(Item::Error(_))) => {
-                unreachable!("reader chunk write cannot recover an error payload")
-            }
-        }
+        try_write_chunk(&self.slot, &self.changed, bytes, Self::FINISHED)
     }
 
+    /// marks clean reader eof
     pub fn finish(&self) {
-        if self.state.fetch_or(READER_FINISHED, Ordering::Release) & READER_FINISHED == 0 {
+        if self.slot.fetch_or(Self::FINISHED) & Self::FINISHED == 0 {
             self.changed.notify();
         }
     }
 
+    /// stores a terminal reader error
     pub fn fail(
         &self,
         error: QlStreamError,
-    ) -> Result<Option<Bytes>, ForcePushError<QlStreamError>> {
-        match self.slot.force_push(Item::Error(error)) {
-            Ok(displaced) => {
-                self.changed.notify();
-                Ok(displaced.and_then(Item::into_chunk))
-            }
-            Err(ForcePushError(Item::Error(error))) => Err(ForcePushError(error)),
-            Err(ForcePushError(Item::Chunk(_))) => {
-                unreachable!("reader fail cannot recover a chunk payload")
-            }
-        }
+    ) -> Option<Bytes> {
+        let displaced = self.slot.force_push(Item::Error(error));
+        self.changed.notify();
+        displaced_bytes(displaced)
     }
 
-    pub fn load_state(&self) -> u8 {
-        self.state.load(Ordering::Acquire)
+    pub fn load_state(&self) -> usize {
+        self.slot.load_state()
     }
 
-    pub fn is_finished(state: u8) -> bool {
-        state & READER_FINISHED != 0
+    pub fn is_finished(state: usize) -> bool {
+        state & Self::FINISHED != 0
     }
 
     pub fn pop(&self) -> Result<Item, PopError> {
-        match self.slot.pop() {
-            Ok(Item::Chunk(bytes)) => {
-                self.changed.notify();
-                Ok(Item::Chunk(bytes))
-            }
-            Ok(Item::Error(error)) => Ok(Item::Error(error)),
-            Err(error) => Err(error),
-        }
+        pop_item(&self.slot, &self.changed)
     }
 
+    /// registers the sole reader-lane waiter
     pub fn register_waiter(&self, waker: &Waker) {
-        // Safety: StreamReader is the only reader-side registrar for this
+        // Safety: StreamReader is the only reader-lane registrar for this
         // shared state, so register/unregister never run concurrently.
         unsafe { self.changed.register(waker) };
     }
 
+    /// unregisters the sole reader-lane waiter
     pub fn unregister_waiter(&self) {
-        // Safety: StreamReader is the only reader-side registrar for this
+        // Safety: StreamReader is the only reader-lane registrar for this
         // shared state, so register/unregister never run concurrently.
         unsafe { self.changed.unregister() };
     }
 }
 
+/// writer-lane shared state
+///
+/// finish and fail race to establish the terminal result
+/// terminal errors are stored in the slot
 pub struct TxInner {
-    slot: Single<Item>,
+    slot: Slot<Item>,
     changed: DiatomicWaker,
-    state: AtomicU8,
 }
 
 impl TxInner {
+    const FINISH_REQUESTED: usize = 1 << 2;
+    const TERMINAL_READY: usize = 1 << 3;
+    const TERMINAL_OK: usize = 1 << 4;
+
     fn new() -> Self {
         Self {
-            slot: Single::new(),
+            slot: Slot::new(),
             changed: DiatomicWaker::new(),
-            state: AtomicU8::new(0),
         }
     }
 
-    pub fn load_state(&self) -> u8 {
-        self.state.load(Ordering::Acquire)
+    pub fn load_state(&self) -> usize {
+        self.slot.load_state()
     }
 
-    pub fn finish_requested(state: u8) -> bool {
-        state & WRITER_FINISH_REQUESTED != 0
+    pub fn finish_requested(state: usize) -> bool {
+        state & Self::FINISH_REQUESTED != 0
     }
 
-    pub fn terminal_ready(state: u8) -> bool {
-        state & WRITER_TERMINAL_READY != 0
+    pub fn terminal_ready(state: usize) -> bool {
+        state & Self::TERMINAL_READY != 0
     }
 
-    pub fn terminal_ok(state: u8) -> bool {
-        state & WRITER_TERMINAL_OK != 0
+    pub fn terminal_ok(state: usize) -> bool {
+        state & Self::TERMINAL_OK != 0
     }
 
     pub fn try_write(&self, bytes: Bytes) -> Result<(), PushError<Bytes>> {
-        let state = self.load_state();
-        if Self::terminal_ready(state) || Self::finish_requested(state) {
-            return Err(PushError::Closed(bytes));
-        }
-
-        match self.slot.push(Item::Chunk(bytes)) {
-            Ok(()) => {
-                self.changed.notify();
-                Ok(())
-            }
-            Err(PushError::Closed(Item::Chunk(bytes))) => Err(PushError::Closed(bytes)),
-            Err(PushError::Full(Item::Chunk(bytes))) => Err(PushError::Full(bytes)),
-            Err(PushError::Closed(Item::Error(_))) | Err(PushError::Full(Item::Error(_))) => {
-                unreachable!("writer chunk write cannot recover an error payload")
-            }
-        }
+        try_write_chunk(
+            &self.slot,
+            &self.changed,
+            bytes,
+            Self::FINISH_REQUESTED | Self::TERMINAL_READY,
+        )
     }
 
+    /// prevents future chunk writes once observed
     pub fn request_finish(&self) {
-        if self
-            .state
-            .fetch_or(WRITER_FINISH_REQUESTED, Ordering::Release)
-            & WRITER_FINISH_REQUESTED
-            == 0
-        {
+        if self.slot.fetch_or(Self::FINISH_REQUESTED) & Self::FINISH_REQUESTED == 0 {
             self.changed.notify();
         }
     }
 
+    /// commits a clean writer eof
     pub fn finish(&self) {
-        let mut state = self.state.load(Ordering::Acquire);
+        let mut state = self.slot.load_state();
         loop {
             if Self::terminal_ready(state) {
                 return;
             }
 
-            let new_state = state | WRITER_TERMINAL_READY | WRITER_TERMINAL_OK;
-            match self
-                .state
-                .compare_exchange(state, new_state, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => {
+            let new_state = state | Self::TERMINAL_READY | Self::TERMINAL_OK;
+            match self.slot.compare_exchange(state, new_state) {
+                Ok(()) => {
                     self.changed.notify();
                     return;
                 }
@@ -213,68 +172,52 @@ impl TxInner {
         }
     }
 
+    /// stores a terminal writer error
+    /// futures calls will have no effect
     pub fn fail(
         &self,
         error: QlStreamError,
     ) -> Result<Option<Bytes>, ForcePushError<QlStreamError>> {
-        let mut state = self.state.load(Ordering::Acquire);
+        let mut state = self.slot.load_state();
         loop {
             if Self::terminal_ready(state) {
                 return Err(ForcePushError(error));
             }
 
-            let new_state = state | WRITER_TERMINAL_READY;
-            match self
-                .state
-                .compare_exchange(state, new_state, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => break,
+            let new_state = state | Self::TERMINAL_READY;
+            match self.slot.compare_exchange(state, new_state) {
+                Ok(()) => break,
                 Err(actual) => state = actual,
             }
         }
 
-        match self.slot.force_push(Item::Error(error)) {
-            Ok(displaced) => {
-                self.changed.notify();
-                Ok(displaced.and_then(Item::into_chunk))
-            }
-            Err(ForcePushError(Item::Error(error))) => Err(ForcePushError(error)),
-            Err(ForcePushError(Item::Chunk(_))) => {
-                unreachable!("writer fail cannot recover a chunk payload")
-            }
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.slot.is_empty()
+        let displaced = self.slot.force_push(Item::Error(error));
+        self.changed.notify();
+        Ok(displaced_bytes(displaced))
     }
 
     pub fn pop(&self) -> Result<Item, PopError> {
-        match self.slot.pop() {
-            Ok(Item::Chunk(bytes)) => {
-                self.changed.notify();
-                Ok(Item::Chunk(bytes))
-            }
-            Ok(Item::Error(error)) => Ok(Item::Error(error)),
-            Err(error) => Err(error),
-        }
+        pop_item(&self.slot, &self.changed)
     }
 
+    /// registers the sole writer-lane waiter
     pub fn register_waiter(&self, waker: &Waker) {
-        // Safety: StreamWriter is the only writer-side registrar for this
+        // Safety: StreamWriter is the only writer-lane registrar for this
         // shared state, so register/unregister never run concurrently.
         unsafe { self.changed.register(waker) };
     }
 
+    /// unregisters the sole writer-lane waiter
     pub fn unregister_waiter(&self) {
-        // Safety: StreamWriter is the only writer-side registrar for this
+        // Safety: StreamWriter is the only writer-lane registrar for this
         // shared state, so register/unregister never run concurrently.
         unsafe { self.changed.unregister() };
     }
 
+    /// returns true once finish was requested and buffered data is drained
     pub fn is_finished(&self) -> bool {
         let state = self.load_state();
-        TxInner::finish_requested(state) && self.is_empty()
+        Self::finish_requested(state) && Slot::<Item>::is_empty_state(state)
     }
 
     pub fn try_read(&self, pending: &mut Bytes, max_len: usize) -> Result<Bytes, ()> {
@@ -287,7 +230,7 @@ impl TxInner {
         }
 
         let state = self.load_state();
-        if TxInner::terminal_ready(state) {
+        if Self::terminal_ready(state) {
             return Err(());
         }
 
@@ -302,9 +245,47 @@ impl TxInner {
                 }
             }
             Ok(Item::Error(_)) => Err(()),
-            Err(PopError::Empty) => Ok(Bytes::new()),
-            Err(PopError::Closed) => Err(()),
+            Err(PopError) => Ok(Bytes::new()),
         }
+    }
+}
+
+#[inline]
+fn try_write_chunk(
+    slot: &Slot<Item>,
+    changed: &DiatomicWaker,
+    bytes: Bytes,
+    closed_mask: usize,
+) -> Result<(), PushError<Bytes>> {
+    match slot.try_push(Item::Chunk(bytes), closed_mask) {
+        Ok(()) => {
+            changed.notify();
+            Ok(())
+        }
+        Err(PushError::Closed(Item::Chunk(bytes))) => Err(PushError::Closed(bytes)),
+        Err(PushError::Full(Item::Chunk(bytes))) => Err(PushError::Full(bytes)),
+        Err(PushError::Closed(Item::Error(_)) | PushError::Full(Item::Error(_))) => {
+            unreachable!("chunk write cannot recover an error payload")
+        }
+    }
+}
+
+#[inline]
+fn displaced_bytes(displaced: Option<Item>) -> Option<Bytes> {
+    match displaced {
+        Some(Item::Chunk(bytes)) => Some(bytes),
+        Some(Item::Error(_)) | None => None,
+    }
+}
+
+#[inline]
+fn pop_item(slot: &Slot<Item>, changed: &DiatomicWaker) -> Result<Item, PopError> {
+    match slot.pop() {
+        item @ Ok(Item::Chunk(_)) => {
+            changed.notify();
+            item
+        }
+        item @ (Ok(Item::Error(_)) | Err(_)) => item,
     }
 }
 
@@ -326,19 +307,19 @@ mod loom_tests {
     fn reader_waiter_registration_survives_finish() {
         check_model(|| {
             let shared = shared();
-            shared.reader.register_waiter(Waker::noop());
+            shared.rx.register_waiter(Waker::noop());
 
             let finisher = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    shared.reader.finish();
+                    shared.rx.finish();
                 })
             };
 
             finisher.join().unwrap();
-            assert!(RxInner::is_finished(shared.reader.load_state()));
+            assert!(RxInner::is_finished(shared.rx.load_state()));
 
-            shared.reader.unregister_waiter();
+            shared.rx.unregister_waiter();
         });
     }
 
@@ -350,19 +331,19 @@ mod loom_tests {
             let producer = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    shared.reader.try_write(Bytes::from_static(b"abc")).unwrap();
-                    shared.reader.finish();
+                    shared.rx.try_write(Bytes::from_static(b"abc")).unwrap();
+                    shared.rx.finish();
                 })
             };
 
             producer.join().unwrap();
 
-            match shared.reader.pop() {
+            match shared.rx.pop() {
                 Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
                 _ => panic!("expected buffered reader chunk"),
             }
-            assert!(RxInner::is_finished(shared.reader.load_state()));
-            assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
+            assert!(RxInner::is_finished(shared.rx.load_state()));
+            assert!(matches!(shared.rx.pop(), Err(PopError)));
         });
     }
 
@@ -371,14 +352,14 @@ mod loom_tests {
         check_model(|| {
             let shared = shared();
 
-            shared.reader.finish();
+            shared.rx.finish();
 
             assert_eq!(
-                shared.reader.try_write(Bytes::from_static(b"abc")),
+                shared.rx.try_write(Bytes::from_static(b"abc")),
                 Err(PushError::Closed(Bytes::from_static(b"abc")))
             );
-            assert!(RxInner::is_finished(shared.reader.load_state()));
-            assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
+            assert!(RxInner::is_finished(shared.rx.load_state()));
+            assert!(matches!(shared.rx.pop(), Err(PopError)));
         });
     }
 
@@ -389,30 +370,30 @@ mod loom_tests {
 
             let writer = {
                 let shared = shared.clone();
-                thread::spawn(move || shared.reader.try_write(Bytes::from_static(b"abc")))
+                thread::spawn(move || shared.rx.try_write(Bytes::from_static(b"abc")))
             };
             let finisher = {
                 let shared = shared.clone();
-                thread::spawn(move || shared.reader.finish())
+                thread::spawn(move || shared.rx.finish())
             };
 
             let write_result = writer.join().unwrap();
             finisher.join().unwrap();
 
-            assert!(RxInner::is_finished(shared.reader.load_state()));
+            assert!(RxInner::is_finished(shared.rx.load_state()));
             match write_result {
-                Ok(()) => match shared.reader.pop() {
+                Ok(()) => match shared.rx.pop() {
                     Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
                     _ => panic!("expected buffered reader chunk"),
                 },
                 Err(PushError::Closed(bytes)) => {
                     assert_eq!(bytes, Bytes::from_static(b"abc"));
-                    assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
+                    assert!(matches!(shared.rx.pop(), Err(PopError)));
                     return;
                 }
                 Err(PushError::Full(_)) => panic!("empty reader slot must not report full"),
             }
-            assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
+            assert!(matches!(shared.rx.pop(), Err(PopError)));
         });
     }
 
@@ -420,16 +401,16 @@ mod loom_tests {
     fn reader_fail_racing_with_pop_preserves_terminal_outcome() {
         check_model(|| {
             let shared = shared();
-            shared.reader.try_write(Bytes::from_static(b"abc")).unwrap();
+            shared.rx.try_write(Bytes::from_static(b"abc")).unwrap();
 
             let popper = {
                 let shared = shared.clone();
-                thread::spawn(move || shared.reader.pop())
+                thread::spawn(move || shared.rx.pop())
             };
             let failer = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    shared.reader.fail(QlStreamError::StreamClosed {
+                    shared.rx.fail(QlStreamError::StreamClosed {
                         code: StreamCloseCode::CANCELLED,
                     })
                 })
@@ -439,19 +420,19 @@ mod loom_tests {
             let fail_result = failer.join().unwrap();
 
             match (pop_result, fail_result) {
-                (Ok(Item::Chunk(bytes)), Ok(None)) => {
+                (Ok(Item::Chunk(bytes)), None) => {
                     assert_eq!(bytes, Bytes::from_static(b"abc"));
-                    match shared.reader.pop() {
+                    match shared.rx.pop() {
                         Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
                             assert_eq!(code, StreamCloseCode::CANCELLED);
                         }
                         _ => panic!("expected terminal reader error"),
                     }
                 }
-                (Ok(Item::Error(QlStreamError::StreamClosed { code })), Ok(Some(bytes))) => {
+                (Ok(Item::Error(QlStreamError::StreamClosed { code })), Some(bytes)) => {
                     assert_eq!(code, StreamCloseCode::CANCELLED);
                     assert_eq!(bytes, Bytes::from_static(b"abc"));
-                    assert!(matches!(shared.reader.pop(), Err(PopError::Empty)));
+                    assert!(matches!(shared.rx.pop(), Err(PopError)));
                 }
                 _ => panic!("unexpected reader fail/pop race outcome"),
             }
@@ -465,8 +446,8 @@ mod loom_tests {
             let tx = Tx(shared.clone());
             let mut pending = Bytes::new();
 
-            shared.writer.try_write(Bytes::from_static(b"abc")).unwrap();
-            shared.writer.request_finish();
+            shared.tx.try_write(Bytes::from_static(b"abc")).unwrap();
+            shared.tx.request_finish();
 
             assert!(!(pending.is_empty() && tx.is_finished()));
             assert_eq!(tx.try_read(&mut pending, 2), Ok(Bytes::from_static(b"ab")));
@@ -485,17 +466,17 @@ mod loom_tests {
 
             let writer = {
                 let shared = shared.clone();
-                thread::spawn(move || shared.writer.try_write(Bytes::from_static(b"abc")))
+                thread::spawn(move || shared.tx.try_write(Bytes::from_static(b"abc")))
             };
             let finisher = {
                 let shared = shared.clone();
-                thread::spawn(move || shared.writer.request_finish())
+                thread::spawn(move || shared.tx.request_finish())
             };
 
             let write_result = writer.join().unwrap();
             finisher.join().unwrap();
 
-            assert!(TxInner::finish_requested(shared.writer.load_state()));
+            assert!(TxInner::finish_requested(shared.tx.load_state()));
             match write_result {
                 Ok(()) => {
                     assert_eq!(tx.try_read(&mut pending, 8), Ok(Bytes::from_static(b"abc")));
@@ -514,13 +495,13 @@ mod loom_tests {
     fn writer_fail_overwrites_buffered_chunk_and_keeps_terminal_state_observable() {
         check_model(|| {
             let shared = shared();
-            shared.writer.try_write(Bytes::from_static(b"abc")).unwrap();
-            shared.writer.register_waiter(Waker::noop());
+            shared.tx.try_write(Bytes::from_static(b"abc")).unwrap();
+            shared.tx.register_waiter(Waker::noop());
 
             let failer = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    let displaced = shared.writer.fail(QlStreamError::StreamClosed {
+                    let displaced = shared.tx.fail(QlStreamError::StreamClosed {
                         code: StreamCloseCode::CANCELLED,
                     });
                     assert_eq!(displaced.unwrap(), Some(Bytes::from_static(b"abc")));
@@ -529,9 +510,9 @@ mod loom_tests {
 
             failer.join().unwrap();
 
-            assert!(TxInner::terminal_ready(shared.writer.load_state()));
-            shared.writer.unregister_waiter();
-            match shared.writer.pop() {
+            assert!(TxInner::terminal_ready(shared.tx.load_state()));
+            shared.tx.unregister_waiter();
+            match shared.tx.pop() {
                 Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
                     assert_eq!(code, StreamCloseCode::CANCELLED);
                 }
@@ -545,17 +526,17 @@ mod loom_tests {
         check_model(|| {
             let shared = shared();
 
-            shared.reader.register_waiter(Waker::noop());
-            shared.reader.try_write(Bytes::from_static(b"abc")).unwrap();
-            match shared.reader.pop() {
+            shared.rx.register_waiter(Waker::noop());
+            shared.rx.try_write(Bytes::from_static(b"abc")).unwrap();
+            match shared.rx.pop() {
                 Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
                 _ => panic!("expected buffered reader chunk"),
             }
 
-            shared.reader.register_waiter(Waker::noop());
-            shared.reader.finish();
-            assert!(RxInner::is_finished(shared.reader.load_state()));
-            shared.reader.unregister_waiter();
+            shared.rx.register_waiter(Waker::noop());
+            shared.rx.finish();
+            assert!(RxInner::is_finished(shared.rx.load_state()));
+            shared.rx.unregister_waiter();
         });
     }
 
@@ -564,17 +545,17 @@ mod loom_tests {
         check_model(|| {
             let shared = shared();
 
-            shared.writer.register_waiter(Waker::noop());
-            shared.writer.try_write(Bytes::from_static(b"abc")).unwrap();
-            match shared.writer.pop() {
+            shared.tx.register_waiter(Waker::noop());
+            shared.tx.try_write(Bytes::from_static(b"abc")).unwrap();
+            match shared.tx.pop() {
                 Ok(Item::Chunk(bytes)) => assert_eq!(bytes, Bytes::from_static(b"abc")),
                 _ => panic!("expected buffered writer chunk"),
             }
 
-            shared.writer.register_waiter(Waker::noop());
-            shared.writer.finish();
-            assert!(TxInner::terminal_ready(shared.writer.load_state()));
-            shared.writer.unregister_waiter();
+            shared.tx.register_waiter(Waker::noop());
+            shared.tx.finish();
+            assert!(TxInner::terminal_ready(shared.tx.load_state()));
+            shared.tx.unregister_waiter();
         });
     }
 
@@ -585,12 +566,12 @@ mod loom_tests {
 
             let writer = {
                 let shared = shared.clone();
-                thread::spawn(move || shared.writer.try_write(Bytes::from_static(b"abc")))
+                thread::spawn(move || shared.tx.try_write(Bytes::from_static(b"abc")))
             };
             let failer = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    shared.writer.fail(QlStreamError::StreamClosed {
+                    shared.tx.fail(QlStreamError::StreamClosed {
                         code: StreamCloseCode::CANCELLED,
                     })
                 })
@@ -599,7 +580,7 @@ mod loom_tests {
             let write_result = writer.join().unwrap();
             let fail_result = failer.join().unwrap();
 
-            assert!(TxInner::terminal_ready(shared.writer.load_state()));
+            assert!(TxInner::terminal_ready(shared.tx.load_state()));
             match (&write_result, &fail_result) {
                 (Ok(()), Ok(Some(bytes))) => {
                     assert_eq!(Bytes::from_static(b"abc"), bytes.clone());
@@ -615,7 +596,7 @@ mod loom_tests {
                 ),
             }
 
-            match shared.writer.pop() {
+            match shared.tx.pop() {
                 Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
                     assert_eq!(code, StreamCloseCode::CANCELLED);
                 }
@@ -631,12 +612,12 @@ mod loom_tests {
 
             let finisher = {
                 let shared = shared.clone();
-                thread::spawn(move || shared.writer.finish())
+                thread::spawn(move || shared.tx.finish())
             };
             let failer = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    shared.writer.fail(QlStreamError::StreamClosed {
+                    shared.tx.fail(QlStreamError::StreamClosed {
                         code: StreamCloseCode::CANCELLED,
                     })
                 })
@@ -645,14 +626,14 @@ mod loom_tests {
             finisher.join().unwrap();
             let fail_result = failer.join().unwrap();
 
-            assert!(TxInner::terminal_ready(shared.writer.load_state()));
+            assert!(TxInner::terminal_ready(shared.tx.load_state()));
             match fail_result {
                 Err(_) => {
-                    assert!(TxInner::terminal_ok(shared.writer.load_state()));
+                    assert!(TxInner::terminal_ok(shared.tx.load_state()));
                 }
                 Ok(_) => {
-                    assert!(!TxInner::terminal_ok(shared.writer.load_state()));
-                    match shared.writer.pop() {
+                    assert!(!TxInner::terminal_ok(shared.tx.load_state()));
+                    match shared.tx.pop() {
                         Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
                             assert_eq!(code, StreamCloseCode::CANCELLED);
                         }

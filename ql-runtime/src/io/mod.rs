@@ -1,6 +1,6 @@
 mod inner;
-mod queue;
 mod reader;
+mod slot;
 mod sync;
 mod writer;
 
@@ -8,17 +8,17 @@ use std::ops::Deref;
 
 use ql_wire::{CloseTarget, StreamId};
 
-pub(crate) use self::queue::PushError;
+pub use self::slot::PushError;
 pub use self::{reader::StreamReader, writer::StreamWriter};
 use crate::RuntimeHandle;
 
-pub(crate) struct Rx(sync::Arc<inner::Inner>);
+pub struct Rx(sync::Arc<inner::Inner>);
 
 impl Deref for Rx {
     type Target = inner::RxInner;
 
     fn deref(&self) -> &Self::Target {
-        &self.0.reader
+        &self.0.rx
     }
 }
 
@@ -28,13 +28,13 @@ impl Rx {
     }
 }
 
-pub(crate) struct Tx(sync::Arc<inner::Inner>);
+pub struct Tx(sync::Arc<inner::Inner>);
 
 impl Deref for Tx {
     type Target = inner::TxInner;
 
     fn deref(&self) -> &Self::Target {
-        &self.0.writer
+        &self.0.tx
     }
 }
 
@@ -44,13 +44,13 @@ impl Tx {
     }
 }
 
-pub(crate) fn new_stream(
+pub fn new_stream(
     stream_id: StreamId,
     reader_target: CloseTarget,
     writer_target: CloseTarget,
     handle: RuntimeHandle,
 ) -> (StreamReader, StreamWriter, Rx, Tx) {
-    let shared = sync::Arc::new(inner::new(stream_id));
+    let shared = inner::new(stream_id);
     (
         StreamReader::new(Rx(shared.clone()), reader_target, handle.clone()),
         StreamWriter::new(Tx(shared.clone()), writer_target, handle),
