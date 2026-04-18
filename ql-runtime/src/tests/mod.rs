@@ -102,23 +102,27 @@ struct TestInbound {
     receiver: Receiver<Vec<u8>>,
 }
 
+type TestPlatformParts = (
+    TestPlatform,
+    Receiver<Vec<u8>>,
+    Sender<Vec<u8>>,
+    Receiver<StatusEvent>,
+);
+
+type TestPlatformPartsWithInbound = (
+    TestPlatform,
+    Receiver<Vec<u8>>,
+    Sender<Vec<u8>>,
+    Receiver<StatusEvent>,
+    Receiver<QlStream>,
+);
+
 impl TestPlatform {
-    fn new() -> (
-        Self,
-        Receiver<Vec<u8>>,
-        Sender<Vec<u8>>,
-        Receiver<StatusEvent>,
-    ) {
+    fn new() -> TestPlatformParts {
         Self::new_inner(None, None, Duration::ZERO, None)
     }
 
-    fn new_with_inbound() -> (
-        Self,
-        Receiver<Vec<u8>>,
-        Sender<Vec<u8>>,
-        Receiver<StatusEvent>,
-        Receiver<QlStream>,
-    ) {
+    fn new_with_inbound() -> TestPlatformPartsWithInbound {
         let (inbound_tx, inbound_rx) = async_channel::unbounded();
         let (platform, outbound_rx, inbound_messages_tx, status_rx) =
             Self::new_inner(Some(inbound_tx), None, Duration::ZERO, None);
@@ -133,24 +137,14 @@ impl TestPlatform {
 
     fn new_with_session_write_failure(
         fail_encrypted_write_at: usize,
-    ) -> (
-        Self,
-        Receiver<Vec<u8>>,
-        Sender<Vec<u8>>,
-        Receiver<StatusEvent>,
-    ) {
+    ) -> TestPlatformParts {
         Self::new_inner(None, Some(fail_encrypted_write_at), Duration::ZERO, None)
     }
 
     fn new_with_delayed_writes(
         delay: Duration,
         write_stats: WriteStats,
-    ) -> (
-        Self,
-        Receiver<Vec<u8>>,
-        Sender<Vec<u8>>,
-        Receiver<StatusEvent>,
-    ) {
+    ) -> TestPlatformParts {
         Self::new_inner(None, None, delay, Some(write_stats))
     }
 
@@ -159,12 +153,7 @@ impl TestPlatform {
         fail_encrypted_write_at: Option<usize>,
         write_delay: Duration,
         write_stats: Option<WriteStats>,
-    ) -> (
-        Self,
-        Receiver<Vec<u8>>,
-        Sender<Vec<u8>>,
-        Receiver<StatusEvent>,
-    ) {
+    ) -> TestPlatformParts {
         let (outbound, outbound_rx) = async_channel::unbounded();
         let (inbound_messages_tx, inbound_messages_rx) = async_channel::unbounded();
         let (status, status_rx) = async_channel::unbounded();
