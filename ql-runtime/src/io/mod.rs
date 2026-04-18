@@ -1,6 +1,6 @@
+mod inner;
 mod queue;
 mod reader;
-mod shared;
 mod sync;
 mod writer;
 
@@ -12,10 +12,10 @@ pub(crate) use self::queue::PushError;
 pub use self::{reader::StreamReader, writer::StreamWriter};
 use crate::RuntimeHandle;
 
-pub(crate) struct Rx(sync::Arc<shared::Inner>);
+pub(crate) struct Rx(sync::Arc<inner::Inner>);
 
 impl Deref for Rx {
-    type Target = shared::RxInner;
+    type Target = inner::RxInner;
 
     fn deref(&self) -> &Self::Target {
         &self.0.reader
@@ -28,10 +28,10 @@ impl Rx {
     }
 }
 
-pub(crate) struct Tx(sync::Arc<shared::Inner>);
+pub(crate) struct Tx(sync::Arc<inner::Inner>);
 
 impl Deref for Tx {
-    type Target = shared::TxInner;
+    type Target = inner::TxInner;
 
     fn deref(&self) -> &Self::Target {
         &self.0.writer
@@ -50,7 +50,7 @@ pub(crate) fn new_stream(
     writer_target: CloseTarget,
     handle: RuntimeHandle,
 ) -> (StreamReader, StreamWriter, Rx, Tx) {
-    let shared = sync::Arc::new(shared::new(stream_id));
+    let shared = sync::Arc::new(inner::new(stream_id));
     (
         StreamReader::new(Rx(shared.clone()), reader_target, handle.clone()),
         StreamWriter::new(Tx(shared.clone()), writer_target, handle),

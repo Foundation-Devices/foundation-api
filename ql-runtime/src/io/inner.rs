@@ -313,20 +313,14 @@ mod loom_tests {
     use std::task::Waker;
 
     use bytes::Bytes;
-    use loom::{model, thread};
-    use ql_wire::{StreamCloseCode, StreamId};
+    use loom::thread;
+    use ql_wire::StreamCloseCode;
 
     use super::*;
-    use crate::{io::Tx, QlStreamError};
-
-    fn check_model(f: impl Fn() + Sync + Send + 'static) {
-        let builder = model::Builder::new();
-        builder.check(f);
-    }
-
-    fn shared() -> super::super::sync::Arc<Inner> {
-        super::super::sync::Arc::new(new(StreamId(1u32.into())))
-    }
+    use crate::{
+        io::{sync::loom::*, Tx},
+        QlStreamError,
+    };
 
     #[test]
     fn reader_waiter_registration_survives_finish() {

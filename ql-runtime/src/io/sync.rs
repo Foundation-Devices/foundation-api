@@ -75,3 +75,26 @@ mod inner {
 }
 
 pub use inner::*;
+
+#[cfg(all(test, loom))]
+pub(crate) mod loom {
+    use loom::model;
+    use ql_wire::StreamId;
+
+    use super::Arc;
+    use crate::{io::inner::Inner, RuntimeHandle};
+
+    pub(crate) fn check_model(f: impl Fn() + Sync + Send + 'static) {
+        let builder = model::Builder::new();
+        builder.check(f);
+    }
+
+    pub(crate) fn shared() -> Arc<Inner> {
+        Arc::new(crate::io::inner::new(StreamId(1u32.into())))
+    }
+
+    pub(crate) fn handle() -> RuntimeHandle {
+        let (tx, _rx) = async_channel::unbounded();
+        RuntimeHandle::new(tx)
+    }
+}

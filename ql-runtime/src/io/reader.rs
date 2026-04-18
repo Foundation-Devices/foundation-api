@@ -7,8 +7,8 @@ use bytes::Bytes;
 use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
+    inner::{Item, RxInner},
     queue::PopError,
-    shared::{Item, RxInner},
     Rx,
 };
 use crate::{command::Command, log, QlStreamError, RuntimeHandle};
@@ -190,6 +190,54 @@ impl Drop for StreamReader {
             stream_id: self.rx.stream_id(),
             target: self.target,
             code: StreamCloseCode::CANCELLED,
+        });
+    }
+}
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use std::task::{Context, Poll, Waker};
+
+    use bytes::Bytes;
+    use loom::thread;
+    use ql_wire::CloseTarget;
+
+    use super::*;
+    use crate::io::sync::loom::*;
+
+    #[test]
+    fn poll_read_observes_chunk_racing_with_registration() {
+        check_model(|| {
+            let inner = shared();
+            let mut reader = StreamReader::new(
+                Rx(inner.clone()),
+                CloseTarget::Origin,
+                handle(),
+            );
+            let mut cx = Context::from_waker(Waker::noop());
+
+            let producer = {
+                let inner = inner.clone();
+                thread::spawn(move || {
+                    inner.reader.try_write(Bytes::from_static(b"abc")).unwrap();
+                })
+            };
+
+            let first = reader.poll_read(usize::MAX, &mut cx);
+            producer.join().unwrap();
+
+            match first {
+                Poll::Ready(Ok(Some(bytes))) => {
+                    assert_eq!(bytes, Bytes::from_static(b"abc"));
+                }
+                Poll::Pending => {
+                    assert_eq!(
+                        reader.poll_read(usize::MAX, &mut cx),
+                        Poll::Ready(Ok(Some(Bytes::from_static(b"abc"))))
+                    );
+                }
+                other => panic!("unexpected first poll result: {other:?}"),
+            }
         });
     }
 }

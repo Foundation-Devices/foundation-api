@@ -7,8 +7,8 @@ use bytes::Bytes;
 use ql_wire::{CloseTarget, StreamCloseCode};
 
 use super::{
+    inner::{Item, TxInner},
     queue::{PopError, PushError},
-    shared::{Item, TxInner},
     Tx,
 };
 use crate::{command::Command, log, QlStreamError, RuntimeHandle};
@@ -221,5 +221,87 @@ impl StreamWriter {
 impl Drop for StreamWriter {
     fn drop(&mut self) {
         self.close_inner(StreamCloseCode::CANCELLED);
+    }
+}
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use std::task::{Context, Poll, Waker};
+
+    use bytes::Bytes;
+    use loom::thread;
+    use ql_wire::CloseTarget;
+
+    use super::*;
+    use crate::io::sync::loom::*;
+
+    #[test]
+    fn poll_write_observes_capacity_racing_with_registration() {
+        check_model(|| {
+            let inner = shared();
+            inner.writer.try_write(Bytes::from_static(b"abc")).unwrap();
+
+            let mut writer = StreamWriter::new(
+                Tx(inner.clone()),
+                CloseTarget::Origin,
+                handle(),
+            );
+            let mut bytes = Bytes::from_static(b"xyz");
+            let mut cx = Context::from_waker(Waker::noop());
+
+            let drainer = {
+                let inner = inner.clone();
+                thread::spawn(move || {
+                    assert!(matches!(inner.writer.pop(), Ok(Item::Chunk(_))));
+                })
+            };
+
+            let first = writer.poll_write(&mut bytes, &mut cx);
+            drainer.join().unwrap();
+
+            match first {
+                Poll::Ready(Ok(())) => {
+                    assert!(bytes.is_empty());
+                }
+                Poll::Pending => {
+                    assert_eq!(writer.poll_write(&mut bytes, &mut cx), Poll::Ready(Ok(())));
+                    assert!(bytes.is_empty());
+                }
+                other => panic!("unexpected first poll result: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn poll_finish_observes_terminal_racing_with_registration() {
+        check_model(|| {
+            let inner = shared();
+            let mut writer = StreamWriter::new(
+                Tx(inner.clone()),
+                CloseTarget::Origin,
+                handle(),
+            );
+            let mut cx = Context::from_waker(Waker::noop());
+
+            writer.queue_finish();
+
+            let finisher = {
+                let inner = inner.clone();
+                thread::spawn(move || {
+                    inner.writer.finish();
+                })
+            };
+
+            let first = writer.poll_finish(&mut cx);
+            finisher.join().unwrap();
+
+            match first {
+                Poll::Ready(Ok(())) => {}
+                Poll::Pending => {
+                    assert_eq!(writer.poll_finish(&mut cx), Poll::Ready(Ok(())));
+                }
+                other => panic!("unexpected first poll result: {other:?}"),
+            }
+        });
     }
 }
