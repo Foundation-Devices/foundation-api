@@ -30,7 +30,7 @@ unsafe impl Sync for StreamReader {}
 
 impl std::fmt::Debug for StreamReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InboundByteStream")
+        f.debug_struct("StreamReader")
             .field("stream_id", &self.rx.stream_id())
             .field("target", &self.target)
             .field(
@@ -96,7 +96,7 @@ impl StreamReader {
         match self.rx.pop() {
             Ok(Item::Chunk(mut bytes)) => {
                 log::trace!(
-                    "byte reader received chunk: stream_id={:?} target={:?} len={}",
+                    "byte reader received chunk: stream_id={} target={:?} len={}",
                     self.rx.stream_id(),
                     self.target,
                     bytes.len()
@@ -113,7 +113,7 @@ impl StreamReader {
             }
             Ok(Item::Error(error)) => {
                 log::debug!(
-                    "byte reader delivered terminal error: stream_id={:?} target={:?} error={:?}",
+                    "byte reader delivered terminal error: stream_id={} target={:?} error={:?}",
                     self.rx.stream_id(),
                     self.target,
                     error
@@ -124,7 +124,7 @@ impl StreamReader {
             Err(PopError::Empty) => {
                 if RxInner::is_finished(self.rx.load_state()) {
                     log::debug!(
-                        "byte reader delivered clean eof: stream_id={:?} target={:?}",
+                        "byte reader delivered clean eof: stream_id={} target={:?}",
                         self.rx.stream_id(),
                         self.target
                     );
@@ -209,11 +209,7 @@ mod loom_tests {
     fn poll_read_observes_chunk_racing_with_registration() {
         check_model(|| {
             let inner = shared();
-            let mut reader = StreamReader::new(
-                Rx(inner.clone()),
-                CloseTarget::Origin,
-                handle(),
-            );
+            let mut reader = StreamReader::new(Rx(inner.clone()), CloseTarget::Origin, handle());
             let mut cx = Context::from_waker(Waker::noop());
 
             let producer = {

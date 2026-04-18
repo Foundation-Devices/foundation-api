@@ -30,7 +30,7 @@ unsafe impl Sync for StreamWriter {}
 
 impl std::fmt::Debug for StreamWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OutboundByteStream")
+        f.debug_struct("StreamWriter")
             .field("stream_id", &self.tx.stream_id())
             .field("target", &self.target)
             .field("closed", &!self.open)
@@ -66,7 +66,7 @@ impl StreamWriter {
             match self.tx.try_write(std::mem::take(bytes)) {
                 Ok(()) => {
                     log::trace!(
-                        "byte writer accepted chunk: stream_id={:?} target={:?}",
+                        "byte writer accepted chunk: stream_id={} target={:?}",
                         self.tx.stream_id(),
                         self.target
                     );
@@ -89,7 +89,7 @@ impl StreamWriter {
                 Ok(()) => {
                     self.tx.unregister_waiter();
                     log::trace!(
-                        "byte writer accepted chunk: stream_id={:?} target={:?}",
+                        "byte writer accepted chunk: stream_id={} target={:?}",
                         self.tx.stream_id(),
                         self.target
                     );
@@ -120,7 +120,7 @@ impl StreamWriter {
             return;
         }
         log::debug!(
-            "byte writer finish: stream_id={:?} target={:?}",
+            "byte writer finish: stream_id={} target={:?}",
             self.tx.stream_id(),
             self.target
         );
@@ -241,11 +241,7 @@ mod loom_tests {
             let inner = shared();
             inner.writer.try_write(Bytes::from_static(b"abc")).unwrap();
 
-            let mut writer = StreamWriter::new(
-                Tx(inner.clone()),
-                CloseTarget::Origin,
-                handle(),
-            );
+            let mut writer = StreamWriter::new(Tx(inner.clone()), CloseTarget::Origin, handle());
             let mut bytes = Bytes::from_static(b"xyz");
             let mut cx = Context::from_waker(Waker::noop());
 
@@ -276,11 +272,7 @@ mod loom_tests {
     fn poll_finish_observes_terminal_racing_with_registration() {
         check_model(|| {
             let inner = shared();
-            let mut writer = StreamWriter::new(
-                Tx(inner.clone()),
-                CloseTarget::Origin,
-                handle(),
-            );
+            let mut writer = StreamWriter::new(Tx(inner.clone()), CloseTarget::Origin, handle());
             let mut cx = Context::from_waker(Waker::noop());
 
             writer.queue_finish();
