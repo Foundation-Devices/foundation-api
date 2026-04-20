@@ -1,5 +1,5 @@
 use crate::{
-    MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce, SessionKey,
+    ByteBuf, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce, SessionKey,
     ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
@@ -12,22 +12,26 @@ pub trait QlHash {
 }
 
 pub trait QlAead {
+    type B: ByteBuf;
+
     fn aes256_gcm_encrypt(
         &self,
         key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
-        buffer: &mut [u8],
-    ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
+        buffer: Self::B,
+        range: core::ops::Range<usize>,
+    ) -> (Self::B, [u8; ENCRYPTED_MESSAGE_AUTH_SIZE]);
 
     fn aes256_gcm_decrypt(
         &self,
         key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
-        buffer: &mut [u8],
+        buffer: Self::B,
+        range: core::ops::Range<usize>,
         auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
-    ) -> bool;
+    ) -> Option<Self::B>;
 }
 
 pub trait QlKem {

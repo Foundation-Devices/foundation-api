@@ -38,25 +38,28 @@ impl QlHash for SoftwareCrypto {
 }
 
 impl QlAead for SoftwareCrypto {
+    type B = Vec<u8>;
+
     fn aes256_gcm_encrypt(
         &self,
         key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
-        buffer: &mut [u8],
-    ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE] {
+        mut buffer: Self::B,
+        range: core::ops::Range<usize>,
+    ) -> (Self::B, [u8; ENCRYPTED_MESSAGE_AUTH_SIZE]) {
         let key: AesGcm256Key = (*key.data()).into();
-        let plaintext = buffer.to_vec();
+        let plaintext = buffer[range.clone()].to_vec();
         let mut auth = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
         key.encrypt(
-            buffer,
+            &mut buffer[range],
             (&mut auth).into(),
             (&nonce.0).into(),
             aad,
             &plaintext,
         )
         .unwrap();
-        auth
+        (buffer, auth)
     }
 
     fn aes256_gcm_decrypt(
@@ -64,13 +67,21 @@ impl QlAead for SoftwareCrypto {
         key: &SessionKey,
         nonce: &Nonce,
         aad: &[u8],
-        buffer: &mut [u8],
+        mut buffer: Self::B,
+        range: core::ops::Range<usize>,
         auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
-    ) -> bool {
+    ) -> Option<Self::B> {
         let key: AesGcm256Key = (*key.data()).into();
-        let ciphertext = buffer.to_vec();
-        key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
-            .is_ok()
+        let ciphertext = buffer[range.clone()].to_vec();
+        key.decrypt(
+            &mut buffer[range],
+            (&nonce.0).into(),
+            aad,
+            &ciphertext,
+            auth_tag.into(),
+        )
+        .ok()?;
+        Some(buffer)
     }
 }
 
@@ -129,14 +140,17 @@ impl QlHash for NoopCrypto {
 }
 
 impl QlAead for NoopCrypto {
+    type B = Vec<u8>;
+
     fn aes256_gcm_encrypt(
         &self,
         _key: &SessionKey,
         _nonce: &Nonce,
         _aad: &[u8],
-        _buffer: &mut [u8],
-    ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE] {
-        [0; ENCRYPTED_MESSAGE_AUTH_SIZE]
+        buffer: Self::B,
+        _range: core::ops::Range<usize>,
+    ) -> (Self::B, [u8; ENCRYPTED_MESSAGE_AUTH_SIZE]) {
+        (buffer, [0; ENCRYPTED_MESSAGE_AUTH_SIZE])
     }
 
     fn aes256_gcm_decrypt(
@@ -144,10 +158,11 @@ impl QlAead for NoopCrypto {
         _key: &SessionKey,
         _nonce: &Nonce,
         _aad: &[u8],
-        _buffer: &mut [u8],
+        _buffer: Self::B,
+        _range: core::ops::Range<usize>,
         _auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
-    ) -> bool {
-        false
+    ) -> Option<Self::B> {
+        None
     }
 }
 

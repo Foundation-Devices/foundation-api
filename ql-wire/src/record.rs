@@ -1,26 +1,21 @@
 use crate::{
     codec,
-    encrypted_message::EncryptedMessage,
     handshake::{Ik1, Ik2, Kk1, Kk2, Xx1, Xx2, Xx3, Xx4},
-    ByteSlice, SessionHeader, WireDecode, WireEncode, WireError, QL_WIRE_VERSION,
+    ByteBuf, ByteSlice, SessionHeader, WireDecode, WireEncode, WireError,
+    ENCRYPTED_MESSAGE_AUTH_SIZE, QL_WIRE_VERSION,
 };
 
-pub fn encode_record<W, T>(out: &mut W, record_type: RecordType, body: &T)
-where
-    W: bytes::BufMut + ?Sized,
-    T: WireEncode + ?Sized,
-{
+pub fn encode_record<B: ByteBuf, T: WireEncode + ?Sized>(
+    record_type: RecordType,
+    body: &T,
+) -> B {
+    let mut out = B::with_capacity(RecordHeader::WIRE_SIZE + body.encoded_len());
     RecordHeader {
         version: QL_WIRE_VERSION,
         record_type,
     }
-    .encode(out);
-    body.encode(out);
-}
-
-pub fn encode_record_vec<T: WireEncode + ?Sized>(record_type: RecordType, body: &T) -> Vec<u8> {
-    let mut out = Vec::with_capacity(RecordHeader::WIRE_SIZE + body.encoded_len());
-    encode_record(&mut out, record_type, body);
+    .encode(&mut out);
+    body.encode(&mut out);
     out
 }
 
@@ -31,6 +26,21 @@ where
 {
     let mut reader = codec::Reader::new(bytes);
     Ok((reader.decode()?, reader.decode()?))
+}
+
+pub fn decode_session_record_prefix(
+    bytes: &[u8],
+) -> Result<(SessionHeader, [u8; ENCRYPTED_MESSAGE_AUTH_SIZE], usize), WireError> {
+    let mut reader = codec::Reader::new(bytes);
+    let record = reader.decode::<RecordHeader>()?;
+    if record.version != QL_WIRE_VERSION || record.record_type != RecordType::Session {
+        return Err(WireError::InvalidPayload);
+    }
+
+    let header = reader.decode::<SessionHeader>()?;
+    let auth = reader.decode()?;
+    let ciphertext_start = bytes.len().saturating_sub(reader.remaining_len());
+    Ok((header, auth, ciphertext_start))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,40 +225,5 @@ impl<B: ByteSlice> WireDecode<B> for QlHandshakeRecord {
             HandshakeKind::Xx3 => Ok(Self::Xx3(reader.decode()?)),
             HandshakeKind::Xx4 => Ok(Self::Xx4(reader.decode()?)),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QlSessionRecord<B> {
-    pub header: SessionHeader,
-    pub payload: EncryptedMessage<B>,
-}
-
-impl<B: AsRef<[u8]>> WireEncode for QlSessionRecord<B> {
-    fn encoded_len(&self) -> usize {
-        self.header.encoded_len() + self.payload.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.header.encode(out);
-        self.payload.encode(out);
-    }
-}
-
-impl<B: ByteSlice> QlSessionRecord<B> {
-    pub fn into_owned(self) -> QlSessionRecord<Vec<u8>> {
-        QlSessionRecord {
-            header: self.header,
-            payload: self.payload.into_owned(),
-        }
-    }
-}
-
-impl<B: ByteSlice> WireDecode<B> for QlSessionRecord<B> {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self {
-            header: reader.decode()?,
-            payload: reader.decode()?,
-        })
     }
 }

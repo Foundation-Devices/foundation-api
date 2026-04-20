@@ -1,6 +1,6 @@
 use crate::{
-    codec, encrypted_message::EncryptedMessage, BufView, ByteSlice, Nonce, QlCrypto, Reader,
-    SessionHeader, SessionKey, WireDecode, WireEncode, WireError,
+    codec, BufView, ByteBuf, ByteSlice, Nonce, QlCrypto, Reader, SessionHeader, SessionKey,
+    WireDecode, WireEncode, WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 mod ack;
@@ -166,13 +166,21 @@ impl<B: ByteSlice> Iterator for SessionFrameIter<B> {
     }
 }
 
-pub fn decrypt_record<B: AsMut<[u8]>>(
-    crypto: &impl QlCrypto,
+pub fn decrypt_record<B: ByteBuf>(
+    crypto: &impl QlCrypto<B = B>,
     header: &SessionHeader,
-    encrypted: EncryptedMessage<B>,
+    buffer: B,
+    ciphertext_range: core::ops::Range<usize>,
+    auth: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
     session_key: &SessionKey,
 ) -> Result<B, WireError> {
+    assert!(
+        ciphertext_range.start <= ciphertext_range.end && ciphertext_range.end <= buffer.len(),
+        "ciphertext valid range",
+    );
     let aad = header.aad();
     let nonce = Nonce::from_counter(header.seq.into_inner());
-    encrypted.decrypt_in_place(crypto, session_key, &nonce, &aad)
+    crypto
+        .aes256_gcm_decrypt(session_key, &nonce, &aad, buffer, ciphertext_range, auth)
+        .ok_or(WireError::DecryptFailed)
 }
