@@ -69,9 +69,7 @@ fn read_stream_all_with_events(
     stream_id: StreamId,
     events: &mut Vec<SessionEvent>,
 ) -> Vec<u8> {
-    let mut stream = fsm
-        .stream(stream_id, |event| events.push(event))
-        .unwrap();
+    let mut stream = fsm.stream(stream_id, |event| events.push(event)).unwrap();
     let out = stream.read().flatten().collect::<Vec<u8>>();
     stream.commit_read(out.len()).unwrap();
     out
@@ -231,7 +229,11 @@ fn ack_of_fin_emits_outbound_finished_once() {
     let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"done"), 4);
-    fsm.stream(stream_id, |_| {}).unwrap().writer().unwrap().finish();
+    fsm.stream(stream_id, |_| {})
+        .unwrap()
+        .writer()
+        .unwrap()
+        .finish();
 
     let (record_seq, record) = next_outbound(&mut fsm, now).unwrap();
     assert!(matches!(
@@ -307,7 +309,10 @@ fn commit_stream_read_is_what_advances_stream_window() {
 
     assert!(next_outbound(&mut fsm, now + Duration::from_millis(2)).is_none());
 
-    fsm.stream(stream_id, |_| {}).unwrap().commit_read(2).unwrap();
+    fsm.stream(stream_id, |_| {})
+        .unwrap()
+        .commit_read(2)
+        .unwrap();
     let (_second_seq, second) = next_outbound(&mut fsm, now + Duration::from_millis(3)).unwrap();
     assert!(matches!(
         second.as_slice(),
@@ -341,7 +346,10 @@ fn pure_ack_only_records_are_fire_and_forget() {
     assert!(matches!(ack.as_slice(), [SessionFrame::Ack(_)]));
 
     let mut emit = |_| {};
-    fsm.on_timer(now + retransmit_timeout + Duration::from_millis(1), &mut emit);
+    fsm.on_timer(
+        now + retransmit_timeout + Duration::from_millis(1),
+        &mut emit,
+    );
     assert!(fsm
         .take_next_write(now + retransmit_timeout + Duration::from_millis(1))
         .is_none());
@@ -387,7 +395,10 @@ fn inbound_empty_fin_emits_finished_immediately() {
     })];
 
     let events = receive_events(&mut fsm, now, seq(0), &record);
-    assert_eq!(events, vec![opened(stream_id), SessionEvent::Finished(stream_id)]);
+    assert_eq!(
+        events,
+        vec![opened(stream_id), SessionEvent::Finished(stream_id)]
+    );
 }
 
 #[test]
@@ -695,6 +706,42 @@ fn close_does_not_ack_rejected_record_seq() {
 
     let (_seq, outbound) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
     assert!(matches!(outbound.as_slice(), [SessionFrame::Close(_)]));
+}
+
+#[test]
+fn inbound_unpair_emits_final_unpair_frame() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+
+    let events = receive_events(&mut fsm, now, seq(1), &[SessionFrame::Unpair]);
+    assert_eq!(events, vec![SessionEvent::Unpaired]);
+    assert!(!fsm.is_closed());
+
+    let (_seq, outbound) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
+    assert!(matches!(outbound.as_slice(), [SessionFrame::Unpair]));
+    assert!(fsm.is_closed());
+}
+
+#[test]
+fn terminating_session_ignores_inbound_frames() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+
+    let mut events = Vec::new();
+    fsm.unpair(&mut |event| events.push(event));
+    assert_eq!(events, vec![SessionEvent::Unpaired]);
+
+    let ignored = receive_events(
+        &mut fsm,
+        now + Duration::from_millis(1),
+        seq(1),
+        &[SessionFrame::Ping],
+    );
+    assert!(ignored.is_empty());
+
+    let (_seq, outbound) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
+    assert!(matches!(outbound.as_slice(), [SessionFrame::Unpair]));
+    assert!(fsm.is_closed());
 }
 
 #[test]

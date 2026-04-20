@@ -26,7 +26,7 @@ pub struct SessionState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionPhase {
     Open,
-    Closing(SessionClose),
+    Terminating(TerminalFrame),
     Closed,
 }
 
@@ -34,6 +34,12 @@ impl SessionPhase {
     pub fn is_open(&self) -> bool {
         self == &Self::Open
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalFrame {
+    Close(SessionClose),
+    Unpair,
 }
 
 #[derive(Debug)]

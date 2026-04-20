@@ -8,18 +8,31 @@ use ql_wire::{self as wire, QlCrypto, RouteId, SessionCloseCode, StreamId, WireD
 
 use crate::{
     handshake,
-    session::{EventSink, SessionEvent},
+    session::{self, SessionEvent, TerminalFrame},
     state::LinkState,
     Event, NoPeerError, NoSessionError, OutboundWrite, QlFsm, ReceiveError, StreamError, WriteId,
 };
 
-pub struct FsmEventEmitter<'a> {
+pub struct EventSink<'a> {
     events: &'a mut VecDeque<Event>,
+    termination: Option<TerminalFrame>,
 }
 
-impl EventSink for FsmEventEmitter<'_> {
+impl<'a> EventSink<'a> {
+    fn new(events: &'a mut VecDeque<Event>) -> Self {
+        Self {
+            events,
+            termination: None,
+        }
+    }
+}
+
+impl session::EventSink for EventSink<'_> {
     fn emit(&mut self, event: SessionEvent) {
         match event {
+            SessionEvent::Unpaired => {
+                self.termination = Some(TerminalFrame::Unpair);
+            }
             SessionEvent::Opened {
                 stream_id,
                 route_id,
@@ -48,6 +61,7 @@ impl EventSink for FsmEventEmitter<'_> {
                 self.events.push_back(Event::WritableClosed(frame));
             }
             SessionEvent::SessionClosed(close) => {
+                self.termination = Some(TerminalFrame::Close(close.clone()));
                 self.events.push_back(Event::SessionClosed(close));
             }
         }
@@ -58,6 +72,24 @@ pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
     fsm.state.handshake = None;
     fsm.state.link = LinkState::Idle;
     fsm.state.peer = Some(peer);
+}
+
+pub fn unpair(fsm: &mut QlFsm) {
+    let had_peer = fsm.state.peer.is_some();
+    fsm.state.handshake = None;
+    fsm.state.armed_pairing_token = None;
+
+    if let Some(conn) = fsm.state.link.connected_mut() {
+        let mut emit = EventSink::new(&mut fsm.events);
+        conn.session.unpair(&mut emit);
+    } else {
+        fsm.state.link = LinkState::Idle;
+    }
+
+    if had_peer {
+        emit_peer_status(fsm, crate::PeerStatus::Unpaired);
+    }
+    fsm.state.peer = None;
 }
 
 pub fn handle_disarm_pairing(fsm: &mut QlFsm) {
@@ -95,32 +127,40 @@ pub fn receive(
             handshake::handle_handshake_record(fsm, crypto, &record)
         }
         wire::RecordType::Session => {
-            let QlFsm { state, events, .. } = fsm;
-            let conn = state.link.connected_mut_or_err()?;
-            let (decrypt_len, seq) = {
-                let record = wire::QlSessionRecord::decode(&mut reader)?;
-                if record.header.connection_id != conn.transport.rx_connection_id {
-                    return Err(ReceiveError::InvalidPayload);
-                }
-                let payload = wire::decrypt_record(
-                    crypto,
-                    &record.header,
-                    record.payload,
-                    &conn.transport.rx_key,
-                )?;
-                (payload.len(), record.header.seq)
+            let termination = {
+                let QlFsm { state, events, .. } = fsm;
+                let conn = state.link.connected_mut_or_err()?;
+                let (decrypt_len, seq) = {
+                    let record = wire::QlSessionRecord::decode(&mut reader)?;
+                    if record.header.connection_id != conn.transport.rx_connection_id {
+                        return Err(ReceiveError::InvalidPayload);
+                    }
+                    let payload = wire::decrypt_record(
+                        crypto,
+                        &record.header,
+                        record.payload,
+                        &conn.transport.rx_key,
+                    )?;
+                    (payload.len(), record.header.seq)
+                };
+
+                let len = bytes.len();
+                let plaintext = Bytes::from(bytes).slice(len - decrypt_len..);
+                let frames = wire::parse_session_frames(plaintext);
+
+                let mut emit = EventSink::new(events);
+                conn.session
+                    .receive(state.now.instant, seq, frames, &mut emit);
+                emit.termination
             };
 
-            let len = bytes.len();
-            let plaintext = Bytes::from(bytes).slice(len - decrypt_len..);
-            let frames = wire::parse_session_frames(plaintext);
-
-            let mut emit = FsmEventEmitter { events };
-            conn.session
-                .receive(state.now.instant, seq, frames, &mut emit);
-
-            if conn.session.is_closed() {
-                apply_session_closed(fsm);
+            if matches!(termination, Some(TerminalFrame::Unpair)) {
+                if fsm.state.peer.is_some() {
+                    emit_peer_status(fsm, crate::PeerStatus::Unpaired);
+                }
+                fsm.state.handshake = None;
+                fsm.state.armed_pairing_token = None;
+                fsm.state.peer = None;
             }
             Ok(())
         }
@@ -135,12 +175,8 @@ pub fn on_timer(fsm: &mut QlFsm) {
         return;
     };
 
-    let mut emit = FsmEventEmitter { events };
+    let mut emit = EventSink::new(events);
     conn.session.on_timer(state.now.instant, &mut emit);
-
-    if conn.session.is_closed() {
-        apply_session_closed(fsm);
-    }
 }
 
 pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
@@ -174,8 +210,9 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
         conn.transport.tx_connection_id,
         &conn.transport.tx_key,
     );
-    if conn.session.is_closed() {
-        apply_session_closed(fsm);
+    if conn.session.is_closed() && matches!(fsm.state.link, LinkState::Connected(_)) {
+        fsm.state.link = LinkState::Idle;
+        emit_peer_status(fsm, fsm.state.link.status());
     }
     Some(OutboundWrite {
         record,
@@ -196,7 +233,7 @@ pub fn close_session(fsm: &mut QlFsm, code: SessionCloseCode) {
     let Some(conn) = state.link.connected_mut() else {
         return;
     };
-    let mut emit = FsmEventEmitter { events };
+    let mut emit = EventSink::new(events);
     conn.session.close(code, &mut emit);
 }
 
@@ -206,16 +243,14 @@ pub fn open_stream(
 ) -> Result<crate::StreamOps<'_>, NoSessionError> {
     let QlFsm { state, events, .. } = fsm;
     let conn = state.link.connected_mut_or_err()?;
-    let inner = conn
-        .session
-        .open_stream(route_id, FsmEventEmitter { events })?;
+    let inner = conn.session.open_stream(route_id, EventSink::new(events))?;
     Ok(crate::StreamOps { inner })
 }
 
 pub fn stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<crate::StreamOps<'_>, StreamError> {
     let QlFsm { state, events, .. } = fsm;
     let conn = state.link.connected_mut_or_err()?;
-    let inner = conn.session.stream(stream_id, FsmEventEmitter { events })?;
+    let inner = conn.session.stream(stream_id, EventSink::new(events))?;
     Ok(crate::StreamOps { inner })
 }
 
@@ -228,18 +263,8 @@ pub fn poll_event(fsm: &mut QlFsm) -> Option<Event> {
     fsm.events.pop_front()
 }
 
-pub fn emit_peer_status(fsm: &mut QlFsm) {
-    if fsm.state.peer.is_some() {
-        fsm.events
-            .push_back(Event::PeerStatusChanged(fsm.state.link.status()));
-    }
-}
-
-fn apply_session_closed(fsm: &mut QlFsm) {
-    if matches!(fsm.state.link, LinkState::Connected(_)) {
-        fsm.state.link = LinkState::Idle;
-        emit_peer_status(fsm);
-    }
+pub fn emit_peer_status(fsm: &mut QlFsm, status: crate::PeerStatus) {
+    fsm.events.push_back(Event::PeerStatusChanged(status));
 }
 
 pub fn deadline_after_secs(now_secs: u64, duration: Duration) -> u64 {

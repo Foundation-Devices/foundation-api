@@ -94,7 +94,7 @@ pub fn handle_timer(fsm: &mut QlFsm) {
 
     fsm.state.link = LinkState::Idle;
     fsm.state.handshake = None;
-    emit_peer_status(fsm);
+    emit_peer_status(fsm, fsm.state.link.status());
 }
 
 pub fn next_handshake_deadline(fsm: &QlFsm) -> Option<std::time::Instant> {
@@ -136,7 +136,7 @@ pub fn finish_handshake(
         fsm.state.now.instant,
     );
     fsm.state.link = LinkState::Connected(ConnectedState { transport, session });
-    emit_peer_status(fsm);
+    emit_peer_status(fsm, fsm.state.link.status());
     Ok(())
 }
 

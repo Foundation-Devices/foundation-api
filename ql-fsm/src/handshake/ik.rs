@@ -26,7 +26,7 @@ pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, peer: PeerBundle
         deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
     });
     enqueue_handshake(fsm, QlHandshakeRecord::Ik1(message));
-    emit_peer_status(fsm);
+    emit_peer_status(fsm, fsm.state.link.status());
 }
 
 pub fn handle_ik1(

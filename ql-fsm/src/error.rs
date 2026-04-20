@@ -32,7 +32,10 @@ impl Display for ReceiveError {
             Self::NoSession => f.write_str("no active session"),
             Self::NotPairingMode => f.write_str("not in pairing mode"),
             Self::InvalidPairingId { expected, actual } => {
-                write!(f, "invalid pairing id: expected {expected}, actual {actual}")
+                write!(
+                    f,
+                    "invalid pairing id: expected {expected}, actual {actual}"
+                )
             }
             Self::Replay => f.write_str("replay"),
         }

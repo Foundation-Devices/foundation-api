@@ -412,6 +412,19 @@ impl Runner {
             match event {
                 Event::NewPeer => {}
                 Event::PeerStatusChanged(status) => {
+                    if status == PeerStatus::Unpaired {
+                        let state = &mut self.events[side.idx()];
+                        prop_assert!(
+                            state.session_epoch > 0,
+                            "side {side:?} emitted Unpaired without a connected session"
+                        );
+                        prop_assert!(
+                            state.session_closed_epoch != Some(state.session_epoch),
+                            "side {side:?} emitted duplicate terminal event in session epoch {}",
+                            state.session_epoch
+                        );
+                        state.session_closed_epoch = Some(state.session_epoch);
+                    }
                     self.events[side.idx()].note_peer_status(status);
                 }
                 Event::Opened { stream_id, .. } => {

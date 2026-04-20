@@ -384,6 +384,71 @@ fn close_session_disconnects_locally() {
 }
 
 #[test]
+fn unpair_clears_bound_peer_and_emits_unpair_frame() {
+    let mut harness = Harness::connected(QlFsmConfig::default());
+
+    harness.a.fsm.unpair();
+
+    assert_eq!(
+        harness.take_event(Side::A),
+        Some(Event::PeerStatusChanged(PeerStatus::Unpaired))
+    );
+    assert!(harness.a.fsm.peer().is_none());
+    assert!(matches!(
+        harness.a.fsm.open_stream(route_id(1)),
+        Err(NoSessionError)
+    ));
+    assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
+
+    let unpair = harness.next_decoded_outbound(Side::A).unwrap();
+    assert!(matches!(
+        unpair.frames.as_slice(),
+        [ql_wire::SessionFrame::Unpair]
+    ));
+    assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
+}
+
+#[test]
+fn inbound_unpair_clears_remote_peer_binding() {
+    let mut harness = Harness::connected(QlFsmConfig::default());
+
+    harness.a.fsm.unpair();
+    let unpair = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, unpair);
+
+    assert_eq!(
+        harness.take_event(Side::B),
+        Some(Event::PeerStatusChanged(PeerStatus::Unpaired))
+    );
+    assert!(harness.b.fsm.peer().is_none());
+    assert!(matches!(
+        harness.b.fsm.open_stream(route_id(1)),
+        Err(NoSessionError)
+    ));
+    assert!(matches!(harness.connect_ik(Side::B), Err(NoPeerError)));
+
+    let reply_key = harness.b.fsm.state.link.transport().unwrap().tx_key.clone();
+    let reply = harness.next_outbound(Side::B).unwrap();
+    let (_header, frames) = decrypt_record(&harness.b.crypto, &reply, &reply_key);
+    assert!(matches!(frames.as_slice(), [ql_wire::SessionFrame::Unpair]));
+    assert!(matches!(harness.b.fsm.state.link, LinkState::Idle));
+}
+
+#[test]
+fn local_unpair_without_session_emits_unpaired_immediately() {
+    let mut harness = Harness::paired_known(QlFsmConfig::default());
+
+    harness.a.fsm.unpair();
+
+    assert_eq!(
+        harness.take_event(Side::A),
+        Some(Event::PeerStatusChanged(PeerStatus::Unpaired))
+    );
+    assert!(harness.a.fsm.peer().is_none());
+    assert_eq!(harness.take_event(Side::A), None);
+}
+
+#[test]
 fn session_records_contain_ack_frames_after_delivery() {
     let config = QlFsmConfig::default();
     let mut harness = Harness::connected(config);

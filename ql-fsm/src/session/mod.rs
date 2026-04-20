@@ -1,4 +1,4 @@
-pub use self::{stream_ops::*, stream_parity::*, stream_rx::*};
+pub use self::{state::TerminalFrame, stream_ops::*, stream_parity::*, stream_rx::*};
 
 mod ack_tracker;
 mod range_set;
@@ -78,6 +78,7 @@ pub enum SessionEvent {
     Closed(StreamClose),
     WritableClosed(StreamClose),
     SessionClosed(SessionClose),
+    Unpaired,
 }
 
 pub trait EventSink {
@@ -178,39 +179,36 @@ impl SessionFsm {
         Ok(())
     }
 
-    pub(crate) fn close(&mut self, code: SessionCloseCode, sink: &mut impl EventSink) {
+    pub fn close(&mut self, code: SessionCloseCode, sink: &mut impl EventSink) {
         if self.state.phase != SessionPhase::Open {
             return;
         }
 
-        let close = SessionClose { code };
-        self.state.phase = SessionPhase::Closing(close.clone());
-        self.state.tracked_records.clear();
-        self.state.ack_tracker.clear_ack_state();
-        self.clear_streams();
-        sink.emit(SessionEvent::SessionClosed(close));
+        self.begin_termination(TerminalFrame::Close(SessionClose { code }), sink);
     }
 
-    pub(crate) fn is_closed(&self) -> bool {
+    pub fn unpair(&mut self, sink: &mut impl EventSink) {
+        if self.state.phase != SessionPhase::Open {
+            return;
+        }
+
+        self.begin_termination(TerminalFrame::Unpair, sink);
+    }
+
+    pub fn is_closed(&self) -> bool {
         self.state.phase == SessionPhase::Closed
     }
 
-    pub(crate) fn receive<I>(
-        &mut self,
-        now: Instant,
-        seq: RecordSeq,
-        frames: I,
-        sink: &mut impl EventSink,
-    ) where
+    pub fn receive<I>(&mut self, now: Instant, seq: RecordSeq, frames: I, sink: &mut impl EventSink)
+    where
         I: IntoIterator<Item = Result<SessionFrame<Bytes>, WireError>>,
     {
-        self.state.last_activity_at = now;
-        self.state.last_inbound_at = now;
-
         if self.state.phase != SessionPhase::Open {
             return;
         }
 
+        self.state.last_activity_at = now;
+        self.state.last_inbound_at = now;
         self.collect_timeouts(now);
 
         match self.state.ack_tracker.insert(seq) {
@@ -223,7 +221,6 @@ impl SessionFsm {
         }
 
         let mut ack_eliciting = false;
-        let mut handled_close = false;
 
         for frame in frames {
             let Ok(frame) = frame else {
@@ -233,6 +230,10 @@ impl SessionFsm {
             ack_eliciting |= !matches!(frame, SessionFrame::Ack(_));
             match frame {
                 SessionFrame::Ping => {}
+                SessionFrame::Unpair => {
+                    self.unpair(sink);
+                    return;
+                }
                 SessionFrame::Ack(ack) => self.process_record_ack(&ack, sink),
                 SessionFrame::StreamData(frame) => {
                     if self.handle_stream_data(frame, sink).is_err() {
@@ -249,14 +250,9 @@ impl SessionFsm {
                 }
                 SessionFrame::Close(close) => {
                     self.close(close.code, sink);
-                    handled_close = true;
-                    break;
+                    return;
                 }
             }
-        }
-
-        if handled_close {
-            return;
         }
 
         if ack_eliciting {
@@ -351,16 +347,25 @@ impl SessionFsm {
     }
 
     pub fn has_shutdown_work(&self) -> bool {
-        self.state.ack_tracker.ack_deadline().is_some() || !self.state.tracked_records.is_empty()
+        matches!(self.state.phase, SessionPhase::Terminating(_))
+            || self.state.ack_tracker.ack_deadline().is_some()
+            || !self.state.tracked_records.is_empty()
     }
 
     pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
         match &self.state.phase {
-            SessionPhase::Closing(close) => {
+            SessionPhase::Terminating(frame) => {
                 let seq = self.state.next_record_seq;
                 next_seq(&mut self.state.next_record_seq);
                 let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
-                assert!(builder.push_close(close), "builder has capacity");
+                match frame {
+                    TerminalFrame::Close(close) => {
+                        assert!(builder.push_close(close), "builder has capacity");
+                    }
+                    TerminalFrame::Unpair => {
+                        assert!(builder.push_unpair(), "builder has capacity");
+                    }
+                }
                 self.state.phase = SessionPhase::Closed;
                 return Some((None, builder));
             }
@@ -424,6 +429,18 @@ impl SessionFsm {
 
         next_seq(&mut self.state.next_record_seq);
         Some((builder, outbound))
+    }
+
+    fn begin_termination(&mut self, frame: TerminalFrame, sink: &mut impl EventSink) {
+        match &frame {
+            TerminalFrame::Close(close) => sink.emit(SessionEvent::SessionClosed(close.clone())),
+            TerminalFrame::Unpair => sink.emit(SessionEvent::Unpaired),
+        }
+
+        self.state.phase = SessionPhase::Terminating(frame);
+        self.state.tracked_records.clear();
+        self.state.ack_tracker.clear_ack_state();
+        self.clear_streams();
     }
 
     fn push_next_pending_stream_close(

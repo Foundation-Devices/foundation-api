@@ -3,7 +3,7 @@ use ql_wire::{CloseTarget, StreamClose, StreamCloseCode, StreamId};
 use super::{
     state::{InboundState, StreamState},
     stream_rx::StreamReadIter,
-    SessionEvent, EventSink, SessionFsm,
+    EventSink, SessionEvent, SessionFsm,
 };
 use crate::CommitReadError;
 

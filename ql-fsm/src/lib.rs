@@ -63,6 +63,11 @@ pub enum PeerStatus {
     Initiator,
     /// the encrypted session is up
     Connected,
+    /// the bound peer was forgotten immediately
+    ///
+    /// unpair is abortive and best-effort. the binding is removed immediately
+    /// and one final write may remain: a record containing only `SessionFrame::Unpair`
+    Unpaired,
 }
 
 /// events emitted by `QlFsm`
@@ -70,7 +75,7 @@ pub enum PeerStatus {
 pub enum Event {
     /// a peer was learned during handshake completion
     NewPeer,
-    /// the peer changed connection state
+    /// the peer changed lifecycle state
     PeerStatusChanged(PeerStatus),
     /// a stream was opened
     Opened {
@@ -111,7 +116,7 @@ pub struct OutboundWrite {
 }
 
 pub struct StreamOps<'a> {
-    inner: session::StreamOps<'a, fsm::FsmEventEmitter<'a>>,
+    inner: session::StreamOps<'a, fsm::EventSink<'a>>,
 }
 
 impl StreamOps<'_> {
@@ -315,12 +320,13 @@ impl QlFsm {
     }
 
     /// closes the current encrypted session locally
-    ///
-    /// This transition is abortive and best-effort. It ends normal session use immediately and
-    /// may emit one final outbound close record, but it does not wait for the peer to acknowledge
-    /// that close.
     pub fn close_session(&mut self, code: SessionCloseCode) {
         fsm::close_session(self, code);
+    }
+
+    /// forgets the bound peer locally and may emit one final outbound `SessionFrame::Unpair`
+    pub fn unpair(&mut self) {
+        fsm::unpair(self);
     }
 
     /// opens a new outgoing stream
