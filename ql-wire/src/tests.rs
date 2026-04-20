@@ -659,6 +659,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     };
     let body = vec![
         SessionFrame::Ping,
+        SessionFrame::Unpair,
         SessionFrame::Ack(
             RecordAck::from_ranges([record_ack_range(20, 23), record_ack_range(12, 13)]).unwrap(),
         ),
@@ -852,11 +853,20 @@ fn protocol_record_size_breakdown() {
             RecordAck::from_ranges([record_ack_range(6, 6), record_ack_range(1, 2)]).unwrap(),
         )],
     );
-    let session_stream_empty = encrypt_record(
+    let session_unpair = encrypt_record(
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
             seq: record_seq(3),
+        },
+        &session.tx_key,
+        &[SessionFrame::Unpair],
+    );
+    let session_stream_empty = encrypt_record(
+        &crypto,
+        SessionHeader {
+            connection_id: session.tx_connection_id,
+            seq: record_seq(4),
         },
         &session.tx_key,
         &[SessionFrame::StreamData(StreamData {
@@ -871,7 +881,7 @@ fn protocol_record_size_breakdown() {
         &crypto,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: record_seq(4),
+            seq: record_seq(5),
         },
         &session.tx_key,
         &[SessionFrame::Close(SessionClose {
@@ -892,6 +902,7 @@ fn protocol_record_size_breakdown() {
     print_size("ql-wire pq xx4", xx4.encode_vec().len());
     print_size("ql-wire session ping", session_ping.encode_vec().len());
     print_size("ql-wire session ack", session_ack.encode_vec().len());
+    print_size("ql-wire session unpair", session_unpair.encode_vec().len());
     print_size(
         "ql-wire session stream empty",
         session_stream_empty.encode_vec().len(),

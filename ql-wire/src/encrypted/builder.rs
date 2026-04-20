@@ -66,6 +66,10 @@ impl SessionRecordBuilder {
         self.push_empty_frame(super::SessionFrameKind::Ping)
     }
 
+    pub fn push_unpair(&mut self) -> bool {
+        self.push_empty_frame(super::SessionFrameKind::Unpair)
+    }
+
     pub fn push_ack(&mut self, ack: &RecordAck) -> bool {
         self.push_frame_payload(super::SessionFrameKind::Ack, ack)
     }
@@ -89,6 +93,7 @@ impl SessionRecordBuilder {
     pub fn push_frame<B: BufView>(&mut self, frame: &SessionFrame<B>) -> bool {
         match frame {
             SessionFrame::Ping => self.push_ping(),
+            SessionFrame::Unpair => self.push_unpair(),
             SessionFrame::Ack(frame) => self.push_ack(frame),
             SessionFrame::StreamData(frame) => self.push_stream_data(frame),
             SessionFrame::StreamWindow(frame) => self.push_stream_window(frame),

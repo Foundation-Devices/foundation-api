@@ -23,7 +23,9 @@ pub use stream_window::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionFrame<B> {
+    // todo: do we need ping as explicit frame?
     Ping,
+    Unpair,
     Ack(RecordAck),
     StreamData(StreamData<B>),
     StreamWindow(StreamWindow),
@@ -36,6 +38,7 @@ impl<B: ByteSlice> WireDecode<B> for SessionFrame<B> {
         let kind = reader.decode::<SessionFrameKind>()?;
         let frame = match kind {
             SessionFrameKind::Ping => Self::Ping,
+            SessionFrameKind::Unpair => Self::Unpair,
             SessionFrameKind::Ack => Self::Ack(reader.decode::<RecordAck>()?),
             SessionFrameKind::StreamData => Self::StreamData(reader.decode::<StreamData<B>>()?),
             SessionFrameKind::StreamWindow => Self::StreamWindow(reader.decode::<StreamWindow>()?),
@@ -50,6 +53,7 @@ impl<B> SessionFrame<B> {
     fn kind(&self) -> SessionFrameKind {
         match self {
             Self::Ping => SessionFrameKind::Ping,
+            Self::Unpair => SessionFrameKind::Unpair,
             Self::Ack(_) => SessionFrameKind::Ack,
             Self::StreamData(_) => SessionFrameKind::StreamData,
             Self::StreamWindow(_) => SessionFrameKind::StreamWindow,
@@ -63,6 +67,7 @@ impl<B: ByteSlice> SessionFrame<B> {
     pub fn into_owned(self) -> SessionFrame<Vec<u8>> {
         match self {
             Self::Ping => SessionFrame::Ping,
+            Self::Unpair => SessionFrame::Unpair,
             Self::Ack(frame) => SessionFrame::Ack(frame),
             Self::StreamData(frame) => SessionFrame::StreamData(frame.into_owned()),
             Self::StreamWindow(frame) => SessionFrame::StreamWindow(frame),
@@ -75,7 +80,7 @@ impl<B: ByteSlice> SessionFrame<B> {
 impl<B: BufView> WireEncode for SessionFrame<B> {
     fn encoded_len(&self) -> usize {
         1 + match self {
-            Self::Ping => 0,
+            Self::Ping | Self::Unpair => 0,
             Self::Ack(frame) => frame.encoded_len(),
             Self::StreamData(frame) => frame.encoded_len(),
             Self::StreamWindow(frame) => frame.encoded_len(),
@@ -87,7 +92,7 @@ impl<B: BufView> WireEncode for SessionFrame<B> {
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
         out.put_u8(self.kind() as u8);
         match self {
-            Self::Ping => {}
+            Self::Ping | Self::Unpair => {}
             Self::Ack(frame) => frame.encode(out),
             Self::StreamData(frame) => frame.encode(out),
             Self::StreamWindow(frame) => frame.encode(out),
@@ -106,6 +111,7 @@ pub enum SessionFrameKind {
     StreamWindow = 4,
     StreamClose = 5,
     Close = 6,
+    Unpair = 7,
 }
 
 impl TryFrom<u8> for SessionFrameKind {
@@ -119,6 +125,7 @@ impl TryFrom<u8> for SessionFrameKind {
             4 => Ok(Self::StreamWindow),
             5 => Ok(Self::StreamClose),
             6 => Ok(Self::Close),
+            7 => Ok(Self::Unpair),
             _ => Err(WireError::InvalidPayload),
         }
     }
