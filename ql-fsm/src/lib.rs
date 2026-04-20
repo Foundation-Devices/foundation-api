@@ -108,9 +108,9 @@ pub struct WriteId(pub(crate) u64);
 
 /// outbound record produced by `QlFsm`
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutboundWrite {
+pub struct OutboundWrite<B> {
     /// wire bytes to hand to the transport
-    pub record: Vec<u8>,
+    pub record: B,
     /// write handle that must be completed exactly once
     pub write_id: Option<WriteId>,
 }
@@ -264,11 +264,11 @@ impl QlFsm {
     }
 
     /// handles one inbound wire message
-    pub fn receive(
+    pub fn receive<C: QlCrypto>(
         &mut self,
         now: FsmTime,
-        bytes: Vec<u8>,
-        crypto: &impl QlCrypto,
+        bytes: C::B,
+        crypto: &C,
     ) -> Result<(), ReceiveError> {
         self.state.now = now;
         fsm::receive(self, bytes, crypto)
@@ -302,11 +302,11 @@ impl QlFsm {
     /// if `write_id` is `Some`, call `complete_write` exactly once
     ///
     /// if it is `None`, the record is fire-and-forget
-    pub fn take_next_write(
+    pub fn take_next_write<C: QlCrypto>(
         &mut self,
         now: FsmTime,
-        crypto: &impl QlCrypto,
-    ) -> Option<OutboundWrite> {
+        crypto: &C,
+    ) -> Option<OutboundWrite<C::B>> {
         self.state.now = now;
         fsm::take_next_write(self, crypto)
     }

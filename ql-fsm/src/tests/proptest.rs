@@ -296,17 +296,14 @@ impl Runner {
             Action::Write { side, slot, bytes } => {
                 if let Some(stream_id) = self.slots[side.idx()][*slot] {
                     let mut chunk = Bytes::copy_from_slice(bytes);
-                    let accepted = if let Ok(mut stream) =
-                        self.harness.node_mut(*side).fsm.stream(stream_id)
-                    {
-                        if let Some(mut writer) = stream.writer() {
-                            writer.write(&mut chunk)
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    };
+                    let accepted = self
+                        .harness
+                        .node_mut(*side)
+                        .fsm
+                        .stream(stream_id)
+                        .map_or(0, |mut stream| {
+                            stream.writer().map_or(0, |mut writer| writer.write(&mut chunk))
+                        });
                     if accepted != 0 {
                         self.expected[opposite(*side).idx()]
                             .entry(stream_id)
@@ -317,18 +314,17 @@ impl Runner {
             }
             Action::Finish { side, slot } => {
                 if let Some(stream_id) = self.slots[side.idx()][*slot] {
-                    let finished = if let Ok(mut stream) =
-                        self.harness.node_mut(*side).fsm.stream(stream_id)
-                    {
-                        if let Some(writer) = stream.writer() {
-                            writer.finish();
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
+                    let finished = self
+                        .harness
+                        .node_mut(*side)
+                        .fsm
+                        .stream(stream_id)
+                        .is_ok_and(|mut stream| {
+                            stream.writer().is_some_and(|writer| {
+                                writer.finish();
+                                true
+                            })
+                        });
                     if finished {
                         self.finished_by[side.idx()].insert(stream_id);
                     }
@@ -336,14 +332,15 @@ impl Runner {
             }
             Action::Close { side, slot } => {
                 if let Some(stream_id) = self.slots[side.idx()][*slot] {
-                    let closed = if let Ok(mut stream) =
-                        self.harness.node_mut(*side).fsm.stream(stream_id)
-                    {
-                        stream.close(CloseTarget::Both, StreamCloseCode::CANCELLED);
-                        true
-                    } else {
-                        false
-                    };
+                    let closed = self
+                        .harness
+                        .node_mut(*side)
+                        .fsm
+                        .stream(stream_id)
+                        .is_ok_and(|mut stream| {
+                            stream.close(CloseTarget::Both, StreamCloseCode::CANCELLED);
+                            true
+                        });
                     if closed {
                         self.closed_by[side.idx()].insert(stream_id);
                         self.slots[side.idx()][*slot] = None;
@@ -863,9 +860,9 @@ fn connected_action_strategy() -> impl Strategy<Value = Action> {
         side_action(Action::DropNext),
         side_usize_action(queue_index.clone(), Action::deliver_queued),
         side_usize_action(queue_index.clone(), Action::duplicate_queued),
-        side_usize_action(queue_index.clone(), Action::drop_queued),
+        side_usize_action(queue_index, Action::drop_queued),
         side_usize_action(slot.clone(), Action::open_stream),
-        side_usize_vec_action(slot.clone(), bytes.clone(), Action::write),
+        side_usize_vec_action(slot.clone(), bytes, Action::write),
         side_usize_action(slot.clone(), Action::finish),
         side_usize_action(slot, Action::close),
     ]
@@ -910,7 +907,7 @@ fn terminal_action_strategy() -> impl Strategy<Value = Action> {
     let queue_index = 0usize..6;
     prop_oneof![
         side_usize_action(slot.clone(), Action::open_stream),
-        side_usize_vec_action(slot.clone(), bytes.clone(), Action::write),
+        side_usize_vec_action(slot.clone(), bytes, Action::write),
         side_usize_action(slot.clone(), Action::finish),
         side_usize_action(slot, Action::close),
         side_action(Action::TakeNext),

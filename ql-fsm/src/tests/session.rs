@@ -215,7 +215,7 @@ fn disconnected_stream_operations_fail_with_no_session() {
             stream.close(
                 ql_wire::CloseTarget::Both,
                 ql_wire::StreamCloseCode::CANCELLED,
-            )
+            );
         }),
         Err(StreamError::NoSession)
     );

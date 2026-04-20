@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, RecordAck, RecordSeq, RouteId, SessionClose, SessionCloseCode, SessionFrame,
-    SessionRecordBuilder, StreamClose, StreamData, StreamHeader, StreamId, StreamWindow, VarInt,
-    WireError,
+    ByteBuf, CloseTarget, RecordAck, RecordSeq, RouteId, SessionClose, SessionCloseCode,
+    SessionFrame, SessionRecordBuilder, StreamClose, StreamData, StreamHeader, StreamId,
+    StreamWindow, VarInt,
 };
 
 use self::{
@@ -103,7 +103,7 @@ impl SessionFsm {
     pub fn new(mut config: SessionConfig, now: Instant) -> Self {
         config.record_max_size = config
             .record_max_size
-            .max(SessionRecordBuilder::MIN_CAPACITY);
+            .max(SessionRecordBuilder::<Vec<u8>>::MIN_CAPACITY);
         config.stream_send_buffer_size = config.stream_send_buffer_size.max(1);
         config.stream_receive_buffer_size = config.stream_receive_buffer_size.max(1);
         config.accepted_record_window = config.accepted_record_window.max(1);
@@ -117,13 +117,13 @@ impl SessionFsm {
                 next_stream_ordinal: 0,
                 next_record_seq: RecordSeq::from_u32(0),
                 next_write_id: 0,
-                tracked_records: Default::default(),
+                tracked_records: IndexMap::default(),
                 ack_tracker: AckTracker::new(
                     config.accepted_record_window,
                     config.pending_ack_range_limit,
                 ),
                 pending_ping: false,
-                streams: Default::default(),
+                streams: IndexMap::default(),
                 next_stream_index: 0,
                 remote_stream_history: RemoteStreamHistory::new(config.local_parity.remote()),
             },
@@ -199,10 +199,13 @@ impl SessionFsm {
         self.state.phase == SessionPhase::Closed
     }
 
-    pub fn receive<I>(&mut self, now: Instant, seq: RecordSeq, frames: I, sink: &mut impl EventSink)
-    where
-        I: IntoIterator<Item = Result<SessionFrame<Bytes>, WireError>>,
-    {
+    pub fn receive(
+        &mut self,
+        now: Instant,
+        seq: RecordSeq,
+        bytes: Bytes,
+        sink: &mut impl EventSink,
+    ) {
         if self.state.phase != SessionPhase::Open {
             return;
         }
@@ -221,6 +224,7 @@ impl SessionFsm {
         }
 
         let mut ack_eliciting = false;
+        let frames = ql_wire::parse_session_frames(bytes);
 
         for frame in frames {
             let Ok(frame) = frame else {
@@ -352,12 +356,15 @@ impl SessionFsm {
             || !self.state.tracked_records.is_empty()
     }
 
-    pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
+    pub fn take_next_write<B: ByteBuf>(
+        &mut self,
+        now: Instant,
+    ) -> Option<(Option<u64>, SessionRecordBuilder<B>)> {
         match &self.state.phase {
             SessionPhase::Terminating(frame) => {
                 let seq = self.state.next_record_seq;
                 next_seq(&mut self.state.next_record_seq);
-                let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
+                let mut builder = SessionRecordBuilder::<B>::new(seq, self.config.record_max_size);
                 match frame {
                     TerminalFrame::Close(close) => {
                         assert!(builder.push_close(close), "builder has capacity");
@@ -376,7 +383,7 @@ impl SessionFsm {
         }
         self.collect_timeouts(now);
 
-        let (builder, outbound) = self.build_next_record(now)?;
+        let (builder, outbound) = self.build_next_record::<B>(now)?;
 
         let should_track = outbound.ping_included
             || !outbound.window_updates.is_empty()
@@ -391,9 +398,12 @@ impl SessionFsm {
         Some((write_id, builder))
     }
 
-    fn build_next_record(&mut self, now: Instant) -> Option<(SessionRecordBuilder, TrackedRecord)> {
+    fn build_next_record<B: ByteBuf>(
+        &mut self,
+        now: Instant,
+    ) -> Option<(SessionRecordBuilder<B>, TrackedRecord)> {
         let seq = self.state.next_record_seq;
-        let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
+        let mut builder = SessionRecordBuilder::<B>::new(seq, self.config.record_max_size);
         let mut outbound = TrackedRecord {
             seq,
             frames: Vec::new(),
@@ -445,7 +455,7 @@ impl SessionFsm {
 
     fn push_next_pending_stream_close(
         &mut self,
-        builder: &mut SessionRecordBuilder,
+        builder: &mut SessionRecordBuilder<impl ByteBuf>,
         outbound: &mut TrackedRecord,
     ) {
         let len = self.state.streams.len();
@@ -472,7 +482,7 @@ impl SessionFsm {
 
     fn push_next_pending_stream_window(
         &mut self,
-        builder: &mut SessionRecordBuilder,
+        builder: &mut SessionRecordBuilder<impl ByteBuf>,
         outbound: &mut TrackedRecord,
     ) {
         let len = self.state.streams.len();
@@ -505,7 +515,7 @@ impl SessionFsm {
 
     fn push_next_stream_data(
         &mut self,
-        builder: &mut SessionRecordBuilder,
+        builder: &mut SessionRecordBuilder<impl ByteBuf>,
         outbound: &mut TrackedRecord,
     ) {
         const OVERHEAD: usize = 1 + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;

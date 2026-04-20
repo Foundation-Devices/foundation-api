@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ql_wire::{
-    decode_session_frames, parse_session_frames, CloseTarget, RecordAck, RecordSeq, RouteId,
-    SessionFrame, SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamHeader,
-    StreamId, VarInt, XID,
+    decode_session_frames, CloseTarget, RecordAck, RecordSeq, RouteId, SessionFrame,
+    SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamHeader, StreamId,
+    VarInt, WireEncode, XID,
 };
 
 use super::{SessionConfig, SessionEvent, SessionFsm};
@@ -33,10 +33,10 @@ fn record_ack(seq: RecordSeq) -> RecordAck {
 const REFUSED: StreamCloseCode = StreamCloseCode(1);
 const TIMEOUT: StreamCloseCode = StreamCloseCode(2);
 
-fn header(value: u64) -> Option<StreamHeader> {
-    Some(StreamHeader {
+fn header(value: u64) -> StreamHeader {
+    StreamHeader {
         route_id: route_id(value),
-    })
+    }
 }
 
 fn opened(stream_id: StreamId) -> SessionEvent {
@@ -79,7 +79,7 @@ fn next_outbound(
     fsm: &mut SessionFsm,
     now: Instant,
 ) -> Option<(RecordSeq, Vec<SessionFrame<Vec<u8>>>)> {
-    let (write_id, builder) = fsm.take_next_write(now)?;
+    let (write_id, builder) = fsm.take_next_write::<Vec<u8>>(now)?;
     if let Some(write_id) = write_id {
         fsm.complete_write(now, write_id, true);
     }
@@ -111,16 +111,23 @@ fn receive_events(
     seq: RecordSeq,
     record: &[SessionFrame<Vec<u8>>],
 ) -> Vec<SessionEvent> {
-    let mut builder = SessionRecordBuilder::new(seq, usize::MAX);
+    let mut builder = SessionRecordBuilder::<Vec<u8>>::new(seq, usize::MAX);
     for frame in record {
         assert!(builder.push_frame(frame));
     }
     let bytes = Bytes::from(builder.bytes().to_vec());
-    let frames = parse_session_frames(bytes);
     let mut events = Vec::new();
     let mut emit = |event| events.push(event);
-    fsm.receive(now, seq, frames, &mut emit);
+    fsm.receive(now, seq, bytes, &mut emit);
     events
+}
+
+fn encode_frames(frames: &[SessionFrame<Vec<u8>>]) -> Bytes {
+    let mut out = Vec::with_capacity(frames.iter().map(WireEncode::encoded_len).sum());
+    for frame in frames {
+        frame.encode(&mut out);
+    }
+    Bytes::from(out)
 }
 
 #[test]
@@ -161,7 +168,7 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
         SessionConfig {
-            record_max_size: 80 + SessionRecordBuilder::MIN_CAPACITY,
+            record_max_size: 80 + SessionRecordBuilder::<Vec<u8>>::MIN_CAPACITY,
             ..SessionConfig::default()
         },
         now,
@@ -211,10 +218,11 @@ fn ack_reopens_write_capacity() {
 
     let mut events = Vec::new();
     let mut emit = |event| events.push(event);
+    let ack = encode_frames(&[SessionFrame::Ack(record_ack(record_seq))]);
     fsm.receive(
         now + Duration::from_millis(1),
         seq(9),
-        std::iter::once(Ok(SessionFrame::Ack(record_ack(record_seq)))),
+        ack,
         &mut emit,
     );
 
@@ -248,10 +256,11 @@ fn ack_of_fin_emits_outbound_finished_once() {
     let mut events = Vec::new();
     {
         let mut emit = |event| events.push(event);
+        let ack = encode_frames(&[SessionFrame::Ack(record_ack(record_seq))]);
         fsm.receive(
             now + Duration::from_millis(1),
             seq(9),
-            std::iter::once(Ok(SessionFrame::Ack(record_ack(record_seq)))),
+            ack,
             &mut emit,
         );
     }
@@ -259,10 +268,11 @@ fn ack_of_fin_emits_outbound_finished_once() {
 
     {
         let mut emit = |event| events.push(event);
+        let ack = encode_frames(&[SessionFrame::Ack(record_ack(record_seq))]);
         fsm.receive(
             now + Duration::from_millis(2),
             seq(10),
-            std::iter::once(Ok(SessionFrame::Ack(record_ack(record_seq)))),
+            ack,
             &mut emit,
         );
     }
@@ -284,7 +294,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
-        header: header(1),
+        header: Some(header(1)),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
@@ -294,7 +304,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
         vec![opened(stream_id), SessionEvent::Readable(stream_id)]
     );
 
-    let (write_id, builder) = fsm.take_next_write(now + Duration::from_millis(1)).unwrap();
+    let (write_id, builder) = fsm.take_next_write::<Vec<u8>>(now + Duration::from_millis(1)).unwrap();
     let first = decode_session_frames(builder.bytes()).unwrap();
     assert!(write_id.is_none());
     assert!(matches!(first.as_slice(), [SessionFrame::Ack(_)]));
@@ -333,14 +343,14 @@ fn pure_ack_only_records_are_fire_and_forget() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
-        header: header(1),
+        header: Some(header(1)),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
 
     let _ = receive_events(&mut fsm, now, seq(7), &record);
 
-    let (write_id, builder) = fsm.take_next_write(now + Duration::from_millis(1)).unwrap();
+    let (write_id, builder) = fsm.take_next_write::<Vec<u8>>(now + Duration::from_millis(1)).unwrap();
     let ack = decode_session_frames(builder.bytes()).unwrap();
     assert!(write_id.is_none());
     assert!(matches!(ack.as_slice(), [SessionFrame::Ack(_)]));
@@ -351,7 +361,7 @@ fn pure_ack_only_records_are_fire_and_forget() {
         &mut emit,
     );
     assert!(fsm
-        .take_next_write(now + retransmit_timeout + Duration::from_millis(1))
+        .take_next_write::<Vec<u8>>(now + retransmit_timeout + Duration::from_millis(1))
         .is_none());
 }
 
@@ -363,7 +373,7 @@ fn inbound_stream_data_emits_opened_and_readable() {
     let record = vec![SessionFrame::StreamData(ql_wire::StreamData {
         stream_id,
         offset: offset(0),
-        header: header(1),
+        header: Some(header(1)),
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -389,7 +399,7 @@ fn inbound_empty_fin_emits_finished_immediately() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
-        header: header(1),
+        header: Some(header(1)),
         fin: true,
         bytes: Vec::new(),
     })];
@@ -411,7 +421,7 @@ fn remote_stream_close_is_reliable_and_retried() {
         .unwrap()
         .close(CloseTarget::Both, StreamCloseCode::CANCELLED);
 
-    let (write_id, builder) = fsm.take_next_write(now).unwrap();
+    let (write_id, builder) = fsm.take_next_write::<Vec<u8>>(now).unwrap();
     fsm.complete_write(now, write_id.expect("stream close should be tracked"), true);
     let first = decode_session_frames(builder.bytes()).unwrap();
     assert!(matches!(
@@ -465,7 +475,7 @@ fn duplicate_stream_data_is_not_redelivered() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
-        header: header(1),
+        header: Some(header(1)),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
@@ -512,7 +522,7 @@ fn late_remote_stream_data_after_close_is_ignored() {
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
-        header: header(1),
+        header: Some(header(1)),
         fin: false,
         bytes: b"hello".to_vec(),
     })];
@@ -546,7 +556,7 @@ fn duplicate_finished_remote_data_after_reap_is_ignored() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
-        header: header(1),
+        header: Some(header(1)),
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -575,7 +585,7 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: offset(0),
-        header: header(1),
+        header: Some(header(1)),
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -683,7 +693,7 @@ fn close_does_not_ack_rejected_record_seq() {
     let invalid = vec![SessionFrame::StreamData(StreamData {
         stream_id: stream_id(0),
         offset: offset(0),
-        header: header(1),
+        header: Some(header(1)),
         fin: false,
         bytes: b"bad".to_vec(),
     })];
@@ -791,7 +801,7 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
     let now = Instant::now();
     let sender_config = SessionConfig {
         local_parity: StreamParity::Even,
-        record_max_size: SessionRecordBuilder::MIN_CAPACITY + 40,
+        record_max_size: SessionRecordBuilder::<Vec<u8>>::MIN_CAPACITY + 40,
         ack_delay: Duration::from_millis(5),
         retransmit_timeout: Duration::from_millis(25),
         stream_send_buffer_size: 8 * 1024,
@@ -800,7 +810,7 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
     };
     let receiver_config = SessionConfig {
         local_parity: StreamParity::Odd,
-        record_max_size: SessionRecordBuilder::MIN_CAPACITY + 10,
+        record_max_size: SessionRecordBuilder::<Vec<u8>>::MIN_CAPACITY + 10,
         ack_delay: Duration::from_millis(1),
         retransmit_timeout: Duration::from_millis(25),
         pending_ack_range_limit: 512,

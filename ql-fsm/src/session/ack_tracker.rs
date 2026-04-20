@@ -184,7 +184,7 @@ mod tests {
         RecordSeq::from_u64(value).unwrap()
     }
 
-    fn ack_ranges(pending_ack: PendingAck) -> Vec<(u64, u64)> {
+    fn ack_ranges(pending_ack: &PendingAck) -> Vec<(u64, u64)> {
         pending_ack
             .ack
             .ranges()
@@ -203,7 +203,7 @@ mod tests {
 
         ack_tracker.schedule_ack(now);
         let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
-        assert_eq!(ack_ranges(pending_ack), vec![(10, 12)]);
+        assert_eq!(ack_ranges(&pending_ack), vec![(10, 12)]);
     }
 
     #[test]
@@ -218,7 +218,7 @@ mod tests {
 
         ack_tracker.schedule_ack(now + Duration::from_millis(5));
         let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
-        assert_eq!(ack_ranges(pending_ack), vec![(15, 16), (12, 12), (10, 10)]);
+        assert_eq!(ack_ranges(&pending_ack), vec![(15, 16), (12, 12), (10, 10)]);
     }
 
     #[test]
@@ -242,7 +242,7 @@ mod tests {
 
         ack_tracker.schedule_ack(now);
         let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
-        assert_eq!(ack_ranges(pending_ack), vec![(5, 5), (3, 3)]);
+        assert_eq!(ack_ranges(&pending_ack), vec![(5, 5), (3, 3)]);
     }
 
     #[test]
@@ -256,11 +256,11 @@ mod tests {
         ack_tracker.schedule_ack(now);
 
         let first_ack = ack_tracker.pending_ack(4).unwrap();
-        assert_eq!(ack_ranges(first_ack.clone()), vec![(5, 5)]);
+        assert_eq!(ack_ranges(&first_ack), vec![(5, 5)]);
         ack_tracker.on_ack_emitted(&first_ack);
         ack_tracker.retire_acked_ranges(&first_ack.ack);
 
         let second_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
-        assert_eq!(ack_ranges(second_ack), vec![(3, 3), (1, 1)]);
+        assert_eq!(ack_ranges(&second_ack), vec![(3, 3), (1, 1)]);
     }
 }
