@@ -26,8 +26,8 @@ enum Side {
 impl Side {
     fn idx(self) -> usize {
         match self {
-            Self::A => 0,
-            Self::B => 1,
+            Side::A => 0,
+            Side::B => 1,
         }
     }
 }
@@ -176,7 +176,7 @@ impl Harness {
         Some(write.record)
     }
 
-    fn next_write(&mut self, side: Side) -> Option<OutboundWrite<Vec<u8>>> {
+    fn next_write(&mut self, side: Side) -> Option<OutboundWrite> {
         let time = self.time();
         let Node { fsm, crypto } = self.node_mut(side);
         fsm.take_next_write(time, crypto)
@@ -231,7 +231,7 @@ impl Harness {
             .complete_write(time, write_id, false);
     }
 
-    fn decode_session_write(&self, write: OutboundWrite<Vec<u8>>, side: Side) -> DecodedSessionWrite {
+    fn decode_session_write(&self, write: OutboundWrite, side: Side) -> DecodedSessionWrite {
         let peer = self.node(match side {
             Side::A => Side::B,
             Side::B => Side::A,
@@ -326,23 +326,21 @@ fn session_config(harness: &Harness, a: bool) -> SessionConfig {
 }
 
 fn decrypt_record(
-    crypto: &impl QlCrypto<B = Vec<u8>>,
+    crypto: &impl QlCrypto,
     record: &[u8],
     session_key: &SessionKey,
 ) -> (ql_wire::SessionHeader, Vec<ql_wire::SessionFrame<Vec<u8>>>) {
-    let (header, auth, ciphertext_start) = ql_wire::decode_session_record_prefix(record).unwrap();
-    let ciphertext_range = ciphertext_start..record.len();
+    let (_header, record) =
+        ql_wire::decode_record::<ql_wire::QlSessionRecord<_>, _>(record).unwrap();
     let plaintext = ql_wire::decrypt_record(
         crypto,
-        &header,
-        record.to_vec(),
-        ciphertext_range.clone(),
-        &auth,
+        &record.header,
+        record.payload.into_owned(),
         session_key,
     )
     .unwrap();
     (
-        header,
-        ql_wire::decode_session_frames(&plaintext[ciphertext_range]).unwrap(),
+        record.header,
+        ql_wire::decode_session_frames(&plaintext).unwrap(),
     )
 }

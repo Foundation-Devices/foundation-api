@@ -109,12 +109,12 @@ pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), 
     handshake::handle_connect_kk(fsm, crypto)
 }
 
-pub fn receive<C: QlCrypto>(
+pub fn receive(
     fsm: &mut QlFsm,
-    mut bytes: C::B,
-    crypto: &C,
+    mut bytes: Vec<u8>,
+    crypto: &impl QlCrypto,
 ) -> Result<(), ReceiveError> {
-    let mut reader = wire::Reader::new(&mut bytes[..]);
+    let mut reader = wire::Reader::new(bytes.as_mut_slice());
     let header = wire::RecordHeader::decode(&mut reader)?;
 
     if header.version != wire::QL_WIRE_VERSION {
@@ -130,30 +130,27 @@ pub fn receive<C: QlCrypto>(
             let termination = {
                 let QlFsm { state, events, .. } = fsm;
                 let conn = state.link.connected_mut_or_err()?;
-                let (plaintext_range, seq) = {
-                    let (header, auth, ciphertext_start) =
-                        wire::decode_session_record_prefix(&bytes)?;
-                    if header.connection_id != conn.transport.rx_connection_id {
+                let (decrypt_len, seq) = {
+                    let record = wire::QlSessionRecord::decode(&mut reader)?;
+                    if record.header.connection_id != conn.transport.rx_connection_id {
                         return Err(ReceiveError::InvalidPayload);
                     }
-                    let ciphertext_range = ciphertext_start..bytes.len();
-                    bytes = wire::decrypt_record(
+                    let payload = wire::decrypt_record(
                         crypto,
-                        &header,
-                        bytes,
-                        ciphertext_range.clone(),
-                        &auth,
+                        &record.header,
+                        record.payload,
                         &conn.transport.rx_key,
                     )?;
-                    (ciphertext_range, header.seq)
+                    (payload.len(), record.header.seq)
                 };
 
-                let bytes = Bytes::from_owner(bytes);
-                let plaintext = bytes.slice(plaintext_range);
+                let len = bytes.len();
+                let plaintext = Bytes::from(bytes).slice(len - decrypt_len..);
+                let frames = wire::parse_session_frames(plaintext);
 
                 let mut emit = EventSink::new(events);
                 conn.session
-                    .receive(state.now.instant, seq, plaintext, &mut emit);
+                    .receive(state.now.instant, seq, frames, &mut emit);
                 emit.termination
             };
 
@@ -195,9 +192,9 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
     .min()
 }
 
-pub fn take_next_write<C: QlCrypto>(fsm: &mut QlFsm, crypto: &C) -> Option<OutboundWrite<C::B>> {
+pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
     if let Some(record) = fsm.state.handshake.take() {
-        let record: C::B = wire::encode_record(ql_wire::RecordType::Handshake, &record);
+        let record = wire::encode_record_vec(ql_wire::RecordType::Handshake, &record);
         return Some(OutboundWrite {
             record,
             write_id: None,
@@ -207,7 +204,7 @@ pub fn take_next_write<C: QlCrypto>(fsm: &mut QlFsm, crypto: &C) -> Option<Outbo
     let QlFsm { state, .. } = fsm;
     let conn = state.link.connected_mut()?;
 
-    let (write_id, builder) = conn.session.take_next_write::<C::B>(state.now.instant)?;
+    let (write_id, builder) = conn.session.take_next_write(state.now.instant)?;
     let record = builder.encrypt(
         crypto,
         conn.transport.tx_connection_id,
