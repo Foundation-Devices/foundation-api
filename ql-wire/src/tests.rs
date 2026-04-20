@@ -6,10 +6,9 @@ fn decode_handshake_record(bytes: &[u8]) -> QlHandshakeRecord {
     decode_record(bytes).unwrap().1
 }
 
-fn decode_session_record_prefix_for_test(
-    bytes: &[u8],
-) -> (SessionHeader, [u8; ENCRYPTED_MESSAGE_AUTH_SIZE], usize) {
-    decode_session_record_prefix(bytes).unwrap()
+fn decode_session_record(bytes: &[u8]) -> QlSessionRecord<Vec<u8>> {
+    let (_, record) = decode_record::<QlSessionRecord<_>, _>(bytes).unwrap();
+    record.into_owned()
 }
 
 fn xid(byte: u8) -> XID {
@@ -67,20 +66,21 @@ fn xx_header(byte: u8) -> XxHeader {
 }
 
 fn encrypt_record(
-    crypto: &impl QlCrypto<B = Vec<u8>>,
+    crypto: &impl QlCrypto,
     header: SessionHeader,
     session_key: &SessionKey,
     body: &[SessionFrame<Vec<u8>>],
-) -> Vec<u8> {
-    let body_len = body.iter().map(WireEncode::encoded_len).sum::<usize>();
-    let max_capacity =
-        RecordHeader::WIRE_SIZE + header.encoded_len() + ENCRYPTED_MESSAGE_AUTH_SIZE + body_len;
-    let mut builder = SessionRecordBuilder::<Vec<u8>>::new(header.seq, max_capacity);
+) -> QlSessionRecord<Vec<u8>> {
+    let mut builder = SessionRecordBuilder::new(header.seq, usize::MAX);
     for frame in body {
         let pushed = builder.push_frame(frame);
         debug_assert!(pushed);
     }
-    builder.encrypt(crypto, header.connection_id, session_key)
+    decode_session_record(
+        builder
+            .encrypt(crypto, header.connection_id, session_key)
+            .as_slice(),
+    )
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
         },
         static_bundle: EncryptedPeerBundle::new(Box::new([13; EncryptedPeerBundle::WIRE_SIZE])),
     });
-    let ik_encoded: Vec<u8> = encode_record(RecordType::Handshake, &ik);
+    let ik_encoded = encode_record_vec(RecordType::Handshake, &ik);
     assert_eq!(
         RecordHeader::decode_bytes(ik_encoded.as_slice()).unwrap(),
         RecordHeader {
@@ -126,7 +126,7 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
             mlkem_public_key: MlKemPublicKey::new(Box::new([15; MlKemPublicKey::SIZE])),
         },
     });
-    let kk_encoded: Vec<u8> = encode_record(RecordType::Handshake, &kk);
+    let kk_encoded = encode_record_vec(RecordType::Handshake, &kk);
     assert_eq!(
         RecordHeader::decode_bytes(kk_encoded.as_slice()).unwrap(),
         RecordHeader {
@@ -144,7 +144,7 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
             mlkem_public_key: MlKemPublicKey::new(Box::new([17; MlKemPublicKey::SIZE])),
         },
     });
-    let xx_encoded: Vec<u8> = encode_record(RecordType::Handshake, &xx);
+    let xx_encoded = encode_record_vec(RecordType::Handshake, &xx);
     assert_eq!(
         RecordHeader::decode_bytes(xx_encoded.as_slice()).unwrap(),
         RecordHeader {
@@ -686,44 +686,28 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
     let record = encrypt_record(&crypto, header, &session_key, &body);
 
+    let bytes = encode_record_vec(RecordType::Session, &record);
     assert_eq!(
-        RecordHeader::decode_bytes(record.as_slice()).unwrap(),
+        RecordHeader::decode_bytes(bytes.as_slice()).unwrap(),
         RecordHeader {
             version: QL_WIRE_VERSION,
             record_type: RecordType::Session,
         }
     );
-    let (decoded_header, auth, ciphertext_start) = decode_session_record_prefix_for_test(&record);
-    assert_eq!(decoded_header, header);
-    let ciphertext_range = ciphertext_start..record.len();
+    let decoded = decode_session_record(bytes.as_slice());
+    assert_eq!(decoded.header, header);
+    let encrypted = decoded.payload;
 
-    let decrypted = encrypted::decrypt_record(
-        &crypto,
-        &header,
-        record.clone(),
-        ciphertext_range.clone(),
-        &auth,
-        &session_key,
-    )
-    .unwrap();
-    assert_eq!(
-        decode_session_frames(&decrypted[ciphertext_range.clone()]).unwrap(),
-        body
-    );
+    let decrypted =
+        encrypted::decrypt_record(&crypto, &header, encrypted.clone(), &session_key).unwrap();
+    assert_eq!(decode_session_frames(&decrypted).unwrap(), body);
 
     let wrong_header = SessionHeader {
         connection_id: ConnectionId::from_data([0x99; ConnectionId::SIZE]),
         seq: header.seq,
     };
     assert_eq!(
-        encrypted::decrypt_record(
-            &crypto,
-            &wrong_header,
-            record.clone(),
-            ciphertext_range.clone(),
-            &auth,
-            &session_key,
-        ),
+        encrypted::decrypt_record(&crypto, &wrong_header, encrypted.clone(), &session_key),
         Err(WireError::DecryptFailed)
     );
 
@@ -732,14 +716,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         seq: record_seq(header.seq.into_inner() + 1),
     };
     assert_eq!(
-        encrypted::decrypt_record(
-            &crypto,
-            &wrong_seq_header,
-            record,
-            ciphertext_range,
-            &auth,
-            &session_key,
-        ),
+        encrypted::decrypt_record(&crypto, &wrong_seq_header, encrypted, &session_key),
         Err(WireError::DecryptFailed)
     );
 }
@@ -923,9 +900,12 @@ fn protocol_record_size_breakdown() {
     print_size("ql-wire pq xx2", xx2.encode_vec().len());
     print_size("ql-wire pq xx3", xx3.encode_vec().len());
     print_size("ql-wire pq xx4", xx4.encode_vec().len());
-    print_size("ql-wire session ping", session_ping.len());
-    print_size("ql-wire session ack", session_ack.len());
-    print_size("ql-wire session unpair", session_unpair.len());
-    print_size("ql-wire session stream empty", session_stream_empty.len());
-    print_size("ql-wire session close", session_close.len());
+    print_size("ql-wire session ping", session_ping.encode_vec().len());
+    print_size("ql-wire session ack", session_ack.encode_vec().len());
+    print_size("ql-wire session unpair", session_unpair.encode_vec().len());
+    print_size(
+        "ql-wire session stream empty",
+        session_stream_empty.encode_vec().len(),
+    );
+    print_size("ql-wire session close", session_close.encode_vec().len());
 }

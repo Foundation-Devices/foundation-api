@@ -1,8 +1,6 @@
-use bytes::BufMut;
-
 use crate::{
-    codec, ByteBuf, ByteSlice, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair,
-    MlKemPublicKey, Nonce, PeerBundle, QlCrypto, SessionKey, WireDecode, WireEncode, WireError,
+    codec, ByteSlice, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey,
+    Nonce, PeerBundle, QlCrypto, SessionKey, WireDecode, WireEncode, WireError,
     ENCRYPTED_MESSAGE_AUTH_SIZE, XID,
 };
 
@@ -227,50 +225,43 @@ impl CipherState {
         self.key.is_some()
     }
 
-    fn encrypt<C: QlCrypto>(
+    fn encrypt(
         &mut self,
-        crypto: &C,
+        crypto: &impl QlCrypto,
         aad: &[u8],
         plaintext: &[u8],
     ) -> Result<Vec<u8>, WireError> {
         let key = self.key.as_ref().ok_or(WireError::InvalidState)?;
         let nonce = Nonce::from_counter(self.nonce);
-        let mut buffer = C::B::with_capacity(plaintext.len());
-        buffer.put_slice(plaintext);
-        let payload_len = buffer.len();
-        let (ciphertext, auth) =
-            crypto.aes256_gcm_encrypt(key, &nonce, aad, buffer, 0..payload_len);
-        let mut out = Vec::with_capacity(ciphertext.len() + ENCRYPTED_MESSAGE_AUTH_SIZE);
-        out.extend_from_slice(&ciphertext);
-        out.extend_from_slice(&auth);
+        let mut ciphertext = Vec::with_capacity(plaintext.len() + ENCRYPTED_MESSAGE_AUTH_SIZE);
+        ciphertext.extend_from_slice(plaintext);
+        let auth = crypto.aes256_gcm_encrypt(key, &nonce, aad, &mut ciphertext);
         self.nonce = self.nonce.wrapping_add(1);
-        Ok(out)
+        ciphertext.extend_from_slice(&auth);
+        Ok(ciphertext)
     }
 
-    fn decrypt<C: QlCrypto>(
+    fn decrypt(
         &mut self,
-        crypto: &C,
+        crypto: &impl QlCrypto,
         aad: &[u8],
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, WireError> {
         if ciphertext.len() < ENCRYPTED_MESSAGE_AUTH_SIZE {
             return Err(WireError::InvalidPayload);
         }
-
         let split = ciphertext.len() - ENCRYPTED_MESSAGE_AUTH_SIZE;
         let (ciphertext, auth) = ciphertext.split_at(split);
-        let mut auth_tag = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
-        auth_tag.copy_from_slice(auth);
+        let mut plaintext = ciphertext.to_vec();
         let key = self.key.as_ref().ok_or(WireError::InvalidState)?;
         let nonce = Nonce::from_counter(self.nonce);
-        let mut buffer = C::B::with_capacity(ciphertext.len());
-        buffer.put_slice(ciphertext);
-        let payload_len = buffer.len();
-        let plaintext = crypto
-            .aes256_gcm_decrypt(key, &nonce, aad, buffer, 0..payload_len, &auth_tag)
-            .ok_or(WireError::DecryptFailed)?;
+        let mut auth_tag = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
+        auth_tag.copy_from_slice(auth);
+        if !crypto.aes256_gcm_decrypt(key, &nonce, aad, &mut plaintext, &auth_tag) {
+            return Err(WireError::DecryptFailed);
+        }
         self.nonce = self.nonce.wrapping_add(1);
-        Ok(plaintext.to_vec())
+        Ok(plaintext)
     }
 }
 

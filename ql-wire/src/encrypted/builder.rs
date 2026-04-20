@@ -1,18 +1,20 @@
+use bytes::BufMut;
+
 use super::{RecordAck, SessionClose, SessionFrame, StreamClose, StreamData, StreamWindow};
 use crate::{
-    BufView, ByteBuf, ConnectionId, Nonce, QlCrypto, RecordSeq, RecordType, SessionHeader,
-    SessionKey, WireEncode, QL_WIRE_VERSION,
+    BufView, ConnectionId, Nonce, QlCrypto, RecordSeq, RecordType, SessionHeader, SessionKey,
+    WireEncode, QL_WIRE_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionRecordBuilder<B: ByteBuf> {
+pub struct SessionRecordBuilder {
     seq: RecordSeq,
     prefix_len: usize,
     max_capacity: usize,
-    bytes: Option<B>,
+    bytes: Vec<u8>,
 }
 
-impl<B: ByteBuf> SessionRecordBuilder<B> {
+impl SessionRecordBuilder {
     pub const MIN_CAPACITY: usize = 1
         + 1
         + ConnectionId::SIZE
@@ -27,7 +29,7 @@ impl<B: ByteBuf> SessionRecordBuilder<B> {
             seq,
             prefix_len,
             max_capacity,
-            bytes: None,
+            bytes: Vec::new(),
         }
     }
 
@@ -44,9 +46,7 @@ impl<B: ByteBuf> SessionRecordBuilder<B> {
     }
 
     pub fn len(&self) -> usize {
-        self.bytes
-            .as_ref()
-            .map_or(0, |bytes| bytes.len().saturating_sub(self.prefix_len))
+        self.bytes.len().saturating_sub(self.prefix_len)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -55,14 +55,11 @@ impl<B: ByteBuf> SessionRecordBuilder<B> {
 
     pub fn remaining_capacity(&self) -> usize {
         self.max_capacity
-            .saturating_sub(self.prefix_len.saturating_add(self.len()))
+            .saturating_sub(self.bytes.len().max(self.prefix_len))
     }
 
     pub fn bytes(&self) -> &[u8] {
-        self.bytes
-            .as_ref()
-            .and_then(|bytes| bytes.get(self.prefix_len..))
-            .unwrap_or_default()
+        self.bytes.get(self.prefix_len..).unwrap_or_default()
     }
 
     pub fn push_ping(&mut self) -> bool {
@@ -77,7 +74,7 @@ impl<B: ByteBuf> SessionRecordBuilder<B> {
         self.push_frame_payload(super::SessionFrameKind::Ack, ack)
     }
 
-    pub fn push_stream_data<V: BufView>(&mut self, frame: &StreamData<V>) -> bool {
+    pub fn push_stream_data<B: BufView>(&mut self, frame: &StreamData<B>) -> bool {
         self.push_frame_payload(super::SessionFrameKind::StreamData, frame)
     }
 
@@ -93,7 +90,7 @@ impl<B: ByteBuf> SessionRecordBuilder<B> {
         self.push_frame_payload(super::SessionFrameKind::Close, close)
     }
 
-    pub fn push_frame<V: BufView>(&mut self, frame: &SessionFrame<V>) -> bool {
+    pub fn push_frame<B: BufView>(&mut self, frame: &SessionFrame<B>) -> bool {
         match frame {
             SessionFrame::Ping => self.push_ping(),
             SessionFrame::Unpair => self.push_unpair(),
@@ -105,42 +102,44 @@ impl<B: ByteBuf> SessionRecordBuilder<B> {
         }
     }
 
-    pub fn encrypt<C: QlCrypto<B = B>>(
-        self,
-        crypto: &C,
+    pub fn encrypt(
+        mut self,
+        crypto: &impl QlCrypto,
         connection_id: ConnectionId,
         session_key: &SessionKey,
-    ) -> B {
+    ) -> Vec<u8> {
+        self.ensure_prefix_capacity(0);
         let header = SessionHeader {
             connection_id,
             seq: self.seq,
         };
         let aad = header.aad();
         let nonce = Nonce::from_counter(self.seq.into_inner());
-        let prefix_len = self.prefix_len;
-        let bytes = self.into_bytes(0);
-        let body_range = prefix_len..bytes.len();
-        let (mut bytes, auth) =
-            crypto.aes256_gcm_encrypt(session_key, &nonce, &aad, bytes, body_range);
+        let auth = crypto.aes256_gcm_encrypt(
+            session_key,
+            &nonce,
+            &aad,
+            &mut self.bytes[self.prefix_len..],
+        );
 
-        let mut prefix = &mut bytes[..prefix_len];
+        let mut prefix = &mut self.bytes[..self.prefix_len];
         prefix[0] = QL_WIRE_VERSION;
         prefix[1] = RecordType::Session as u8;
         prefix = &mut prefix[2..];
         header.encode(&mut prefix);
         auth.encode(&mut prefix);
         debug_assert!(prefix.is_empty());
-        bytes
+        self.bytes
     }
 
-    fn push_wire_size(&mut self, wire_size: usize, encode: impl FnOnce(&mut B)) -> bool {
+    fn push_wire_size(&mut self, wire_size: usize, encode: impl FnOnce(&mut Vec<u8>)) -> bool {
         if !self.can_push_len(wire_size) {
             return false;
         }
-        let bytes = self.bytes_mut(wire_size);
-        let start = bytes.len();
-        encode(bytes);
-        debug_assert_eq!(bytes.len(), start + wire_size);
+        self.ensure_prefix_capacity(wire_size);
+        let start = self.bytes.len();
+        encode(&mut self.bytes);
+        debug_assert_eq!(self.bytes.len(), start + wire_size);
         true
     }
 
@@ -164,21 +163,10 @@ impl<B: ByteBuf> SessionRecordBuilder<B> {
         len <= self.remaining_capacity()
     }
 
-    fn bytes_mut(&mut self, additional_body_len: usize) -> &mut B {
-        self.ensure_bytes(additional_body_len);
-        self.bytes.as_mut().unwrap()
-    }
-
-    fn into_bytes(mut self, additional_body_len: usize) -> B {
-        self.ensure_bytes(additional_body_len);
-        self.bytes.take().unwrap()
-    }
-
-    fn ensure_bytes(&mut self, additional_body_len: usize) {
-        if self.bytes.is_none() {
-            let mut bytes = B::with_capacity(self.prefix_len + additional_body_len);
-            bytes.put_bytes(0, self.prefix_len);
-            self.bytes = Some(bytes);
+    fn ensure_prefix_capacity(&mut self, additional_body_len: usize) {
+        if self.bytes.is_empty() {
+            self.bytes.reserve(self.prefix_len + additional_body_len);
+            self.bytes.resize(self.prefix_len, 0);
         }
     }
 }

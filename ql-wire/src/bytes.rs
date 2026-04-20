@@ -1,6 +1,6 @@
 use core::ops::{Deref, DerefMut};
 
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, Bytes};
 
 /// A mutable or immutable byte slice owner used by the wire parser.
 pub trait ByteSlice: Deref<Target = [u8]> + Sized {
@@ -14,43 +14,6 @@ pub trait ByteSlice: Deref<Target = [u8]> + Sized {
 pub trait ByteSliceMut: ByteSlice + DerefMut<Target = [u8]> {}
 
 impl<B> ByteSliceMut for B where B: ByteSlice + DerefMut<Target = [u8]> {}
-
-/// An owned growable byte buffer used by outbound encoding and crypto paths.
-pub trait ByteBuf:
-    AsRef<[u8]>
-    + AsMut<[u8]>
-    + Deref<Target = [u8]>
-    + DerefMut<Target = [u8]>
-    + BufMut
-    + Send
-    + Sized
-    + 'static
-{
-    fn with_capacity(capacity: usize) -> Self;
-    fn len(&self) -> usize;
-    fn capacity(&self) -> usize;
-
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-impl ByteBuf for Vec<u8> {
-    #[inline]
-    fn with_capacity(capacity: usize) -> Self {
-        Self::with_capacity(capacity)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    #[inline]
-    fn capacity(&self) -> usize {
-        Self::capacity(self)
-    }
-}
 
 impl ByteSlice for &[u8] {
     #[inline]
