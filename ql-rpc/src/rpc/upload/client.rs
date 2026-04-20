@@ -37,7 +37,9 @@ where
 
     pub async fn finish(mut self) -> Result<M::Response, CallError<M::Error, W::Error>> {
         let mut writer = self.writer.take().expect("upload writer exists");
-        finish_bytes(&mut writer).await.map_err(CallError::Transport)?;
+        finish_bytes(&mut writer)
+            .await
+            .map_err(CallError::Transport)?;
 
         let mut reader = self.reader.take().expect("upload reader exists");
         let mut bytes = ChunkQueue::default();

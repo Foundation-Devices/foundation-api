@@ -99,20 +99,19 @@ pub(crate) async fn handle_upload_inner<S, M, St>(
     S: UploadHandler<M, St> + 'static,
     St: RpcStream + 'static,
 {
-    let (request, buffered) = match read_framed_request_prefix::<M::Request, _>(&mut reader, config)
-        .await
-    {
-        Ok(value) => value,
-        Err(error) => {
-            let code = error.close_code();
-            state.handle_transport_error(&error);
-            if let Some(code) = code {
-                reader.close(code);
-                writer.close(code);
+    let (request, buffered) =
+        match read_framed_request_prefix::<M::Request, _>(&mut reader, config).await {
+            Ok(value) => value,
+            Err(error) => {
+                let code = error.close_code();
+                state.handle_transport_error(&error);
+                if let Some(code) = code {
+                    reader.close(code);
+                    writer.close(code);
+                }
+                return;
             }
-            return;
-        }
-    };
+        };
 
     state.handle(
         request,
