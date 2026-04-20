@@ -37,7 +37,7 @@ pub trait QlPlatform: QlCrypto {
 
     fn persist_peer(&self, peer: PeerBundle);
 
-    fn handle_peer_status(&self, peer: XID, status: PeerStatus);
+    fn handle_peer_status(&self, peer: Option<XID>, status: PeerStatus);
     fn handle_inbound(&self, event: QlStream);
     fn handle_recv_error(&self, _error: ReceiveError) {}
 }

@@ -158,7 +158,6 @@ impl<T> Slot<T> {
     pub fn is_empty_state(state: usize) -> bool {
         state & PUSHED == 0
     }
-
 }
 
 impl<T> Drop for Slot<T> {

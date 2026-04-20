@@ -1,5 +1,7 @@
 use ql_fsm::NoSessionError;
-use ql_wire::{CloseTarget, PairingToken, PeerBundle, RouteId, StreamCloseCode, StreamId};
+use ql_wire::{
+    CloseTarget, PairingToken, PeerBundle, RouteId, SessionCloseCode, StreamCloseCode, StreamId,
+};
 
 use crate::{StreamReader, StreamWriter};
 
@@ -25,6 +27,10 @@ pub enum Command {
     PollStream {
         stream_id: StreamId,
     },
+    CloseSession {
+        code: SessionCloseCode,
+    },
+    Unpair,
     CloseStream {
         stream_id: StreamId,
         target: CloseTarget,
@@ -43,6 +49,8 @@ impl Command {
             Self::OpenStream { .. } => "OpenStream",
             Self::PollInbound { .. } => "PollInbound",
             Self::PollStream { .. } => "PollStream",
+            Self::CloseSession { .. } => "CloseSession",
+            Self::Unpair => "Unpair",
             Self::CloseStream { .. } => "CloseStream",
         }
     }

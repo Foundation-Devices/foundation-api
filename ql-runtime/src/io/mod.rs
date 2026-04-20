@@ -8,8 +8,7 @@ use std::ops::Deref;
 
 use ql_wire::{CloseTarget, StreamId};
 
-pub use self::slot::PushError;
-pub use self::{reader::StreamReader, writer::StreamWriter};
+pub use self::{reader::StreamReader, slot::PushError, writer::StreamWriter};
 use crate::RuntimeHandle;
 
 pub struct Rx(sync::Arc<inner::Inner>);

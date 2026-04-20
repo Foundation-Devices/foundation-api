@@ -37,7 +37,7 @@ impl QlPlatform for NoopCrypto {
 
     fn persist_peer(&self, _peer: PeerBundle) {}
 
-    fn handle_peer_status(&self, _peer: XID, _status: ql_fsm::PeerStatus) {}
+    fn handle_peer_status(&self, _peer: Option<XID>, _status: ql_fsm::PeerStatus) {}
 
     fn handle_inbound(&self, _event: QlStream) {}
 }
@@ -175,4 +175,33 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
     );
 
     assert!(!state.streams.contains_key(&stream_id));
+}
+
+#[test]
+fn unpaired_status_fails_and_reaps_all_streams() {
+    let (mut state, mut fsm) = new_driver_state();
+    let peer = test_identity(&SoftwareCrypto).bundle();
+    let stream_id = StreamId(1u32.into());
+    let (runtime_tx, _runtime_rx) = async_channel::unbounded();
+    let (_, _, reader_io, writer_io) = io::new_stream(
+        stream_id,
+        CloseTarget::Origin,
+        CloseTarget::Return,
+        RuntimeHandle::new(runtime_tx),
+    );
+
+    state.streams.insert(
+        stream_id,
+        DriverStreamIo::new(
+            false,
+            Some(OutboundIo::new(writer_io)),
+            Some(InboundIo::new(reader_io)),
+        ),
+    );
+    fsm.bind_peer(peer);
+    fsm.unpair();
+
+    state.drain_fsm_events(&mut fsm, &NoopCrypto);
+
+    assert!(state.streams.is_empty());
 }

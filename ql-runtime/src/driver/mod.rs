@@ -202,6 +202,14 @@ impl DriverState {
                 log::info!(" starting XX pairing");
                 fsm.connect_xx(now(), token, platform);
             }
+            Command::CloseSession { code } => {
+                log::info!("closing session: code={code:?}");
+                fsm.close_session(code);
+            }
+            Command::Unpair => {
+                log::info!("unpairing peer");
+                fsm.unpair();
+            }
             Command::OpenStream { route_id, start } => {
                 log::info!("open stream requested: route_id={route_id}");
                 let Some(runtime_tx) = self.runtime_tx.upgrade() else {
@@ -234,10 +242,7 @@ impl DriverState {
                         Some(InboundIo::new(reader_io)),
                     ),
                 );
-                if start
-                    .send(Ok((stream_id, reader, writer)))
-                    .is_err()
-                {
+                if start.send(Ok((stream_id, reader, writer))).is_err() {
                     log::warn!("open stream cancelled before delivery: stream_id={stream_id}");
                     if let Some(stream) = self.streams.get_mut(&stream_id) {
                         stream.inbound_close();
@@ -300,10 +305,14 @@ impl DriverState {
                     }
                 }
                 Event::PeerStatusChanged(status) => {
-                    log::info!("peer status changed: status={status:?}");
-                    if let Some(peer) = fsm.peer().map(|peer| peer.xid) {
-                        platform.handle_peer_status(peer, status);
+                    let peer = fsm.peer().map(|peer| peer.xid);
+                    log::info!("peer status changed: peer={peer:?} status={status:?}");
+                    if status == ql_fsm::PeerStatus::Unpaired {
+                        for (_, mut stream) in self.streams.drain() {
+                            stream.fail_all();
+                        }
                     }
+                    platform.handle_peer_status(peer, status);
                 }
                 Event::Opened {
                     stream_id,

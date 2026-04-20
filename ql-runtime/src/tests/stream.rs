@@ -306,8 +306,8 @@ async fn max_concurrent_message_writes_is_respected() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        await_status(&status_a, Some(identity_b.xid), PeerStatus::Connected).await;
+        await_status(&status_b, Some(identity_a.xid), PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             for _ in 0..4 {
@@ -381,8 +381,8 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        await_status(&status_a, Some(identity_b.xid), PeerStatus::Connected).await;
+        await_status(&status_b, Some(identity_a.xid), PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();

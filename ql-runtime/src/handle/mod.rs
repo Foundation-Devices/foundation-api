@@ -1,5 +1,5 @@
 use ql_fsm::NoSessionError;
-use ql_wire::{PairingToken, PeerBundle, RouteId, StreamId};
+use ql_wire::{PairingToken, PeerBundle, RouteId, SessionCloseCode, StreamId};
 
 use crate::command::Command;
 pub use crate::io::{StreamReader, StreamWriter};
@@ -41,6 +41,16 @@ impl RuntimeHandle {
     /// starts an outbound xx handshake using the supplied pairing token
     pub fn start_pairing(&self, token: PairingToken) {
         self.send(Command::StartPairing { token });
+    }
+
+    /// closes the current encrypted session
+    pub fn close_session(&self, code: SessionCloseCode) {
+        self.send(Command::CloseSession { code });
+    }
+
+    /// forgets the currently bound peer and initiates session unpairing if connected
+    pub fn unpair(&self) {
+        self.send(Command::Unpair);
     }
 
     /// opens a new stream on the active encrypted session

@@ -25,9 +25,9 @@ use crate::{
 };
 
 mod handshake;
-mod heartbeat;
 #[cfg(feature = "rpc")]
 mod rpc;
+mod session;
 mod stream;
 
 fn init_test_logger() {
@@ -43,7 +43,7 @@ fn init_test_logger() {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatusEvent {
-    peer: XID,
+    peer: Option<XID>,
     status: PeerStatus,
 }
 
@@ -135,16 +135,11 @@ impl TestPlatform {
         )
     }
 
-    fn new_with_session_write_failure(
-        fail_encrypted_write_at: usize,
-    ) -> TestPlatformParts {
+    fn new_with_session_write_failure(fail_encrypted_write_at: usize) -> TestPlatformParts {
         Self::new_inner(None, Some(fail_encrypted_write_at), Duration::ZERO, None)
     }
 
-    fn new_with_delayed_writes(
-        delay: Duration,
-        write_stats: WriteStats,
-    ) -> TestPlatformParts {
+    fn new_with_delayed_writes(delay: Duration, write_stats: WriteStats) -> TestPlatformParts {
         Self::new_inner(None, None, delay, Some(write_stats))
     }
 
@@ -296,13 +291,13 @@ impl TestPair {
         self.side(initiator).handle.connect();
         await_status(
             &self.side(initiator).status,
-            self.side(initiator.opposite()).peer,
+            Some(self.side(initiator.opposite()).peer),
             PeerStatus::Connected,
         )
         .await;
         await_status(
             &self.side(initiator.opposite()).status,
-            self.side(initiator).peer,
+            Some(self.side(initiator).peer),
             PeerStatus::Connected,
         )
         .await;
@@ -444,7 +439,7 @@ impl crate::platform::QlPlatform for TestPlatform {
 
     fn persist_peer(&self, _peer: PeerBundle) {}
 
-    fn handle_peer_status(&self, peer: XID, status: PeerStatus) {
+    fn handle_peer_status(&self, peer: Option<XID>, status: PeerStatus) {
         let _ = self.status.try_send(StatusEvent { peer, status });
     }
 
@@ -613,7 +608,7 @@ where
         .unwrap_or_else(|_| panic!("local runtime test exceeded {duration:?}"));
 }
 
-async fn await_status(receiver: &Receiver<StatusEvent>, peer: XID, stage: PeerStatus) {
+async fn await_status(receiver: &Receiver<StatusEvent>, peer: Option<XID>, stage: PeerStatus) {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if let Ok(event) = receiver.recv().await {
@@ -629,7 +624,7 @@ async fn await_status(receiver: &Receiver<StatusEvent>, peer: XID, stage: PeerSt
 
 async fn assert_no_status_for(
     receiver: &Receiver<StatusEvent>,
-    peer: XID,
+    peer: Option<XID>,
     status: PeerStatus,
     window: Duration,
 ) {

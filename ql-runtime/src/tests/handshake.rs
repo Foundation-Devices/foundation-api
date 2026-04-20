@@ -48,7 +48,7 @@ async fn handshake_timeout_disconnects() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStatus::Disconnected).await;
+        await_status(&status_a, Some(identity_b.xid), PeerStatus::Disconnected).await;
     })
     .await;
 }
@@ -75,8 +75,8 @@ async fn rejected_session_write_is_reissued() {
         register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
         handle_a.connect();
 
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        await_status(&status_a, Some(identity_b.xid), PeerStatus::Connected).await;
+        await_status(&status_b, Some(identity_a.xid), PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
             let stream = inbound_b.recv().await.unwrap();
@@ -104,7 +104,7 @@ async fn rejected_session_write_is_reissued() {
 
         assert_no_status_for(
             &status_a,
-            identity_b.xid,
+            Some(identity_b.xid),
             PeerStatus::Disconnected,
             Duration::from_millis(150),
         )
@@ -134,8 +134,8 @@ async fn start_pairing_round_trip_connects_when_armed() {
         handle_b.arm_pairing(token);
         handle_a.start_pairing(token);
 
-        await_status(&status_a, identity_b.xid, PeerStatus::Connected).await;
-        await_status(&status_b, identity_a.xid, PeerStatus::Connected).await;
+        await_status(&status_a, Some(identity_b.xid), PeerStatus::Connected).await;
+        await_status(&status_b, Some(identity_a.xid), PeerStatus::Connected).await;
     })
     .await;
 }
@@ -162,7 +162,7 @@ async fn start_pairing_does_not_connect_when_unarmed() {
 
         assert_no_status_for(
             &status_a,
-            identity_b.xid,
+            Some(identity_b.xid),
             PeerStatus::Connected,
             Duration::from_millis(150),
         )

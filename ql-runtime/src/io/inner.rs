@@ -64,10 +64,7 @@ impl RxInner {
     }
 
     /// stores a terminal reader error
-    pub fn fail(
-        &self,
-        error: QlStreamError,
-    ) -> Option<Bytes> {
+    pub fn fail(&self, error: QlStreamError) -> Option<Bytes> {
         let displaced = self.slot.force_push(Item::Error(error));
         self.changed.notify();
         displaced_bytes(displaced)
