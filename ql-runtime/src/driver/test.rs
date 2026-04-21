@@ -59,7 +59,7 @@ fn new_driver_state() -> (DriverState, QlFsm) {
         QlFsm::new(
             ql_fsm::QlFsmConfig::default(),
             test_identity(&SoftwareCrypto),
-            now(),
+            Instant::now(),
         ),
     )
 }

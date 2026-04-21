@@ -10,12 +10,12 @@ use std::{
     future::Future,
     pin::{pin, Pin},
     task::{Context, Poll},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 
 use async_channel::Recv;
 use futures_lite::future::{poll_fn, yield_now};
-use ql_fsm::{Event, FsmTime, QlFsm, WriteId};
+use ql_fsm::{Event, QlFsm, WriteId};
 use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
@@ -38,7 +38,7 @@ impl<P: QlPlatform> Runtime<P> {
             tx,
         } = self;
 
-        let mut fsm = QlFsm::new(config.fsm, identity, now());
+        let mut fsm = QlFsm::new(config.fsm, identity, Instant::now());
 
         let mut state = DriverState {
             streams: HashMap::new(),
@@ -82,7 +82,7 @@ impl<P: QlPlatform> Runtime<P> {
                 }
                 DriverStep::Inbound(bytes) => {
                     log::trace!("received transport frame: len={}", bytes.len());
-                    if let Err(e) = fsm.receive(now(), bytes, &platform) {
+                    if let Err(e) = fsm.receive(Instant::now(), bytes, &platform) {
                         log::info!("receive rejected frame: error={e:?}");
                         platform.handle_recv_error(e);
                     }
@@ -98,7 +98,7 @@ impl<P: QlPlatform> Runtime<P> {
                 }
                 DriverStep::TimerExpired => {
                     log::trace!("timer expired");
-                    fsm.on_timer(now());
+                    fsm.on_timer(Instant::now());
                 }
                 DriverStep::Closed => {
                     log::debug!(
@@ -186,7 +186,7 @@ impl DriverState {
             }
             Command::Connect => {
                 log::info!("starting IK connect");
-                if fsm.connect_ik(now(), platform).is_err() {
+                if fsm.connect_ik(Instant::now(), platform).is_err() {
                     log::warn!("IK connect ignored: no bound peer");
                 }
             }
@@ -200,7 +200,7 @@ impl DriverState {
             }
             Command::StartPairing { token } => {
                 log::info!(" starting XX pairing");
-                fsm.connect_xx(now(), token, platform);
+                fsm.connect_xx(Instant::now(), token, platform);
             }
             Command::CloseSession { code } => {
                 log::info!("closing session: code={code:?}");
@@ -290,7 +290,7 @@ impl DriverState {
 
     fn drive_write_completed(fsm: &mut QlFsm, session_write_id: Option<WriteId>, success: bool) {
         if let Some(write_id) = session_write_id {
-            fsm.complete_write(now(), write_id, success);
+            fsm.complete_write(Instant::now(), write_id, success);
         }
     }
 
@@ -521,7 +521,7 @@ impl DriverState {
     ) -> bool {
         let mut filled = false;
         while in_flight.len() < self.max_concurrent_message_writes {
-            let Some(write) = fsm.take_next_write(now(), platform) else {
+            let Some(write) = fsm.take_next_write(Instant::now(), platform) else {
                 break;
             };
             filled = true;
@@ -606,18 +606,4 @@ impl DriverState {
             entry.remove();
         }
     }
-}
-
-fn now() -> FsmTime {
-    FsmTime {
-        instant: Instant::now(),
-        unix_secs: unix_now_secs(),
-    }
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs()
 }
