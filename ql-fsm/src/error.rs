@@ -18,7 +18,6 @@ pub enum ReceiveError {
         expected: PairingId,
         actual: PairingId,
     },
-    Replay,
 }
 
 impl Display for ReceiveError {
@@ -37,7 +36,6 @@ impl Display for ReceiveError {
                     "invalid pairing id: expected {expected}, actual {actual}"
                 )
             }
-            Self::Replay => f.write_str("replay"),
         }
     }
 }

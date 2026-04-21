@@ -1,8 +1,7 @@
 use ql_wire::{self as wire, Kk1, Kk2, PeerBundle, QlCrypto, QlHandshakeRecord};
 
 use super::{
-    emit_peer_status, enqueue_handshake, finish_handshake, is_replayed_handshake_start,
-    reset_connected_session_if_needed,
+    emit_peer_status, enqueue_handshake, finish_handshake, reset_connected_session_if_needed,
 };
 use crate::{
     state::{KkInitiatorState, LinkState, SessionTransport},
@@ -23,7 +22,7 @@ pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, peer: PeerBundle
         handshake_id: meta.handshake_id,
         initial_ephemeral: message.ephemeral.clone(),
         handshake,
-        deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
+        deadline: fsm.state.now + fsm.config.handshake_timeout,
     });
     enqueue_handshake(fsm, QlHandshakeRecord::Kk1(message));
     emit_peer_status(fsm, fsm.state.link.status());
@@ -35,9 +34,6 @@ pub fn handle_kk1(
     message: &Kk1,
 ) -> Result<(), ReceiveError> {
     if should_ignore_inbound(fsm, message) {
-        return Ok(());
-    }
-    if is_replayed_handshake_start(fsm, message.meta) {
         return Ok(());
     }
 
@@ -56,7 +52,7 @@ pub fn handle_kk1(
         peer,
         super::local_transport_params(fsm),
     );
-    handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
+    handshake.read_1(crypto, message)?;
     let outbound = handshake.write_2(crypto, message.meta)?;
     let (transport, remote_bundle) = SessionTransport::from_finalized(handshake.finalize(crypto)?);
     finish_handshake(fsm, transport, remote_bundle)?;
@@ -81,7 +77,7 @@ pub fn handle_kk2(
 
         state
             .handshake
-            .read_2(crypto, fsm.state.now.unix_secs, message)?;
+            .read_2(crypto, message)?;
     }
 
     let LinkState::KkInitiator(state) = fsm.state.link.take() else {

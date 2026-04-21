@@ -7,7 +7,7 @@ use ql_wire::{
 };
 
 use crate::{
-    fsm::{deadline_after_secs, emit_peer_status},
+    fsm::emit_peer_status,
     session::{SessionConfig, SessionFsm, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
     Event, NoPeerError, QlFsm, ReceiveError,
@@ -35,10 +35,7 @@ pub fn handle_connect_xx(fsm: &mut QlFsm, token: PairingToken, crypto: &impl QlC
 pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
     let handshake_id = wire::HandshakeId(fsm.state.next_control_id);
     fsm.state.next_control_id = fsm.state.next_control_id.wrapping_add(1);
-    HandshakeMeta {
-        handshake_id,
-        valid_until: deadline_after_secs(fsm.state.now.unix_secs, fsm.config.handshake_timeout),
-    }
+    HandshakeMeta { handshake_id }
 }
 
 pub fn enqueue_handshake(fsm: &mut QlFsm, record: QlHandshakeRecord) {
@@ -59,12 +56,6 @@ fn local_transport_params(fsm: &QlFsm) -> wire::TransportParams {
 pub fn prepare_for_outbound_connect(fsm: &mut QlFsm) {
     fsm.state.handshake = None;
     reset_connected_session_if_needed(fsm);
-}
-
-pub fn is_replayed_handshake_start(fsm: &mut QlFsm, meta: HandshakeMeta) -> bool {
-    fsm.state
-        .replay_cache
-        .check_and_store_valid_until(meta, fsm.state.now.unix_secs)
 }
 
 pub fn handle_handshake_record(
@@ -88,7 +79,7 @@ pub fn handle_timer(fsm: &mut QlFsm) {
     let Some(deadline) = fsm.state.link.handshake_deadline() else {
         return;
     };
-    if deadline > fsm.state.now.instant {
+    if deadline > fsm.state.now {
         return;
     }
 
@@ -133,7 +124,7 @@ pub fn finish_handshake(
                 .remote_transport_params
                 .initial_stream_receive_window,
         },
-        fsm.state.now.instant,
+        fsm.state.now,
     );
     fsm.state.link = LinkState::Connected(ConnectedState { transport, session });
     emit_peer_status(fsm, fsm.state.link.status());

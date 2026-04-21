@@ -5,16 +5,15 @@ use ql_wire::{
     PairingToken, PeerBundle, QlHandshakeRecord, SessionKey, TransportParams, XxHandshake,
 };
 
-use crate::{replay_cache::ReplayCache, session::SessionFsm, FsmTime, NoSessionError, PeerStatus};
+use crate::{session::SessionFsm, NoSessionError, PeerStatus};
 
 pub struct QlFsmState {
-    pub replay_cache: ReplayCache,
     pub next_control_id: u32,
     pub peer: Option<PeerBundle>,
     pub armed_pairing_token: Option<PairingToken>,
     pub handshake: Option<QlHandshakeRecord>,
     pub link: LinkState,
-    pub now: FsmTime,
+    pub now: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

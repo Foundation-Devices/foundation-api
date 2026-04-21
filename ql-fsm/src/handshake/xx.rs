@@ -1,8 +1,7 @@
 use ql_wire::{self as wire, PairingToken, QlCrypto, QlHandshakeRecord, Xx1, Xx2, Xx3, Xx4};
 
 use super::{
-    emit_peer_status, enqueue_handshake, finish_handshake, is_replayed_handshake_start,
-    reset_connected_session_if_needed,
+    emit_peer_status, enqueue_handshake, finish_handshake, reset_connected_session_if_needed,
 };
 use crate::{
     state::{LinkState, SessionTransport, XxInitiatorState, XxResponderState},
@@ -23,7 +22,7 @@ pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, token: PairingTo
         handshake_id: meta.handshake_id,
         initial_ephemeral: message.ephemeral.clone(),
         handshake,
-        deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
+        deadline: fsm.state.now + fsm.config.handshake_timeout,
     });
     enqueue_handshake(fsm, QlHandshakeRecord::Xx1(message));
     emit_peer_status(fsm, fsm.state.link.status());
@@ -36,9 +35,6 @@ pub fn handle_xx1(
 ) -> Result<(), ReceiveError> {
     if should_ignore_inbound(fsm, crypto, message) {
         return Ok(());
-    }
-    if is_replayed_handshake_start(fsm, message.meta) {
-        return Err(ReceiveError::Replay);
     }
     match fsm.state.armed_pairing_token {
         Some(expected) if expected.id(crypto) != message.header.pairing_id => {
@@ -56,12 +52,12 @@ pub fn handle_xx1(
                 token,
                 super::local_transport_params(fsm),
             );
-            handshake.read_1(crypto, fsm.state.now.unix_secs, message)?;
+            handshake.read_1(crypto, message)?;
             let outbound = handshake.write_2(crypto, message.meta)?;
             fsm.state.link = LinkState::XxResponder(XxResponderState {
                 handshake,
                 handshake_meta: message.meta,
-                deadline: fsm.state.now.instant + fsm.config.handshake_timeout,
+                deadline: fsm.state.now + fsm.config.handshake_timeout,
             });
             fsm.state.handshake = None;
             enqueue_handshake(fsm, QlHandshakeRecord::Xx2(outbound));
@@ -87,7 +83,7 @@ pub fn handle_xx2(
 
         state
             .handshake
-            .read_2(crypto, fsm.state.now.unix_secs, message)?;
+            .read_2(crypto, message)?;
         let outbound = state.handshake.write_3(crypto, message.meta)?;
         fsm.state.handshake = None;
         enqueue_handshake(fsm, QlHandshakeRecord::Xx3(outbound));
@@ -111,7 +107,7 @@ pub fn handle_xx3(
 
     state
         .handshake
-        .read_3(crypto, fsm.state.now.unix_secs, message)?;
+        .read_3(crypto, message)?;
     let handshake_meta = state.handshake_meta;
     let LinkState::XxResponder(mut state) = fsm.state.link.take() else {
         unreachable!("active XX responder was checked above");
@@ -140,7 +136,7 @@ pub fn handle_xx4(
 
         state
             .handshake
-            .read_4(crypto, fsm.state.now.unix_secs, message)?;
+            .read_4(crypto, message)?;
     }
 
     let LinkState::XxInitiator(state) = fsm.state.link.take() else {

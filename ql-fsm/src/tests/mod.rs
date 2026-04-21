@@ -12,7 +12,7 @@ use ql_wire::{
 use crate::{
     session::{SessionConfig, SessionFsm, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
-    Event, FsmTime, NoPeerError, OutboundWrite, QlFsm, QlFsmConfig, WriteId,
+    Event, NoPeerError, OutboundWrite, QlFsm, QlFsmConfig, WriteId,
 };
 
 type TestCrypto = SoftwareCrypto;
@@ -39,7 +39,6 @@ struct Node {
 
 struct Harness {
     now: Instant,
-    unix_secs: u64,
     a: Node,
     b: Node,
 }
@@ -72,20 +71,15 @@ impl Harness {
     ) -> Self {
         let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
         let now = Instant::now();
-        let time = FsmTime {
-            instant: now,
-            unix_secs: 1_700_000_000,
-        };
 
         let mut harness = Self {
             now,
-            unix_secs: time.unix_secs,
             a: Node {
-                fsm: QlFsm::new(config_a, identity_a.clone(), time),
+                fsm: QlFsm::new(config_a, identity_a.clone(), now),
                 crypto: SoftwareCrypto,
             },
             b: Node {
-                fsm: QlFsm::new(config_b, identity_b.clone(), time),
+                fsm: QlFsm::new(config_b, identity_b.clone(), now),
                 crypto: SoftwareCrypto,
             },
         };
@@ -142,16 +136,12 @@ impl Harness {
         harness
     }
 
-    fn time(&self) -> FsmTime {
-        FsmTime {
-            instant: self.now,
-            unix_secs: self.unix_secs,
-        }
+    fn time(&self) -> Instant {
+        self.now
     }
 
     fn advance(&mut self, duration: Duration) {
         self.now += duration;
-        self.unix_secs = self.unix_secs.saturating_add(duration.as_secs());
     }
 
     fn node(&self, side: Side) -> &Node {

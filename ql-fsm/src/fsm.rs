@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use bytes::Bytes;
@@ -150,7 +150,7 @@ pub fn receive(
 
                 let mut emit = EventSink::new(events);
                 conn.session
-                    .receive(state.now.instant, seq, frames, &mut emit);
+                    .receive(state.now, seq, frames, &mut emit);
                 emit.termination
             };
 
@@ -176,7 +176,7 @@ pub fn on_timer(fsm: &mut QlFsm) {
     };
 
     let mut emit = EventSink::new(events);
-    conn.session.on_timer(state.now.instant, &mut emit);
+    conn.session.on_timer(state.now, &mut emit);
 }
 
 pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
@@ -204,7 +204,7 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     let QlFsm { state, .. } = fsm;
     let conn = state.link.connected_mut()?;
 
-    let (write_id, builder) = conn.session.take_next_write(state.now.instant)?;
+    let (write_id, builder) = conn.session.take_next_write(state.now)?;
     let record = builder.encrypt(
         crypto,
         conn.transport.tx_connection_id,
@@ -224,7 +224,7 @@ pub fn complete_write(fsm: &mut QlFsm, write_id: WriteId, success: bool) {
     let QlFsm { state, .. } = fsm;
     if let Some(conn) = state.link.connected_mut() {
         conn.session
-            .complete_write(state.now.instant, write_id.0, success);
+            .complete_write(state.now, write_id.0, success);
     }
 }
 
@@ -265,14 +265,4 @@ pub fn poll_event(fsm: &mut QlFsm) -> Option<Event> {
 
 pub fn emit_peer_status(fsm: &mut QlFsm, status: crate::PeerStatus) {
     fsm.events.push_back(Event::PeerStatusChanged(status));
-}
-
-pub fn deadline_after_secs(now_secs: u64, duration: Duration) -> u64 {
-    now_secs.saturating_add(duration_to_secs(duration))
-}
-
-fn duration_to_secs(duration: Duration) -> u64 {
-    duration
-        .as_secs()
-        .saturating_add(u64::from(duration.subsec_nanos() > 0))
 }

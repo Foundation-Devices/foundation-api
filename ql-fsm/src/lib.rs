@@ -21,7 +21,6 @@
 mod error;
 mod fsm;
 mod handshake;
-pub(crate) mod replay_cache;
 mod session;
 pub(crate) mod state;
 #[cfg(test)]
@@ -41,18 +40,8 @@ use ql_wire::{
 pub use session::{SessionEvent, StreamReadIter, StreamWriter};
 
 use crate::{
-    replay_cache::ReplayCache,
     state::{LinkState, QlFsmState},
 };
-
-/// time input for `QlFsm`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FsmTime {
-    /// monotonic time used for local deadlines
-    pub instant: Instant,
-    /// wall-clock unix time used for expiration checks
-    pub unix_secs: u64,
-}
 
 /// connection state for the bound peer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,12 +193,11 @@ pub struct QlFsm {
 
 impl QlFsm {
     /// creates a new `QlFsm`
-    pub fn new(config: QlFsmConfig, identity: QlIdentity, now: FsmTime) -> Self {
+    pub fn new(config: QlFsmConfig, identity: QlIdentity, now: Instant) -> Self {
         Self {
             config,
             identity,
             state: QlFsmState {
-                replay_cache: ReplayCache::default(),
                 next_control_id: 1,
                 peer: None,
                 armed_pairing_token: None,
@@ -246,19 +234,19 @@ impl QlFsm {
     }
 
     /// starts an outbound xx handshake using the supplied pairing token
-    pub fn connect_xx(&mut self, now: FsmTime, token: PairingToken, crypto: &impl QlCrypto) {
+    pub fn connect_xx(&mut self, now: Instant, token: PairingToken, crypto: &impl QlCrypto) {
         self.state.now = now;
         fsm::handle_connect_xx(self, token, crypto);
     }
 
     /// starts an IK handshake with the currently bound peer
-    pub fn connect_ik(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+    pub fn connect_ik(&mut self, now: Instant, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
         self.state.now = now;
         fsm::handle_connect_ik(self, crypto)
     }
 
     /// starts a KK handshake with the currently bound peer
-    pub fn connect_kk(&mut self, now: FsmTime, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+    pub fn connect_kk(&mut self, now: Instant, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
         self.state.now = now;
         fsm::handle_connect_kk(self, crypto)
     }
@@ -266,7 +254,7 @@ impl QlFsm {
     /// handles one inbound wire message
     pub fn receive(
         &mut self,
-        now: FsmTime,
+        now: Instant,
         bytes: Vec<u8>,
         crypto: &impl QlCrypto,
     ) -> Result<(), ReceiveError> {
@@ -280,7 +268,7 @@ impl QlFsm {
     }
 
     /// advances time-based state
-    pub fn on_timer(&mut self, now: FsmTime) {
+    pub fn on_timer(&mut self, now: Instant) {
         self.state.now = now;
         fsm::on_timer(self);
     }
@@ -304,7 +292,7 @@ impl QlFsm {
     /// if it is `None`, the record is fire-and-forget
     pub fn take_next_write(
         &mut self,
-        now: FsmTime,
+        now: Instant,
         crypto: &impl QlCrypto,
     ) -> Option<OutboundWrite> {
         self.state.now = now;
@@ -314,7 +302,7 @@ impl QlFsm {
     /// completes a `SessionWriteId` from `take_next_write` with the transport outcome
     ///
     /// call this at most once for each returned `SessionWriteId`
-    pub fn complete_write(&mut self, now: FsmTime, write_id: WriteId, success: bool) {
+    pub fn complete_write(&mut self, now: Instant, write_id: WriteId, success: bool) {
         self.state.now = now;
         fsm::complete_write(self, write_id, success);
     }
