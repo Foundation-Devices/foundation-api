@@ -7,7 +7,6 @@ pub struct HandshakeId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandshakeMeta {
     pub handshake_id: HandshakeId,
-    pub valid_until: u64,
 }
 
 impl<B: ByteSlice> codec::WireDecode<B> for HandshakeId {
@@ -27,12 +26,7 @@ impl WireEncode for HandshakeId {
 }
 
 impl HandshakeMeta {
-    pub const WIRE_SIZE: usize = size_of::<u32>() + size_of::<u64>();
-
-    // TODO: re-think expiration
-    pub fn ensure_not_expired(&self, _now_seconds: u64) -> Result<(), WireError> {
-        Ok(())
-    }
+    pub const WIRE_SIZE: usize = size_of::<u32>();
 }
 
 impl WireEncode for HandshakeMeta {
@@ -42,7 +36,6 @@ impl WireEncode for HandshakeMeta {
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
         self.handshake_id.encode(out);
-        self.valid_until.encode(out);
     }
 }
 
@@ -50,7 +43,6 @@ impl<B: ByteSlice> codec::WireDecode<B> for HandshakeMeta {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
             handshake_id: reader.decode()?,
-            valid_until: reader.decode()?,
         })
     }
 }

@@ -286,13 +286,11 @@ impl IkHandshake {
     pub fn read_1(
         &mut self,
         crypto: &impl QlCrypto,
-        now_seconds: u64,
         message: &Ik1,
     ) -> Result<(), WireError> {
         if self.step != IkStep::Recv1 {
             return Err(WireError::InvalidState);
         }
-        message.meta.ensure_not_expired(now_seconds)?;
         initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
         self.ensure_inbound_recipient(message.header)?;
         self.ensure_known_remote_sender(message.header)?;
@@ -334,13 +332,11 @@ impl IkHandshake {
     pub fn read_2(
         &mut self,
         crypto: &impl QlCrypto,
-        now_seconds: u64,
         message: &Ik2,
     ) -> Result<(), WireError> {
         if self.step != IkStep::Recv2 {
             return Err(WireError::InvalidState);
         }
-        message.meta.ensure_not_expired(now_seconds)?;
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_recipient(message.header)?;
         self.ensure_known_remote_sender(message.header)?;

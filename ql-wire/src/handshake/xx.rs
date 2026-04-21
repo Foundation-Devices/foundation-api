@@ -317,13 +317,11 @@ impl XxHandshake {
     pub fn read_1(
         &mut self,
         crypto: &impl QlCrypto,
-        now_seconds: u64,
         message: &Xx1,
     ) -> Result<(), WireError> {
         if self.step != XxStep::Recv1 {
             return Err(WireError::InvalidState);
         }
-        message.meta.ensure_not_expired(now_seconds)?;
         initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
         self.ensure_inbound_header(crypto, message.header)?;
         mix_hash_pairing_handshake(
@@ -386,13 +384,11 @@ impl XxHandshake {
     pub fn read_2(
         &mut self,
         crypto: &impl QlCrypto,
-        now_seconds: u64,
         message: &Xx2,
     ) -> Result<(), WireError> {
         if self.step != XxStep::Recv2 {
             return Err(WireError::InvalidState);
         }
-        message.meta.ensure_not_expired(now_seconds)?;
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_header(crypto, message.header)?;
         mix_hash_pairing_handshake(
@@ -464,13 +460,11 @@ impl XxHandshake {
     pub fn read_3(
         &mut self,
         crypto: &impl QlCrypto,
-        now_seconds: u64,
         message: &Xx3,
     ) -> Result<(), WireError> {
         if self.step != XxStep::Recv3 {
             return Err(WireError::InvalidState);
         }
-        message.meta.ensure_not_expired(now_seconds)?;
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_header(crypto, message.header)?;
         require_transport_params(
@@ -538,13 +532,11 @@ impl XxHandshake {
     pub fn read_4(
         &mut self,
         crypto: &impl QlCrypto,
-        now_seconds: u64,
         message: &Xx4,
     ) -> Result<(), WireError> {
         if self.step != XxStep::Recv4 {
             return Err(WireError::InvalidState);
         }
-        message.meta.ensure_not_expired(now_seconds)?;
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_header(crypto, message.header)?;
         require_transport_params(

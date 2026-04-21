@@ -274,13 +274,11 @@ impl KkHandshake {
     pub fn read_1(
         &mut self,
         crypto: &impl QlCrypto,
-        now_seconds: u64,
         message: &Kk1,
     ) -> Result<(), WireError> {
         if self.step != KkStep::Recv1 {
             return Err(WireError::InvalidState);
         }
-        message.meta.ensure_not_expired(now_seconds)?;
         initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
         self.ensure_inbound_header(message.header)?;
         mix_hash_routed_handshake(
@@ -308,13 +306,11 @@ impl KkHandshake {
     pub fn read_2(
         &mut self,
         crypto: &impl QlCrypto,
-        now_seconds: u64,
         message: &Kk2,
     ) -> Result<(), WireError> {
         if self.step != KkStep::Recv2 {
             return Err(WireError::InvalidState);
         }
-        message.meta.ensure_not_expired(now_seconds)?;
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_header(message.header)?;
         mix_hash_routed_handshake(
