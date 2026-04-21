@@ -1,0 +1,15 @@
+[package]
+name = "ql-fsm"
+version = "0.1.0"
+edition = "2021"
+description = "Quantum Link synchronous finite state machine"
+license = "Proprietary"
+
+[dependencies]
+bytes = "1"
+indexmap = "2"
+ql-wire = { path = "../ql-wire" }
+
+[dev-dependencies]
+proptest = "1.6"
+ql-wire = { path = "../ql-wire", features = ["test-utils"] }
