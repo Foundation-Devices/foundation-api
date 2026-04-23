@@ -4,10 +4,10 @@ use super::onboarding::OnboardingState;
 use crate::{
     backup::{
         BackupShardRequest, BackupShardResponse, CreateMagicBackupEvent, CreateMagicBackupResult,
-        EnvoyMagicBackupEnabledRequest, EnvoyMagicBackupEnabledResponse, PrimeMagicBackupEnabled,
-        PrimeMagicBackupStatusRequest, PrimeMagicBackupStatusResponse, RestoreMagicBackupEvent,
-        RestoreMagicBackupRequest, RestoreMagicBackupResult, RestoreShardRequest,
-        RestoreShardResponse, MagicBackupRequestV2, MagicBackupResponseV2,
+        EnvoyMagicBackupEnabledRequest, EnvoyMagicBackupEnabledResponse, MagicBackupRequestV2,
+        MagicBackupResponseV2, PrimeMagicBackupEnabled, PrimeMagicBackupStatusRequest,
+        PrimeMagicBackupStatusResponse, RestoreMagicBackupEvent, RestoreMagicBackupRequest,
+        RestoreMagicBackupResult, RestoreShardRequest, RestoreShardResponse,
     },
     bitcoin::*,
     firmware::{
