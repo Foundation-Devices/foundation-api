@@ -7,7 +7,7 @@ use crate::{
         EnvoyMagicBackupEnabledRequest, EnvoyMagicBackupEnabledResponse, PrimeMagicBackupEnabled,
         PrimeMagicBackupStatusRequest, PrimeMagicBackupStatusResponse, RestoreMagicBackupEvent,
         RestoreMagicBackupRequest, RestoreMagicBackupResult, RestoreShardRequest,
-        RestoreShardResponse,
+        RestoreShardResponse, MagicBackupRequestV2, MagicBackupResponseV2,
     },
     bitcoin::*,
     firmware::{
@@ -132,4 +132,9 @@ pub enum QuantumLinkMessage {
     UnpairingRequest(UnpairingRequest),
     #[n(36)]
     UnpairingResponse(UnpairingResponse),
+
+    #[n(37)]
+    MagicBackupRequestV2(MagicBackupRequestV2),
+    #[n(38)]
+    MagicBackupResponseV2(MagicBackupResponseV2),
 }
