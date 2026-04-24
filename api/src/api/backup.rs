@@ -193,40 +193,40 @@ pub enum RestoreMagicBackupResult {
 pub struct CreateMagicBackupV2 {
     #[n(0)]
     pub timestamp: u64,
-    /// 64-char hex backup identifier.
+    /// Backup identifier (SHA-256 hash).
     #[n(1)]
-    pub hash: String,
-    /// Hex-encoded ML-DSA-44 public key.
+    pub hash: Vec<u8>,
+    /// ML-DSA-44 public key.
     #[n(2)]
-    pub pubkey: String,
+    pub pubkey: Vec<u8>,
     /// Encrypted backup payload.
     #[n(3)]
-    pub backup: String,
-    /// Hex-encoded ML-DSA-44 client signature.
+    pub data: Vec<u8>,
+    /// ML-DSA-44 client signature.
     #[n(4)]
-    pub client_signature: String,
+    pub client_signature: Vec<u8>,
 }
 
 #[quantum_link]
 pub struct GetMagicBackupV2 {
     #[n(0)]
-    pub key: String,
+    pub key: Vec<u8>,
     #[n(1)]
     pub timestamp: u64,
-    /// Hex-encoded ML-DSA-44 signature.
+    /// ML-DSA-44 signature.
     #[n(2)]
-    pub signature: String,
+    pub signature: Vec<u8>,
 }
 
 #[quantum_link]
 pub struct DeleteMagicBackupV2 {
     #[n(0)]
-    pub key: String,
+    pub key: Vec<u8>,
     #[n(1)]
     pub timestamp: u64,
-    /// Hex-encoded ML-DSA-44 signature.
+    /// ML-DSA-44 signature.
     #[n(2)]
-    pub signature: String,
+    pub signature: Vec<u8>,
 }
 
 // prime -> envoy
@@ -248,7 +248,7 @@ pub enum MagicBackupResponseV2 {
     #[n(1)]
     Backup {
         #[n(0)]
-        backup: String,
+        data: Vec<u8>,
     },
     #[n(2)]
     Deleted,
