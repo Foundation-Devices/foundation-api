@@ -184,3 +184,77 @@ pub enum RestoreMagicBackupResult {
         error: String,
     },
 }
+
+//
+// MAGIC BACKUPS V2
+//
+
+#[quantum_link]
+pub struct CreateMagicBackupV2 {
+    #[n(0)]
+    pub timestamp: u64,
+    /// Backup identifier (SHA-256 hash).
+    #[n(1)]
+    pub hash: Vec<u8>,
+    /// ML-DSA-44 public key.
+    #[n(2)]
+    pub pubkey: Vec<u8>,
+    /// Encrypted backup payload.
+    #[n(3)]
+    pub data: Vec<u8>,
+    /// ML-DSA-44 client signature.
+    #[n(4)]
+    pub client_signature: Vec<u8>,
+}
+
+#[quantum_link]
+pub struct GetMagicBackupV2 {
+    #[n(0)]
+    pub key: Vec<u8>,
+    #[n(1)]
+    pub timestamp: u64,
+    /// ML-DSA-44 signature.
+    #[n(2)]
+    pub signature: Vec<u8>,
+}
+
+#[quantum_link]
+pub struct DeleteMagicBackupV2 {
+    #[n(0)]
+    pub key: Vec<u8>,
+    #[n(1)]
+    pub timestamp: u64,
+    /// ML-DSA-44 signature.
+    #[n(2)]
+    pub signature: Vec<u8>,
+}
+
+// prime -> envoy
+#[quantum_link]
+pub enum MagicBackupRequestV2 {
+    #[n(0)]
+    Create(CreateMagicBackupV2),
+    #[n(1)]
+    Get(GetMagicBackupV2),
+    #[n(2)]
+    Delete(DeleteMagicBackupV2),
+}
+
+// envoy -> prime
+#[quantum_link]
+pub enum MagicBackupResponseV2 {
+    #[n(0)]
+    Created,
+    #[n(1)]
+    Backup {
+        #[n(0)]
+        data: Vec<u8>,
+    },
+    #[n(2)]
+    Deleted,
+    #[n(3)]
+    Error {
+        #[n(0)]
+        error: String,
+    },
+}
