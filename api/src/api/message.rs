@@ -17,7 +17,9 @@ use crate::{
     fx::{ExchangeRate, ExchangeRateHistory},
     pairing::{PairingRequest, PairingResponse, UnpairingRequest, UnpairingResponse},
     scv::SecurityCheck,
-    status::{DeviceStatus, EnvoyStatus, Heartbeat, TimezoneRequest, TimezoneResponse},
+    status::{
+        DeviceNameUpdate, DeviceStatus, EnvoyStatus, Heartbeat, TimezoneRequest, TimezoneResponse,
+    },
 };
 
 // Bump this every time there is a significant change
@@ -132,4 +134,7 @@ pub enum QuantumLinkMessage {
     UnpairingRequest(UnpairingRequest),
     #[n(36)]
     UnpairingResponse(UnpairingResponse),
+
+    #[n(37)]
+    DeviceNameUpdate(DeviceNameUpdate),
 }
