@@ -27,3 +27,9 @@ pub struct TimezoneResponse {
     #[n(1)]
     pub zone: String,
 }
+
+#[quantum_link]
+pub struct DeviceNameUpdate {
+    #[n(0)]
+    pub device_name: String,
+}
