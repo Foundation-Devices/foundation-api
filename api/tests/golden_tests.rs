@@ -373,6 +373,7 @@ fn golden_prime_magic_backup_status_request() {
     assert_golden!(QuantumLinkMessage::PrimeMagicBackupStatusRequest(
         PrimeMagicBackupStatusRequest {
             seed_fingerprint: SeedFingerprint([0xab; 32]),
+            timestamp: None,
         },
     ));
 }
@@ -414,6 +415,7 @@ fn golden_restore_shard_request() {
     assert_golden!(QuantumLinkMessage::RestoreShardRequest(
         RestoreShardRequest {
             seed_fingerprint: SeedFingerprint([0xcd; 32]),
+            timestamp: None,
         },
     ));
 }
