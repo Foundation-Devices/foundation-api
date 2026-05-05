@@ -5,6 +5,7 @@ members = [
   "btp",
   "ql-codec",
   "ql-common",
+  "ql-api",
   "ql-fsm",
   "ql-rpc",
   "ql-runtime",

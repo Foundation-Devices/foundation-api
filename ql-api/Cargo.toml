@@ -1,0 +1,20 @@
+[package]
+name = "ql-api"
+version = "0.1.0"
+edition = "2021"
+description = "KeyOS QLv2 RPC protocol"
+license = "Proprietary"
+
+
+[dependencies]
+ql-rpc = { workspace = true }
+bytes = { workspace = true }
+ciborium = "0.2.2"
+flutter_rust_bridge = { version = "=2.11.1", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+
+[features]
+frb = ["flutter_rust_bridge"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
