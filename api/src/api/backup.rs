@@ -29,6 +29,8 @@ pub enum BackupShardResponse {
 pub struct RestoreShardRequest {
     #[n(0)]
     pub seed_fingerprint: SeedFingerprint,
+    #[n(1)]
+    pub timestamp: Option<u32>,
 }
 
 #[quantum_link]
@@ -68,6 +70,8 @@ pub struct PrimeMagicBackupEnabled {
 pub struct PrimeMagicBackupStatusRequest {
     #[n(0)]
     pub seed_fingerprint: SeedFingerprint,
+    #[n(1)]
+    pub timestamp: Option<u32>,
 }
 
 #[quantum_link]
