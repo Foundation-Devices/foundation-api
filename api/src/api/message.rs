@@ -137,7 +137,7 @@ pub enum QuantumLinkMessage {
 
     #[n(37)]
     DeviceNameUpdate(DeviceNameUpdate),
-    
+
     #[n(38)]
     MagicBackupRequestV2(MagicBackupRequestV2),
     #[n(39)]
