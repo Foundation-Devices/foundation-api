@@ -143,6 +143,7 @@ pub enum QuantumLinkMessage {
     #[n(39)]
     MagicBackupResponseV2(MagicBackupResponseV2),
 
+    // Skipped tags (e.g. #[n(32)]) are intentional and must not be reused.
     #[n(40)]
     PrimeFiatPreference(PrimeFiatPreference),
 }
