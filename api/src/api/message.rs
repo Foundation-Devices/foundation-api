@@ -14,7 +14,7 @@ use crate::{
         FirmwareFetchEvent, FirmwareFetchRequest, FirmwareInstallEvent, FirmwareUpdateCheckRequest,
         FirmwareUpdateCheckResponse,
     },
-    fx::{ExchangeRate, ExchangeRateHistory},
+    fx::{ExchangeRate, ExchangeRateHistory, PrimeFiatPreference},
     pairing::{PairingRequest, PairingResponse, UnpairingRequest, UnpairingResponse},
     scv::SecurityCheck,
     status::{
@@ -142,4 +142,8 @@ pub enum QuantumLinkMessage {
     MagicBackupRequestV2(MagicBackupRequestV2),
     #[n(39)]
     MagicBackupResponseV2(MagicBackupResponseV2),
+
+    // Skipped tags (e.g. #[n(32)]) are intentional and must not be reused.
+    #[n(40)]
+    PrimeFiatPreference(PrimeFiatPreference),
 }

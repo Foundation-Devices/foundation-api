@@ -25,3 +25,10 @@ pub struct PricePoint {
     #[n(1)]
     pub timestamp: u64,
 }
+
+/// Prime → Envoy. ISO-4217 code; sent on settings change and on every reconnect.
+#[quantum_link]
+pub struct PrimeFiatPreference {
+    #[n(0)]
+    pub currency_code: String,
+}
