@@ -244,6 +244,7 @@ fn golden_pairing_response() {
         passport_serial: PassportSerial("ABC123".to_string()),
         passport_color: PassportColor::Dark,
         onboarding_complete: true,
+        device_name: Some("Passport Prime".to_string()),
     }));
 }
 

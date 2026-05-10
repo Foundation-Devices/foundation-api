@@ -17,6 +17,8 @@ pub struct PairingResponse {
     pub passport_color: PassportColor,
     #[n(4)]
     pub onboarding_complete: bool,
+    #[n(5)]
+    pub device_name: Option<String>,
 }
 
 #[quantum_link]
