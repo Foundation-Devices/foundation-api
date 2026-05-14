@@ -2,37 +2,85 @@
 // 2. get app by id
 // 3. download version?
 
-mod codec;
+#[macro_use]
+mod macros;
+
 mod app_store;
+mod backup;
 mod benchmark;
-mod bootstrap;
+mod bitcoin;
+mod codec;
+mod firmware;
+mod fx;
+mod onboarding;
+mod scv;
+mod status;
+mod timezone;
 
 pub use app_store::*;
+pub use backup::*;
 pub use benchmark::*;
-pub use bootstrap::*;
+pub use bitcoin::*;
+pub use firmware::*;
+pub use fx::*;
+pub use onboarding::*;
+pub use scv::*;
+pub use status::*;
+pub use timezone::*;
 
 pub type Error = ciborium::de::Error<std::io::Error>;
 
-pub const SERVICE_ID: ql_rpc::ServiceId = ql_rpc::ServiceId([0; 16]);
+pub const SERVICE_ID: ql_common::ServiceId = ql_common::ServiceId([0; 16]);
 
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Route {
-    // setup
-    BootstrapQlv1 = 100,
-
+routes! {
     // app store
     ListApps = 200,
     AppDownload = 201,
+
+    // status and presence
+    DeviceStatus = 300,
+    EnvoyStatus = 301,
+    Timezone = 303,
+
+    // status and presence
+    PassportDetails = 402,
+    PassportDetailsUpdated = 403,
+
+    // security and onboarding
+    SecurityCheck = 500,
+    OnboardingStatus = 501,
+
+    // firmware
+    FirmwareUpdateCheck = 600,
+    FirmwareDownload = 601,
+    FirmwareInstallStatus = 602,
+
+    // market data
+    ExchangeRateUpdate = 700,
+    ExchangeRateSubscription = 701,
+    ExchangeRateHistory = 702,
+    PassportFiatPreference = 703,
+    PassportFiatPreferenceRequest = 704,
+
+    // bitcoin and wallet
+    SignPsbt = 800,
+    BroadcastTransaction = 801,
+    AccountUpdate = 802,
+    PassportActiveSeedFingerprint = 803,
+    GetPassportActiveSeedFingerprint = 804,
+
+    // backup
+    BackupShard = 900,
+    RestoreShard = 901,
+    EnvoyMagicBackupEnabled = 902,
+    PassportMagicBackupEnabled = 903,
+    PassportMagicBackupStatus = 904,
+    UploadMagicBackup = 905,
+    DownloadMagicBackup = 906,
+    RestoreMagicBackupComplete = 907,
 
     // debug
     Echo = 1000,
     BytesBenchmark = 1001,
     DownloadBenchmark = 1002,
-}
-
-impl Route {
-    pub const fn id(self) -> ql_rpc::RouteId {
-        ql_rpc::RouteId::from_u32(self as u32)
-    }
 }

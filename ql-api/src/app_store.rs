@@ -1,6 +1,6 @@
-use ql_rpc::{Download, Request, RouteId};
+use ql_rpc::{Download, Request};
 
-use crate::{codec::rpc, Error, Route};
+use crate::{route, Error};
 
 rpc! {
     #[derive(Copy)]
@@ -10,8 +10,6 @@ rpc! {
 //
 // LIST APPS
 //
-
-pub struct ListApps;
 
 rpc! {
     pub struct ListAppsRequest {
@@ -34,8 +32,7 @@ rpc! {
     }
 }
 
-impl Request for ListApps {
-    const ROUTE: RouteId = Route::ListApps.id();
+impl Request for route::ListApps {
     type Error = Error;
     type Request = ListAppsRequest;
     type Response = ListAppsResponse;
@@ -47,8 +44,6 @@ impl Request for ListApps {
 // download a single tar file that contains:
 // - app.elf
 // - manifest.json
-
-pub struct AppDownload;
 
 rpc! {
     pub struct AppDownloadRequest {
@@ -62,12 +57,16 @@ rpc! {
     }
 }
 
-impl Download for AppDownload {
-    const ROUTE: RouteId = Route::AppDownload.id();
+rpc! {
+    pub struct AppDownloadPartHeader {}
+}
 
+impl Download for route::AppDownload {
     type Error = Error;
 
     type Request = AppDownloadRequest;
 
     type ResponseHeader = AppDownloadHeader;
+
+    type PartHeader = AppDownloadPartHeader;
 }
