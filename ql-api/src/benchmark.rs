@@ -1,16 +1,12 @@
-use ql_rpc::{request::Request, Download, RouteId, Subscription};
+use ql_rpc::{request::Request, Download, Subscription};
 
-use crate::{codec::rpc, Error, Route};
+use crate::{route, Error};
 
 // Echo request-response benchmark
-pub struct Echo;
-
-impl Request for Echo {
+impl Request for route::Echo {
     type Error = Error;
     type Request = EchoRequest;
     type Response = EchoResponse;
-
-    const ROUTE: RouteId = Route::Echo.id();
 }
 
 rpc! {
@@ -26,14 +22,10 @@ rpc! {
 }
 
 // Byte-stream subscription benchmark
-pub struct BytesBenchmark;
-
-impl Subscription for BytesBenchmark {
+impl Subscription for route::BytesBenchmark {
     type Error = Error;
     type Event = BenchmarkEvent;
     type Request = BenchmarkRequest;
-
-    const ROUTE: ql_rpc::RouteId = Route::BytesBenchmark.id();
 }
 
 rpc! {
@@ -49,14 +41,11 @@ rpc! {
 }
 
 // Raw-body download benchmark
-pub struct DownloadBenchmark;
-
-impl Download for DownloadBenchmark {
+impl Download for route::DownloadBenchmark {
     type Error = Error;
     type Request = DownloadBenchmarkRequest;
     type ResponseHeader = DownloadBenchmarkHeader;
-
-    const ROUTE: RouteId = Route::DownloadBenchmark.id();
+    type PartHeader = DownloadBenchmarkPartHeader;
 }
 
 rpc! {
@@ -69,4 +58,8 @@ rpc! {
     pub struct DownloadBenchmarkHeader {
         pub hash: Vec<u8>,
     }
+}
+
+rpc! {
+    pub struct DownloadBenchmarkPartHeader {}
 }

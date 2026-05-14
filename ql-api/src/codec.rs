@@ -5,40 +5,6 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::Error;
 
-macro_rules! impl_codec {
-    ($ty:ty) => {
-        impl ql_rpc::RpcCodec for $ty {
-            type Error = crate::Error;
-
-            fn encode_value<B: bytes::BufMut + ?Sized>(&self, out: &mut B) {
-                $crate::codec::encode_cbor(self, out);
-            }
-
-            fn decode_value<B: bytes::Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
-                $crate::codec::decode_cbor(bytes)
-            }
-        }
-    };
-}
-
-pub(crate) use impl_codec;
-
-macro_rules! rpc {
-    ($(#[$attr:meta])* $vis:vis struct $name:ident;) => {
-        compile_error!("rpc! does not support unit structs");
-    };
-    ($(#[$attr:meta])* $vis:vis struct $name:ident $($body:tt)+) => {
-        #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-        $(#[$attr])*
-        #[cfg_attr(feature = "frb", flutter_rust_bridge::frb(non_opaque))]
-        $vis struct $name $($body)+
-
-        $crate::codec::impl_codec!($name);
-    };
-}
-
-pub(crate) use rpc;
-
 pub fn encode_cbor<T, B>(value: &T, out: &mut B)
 where
     T: Serialize,
