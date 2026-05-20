@@ -18,3 +18,19 @@ impl Request for route::Timezone {
     type Request = TimezoneRequest;
     type Response = TimezoneResponse;
 }
+
+rpc! {
+    pub struct CurrentTimeRequest {}
+}
+
+rpc! {
+    pub struct CurrentTimeResponse {
+        pub server_time_millis: u64,
+    }
+}
+
+impl Request for route::CurrentTime {
+    type Error = Error;
+    type Request = CurrentTimeRequest;
+    type Response = CurrentTimeResponse;
+}
