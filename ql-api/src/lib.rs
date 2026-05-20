@@ -15,7 +15,7 @@ mod fx;
 mod onboarding;
 mod scv;
 mod status;
-mod timezone;
+mod time;
 
 pub use app_store::*;
 pub use backup::*;
@@ -26,7 +26,7 @@ pub use fx::*;
 pub use onboarding::*;
 pub use scv::*;
 pub use status::*;
-pub use timezone::*;
+pub use time::*;
 
 pub type Error = ciborium::de::Error<std::io::Error>;
 
@@ -41,6 +41,7 @@ routes! {
     DeviceStatus = 300,
     EnvoyStatus = 301,
     Timezone = 303,
+    CurrentTime = 304,
 
     // status and presence
     PassportDetails = 402,
