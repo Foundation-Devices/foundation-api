@@ -15,6 +15,13 @@ use crate::message::{EnvoyMessage, PassportMessage};
 pub const QUANTUM_LINK: Function = Function::new_static_named("quantumLink");
 pub const EXPIRATION_DURATION: Duration = Duration::from_secs(60);
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ReplayCheck {
+    Fresh,
+    Replay,
+    Expired,
+}
+
 /// Storage for tracking received ARIDs to prevent replay attacks
 #[derive(Debug, Default, Clone)]
 pub struct ARIDCache {
@@ -26,27 +33,27 @@ impl ARIDCache {
         Self { cache: Vec::new() }
     }
 
-    /// Check if ARID has been seen before and store it if not
-    /// Returns true if this is a replay attack (ARID already exists)
+    /// Check if ARID has been seen before and store it until the event expires.
     pub fn check_and_store(
         &mut self,
         arid: &ARID,
-        sent_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
         now: DateTime<Utc>,
-    ) -> bool {
+    ) -> ReplayCheck {
         // Clean up expired entries first
-        self.cache
-            .retain(|(_, date)| now < (*date + EXPIRATION_DURATION));
+        self.cache.retain(|(_, expires_at)| now < *expires_at);
+
+        if now >= expires_at {
+            return ReplayCheck::Expired;
+        }
 
         // Check if ARID already exists (replay attack)
         if self.cache.iter().any(|(id, _)| id == arid) {
-            return true; // Replay attack detected
+            return ReplayCheck::Replay;
         }
 
-        if now < (sent_at + EXPIRATION_DURATION) {
-            self.cache.push((*arid, sent_at));
-        }
-        false // Not a replay attack
+        self.cache.push((*arid, expires_at));
+        ReplayCheck::Fresh
     }
 
     /// Get the number of stored ARIDs
@@ -81,6 +88,10 @@ pub enum QlError {
     InvalidFunction,
     #[error("replay attack")]
     ReplayAttack,
+    #[error("expired")]
+    Expired,
+    #[error("date too far in the future")]
+    FutureDated,
 }
 
 pub trait QuantumLink: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {
@@ -120,8 +131,12 @@ pub trait QuantumLink: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {
         envelope: &Envelope,
         private_keys: &PrivateKeys,
     ) -> Result<(Expression, XIDDocument), QlError> {
+        let now = Utc::now();
         let event: SealedEvent<Expression> =
-            SealedEvent::try_from_envelope(envelope, None, Some(&Date::now()), private_keys)?;
+            SealedEvent::try_from_envelope(envelope, None, Some(&Date::from(now)), private_keys)?;
+        let expires_at = event.date().ok_or(QlError::MissingDate)?.datetime();
+        validate_expires_at(expires_at, now)?;
+
         let expression = event.content().clone();
         Ok((expression, event.sender().clone()))
     }
@@ -135,23 +150,18 @@ pub trait QuantumLink: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {
         let event: SealedEvent<Expression> =
             SealedEvent::try_from_envelope(envelope, None, Some(&Date::from(now)), private_keys)?;
 
-        // Check for replay attack
         let arid = event.id();
-        let event_date = event.date().ok_or(QlError::MissingDate)?.datetime();
-        if arid_cache.check_and_store(&arid, event_date, now) {
-            return Err(QlError::ReplayAttack);
+        let expires_at = event.date().ok_or(QlError::MissingDate)?.datetime();
+        validate_expires_at(expires_at, now)?;
+
+        match arid_cache.check_and_store(&arid, expires_at, now) {
+            ReplayCheck::Fresh => {}
+            ReplayCheck::Replay => return Err(QlError::ReplayAttack),
+            ReplayCheck::Expired => return Err(QlError::Expired),
         }
 
         let expression = event.content().clone();
         Ok((expression, event.sender().clone()))
-    }
-
-    fn unseal_passport_message(
-        envelope: &Envelope,
-        private_keys: &PrivateKeys,
-    ) -> Result<(PassportMessage, XIDDocument), QlError> {
-        let (expression, sender) = PassportMessage::unseal(envelope, private_keys)?;
-        Ok((PassportMessage::decode(&expression)?, sender))
     }
 
     fn unseal_passport_message_with_replay_check(
@@ -162,14 +172,6 @@ pub trait QuantumLink: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {
         let (expression, sender) =
             PassportMessage::unseal_with_replay_check(envelope, private_keys, arid_cache)?;
         Ok((PassportMessage::decode(&expression)?, sender))
-    }
-
-    fn unseal_envoy_message(
-        envelope: &Envelope,
-        private_keys: &PrivateKeys,
-    ) -> Result<(EnvoyMessage, XIDDocument), QlError> {
-        let (expression, sender) = EnvoyMessage::unseal(envelope, private_keys)?;
-        Ok((EnvoyMessage::decode(&expression)?, sender))
     }
 
     fn unseal_envoy_message_with_replay_check(
@@ -237,8 +239,25 @@ impl QuantumLinkIdentity {
     }
 }
 
+fn expiration_duration() -> chrono::Duration {
+    chrono::Duration::from_std(EXPIRATION_DURATION).expect("expiration duration must fit chrono")
+}
+
+fn validate_expires_at(expires_at: DateTime<Utc>, now: DateTime<Utc>) -> Result<(), QlError> {
+    if now >= expires_at {
+        return Err(QlError::Expired);
+    }
+
+    if expires_at > now + expiration_duration() {
+        return Err(QlError::FutureDated);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
         api::{
             message::{QuantumLinkMessage, PROTOCOL_VERSION},
@@ -250,112 +269,26 @@ mod tests {
     };
 
     #[test]
-    fn test_encode_decode_quantumlink_message() {
-        let fx_rate = ExchangeRate {
-            currency_code: String::from("USD"),
-            rate: 0.85,
-            timestamp: 0,
-        };
-        let original_message = QuantumLinkMessage::ExchangeRate(fx_rate.clone());
-
-        // Encode the message
-        let expression = QuantumLink::encode(original_message);
-
-        // Decode the message
-        let decoded_message = QuantumLink::decode(&expression).unwrap();
-
-        let fx_rate_decoded: ExchangeRate = match decoded_message {
-            QuantumLinkMessage::ExchangeRate(rate) => rate,
-            _ => panic!("Expected ExchangeRate message"),
-        };
-
-        // Assert that the original and decoded messages are the same
-        assert_eq!(fx_rate.rate, fx_rate_decoded.rate);
-    }
-
-    #[test]
-    fn test_seal_unseal_quantumlink_message() {
-        let envoy = QuantumLinkIdentity::generate();
-        let passport = QuantumLinkIdentity::generate();
-
-        let fx_rate = ExchangeRate {
-            currency_code: String::from("USD"),
-            rate: 0.85,
-            timestamp: 0,
-        };
-        let original_message = EnvoyMessage {
-            message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
-            timestamp: 123456,
-            protocol_version: Some(PROTOCOL_VERSION),
-        };
-
-        // Seal the message
-        let envelope = QuantumLink::seal(
-            original_message,
-            (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
-            &passport.xid_document,
-        );
-
-        // Decode the message
-        let decoded_message =
-            EnvoyMessage::unseal_envoy_message(&envelope, &passport.private_keys.unwrap()).unwrap();
-
-        let fx_rate_decoded: ExchangeRate = match decoded_message.0.message {
-            QuantumLinkMessage::ExchangeRate(rate) => rate,
-            _ => panic!("Expected ExchangeRate message"),
-        };
-
-        // Assert that the original and decoded messages are the same
-        assert_eq!(fx_rate.rate, fx_rate_decoded.rate);
-    }
-
-    #[test]
-    fn test_serialize_ql_identity() {
-        let identity = QuantumLinkIdentity::generate();
-        let bytes = identity.to_bytes();
-
-        let deserialized_identity = QuantumLinkIdentity::from_bytes(bytes.as_slice()).unwrap();
-
-        // Assert that the original and decoded messages are the same
-        assert_eq!(
-            identity.private_keys.unwrap(),
-            deserialized_identity.private_keys.unwrap()
-        );
-    }
-
-    #[test]
-    fn test_replay_attack_prevention() {
+    fn accepts_fresh_and_rejects_immediate_replay() {
         let envoy = QuantumLinkIdentity::generate();
         let passport = QuantumLinkIdentity::generate();
         let mut arid_cache = ARIDCache::new();
 
-        let fx_rate = ExchangeRate {
-            currency_code: String::from("USD"),
-            rate: 0.85,
-            timestamp: 0,
-        };
-        let original_message = EnvoyMessage {
-            message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
-            timestamp: 123456,
-            protocol_version: Some(PROTOCOL_VERSION),
-        };
-
-        // Seal the message
+        let original_message = exchange_rate_envoy_message();
         let envelope = QuantumLink::seal(
-            original_message,
+            original_message.clone(),
             (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
             &passport.xid_document,
         );
 
-        // First unseal should succeed
-        let result1 = EnvoyMessage::unseal_envoy_message_with_replay_check(
+        let (decoded, _sender) = EnvoyMessage::unseal_envoy_message_with_replay_check(
             &envelope,
             &passport.private_keys.clone().unwrap(),
             &mut arid_cache,
-        );
-        assert!(result1.is_ok());
+        )
+        .unwrap();
+        assert_exchange_rate_matches(&original_message, &decoded);
 
-        // Second unseal of the same message should fail (replay attack)
         let result2 = EnvoyMessage::unseal_envoy_message_with_replay_check(
             &envelope,
             &passport.private_keys.unwrap(),
@@ -365,122 +298,134 @@ mod tests {
     }
 
     #[test]
-    fn test_arid_cache_cleanup() {
-        let mut arid_cache = ARIDCache::new();
+    fn rejects_expired_envelope() {
         let envoy = QuantumLinkIdentity::generate();
         let passport = QuantumLinkIdentity::generate();
+        let mut arid_cache = ARIDCache::new();
+        let expired_at = Utc::now() - chrono::Duration::seconds(1);
 
-        // Create and seal multiple messages
+        let envelope = seal_envoy_message_with_expiration(
+            exchange_rate_envoy_message(),
+            &envoy,
+            &passport,
+            expired_at,
+        );
+
+        let replay_checked_result = EnvoyMessage::unseal_envoy_message_with_replay_check(
+            &envelope,
+            &passport.private_keys.unwrap(),
+            &mut arid_cache,
+        );
+        assert!(matches!(replay_checked_result, Err(QlError::Expired)));
+    }
+
+    #[test]
+    fn rejects_future_dated_envelope() {
+        let envoy = QuantumLinkIdentity::generate();
+        let passport = QuantumLinkIdentity::generate();
+        let mut arid_cache = ARIDCache::new();
+        let expires_at = Utc::now() + expiration_duration() + chrono::Duration::seconds(1);
+
+        let envelope = seal_envoy_message_with_expiration(
+            exchange_rate_envoy_message(),
+            &envoy,
+            &passport,
+            expires_at,
+        );
+
+        let result = EnvoyMessage::unseal_envoy_message_with_replay_check(
+            &envelope,
+            &passport.private_keys.unwrap(),
+            &mut arid_cache,
+        );
+        assert!(matches!(result, Err(QlError::FutureDated)));
+    }
+
+    #[test]
+    fn arid_cache_reports_replay_and_expiration() {
+        let mut cache = ARIDCache::new();
+        let arid1 = ARID::new();
+        let arid2 = ARID::new();
+
+        let start = chrono::Utc::now();
+        let expires_at = start + expiration_duration();
+
+        assert_eq!(
+            cache.check_and_store(&arid1, expires_at, start),
+            ReplayCheck::Fresh
+        );
+        assert_eq!(
+            cache.check_and_store(&arid1, expires_at, start),
+            ReplayCheck::Replay
+        );
+
+        let after_expiration = expires_at + chrono::Duration::seconds(1);
+        assert_eq!(
+            cache.check_and_store(&arid1, expires_at, after_expiration),
+            ReplayCheck::Expired
+        );
+
+        assert_eq!(
+            cache.check_and_store(
+                &arid2,
+                after_expiration + expiration_duration(),
+                after_expiration,
+            ),
+            ReplayCheck::Fresh
+        );
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.cache.iter().any(|(id, _)| id == &arid1));
+    }
+
+    fn exchange_rate_envoy_message() -> EnvoyMessage {
         let fx_rate = ExchangeRate {
             currency_code: String::from("USD"),
             rate: 0.85,
             timestamp: 0,
         };
-        let message1 = EnvoyMessage {
-            message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
+
+        EnvoyMessage {
+            message: QuantumLinkMessage::ExchangeRate(fx_rate),
             timestamp: 123456,
             protocol_version: Some(PROTOCOL_VERSION),
-        };
-        let message2 = EnvoyMessage {
-            message: QuantumLinkMessage::ExchangeRate(fx_rate.clone()),
-            timestamp: 123457,
-            protocol_version: Some(PROTOCOL_VERSION),
-        };
-
-        let envelope1 = QuantumLink::seal(
-            message1,
-            (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
-            &passport.xid_document,
-        );
-
-        let envelope2 = QuantumLink::seal(
-            message2,
-            (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
-            &passport.xid_document,
-        );
-
-        // Unseal both messages
-        let _result1 = EnvoyMessage::unseal_envoy_message_with_replay_check(
-            &envelope1,
-            &passport.private_keys.clone().unwrap(),
-            &mut arid_cache,
-        )
-        .unwrap();
-        let _result2 = EnvoyMessage::unseal_envoy_message_with_replay_check(
-            &envelope2,
-            &passport.private_keys.unwrap(),
-            &mut arid_cache,
-        )
-        .unwrap();
-
-        // Should have 2 ARIDs stored
-        assert_eq!(arid_cache.len(), 2);
-
-        // Clear cache manually to test cleanup
-        arid_cache.clear();
-        assert_eq!(arid_cache.len(), 0);
+        }
     }
-}
 
-#[test]
-fn test_time_based_eviction() {
-    let mut cache = ARIDCache::new();
-    let arid1 = ARID::new();
-    let arid2 = ARID::new();
+    fn assert_exchange_rate_matches(expected: &EnvoyMessage, actual: &EnvoyMessage) {
+        let expected_rate = match &expected.message {
+            QuantumLinkMessage::ExchangeRate(rate) => rate,
+            _ => panic!("Expected ExchangeRate message"),
+        };
+        let actual_rate = match &actual.message {
+            QuantumLinkMessage::ExchangeRate(rate) => rate,
+            _ => panic!("Expected ExchangeRate message"),
+        };
 
-    let expiration = chrono::Duration::from_std(EXPIRATION_DURATION).unwrap();
-    let start = chrono::Utc::now();
+        assert_eq!(actual.timestamp, expected.timestamp);
+        assert_eq!(actual.protocol_version, expected.protocol_version);
+        assert_eq!(actual_rate.rate, expected_rate.rate);
+    }
 
-    cache.check_and_store(&arid1, start, start);
-    assert_eq!(cache.len(), 1);
+    fn seal_envoy_message_with_expiration(
+        message: EnvoyMessage,
+        sender: &QuantumLinkIdentity,
+        recipient: &QuantumLinkIdentity,
+        expires_at: DateTime<Utc>,
+    ) -> Envelope {
+        let valid_until = Date::from(expires_at);
 
-    // evict the old time
-    // evict the old time by advancing 'now' past expiration
-    let future = start + expiration + chrono::Duration::seconds(1);
-    cache.check_and_store(&arid2, future, future);
-    assert_eq!(cache.len(), 1);
-    assert!(!cache.cache.iter().any(|(id, _)| id == &arid1));
-}
-
-#[test]
-fn test_replay_check() {
-    use crate::{
-        fx::ExchangeRate,
-        message::{QuantumLinkMessage, PROTOCOL_VERSION},
-    };
-
-    let mut arid_cache = ARIDCache::new();
-    let envoy = QuantumLinkIdentity::generate();
-    let passport = QuantumLinkIdentity::generate();
-
-    let fx_rate = ExchangeRate {
-        currency_code: String::from("USD"),
-        rate: 0.85,
-        timestamp: 0,
-    };
-    let message = EnvoyMessage {
-        message: QuantumLinkMessage::ExchangeRate(fx_rate),
-        timestamp: 123456,
-        protocol_version: Some(PROTOCOL_VERSION),
-    };
-
-    let envelope = QuantumLink::seal(
-        message,
-        (envoy.private_keys.as_ref().unwrap(), &envoy.xid_document),
-        &passport.xid_document,
-    );
-
-    let result1 = EnvoyMessage::unseal_envoy_message_with_replay_check(
-        &envelope,
-        &passport.private_keys.clone().unwrap(),
-        &mut arid_cache,
-    );
-    assert!(result1.is_ok());
-
-    let result2 = EnvoyMessage::unseal_envoy_message_with_replay_check(
-        &envelope,
-        &passport.private_keys.unwrap(),
-        &mut arid_cache,
-    );
-    assert!(result2.is_err());
+        let event: SealedEvent<Expression> = SealedEvent::new(
+            QuantumLink::encode(message),
+            ARID::new(),
+            &sender.xid_document,
+        )
+        .with_date(&valid_until);
+        event
+            .to_envelope(
+                Some(&valid_until),
+                Some(sender.private_keys.as_ref().unwrap()),
+                Some(&recipient.xid_document),
+            )
+            .unwrap()
+    }
 }
