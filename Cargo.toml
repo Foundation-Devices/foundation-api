@@ -6,6 +6,7 @@ members = [
   "btp",
   "ql-fsm",
   "ql-rpc",
+  "ql-runtime",
   "ql-wire",
   "quantum-link-macros",
 ]
