@@ -1,0 +1,152 @@
+use std::{
+    future::{poll_fn, Future},
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+use crate::{
+    progress::{Progress, ReadStep, ResponseReader},
+    CallError, Error, RpcRead, StreamCloseCode,
+};
+
+pub struct ProgressCall<M, R>
+where
+    M: Progress,
+    R: RpcRead,
+{
+    stream: Option<R>,
+    state: State<M, R::Error>,
+}
+
+enum State<M, T>
+where
+    M: Progress,
+{
+    Invalid,
+    Reading(ResponseReader<M>),
+    Terminal(Result<M::Response, CallError<M::Error, T>>),
+    Done,
+}
+
+impl<M, R> Unpin for ProgressCall<M, R>
+where
+    M: Progress,
+    R: RpcRead,
+{
+}
+
+impl<M, R> ProgressCall<M, R>
+where
+    M: Progress,
+    R: RpcRead,
+{
+    pub fn new(stream: R) -> Self {
+        Self {
+            stream: Some(stream),
+            state: State::Reading(ResponseReader::default()),
+        }
+    }
+
+    pub async fn next_progress(&mut self) -> Option<M::Progress> {
+        poll_fn(|cx| self.poll_next_progress(cx)).await
+    }
+
+    fn poll_step(&mut self, cx: &mut Context<'_>) -> Poll<Option<M::Progress>> {
+        loop {
+            let reader = match &mut self.state {
+                State::Reading(reader) => reader,
+                State::Terminal(_) | State::Done => return Poll::Ready(None),
+                State::Invalid => panic!("invalid state"),
+            };
+
+            match reader.advance() {
+                Ok(ReadStep::Progress(value)) => return Poll::Ready(Some(value)),
+                Ok(ReadStep::Response(response)) => {
+                    self.state = State::Terminal(Ok(response));
+                    return Poll::Ready(None);
+                }
+                Ok(ReadStep::NeedMore) => {}
+                Err(error) => {
+                    self.state = State::Terminal(Err(error.into()));
+                    return Poll::Ready(None);
+                }
+            }
+
+            let stream = self.stream.as_mut().unwrap();
+            match stream.poll_read(usize::MAX, cx) {
+                Poll::Ready(Ok(Some(chunk))) => {
+                    let State::Reading(reader) = &mut self.state else {
+                        panic!("invalid state");
+                    };
+                    reader.push(chunk);
+                }
+                Poll::Ready(Ok(None)) => {
+                    self.state = State::Terminal(Err(Error::MissingResponse.into()));
+                    return Poll::Ready(None);
+                }
+                Poll::Ready(Err(error)) => {
+                    self.state = State::Terminal(Err(CallError::Transport(error)));
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    pub fn poll_next_progress(&mut self, cx: &mut Context<'_>) -> Poll<Option<M::Progress>> {
+        self.poll_step(cx)
+    }
+
+    pub fn close(mut self, code: StreamCloseCode) {
+        self.close_inner(code);
+    }
+
+    fn close_inner(&mut self, code: StreamCloseCode) {
+        self.state = State::Done;
+        if let Some(stream) = self.stream.take() {
+            stream.close(code);
+        }
+    }
+}
+
+impl<M, R> Drop for ProgressCall<M, R>
+where
+    M: Progress,
+    R: RpcRead,
+{
+    fn drop(&mut self) {
+        if matches!(self.state, State::Reading(_)) {
+            self.close_inner(StreamCloseCode::CANCELLED);
+        }
+    }
+}
+
+impl<M, R> Future for ProgressCall<M, R>
+where
+    M: Progress,
+    R: RpcRead,
+{
+    type Output = Result<M::Response, CallError<M::Error, R::Error>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+
+        loop {
+            match this.poll_step(cx) {
+                Poll::Ready(Some(_)) => {}
+                Poll::Ready(None) => match std::mem::replace(&mut this.state, State::Invalid) {
+                    State::Terminal(result) => {
+                        this.state = State::Done;
+                        return Poll::Ready(result);
+                    }
+                    State::Done => panic!("polled after completion"),
+                    State::Invalid => panic!("polled during state transition"),
+                    State::Reading(_) => {
+                        panic!("progress call reached terminal step without result")
+                    }
+                },
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}

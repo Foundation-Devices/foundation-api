@@ -2100,6 +2100,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ql-rpc"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "trait-variant",
+]
+
+[[package]]
 name = "ql-wire"
 version = "0.1.0"
 dependencies = [
@@ -2769,6 +2777,17 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "trait-variant"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70977707304198400eb4835a78f6a9f928bf41bba420deb8fdb175cd965d77a7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]
