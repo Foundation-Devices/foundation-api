@@ -1,0 +1,15 @@
+[package]
+name = "ql-fsm"
+version = "0.1.0"
+edition = "2021"
+description = "QuantumLink Sans-IO protocol finite state machine"
+license = "Proprietary"
+
+[dependencies]
+bytes = { workspace = true }
+indexmap = "2"
+ql-wire = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.6"
+ql-wire = { workspace = true, features = ["test-utils"] }
