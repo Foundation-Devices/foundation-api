@@ -5,8 +5,8 @@ mod session;
 use std::time::{Duration, Instant};
 
 use ql_wire::{
-    self, generate_identity, test_identities, ConnectionId, PairingToken, QlCrypto, SessionKey,
-    SoftwareCrypto, TransportParams, QID,
+    self, generate_identity, test_identities, ConnectionId, HandshakeId, PairingToken, QlCrypto,
+    SessionKey, SoftwareCrypto, TransportParams, QID,
 };
 
 use crate::{
@@ -102,6 +102,7 @@ impl Harness {
         let b_to_a_conn = ConnectionId::from_data([0xB2; ConnectionId::SIZE]);
 
         harness.a.fsm.state.link = LinkState::Connected(ConnectedState {
+            handshake_id: HandshakeId(0),
             transport: SessionTransport {
                 tx_key: a_to_b_key.clone(),
                 rx_key: b_to_a_key.clone(),
@@ -118,6 +119,7 @@ impl Harness {
             session: SessionFsm::new(session_config(&harness, true), harness.now),
         });
         harness.b.fsm.state.link = LinkState::Connected(ConnectedState {
+            handshake_id: HandshakeId(0),
             transport: SessionTransport {
                 tx_key: b_to_a_key,
                 rx_key: a_to_b_key,

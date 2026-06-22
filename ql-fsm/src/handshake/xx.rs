@@ -146,7 +146,7 @@ pub fn handle_xx3(
             .finalize(crypto)
             .map_err(ReceiveError::InvalidXxHandshake)?,
     );
-    finish_handshake(fsm, transport, remote_bundle)
+    finish_handshake(fsm, message.meta.handshake_id, transport, remote_bundle)
 }
 
 pub fn handle_xx4(
@@ -178,7 +178,7 @@ pub fn handle_xx4(
             .finalize(crypto)
             .map_err(ReceiveError::InvalidXxHandshake)?,
     );
-    finish_handshake(fsm, transport, remote_bundle)
+    finish_handshake(fsm, message.meta.handshake_id, transport, remote_bundle)
 }
 
 pub fn disarm_pairing(fsm: &mut QlFsm) {
@@ -190,7 +190,13 @@ pub fn disarm_pairing(fsm: &mut QlFsm) {
 
 pub fn should_ignore_inbound(fsm: &QlFsm, crypto: &impl QlCrypto, message: &Xx1) -> bool {
     match &fsm.state.link {
-        LinkState::Idle | LinkState::Connected(_) => false,
+        LinkState::Idle => false,
+        LinkState::Connected(_) => super::is_connected_replay(
+            fsm,
+            message.meta.handshake_id,
+            message.header.sender,
+            message.header.recipient,
+        ),
         LinkState::IkInitiator(_) | LinkState::KkInitiator(_) | LinkState::XxResponder(_) => true,
         LinkState::XxInitiator(state) => {
             if state.handshake.pairing_id(crypto) != message.pairing_id {

@@ -64,7 +64,7 @@ pub fn handle_ik1(
             .finalize(crypto)
             .map_err(ReceiveError::InvalidIkHandshake)?,
     );
-    finish_handshake(fsm, transport, remote_bundle)?;
+    finish_handshake(fsm, message.meta.handshake_id, transport, remote_bundle)?;
     fsm.state.handshake = None;
     enqueue_handshake(fsm, QlHandshakeRecord::Ik2(outbound));
     Ok(())
@@ -99,16 +99,21 @@ pub fn handle_ik2(
             .finalize(crypto)
             .map_err(ReceiveError::InvalidIkHandshake)?,
     );
-    finish_handshake(fsm, transport, remote_bundle)
+    finish_handshake(fsm, message.meta.handshake_id, transport, remote_bundle)
 }
 
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Ik1) -> bool {
     match &fsm.state.link {
         LinkState::Idle
-        | LinkState::Connected(_)
         | LinkState::KkInitiator(_)
         | LinkState::XxInitiator(_)
         | LinkState::XxResponder(_) => false,
+        LinkState::Connected(_) => super::is_connected_replay(
+            fsm,
+            message.meta.handshake_id,
+            message.header.sender,
+            message.header.recipient,
+        ),
         LinkState::IkInitiator(state) => {
             if fsm.state.peer.as_ref().map(|peer| peer.qid) != Some(message.header.sender) {
                 return false;

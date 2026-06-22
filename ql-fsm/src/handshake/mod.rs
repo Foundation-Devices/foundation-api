@@ -2,7 +2,9 @@ mod ik;
 mod kk;
 mod xx;
 
-use ql_wire::{self as wire, EphemeralPublicKey, HandshakeMeta, QlCrypto, QlHandshakeRecord};
+use ql_wire::{
+    self as wire, EphemeralPublicKey, HandshakeId, HandshakeMeta, QlCrypto, QlHandshakeRecord, QID,
+};
 
 use crate::{
     fsm::emit_peer_status,
@@ -92,6 +94,7 @@ pub fn next_handshake_deadline(fsm: &QlFsm) -> Option<std::time::Instant> {
 
 pub fn finish_handshake(
     fsm: &mut QlFsm,
+    handshake_id: HandshakeId,
     transport: SessionTransport,
     remote_bundle: wire::PeerBundle,
 ) -> Result<(), ReceiveError> {
@@ -124,7 +127,11 @@ pub fn finish_handshake(
         },
         fsm.state.now,
     );
-    fsm.state.link = LinkState::Connected(ConnectedState { transport, session });
+    fsm.state.link = LinkState::Connected(ConnectedState {
+        handshake_id,
+        transport,
+        session,
+    });
     emit_peer_status(fsm, fsm.state.link.status());
     Ok(())
 }
@@ -137,4 +144,19 @@ pub fn reset_connected_session_if_needed(fsm: &mut QlFsm) {
 
 fn local_start_wins(local: &EphemeralPublicKey, inbound: &EphemeralPublicKey) -> bool {
     local.mlkem_public_key.as_bytes() <= inbound.mlkem_public_key.as_bytes()
+}
+
+fn is_connected_replay(
+    fsm: &QlFsm,
+    handshake_id: HandshakeId,
+    sender: QID,
+    recipient: QID,
+) -> bool {
+    let LinkState::Connected(connected) = &fsm.state.link else {
+        return false;
+    };
+
+    connected.handshake_id == handshake_id
+        && recipient == fsm.identity.qid
+        && fsm.state.peer.as_ref().map(|peer| peer.qid) == Some(sender)
 }

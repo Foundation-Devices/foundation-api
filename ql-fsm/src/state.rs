@@ -51,6 +51,7 @@ pub enum LinkState {
 }
 
 pub struct ConnectedState {
+    pub handshake_id: HandshakeId,
     pub transport: SessionTransport,
     pub session: SessionFsm,
 }
