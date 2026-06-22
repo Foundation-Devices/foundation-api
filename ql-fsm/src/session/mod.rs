@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, RecordAck, RecordSeq, RouteId, SessionClose, SessionCloseCode, SessionFrame,
-    SessionRecordBuilder, StreamClose, StreamData, StreamHeader, StreamId, StreamWindow, VarInt,
-    WireError,
+    CloseTarget, RecordAck, RecordSeq, RouteId, ServiceId, SessionClose, SessionCloseCode,
+    SessionFrame, SessionRecordBuilder, StreamClose, StreamData, StreamHeader, StreamId,
+    StreamWindow, VarInt, WireError,
 };
 
 use self::{
@@ -67,10 +67,7 @@ impl Default for SessionConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
-    Opened {
-        stream_id: StreamId,
-        route_id: RouteId,
-    },
+    Opened(StreamId),
     Readable(StreamId),
     Writable(StreamId),
     Finished(StreamId),
@@ -132,6 +129,7 @@ impl SessionFsm {
 
     pub fn open_stream<E>(
         &mut self,
+        service_id: ServiceId,
         route_id: RouteId,
         sink: E,
     ) -> Result<StreamOps<'_, E>, NoSessionError>
@@ -148,7 +146,10 @@ impl SessionFsm {
             stream_id,
             StreamState::new(
                 StreamRole::Initiator,
-                Some(route_id),
+                Some(StreamHeader {
+                    service_id,
+                    route_id,
+                }),
                 self.config.stream_receive_buffer_size,
                 self.config.initial_peer_stream_receive_window,
             ),
@@ -166,10 +167,15 @@ impl SessionFsm {
         E: EventSink,
     {
         self.ensure_session_open()?;
-        let Some(stream_index) = self.state.streams.get_index_of(&stream_id) else {
+        let Some(stream_index) = (|| {
+            let index = self.state.streams.get_index_of(&stream_id)?;
+            // Event::Opened only fires after we receive the first frame of a stream
+            // prevent early access to streams
+            let _ = self.state.streams[index].header.as_ref()?;
+            Some(index)
+        })() else {
             return Err(StreamError::MissingStream);
         };
-
         Ok(StreamOps::new(self, stream_id, stream_index, sink))
     }
 
@@ -538,7 +544,7 @@ impl SessionFsm {
                 stream_id,
                 offset,
                 header: if matches!(stream.role, StreamRole::Initiator) && candidate.offset == 0 {
-                    stream.route_id.map(|route_id| StreamHeader { route_id })
+                    stream.header
                 } else {
                     None
                 },
@@ -654,15 +660,15 @@ impl SessionFsm {
         let readable_before = stream.readable_bytes();
         let was_finished = matches!(stream.inbound_state, InboundState::Finished);
 
-        let opened_route = match (stream.role, stream.route_id, header, frame_offset) {
+        let opened = match (stream.role, stream.header, header, frame_offset) {
             (StreamRole::Responder, None, Some(header), 0) => {
-                stream.route_id = Some(header.route_id);
-                Some(header.route_id)
+                stream.header = Some(header);
+                true
             }
             (StreamRole::Initiator, _, Some(_), _)
             | (StreamRole::Responder, None, Some(_), _)
             | (StreamRole::Responder, None, None, 0) => return Err(()),
-            _ => None,
+            _ => false,
         };
 
         match stream.inbound_state {
@@ -678,11 +684,8 @@ impl SessionFsm {
                 // retransmitted data for an already-finished stream is fine as long as it stays
                 // within the finalized byte range and any repeated FIN lands on that same offset.
                 if (!frame.fin || frame_end == final_offset) && frame_end <= final_offset {
-                    if let Some(route_id) = opened_route {
-                        sink.emit(SessionEvent::Opened {
-                            stream_id,
-                            route_id,
-                        });
+                    if opened {
+                        sink.emit(SessionEvent::Opened(stream_id));
                         if readable_before > 0 {
                             sink.emit(SessionEvent::Readable(stream_id));
                         } else {
@@ -702,18 +705,15 @@ impl SessionFsm {
             stream.inbound_state = InboundState::Finished;
         }
 
-        if let Some(route_id) = opened_route {
-            sink.emit(SessionEvent::Opened {
-                stream_id,
-                route_id,
-            });
+        if opened {
+            sink.emit(SessionEvent::Opened(stream_id));
         }
 
-        if stream.route_id.is_some() && readable_before == 0 && stream.readable_bytes() > 0 {
+        if stream.header.is_some() && readable_before == 0 && stream.readable_bytes() > 0 {
             sink.emit(SessionEvent::Readable(stream_id));
         }
 
-        if stream.route_id.is_some()
+        if stream.header.is_some()
             && !was_finished
             && matches!(stream.inbound_state, InboundState::Finished)
             && stream.readable_bytes() == 0

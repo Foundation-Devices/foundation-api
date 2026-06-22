@@ -1,6 +1,6 @@
 use bytes::Buf;
 
-use super::{RouteId, StreamId};
+use super::{RouteId, ServiceId, StreamId};
 use crate::{codec, BufView, ByteSlice, VarInt, WireDecode, WireEncode, WireError};
 
 /// carries bytes for a stream and may finish that sending direction.
@@ -104,16 +104,18 @@ impl<B: BufView> WireEncode for StreamData<B> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamHeader {
+    pub service_id: ServiceId,
     pub route_id: RouteId,
 }
 
 impl StreamHeader {
-    pub const MAX_WIRE_SIZE: usize = RouteId::MAX_ENCODED_LEN;
+    pub const MAX_WIRE_SIZE: usize = ServiceId::ENCODED_LEN + RouteId::MAX_ENCODED_LEN;
 }
 
 impl<B: ByteSlice> WireDecode<B> for StreamHeader {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
+            service_id: reader.decode()?,
             route_id: reader.decode()?,
         })
     }
@@ -121,10 +123,11 @@ impl<B: ByteSlice> WireDecode<B> for StreamHeader {
 
 impl WireEncode for StreamHeader {
     fn encoded_len(&self) -> usize {
-        self.route_id.encoded_len()
+        self.service_id.encoded_len() + self.route_id.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.service_id.encode(out);
         self.route_id.encode(out);
     }
 }

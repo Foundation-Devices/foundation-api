@@ -16,7 +16,7 @@ use std::{
 use async_channel::Recv;
 use futures_lite::future::{poll_fn, yield_now};
 use ql_fsm::{Event, QlFsm, WriteId};
-use ql_wire::{CloseTarget, StreamCloseCode, StreamId};
+use ql_wire::{CloseTarget, StreamCloseCode, StreamHeader, StreamId};
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
@@ -210,7 +210,11 @@ impl DriverState {
                 log::info!("unpairing peer");
                 fsm.unpair();
             }
-            Command::OpenStream { route_id, start } => {
+            Command::OpenStream {
+                service_id,
+                route_id,
+                start,
+            } => {
                 log::info!("open stream requested: route_id={route_id}");
                 let Some(runtime_tx) = self.runtime_tx.upgrade() else {
                     log::warn!("open stream aborted: runtime channel unavailable");
@@ -218,7 +222,10 @@ impl DriverState {
                     return;
                 };
 
-                let mut stream_ops = match fsm.open_stream(route_id) {
+                let mut stream_ops = match fsm.open_stream(ql_fsm::OpenStreamParams {
+                    service_id,
+                    route_id,
+                }) {
                     Ok(stream_ops) => stream_ops,
                     Err(error) => {
                         log::warn!("open stream failed: route_id={route_id}");
@@ -227,7 +234,7 @@ impl DriverState {
                     }
                 };
                 let stream_id = stream_ops.stream_id();
-                log::info!("open stream allocated: route_id={route_id} stream_id={stream_id}");
+                log::info!("open stream allocated: service_id={service_id} route_id={route_id} stream_id={stream_id}");
                 let (reader, writer, reader_io, writer_io) = io::new_stream(
                     stream_id,
                     CloseTarget::Return,
@@ -314,12 +321,9 @@ impl DriverState {
                     }
                     platform.handle_peer_status(peer, status);
                 }
-                Event::Opened {
-                    stream_id,
-                    route_id,
-                } => {
-                    log::info!("inbound stream opened: stream_id={stream_id} route_id={route_id}");
-                    self.handle_opened_stream(fsm, platform, stream_id, route_id);
+                Event::Opened(stream_id) => {
+                    log::info!("inbound stream opened: stream_id={stream_id}");
+                    self.handle_opened_stream(fsm, platform, stream_id);
                 }
                 Event::Readable(stream_id) => {
                     log::trace!("stream readable: stream_id={stream_id}");
@@ -358,7 +362,6 @@ impl DriverState {
         fsm: &mut QlFsm,
         platform: &P,
         stream_id: StreamId,
-        route_id: ql_wire::RouteId,
     ) {
         let Some(runtime_tx) = self.runtime_tx.upgrade() else {
             log::warn!(
@@ -386,12 +389,20 @@ impl DriverState {
             ),
         );
 
+        let stream = fsm.stream(stream_id).unwrap();
+        let StreamHeader {
+            service_id,
+            route_id,
+        } = *stream.header();
+
         log::info!(
-            "delivering inbound stream to platform: stream_id={stream_id} route_id={route_id}"
+            "delivering inbound stream to platform: service_id={service_id} route_id={route_id} stream_id={stream_id}",
         );
+
         platform.handle_inbound(QlStream {
             stream_id,
             route_id,
+            service_id,
             writer,
             reader,
         });

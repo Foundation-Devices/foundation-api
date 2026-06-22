@@ -1,13 +1,14 @@
 use std::{collections::VecDeque, time::Instant};
 
 use bytes::Bytes;
-use ql_wire::{self as wire, QlCrypto, RouteId, SessionCloseCode, StreamId, WireDecode};
+use ql_wire::{self as wire, QlCrypto, SessionCloseCode, StreamId, WireDecode};
 
 use crate::{
     handshake,
     session::{self, SessionEvent, TerminalFrame},
     state::LinkState,
-    Event, NoPeerError, NoSessionError, OutboundWrite, QlFsm, ReceiveError, StreamError, WriteId,
+    Event, NoPeerError, NoSessionError, OpenStreamParams, OutboundWrite, QlFsm, ReceiveError,
+    StreamError, WriteId,
 };
 
 pub struct EventSink<'a> {
@@ -30,14 +31,8 @@ impl session::EventSink for EventSink<'_> {
             SessionEvent::Unpaired => {
                 self.termination = Some(TerminalFrame::Unpair);
             }
-            SessionEvent::Opened {
-                stream_id,
-                route_id,
-            } => {
-                self.events.push_back(Event::Opened {
-                    stream_id,
-                    route_id,
-                });
+            SessionEvent::Opened(stream_id) => {
+                self.events.push_back(Event::Opened(stream_id));
             }
             SessionEvent::Readable(stream_id) => {
                 self.events.push_back(Event::Readable(stream_id));
@@ -238,11 +233,13 @@ pub fn close_session(fsm: &mut QlFsm, code: SessionCloseCode) {
 
 pub fn open_stream(
     fsm: &mut QlFsm,
-    route_id: RouteId,
+    params: OpenStreamParams,
 ) -> Result<crate::StreamOps<'_>, NoSessionError> {
     let QlFsm { state, events, .. } = fsm;
     let conn = state.link.connected_mut_or_err()?;
-    let inner = conn.session.open_stream(route_id, EventSink::new(events))?;
+    let inner =
+        conn.session
+            .open_stream(params.service_id, params.route_id, EventSink::new(events))?;
     Ok(crate::StreamOps { inner })
 }
 

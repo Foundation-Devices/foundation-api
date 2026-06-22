@@ -30,7 +30,7 @@ async fn open_stream_duplex_happy_path() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_route_id())
+            .open_stream(test_open_stream_params())
             .await
             .unwrap();
         stream
@@ -90,7 +90,7 @@ async fn reader_respects_max_len() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_route_id())
+            .open_stream(test_open_stream_params())
             .await
             .unwrap();
         stream
@@ -128,7 +128,7 @@ async fn large_stream_payload_round_trips() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_route_id())
+            .open_stream(test_open_stream_params())
             .await
             .unwrap();
         stream
@@ -168,7 +168,7 @@ async fn dropping_responder_closes_initiator_response() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_route_id())
+            .open_stream(test_open_stream_params())
             .await
             .unwrap();
         let err = stream.writer.finish().await.unwrap_err();
@@ -220,7 +220,7 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_route_id())
+            .open_stream(test_open_stream_params())
             .await
             .unwrap();
         stream.writer.finish().await.unwrap();
@@ -256,7 +256,7 @@ async fn closing_initiator_reader_preserves_initiator_writer() {
         let stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_route_id())
+            .open_stream(test_open_stream_params())
             .await
             .unwrap();
         let mut writer = stream.writer;
@@ -322,7 +322,7 @@ async fn max_concurrent_message_writes_is_respected() {
         for i in 0..4u8 {
             let handle = handle_a.clone();
             tasks.push(tokio::task::spawn_local(async move {
-                let mut stream = handle.open_stream(test_route_id()).await.unwrap();
+                let mut stream = handle.open_stream(test_open_stream_params()).await.unwrap();
                 stream.writer.write(Bytes::from(vec![i; 8])).await.unwrap();
                 stream.writer.finish().await.unwrap();
                 assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
@@ -396,7 +396,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
             received_request
         });
 
-        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
+        let mut stream = handle_a.open_stream(test_open_stream_params()).await.unwrap();
         stream
             .writer
             .write(Bytes::from(request_payload.clone()))
@@ -497,7 +497,7 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
             let mut stream = pair
                 .side(Side::A)
                 .handle
-                .open_stream(test_route_id())
+                .open_stream(test_open_stream_params())
                 .await
                 .unwrap();
             for (index, chunk) in payload.chunks(chunk_len).enumerate() {
@@ -603,7 +603,7 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
             let mut stream = pair
                 .side(Side::A)
                 .handle
-                .open_stream(test_route_id())
+                .open_stream(test_open_stream_params())
                 .await
                 .unwrap();
             for chunk in payload.chunks(chunk_len) {
@@ -651,7 +651,7 @@ async fn responder_drains_multiple_local_chunks_per_writable_wake() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_route_id())
+            .open_stream(test_open_stream_params())
             .await
             .unwrap();
         stream

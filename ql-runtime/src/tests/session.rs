@@ -37,7 +37,7 @@ async fn close_session_aborts_active_streams_and_allows_reconnect() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_route_id())
+            .open_stream(test_open_stream_params())
             .await
             .unwrap();
         stream
@@ -102,7 +102,7 @@ async fn unpair_aborts_active_streams_and_prevents_reconnect() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_route_id())
+            .open_stream(test_open_stream_params())
             .await
             .unwrap();
         stream
@@ -126,11 +126,17 @@ async fn unpair_aborts_active_streams_and_prevents_reconnect() {
             .unwrap();
 
         assert!(matches!(
-            pair.side(Side::A).handle.open_stream(test_route_id()).await,
+            pair.side(Side::A)
+                .handle
+                .open_stream(test_open_stream_params())
+                .await,
             Err(NoSessionError)
         ));
         assert!(matches!(
-            pair.side(Side::B).handle.open_stream(test_route_id()).await,
+            pair.side(Side::B)
+                .handle
+                .open_stream(test_open_stream_params())
+                .await,
             Err(NoSessionError)
         ));
 
@@ -195,7 +201,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
 
         drop_flag.store(true, Ordering::Relaxed);
 
-        let mut pending = handle_a.open_stream(test_route_id()).await.unwrap();
+        let mut pending = handle_a.open_stream(test_open_stream_params()).await.unwrap();
         let err = pending.writer.finish().await.unwrap_err();
         assert!(matches!(err, QlStreamError::NoSession));
 

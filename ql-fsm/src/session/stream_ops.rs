@@ -1,4 +1,4 @@
-use ql_wire::{CloseTarget, StreamClose, StreamCloseCode, StreamId};
+use ql_wire::{CloseTarget, StreamClose, StreamCloseCode, StreamHeader, StreamId};
 
 use super::{
     state::{InboundState, StreamState},
@@ -31,9 +31,16 @@ impl<'a, E: EventSink> StreamOps<'a, E> {
         }
     }
 
-    /// returns this stream's identifier
+    /// returns this stream's identifier    
+    #[inline]
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
+    }
+
+    /// returns the streams details
+    #[inline]
+    pub fn header(&self) -> &StreamHeader {
+        self.stream().header.as_ref().unwrap()
     }
 
     /// returns the readable stream bytes as owned `Bytes` views without consuming them
@@ -58,7 +65,7 @@ impl<'a, E: EventSink> StreamOps<'a, E> {
             if stream.recv_limit() > stream.advertised_max_offset {
                 stream.pending_window = true;
             }
-            stream.route_id.is_some()
+            stream.header.is_some()
                 && matches!(stream.inbound_state, InboundState::Finished)
                 && stream.readable_bytes() == 0
         };
@@ -92,10 +99,12 @@ impl<'a, E: EventSink> StreamOps<'a, E> {
         self.reap_on_drop = true;
     }
 
+    #[inline]
     fn stream(&self) -> &StreamState {
         &self.session.state.streams[self.stream_index]
     }
 
+    #[inline]
     fn stream_mut(&mut self) -> &mut StreamState {
         &mut self.session.state.streams[self.stream_index]
     }

@@ -18,7 +18,10 @@ async fn opening_stream_requires_connection() {
     run_local_test(async {
         let pair = TestPair::new(default_runtime_config());
         assert!(matches!(
-            pair.side(Side::A).handle.open_stream(test_route_id()).await,
+            pair.side(Side::A)
+                .handle
+                .open_stream(test_open_stream_params())
+                .await,
             Err(NoSessionError)
         ));
     })
@@ -85,7 +88,7 @@ async fn rejected_session_write_is_reissued() {
             request
         });
 
-        let mut stream = handle_a.open_stream(test_route_id()).await.unwrap();
+        let mut stream = handle_a.open_stream(test_open_stream_params()).await.unwrap();
         stream
             .writer
             .write(Bytes::from_static(b"retry"))

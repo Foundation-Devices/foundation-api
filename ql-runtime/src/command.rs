@@ -1,6 +1,7 @@
 use ql_fsm::{NoSessionError, PairingInvite};
 use ql_wire::{
-    CloseTarget, PairingToken, PeerBundle, RouteId, SessionCloseCode, StreamCloseCode, StreamId,
+    CloseTarget, PairingToken, PeerBundle, RouteId, ServiceId, SessionCloseCode, StreamCloseCode,
+    StreamId,
 };
 
 use crate::{StreamReader, StreamWriter};
@@ -18,6 +19,7 @@ pub enum Command {
         invite: PairingInvite,
     },
     OpenStream {
+        service_id: ServiceId,
         route_id: RouteId,
         start: oneshot::Sender<Result<(StreamId, StreamReader, StreamWriter), NoSessionError>>,
     },

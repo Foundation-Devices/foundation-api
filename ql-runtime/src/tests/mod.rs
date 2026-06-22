@@ -11,11 +11,11 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 use futures_lite::Stream;
-use ql_fsm::PeerStatus;
+use ql_fsm::{OpenStreamParams, PeerStatus};
 use ql_wire::{
     generate_identity, test_identities, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
     MlKemPublicKey, Nonce, PairingToken, PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom,
-    RecordHeader, RecordType, RouteId, SessionKey, SoftwareCrypto, WireDecode, QID,
+    RecordHeader, RecordType, RouteId, ServiceId, SessionKey, SoftwareCrypto, WireDecode, QID,
 };
 use tokio::{task::LocalSet, time::Sleep};
 
@@ -64,6 +64,13 @@ impl Side {
 
 fn test_route_id() -> RouteId {
     RouteId::from_u32(1)
+}
+
+fn test_open_stream_params() -> OpenStreamParams {
+    OpenStreamParams {
+        service_id: ServiceId([1; 16]),
+        route_id: test_route_id(),
+    }
 }
 
 #[derive(Debug, Clone)]

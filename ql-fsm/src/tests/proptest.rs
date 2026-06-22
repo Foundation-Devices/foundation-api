@@ -7,14 +7,10 @@ extern crate proptest as proptest_crate;
 
 use bytes::Bytes;
 use proptest_crate::{collection::vec, prelude::*, test_runner::TestCaseResult};
-use ql_wire::{CloseTarget, StreamCloseCode, StreamId, WireError};
+use ql_wire::{CloseTarget, RouteId, ServiceId, StreamCloseCode, StreamId, WireError};
 
 use super::*;
-
-fn test_route_id() -> ql_wire::RouteId {
-    ql_wire::RouteId::from_u32(1)
-}
-use crate::{state::LinkState, Event, PeerStatus, ReceiveError, WriteId};
+use crate::{state::LinkState, Event, OpenStreamParams, PeerStatus, ReceiveError, WriteId};
 
 const SLOT_COUNT: usize = 4;
 
@@ -285,7 +281,10 @@ impl Runner {
                     .harness
                     .node_mut(*side)
                     .fsm
-                    .open_stream(test_route_id())
+                    .open_stream(OpenStreamParams {
+                        service_id: ServiceId([1; 16]),
+                        route_id: RouteId::from(1u32),
+                    })
                     .ok()
                     .map(|stream| stream.stream_id());
                 if let Some(stream_id) = stream_id {
@@ -424,7 +423,7 @@ impl Runner {
                     }
                     self.events[side.idx()].note_peer_status(status);
                 }
-                Event::Opened { stream_id, .. } => {
+                Event::Opened(stream_id) => {
                     prop_assert!(
                         self.known_streams.contains(&stream_id),
                         "side {side:?} emitted Opened for unknown stream {stream_id:?}"

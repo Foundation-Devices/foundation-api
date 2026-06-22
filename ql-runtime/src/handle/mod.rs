@@ -1,13 +1,15 @@
-use ql_fsm::{NoSessionError, PairingInvite};
-use ql_wire::{PairingToken, PeerBundle, RouteId, SessionCloseCode, StreamId};
+use ql_fsm::{NoSessionError, OpenStreamParams, PairingInvite};
+use ql_wire::{PairingToken, PeerBundle, RouteId, ServiceId, SessionCloseCode, StreamId};
 
 use crate::command::Command;
 pub use crate::io::{StreamReader, StreamWriter};
 
 #[derive(Debug)]
 pub struct QlStream {
-    pub stream_id: StreamId,
+    pub service_id: ServiceId,
     pub route_id: RouteId,
+    pub stream_id: StreamId,
+
     pub writer: StreamWriter,
     pub reader: StreamReader,
 }
@@ -54,11 +56,16 @@ impl RuntimeHandle {
     }
 
     /// opens a new stream on the active encrypted session
-    pub async fn open_stream(&self, route_id: RouteId) -> Result<QlStream, NoSessionError> {
+    pub async fn open_stream(&self, params: OpenStreamParams) -> Result<QlStream, NoSessionError> {
         let (start_tx, start_rx) = oneshot::channel();
+        let OpenStreamParams {
+            service_id,
+            route_id,
+        } = params;
 
         self.send(Command::OpenStream {
             route_id,
+            service_id,
             start: start_tx,
         });
 
@@ -66,8 +73,9 @@ impl RuntimeHandle {
         let (stream_id, reader, writer) = start_rx.await.unwrap()?;
 
         Ok(QlStream {
-            stream_id,
             route_id,
+            service_id,
+            stream_id,
             writer,
             reader,
         })

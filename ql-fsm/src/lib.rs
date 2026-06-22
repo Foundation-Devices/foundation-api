@@ -36,8 +36,8 @@ pub use bytes::Bytes;
 pub use error::*;
 pub use pairing::PairingInvite;
 use ql_wire::{
-    PairingToken, PeerBundle, QlCrypto, QlIdentity, RouteId, SessionClose, SessionCloseCode,
-    StreamClose, StreamId,
+    PairingToken, PeerBundle, QlCrypto, QlIdentity, RouteId, ServiceId, SessionClose,
+    SessionCloseCode, StreamClose, StreamHeader, StreamId,
 };
 pub use session::{SessionEvent, StreamReadIter, StreamWriter};
 
@@ -67,10 +67,7 @@ pub enum Event {
     /// the peer changed lifecycle state
     PeerStatusChanged(PeerStatus),
     /// a stream was opened
-    Opened {
-        stream_id: StreamId,
-        route_id: RouteId,
-    },
+    Opened(StreamId),
     /// a stream has bytes ready to read
     Readable(StreamId),
     /// a stream has room for more local writes
@@ -112,6 +109,10 @@ impl StreamOps<'_> {
     /// returns this stream's identifier
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
+    }
+
+    pub fn header(&self) -> &StreamHeader {
+        self.inner.header()
     }
 
     /// returns the readable stream bytes as owned `Bytes` views without consuming them
@@ -181,6 +182,11 @@ impl Default for QlFsmConfig {
             session_pending_ack_range_limit: s.pending_ack_range_limit,
         }
     }
+}
+
+pub struct OpenStreamParams {
+    pub service_id: ServiceId,
+    pub route_id: RouteId,
 }
 
 /// synchronous driver for peer binding, handshake, and encrypted streams
@@ -318,8 +324,11 @@ impl QlFsm {
     }
 
     /// opens a new outgoing stream
-    pub fn open_stream(&mut self, route_id: RouteId) -> Result<StreamOps<'_>, NoSessionError> {
-        fsm::open_stream(self, route_id)
+    pub fn open_stream(
+        &mut self,
+        params: OpenStreamParams,
+    ) -> Result<StreamOps<'_>, NoSessionError> {
+        fsm::open_stream(self, params)
     }
 
     /// returns a facade for an open stream

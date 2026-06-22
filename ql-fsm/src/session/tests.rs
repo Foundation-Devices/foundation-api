@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use ql_wire::{
     decode_session_frames, parse_session_frames, CloseTarget, RecordAck, RecordSeq, RouteId,
-    SessionFrame, SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData, StreamHeader,
-    StreamId, VarInt, QID,
+    ServiceId, SessionFrame, SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData,
+    StreamHeader, StreamId, VarInt, QID,
 };
 
 use super::{SessionConfig, SessionEvent, SessionFsm};
@@ -36,18 +36,19 @@ const TIMEOUT: StreamCloseCode = StreamCloseCode(2);
 fn header(value: u64) -> StreamHeader {
     StreamHeader {
         route_id: route_id(value),
+        service_id: ServiceId([0; 16]),
     }
 }
 
+// todo: remove
 fn opened(stream_id: StreamId) -> SessionEvent {
-    SessionEvent::Opened {
-        stream_id,
-        route_id: route_id(1),
-    }
+    SessionEvent::Opened(stream_id)
 }
 
 fn open_stream_id(fsm: &mut SessionFsm) -> StreamId {
-    fsm.open_stream(route_id(1), |_| {}).unwrap().stream_id()
+    fsm.open_stream(ServiceId([0; 16]), route_id(1), |_| {})
+        .unwrap()
+        .stream_id()
 }
 
 fn write_stream_bytes(fsm: &mut SessionFsm, stream_id: StreamId, bytes: &[u8]) -> usize {
@@ -158,21 +159,32 @@ fn retransmit_uses_new_record_seq() {
 
 #[test]
 fn lost_record_on_one_stream_does_not_block_another_stream() {
+    const PAYLOAD_LEN: usize = 40;
+
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
         SessionConfig {
-            record_max_size: 80 + SessionRecordBuilder::MIN_CAPACITY,
+            record_max_size: SessionRecordBuilder::MIN_CAPACITY
+                + 1 // discriminator byte
+                + StreamData::<Vec<u8>>::MIN_WIRE_SIZE
+                + PAYLOAD_LEN,
             ..SessionConfig::default()
         },
         now,
     );
     let stream_id_a = open_stream_id(&mut fsm);
     let stream_id_b = open_stream_id(&mut fsm);
-    let payload_a = vec![b'a'; 40];
-    let payload_b = vec![b'b'; 40];
+    let payload_a = vec![b'a'; PAYLOAD_LEN];
+    let payload_b = vec![b'b'; PAYLOAD_LEN];
 
-    assert_eq!(write_stream_bytes(&mut fsm, stream_id_a, &payload_a), 40);
-    assert_eq!(write_stream_bytes(&mut fsm, stream_id_b, &payload_b), 40);
+    assert_eq!(
+        write_stream_bytes(&mut fsm, stream_id_a, &payload_a),
+        PAYLOAD_LEN
+    );
+    assert_eq!(
+        write_stream_bytes(&mut fsm, stream_id_b, &payload_b),
+        PAYLOAD_LEN
+    );
 
     let (first_seq, first) = next_outbound(&mut fsm, now).unwrap();
     let (second_seq, _second) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
@@ -439,7 +451,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream(route_id(1), |_| {})
+    .open_stream(ServiceId([0; 16]), route_id(1), |_| {})
     .unwrap()
     .stream_id();
     let odd_id = SessionFsm::new(
@@ -449,7 +461,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream(route_id(1), |_| {})
+    .open_stream(ServiceId([0; 16]), route_id(1), |_| {})
     .unwrap()
     .stream_id();
 
@@ -791,7 +803,10 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
     let now = Instant::now();
     let sender_config = SessionConfig {
         local_parity: StreamParity::Even,
-        record_max_size: SessionRecordBuilder::MIN_CAPACITY + 40,
+        record_max_size: SessionRecordBuilder::MIN_CAPACITY
+            + 1 // discriminator byte
+            + StreamData::<Vec<u8>>::MIN_WIRE_SIZE
+            + 10, // keeps stream-data records tiny enough to force ACK paging
         ack_delay: Duration::from_millis(5),
         retransmit_timeout: Duration::from_millis(25),
         stream_send_buffer_size: 8 * 1024,

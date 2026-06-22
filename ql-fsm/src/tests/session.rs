@@ -1,28 +1,25 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ql_wire::{RouteId, SessionClose, StreamId, VarInt};
+use ql_wire::{RouteId, ServiceId, SessionClose, StreamId, VarInt};
 
 use super::*;
-use crate::{state::LinkState, CommitReadError, Event, NoSessionError, PeerStatus, StreamError};
+use crate::{
+    state::LinkState, CommitReadError, Event, NoSessionError, OpenStreamParams, PeerStatus,
+    StreamError,
+};
 
 fn stream_id(value: u32) -> StreamId {
     StreamId(VarInt::from_u32(value))
 }
 
-fn route_id(value: u32) -> RouteId {
-    RouteId::from_u32(value)
-}
-
-fn opened(stream_id: StreamId) -> Event {
-    Event::Opened {
-        stream_id,
-        route_id: route_id(1),
-    }
-}
-
 fn open_stream_id(fsm: &mut QlFsm) -> StreamId {
-    fsm.open_stream(route_id(1)).unwrap().stream_id()
+    fsm.open_stream(OpenStreamParams {
+        service_id: ServiceId([1; 16]),
+        route_id: RouteId::from(1u32),
+    })
+    .unwrap()
+    .stream_id()
 }
 
 fn write_stream_bytes(
@@ -77,7 +74,7 @@ fn connected_fsms_deliver_stream_data() {
 
     harness.pump();
 
-    assert_eq!(harness.take_event(Side::B), Some(opened(stream_id)));
+    assert_eq!(harness.take_event(Side::B), Some(Event::Opened(stream_id)));
     assert_eq!(
         harness.take_event(Side::B),
         Some(Event::Readable(stream_id))
@@ -126,7 +123,7 @@ fn session_retransmit_uses_new_record_seq() {
     harness.on_timer(Side::B);
     harness.pump();
 
-    assert_eq!(harness.take_event(Side::B), Some(opened(stream_id)));
+    assert_eq!(harness.take_event(Side::B), Some(Event::Opened(stream_id)));
     assert_eq!(
         harness.take_event(Side::B),
         Some(Event::Readable(stream_id))
@@ -169,7 +166,10 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
 
     harness.pump();
 
-    assert_eq!(harness.take_event(Side::A), Some(opened(stream_id_b)));
+    assert_eq!(
+        harness.take_event(Side::A),
+        Some(Event::Opened(stream_id_b))
+    );
     assert_eq!(
         harness.take_event(Side::A),
         Some(Event::Readable(stream_id_b))
@@ -178,7 +178,10 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
         read_stream_all(&mut harness.a.fsm, stream_id_b),
         b"from-b".to_vec()
     );
-    assert_eq!(harness.take_event(Side::B), Some(opened(stream_id_a)));
+    assert_eq!(
+        harness.take_event(Side::B),
+        Some(Event::Opened(stream_id_a))
+    );
     assert_eq!(
         harness.take_event(Side::B),
         Some(Event::Readable(stream_id_a))
@@ -195,7 +198,10 @@ fn disconnected_stream_operations_fail_with_no_session() {
     let missing = stream_id(0);
 
     assert!(matches!(
-        harness.a.fsm.open_stream(route_id(1)),
+        harness.a.fsm.open_stream(OpenStreamParams {
+            service_id: ServiceId([1; 16]),
+            route_id: RouteId::from(1u32),
+        }),
         Err(NoSessionError)
     ));
     assert_eq!(
@@ -278,7 +284,7 @@ fn returned_session_write_is_reissued_with_new_record_seq() {
     harness.deliver(Side::B, reissued.record);
     harness.pump();
 
-    assert_eq!(harness.take_event(Side::B), Some(opened(stream_id)));
+    assert_eq!(harness.take_event(Side::B), Some(Event::Opened(stream_id)));
     assert_eq!(
         harness.take_event(Side::B),
         Some(Event::Readable(stream_id))
@@ -365,7 +371,10 @@ fn close_session_disconnects_locally() {
     ));
     assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
     assert!(matches!(
-        harness.a.fsm.open_stream(route_id(1)),
+        harness.a.fsm.open_stream(OpenStreamParams {
+            service_id: ServiceId([1; 16]),
+            route_id: RouteId::from(1u32),
+        }),
         Err(NoSessionError)
     ));
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
@@ -395,7 +404,10 @@ fn unpair_clears_bound_peer_and_emits_unpair_frame() {
     );
     assert!(harness.a.fsm.peer().is_none());
     assert!(matches!(
-        harness.a.fsm.open_stream(route_id(1)),
+        harness.a.fsm.open_stream(OpenStreamParams {
+            service_id: ServiceId([1; 16]),
+            route_id: RouteId::from(1u32),
+        }),
         Err(NoSessionError)
     ));
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
@@ -422,7 +434,10 @@ fn inbound_unpair_clears_remote_peer_binding() {
     );
     assert!(harness.b.fsm.peer().is_none());
     assert!(matches!(
-        harness.b.fsm.open_stream(route_id(1)),
+        harness.b.fsm.open_stream(OpenStreamParams {
+            service_id: ServiceId([1; 16]),
+            route_id: RouteId::from(1u32),
+        }),
         Err(NoSessionError)
     ));
     assert!(matches!(harness.connect_ik(Side::B), Err(NoPeerError)));
