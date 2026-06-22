@@ -1,7 +1,17 @@
 use crate::{
-    MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, Nonce, SessionKey,
+    MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, SessionKey,
     ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
+
+crate::array_wrapper!(Nonce, 12);
+
+impl Nonce {
+    pub fn from_counter(counter: u64) -> Self {
+        let mut nonce = [0u8; Self::SIZE];
+        nonce[4..].copy_from_slice(&counter.to_le_bytes());
+        Self(nonce)
+    }
+}
 
 pub trait QlRandom {
     fn fill_random_bytes(&self, out: &mut [u8]);

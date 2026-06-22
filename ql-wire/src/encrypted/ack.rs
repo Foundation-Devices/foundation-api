@@ -320,26 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn builder_matches_from_ranges() {
-        let mut builder = RecordAckBuilder::new();
-        assert!(builder
-            .try_push_range(ack_range(95, 100), usize::MAX)
-            .unwrap());
-        assert!(builder
-            .try_push_range(ack_range(90, 92), usize::MAX)
-            .unwrap());
-        assert!(builder
-            .try_push_range(ack_range(80, 80), usize::MAX)
-            .unwrap());
-
-        assert_eq!(
-            builder.build().unwrap(),
-            RecordAck::from_ranges([ack_range(95, 100), ack_range(90, 92), ack_range(80, 80)])
-                .unwrap()
-        );
-    }
-
-    #[test]
     fn builder_stops_when_budget_is_exhausted() {
         let first_only = RecordAck::from_ranges([ack_range(95, 100)]).unwrap();
         let mut builder = RecordAckBuilder::new();

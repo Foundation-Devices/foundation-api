@@ -201,7 +201,10 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
 
         drop_flag.store(true, Ordering::Relaxed);
 
-        let mut pending = handle_a.open_stream(test_open_stream_params()).await.unwrap();
+        let mut pending = handle_a
+            .open_stream(test_open_stream_params())
+            .await
+            .unwrap();
         let err = pending.writer.finish().await.unwrap_err();
         assert!(matches!(err, QlStreamError::NoSession));
 

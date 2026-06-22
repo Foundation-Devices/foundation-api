@@ -117,8 +117,6 @@ impl<B: ByteSlice> codec::WireDecode<B> for EncryptedMlKemCiphertext {
 pub struct EncryptedPeerBundle(pub Box<[u8]>);
 
 impl EncryptedPeerBundle {
-    pub const MAX_WIRE_SIZE: usize = PeerBundle::MAX_WIRE_SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
-
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_ref()
     }
@@ -137,9 +135,6 @@ impl WireEncode for EncryptedPeerBundle {
 impl<B: ByteSlice> codec::WireDecode<B> for EncryptedPeerBundle {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         let data = reader.take_rest();
-        if data.len() > Self::MAX_WIRE_SIZE {
-            return Err(WireError::InvalidPayload);
-        }
         Ok(Self(data.to_vec().into_boxed_slice()))
     }
 }
@@ -309,8 +304,8 @@ impl SymmetricState {
 
     fn split_for_role(&self, crypto: &impl QlCrypto, role: Role) -> (SessionKey, SessionKey) {
         let temp_key = hmac_sha256(crypto, &self.chaining_key, &[&[]]);
-        let k1 = SessionKey::from_data(hmac_sha256(crypto, &temp_key, &[&[1]]));
-        let k2 = SessionKey::from_data(hmac_sha256(crypto, &temp_key, &[k1.as_bytes(), &[2]]));
+        let k1 = SessionKey(hmac_sha256(crypto, &temp_key, &[&[1]]));
+        let k2 = SessionKey(hmac_sha256(crypto, &temp_key, &[k1.as_bytes(), &[2]]));
         match role {
             Role::Initiator => (k1, k2),
             Role::Responder => (k2, k1),
@@ -472,7 +467,8 @@ fn decrypt_peer_bundle(
 ) -> Result<PeerBundle, WireError> {
     let plaintext = symmetric.decrypt_and_hash(crypto, bundle.as_bytes())?;
     let bundle = PeerBundle::decode_exact(plaintext.as_slice())?;
-    if !bundle.qid_matches_public_key(crypto) {
+    let peer_qid = QID::derive(crypto, &bundle.mlkem_public_key);
+    if peer_qid != bundle.qid {
         return Err(WireError::InvalidRemoteBundle);
     }
     Ok(bundle)
@@ -536,10 +532,7 @@ fn derive_connection_ids(
     let mut responder_rx = [0u8; ConnectionId::SIZE];
     initiator_rx.copy_from_slice(&initiator[..ConnectionId::SIZE]);
     responder_rx.copy_from_slice(&responder[..ConnectionId::SIZE]);
-    (
-        ConnectionId::from_data(initiator_rx),
-        ConnectionId::from_data(responder_rx),
-    )
+    (ConnectionId(initiator_rx), ConnectionId(responder_rx))
 }
 
 fn hkdf2(
@@ -550,7 +543,7 @@ fn hkdf2(
     let temp_key = hmac_sha256(crypto, chaining_key, &[input_key_material]);
     let out1 = hmac_sha256(crypto, &temp_key, &[&[1]]);
     let out2 = hmac_sha256(crypto, &temp_key, &[&out1, &[2]]);
-    (out1, SessionKey::from_data(out2))
+    (out1, SessionKey(out2))
 }
 
 fn hkdf3(
@@ -562,7 +555,7 @@ fn hkdf3(
     let out1 = hmac_sha256(crypto, &temp_key, &[&[1]]);
     let out2 = hmac_sha256(crypto, &temp_key, &[&out1, &[2]]);
     let out3 = hmac_sha256(crypto, &temp_key, &[&out2, &[3]]);
-    (out1, out2, SessionKey::from_data(out3))
+    (out1, out2, SessionKey(out3))
 }
 
 fn hmac_sha256(crypto: &impl QlCrypto, key: &[u8], parts: &[&[u8]]) -> [u8; 32] {

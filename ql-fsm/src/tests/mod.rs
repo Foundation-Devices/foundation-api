@@ -96,10 +96,10 @@ impl Harness {
 
     fn connected(config: QlFsmConfig) -> Self {
         let mut harness = Self::paired_known(config);
-        let a_to_b_key = SessionKey::from_data([7; SessionKey::SIZE]);
-        let b_to_a_key = SessionKey::from_data([9; SessionKey::SIZE]);
-        let a_to_b_conn = ConnectionId::from_data([0xA1; ConnectionId::SIZE]);
-        let b_to_a_conn = ConnectionId::from_data([0xB2; ConnectionId::SIZE]);
+        let a_to_b_key = SessionKey([7; SessionKey::SIZE]);
+        let b_to_a_key = SessionKey([9; SessionKey::SIZE]);
+        let a_to_b_conn = ConnectionId([0xA1; ConnectionId::SIZE]);
+        let b_to_a_conn = ConnectionId([0xB2; ConnectionId::SIZE]);
 
         harness.a.fsm.state.link = LinkState::Connected(ConnectedState {
             handshake_id: HandshakeId(0),

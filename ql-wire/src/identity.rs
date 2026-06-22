@@ -18,11 +18,6 @@ impl PeerBundle {
     pub const VERSION: u16 = 1;
     pub const FIXED_WIRE_SIZE: usize =
         size_of::<u16>() + QID::SIZE + size_of::<u32>() + MlKemPublicKey::SIZE;
-    pub const MAX_WIRE_SIZE: usize = Self::FIXED_WIRE_SIZE + VarInt::MAX_SIZE + QlName::MAX_LEN;
-
-    pub fn qid_matches_public_key(&self, crypto: &impl QlHash) -> bool {
-        self.qid.matches_public_key(crypto, &self.mlkem_public_key)
-    }
 }
 
 impl WireEncode for PeerBundle {
@@ -82,17 +77,6 @@ impl QlIdentity {
         })
     }
 
-    #[must_use]
-    pub fn with_capabilities(mut self, capabilities: u32) -> Self {
-        self.capabilities = capabilities;
-        self
-    }
-
-    pub fn with_name(mut self, name: impl Into<String>) -> Result<Self, WireError> {
-        self.name = QlName::new(name)?;
-        Ok(self)
-    }
-
     pub fn bundle(&self) -> PeerBundle {
         PeerBundle {
             version: PeerBundle::VERSION,
@@ -134,11 +118,8 @@ pub fn generate_identity(
     crypto: &impl QlCrypto,
     name: impl Into<String>,
 ) -> Result<QlIdentity, WireError> {
-    let MlKemKeyPair {
-        private: mlkem_private_key,
-        public: mlkem_public_key,
-    } = crypto.mlkem_generate_keypair();
-    QlIdentity::new(crypto, mlkem_private_key, mlkem_public_key, name)
+    let MlKemKeyPair { private, public } = crypto.mlkem_generate_keypair();
+    QlIdentity::new(crypto, private, public, name)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

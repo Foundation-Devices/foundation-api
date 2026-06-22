@@ -11,18 +11,10 @@ const ML_KEM_1024_PRIVATE_KEY_SIZE: usize = 3168;
 const ML_KEM_1024_CIPHERTEXT_SIZE: usize = 1568;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SessionKey([u8; Self::SIZE]);
+pub struct SessionKey(pub [u8; Self::SIZE]);
 
 impl SessionKey {
     pub const SIZE: usize = ML_KEM_1024_SHARED_SECRET_SIZE;
-
-    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(data)
-    }
-
-    pub const fn data(&self) -> &[u8; Self::SIZE] {
-        &self.0
-    }
 
     pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
@@ -53,7 +45,7 @@ impl WireEncode for SessionKey {
 
 impl<B: ByteSlice> codec::WireDecode<B> for SessionKey {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self::from_data(reader.decode()?))
+        Ok(Self(reader.decode()?))
     }
 }
 

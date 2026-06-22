@@ -1,8 +1,6 @@
 use ::bytes::BufMut;
 
-use crate::{
-    codec, ByteSlice, VarInt, VarIntBoundsExceeded, WireEncode, WireError, QL_WIRE_VERSION,
-};
+use crate::{codec, ByteSlice, WireEncode, WireError, QL_WIRE_VERSION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionHeader {
@@ -10,73 +8,9 @@ pub struct SessionHeader {
     pub seq: RecordSeq,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct RecordSeq(pub VarInt);
+crate::varint_wrapper!(RecordSeq);
 
-impl RecordSeq {
-    pub const MAX_ENCODED_LEN: usize = VarInt::MAX_SIZE;
-
-    pub const fn from_u32(value: u32) -> Self {
-        Self(VarInt::from_u32(value))
-    }
-
-    pub fn from_u64(value: u64) -> Result<Self, VarIntBoundsExceeded> {
-        Ok(Self(VarInt::from_u64(value)?))
-    }
-
-    pub const fn into_inner(self) -> u64 {
-        self.0.into_inner()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct ConnectionId(pub [u8; Self::SIZE]);
-
-impl ConnectionId {
-    pub const SIZE: usize = 16;
-
-    pub const fn from_data(data: [u8; Self::SIZE]) -> Self {
-        Self(data)
-    }
-
-    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        &self.0
-    }
-}
-
-impl<B: ByteSlice> codec::WireDecode<B> for RecordSeq {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self(reader.decode()?))
-    }
-}
-
-impl WireEncode for RecordSeq {
-    fn encoded_len(&self) -> usize {
-        self.0.size()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.0.encode(out);
-    }
-}
-
-impl<B: ByteSlice> codec::WireDecode<B> for ConnectionId {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self::from_data(reader.decode()?))
-    }
-}
-
-impl WireEncode for ConnectionId {
-    fn encoded_len(&self) -> usize {
-        Self::SIZE
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.0.encode(out);
-    }
-}
+crate::array_wrapper!(ConnectionId, 16);
 
 impl SessionHeader {
     pub const MAX_ENCODED_LEN: usize = ConnectionId::SIZE + RecordSeq::MAX_ENCODED_LEN;

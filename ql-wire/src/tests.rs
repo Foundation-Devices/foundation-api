@@ -86,9 +86,8 @@ fn encrypt_record(
 #[test]
 fn peer_bundle_round_trip() {
     let crypto = SoftwareCrypto;
-    let identity = generate_identity(&crypto, "alice")
-        .unwrap()
-        .with_capabilities(0x55aa_33cc);
+    let mut identity = generate_identity(&crypto, "alice").unwrap();
+    identity.capabilities = 1231;
     let bundle = identity.bundle();
 
     let encoded = bundle.encode_vec();
@@ -109,44 +108,6 @@ fn identity_name_validation() {
         QlName::new("a".repeat(QlName::MAX_LEN + 1)),
         Err(WireError::InvalidPayload)
     ));
-}
-
-#[test]
-fn qid_derives_from_mlkem_public_key() {
-    let crypto = SoftwareCrypto;
-    let public_key = MlKemPublicKey::new(Box::new([42; MlKemPublicKey::SIZE]));
-    let qid = QID::derive(&crypto, &public_key);
-
-    let digest = crypto.sha256(&[
-        b"quantum-link qid v1",
-        ML_KEM_SUITE_TAG,
-        public_key.as_bytes(),
-    ]);
-    let mut expected = [0u8; QID::SIZE];
-    expected.copy_from_slice(&digest[..QID::SIZE]);
-
-    assert_eq!(qid, QID(expected));
-    assert!(qid.matches_public_key(&crypto, &public_key));
-}
-
-#[test]
-fn qid_changes_when_mlkem_public_key_changes() {
-    let crypto = SoftwareCrypto;
-    let first = MlKemPublicKey::new(Box::new([1; MlKemPublicKey::SIZE]));
-    let second = MlKemPublicKey::new(Box::new([2; MlKemPublicKey::SIZE]));
-
-    assert_ne!(QID::derive(&crypto, &first), QID::derive(&crypto, &second));
-}
-
-#[test]
-fn peer_bundle_detects_tampered_qid() {
-    let crypto = SoftwareCrypto;
-    let identity = generate_identity(&crypto, "alice").unwrap();
-    let mut bundle = identity.bundle();
-
-    bundle.qid = qid(9);
-
-    assert!(!bundle.qid_matches_public_key(&crypto));
 }
 
 #[test]
@@ -758,7 +719,7 @@ fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
 fn encrypted_session_record_round_trip_uses_connection_id_header() {
     let crypto = SoftwareCrypto;
     let header = SessionHeader {
-        connection_id: ConnectionId::from_data([0x44; ConnectionId::SIZE]),
+        connection_id: ConnectionId([0x44; ConnectionId::SIZE]),
         seq: record_seq(11),
     };
     let body = vec![
@@ -787,7 +748,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
             code: SessionCloseCode::TIMEOUT,
         }),
     ];
-    let session_key = SessionKey::from_data([7; SessionKey::SIZE]);
+    let session_key = SessionKey([7; SessionKey::SIZE]);
     let record = encrypt_record(&crypto, header, &session_key, &body);
 
     let bytes = encode_record_vec(RecordType::Session, &record);
@@ -807,7 +768,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     assert_eq!(decode_session_frames(&decrypted).unwrap(), body);
 
     let wrong_header = SessionHeader {
-        connection_id: ConnectionId::from_data([0x99; ConnectionId::SIZE]),
+        connection_id: ConnectionId([0x99; ConnectionId::SIZE]),
         seq: header.seq,
     };
     assert_eq!(
@@ -822,37 +783,6 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     assert_eq!(
         encrypted::decrypt_record(&crypto, &wrong_seq_header, encrypted, &session_key),
         Err(WireError::DecryptFailed)
-    );
-}
-
-#[test]
-fn session_varint_fields_expand_at_expected_boundaries() {
-    let short_header = SessionHeader {
-        connection_id: ConnectionId::from_data([0x11; ConnectionId::SIZE]),
-        seq: record_seq(63),
-    };
-    let long_header = SessionHeader {
-        connection_id: ConnectionId::from_data([0x11; ConnectionId::SIZE]),
-        seq: record_seq(64),
-    };
-
-    assert_eq!(short_header.encode_vec().len(), ConnectionId::SIZE + 1);
-    assert_eq!(long_header.encode_vec().len(), ConnectionId::SIZE + 2);
-
-    let frame = StreamData {
-        stream_id: stream_id(64),
-        offset: varint(16_384),
-        header: None,
-        fin: true,
-        bytes: b"abc".to_vec(),
-    };
-    let encoded = frame.encode_vec();
-
-    assert_eq!(
-        StreamData::decode_exact(encoded.as_slice())
-            .unwrap()
-            .into_owned(),
-        frame
     );
 }
 

@@ -88,7 +88,10 @@ async fn rejected_session_write_is_reissued() {
             request
         });
 
-        let mut stream = handle_a.open_stream(test_open_stream_params()).await.unwrap();
+        let mut stream = handle_a
+            .open_stream(test_open_stream_params())
+            .await
+            .unwrap();
         stream
             .writer
             .write(Bytes::from_static(b"retry"))

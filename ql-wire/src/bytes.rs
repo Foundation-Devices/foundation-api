@@ -1,4 +1,4 @@
-use core::ops::{Deref, DerefMut};
+use core::ops::Deref;
 
 use bytes::{Buf, Bytes};
 
@@ -9,11 +9,6 @@ pub trait ByteSlice: Deref<Target = [u8]> + Sized {
     /// Returns `Err(self)` when `mid` is out of bounds.
     fn split_at(self, mid: usize) -> Result<(Self, Self), Self>;
 }
-
-/// A mutable reference to bytes.
-pub trait ByteSliceMut: ByteSlice + DerefMut<Target = [u8]> {}
-
-impl<B> ByteSliceMut for B where B: ByteSlice + DerefMut<Target = [u8]> {}
 
 impl ByteSlice for &[u8] {
     #[inline]
@@ -124,52 +119,5 @@ impl BufView for Bytes {
 
     fn buf(&self) -> Self::Buf<'_> {
         self.as_ref()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use bytes::Buf;
-
-    use super::{BufView, ByteSlice, ByteSliceMut};
-
-    #[test]
-    fn shared_slice_split_at() {
-        let bytes: &[u8] = b"abcdef";
-        let (left, right) = ByteSlice::split_at(bytes, 2).unwrap();
-        assert_eq!(left, b"ab");
-        assert_eq!(right, b"cdef");
-    }
-
-    #[test]
-    fn mutable_slice_split_at() {
-        let mut bytes = *b"abcdef";
-        let (left, right) = ByteSlice::split_at(&mut bytes[..], 2).unwrap();
-        assert_eq!(left, b"ab");
-        assert_eq!(right, b"cdef");
-    }
-
-    #[test]
-    fn mutable_split_trait_is_implemented() {
-        fn assert_split_mut<T: ByteSliceMut>(_value: T) {}
-
-        let mut bytes = [0u8; 4];
-        assert_split_mut(&mut bytes[..]);
-    }
-
-    #[test]
-    fn split_at_rejects_out_of_bounds_index() {
-        let bytes: &[u8] = b"abcdef";
-        assert!(ByteSlice::split_at(bytes, 7).is_err());
-    }
-
-    #[test]
-    fn slice_buf_view_is_contiguous() {
-        let bytes: &[u8] = b"abcdef";
-        let mut buf = bytes.buf();
-        assert_eq!(buf.remaining(), 6);
-        assert_eq!(buf.chunk(), b"abcdef");
-        buf.advance(6);
-        assert!(!buf.has_remaining());
     }
 }

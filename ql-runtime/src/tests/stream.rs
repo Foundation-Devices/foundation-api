@@ -396,7 +396,10 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
             received_request
         });
 
-        let mut stream = handle_a.open_stream(test_open_stream_params()).await.unwrap();
+        let mut stream = handle_a
+            .open_stream(test_open_stream_params())
+            .await
+            .unwrap();
         stream
             .writer
             .write(Bytes::from(request_payload.clone()))

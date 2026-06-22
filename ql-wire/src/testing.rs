@@ -44,7 +44,7 @@ impl QlAead for SoftwareCrypto {
         aad: &[u8],
         buffer: &mut [u8],
     ) -> [u8; ENCRYPTED_MESSAGE_AUTH_SIZE] {
-        let key: AesGcm256Key = (*key.data()).into();
+        let key: AesGcm256Key = (*key.as_bytes()).into();
         let plaintext = buffer.to_vec();
         let mut auth = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
         key.encrypt(
@@ -66,7 +66,7 @@ impl QlAead for SoftwareCrypto {
         buffer: &mut [u8],
         auth_tag: &[u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
     ) -> bool {
-        let key: AesGcm256Key = (*key.data()).into();
+        let key: AesGcm256Key = (*key.as_bytes()).into();
         let ciphertext = buffer.to_vec();
         key.decrypt(buffer, (&nonce.0).into(), aad, &ciphertext, auth_tag.into())
             .is_ok()
@@ -97,7 +97,7 @@ impl QlKem for SoftwareCrypto {
         shared.copy_from_slice(shared_value.as_slice());
         (
             MlKemCiphertext::new(Box::new(ciphertext)),
-            SessionKey::from_data(shared),
+            SessionKey(shared),
         )
     }
 
@@ -111,7 +111,7 @@ impl QlKem for SoftwareCrypto {
         let shared = mlkem1024::decapsulate(&private_key, &ciphertext);
         let mut out = [0u8; SessionKey::SIZE];
         out.copy_from_slice(shared.as_slice());
-        SessionKey::from_data(out)
+        SessionKey(out)
     }
 }
 
@@ -161,7 +161,7 @@ impl QlKem for NoopCrypto {
     fn mlkem_encapsulate(&self, _public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
         (
             MlKemCiphertext::new(Box::new([0; MlKemCiphertext::SIZE])),
-            SessionKey::from_data([0; SessionKey::SIZE]),
+            SessionKey([0; SessionKey::SIZE]),
         )
     }
 
@@ -170,7 +170,7 @@ impl QlKem for NoopCrypto {
         _private_key: &MlKemPrivateKey,
         _ciphertext: &MlKemCiphertext,
     ) -> SessionKey {
-        SessionKey::from_data([0; SessionKey::SIZE])
+        SessionKey([0; SessionKey::SIZE])
     }
 }
 
