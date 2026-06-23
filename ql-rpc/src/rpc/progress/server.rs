@@ -6,8 +6,7 @@ use crate::{
     finish_bytes,
     progress::{encode_progress, encode_response, Progress},
     rpc::read_framed_request,
-    write_bytes, DropCloseWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
-    StreamCloseCode,
+    write_bytes, DropResetWrite, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(ProgressHandler: Send)]
@@ -26,7 +25,7 @@ where
     M: Progress,
     W: RpcWrite,
 {
-    writer: DropCloseWrite<W>,
+    writer: DropResetWrite<W>,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -37,7 +36,7 @@ where
 {
     pub(crate) fn new(writer: W) -> Self {
         Self {
-            writer: DropCloseWrite::new(writer),
+            writer: DropResetWrite::new(writer),
             marker: PhantomData,
         }
     }
@@ -56,8 +55,8 @@ where
         finish_bytes(&mut self.writer).await
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        DropCloseWrite::close(&mut self.writer, code);
+    pub fn reset(mut self, code: ResetCode) {
+        DropResetWrite::reset(&mut self.writer, code);
     }
 }
 
@@ -78,11 +77,11 @@ pub(crate) async fn handle_progress_inner<S, M, St, H, HF, E>(
     let request = match read_framed_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
-            let code = error.close_code();
+            let code = error.reset_code();
             handle_error(&state, &error);
             if let Some(code) = code {
-                reader.close(code);
-                writer.close(code);
+                reader.reset(code);
+                writer.reset(code);
             }
             return;
         }

@@ -6,15 +6,15 @@ use crate::{
 mod ack;
 mod builder;
 mod close;
-mod stream_close;
 mod stream_data;
+mod stream_reset;
 mod stream_window;
 
 pub use ack::*;
 pub use builder::*;
 pub use close::*;
-pub use stream_close::*;
 pub use stream_data::*;
+pub use stream_reset::*;
 pub use stream_window::*;
 
 varint_wrapper_codec!(RouteId);
@@ -29,7 +29,7 @@ pub enum SessionFrame<B> {
     Ack(RecordAck),
     StreamData(StreamData<B>),
     StreamWindow(StreamWindow),
-    StreamClose(StreamClose),
+    StreamReset(StreamReset),
     Close(SessionClose),
 }
 
@@ -42,7 +42,7 @@ impl<B: ByteSlice> WireDecode<B> for SessionFrame<B> {
             SessionFrameKind::Ack => Self::Ack(reader.decode::<RecordAck>()?),
             SessionFrameKind::StreamData => Self::StreamData(reader.decode::<StreamData<B>>()?),
             SessionFrameKind::StreamWindow => Self::StreamWindow(reader.decode::<StreamWindow>()?),
-            SessionFrameKind::StreamClose => Self::StreamClose(reader.decode::<StreamClose>()?),
+            SessionFrameKind::StreamReset => Self::StreamReset(reader.decode::<StreamReset>()?),
             SessionFrameKind::Close => Self::Close(reader.decode::<SessionClose>()?),
         };
         Ok(frame)
@@ -57,7 +57,7 @@ impl<B> SessionFrame<B> {
             Self::Ack(_) => SessionFrameKind::Ack,
             Self::StreamData(_) => SessionFrameKind::StreamData,
             Self::StreamWindow(_) => SessionFrameKind::StreamWindow,
-            Self::StreamClose(_) => SessionFrameKind::StreamClose,
+            Self::StreamReset(_) => SessionFrameKind::StreamReset,
             Self::Close(_) => SessionFrameKind::Close,
         }
     }
@@ -71,7 +71,7 @@ impl<B: ByteSlice> SessionFrame<B> {
             Self::Ack(frame) => SessionFrame::Ack(frame),
             Self::StreamData(frame) => SessionFrame::StreamData(frame.into_owned()),
             Self::StreamWindow(frame) => SessionFrame::StreamWindow(frame),
-            Self::StreamClose(frame) => SessionFrame::StreamClose(frame),
+            Self::StreamReset(frame) => SessionFrame::StreamReset(frame),
             Self::Close(frame) => SessionFrame::Close(frame),
         }
     }
@@ -84,7 +84,7 @@ impl<B: BufView> WireEncode for SessionFrame<B> {
             Self::Ack(frame) => frame.encoded_len(),
             Self::StreamData(frame) => frame.encoded_len(),
             Self::StreamWindow(frame) => frame.encoded_len(),
-            Self::StreamClose(frame) => frame.encoded_len(),
+            Self::StreamReset(frame) => frame.encoded_len(),
             Self::Close(frame) => frame.encoded_len(),
         }
     }
@@ -96,7 +96,7 @@ impl<B: BufView> WireEncode for SessionFrame<B> {
             Self::Ack(frame) => frame.encode(out),
             Self::StreamData(frame) => frame.encode(out),
             Self::StreamWindow(frame) => frame.encode(out),
-            Self::StreamClose(frame) => frame.encode(out),
+            Self::StreamReset(frame) => frame.encode(out),
             Self::Close(frame) => frame.encode(out),
         }
     }
@@ -109,7 +109,7 @@ pub enum SessionFrameKind {
     Ack = 2,
     StreamData = 3,
     StreamWindow = 4,
-    StreamClose = 5,
+    StreamReset = 5,
     Close = 6,
     Unpair = 7,
 }
@@ -123,7 +123,7 @@ impl TryFrom<u8> for SessionFrameKind {
             2 => Ok(Self::Ack),
             3 => Ok(Self::StreamData),
             4 => Ok(Self::StreamWindow),
-            5 => Ok(Self::StreamClose),
+            5 => Ok(Self::StreamReset),
             6 => Ok(Self::Close),
             7 => Ok(Self::Unpair),
             _ => Err(WireError::InvalidPayload),

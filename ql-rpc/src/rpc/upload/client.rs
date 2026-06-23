@@ -4,8 +4,8 @@ use crate::{
     finish_bytes, read_bytes,
     rpc::parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
     upload::Upload,
-    write_bytes, ChunkQueue, DropCloseRead, DropCloseWrite, RpcCodec, RpcError, RpcRead, RpcWrite,
-    StreamCloseCode,
+    write_bytes, ChunkQueue, DropResetRead, DropResetWrite, ResetCode, RpcCodec, RpcError, RpcRead,
+    RpcWrite,
 };
 
 pub struct UploadCall<M, W, R>
@@ -14,8 +14,8 @@ where
     W: RpcWrite,
     R: RpcRead<Error = W::Error>,
 {
-    writer: DropCloseWrite<W>,
-    reader: DropCloseRead<R>,
+    writer: DropResetWrite<W>,
+    reader: DropResetRead<R>,
     marker: std::marker::PhantomData<fn() -> M>,
 }
 
@@ -37,8 +37,8 @@ where
 {
     pub fn new(writer: W, reader: R) -> Self {
         Self {
-            writer: DropCloseWrite::new(writer),
-            reader: DropCloseRead::new(reader),
+            writer: DropResetWrite::new(writer),
+            reader: DropResetRead::new(reader),
             marker: std::marker::PhantomData,
         }
     }
@@ -80,9 +80,9 @@ where
         Ok(value)
     }
 
-    fn close(&mut self, code: StreamCloseCode) {
-        DropCloseRead::close(&mut self.reader, code);
-        DropCloseWrite::close(&mut self.writer, code);
+    fn reset(&mut self, code: ResetCode) {
+        DropResetRead::reset(&mut self.reader, code);
+        DropResetWrite::reset(&mut self.writer, code);
     }
 }
 
@@ -117,7 +117,7 @@ where
 {
     fn drop(&mut self) {
         if !self.finished {
-            self.parent.close(StreamCloseCode::DROPPED);
+            self.parent.reset(ResetCode::DROPPED);
         }
     }
 }

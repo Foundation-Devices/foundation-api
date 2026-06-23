@@ -5,9 +5,9 @@ pub use varint::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
-pub struct StreamCloseCode(pub u16);
+pub struct ResetCode(pub u16);
 
-impl StreamCloseCode {
+impl ResetCode {
     /// operation was explicitly cancelled
     pub const CANCELLED: Self = Self(0);
     /// local reader/writer/call handle was dropped before completion
@@ -30,7 +30,7 @@ impl StreamCloseCode {
     pub const UNKNOWN_ROUTE: Self = Self(9);
 }
 
-impl std::fmt::Display for StreamCloseCode {
+impl std::fmt::Display for ResetCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
             Self::CANCELLED => f.write_str("cancelled"),
@@ -48,12 +48,12 @@ impl std::fmt::Display for StreamCloseCode {
     }
 }
 
-/// origin of a stream close: either we triggered it locally or the peer sent it.
+/// origin of a stream reset: either we triggered it locally or the peer sent it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StreamCloseOrigin {
-    /// the close code originated from the peer
+pub enum ResetOrigin {
+    /// the reset code originated from the peer
     Peer,
-    /// the close code originated from local logic
+    /// the reset code originated from local logic
     Local,
 }
 

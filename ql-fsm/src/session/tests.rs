@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ql_wire::{
-    decode_session_frames, parse_session_frames, CloseTarget, RecordAck, RecordSeq, RouteId,
-    ServiceId, SessionFrame, SessionRecordBuilder, StreamClose, StreamCloseCode, StreamData,
-    StreamHeader, StreamId, VarInt, QID,
+    decode_session_frames, parse_session_frames, RecordAck, RecordSeq, ResetCode, ResetTarget,
+    RouteId, ServiceId, SessionFrame, SessionRecordBuilder, StreamData, StreamHeader, StreamId,
+    StreamReset, VarInt, QID,
 };
 
 use super::{SessionConfig, SessionEvent, SessionFsm};
@@ -30,8 +30,8 @@ fn record_ack(seq: RecordSeq) -> RecordAck {
     RecordAck::from_ranges([seq..=seq]).unwrap()
 }
 
-const REFUSED: StreamCloseCode = StreamCloseCode(1);
-const TIMEOUT: StreamCloseCode = StreamCloseCode(2);
+const REFUSED: ResetCode = ResetCode(1);
+const TIMEOUT: ResetCode = ResetCode(2);
 
 fn header(value: u64) -> StreamHeader {
     StreamHeader {
@@ -414,21 +414,21 @@ fn inbound_empty_fin_emits_finished_immediately() {
 }
 
 #[test]
-fn remote_stream_close_is_reliable_and_retried() {
+fn remote_stream_reset_is_reliable_and_retried() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = open_stream_id(&mut fsm);
 
     fsm.stream(stream_id, |_| {})
         .unwrap()
-        .close(CloseTarget::Both, StreamCloseCode::CANCELLED);
+        .reset(ResetTarget::Both, ResetCode::CANCELLED);
 
     let (write_id, builder) = fsm.take_next_write(now).unwrap();
-    fsm.complete_write(now, write_id.expect("stream close should be tracked"), true);
+    fsm.complete_write(now, write_id.expect("stream reset should be tracked"), true);
     let first = decode_session_frames(builder.bytes()).unwrap();
     assert!(matches!(
         first.as_slice(),
-        [SessionFrame::StreamClose(StreamClose { stream_id: id, .. })] if *id == stream_id
+        [SessionFrame::StreamReset(StreamReset { stream_id: id, .. })] if *id == stream_id
     ));
 
     let mut emit = |_| {};
@@ -488,22 +488,22 @@ fn duplicate_stream_data_is_not_redelivered() {
 }
 
 #[test]
-fn duplicate_remote_close_after_reap_is_ignored() {
+fn duplicate_remote_reset_after_reap_is_ignored() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionConfig::default(), now);
-    let close = StreamClose {
+    let reset = StreamReset {
         stream_id: stream_id(1),
-        target: CloseTarget::Both,
-        code: StreamCloseCode(9),
+        target: ResetTarget::Both,
+        code: ResetCode(9),
     };
-    let record = vec![SessionFrame::StreamClose(close.clone())];
+    let record = vec![SessionFrame::StreamReset(reset.clone())];
 
     let first = receive_events(&mut fsm, now, seq(1), &record);
     assert_eq!(
         first,
         vec![
-            SessionEvent::Closed(close.clone()),
-            SessionEvent::WritableClosed(close),
+            SessionEvent::Reset(reset.clone()),
+            SessionEvent::WritableReset(reset),
         ]
     );
 
@@ -512,14 +512,14 @@ fn duplicate_remote_close_after_reap_is_ignored() {
 }
 
 #[test]
-fn late_remote_stream_data_after_close_is_ignored() {
+fn late_remote_stream_data_after_reset_is_ignored() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionConfig::default(), now);
     let stream_id = stream_id(1);
-    let close = vec![SessionFrame::StreamClose(StreamClose {
+    let reset = vec![SessionFrame::StreamReset(StreamReset {
         stream_id,
-        target: CloseTarget::Both,
-        code: StreamCloseCode(9),
+        target: ResetTarget::Both,
+        code: ResetCode(9),
     })];
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -529,19 +529,19 @@ fn late_remote_stream_data_after_close_is_ignored() {
         bytes: b"hello".to_vec(),
     })];
 
-    let first = receive_events(&mut fsm, now, seq(1), &close);
+    let first = receive_events(&mut fsm, now, seq(1), &reset);
     assert_eq!(
         first,
         vec![
-            SessionEvent::Closed(StreamClose {
+            SessionEvent::Reset(StreamReset {
                 stream_id,
-                target: CloseTarget::Both,
-                code: StreamCloseCode(9),
+                target: ResetTarget::Both,
+                code: ResetCode(9),
             }),
-            SessionEvent::WritableClosed(StreamClose {
+            SessionEvent::WritableReset(StreamReset {
                 stream_id,
-                target: CloseTarget::Both,
-                code: StreamCloseCode(9),
+                target: ResetTarget::Both,
+                code: ResetCode(9),
             }),
         ]
     );
@@ -612,64 +612,64 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
 fn out_of_order_remote_stream_first_observations_still_open_once_each() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionConfig::default(), now);
-    let close3 = vec![SessionFrame::StreamClose(StreamClose {
+    let reset3 = vec![SessionFrame::StreamReset(StreamReset {
         stream_id: stream_id(3),
-        target: CloseTarget::Both,
+        target: ResetTarget::Both,
         code: REFUSED,
     })];
-    let close1 = vec![SessionFrame::StreamClose(StreamClose {
+    let reset1 = vec![SessionFrame::StreamReset(StreamReset {
         stream_id: stream_id(1),
-        target: CloseTarget::Both,
+        target: ResetTarget::Both,
         code: TIMEOUT,
     })];
 
-    let first = receive_events(&mut fsm, now, seq(1), &close3);
+    let first = receive_events(&mut fsm, now, seq(1), &reset3);
     assert_eq!(
         first,
         vec![
-            SessionEvent::Closed(StreamClose {
+            SessionEvent::Reset(StreamReset {
                 stream_id: stream_id(3),
-                target: CloseTarget::Both,
+                target: ResetTarget::Both,
                 code: REFUSED,
             }),
-            SessionEvent::WritableClosed(StreamClose {
+            SessionEvent::WritableReset(StreamReset {
                 stream_id: stream_id(3),
-                target: CloseTarget::Both,
+                target: ResetTarget::Both,
                 code: REFUSED,
             }),
         ]
     );
 
-    let second = receive_events(&mut fsm, now + Duration::from_millis(1), seq(2), &close1);
+    let second = receive_events(&mut fsm, now + Duration::from_millis(1), seq(2), &reset1);
     assert_eq!(
         second,
         vec![
-            SessionEvent::Closed(StreamClose {
+            SessionEvent::Reset(StreamReset {
                 stream_id: stream_id(1),
-                target: CloseTarget::Both,
+                target: ResetTarget::Both,
                 code: TIMEOUT,
             }),
-            SessionEvent::WritableClosed(StreamClose {
+            SessionEvent::WritableReset(StreamReset {
                 stream_id: stream_id(1),
-                target: CloseTarget::Both,
+                target: ResetTarget::Both,
                 code: TIMEOUT,
             }),
         ]
     );
 
-    let third = receive_events(&mut fsm, now + Duration::from_millis(2), seq(3), &close3);
+    let third = receive_events(&mut fsm, now + Duration::from_millis(2), seq(3), &reset3);
     assert!(third.is_empty());
 }
 
 #[test]
-fn invalid_remote_stream_close_closes_session() {
+fn invalid_remote_stream_reset_closes_session() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(SessionConfig::default(), now);
 
-    let invalid = vec![SessionFrame::StreamClose(StreamClose {
+    let invalid = vec![SessionFrame::StreamReset(StreamReset {
         stream_id: stream_id(0),
-        target: CloseTarget::Both,
-        code: StreamCloseCode(9),
+        target: ResetTarget::Both,
+        code: ResetCode(9),
     })];
     let events = receive_events(&mut fsm, now, seq(1), &invalid);
 

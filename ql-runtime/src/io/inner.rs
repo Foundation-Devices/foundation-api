@@ -292,7 +292,7 @@ mod loom_tests {
 
     use bytes::Bytes;
     use loom::thread;
-    use ql_wire::{StreamCloseCode, StreamCloseOrigin};
+    use ql_wire::{ResetCode, ResetOrigin};
 
     use super::*;
     use crate::{
@@ -407,9 +407,9 @@ mod loom_tests {
             let failer = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    shared.rx.fail(QlStreamError::StreamClosed {
-                        code: StreamCloseCode::CANCELLED,
-                        origin: StreamCloseOrigin::Local,
+                    shared.rx.fail(QlStreamError::StreamReset {
+                        code: ResetCode::CANCELLED,
+                        origin: ResetOrigin::Local,
                     })
                 })
             };
@@ -421,14 +421,14 @@ mod loom_tests {
                 (Ok(Item::Chunk(bytes)), None) => {
                     assert_eq!(bytes, Bytes::from_static(b"abc"));
                     match shared.rx.pop() {
-                        Ok(Item::Error(QlStreamError::StreamClosed { code, .. })) => {
-                            assert_eq!(code, StreamCloseCode::CANCELLED);
+                        Ok(Item::Error(QlStreamError::StreamReset { code, .. })) => {
+                            assert_eq!(code, ResetCode::CANCELLED);
                         }
                         _ => panic!("expected terminal reader error"),
                     }
                 }
-                (Ok(Item::Error(QlStreamError::StreamClosed { code, .. })), Some(bytes)) => {
-                    assert_eq!(code, StreamCloseCode::CANCELLED);
+                (Ok(Item::Error(QlStreamError::StreamReset { code, .. })), Some(bytes)) => {
+                    assert_eq!(code, ResetCode::CANCELLED);
                     assert_eq!(bytes, Bytes::from_static(b"abc"));
                     assert!(matches!(shared.rx.pop(), Err(PopError)));
                 }
@@ -499,9 +499,9 @@ mod loom_tests {
             let failer = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    let displaced = shared.tx.fail(QlStreamError::StreamClosed {
-                        code: StreamCloseCode::CANCELLED,
-                        origin: StreamCloseOrigin::Local,
+                    let displaced = shared.tx.fail(QlStreamError::StreamReset {
+                        code: ResetCode::CANCELLED,
+                        origin: ResetOrigin::Local,
                     });
                     assert_eq!(displaced.unwrap(), Some(Bytes::from_static(b"abc")));
                 })
@@ -512,8 +512,8 @@ mod loom_tests {
             assert!(TxInner::terminal_ready(shared.tx.load_state()));
             shared.tx.unregister_waiter();
             match shared.tx.pop() {
-                Ok(Item::Error(QlStreamError::StreamClosed { code, .. })) => {
-                    assert_eq!(code, StreamCloseCode::CANCELLED);
+                Ok(Item::Error(QlStreamError::StreamReset { code, .. })) => {
+                    assert_eq!(code, ResetCode::CANCELLED);
                 }
                 _ => panic!("expected terminal writer error"),
             }
@@ -570,9 +570,9 @@ mod loom_tests {
             let failer = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    shared.tx.fail(QlStreamError::StreamClosed {
-                        code: StreamCloseCode::CANCELLED,
-                        origin: StreamCloseOrigin::Local,
+                    shared.tx.fail(QlStreamError::StreamReset {
+                        code: ResetCode::CANCELLED,
+                        origin: ResetOrigin::Local,
                     })
                 })
             };
@@ -597,8 +597,8 @@ mod loom_tests {
             }
 
             match shared.tx.pop() {
-                Ok(Item::Error(QlStreamError::StreamClosed { code, .. })) => {
-                    assert_eq!(code, StreamCloseCode::CANCELLED);
+                Ok(Item::Error(QlStreamError::StreamReset { code, .. })) => {
+                    assert_eq!(code, ResetCode::CANCELLED);
                 }
                 _ => panic!("expected terminal writer error"),
             }
@@ -617,9 +617,9 @@ mod loom_tests {
             let failer = {
                 let shared = shared.clone();
                 thread::spawn(move || {
-                    shared.tx.fail(QlStreamError::StreamClosed {
-                        code: StreamCloseCode::CANCELLED,
-                        origin: StreamCloseOrigin::Local,
+                    shared.tx.fail(QlStreamError::StreamReset {
+                        code: ResetCode::CANCELLED,
+                        origin: ResetOrigin::Local,
                     })
                 })
             };
@@ -635,8 +635,8 @@ mod loom_tests {
                 Ok(_) => {
                     assert!(!TxInner::terminal_ok(shared.tx.load_state()));
                     match shared.tx.pop() {
-                        Ok(Item::Error(QlStreamError::StreamClosed { code, .. })) => {
-                            assert_eq!(code, StreamCloseCode::CANCELLED);
+                        Ok(Item::Error(QlStreamError::StreamReset { code, .. })) => {
+                            assert_eq!(code, ResetCode::CANCELLED);
                         }
                         _ => panic!("expected terminal writer error"),
                     }

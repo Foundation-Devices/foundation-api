@@ -1,6 +1,6 @@
 use crate::{codec, codec::Reader, ByteSlice, WireEncode, WireError};
 
-/// closes the whole session immediately with a close code.
+/// closes the whole session immediately with a reset code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionClose {
     pub code: SessionCloseCode,

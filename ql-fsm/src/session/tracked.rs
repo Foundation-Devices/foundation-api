@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use ql_wire::{RecordAck, RecordSeq, StreamClose, StreamId};
+use ql_wire::{RecordAck, RecordSeq, StreamId, StreamReset};
 
 #[derive(Debug, Clone)]
 pub struct TrackedRecord {
@@ -17,7 +17,7 @@ pub struct TrackedRecord {
 #[derive(Debug, Clone)]
 pub enum TrackedFrame {
     StreamData(TrackedStreamData),
-    StreamClose(StreamClose),
+    StreamReset(StreamReset),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

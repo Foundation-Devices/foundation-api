@@ -7,7 +7,7 @@ extern crate proptest as proptest_crate;
 
 use bytes::Bytes;
 use proptest_crate::{collection::vec, prelude::*, test_runner::TestCaseResult};
-use ql_wire::{CloseTarget, RouteId, ServiceId, StreamCloseCode, StreamId, WireError};
+use ql_wire::{ResetCode, ResetTarget, RouteId, ServiceId, StreamId, WireError};
 
 use super::*;
 use crate::{state::LinkState, Event, OpenStreamParams, PeerStatus, ReceiveError, WriteId};
@@ -59,7 +59,7 @@ enum Action {
         side: Side,
         slot: usize,
     },
-    Close {
+    Reset {
         side: Side,
         slot: usize,
     },
@@ -98,8 +98,8 @@ impl Action {
         Self::Finish { side, slot }
     }
 
-    fn close(side: Side, slot: usize) -> Self {
-        Self::Close { side, slot }
+    fn reset(side: Side, slot: usize) -> Self {
+        Self::Reset { side, slot }
     }
 }
 
@@ -114,8 +114,8 @@ struct SideEventState {
     opened: BTreeSet<StreamId>,
     finished: BTreeSet<StreamId>,
     outbound_finished: BTreeSet<StreamId>,
-    writable_closed: BTreeSet<StreamId>,
-    closed: BTreeSet<StreamId>,
+    writable_reset: BTreeSet<StreamId>,
+    reset: BTreeSet<StreamId>,
     peer_statuses: Vec<PeerStatus>,
     last_peer_status: Option<PeerStatus>,
     session_epoch: usize,
@@ -143,7 +143,7 @@ struct Runner {
     expected: [BTreeMap<StreamId, Vec<u8>>; 2],
     received: [BTreeMap<StreamId, Vec<u8>>; 2],
     finished_by: [BTreeSet<StreamId>; 2],
-    closed_by: [BTreeSet<StreamId>; 2],
+    reset_by: [BTreeSet<StreamId>; 2],
 }
 
 impl Runner {
@@ -167,7 +167,7 @@ impl Runner {
             expected: [BTreeMap::new(), BTreeMap::new()],
             received: [BTreeMap::new(), BTreeMap::new()],
             finished_by: [BTreeSet::new(), BTreeSet::new()],
-            closed_by: [BTreeSet::new(), BTreeSet::new()],
+            reset_by: [BTreeSet::new(), BTreeSet::new()],
         }
     }
 
@@ -199,7 +199,7 @@ impl Runner {
             expected: [BTreeMap::new(), BTreeMap::new()],
             received: [BTreeMap::new(), BTreeMap::new()],
             finished_by: [BTreeSet::new(), BTreeSet::new()],
-            closed_by: [BTreeSet::new(), BTreeSet::new()],
+            reset_by: [BTreeSet::new(), BTreeSet::new()],
         }
     }
 
@@ -329,19 +329,19 @@ impl Runner {
                     }
                 }
             }
-            Action::Close { side, slot } => {
+            Action::Reset { side, slot } => {
                 if let Some(stream_id) = self.slots[side.idx()][*slot] {
-                    let closed = self
+                    let reset = self
                         .harness
                         .node_mut(*side)
                         .fsm
                         .stream(stream_id)
                         .is_ok_and(|mut stream| {
-                            stream.close(CloseTarget::Both, StreamCloseCode::CANCELLED);
+                            stream.reset(ResetTarget::Both, ResetCode::CANCELLED);
                             true
                         });
-                    if closed {
-                        self.closed_by[side.idx()].insert(stream_id);
+                    if reset {
+                        self.reset_by[side.idx()].insert(stream_id);
                         self.slots[side.idx()][*slot] = None;
                     }
                 }
@@ -449,8 +449,8 @@ impl Runner {
                         "side {side:?} emitted duplicate Finished for {stream_id:?}"
                     );
                     prop_assert!(
-                        !self.events[side.idx()].closed.contains(&stream_id),
-                        "side {side:?} emitted Finished after Closed for {stream_id:?}"
+                        !self.events[side.idx()].reset.contains(&stream_id),
+                        "side {side:?} emitted Finished after Reset for {stream_id:?}"
                     );
                 }
                 Event::OutboundFinished(stream_id) => {
@@ -463,27 +463,27 @@ impl Runner {
                         "side {side:?} emitted duplicate OutboundFinished for {stream_id:?}"
                     );
                 }
-                Event::Closed(frame) => {
+                Event::Reset(frame) => {
                     prop_assert!(
                         self.known_streams.contains(&frame.stream_id),
-                        "side {side:?} emitted Closed for unknown stream {:?}",
+                        "side {side:?} emitted Reset for unknown stream {:?}",
                         frame.stream_id
                     );
                     prop_assert!(
-                        self.events[side.idx()].closed.insert(frame.stream_id),
-                        "side {side:?} emitted duplicate Closed for {:?}",
+                        self.events[side.idx()].reset.insert(frame.stream_id),
+                        "side {side:?} emitted duplicate Reset for {:?}",
                         frame.stream_id
                     );
                 }
-                Event::WritableClosed(frame) => {
+                Event::WritableReset(frame) => {
                     let stream_id = frame.stream_id;
                     prop_assert!(
                         self.known_streams.contains(&stream_id),
-                        "side {side:?} emitted WritableClosed for unknown stream {stream_id:?}"
+                        "side {side:?} emitted WritableReset for unknown stream {stream_id:?}"
                     );
                     prop_assert!(
-                        self.events[side.idx()].writable_closed.insert(stream_id),
-                        "side {side:?} emitted duplicate WritableClosed for {stream_id:?}"
+                        self.events[side.idx()].writable_reset.insert(stream_id),
+                        "side {side:?} emitted duplicate WritableReset for {stream_id:?}"
                     );
                 }
                 Event::SessionClosed(_) => {
@@ -590,18 +590,18 @@ impl Runner {
             for stream_id in &self.finished_by[side.idx()] {
                 prop_assert!(
                     self.events[opposite(side).idx()].finished.contains(stream_id)
-                        || self.events[opposite(side).idx()].closed.contains(stream_id)
+                        || self.events[opposite(side).idx()].reset.contains(stream_id)
                         || !connected[opposite(side).idx()],
-                    "side {side:?} finished {stream_id:?} but side {:?} saw neither Finished nor Closed",
+                    "side {side:?} finished {stream_id:?} but side {:?} saw neither Finished nor Reset",
                     opposite(side)
                 );
             }
 
-            for stream_id in &self.closed_by[side.idx()] {
+            for stream_id in &self.reset_by[side.idx()] {
                 prop_assert!(
-                    self.events[opposite(side).idx()].closed.contains(stream_id)
+                    self.events[opposite(side).idx()].reset.contains(stream_id)
                         || !connected[opposite(side).idx()],
-                    "side {side:?} closed {stream_id:?} but side {:?} saw no Closed event",
+                    "side {side:?} reset {stream_id:?} but side {:?} saw no Reset event",
                     opposite(side)
                 );
             }
@@ -634,8 +634,8 @@ impl Runner {
                     events.opened.is_empty()
                         && events.finished.is_empty()
                         && events.outbound_finished.is_empty()
-                        && events.closed.is_empty()
-                        && events.writable_closed.is_empty()
+                        && events.reset.is_empty()
+                        && events.writable_reset.is_empty()
                 }),
             "handshake-only property observed stream activity"
         );
@@ -706,8 +706,8 @@ impl Runner {
     }
 
     fn inbound_aborted(&self, side: Side, stream_id: StreamId) -> bool {
-        self.events[side.idx()].closed.contains(&stream_id)
-            || self.closed_by[side.idx()].contains(&stream_id)
+        self.events[side.idx()].reset.contains(&stream_id)
+            || self.reset_by[side.idx()].contains(&stream_id)
     }
 }
 
@@ -870,7 +870,7 @@ fn connected_action_strategy() -> impl Strategy<Value = Action> {
         side_usize_action(slot.clone(), Action::open_stream),
         side_usize_vec_action(slot.clone(), bytes, Action::write),
         side_usize_action(slot.clone(), Action::finish),
-        side_usize_action(slot, Action::close),
+        side_usize_action(slot, Action::reset),
     ]
 }
 
@@ -915,7 +915,7 @@ fn terminal_action_strategy() -> impl Strategy<Value = Action> {
         side_usize_action(slot.clone(), Action::open_stream),
         side_usize_vec_action(slot.clone(), bytes, Action::write),
         side_usize_action(slot.clone(), Action::finish),
-        side_usize_action(slot, Action::close),
+        side_usize_action(slot, Action::reset),
         side_action(Action::TakeNext),
         side_usize_action(queue_index.clone(), Action::confirm_taken),
         side_usize_action(queue_index.clone(), Action::reject_taken),

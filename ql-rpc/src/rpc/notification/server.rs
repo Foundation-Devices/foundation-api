@@ -1,8 +1,8 @@
 use std::future::Future;
 
 use crate::{
-    notification::Notification as NotificationRpc, rpc::read_eof_request, RouterConfig, RpcError,
-    RpcRead, RpcStream, RpcWrite, StreamCloseCode,
+    notification::Notification as NotificationRpc, rpc::read_eof_request, ResetCode, RouterConfig,
+    RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(NotificationHandler: Send)]
@@ -33,16 +33,16 @@ pub(crate) async fn handle_notification_inner<S, M, St, H, HF, E>(
     let notification = match read_eof_request::<M::Payload, _>(&mut reader, config).await {
         Ok(notification) => notification,
         Err(error) => {
-            let code = error.close_code();
+            let code = error.reset_code();
             handle_error(&state, &error);
             if let Some(code) = code {
-                reader.close(code);
-                writer.close(code);
+                reader.reset(code);
+                writer.reset(code);
             }
             return;
         }
     };
 
-    writer.close(StreamCloseCode::CANCELLED);
+    writer.reset(ResetCode::CANCELLED);
     handle(state, notification).await;
 }

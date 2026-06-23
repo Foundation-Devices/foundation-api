@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use indexmap::IndexMap;
-use ql_wire::{CloseTarget, RecordSeq, SessionClose, StreamClose, StreamHeader, StreamId};
+use ql_wire::{RecordSeq, ResetTarget, SessionClose, StreamHeader, StreamId, StreamReset};
 
 use super::{
     ack_tracker::AckTracker, remote_stream_history::RemoteStreamHistory, stream_rx::StreamRx,
@@ -48,7 +48,7 @@ pub struct StreamState {
     pub header: Option<StreamHeader>,
     pub rx: StreamRx,
     pub tx: StreamTx,
-    pub pending_close: Option<StreamClose>,
+    pub pending_reset: Option<StreamReset>,
     pub peer_max_offset: u64,
     pub outbound_state: OutboundState,
     pub inbound_state: InboundState,
@@ -68,7 +68,7 @@ impl StreamState {
             role,
             header: route_id,
             tx: StreamTx::new(),
-            pending_close: None,
+            pending_reset: None,
             peer_max_offset: u64::from(initial_peer_stream_receive_window),
             outbound_state: OutboundState::Open,
             inbound_state: InboundState::Open,
@@ -108,17 +108,17 @@ pub enum StreamRole {
 }
 
 impl StreamRole {
-    pub fn outbound_target(self) -> CloseTarget {
+    pub fn outbound_target(self) -> ResetTarget {
         match self {
-            Self::Initiator => CloseTarget::Origin,
-            Self::Responder => CloseTarget::Return,
+            Self::Initiator => ResetTarget::Origin,
+            Self::Responder => ResetTarget::Return,
         }
     }
 
-    pub fn inbound_target(self) -> CloseTarget {
+    pub fn inbound_target(self) -> ResetTarget {
         match self {
-            Self::Initiator => CloseTarget::Return,
-            Self::Responder => CloseTarget::Origin,
+            Self::Initiator => ResetTarget::Return,
+            Self::Responder => ResetTarget::Origin,
         }
     }
 }
@@ -135,6 +135,6 @@ pub enum OutboundState {
 pub enum InboundState {
     Open,
     Finished,
-    Closed(StreamClose),
+    Reset(StreamReset),
     Discarding,
 }

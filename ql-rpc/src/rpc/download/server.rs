@@ -10,8 +10,7 @@ use crate::{
         parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
         read_eof_request,
     },
-    write_bytes, DropCloseWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
-    StreamCloseCode,
+    write_bytes, DropResetWrite, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(DownloadHandler: Send)]
@@ -30,7 +29,7 @@ where
     M: DownloadRpc,
     W: RpcWrite,
 {
-    writer: DropCloseWrite<W>,
+    writer: DropResetWrite<W>,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -39,7 +38,7 @@ where
     M: DownloadRpc,
     W: RpcWrite,
 {
-    writer: DropCloseWrite<W>,
+    writer: DropResetWrite<W>,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -59,7 +58,7 @@ where
 {
     pub(crate) fn new(writer: W) -> Self {
         Self {
-            writer: DropCloseWrite::new(writer),
+            writer: DropResetWrite::new(writer),
             marker: PhantomData,
         }
     }
@@ -89,9 +88,9 @@ where
         finish_bytes(&mut writer).await
     }
 
-    /// close the stream with a transport code
-    pub fn close(mut self, code: StreamCloseCode) {
-        DropCloseWrite::close(&mut self.writer, code);
+    /// reset the stream with a transport code
+    pub fn reset(mut self, code: ResetCode) {
+        DropResetWrite::reset(&mut self.writer, code);
     }
 }
 
@@ -122,8 +121,8 @@ where
         finish_bytes(&mut writer).await
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        DropCloseWrite::close(&mut self.writer, code);
+    pub fn reset(mut self, code: ResetCode) {
+        DropResetWrite::reset(&mut self.writer, code);
     }
 }
 
@@ -156,7 +155,7 @@ where
 {
     fn drop(&mut self) {
         if !self.finished {
-            DropCloseWrite::close(&mut self.parent.writer, StreamCloseCode::DROPPED);
+            DropResetWrite::reset(&mut self.parent.writer, ResetCode::DROPPED);
         }
     }
 }
@@ -178,11 +177,11 @@ pub(crate) async fn handle_download_inner<S, M, St, H, HF, E>(
     let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
-            let code = error.close_code();
+            let code = error.reset_code();
             handle_error(&state, &error);
             if let Some(code) = code {
-                reader.close(code);
-                writer.close(code);
+                reader.reset(code);
+                writer.reset(code);
             }
             return;
         }

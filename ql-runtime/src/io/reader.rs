@@ -4,7 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use ql_wire::{CloseTarget, StreamCloseCode};
+use ql_wire::{ResetCode, ResetTarget};
 
 use super::{
     inner::{Item, RxInner},
@@ -15,7 +15,7 @@ use crate::{command::Command, log, QlStreamError, RuntimeHandle};
 
 pub struct StreamReader {
     rx: Rx,
-    target: CloseTarget,
+    target: ResetTarget,
     terminal: ReaderTerminalState,
     handle: RuntimeHandle,
 }
@@ -41,7 +41,7 @@ impl std::fmt::Debug for StreamReader {
 }
 
 impl StreamReader {
-    pub(crate) fn new(shared: Rx, target: CloseTarget, handle: RuntimeHandle) -> Self {
+    pub(crate) fn new(shared: Rx, target: ResetTarget, handle: RuntimeHandle) -> Self {
         Self {
             rx: shared,
             target,
@@ -117,22 +117,22 @@ impl StreamReader {
         poll_fn(|cx| self.poll_read(cx)).await
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
     }
 
-    fn close_inner(&mut self, code: StreamCloseCode) {
+    fn reset_inner(&mut self, code: ResetCode) {
         if matches!(self.terminal, ReaderTerminalState::Delivered) {
             return;
         }
         log::debug!(
-            "byte reader explicit close: stream_id={:?} target={:?} code={:?}",
+            "byte reader explicit reset: stream_id={:?} target={:?} code={:?}",
             self.rx.stream_id(),
             self.target,
             code
         );
         self.terminal = ReaderTerminalState::Delivered;
-        self.handle.try_send(Command::CloseStream {
+        self.handle.try_send(Command::ResetStream {
             stream_id: self.rx.stream_id(),
             target: self.target,
             code,
@@ -146,15 +146,15 @@ impl Drop for StreamReader {
             return;
         }
         log::debug!(
-            "byte reader drop close: stream_id={:?} target={:?} code={:?}",
+            "byte reader drop reset: stream_id={:?} target={:?} code={:?}",
             self.rx.stream_id(),
             self.target,
-            StreamCloseCode::DROPPED
+            ResetCode::DROPPED
         );
-        self.handle.try_send(Command::CloseStream {
+        self.handle.try_send(Command::ResetStream {
             stream_id: self.rx.stream_id(),
             target: self.target,
-            code: StreamCloseCode::DROPPED,
+            code: ResetCode::DROPPED,
         });
     }
 }
@@ -165,7 +165,7 @@ mod loom_tests {
 
     use bytes::Bytes;
     use loom::thread;
-    use ql_wire::CloseTarget;
+    use ql_wire::ResetTarget;
 
     use super::*;
     use crate::io::sync::loom::*;
@@ -174,7 +174,7 @@ mod loom_tests {
     fn poll_read_observes_chunk_racing_with_registration() {
         check_model(|| {
             let inner = shared();
-            let mut reader = StreamReader::new(Rx(inner.clone()), CloseTarget::Origin, handle());
+            let mut reader = StreamReader::new(Rx(inner.clone()), ResetTarget::Origin, handle());
             let mut cx = Context::from_waker(Waker::noop());
 
             let producer = {

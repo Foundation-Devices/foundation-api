@@ -1,4 +1,4 @@
-use ql_wire::{CloseTarget, StreamClose, StreamCloseCode, StreamHeader, StreamId};
+use ql_wire::{ResetCode, ResetTarget, StreamHeader, StreamId, StreamReset};
 
 use super::{
     state::{InboundState, StreamState},
@@ -86,12 +86,12 @@ impl<'a, E: EventSink> StreamOps<'a, E> {
         Some(StreamWriter::new(stream, send_buffer_size))
     }
 
-    /// closes the origin lane, return lane, or both lanes of the stream
-    pub fn close(&mut self, target: CloseTarget, code: StreamCloseCode) {
+    /// resets the origin lane, return lane, or both lanes of the stream
+    pub fn reset(&mut self, target: ResetTarget, code: ResetCode) {
         let stream_id = self.stream_id;
         let stream = self.stream_mut();
-        SessionFsm::apply_local_close_to_stream(stream, target);
-        stream.pending_close = Some(StreamClose {
+        SessionFsm::apply_local_reset_to_stream(stream, target);
+        stream.pending_reset = Some(StreamReset {
             stream_id,
             target,
             code,

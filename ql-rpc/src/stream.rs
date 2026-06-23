@@ -5,7 +5,7 @@ use std::{
 
 use bytes::Bytes;
 
-use crate::{RouteId, ServiceId, StreamCloseCode};
+use crate::{ResetCode, RouteId, ServiceId};
 
 pub trait RpcStream {
     type Error;
@@ -24,24 +24,24 @@ pub trait RpcRead {
     fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, Self::Error>>;
 
     /// aborts the read side
-    fn close(self, code: StreamCloseCode);
+    fn reset(self, code: ResetCode);
 }
 
 pub trait RpcWrite {
     type Error;
 
-    /// writes outbound bytes before finish or close
+    /// writes outbound bytes before finish or reset
     fn poll_write(
         &mut self,
         bytes: &mut Bytes,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>>;
 
-    /// completes the write side and must be polled until ready without further write or close calls
+    /// completes the write side and must be polled until ready without further write or reset calls
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
 
     /// aborts the write side before finish
-    fn close(self, code: StreamCloseCode);
+    fn reset(self, code: ResetCode);
 }
 
 pub async fn read_bytes<R>(reader: &mut R) -> Result<Option<Bytes>, R::Error>
@@ -66,24 +66,24 @@ where
     poll_fn(|cx| writer.poll_finish(cx)).await
 }
 
-pub fn close_stream<St>(stream: St, code: StreamCloseCode)
+pub fn reset_stream<St>(stream: St, code: ResetCode)
 where
     St: RpcStream,
 {
     let (reader, writer) = stream.split();
-    reader.close(code);
-    writer.close(code);
+    reader.reset(code);
+    writer.reset(code);
 }
 
 pub(crate) use drop::*;
 mod drop {
     use super::*;
 
-    pub struct DropCloseRead<R: RpcRead> {
+    pub struct DropResetRead<R: RpcRead> {
         inner: Option<R>,
     }
 
-    impl<R: RpcRead> DropCloseRead<R> {
+    impl<R: RpcRead> DropResetRead<R> {
         pub fn new(reader: R) -> Self {
             Self {
                 inner: Some(reader),
@@ -101,14 +101,14 @@ mod drop {
         }
 
         #[inline]
-        pub fn close(&mut self, code: StreamCloseCode) {
+        pub fn reset(&mut self, code: ResetCode) {
             if let Some(reader) = self.inner.take() {
-                reader.close(code);
+                reader.reset(code);
             }
         }
     }
 
-    impl<R: RpcRead> RpcRead for DropCloseRead<R> {
+    impl<R: RpcRead> RpcRead for DropResetRead<R> {
         type Error = R::Error;
 
         #[track_caller]
@@ -116,22 +116,22 @@ mod drop {
             self.inner.as_mut().unwrap().poll_read(cx)
         }
 
-        fn close(mut self, code: StreamCloseCode) {
-            Self::close(&mut self, code);
+        fn reset(mut self, code: ResetCode) {
+            Self::reset(&mut self, code);
         }
     }
 
-    impl<R: RpcRead> Drop for DropCloseRead<R> {
+    impl<R: RpcRead> Drop for DropResetRead<R> {
         fn drop(&mut self) {
-            self.close(StreamCloseCode::DROPPED);
+            self.reset(ResetCode::DROPPED);
         }
     }
 
-    pub struct DropCloseWrite<W: RpcWrite> {
+    pub struct DropResetWrite<W: RpcWrite> {
         inner: Option<W>,
     }
 
-    impl<W: RpcWrite> DropCloseWrite<W> {
+    impl<W: RpcWrite> DropResetWrite<W> {
         pub fn new(writer: W) -> Self {
             Self {
                 inner: Some(writer),
@@ -139,14 +139,14 @@ mod drop {
         }
 
         #[inline]
-        pub fn close(&mut self, code: StreamCloseCode) {
+        pub fn reset(&mut self, code: ResetCode) {
             if let Some(writer) = self.inner.take() {
-                writer.close(code);
+                writer.reset(code);
             }
         }
     }
 
-    impl<W: RpcWrite> RpcWrite for DropCloseWrite<W> {
+    impl<W: RpcWrite> RpcWrite for DropResetWrite<W> {
         type Error = W::Error;
 
         #[track_caller]
@@ -163,14 +163,14 @@ mod drop {
             self.inner.as_mut().unwrap().poll_finish(cx)
         }
 
-        fn close(mut self, code: StreamCloseCode) {
-            Self::close(&mut self, code);
+        fn reset(mut self, code: ResetCode) {
+            Self::reset(&mut self, code);
         }
     }
 
-    impl<W: RpcWrite> Drop for DropCloseWrite<W> {
+    impl<W: RpcWrite> Drop for DropResetWrite<W> {
         fn drop(&mut self) {
-            self.close(StreamCloseCode::DROPPED)
+            self.reset(ResetCode::DROPPED)
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use ql_rpc::{RouteId, RpcRead, RpcStream, RpcWrite, ServiceId, StreamCloseCode};
+use ql_rpc::{ResetCode, RouteId, RpcRead, RpcStream, RpcWrite, ServiceId};
 
 use crate::{QlStream, QlStreamError, StreamReader, StreamWriter};
 
@@ -30,8 +30,8 @@ impl RpcRead for StreamReader {
         StreamReader::poll_read(self, cx)
     }
 
-    fn close(self, code: StreamCloseCode) {
-        StreamReader::close(self, code);
+    fn reset(self, code: ResetCode) {
+        StreamReader::reset(self, code);
     }
 }
 
@@ -50,7 +50,7 @@ impl RpcWrite for StreamWriter {
         StreamWriter::poll_finish(self, cx)
     }
 
-    fn close(self, code: StreamCloseCode) {
-        StreamWriter::close(self, code);
+    fn reset(self, code: ResetCode) {
+        StreamWriter::reset(self, code);
     }
 }

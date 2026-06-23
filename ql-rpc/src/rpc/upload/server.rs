@@ -8,7 +8,7 @@ use crate::{
         parts::{FrameKind, PartFrameReader, PartReadStep},
         read_framed_request_prefix,
     },
-    DropCloseRead, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode, Upload,
+    DropResetRead, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, Upload,
 };
 
 #[trait_variant::make(UploadHandler: Send)]
@@ -32,7 +32,7 @@ where
     M: Upload,
     R: RpcRead,
 {
-    stream: DropCloseRead<R>,
+    stream: DropResetRead<R>,
     reader: PartFrameReader<M::PartHeader>,
 }
 
@@ -107,12 +107,12 @@ where
         }
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
     }
 
-    fn close_inner(&mut self, code: StreamCloseCode) {
-        DropCloseRead::close(&mut self.stream, code);
+    fn reset_inner(&mut self, code: ResetCode) {
+        DropResetRead::reset(&mut self.stream, code);
     }
 }
 
@@ -144,8 +144,8 @@ where
         }
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.parent.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.parent.reset_inner(code);
         self.finished = true;
     }
 }
@@ -157,7 +157,7 @@ where
 {
     fn drop(&mut self) {
         if !self.finished {
-            self.parent.close_inner(StreamCloseCode::DROPPED);
+            self.parent.reset_inner(ResetCode::DROPPED);
         }
     }
 }
@@ -177,8 +177,8 @@ where
         self.inner.respond(response).await
     }
 
-    pub fn close(self, code: StreamCloseCode) {
-        self.inner.close(code);
+    pub fn reset(self, code: ResetCode) {
+        self.inner.reset(code);
     }
 }
 
@@ -205,11 +205,11 @@ pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
         match read_framed_request_prefix::<M::Request, _>(&mut reader, config).await {
             Ok(value) => value,
             Err(error) => {
-                let code = error.close_code();
+                let code = error.reset_code();
                 handle_error(&state, &error);
                 if let Some(code) = code {
-                    reader.close(code);
-                    writer.close(code);
+                    reader.reset(code);
+                    writer.reset(code);
                 }
                 return;
             }
@@ -219,7 +219,7 @@ pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
         state,
         request,
         UploadReader {
-            stream: DropCloseRead::new(reader),
+            stream: DropResetRead::new(reader),
             reader: PartFrameReader::new(buffered),
         },
         UploadResponder::new(writer),

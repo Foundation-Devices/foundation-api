@@ -6,7 +6,7 @@ mod writer;
 
 use std::ops::Deref;
 
-use ql_wire::{CloseTarget, StreamId};
+use ql_wire::{ResetTarget, StreamId};
 
 pub use self::{reader::StreamReader, slot::PushError, writer::StreamWriter};
 use crate::RuntimeHandle;
@@ -45,8 +45,8 @@ impl Tx {
 
 pub fn new_stream(
     stream_id: StreamId,
-    reader_target: CloseTarget,
-    writer_target: CloseTarget,
+    reader_target: ResetTarget,
+    writer_target: ResetTarget,
     handle: RuntimeHandle,
 ) -> (StreamReader, StreamWriter, Rx, Tx) {
     let shared = inner::new(stream_id);

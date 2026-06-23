@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     progress::{Progress, ReadStep, ResponseReader},
-    DropCloseRead, Error, RpcError, RpcRead, StreamCloseCode,
+    DropResetRead, Error, ResetCode, RpcError, RpcRead,
 };
 
 pub struct ProgressCall<M, R>
@@ -14,7 +14,7 @@ where
     M: Progress,
     R: RpcRead,
 {
-    stream: DropCloseRead<R>,
+    stream: DropResetRead<R>,
     state: State<M, R::Error>,
 }
 
@@ -42,7 +42,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: DropCloseRead::new(stream),
+            stream: DropResetRead::new(stream),
             state: State::Reading(ResponseReader::default()),
         }
     }
@@ -100,13 +100,13 @@ where
         self.poll_step(cx)
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
     }
 
-    fn close_inner(&mut self, code: StreamCloseCode) {
+    fn reset_inner(&mut self, code: ResetCode) {
         self.state = State::Done;
-        DropCloseRead::close(&mut self.stream, code);
+        DropResetRead::reset(&mut self.stream, code);
     }
 }
 

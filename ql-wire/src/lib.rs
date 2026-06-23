@@ -34,8 +34,7 @@ pub use identity::*;
 pub use pq::*;
 pub use qid::*;
 pub use ql_common::{
-    RouteId, ServiceId, StreamCloseCode, StreamCloseOrigin, StreamId, VarInt, VarIntBoundsExceeded,
-    QID,
+    ResetCode, ResetOrigin, RouteId, ServiceId, StreamId, VarInt, VarIntBoundsExceeded, QID,
 };
 pub use record::*;
 #[cfg(any(feature = "test-utils", test))]

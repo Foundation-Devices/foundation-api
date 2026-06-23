@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     subscription::{ReadStep, ResponseReader, Subscription},
-    DropCloseRead, RpcError, RpcRead, StreamCloseCode,
+    DropResetRead, ResetCode, RpcError, RpcRead,
 };
 
 pub struct SubscriptionCall<M, R>
@@ -13,7 +13,7 @@ where
     M: Subscription,
     R: RpcRead,
 {
-    stream: DropCloseRead<R>,
+    stream: DropResetRead<R>,
     reader: ResponseReader<M>,
 }
 
@@ -24,7 +24,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: DropCloseRead::new(stream),
+            stream: DropResetRead::new(stream),
             reader: ResponseReader::default(),
         }
     }
@@ -74,11 +74,11 @@ where
         }
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
     }
 
-    fn close_inner(&mut self, code: StreamCloseCode) {
-        DropCloseRead::close(&mut self.stream, code);
+    fn reset_inner(&mut self, code: ResetCode) {
+        DropResetRead::reset(&mut self.stream, code);
     }
 }

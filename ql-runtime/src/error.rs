@@ -1,10 +1,10 @@
-use ql_wire::{StreamCloseCode, StreamCloseOrigin};
+use ql_wire::{ResetCode, ResetOrigin};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlStreamError {
-    StreamClosed {
-        code: StreamCloseCode,
-        origin: StreamCloseOrigin,
+    StreamReset {
+        code: ResetCode,
+        origin: ResetOrigin,
     },
     NoSession,
 }
@@ -12,7 +12,7 @@ pub enum QlStreamError {
 impl std::fmt::Display for QlStreamError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::StreamClosed { code, origin } => write!(f, "stream closed {code:?} ({origin:?})"),
+            Self::StreamReset { code, origin } => write!(f, "stream reset {code:?} ({origin:?})"),
             Self::NoSession => f.write_str("no session"),
         }
     }

@@ -1,4 +1,4 @@
-use crate::{RouteId, ServiceId, StreamCloseCode};
+use crate::{ResetCode, RouteId, ServiceId};
 
 mod builder;
 mod config;
@@ -9,7 +9,6 @@ pub use self::{
     config::RouterConfig,
     mode::*,
 };
-use crate::{close_stream, RpcStream};
 pub use crate::{
     download::{DownloadHandler, DownloadHandlerLocal, DownloadStart, DownloadWriter},
     duplex::{DuplexHandler, DuplexHandlerLocal, DuplexPeer},
@@ -19,6 +18,7 @@ pub use crate::{
     subscription::{SubscriptionHandler, SubscriptionHandlerLocal, SubscriptionResponder},
     upload::{UploadHandler, UploadHandlerLocal, UploadReader, UploadResponder},
 };
+use crate::{reset_stream, RpcStream};
 
 pub struct Router<S, St, Sp>
 where
@@ -90,7 +90,7 @@ where
             route_id,
         };
         let Ok(index) = self.routes.binary_search_by_key(&key, |entry| entry.key) else {
-            close_stream(stream, StreamCloseCode::UNKNOWN_ROUTE);
+            reset_stream(stream, ResetCode::UNKNOWN_ROUTE);
             return None;
         };
         let route = self.routes[index].route;

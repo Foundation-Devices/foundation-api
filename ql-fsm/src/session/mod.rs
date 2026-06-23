@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use indexmap::IndexMap;
 use ql_wire::{
-    CloseTarget, RecordAck, RecordSeq, RouteId, ServiceId, SessionClose, SessionCloseCode,
-    SessionFrame, SessionRecordBuilder, StreamClose, StreamData, StreamHeader, StreamId,
+    RecordAck, RecordSeq, ResetTarget, RouteId, ServiceId, SessionClose, SessionCloseCode,
+    SessionFrame, SessionRecordBuilder, StreamData, StreamHeader, StreamId, StreamReset,
     StreamWindow, VarInt, WireError,
 };
 
@@ -72,8 +72,8 @@ pub enum SessionEvent {
     Writable(StreamId),
     Finished(StreamId),
     OutboundFinished(StreamId),
-    Closed(StreamClose),
-    WritableClosed(StreamClose),
+    Reset(StreamReset),
+    WritableReset(StreamReset),
     SessionClosed(SessionClose),
     Unpaired,
 }
@@ -248,8 +248,8 @@ impl SessionFsm {
                     }
                 }
                 SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame, sink),
-                SessionFrame::StreamClose(frame) => {
-                    if self.handle_stream_close(&frame, sink).is_err() {
+                SessionFrame::StreamReset(frame) => {
+                    if self.handle_stream_reset(&frame, sink).is_err() {
                         self.close(SessionCloseCode::PROTOCOL, sink);
                         return;
                     }
@@ -409,7 +409,7 @@ impl SessionFsm {
             sent_at: None,
         };
 
-        self.push_next_pending_stream_close(&mut builder, &mut outbound);
+        self.push_next_pending_stream_reset(&mut builder, &mut outbound);
 
         if self.state.pending_ping && builder.push_ping() {
             self.state.pending_ping = false;
@@ -449,7 +449,7 @@ impl SessionFsm {
         self.clear_streams();
     }
 
-    fn push_next_pending_stream_close(
+    fn push_next_pending_stream_reset(
         &mut self,
         builder: &mut SessionRecordBuilder,
         outbound: &mut TrackedRecord,
@@ -463,15 +463,15 @@ impl SessionFsm {
         for offset in 0..len {
             let index = (start + offset) % len;
             let stream = self.state.streams.get_index_mut(index).unwrap().1;
-            let Some(close) = stream.pending_close.as_ref() else {
+            let Some(reset) = stream.pending_reset.as_ref() else {
                 continue;
             };
-            if !builder.push_stream_close(close) {
+            if !builder.push_stream_reset(reset) {
                 break;
             }
 
-            outbound.frames.push(TrackedFrame::StreamClose(
-                stream.pending_close.take().unwrap(),
+            outbound.frames.push(TrackedFrame::StreamReset(
+                stream.pending_reset.take().unwrap(),
             ));
         }
     }
@@ -673,7 +673,7 @@ impl SessionFsm {
 
         match stream.inbound_state {
             InboundState::Open => {}
-            InboundState::Discarding | InboundState::Closed(_) => return Ok(()),
+            InboundState::Discarding | InboundState::Reset(_) => return Ok(()),
             InboundState::Finished => {
                 // finished stream should always have a final offset
                 let Some(final_offset) = stream.rx.final_offset() else {
@@ -740,9 +740,9 @@ impl SessionFsm {
         }
     }
 
-    fn handle_stream_close(
+    fn handle_stream_reset(
         &mut self,
-        frame: &StreamClose,
+        frame: &StreamReset,
         sink: &mut impl EventSink,
     ) -> Result<(), ()> {
         let stream_id = frame.stream_id;
@@ -757,26 +757,26 @@ impl SessionFsm {
         if Self::target_affects_inbound(stream.role, frame.target)
             && !matches!(
                 stream.inbound_state,
-                InboundState::Closed(_) | InboundState::Discarding
+                InboundState::Reset(_) | InboundState::Discarding
             )
         {
-            stream.inbound_state = InboundState::Closed(frame.clone());
+            stream.inbound_state = InboundState::Reset(frame.clone());
             stream.reset_recv();
-            sink.emit(SessionEvent::Closed(frame.clone()));
+            sink.emit(SessionEvent::Reset(frame.clone()));
         }
         if Self::target_affects_outbound(stream.role, frame.target)
             && !matches!(stream.outbound_state, OutboundState::Closed)
         {
             stream.outbound_state = OutboundState::Closed;
             stream.tx.clear();
-            stream.pending_close = None;
-            sink.emit(SessionEvent::WritableClosed(frame.clone()));
+            stream.pending_reset = None;
+            sink.emit(SessionEvent::WritableReset(frame.clone()));
         }
         self.try_reap_stream(frame.stream_id);
         Ok(())
     }
 
-    fn apply_local_close_to_stream(stream: &mut StreamState, target: CloseTarget) {
+    fn apply_local_reset_to_stream(stream: &mut StreamState, target: ResetTarget) {
         if Self::target_affects_inbound(stream.role, target) {
             stream.inbound_state = InboundState::Discarding;
             stream.reset_recv();
@@ -787,12 +787,12 @@ impl SessionFsm {
         }
     }
 
-    fn target_affects_inbound(role: StreamRole, target: CloseTarget) -> bool {
-        matches!(target, CloseTarget::Both) || role.inbound_target() == target
+    fn target_affects_inbound(role: StreamRole, target: ResetTarget) -> bool {
+        matches!(target, ResetTarget::Both) || role.inbound_target() == target
     }
 
-    fn target_affects_outbound(role: StreamRole, target: CloseTarget) -> bool {
-        matches!(target, CloseTarget::Both) || role.outbound_target() == target
+    fn target_affects_outbound(role: StreamRole, target: ResetTarget) -> bool {
+        matches!(target, ResetTarget::Both) || role.outbound_target() == target
     }
 
     fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
@@ -800,7 +800,7 @@ impl SessionFsm {
             record.window_updates.iter().any(|(id, _)| *id == stream_id)
                 || record.frames.iter().any(|frame| match frame {
                     TrackedFrame::StreamData(frame) => frame.stream_id == stream_id,
-                    TrackedFrame::StreamClose(frame) => frame.stream_id == stream_id,
+                    TrackedFrame::StreamReset(frame) => frame.stream_id == stream_id,
                 })
         });
         if tracked_refs_stream {
@@ -808,7 +808,7 @@ impl SessionFsm {
         }
 
         if !stream.tx.is_empty()
-            || stream.pending_close.is_some()
+            || stream.pending_reset.is_some()
             || stream.pending_window
             || stream.readable_bytes() > 0
             || stream.rx.buffered_end_offset() > stream.rx.start_offset()
@@ -818,7 +818,7 @@ impl SessionFsm {
 
         matches!(
             stream.inbound_state,
-            InboundState::Finished | InboundState::Closed(_) | InboundState::Discarding
+            InboundState::Finished | InboundState::Reset(_) | InboundState::Discarding
         ) && matches!(
             stream.outbound_state,
             OutboundState::Finished | OutboundState::Closed
@@ -975,14 +975,14 @@ fn restore_tracked_record(
 
 fn requeue_tracked_frame(streams: &mut IndexMap<StreamId, StreamState>, frame: TrackedFrame) {
     match frame {
-        TrackedFrame::StreamClose(close) => restore_stream_close(streams, close),
+        TrackedFrame::StreamReset(reset) => restore_stream_reset(streams, reset),
         TrackedFrame::StreamData(frame) => restore_stream_data(streams, frame),
     }
 }
 
-fn restore_stream_close(streams: &mut IndexMap<StreamId, StreamState>, close: StreamClose) {
-    if let Some(stream) = streams.get_mut(&close.stream_id) {
-        stream.pending_close = Some(close);
+fn restore_stream_reset(streams: &mut IndexMap<StreamId, StreamState>, reset: StreamReset) {
+    if let Some(stream) = streams.get_mut(&reset.stream_id) {
+        stream.pending_reset = Some(reset);
     }
 }
 
@@ -1009,7 +1009,7 @@ fn acknowledge_tracked_frame(
     sink: &mut impl EventSink,
 ) {
     match frame {
-        TrackedFrame::StreamClose(_) => {}
+        TrackedFrame::StreamReset(_) => {}
         TrackedFrame::StreamData(frame) => {
             let stream_id = frame.stream_id;
             if let Some(stream) = streams.get_mut(&stream_id) {

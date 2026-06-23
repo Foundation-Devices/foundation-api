@@ -1,21 +1,21 @@
 use super::StreamId;
-use crate::{codec, ByteSlice, StreamCloseCode, WireEncode, WireError};
+use crate::{codec, ByteSlice, ResetCode, WireEncode, WireError};
 
-/// aborts one or both lanes of a stream with a close code
+/// aborts one or both lanes of a stream with a reset code
 ///
 /// stream origin is the peer that opened the stream
 /// origin lane carries bytes sent by the stream origin
 /// return lane carries bytes sent back toward the stream origin
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamClose {
+pub struct StreamReset {
     pub stream_id: StreamId,
-    pub target: CloseTarget,
-    pub code: StreamCloseCode,
+    pub target: ResetTarget,
+    pub code: ResetCode,
 }
 
-impl StreamClose {}
+impl StreamReset {}
 
-impl WireEncode for StreamClose {
+impl WireEncode for StreamReset {
     fn encoded_len(&self) -> usize {
         self.stream_id.encoded_len() + self.target.encoded_len() + self.code.encoded_len()
     }
@@ -27,7 +27,7 @@ impl WireEncode for StreamClose {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for StreamClose {
+impl<B: ByteSlice> codec::WireDecode<B> for StreamReset {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
             stream_id: reader.decode()?,
@@ -37,25 +37,25 @@ impl<B: ByteSlice> codec::WireDecode<B> for StreamClose {
     }
 }
 
-/// selects which stream lane a [`StreamClose`] applies to
+/// selects which stream lane a [`StreamReset`] applies to
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum CloseTarget {
-    /// close the lane sent by the stream origin
+pub enum ResetTarget {
+    /// reset the lane sent by the stream origin
     Origin = 1,
-    /// close the lane sent back toward the stream origin
+    /// reset the lane sent back toward the stream origin
     Return = 2,
-    /// close both stream lanes
+    /// reset both stream lanes
     Both = 3,
 }
 
-impl CloseTarget {
+impl ResetTarget {
     pub const fn to_wire(self) -> u8 {
         self as u8
     }
 }
 
-impl WireEncode for CloseTarget {
+impl WireEncode for ResetTarget {
     fn encoded_len(&self) -> usize {
         size_of::<u8>()
     }
@@ -65,7 +65,7 @@ impl WireEncode for CloseTarget {
     }
 }
 
-impl TryFrom<u8> for CloseTarget {
+impl TryFrom<u8> for ResetTarget {
     type Error = WireError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
@@ -78,19 +78,19 @@ impl TryFrom<u8> for CloseTarget {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for CloseTarget {
+impl<B: ByteSlice> codec::WireDecode<B> for ResetTarget {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         reader.decode::<u8>()?.try_into()
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for StreamCloseCode {
+impl<B: ByteSlice> codec::WireDecode<B> for ResetCode {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self(reader.decode()?))
     }
 }
 
-impl WireEncode for StreamCloseCode {
+impl WireEncode for ResetCode {
     fn encoded_len(&self) -> usize {
         size_of::<u16>()
     }

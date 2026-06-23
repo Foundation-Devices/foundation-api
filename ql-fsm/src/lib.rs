@@ -37,7 +37,7 @@ pub use error::*;
 pub use pairing::PairingInvite;
 use ql_wire::{
     PairingToken, PeerBundle, QlCrypto, QlIdentity, RouteId, ServiceId, SessionClose,
-    SessionCloseCode, StreamClose, StreamHeader, StreamId,
+    SessionCloseCode, StreamHeader, StreamId, StreamReset,
 };
 pub use session::{SessionEvent, StreamReadIter, StreamWriter};
 
@@ -76,10 +76,10 @@ pub enum Event {
     Finished(StreamId),
     /// our local FIN was acknowledged by the peer at the session layer
     OutboundFinished(StreamId),
-    /// a stream was closed
-    Closed(StreamClose),
-    /// local writes on this stream are closed
-    WritableClosed(StreamClose),
+    /// a stream was reset
+    Reset(StreamReset),
+    /// local writes on this stream are reset
+    WritableReset(StreamReset),
     /// the encrypted session was closed
     ///
     /// session close is abortive and best-effort. the session ends immediately
@@ -135,9 +135,9 @@ impl StreamOps<'_> {
         self.inner.writer()
     }
 
-    /// closes the origin lane, return lane, or both lanes of the stream
-    pub fn close(&mut self, target: ql_wire::CloseTarget, code: ql_wire::StreamCloseCode) {
-        self.inner.close(target, code);
+    /// resets the origin lane, return lane, or both lanes of the stream
+    pub fn reset(&mut self, target: ql_wire::ResetTarget, code: ql_wire::ResetCode) {
+        self.inner.reset(target, code);
     }
 }
 

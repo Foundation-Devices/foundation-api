@@ -5,7 +5,7 @@ use bytes::{BufMut, Bytes};
 use crate::{
     download::{Download, PartReadStep},
     rpc::parts::FrameKind,
-    DropCloseRead, FramedPrefixStep, FramedReader, RpcCodec, RpcError, RpcRead, StreamCloseCode,
+    DropResetRead, FramedPrefixStep, FramedReader, ResetCode, RpcCodec, RpcError, RpcRead,
 };
 
 pub struct DownloadCall<M, R>
@@ -13,7 +13,7 @@ where
     M: Download,
     R: RpcRead,
 {
-    stream: DropCloseRead<R>,
+    stream: DropResetRead<R>,
     reader: Option<FramedReader<M::ResponseHeader>>,
 }
 
@@ -31,7 +31,7 @@ where
     M: Download,
     R: RpcRead,
 {
-    stream: DropCloseRead<R>,
+    stream: DropResetRead<R>,
     reader: crate::download::PartFrameReader<M::PartHeader>,
 }
 
@@ -42,7 +42,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: DropCloseRead::new(stream),
+            stream: DropResetRead::new(stream),
             reader: Some(FramedReader::default()),
         }
     }
@@ -76,12 +76,12 @@ where
         }
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
     }
 
-    fn close_inner(&mut self, code: StreamCloseCode) {
-        DropCloseRead::close(&mut self.stream, code);
+    fn reset_inner(&mut self, code: ResetCode) {
+        DropResetRead::reset(&mut self.stream, code);
     }
 }
 
@@ -138,8 +138,8 @@ where
         }
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
     }
 
     async fn read_frame(
@@ -162,8 +162,8 @@ where
         }
     }
 
-    fn close_inner(&mut self, code: StreamCloseCode) {
-        DropCloseRead::close(&mut self.stream, code);
+    fn reset_inner(&mut self, code: ResetCode) {
+        DropResetRead::reset(&mut self.stream, code);
     }
 }
 
@@ -193,8 +193,8 @@ where
         }
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.parent.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.parent.reset_inner(code);
         self.finished = true;
     }
 }
@@ -206,7 +206,7 @@ where
 {
     fn drop(&mut self) {
         if !self.finished {
-            self.parent.close_inner(StreamCloseCode::DROPPED);
+            self.parent.reset_inner(ResetCode::DROPPED);
         }
     }
 }

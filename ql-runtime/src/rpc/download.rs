@@ -25,8 +25,8 @@ where
         Ok((header, DownloadReader { inner }))
     }
 
-    pub fn close(self, code: ql_wire::StreamCloseCode) {
-        self.inner.close(ql_rpc::StreamCloseCode(code.0));
+    pub fn reset(self, code: ql_wire::ResetCode) {
+        self.inner.reset(ql_rpc::ResetCode(code.0));
     }
 }
 
@@ -48,8 +48,8 @@ where
         self.inner.complete().await.map_err(RpcError::from)
     }
 
-    pub fn close(self, code: ql_wire::StreamCloseCode) {
-        self.inner.close(ql_rpc::StreamCloseCode(code.0));
+    pub fn reset(self, code: ql_wire::ResetCode) {
+        self.inner.reset(ql_rpc::ResetCode(code.0));
     }
 }
 
@@ -61,7 +61,7 @@ where
         Ok(self.inner.read_chunk().await?)
     }
 
-    pub fn close(self, code: ql_wire::StreamCloseCode) {
-        self.inner.close(ql_rpc::StreamCloseCode(code.0));
+    pub fn reset(self, code: ql_wire::ResetCode) {
+        self.inner.reset(ql_rpc::ResetCode(code.0));
     }
 }

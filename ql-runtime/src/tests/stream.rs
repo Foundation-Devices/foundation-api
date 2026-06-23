@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ql_wire::{StreamCloseCode, StreamCloseOrigin};
+use ql_wire::{ResetCode, ResetOrigin};
 
 use super::*;
 use crate::QlStreamError;
@@ -124,15 +124,15 @@ async fn dropping_responder_closes_initiator_response() {
         let err = stream.writer.finish().await.unwrap_err();
         assert!(matches!(
             err,
-            QlStreamError::StreamClosed { code, origin }
-                if code == StreamCloseCode::DROPPED && origin == StreamCloseOrigin::Peer
+            QlStreamError::StreamReset { code, origin }
+                if code == ResetCode::DROPPED && origin == ResetOrigin::Peer
         ));
 
         let err = next_chunk(&mut stream.reader).await.unwrap_err();
         assert!(matches!(
             err,
-            QlStreamError::StreamClosed { code, origin }
-                if code == StreamCloseCode::DROPPED && origin == StreamCloseOrigin::Peer
+            QlStreamError::StreamReset { code, origin }
+                if code == ResetCode::DROPPED && origin == ResetOrigin::Peer
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -165,8 +165,8 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             let err = writer.finish().await.unwrap_err();
             assert!(matches!(
                 err,
-                QlStreamError::StreamClosed { code, origin }
-                    if code == StreamCloseCode::DROPPED && origin == StreamCloseOrigin::Peer
+                QlStreamError::StreamReset { code, origin }
+                    if code == ResetCode::DROPPED && origin == ResetOrigin::Peer
             ));
         });
 
@@ -213,7 +213,7 @@ async fn closing_initiator_reader_preserves_initiator_writer() {
             .await
             .unwrap();
         let mut writer = stream.writer;
-        stream.reader.close(StreamCloseCode::CANCELLED);
+        stream.reader.reset(ResetCode::CANCELLED);
 
         writer.write(Bytes::from_static(&[1, 2])).await.unwrap();
         writer.write(Bytes::from_static(&[3, 4])).await.unwrap();

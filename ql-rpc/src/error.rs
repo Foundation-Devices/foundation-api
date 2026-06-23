@@ -1,4 +1,4 @@
-use crate::StreamCloseCode;
+use crate::ResetCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -24,13 +24,13 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl Error {
-    pub const fn close_code(self) -> StreamCloseCode {
+    pub const fn reset_code(self) -> ResetCode {
         match self {
-            Self::LengthOverflow => StreamCloseCode::LIMIT,
+            Self::LengthOverflow => ResetCode::LIMIT,
             Self::Truncated
             | Self::UnexpectedFrameKind(_)
             | Self::MissingResponse
-            | Self::TrailingBytes => StreamCloseCode::PROTOCOL,
+            | Self::TrailingBytes => ResetCode::PROTOCOL,
         }
     }
 }
@@ -43,10 +43,10 @@ pub enum RpcError<C, T> {
 }
 
 impl<C, T> RpcError<C, T> {
-    pub const fn close_code(&self) -> Option<StreamCloseCode> {
+    pub const fn reset_code(&self) -> Option<ResetCode> {
         match self {
-            Self::Protocol(error) => Some(error.close_code()),
-            Self::Codec(_) => Some(StreamCloseCode::CODEC),
+            Self::Protocol(error) => Some(error.reset_code()),
+            Self::Codec(_) => Some(ResetCode::CODEC),
             Self::Transport(_) => None,
         }
     }

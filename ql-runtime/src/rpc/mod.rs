@@ -38,7 +38,7 @@ impl RpcHandle {
             .inner
             .open_stream(open_stream_params(M::SERVICE, M::ROUTE))
             .await?;
-        stream.reader.close(ql_rpc::StreamCloseCode::CANCELLED);
+        stream.reader.reset(ql_rpc::ResetCode::CANCELLED);
         stream.writer.write(Bytes::from(payload)).await?;
         stream.writer.finish().await?;
         Ok(())

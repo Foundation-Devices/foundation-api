@@ -4,7 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use ql_wire::{CloseTarget, StreamCloseCode};
+use ql_wire::{ResetCode, ResetTarget};
 
 use super::{
     inner::{Item, TxInner},
@@ -15,7 +15,7 @@ use crate::{command::Command, log, QlStreamError, RuntimeHandle};
 
 pub struct StreamWriter {
     tx: Tx,
-    target: CloseTarget,
+    target: ResetTarget,
     open: bool,
     terminal: WriterTerminalState,
     handle: RuntimeHandle,
@@ -39,7 +39,7 @@ impl std::fmt::Debug for StreamWriter {
 }
 
 impl StreamWriter {
-    pub(crate) fn new(shared: Tx, target: CloseTarget, handle: RuntimeHandle) -> Self {
+    pub(crate) fn new(shared: Tx, target: ResetTarget, handle: RuntimeHandle) -> Self {
         Self {
             tx: shared,
             target,
@@ -139,8 +139,8 @@ impl StreamWriter {
         self.poll_terminal(cx)
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
     }
 
     fn poll_runtime(&self) {
@@ -194,18 +194,18 @@ impl StreamWriter {
         Poll::Pending
     }
 
-    fn close_inner(&mut self, code: StreamCloseCode) {
+    fn reset_inner(&mut self, code: ResetCode) {
         if !self.open {
             return;
         }
         self.open = false;
         log::debug!(
-            "byte writer close: stream_id={:?} target={:?} code={:?}",
+            "byte writer reset: stream_id={:?} target={:?} code={:?}",
             self.tx.stream_id(),
             self.target,
             code
         );
-        self.handle.try_send(Command::CloseStream {
+        self.handle.try_send(Command::ResetStream {
             stream_id: self.tx.stream_id(),
             target: self.target,
             code,
@@ -215,7 +215,7 @@ impl StreamWriter {
 
 impl Drop for StreamWriter {
     fn drop(&mut self) {
-        self.close_inner(StreamCloseCode::DROPPED);
+        self.reset_inner(ResetCode::DROPPED);
     }
 }
 
@@ -225,7 +225,7 @@ mod loom_tests {
 
     use bytes::Bytes;
     use loom::thread;
-    use ql_wire::CloseTarget;
+    use ql_wire::ResetTarget;
 
     use super::*;
     use crate::io::sync::loom::*;
@@ -236,7 +236,7 @@ mod loom_tests {
             let inner = shared();
             inner.tx.try_write(Bytes::from_static(b"abc")).unwrap();
 
-            let mut writer = StreamWriter::new(Tx(inner.clone()), CloseTarget::Origin, handle());
+            let mut writer = StreamWriter::new(Tx(inner.clone()), ResetTarget::Origin, handle());
             let mut bytes = Bytes::from_static(b"xyz");
             let mut cx = Context::from_waker(Waker::noop());
 
@@ -267,7 +267,7 @@ mod loom_tests {
     fn poll_finish_observes_terminal_racing_with_registration() {
         check_model(|| {
             let inner = shared();
-            let mut writer = StreamWriter::new(Tx(inner.clone()), CloseTarget::Origin, handle());
+            let mut writer = StreamWriter::new(Tx(inner.clone()), ResetTarget::Origin, handle());
             let mut cx = Context::from_waker(Waker::noop());
 
             writer.queue_finish();

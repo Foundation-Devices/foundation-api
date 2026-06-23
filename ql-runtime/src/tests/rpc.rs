@@ -12,9 +12,9 @@ use futures_lite::StreamExt;
 use ql_rpc::{
     DownloadHandlerLocal, DownloadStart, DuplexHandlerLocal, DuplexPeer, LocalSpawner,
     NotificationHandlerLocal, ProgressHandlerLocal, ProgressResponder, RequestHandler,
-    RequestHandlerLocal, Response, RouteId, SendSpawner, ServiceId, Spawner, StreamCloseCode,
-    StreamCloseOrigin, SubscriptionHandlerLocal, SubscriptionResponder, UploadHandlerLocal,
-    UploadReader, UploadResponder,
+    RequestHandlerLocal, ResetCode, ResetOrigin, Response, RouteId, SendSpawner, ServiceId,
+    Spawner, SubscriptionHandlerLocal, SubscriptionResponder, UploadHandlerLocal, UploadReader,
+    UploadResponder,
 };
 
 use super::*;
@@ -330,8 +330,8 @@ async fn rpc_router_enforces_max_request_bytes() {
         let response = rpc.request::<Echo>(&"hello".to_string()).await;
         assert!(matches!(
             response,
-            Err(RpcError::Closed { code, origin })
-                if code == StreamCloseCode::LIMIT && origin == StreamCloseOrigin::Peer
+            Err(RpcError::Reset { code, origin })
+                if code == ResetCode::LIMIT && origin == ResetOrigin::Peer
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)

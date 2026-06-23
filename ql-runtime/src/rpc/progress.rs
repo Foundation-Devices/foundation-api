@@ -20,8 +20,8 @@ impl<M> ProgressCall<M>
 where
     M: Progress,
 {
-    pub fn close(self, code: ql_wire::StreamCloseCode) {
-        self.inner.close(ql_rpc::StreamCloseCode(code.0));
+    pub fn reset(self, code: ql_wire::ResetCode) {
+        self.inner.reset(ql_rpc::ResetCode(code.0));
     }
 }
 

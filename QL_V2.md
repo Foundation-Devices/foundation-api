@@ -65,7 +65,7 @@ Today, varints are used for:
 - `StreamData.bytes_len`
 - `StreamWindow.stream_id`
 - `StreamWindow.maximum_offset`
-- `StreamClose.stream_id`
+- `StreamReset.stream_id`
 
 ### Handshake records
 
@@ -128,7 +128,7 @@ The visible session header is authenticated as AEAD AAD but is not encrypted.
 | `Unpair` | 1 byte | forget the currently bound peer and abort the session |
 | `Ack` | `4+` bytes | acknowledge received session records with ACK ranges |
 | `StreamWindow` | `3..17` bytes | extend per-stream send credit |
-| `StreamClose` | `5..12` bytes | abort one stream lane or both lanes |
+| `StreamReset` | `5..12` bytes | abort one stream lane or both lanes |
 | `Close` | 3 bytes | close the whole session |
 | `StreamData` | `5..34 + payload_len` bytes | carry stream bytes, optional opener route, and optional `fin` |
 
@@ -340,7 +340,7 @@ Receive credit advances when the local application commits read bytes, not merel
 
 ## Close And Liveness
 
-`StreamClose` aborts a stream early. Semantically it can target:
+`StreamReset` aborts a stream early. Semantically it can target:
 
 - the origin lane
 - the return lane

@@ -1,4 +1,4 @@
-use ql_wire::{generate_identity, NoopCrypto, PeerBundle, SoftwareCrypto, StreamClose, QID};
+use ql_wire::{generate_identity, NoopCrypto, PeerBundle, SoftwareCrypto, StreamReset, QID};
 
 use super::*;
 use crate::{
@@ -69,8 +69,8 @@ fn new_inbound_io(capacity: usize) -> InboundIo {
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
     let stream = io::new_stream(
         StreamId(99u32.into()),
-        CloseTarget::Origin,
-        CloseTarget::Return,
+        ResetTarget::Origin,
+        ResetTarget::Return,
         RuntimeHandle::new(runtime_tx),
     );
     let (_, _, reader_io, _) = stream;
@@ -81,8 +81,8 @@ fn new_outbound_io() -> OutboundIo {
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
     let stream = io::new_stream(
         StreamId(100u32.into()),
-        CloseTarget::Return,
-        CloseTarget::Origin,
+        ResetTarget::Return,
+        ResetTarget::Origin,
         RuntimeHandle::new(runtime_tx),
     );
     let (_, _, _, writer_io) = stream;
@@ -90,7 +90,7 @@ fn new_outbound_io() -> OutboundIo {
 }
 
 #[test]
-fn handle_inbound_finished_reaps_closed_initiator_stream() {
+fn handle_inbound_finished_reaps_reset_initiator_stream() {
     let (mut state, _fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
 
@@ -105,7 +105,7 @@ fn handle_inbound_finished_reaps_closed_initiator_stream() {
 }
 
 #[test]
-fn handle_closed_stream_reaps_when_both_halves_close() {
+fn handle_reset_stream_reaps_when_both_halves_reset() {
     let (mut state, _fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
 
@@ -114,10 +114,10 @@ fn handle_closed_stream_reaps_when_both_halves_close() {
         DriverStreamIo::new(false, Some(new_outbound_io()), Some(new_inbound_io(1))),
     );
 
-    state.handle_closed_stream(&StreamClose {
+    state.handle_reset_stream(&StreamReset {
         stream_id,
-        target: CloseTarget::Both,
-        code: StreamCloseCode::CANCELLED,
+        target: ResetTarget::Both,
+        code: ResetCode::CANCELLED,
     });
 
     assert!(!state.streams.contains_key(&stream_id));
@@ -130,8 +130,8 @@ fn poll_stream_keeps_outbound_pending_after_local_finish_when_inbound_is_closed(
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
     let (_, mut writer, _, writer_io) = io::new_stream(
         stream_id,
-        CloseTarget::Return,
-        CloseTarget::Origin,
+        ResetTarget::Return,
+        ResetTarget::Origin,
         RuntimeHandle::new(runtime_tx),
     );
     writer.queue_finish();
@@ -148,14 +148,14 @@ fn poll_stream_keeps_outbound_pending_after_local_finish_when_inbound_is_closed(
 }
 
 #[test]
-fn local_close_command_reaps_when_other_half_is_already_closed() {
+fn local_reset_command_reaps_when_other_half_is_already_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
     let (_, _, _, writer_io) = io::new_stream(
         stream_id,
-        CloseTarget::Return,
-        CloseTarget::Origin,
+        ResetTarget::Return,
+        ResetTarget::Origin,
         RuntimeHandle::new(runtime_tx),
     );
 
@@ -166,10 +166,10 @@ fn local_close_command_reaps_when_other_half_is_already_closed() {
 
     state.drive_command(
         &mut fsm,
-        Command::CloseStream {
+        Command::ResetStream {
             stream_id,
-            target: CloseTarget::Origin,
-            code: StreamCloseCode::CANCELLED,
+            target: ResetTarget::Origin,
+            code: ResetCode::CANCELLED,
         },
         &NoopCrypto,
     );
@@ -185,8 +185,8 @@ fn unpaired_status_fails_and_reaps_all_streams() {
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
     let (_, _, reader_io, writer_io) = io::new_stream(
         stream_id,
-        CloseTarget::Origin,
-        CloseTarget::Return,
+        ResetTarget::Origin,
+        ResetTarget::Return,
         RuntimeHandle::new(runtime_tx),
     );
 

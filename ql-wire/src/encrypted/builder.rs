@@ -1,6 +1,6 @@
 use bytes::BufMut;
 
-use super::{RecordAck, SessionClose, SessionFrame, StreamClose, StreamData, StreamWindow};
+use super::{RecordAck, SessionClose, SessionFrame, StreamData, StreamReset, StreamWindow};
 use crate::{
     BufView, ConnectionId, Nonce, QlCrypto, RecordSeq, RecordType, SessionHeader, SessionKey,
     WireEncode, QL_WIRE_VERSION,
@@ -82,8 +82,8 @@ impl SessionRecordBuilder {
         self.push_frame_payload(super::SessionFrameKind::StreamWindow, frame)
     }
 
-    pub fn push_stream_close(&mut self, frame: &StreamClose) -> bool {
-        self.push_frame_payload(super::SessionFrameKind::StreamClose, frame)
+    pub fn push_stream_reset(&mut self, frame: &StreamReset) -> bool {
+        self.push_frame_payload(super::SessionFrameKind::StreamReset, frame)
     }
 
     pub fn push_close(&mut self, close: &SessionClose) -> bool {
@@ -97,7 +97,7 @@ impl SessionRecordBuilder {
             SessionFrame::Ack(frame) => self.push_ack(frame),
             SessionFrame::StreamData(frame) => self.push_stream_data(frame),
             SessionFrame::StreamWindow(frame) => self.push_stream_window(frame),
-            SessionFrame::StreamClose(frame) => self.push_stream_close(frame),
+            SessionFrame::StreamReset(frame) => self.push_stream_reset(frame),
             SessionFrame::Close(close) => self.push_close(close),
         }
     }

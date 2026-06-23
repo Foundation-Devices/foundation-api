@@ -8,8 +8,8 @@ use bytes::Bytes;
 
 use crate::{
     duplex::{codec, Duplex, EventReader, ReadStep},
-    finish_bytes, write_bytes, DropCloseRead, DropCloseWrite, RpcCodec, RpcError, RpcRead,
-    RpcWrite, StreamCloseCode,
+    finish_bytes, write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcCodec, RpcError,
+    RpcRead, RpcWrite,
 };
 
 pub struct DuplexCall<M, W, R>
@@ -27,7 +27,7 @@ where
     T: RpcCodec,
     W: RpcWrite,
 {
-    writer: DropCloseWrite<W>,
+    writer: DropResetWrite<W>,
     marker: PhantomData<fn() -> T>,
 }
 
@@ -36,7 +36,7 @@ where
     T: RpcCodec,
     R: RpcRead,
 {
-    stream: DropCloseRead<R>,
+    stream: DropResetRead<R>,
     reader: EventReader<T>,
 }
 
@@ -47,7 +47,7 @@ where
 {
     pub fn new(writer: W) -> Self {
         Self {
-            writer: DropCloseWrite::new(writer),
+            writer: DropResetWrite::new(writer),
             marker: PhantomData,
         }
     }
@@ -63,8 +63,8 @@ where
         finish_bytes(&mut self.writer).await
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        DropCloseWrite::close(&mut self.writer, code);
+    pub fn reset(mut self, code: ResetCode) {
+        DropResetWrite::reset(&mut self.writer, code);
     }
 }
 
@@ -75,7 +75,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: DropCloseRead::new(stream),
+            stream: DropResetRead::new(stream),
             reader: EventReader::default(),
         }
     }
@@ -125,11 +125,11 @@ where
         }
     }
 
-    pub fn close(mut self, code: StreamCloseCode) {
-        self.close_inner(code);
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
     }
 
-    fn close_inner(&mut self, code: StreamCloseCode) {
-        DropCloseRead::close(&mut self.stream, code);
+    fn reset_inner(&mut self, code: ResetCode) {
+        DropResetRead::reset(&mut self.stream, code);
     }
 }
