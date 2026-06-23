@@ -1,10 +1,10 @@
 use ql_wire::{self as wire, PairingToken, QlCrypto, QlHandshakeRecord, Xx1, Xx2, Xx3, Xx4, QID};
 
 use super::{
-    emit_peer_status, enqueue_handshake, finish_handshake, reset_connected_session_if_needed,
+    emit_peer_status, enqueue_handshake, establish_session, reset_connected_session_if_needed,
 };
 use crate::{
-    state::{LinkState, SessionTransport, XxInitiatorState, XxResponderState},
+    state::{InitiatorState, LinkState, XxResponderState},
     QlFsm, ReceiveError,
 };
 
@@ -24,7 +24,7 @@ pub fn start_initiator(
     );
     let message = handshake.write_1(crypto, meta).unwrap();
 
-    fsm.state.link = LinkState::XxInitiator(XxInitiatorState {
+    fsm.state.link = LinkState::XxInitiator(InitiatorState {
         handshake_id: meta.handshake_id,
         initial_ephemeral: message.ephemeral.clone(),
         handshake,
@@ -140,13 +140,14 @@ pub fn handle_xx3(
         .map_err(ReceiveError::InvalidXxHandshake)?;
     fsm.state.handshake = None;
     enqueue_handshake(fsm, QlHandshakeRecord::Xx4(outbound));
-    let (transport, remote_bundle) = SessionTransport::from_finalized(
+    establish_session(
+        fsm,
+        message.meta.handshake_id,
         state
             .handshake
             .finalize(crypto)
             .map_err(ReceiveError::InvalidXxHandshake)?,
-    );
-    finish_handshake(fsm, message.meta.handshake_id, transport, remote_bundle)
+    )
 }
 
 pub fn handle_xx4(
@@ -172,13 +173,14 @@ pub fn handle_xx4(
     let LinkState::XxInitiator(state) = fsm.state.link.take() else {
         unreachable!("active XX initiator was checked above");
     };
-    let (transport, remote_bundle) = SessionTransport::from_finalized(
+    establish_session(
+        fsm,
+        message.meta.handshake_id,
         state
             .handshake
             .finalize(crypto)
             .map_err(ReceiveError::InvalidXxHandshake)?,
-    );
-    finish_handshake(fsm, message.meta.handshake_id, transport, remote_bundle)
+    )
 }
 
 pub fn disarm_pairing(fsm: &mut QlFsm) {

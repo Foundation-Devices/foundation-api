@@ -1,10 +1,10 @@
 use ql_wire::{self as wire, Kk1, Kk2, PeerBundle, QlCrypto, QlHandshakeRecord};
 
 use super::{
-    emit_peer_status, enqueue_handshake, finish_handshake, reset_connected_session_if_needed,
+    emit_peer_status, enqueue_handshake, establish_session, reset_connected_session_if_needed,
 };
 use crate::{
-    state::{KkInitiatorState, LinkState, SessionTransport},
+    state::{InitiatorState, LinkState},
     QlFsm, ReceiveError,
 };
 
@@ -18,7 +18,7 @@ pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, peer: PeerBundle
     );
     let message = handshake.write_1(crypto, meta).unwrap();
 
-    fsm.state.link = LinkState::KkInitiator(KkInitiatorState {
+    fsm.state.link = LinkState::KkInitiator(InitiatorState {
         handshake_id: meta.handshake_id,
         initial_ephemeral: message.ephemeral.clone(),
         handshake,
@@ -58,12 +58,13 @@ pub fn handle_kk1(
     let outbound = handshake
         .write_2(crypto, message.meta)
         .map_err(ReceiveError::InvalidKkHandshake)?;
-    let (transport, remote_bundle) = SessionTransport::from_finalized(
+    establish_session(
+        fsm,
+        message.meta.handshake_id,
         handshake
             .finalize(crypto)
             .map_err(ReceiveError::InvalidKkHandshake)?,
-    );
-    finish_handshake(fsm, message.meta.handshake_id, transport, remote_bundle)?;
+    )?;
     fsm.state.handshake = None;
     enqueue_handshake(fsm, QlHandshakeRecord::Kk2(outbound));
     Ok(())
@@ -92,13 +93,14 @@ pub fn handle_kk2(
     let LinkState::KkInitiator(state) = fsm.state.link.take() else {
         unreachable!("active KK initiator was checked above");
     };
-    let (transport, remote_bundle) = SessionTransport::from_finalized(
+    establish_session(
+        fsm,
+        message.meta.handshake_id,
         state
             .handshake
             .finalize(crypto)
             .map_err(ReceiveError::InvalidKkHandshake)?,
-    );
-    finish_handshake(fsm, message.meta.handshake_id, transport, remote_bundle)
+    )
 }
 
 pub fn should_ignore_inbound(fsm: &QlFsm, message: &Kk1) -> bool {

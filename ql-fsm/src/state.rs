@@ -25,27 +25,12 @@ pub struct SessionTransport {
     pub remote_transport_params: TransportParams,
 }
 
-impl SessionTransport {
-    pub fn from_finalized(finalized: ql_wire::FinalizedHandshake) -> (Self, PeerBundle) {
-        (
-            Self {
-                tx_key: finalized.tx_key,
-                rx_key: finalized.rx_key,
-                tx_connection_id: finalized.tx_connection_id,
-                rx_connection_id: finalized.rx_connection_id,
-                remote_transport_params: finalized.remote_transport_params,
-            },
-            finalized.remote_bundle,
-        )
-    }
-}
-
 #[allow(clippy::large_enum_variant)]
 pub enum LinkState {
     Idle,
-    IkInitiator(IkInitiatorState),
-    KkInitiator(KkInitiatorState),
-    XxInitiator(XxInitiatorState),
+    IkInitiator(InitiatorState<IkHandshake>),
+    KkInitiator(InitiatorState<KkHandshake>),
+    XxInitiator(InitiatorState<XxHandshake>),
     XxResponder(XxResponderState),
     Connected(ConnectedState),
 }
@@ -57,24 +42,8 @@ pub struct ConnectedState {
 }
 
 #[derive(Debug, Clone)]
-pub struct IkInitiatorState {
-    pub handshake: IkHandshake,
-    pub handshake_id: HandshakeId,
-    pub deadline: Instant,
-    pub initial_ephemeral: EphemeralPublicKey,
-}
-
-#[derive(Debug, Clone)]
-pub struct KkInitiatorState {
-    pub handshake: KkHandshake,
-    pub handshake_id: HandshakeId,
-    pub deadline: Instant,
-    pub initial_ephemeral: EphemeralPublicKey,
-}
-
-#[derive(Debug, Clone)]
-pub struct XxInitiatorState {
-    pub handshake: XxHandshake,
+pub struct InitiatorState<H> {
+    pub handshake: H,
     pub handshake_id: HandshakeId,
     pub deadline: Instant,
     pub initial_ephemeral: EphemeralPublicKey,

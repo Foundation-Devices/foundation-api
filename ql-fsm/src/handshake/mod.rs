@@ -136,6 +136,21 @@ pub fn finish_handshake(
     Ok(())
 }
 
+pub fn establish_session(
+    fsm: &mut QlFsm,
+    handshake_id: HandshakeId,
+    finalized: wire::FinalizedHandshake,
+) -> Result<(), ReceiveError> {
+    let transport = SessionTransport {
+        tx_key: finalized.tx_key,
+        rx_key: finalized.rx_key,
+        tx_connection_id: finalized.tx_connection_id,
+        rx_connection_id: finalized.rx_connection_id,
+        remote_transport_params: finalized.remote_transport_params,
+    };
+    finish_handshake(fsm, handshake_id, transport, finalized.remote_bundle)
+}
+
 pub fn reset_connected_session_if_needed(fsm: &mut QlFsm) {
     if matches!(fsm.state.link, LinkState::Connected(_)) {
         fsm.state.link = LinkState::Idle;
