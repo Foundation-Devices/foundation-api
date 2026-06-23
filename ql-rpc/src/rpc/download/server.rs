@@ -10,7 +10,7 @@ use crate::{
         parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
         read_eof_request,
     },
-    write_bytes, RouterConfig, RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,
+    write_bytes, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
 };
 
 #[trait_variant::make(DownloadHandler: Send)]
@@ -21,7 +21,7 @@ where
 {
     async fn handle(self, message: M::Request, download: DownloadStart<M, St::Writer>);
 
-    fn handle_transport_error(&self, _error: &St::Error) {}
+    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
 }
 
 pub struct DownloadStart<M, W>
@@ -196,19 +196,19 @@ pub(crate) async fn handle_download_inner<S, M, St, H, HF, E>(
     mut reader: St::Reader,
     writer: St::Writer,
     handle: H,
-    handle_transport_error: E,
+    handle_error: E,
 ) where
     M: DownloadRpc + 'static,
     St: RpcStream + 'static,
     H: FnOnce(S, M::Request, DownloadStart<M, St::Writer>) -> HF,
     HF: Future<Output = ()>,
-    E: FnOnce(&S, &St::Error),
+    E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
     let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
             let code = error.close_code();
-            handle_transport_error(&state, &error);
+            handle_error(&state, &error);
             if let Some(code) = code {
                 reader.close(code);
                 writer.close(code);

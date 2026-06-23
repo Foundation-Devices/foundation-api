@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, ChunkQueue, CodecError, RpcCodec};
+use crate::{codec, ChunkQueue, RpcCodec, RpcError};
 
 pub enum PartReadStep<H: RpcCodec> {
     NeedMore,
@@ -44,7 +44,7 @@ impl<H: RpcCodec> PartFrameReader<H> {
         self.bytes.push(chunk);
     }
 
-    pub fn advance(&mut self) -> Result<PartReadStep<H>, CodecError<H::Error>> {
+    pub fn advance<E>(&mut self) -> Result<PartReadStep<H>, RpcError<H::Error, E>> {
         loop {
             match self.pending_frame.take() {
                 PendingFrame::Body { remaining } => {
@@ -73,18 +73,18 @@ impl<H: RpcCodec> PartFrameReader<H> {
 
                     match kind {
                         FrameKind::PartHeader => {
-                            let value = H::decode_value(&mut body).map_err(CodecError::Codec)?;
+                            let value = H::decode_value(&mut body).map_err(RpcError::Codec)?;
                             return Ok(PartReadStep::PartHeader(value));
                         }
                         FrameKind::BodyChunk => unreachable!("body chunk is not a control frame"),
                         FrameKind::EndPart => {
-                            body.expect_empty()?;
+                            body.expect_empty().map_err(RpcError::Protocol)?;
                             return Ok(PartReadStep::EndPart);
                         }
                         FrameKind::Finish => {
-                            body.expect_empty()?;
+                            body.expect_empty().map_err(RpcError::Protocol)?;
                             drop(body);
-                            self.bytes.expect_empty()?;
+                            self.bytes.expect_empty().map_err(RpcError::Protocol)?;
                             return Ok(PartReadStep::Finish);
                         }
                     }
@@ -93,12 +93,12 @@ impl<H: RpcCodec> PartFrameReader<H> {
                     let Some((kind, len)) = self
                         .bytes
                         .try_take_tagged_part_header()
-                        .map_err(CodecError::Rpc)?
+                        .map_err(RpcError::Protocol)?
                     else {
                         return Ok(PartReadStep::NeedMore);
                     };
 
-                    let kind = FrameKind::try_from(kind).map_err(CodecError::Rpc)?;
+                    let kind = FrameKind::try_from(kind).map_err(RpcError::Protocol)?;
                     self.pending_frame = if kind == FrameKind::BodyChunk {
                         PendingFrame::Body { remaining: len }
                     } else {
@@ -195,41 +195,41 @@ mod tests {
         let mut reader = PartFrameReader::<Vec<u8>>::new(Default::default());
         reader.push(Bytes::from(encoded));
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::PartHeader(value) => {
                 assert_eq!(value, b"a.txt".to_vec());
             }
             _ => unreachable!(),
         };
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::BodyBytes(bytes) => assert_eq!(bytes, Bytes::from_static(b"hel")),
             _ => unreachable!(),
         };
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::BodyBytes(bytes) => assert_eq!(bytes, Bytes::from_static(b"lo")),
             _ => unreachable!(),
         };
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::EndPart => {}
             _ => unreachable!(),
         };
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::PartHeader(value) => {
                 assert_eq!(value, b"b.txt".to_vec());
             }
             _ => unreachable!(),
         };
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::EndPart => {}
             _ => unreachable!(),
         };
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::Finish => {}
             _ => unreachable!(),
         }
@@ -243,13 +243,13 @@ mod tests {
 
         let mut reader = PartFrameReader::<Vec<u8>>::new(Default::default());
         reader.push(encoded.slice(..4));
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::NeedMore => {}
             _ => unreachable!(),
         };
 
         reader.push(encoded.slice(4..));
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::PartHeader(value) => assert_eq!(value, b"a.txt".to_vec()),
             _ => unreachable!(),
         }
@@ -263,19 +263,19 @@ mod tests {
 
         let mut reader = PartFrameReader::<Vec<u8>>::new(Default::default());
         reader.push(encoded.slice(..9));
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::NeedMore => {}
             _ => unreachable!(),
         };
 
         reader.push(encoded.slice(9..11));
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::BodyBytes(bytes) => assert_eq!(bytes, Bytes::from_static(b"he")),
             _ => unreachable!(),
         };
 
         reader.push(encoded.slice(11..));
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::BodyBytes(bytes) => assert_eq!(bytes, Bytes::from_static(b"llo")),
             _ => unreachable!(),
         };

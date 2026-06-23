@@ -1,13 +1,13 @@
 use crate::{
-    read_bytes, ChunkQueue, CodecError, FramedPrefixStep, FramedReadStep, FramedReader,
-    RouterConfig, RpcCodec, RpcRead, StreamCloseCode,
+    read_bytes, ChunkQueue, Error, FramedPrefixStep, FramedReadStep, FramedReader, RouterConfig,
+    RpcCodec, RpcError, RpcRead,
 };
 
 /// reads one length-delimited value and rejects trailing bytes
 pub(crate) async fn read_framed_request<T, R>(
     reader: &mut R,
     config: RouterConfig,
-) -> Result<T, R::Error>
+) -> Result<T, RpcError<T::Error, R::Error>>
 where
     T: RpcCodec,
     R: RpcRead,
@@ -16,16 +16,15 @@ where
     let mut total_read = 0usize;
 
     let value = loop {
-        match value_reader.advance() {
+        match value_reader.advance::<R::Error>() {
             Ok(FramedReadStep::Value(value)) => break value,
             Ok(FramedReadStep::NeedMore(next)) => value_reader = next,
-            Err(CodecError::Rpc(_error)) => return Err(StreamCloseCode::REFUSED.into()),
-            Err(CodecError::Codec(_error)) => return Err(StreamCloseCode::REFUSED.into()),
+            Err(error) => return Err(error),
         }
 
         let remaining = config.max_request_bytes.saturating_sub(total_read);
         if remaining == 0 {
-            return Err(StreamCloseCode::LIMIT.into());
+            return Err(RpcError::Protocol(Error::LengthOverflow));
         }
 
         match read_bytes(reader, remaining).await {
@@ -33,8 +32,8 @@ where
                 total_read += chunk.len();
                 value_reader = value_reader.push(chunk);
             }
-            Ok(None) => return Err(StreamCloseCode::REFUSED.into()),
-            Err(error) => return Err(error),
+            Ok(None) => return Err(RpcError::Protocol(Error::Truncated)),
+            Err(error) => return Err(RpcError::Transport(error)),
         }
     };
 
@@ -42,9 +41,9 @@ where
     let probe = remaining.max(1);
     match read_bytes(reader, probe).await {
         Ok(None) => Ok(value),
-        Ok(Some(_)) if remaining == 0 => Err(StreamCloseCode::LIMIT.into()),
-        Ok(Some(_)) => Err(StreamCloseCode::REFUSED.into()),
-        Err(error) => Err(error),
+        Ok(Some(_)) if remaining == 0 => Err(RpcError::Protocol(Error::LengthOverflow)),
+        Ok(Some(_)) => Err(RpcError::Protocol(Error::TrailingBytes)),
+        Err(error) => Err(RpcError::Transport(error)),
     }
 }
 
@@ -52,7 +51,7 @@ where
 pub(crate) async fn read_framed_request_prefix<T, R>(
     reader: &mut R,
     config: RouterConfig,
-) -> Result<(T, ChunkQueue), R::Error>
+) -> Result<(T, ChunkQueue), RpcError<T::Error, R::Error>>
 where
     T: RpcCodec,
     R: RpcRead,
@@ -61,16 +60,15 @@ where
     let mut total_read = 0usize;
 
     loop {
-        match value_reader.advance_prefix() {
+        match value_reader.advance_prefix::<R::Error>() {
             Ok(FramedPrefixStep::Value { value, bytes }) => return Ok((value, bytes)),
             Ok(FramedPrefixStep::NeedMore(next)) => value_reader = next,
-            Err(CodecError::Rpc(_error)) => return Err(StreamCloseCode::REFUSED.into()),
-            Err(CodecError::Codec(_error)) => return Err(StreamCloseCode::REFUSED.into()),
+            Err(error) => return Err(error),
         }
 
         let remaining = config.max_request_bytes.saturating_sub(total_read);
         if remaining == 0 {
-            return Err(StreamCloseCode::LIMIT.into());
+            return Err(RpcError::Protocol(Error::LengthOverflow));
         }
 
         match read_bytes(reader, remaining).await {
@@ -78,8 +76,8 @@ where
                 total_read += chunk.len();
                 value_reader = value_reader.push(chunk);
             }
-            Ok(None) => return Err(StreamCloseCode::REFUSED.into()),
-            Err(error) => return Err(error),
+            Ok(None) => return Err(RpcError::Protocol(Error::Truncated)),
+            Err(error) => return Err(RpcError::Transport(error)),
         }
     }
 }
@@ -88,7 +86,7 @@ where
 pub(crate) async fn read_eof_request<T, R>(
     reader: &mut R,
     config: RouterConfig,
-) -> Result<T, R::Error>
+) -> Result<T, RpcError<T::Error, R::Error>>
 where
     T: RpcCodec,
     R: RpcRead,
@@ -102,19 +100,19 @@ where
         match read_bytes(reader, probe).await {
             Ok(Some(chunk)) => {
                 if chunk.len() > remaining {
-                    return Err(StreamCloseCode::LIMIT.into());
+                    return Err(RpcError::Protocol(Error::LengthOverflow));
                 }
                 total_read += chunk.len();
                 bytes.push(chunk);
             }
             Ok(None) => break,
-            Err(error) => return Err(error),
+            Err(error) => return Err(RpcError::Transport(error)),
         }
     }
 
-    let value = T::decode_value(&mut bytes).map_err(|_error| StreamCloseCode::REFUSED)?;
+    let value = T::decode_value(&mut bytes).map_err(RpcError::Codec)?;
     if bytes.remaining() > 0 {
-        return Err(StreamCloseCode::REFUSED.into());
+        return Err(RpcError::Protocol(Error::TrailingBytes));
     }
     Ok(value)
 }

@@ -8,7 +8,7 @@ use bytes::Bytes;
 use crate::{RouteId, ServiceId, StreamCloseCode};
 
 pub trait RpcStream {
-    type Error: StreamError;
+    type Error;
     type Reader: RpcRead<Error = Self::Error>;
     type Writer: RpcWrite<Error = Self::Error>;
 
@@ -18,7 +18,7 @@ pub trait RpcStream {
 }
 
 pub trait RpcRead {
-    type Error: StreamError;
+    type Error;
 
     /// reads inbound bytes until eof or error
     fn poll_read(
@@ -32,7 +32,7 @@ pub trait RpcRead {
 }
 
 pub trait RpcWrite {
-    type Error: StreamError;
+    type Error;
 
     /// writes outbound bytes before finish or close
     fn poll_write(
@@ -46,16 +46,6 @@ pub trait RpcWrite {
 
     /// aborts the write side before finish
     fn close(self, code: StreamCloseCode);
-}
-
-pub trait StreamError: From<StreamCloseCode> {
-    fn close_code(&self) -> Option<StreamCloseCode>;
-}
-
-impl StreamError for StreamCloseCode {
-    fn close_code(&self) -> Option<StreamCloseCode> {
-        Some(*self)
-    }
 }
 
 pub async fn read_bytes<R>(reader: &mut R, max_len: usize) -> Result<Option<Bytes>, R::Error>

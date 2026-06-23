@@ -4,7 +4,7 @@ use bytes::Bytes;
 
 use crate::{
     finish_bytes, request::Request as RequestRpc, rpc::read_eof_request, write_bytes, RouterConfig,
-    RpcCodec, RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,
+    RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
 };
 
 #[trait_variant::make(RequestHandler: Send)]
@@ -15,7 +15,7 @@ where
 {
     async fn handle(self, message: M::Request, responder: Response<M::Response, St::Writer>);
 
-    fn handle_transport_error(&self, _error: &St::Error) {}
+    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
 }
 
 pub struct Response<T, W>
@@ -71,19 +71,19 @@ pub(crate) async fn handle_request_inner<S, M, St, H, HF, E>(
     mut reader: St::Reader,
     writer: St::Writer,
     handle: H,
-    handle_transport_error: E,
+    handle_error: E,
 ) where
     M: RequestRpc + 'static,
     St: RpcStream + 'static,
     H: FnOnce(S, M::Request, Response<M::Response, St::Writer>) -> HF,
     HF: Future<Output = ()>,
-    E: FnOnce(&S, &St::Error),
+    E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
     let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
             let code = error.close_code();
-            handle_transport_error(&state, &error);
+            handle_error(&state, &error);
             if let Some(code) = code {
                 reader.close(code);
                 writer.close(code);

@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, progress::Progress, CodecError, Error, RpcCodec};
+use crate::{codec, progress::Progress, Error, RpcCodec, RpcError};
 
 pub enum ReadStep<M: Progress> {
     NeedMore,
@@ -29,8 +29,11 @@ impl<M: Progress> ResponseReader<M> {
         self.bytes.push(chunk);
     }
 
-    pub fn advance(&mut self) -> Result<ReadStep<M>, CodecError<M::Error>> {
-        let Some((kind, mut body)) = self.bytes.try_take_tagged_part().map_err(CodecError::Rpc)?
+    pub fn advance<E>(&mut self) -> Result<ReadStep<M>, RpcError<M::Error, E>> {
+        let Some((kind, mut body)) = self
+            .bytes
+            .try_take_tagged_part()
+            .map_err(RpcError::Protocol)?
         else {
             return Ok(ReadStep::NeedMore);
         };
@@ -38,22 +41,22 @@ impl<M: Progress> ResponseReader<M> {
         match kind {
             x if x == FrameKind::Progress as u8 => {
                 let value = {
-                    let value = M::Progress::decode_value(&mut body).map_err(CodecError::Codec)?;
+                    let value = M::Progress::decode_value(&mut body).map_err(RpcError::Codec)?;
                     drop(body);
                     value
                 };
                 Ok(ReadStep::Progress(value))
             }
             x if x == FrameKind::Response as u8 => {
-                let response = M::Response::decode_value(&mut body).map_err(CodecError::Codec)?;
+                let response = M::Response::decode_value(&mut body).map_err(RpcError::Codec)?;
                 drop(body);
                 if self.bytes.remaining() > 0 {
-                    Err(CodecError::Rpc(Error::TrailingBytes))
+                    Err(RpcError::Protocol(Error::TrailingBytes))
                 } else {
                     Ok(ReadStep::Response(response))
                 }
             }
-            other => Err(CodecError::Rpc(Error::UnexpectedFrameKind(other))),
+            other => Err(RpcError::Protocol(Error::UnexpectedFrameKind(other))),
         }
     }
 }
@@ -120,13 +123,13 @@ mod tests {
         let mut reader = ResponseReader::<Watch>::default();
         reader.push(Bytes::from(encoded));
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             ReadStep::Progress(value) => {
                 assert_eq!(value, b"10%".to_vec());
             }
             _ => unreachable!(),
         };
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             ReadStep::Response(value) => assert_eq!(value, b"done".to_vec()),
             _ => unreachable!(),
         }
@@ -140,7 +143,7 @@ mod tests {
         let mut reader = ResponseReader::<Watch>::default();
         reader.push(Bytes::from(encoded));
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             ReadStep::Response(value) => assert_eq!(value, b"done".to_vec()),
             _ => unreachable!(),
         }

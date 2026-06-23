@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     progress::{Progress, ReadStep, ResponseReader},
-    CallError, Error, RpcRead, StreamCloseCode,
+    Error, RpcError, RpcRead, StreamCloseCode,
 };
 
 pub struct ProgressCall<M, R>
@@ -24,7 +24,7 @@ where
 {
     Invalid,
     Reading(ResponseReader<M>),
-    Terminal(Result<M::Response, CallError<M::Error, T>>),
+    Terminal(Result<M::Response, RpcError<M::Error, T>>),
     Done,
 }
 
@@ -67,7 +67,8 @@ where
                 }
                 Ok(ReadStep::NeedMore) => {}
                 Err(error) => {
-                    self.state = State::Terminal(Err(error.into()));
+                    self.stream.disarm();
+                    self.state = State::Terminal(Err(error));
                     return Poll::Ready(None);
                 }
             }
@@ -85,7 +86,7 @@ where
                     return Poll::Ready(None);
                 }
                 Poll::Ready(Err(error)) => {
-                    self.state = State::Terminal(Err(CallError::Transport(error)));
+                    self.state = State::Terminal(Err(RpcError::Transport(error)));
                     return Poll::Ready(None);
                 }
                 Poll::Pending => return Poll::Pending,
@@ -126,7 +127,7 @@ where
     M: Progress,
     R: RpcRead,
 {
-    type Output = Result<M::Response, CallError<M::Error, R::Error>>;
+    type Output = Result<M::Response, RpcError<M::Error, R::Error>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();

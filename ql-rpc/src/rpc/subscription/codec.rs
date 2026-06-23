@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, subscription::Subscription, CodecError, RpcCodec};
+use crate::{codec, subscription::Subscription, RpcCodec, RpcError};
 
 pub fn encode_request<M: Subscription>(
     request: &M::Request,
@@ -43,13 +43,13 @@ impl<M: Subscription> ResponseReader<M> {
         self.bytes.remaining() == 0
     }
 
-    pub fn advance(&mut self) -> Result<ReadStep<M>, CodecError<M::Error>> {
-        let Some(mut body) = self.bytes.try_take_part()? else {
+    pub fn advance<E>(&mut self) -> Result<ReadStep<M>, RpcError<M::Error, E>> {
+        let Some(mut body) = self.bytes.try_take_part().map_err(RpcError::Protocol)? else {
             return Ok(ReadStep::NeedMore);
         };
 
         let item = {
-            let item = M::Event::decode_value(&mut body).map_err(CodecError::Codec)?;
+            let item = M::Event::decode_value(&mut body).map_err(RpcError::Codec)?;
             drop(body);
             item
         };

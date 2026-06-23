@@ -5,7 +5,7 @@ use bytes::{BufMut, Bytes};
 use crate::{
     download::{Download, PartReadStep},
     rpc::parts::FrameKind,
-    CallError, FramedPrefixStep, FramedReader, RpcCodec, RpcRead, StreamCloseCode,
+    FramedPrefixStep, FramedReader, RpcCodec, RpcError, RpcRead, StreamCloseCode,
 };
 
 pub struct DownloadCall<M, R>
@@ -49,7 +49,7 @@ where
 
     pub async fn start(
         mut self,
-    ) -> Result<(M::ResponseHeader, DownloadReader<M, R>), CallError<M::Error, R::Error>> {
+    ) -> Result<(M::ResponseHeader, DownloadReader<M, R>), RpcError<M::Error, R::Error>> {
         loop {
             let reader = self.reader.take().unwrap();
             let reader = match reader.advance_prefix() {
@@ -64,7 +64,7 @@ where
                     ));
                 }
                 Ok(FramedPrefixStep::NeedMore(next)) => next,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             };
 
             let stream = self.stream.as_mut().unwrap();
@@ -73,7 +73,7 @@ where
                     self.reader = Some(reader.push(chunk));
                 }
                 Ok(None) => return Err(crate::Error::Truncated.into()),
-                Err(error) => return Err(CallError::Transport(error)),
+                Err(error) => return Err(RpcError::Transport(error)),
             }
         }
     }
@@ -106,8 +106,7 @@ where
 {
     pub async fn next_part(
         &mut self,
-    ) -> Result<Option<(M::PartHeader, DownloadPart<'_, M, R>)>, CallError<M::Error, R::Error>>
-    {
+    ) -> Result<Option<(M::PartHeader, DownloadPart<'_, M, R>)>, RpcError<M::Error, R::Error>> {
         if self.stream.is_none() {
             return Ok(None);
         }
@@ -134,7 +133,7 @@ where
         }
     }
 
-    pub async fn complete(mut self) -> Result<(), CallError<M::Error, R::Error>> {
+    pub async fn complete(mut self) -> Result<(), RpcError<M::Error, R::Error>> {
         match self.read_frame().await? {
             PartReadStep::Finish => {
                 self.stream.take();
@@ -159,12 +158,12 @@ where
 
     async fn read_frame(
         &mut self,
-    ) -> Result<PartReadStep<M::PartHeader>, CallError<M::Error, R::Error>> {
+    ) -> Result<PartReadStep<M::PartHeader>, RpcError<M::Error, R::Error>> {
         loop {
             match self.reader.advance() {
                 Ok(PartReadStep::NeedMore) => {}
                 Ok(step) => return Ok(step),
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             }
 
             let stream = self.stream.as_mut().unwrap();
@@ -173,7 +172,7 @@ where
                     self.reader.push(chunk);
                 }
                 Ok(None) => return Err(crate::Error::Truncated.into()),
-                Err(error) => return Err(CallError::Transport(error)),
+                Err(error) => return Err(RpcError::Transport(error)),
             }
         }
     }
@@ -202,7 +201,7 @@ where
     M: Download,
     R: RpcRead,
 {
-    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, CallError<M::Error, R::Error>> {
+    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, RpcError<M::Error, R::Error>> {
         if self.finished {
             return Ok(None);
         }

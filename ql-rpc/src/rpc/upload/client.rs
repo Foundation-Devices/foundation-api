@@ -4,7 +4,7 @@ use crate::{
     finish_bytes, read_bytes,
     rpc::parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
     upload::Upload,
-    write_bytes, CallError, ChunkQueue, RpcCodec, RpcRead, RpcWrite, StreamCloseCode,
+    write_bytes, ChunkQueue, RpcCodec, RpcError, RpcRead, RpcWrite, StreamCloseCode,
 };
 
 pub struct UploadCall<M, W, R>
@@ -56,28 +56,28 @@ where
         })
     }
 
-    pub async fn finish(mut self) -> Result<M::Response, CallError<M::Error, W::Error>> {
+    pub async fn finish(mut self) -> Result<M::Response, RpcError<M::Error, W::Error>> {
         let mut writer = self.writer.take().unwrap();
         let mut encoded = Vec::new();
         encode_finish(&mut encoded);
         write_bytes(&mut writer, Bytes::from(encoded))
             .await
-            .map_err(CallError::Transport)?;
+            .map_err(RpcError::Transport)?;
         finish_bytes(&mut writer)
             .await
-            .map_err(CallError::Transport)?;
+            .map_err(RpcError::Transport)?;
 
         let mut reader = self.reader.take().unwrap();
         let mut bytes = ChunkQueue::default();
 
         while let Some(chunk) = read_bytes(&mut reader, usize::MAX)
             .await
-            .map_err(CallError::Transport)?
+            .map_err(RpcError::Transport)?
         {
             bytes.push(chunk);
         }
 
-        let value = M::Response::decode_value(&mut bytes).map_err(CallError::Codec)?;
+        let value = M::Response::decode_value(&mut bytes).map_err(RpcError::Codec)?;
         if bytes.remaining() > 0 {
             return Err(crate::Error::TrailingBytes.into());
         }

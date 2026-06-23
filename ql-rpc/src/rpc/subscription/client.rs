@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     subscription::{ReadStep, ResponseReader, Subscription},
-    CallError, RpcRead, StreamCloseCode,
+    RpcError, RpcRead, StreamCloseCode,
 };
 
 pub struct SubscriptionCall<M, R>
@@ -29,14 +29,14 @@ where
         }
     }
 
-    pub async fn next_event(&mut self) -> Option<Result<M::Event, CallError<M::Error, R::Error>>> {
+    pub async fn next_event(&mut self) -> Option<Result<M::Event, RpcError<M::Error, R::Error>>> {
         poll_fn(|cx| self.poll_next_event(cx)).await
     }
 
     pub fn poll_next_event(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<M::Event, CallError<M::Error, R::Error>>>> {
+    ) -> Poll<Option<Result<M::Event, RpcError<M::Error, R::Error>>>> {
         if self.stream.is_none() {
             return Poll::Ready(None);
         }
@@ -46,8 +46,8 @@ where
                 Ok(ReadStep::Item(value)) => return Poll::Ready(Some(Ok(value))),
                 Ok(ReadStep::NeedMore) => {}
                 Err(error) => {
-                    self.stream.take();
-                    return Poll::Ready(Some(Err(error.into())));
+                    self.stream.disarm();
+                    return Poll::Ready(Some(Err(error)));
                 }
             }
 
@@ -66,7 +66,7 @@ where
                 }
                 Poll::Ready(Err(error)) => {
                     self.stream.take();
-                    return Poll::Ready(Some(Err(CallError::Transport(error))));
+                    return Poll::Ready(Some(Err(RpcError::Transport(error))));
                 }
                 Poll::Pending => {
                     return Poll::Pending;

@@ -1,7 +1,7 @@
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use ql_rpc::{RouteId, RpcRead, RpcStream, RpcWrite, ServiceId, StreamCloseCode, StreamError};
+use ql_rpc::{RouteId, RpcRead, RpcStream, RpcWrite, ServiceId, StreamCloseCode};
 
 use crate::{QlStream, QlStreamError, StreamReader, StreamWriter};
 
@@ -56,23 +56,5 @@ impl RpcWrite for StreamWriter {
 
     fn close(self, code: StreamCloseCode) {
         StreamWriter::close(self, code);
-    }
-}
-
-impl From<StreamCloseCode> for QlStreamError {
-    fn from(code: StreamCloseCode) -> Self {
-        Self::StreamClosed {
-            code,
-            origin: ql_wire::StreamCloseOrigin::Local,
-        }
-    }
-}
-
-impl StreamError for QlStreamError {
-    fn close_code(&self) -> Option<StreamCloseCode> {
-        match self {
-            QlStreamError::StreamClosed { code, .. } => Some(*code),
-            QlStreamError::NoSession => None,
-        }
     }
 }

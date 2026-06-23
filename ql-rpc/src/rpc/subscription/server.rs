@@ -4,8 +4,7 @@ use bytes::Bytes;
 
 use crate::{
     codec, finish_bytes, rpc::read_eof_request, subscription::Subscription as SubscriptionRpc,
-    write_bytes, RouterConfig, RpcCodec, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
-    StreamError,
+    write_bytes, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
 };
 
 #[trait_variant::make(SubscriptionHandler: Send)]
@@ -20,7 +19,7 @@ where
         responder: SubscriptionResponder<M::Event, St::Writer>,
     );
 
-    fn handle_transport_error(&self, _error: &St::Error) {}
+    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
 }
 
 pub struct SubscriptionResponder<T, W>
@@ -80,19 +79,19 @@ pub(crate) async fn handle_subscription_inner<S, M, St, H, HF, E>(
     mut reader: St::Reader,
     writer: St::Writer,
     handle: H,
-    handle_transport_error: E,
+    handle_error: E,
 ) where
     M: SubscriptionRpc + 'static,
     St: RpcStream + 'static,
     H: FnOnce(S, M::Request, SubscriptionResponder<M::Event, St::Writer>) -> HF,
     HF: Future<Output = ()>,
-    E: FnOnce(&S, &St::Error),
+    E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
     let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
             let code = error.close_code();
-            handle_transport_error(&state, &error);
+            handle_error(&state, &error);
             if let Some(code) = code {
                 reader.close(code);
                 writer.close(code);

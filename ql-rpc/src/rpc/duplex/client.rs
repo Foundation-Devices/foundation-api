@@ -8,7 +8,7 @@ use bytes::Bytes;
 
 use crate::{
     duplex::{codec, Duplex, EventReader, ReadStep},
-    finish_bytes, write_bytes, CallError, RpcCodec, RpcRead, RpcWrite, StreamCloseCode,
+    finish_bytes, write_bytes, RpcCodec, RpcError, RpcRead, RpcWrite, StreamCloseCode,
 };
 
 pub struct DuplexCall<M, W, R>
@@ -94,14 +94,14 @@ where
         }
     }
 
-    pub async fn next_event(&mut self) -> Option<Result<T, CallError<T::Error, R::Error>>> {
+    pub async fn next_event(&mut self) -> Option<Result<T, RpcError<T::Error, R::Error>>> {
         poll_fn(|cx| self.poll_next_event(cx)).await
     }
 
     pub fn poll_next_event(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<T, CallError<T::Error, R::Error>>>> {
+    ) -> Poll<Option<Result<T, RpcError<T::Error, R::Error>>>> {
         if self.stream.is_none() {
             return Poll::Ready(None);
         }
@@ -111,8 +111,8 @@ where
                 Ok(ReadStep::Event(value)) => return Poll::Ready(Some(Ok(value))),
                 Ok(ReadStep::NeedMore) => {}
                 Err(error) => {
-                    self.stream.take();
-                    return Poll::Ready(Some(Err(error.into())));
+                    self.stream.disarm();
+                    return Poll::Ready(Some(Err(error)));
                 }
             }
 
@@ -131,7 +131,7 @@ where
                 }
                 Poll::Ready(Err(error)) => {
                     self.stream.take();
-                    return Poll::Ready(Some(Err(CallError::Transport(error))));
+                    return Poll::Ready(Some(Err(RpcError::Transport(error))));
                 }
                 Poll::Pending => {
                     return Poll::Pending;

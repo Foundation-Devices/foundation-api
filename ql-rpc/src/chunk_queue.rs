@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use bytes::{Buf, Bytes};
 
-use crate::{CodecError, Error};
+use crate::Error;
 
 const LENGTH_SIZE: usize = 8;
 
@@ -25,9 +25,9 @@ impl ChunkQueue {
         self.remaining
     }
 
-    pub fn expect_empty<E>(&self) -> Result<(), CodecError<E>> {
+    pub fn expect_empty(&self) -> Result<(), Error> {
         if self.remaining > 0 {
-            Err(CodecError::Rpc(Error::TrailingBytes))
+            Err(Error::TrailingBytes)
         } else {
             Ok(())
         }
@@ -199,9 +199,9 @@ impl<'a> DrainBuf<'a> {
         }
     }
 
-    pub fn expect_empty<E>(&self) -> Result<(), CodecError<E>> {
+    pub fn expect_empty(&self) -> Result<(), Error> {
         if self.remaining > 0 {
-            Err(CodecError::Rpc(Error::TrailingBytes))
+            Err(Error::TrailingBytes)
         } else {
             Ok(())
         }

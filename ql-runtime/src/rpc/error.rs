@@ -34,21 +34,12 @@ impl<E> From<ql_rpc::Error> for RpcError<E> {
     }
 }
 
-impl<E> From<ql_rpc::CodecError<E>> for RpcError<E> {
-    fn from(error: ql_rpc::CodecError<E>) -> Self {
+impl<E> From<ql_rpc::RpcError<E, QlStreamError>> for RpcError<E> {
+    fn from(error: ql_rpc::RpcError<E, QlStreamError>) -> Self {
         match error {
-            ql_rpc::CodecError::Rpc(error) => Self::Protocol(error),
-            ql_rpc::CodecError::Codec(error) => Self::Codec(error),
-        }
-    }
-}
-
-impl<E> From<ql_rpc::CallError<E, QlStreamError>> for RpcError<E> {
-    fn from(error: ql_rpc::CallError<E, QlStreamError>) -> Self {
-        match error {
-            ql_rpc::CallError::Protocol(error) => Self::Protocol(error),
-            ql_rpc::CallError::Codec(error) => Self::Codec(error),
-            ql_rpc::CallError::Transport(error) => error.into(),
+            ql_rpc::RpcError::Protocol(error) => Self::Protocol(error),
+            ql_rpc::RpcError::Codec(error) => Self::Codec(error),
+            ql_rpc::RpcError::Transport(error) => error.into(),
         }
     }
 }

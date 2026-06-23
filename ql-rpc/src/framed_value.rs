@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::Bytes;
 
-use crate::{chunk_queue::ChunkQueue, CodecError, RpcCodec};
+use crate::{chunk_queue::ChunkQueue, RpcCodec, RpcError};
 
 /// reads one length-delimited rpc value from buffered byte chunks
 pub struct FramedReader<T: RpcCodec> {
@@ -35,23 +35,23 @@ impl<T: RpcCodec> FramedReader<T> {
         self
     }
 
-    pub fn advance(self) -> Result<FramedReadStep<T>, CodecError<T::Error>> {
-        match self.advance_prefix()? {
+    pub fn advance<E>(self) -> Result<FramedReadStep<T>, RpcError<T::Error, E>> {
+        match self.advance_prefix::<E>()? {
             FramedPrefixStep::NeedMore(next) => Ok(FramedReadStep::NeedMore(next)),
             FramedPrefixStep::Value { value, bytes } => {
-                bytes.expect_empty()?;
+                bytes.expect_empty().map_err(RpcError::Protocol)?;
                 Ok(FramedReadStep::Value(value))
             }
         }
     }
 
-    pub fn advance_prefix(self) -> Result<FramedPrefixStep<T>, CodecError<T::Error>> {
+    pub fn advance_prefix<E>(self) -> Result<FramedPrefixStep<T>, RpcError<T::Error, E>> {
         let mut this = self;
-        let Some(mut body) = this.bytes.try_take_part()? else {
+        let Some(mut body) = this.bytes.try_take_part().map_err(RpcError::Protocol)? else {
             return Ok(FramedPrefixStep::NeedMore(this));
         };
 
-        let value = T::decode_value(&mut body).map_err(CodecError::Codec)?;
+        let value = T::decode_value(&mut body).map_err(RpcError::Codec)?;
         drop(body);
         Ok(FramedPrefixStep::Value {
             value,
@@ -74,7 +74,7 @@ mod tests {
 
         match FramedReader::<Vec<u8>>::default()
             .push(Bytes::from(encoded))
-            .advance()
+            .advance::<std::convert::Infallible>()
             .unwrap()
         {
             FramedReadStep::Value(value) => assert_eq!(value, b"hello".to_vec()),
@@ -90,14 +90,18 @@ mod tests {
 
         let reader = match FramedReader::<Vec<u8>>::default()
             .push(encoded.slice(..4))
-            .advance()
+            .advance::<std::convert::Infallible>()
             .unwrap()
         {
             FramedReadStep::NeedMore(next) => next,
             _ => unreachable!(),
         };
 
-        match reader.push(encoded.slice(4..)).advance().unwrap() {
+        match reader
+            .push(encoded.slice(4..))
+            .advance::<std::convert::Infallible>()
+            .unwrap()
+        {
             FramedReadStep::Value(value) => assert_eq!(value, b"hello".to_vec()),
             _ => unreachable!(),
         }
@@ -111,7 +115,7 @@ mod tests {
 
         match FramedReader::<Vec<u8>>::default()
             .push(Bytes::from(encoded))
-            .advance_prefix()
+            .advance_prefix::<std::convert::Infallible>()
             .unwrap()
         {
             FramedPrefixStep::Value { value, mut bytes } => {

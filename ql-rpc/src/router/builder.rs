@@ -92,7 +92,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -110,7 +110,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -145,7 +145,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -163,7 +163,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -181,7 +181,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -199,7 +199,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -226,7 +226,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -247,7 +247,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -289,7 +289,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -310,7 +310,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -331,7 +331,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }
@@ -352,7 +352,7 @@ where
                 reader,
                 writer,
                 S::handle,
-                S::handle_transport_error,
+                S::handle_error,
             ))
         })
     }

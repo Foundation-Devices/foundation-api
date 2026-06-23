@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{codec, CodecError, RpcCodec};
+use crate::{codec, RpcCodec, RpcError};
 
 pub fn encode_event<T>(event: &T, out: &mut (impl BufMut + AsMut<[u8]>))
 where
@@ -39,13 +39,13 @@ impl<T: RpcCodec> EventReader<T> {
         self.bytes.remaining() == 0
     }
 
-    pub fn advance(&mut self) -> Result<ReadStep<T>, CodecError<T::Error>> {
-        let Some(mut body) = self.bytes.try_take_part()? else {
+    pub fn advance<E>(&mut self) -> Result<ReadStep<T>, RpcError<T::Error, E>> {
+        let Some(mut body) = self.bytes.try_take_part().map_err(RpcError::Protocol)? else {
             return Ok(ReadStep::NeedMore);
         };
 
         let value = {
-            let value = T::decode_value(&mut body).map_err(CodecError::Codec)?;
+            let value = T::decode_value(&mut body).map_err(RpcError::Codec)?;
             drop(body);
             value
         };
@@ -68,14 +68,14 @@ mod tests {
         let mut reader = EventReader::<Vec<u8>>::default();
         reader.push(Bytes::from(encoded));
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             ReadStep::Event(value) => {
                 assert_eq!(value, b"one".to_vec());
             }
             _ => unreachable!(),
         };
 
-        match reader.advance().unwrap() {
+        match reader.advance::<std::convert::Infallible>().unwrap() {
             ReadStep::Event(value) => {
                 assert_eq!(value, b"two".to_vec());
                 assert!(reader.is_empty());

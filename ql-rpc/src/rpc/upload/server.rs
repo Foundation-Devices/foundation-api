@@ -8,7 +8,7 @@ use crate::{
         parts::{FrameKind, PartFrameReader, PartReadStep},
         read_framed_request_prefix,
     },
-    RouterConfig, RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError, Upload,
+    RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode, Upload,
 };
 
 #[trait_variant::make(UploadHandler: Send)]
@@ -24,7 +24,7 @@ where
         responder: UploadResponder<M::Response, St::Writer>,
     );
 
-    fn handle_transport_error(&self, _error: &St::Error) {}
+    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
 }
 
 pub struct UploadReader<M, R>
@@ -59,7 +59,7 @@ where
 {
     pub async fn next_part(
         &mut self,
-    ) -> Result<Option<(M::PartHeader, UploadPart<'_, M, R>)>, crate::CallError<M::Error, R::Error>>
+    ) -> Result<Option<(M::PartHeader, UploadPart<'_, M, R>)>, crate::RpcError<M::Error, R::Error>>
     {
         if self.stream.is_none() {
             return Ok(None);
@@ -89,12 +89,12 @@ where
 
     async fn read_frame(
         &mut self,
-    ) -> Result<PartReadStep<M::PartHeader>, crate::CallError<M::Error, R::Error>> {
+    ) -> Result<PartReadStep<M::PartHeader>, crate::RpcError<M::Error, R::Error>> {
         loop {
             match self.reader.advance() {
                 Ok(PartReadStep::NeedMore) => {}
                 Ok(step) => return Ok(step),
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             }
 
             let stream = self.stream.as_mut().unwrap();
@@ -103,7 +103,7 @@ where
                     self.reader.push(chunk);
                 }
                 Ok(None) => return Err(crate::Error::Truncated.into()),
-                Err(error) => return Err(crate::CallError::Transport(error)),
+                Err(error) => return Err(crate::RpcError::Transport(error)),
             }
         }
     }
@@ -138,7 +138,7 @@ where
 {
     pub async fn read_chunk(
         &mut self,
-    ) -> Result<Option<Bytes>, crate::CallError<M::Error, R::Error>> {
+    ) -> Result<Option<Bytes>, crate::RpcError<M::Error, R::Error>> {
         if self.finished {
             return Ok(None);
         }
@@ -203,7 +203,7 @@ pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
     mut reader: St::Reader,
     writer: St::Writer,
     handle: H,
-    handle_transport_error: E,
+    handle_error: E,
 ) where
     M: Upload + 'static,
     St: RpcStream + 'static,
@@ -214,14 +214,14 @@ pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
         UploadResponder<M::Response, St::Writer>,
     ) -> HF,
     HF: Future<Output = ()>,
-    E: FnOnce(&S, &St::Error),
+    E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
     let (request, buffered) =
         match read_framed_request_prefix::<M::Request, _>(&mut reader, config).await {
             Ok(value) => value,
             Err(error) => {
                 let code = error.close_code();
-                handle_transport_error(&state, &error);
+                handle_error(&state, &error);
                 if let Some(code) = code {
                     reader.close(code);
                     writer.close(code);

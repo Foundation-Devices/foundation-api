@@ -6,7 +6,7 @@ use crate::{
     finish_bytes,
     progress::{encode_progress, encode_response, Progress},
     rpc::read_framed_request,
-    write_bytes, RouterConfig, RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError,
+    write_bytes, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
 };
 
 #[trait_variant::make(ProgressHandler: Send)]
@@ -17,7 +17,7 @@ where
 {
     async fn handle(self, request: M::Request, responder: ProgressResponder<M, St::Writer>);
 
-    fn handle_transport_error(&self, _error: &St::Error) {}
+    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
 }
 
 pub struct ProgressResponder<M, W>
@@ -81,19 +81,19 @@ pub(crate) async fn handle_progress_inner<S, M, St, H, HF, E>(
     mut reader: St::Reader,
     writer: St::Writer,
     handle: H,
-    handle_transport_error: E,
+    handle_error: E,
 ) where
     M: Progress + 'static,
     St: RpcStream + 'static,
     H: FnOnce(S, M::Request, ProgressResponder<M, St::Writer>) -> HF,
     HF: Future<Output = ()>,
-    E: FnOnce(&S, &St::Error),
+    E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
     let request = match read_framed_request::<M::Request, _>(&mut reader, config).await {
         Ok(request) => request,
         Err(error) => {
             let code = error.close_code();
-            handle_transport_error(&state, &error);
+            handle_error(&state, &error);
             if let Some(code) = code {
                 reader.close(code);
                 writer.close(code);
