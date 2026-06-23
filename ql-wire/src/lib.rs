@@ -4,6 +4,8 @@
 
 #![allow(clippy::too_many_arguments)]
 
+#[macro_use]
+mod macros;
 mod bytes;
 mod codec;
 mod crypto;
@@ -13,7 +15,6 @@ mod error;
 mod handshake;
 mod header;
 mod identity;
-mod macros;
 mod pq;
 mod qid;
 mod record;
@@ -30,13 +31,14 @@ pub use error::*;
 pub use handshake::*;
 pub use header::*;
 pub use identity::*;
-pub(crate) use macros::*;
 pub use pq::*;
 pub use qid::*;
+pub use ql_common::{
+    RouteId, ServiceId, StreamCloseCode, StreamId, VarInt, VarIntBoundsExceeded, QID,
+};
 pub use record::*;
 #[cfg(any(feature = "test-utils", test))]
 pub use testing::*;
-pub use varint::*;
 
 pub const QL_WIRE_VERSION: u8 = 1;
 pub const ENCRYPTED_MESSAGE_AUTH_SIZE: usize = 16;

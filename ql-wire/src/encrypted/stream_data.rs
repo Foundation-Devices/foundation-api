@@ -1,7 +1,9 @@
 use bytes::Buf;
 
-use super::{RouteId, ServiceId, StreamId};
-use crate::{codec, BufView, ByteSlice, VarInt, WireDecode, WireEncode, WireError};
+use crate::{
+    codec, BufView, ByteSlice, RouteId, ServiceId, StreamId, VarInt, WireDecode, WireEncode,
+    WireError,
+};
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,7 +111,7 @@ pub struct StreamHeader {
 }
 
 impl StreamHeader {
-    pub const MAX_WIRE_SIZE: usize = ServiceId::ENCODED_LEN + RouteId::MAX_ENCODED_LEN;
+    pub const MAX_WIRE_SIZE: usize = ServiceId::SIZE + RouteId::MAX_ENCODED_LEN;
 }
 
 impl<B: ByteSlice> WireDecode<B> for StreamHeader {

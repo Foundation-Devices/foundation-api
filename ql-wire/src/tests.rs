@@ -778,7 +778,7 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
 
     let wrong_seq_header = SessionHeader {
         connection_id: header.connection_id,
-        seq: record_seq(header.seq.into_inner() + 1),
+        seq: record_seq(header.seq.0.into_inner() + 1),
     };
     assert_eq!(
         encrypted::decrypt_record(&crypto, &wrong_seq_header, encrypted, &session_key),

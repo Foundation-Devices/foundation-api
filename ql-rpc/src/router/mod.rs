@@ -43,7 +43,6 @@ impl RouteKey {
             route_id: R::ROUTE,
         }
     }
-
 }
 
 struct RouteEntry<S, St, Sp>
@@ -86,7 +85,10 @@ where
     pub fn handle(&self, stream: St) -> Option<(RouteId, Sp::Handle)> {
         let service_id = stream.service_id()?;
         let route_id = stream.route_id()?;
-        let key = RouteKey { service_id, route_id };
+        let key = RouteKey {
+            service_id,
+            route_id,
+        };
         let Ok(index) = self.routes.binary_search_by_key(&key, |entry| entry.key) else {
             close_stream(stream, StreamCloseCode::UNKNOWN_ROUTE);
             return None;

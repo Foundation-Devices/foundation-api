@@ -1,6 +1,6 @@
 use crate::{
-    codec, ByteSlice, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey,
-    Nonce, PeerBundle, QlCrypto, SessionKey, WireDecode, WireEncode, WireError,
+    codec, derive_qid, ByteSlice, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair,
+    MlKemPublicKey, Nonce, PeerBundle, QlCrypto, SessionKey, WireDecode, WireEncode, WireError,
     ENCRYPTED_MESSAGE_AUTH_SIZE, QID,
 };
 
@@ -467,7 +467,7 @@ fn decrypt_peer_bundle(
 ) -> Result<PeerBundle, WireError> {
     let plaintext = symmetric.decrypt_and_hash(crypto, bundle.as_bytes())?;
     let bundle = PeerBundle::decode_exact(plaintext.as_slice())?;
-    let peer_qid = QID::derive(crypto, &bundle.mlkem_public_key);
+    let peer_qid = derive_qid(crypto, &bundle.mlkem_public_key);
     if peer_qid != bundle.qid {
         return Err(WireError::InvalidRemoteBundle);
     }

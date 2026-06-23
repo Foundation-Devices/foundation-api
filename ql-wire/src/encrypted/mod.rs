@@ -1,12 +1,11 @@
 use crate::{
-    codec, encrypted_message::EncryptedMessage, varint_wrapper, BufView, ByteSlice, Nonce,
-    QlCrypto, Reader, SessionHeader, SessionKey, WireDecode, WireEncode, WireError,
+    codec, encrypted_message::EncryptedMessage, BufView, ByteSlice, Nonce, QlCrypto, Reader,
+    RouteId, ServiceId, SessionHeader, SessionKey, StreamId, WireDecode, WireEncode, WireError,
 };
 
 mod ack;
 mod builder;
 mod close;
-mod service_id;
 mod stream_close;
 mod stream_data;
 mod stream_window;
@@ -14,13 +13,13 @@ mod stream_window;
 pub use ack::*;
 pub use builder::*;
 pub use close::*;
-pub use service_id::*;
 pub use stream_close::*;
 pub use stream_data::*;
 pub use stream_window::*;
 
-varint_wrapper!(RouteId);
-varint_wrapper!(StreamId);
+varint_wrapper_codec!(RouteId);
+varint_wrapper_codec!(StreamId);
+array_wrapper_codec!(ServiceId);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionFrame<B> {
@@ -174,7 +173,7 @@ pub fn decrypt_record<B: AsMut<[u8]>>(
     session_key: &SessionKey,
 ) -> Result<B, WireError> {
     let aad = header.aad();
-    let nonce = Nonce::from_counter(header.seq.into_inner());
+    let nonce = Nonce::from_counter(header.seq.0.into_inner());
     let mut ciphertext = encrypted.ciphertext;
     if !crypto.aes256_gcm_decrypt(
         session_key,

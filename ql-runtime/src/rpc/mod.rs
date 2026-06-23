@@ -38,7 +38,7 @@ impl RpcHandle {
             .inner
             .open_stream(open_stream_params(M::SERVICE, M::ROUTE))
             .await?;
-        stream.reader.close(ql_wire::StreamCloseCode::CANCELLED);
+        stream.reader.close(ql_rpc::StreamCloseCode::CANCELLED);
         stream.writer.write(Bytes::from(payload)).await?;
         stream.writer.finish().await?;
         Ok(())
@@ -160,7 +160,7 @@ fn open_stream_params(
     route_id: ql_rpc::RouteId,
 ) -> OpenStreamParams {
     OpenStreamParams {
-        service_id: adapter::to_wire_service_id(service_id),
-        route_id: adapter::to_wire_route_id(route_id),
+        service_id,
+        route_id,
     }
 }

@@ -45,7 +45,7 @@ impl AckTracker {
     }
 
     pub fn insert(&mut self, seq: RecordSeq) -> ReceiveOutcome {
-        let seq = seq.into_inner();
+        let seq = seq.0.into_inner();
         let largest_accepted = self.accepted_records.max();
         if largest_accepted.is_some_and(|largest| seq < self.accepted_cutoff(largest)) {
             return ReceiveOutcome::TooOld;
@@ -167,8 +167,8 @@ fn to_ack_range(range: std::ops::Range<u64>) -> RangeInclusive<RecordSeq> {
 }
 
 fn from_ack_range(range: RangeInclusive<RecordSeq>) -> std::ops::Range<u64> {
-    let start = range.start().into_inner();
-    let end = range.end().into_inner().checked_add(1).unwrap();
+    let start = range.start().0.into_inner();
+    let end = range.end().0.into_inner().checked_add(1).unwrap();
     start..end
 }
 
@@ -188,7 +188,7 @@ mod tests {
         pending_ack
             .ack
             .ranges()
-            .map(|range| (range.start().into_inner(), range.end().into_inner()))
+            .map(|range| (range.start().0.into_inner(), range.end().0.into_inner()))
             .collect()
     }
 

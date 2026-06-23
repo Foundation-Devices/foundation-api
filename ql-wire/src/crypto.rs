@@ -3,7 +3,7 @@ use crate::{
     ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
-crate::array_wrapper!(Nonce, 12);
+array_wrapper!(Nonce, 12);
 
 impl Nonce {
     pub fn from_counter(counter: u64) -> Self {

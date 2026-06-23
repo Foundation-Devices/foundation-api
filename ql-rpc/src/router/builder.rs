@@ -65,8 +65,8 @@ where
         if self.routes.iter().any(|entry| entry.key == key) {
             panic!(
                 "duplicate rpc route {} for service {:?}",
-                key.route_id.into_inner(),
-                key.service_id.into_inner()
+                key.route_id.0.into_inner(),
+                key.service_id.0
             );
         }
         self.routes.push(RouteEntry::new(key, route));

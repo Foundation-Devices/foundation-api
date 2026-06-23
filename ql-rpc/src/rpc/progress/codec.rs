@@ -95,7 +95,7 @@ mod tests {
     use super::{encode_progress, encode_response, ReadStep, ResponseReader};
     use crate::{progress::Progress, Route, RouteId, ServiceId};
 
-    const TEST_SERVICE: ServiceId = ServiceId::from_bytes([7; 16]);
+    const TEST_SERVICE: ServiceId = ServiceId([7; 16]);
 
     struct Watch;
 

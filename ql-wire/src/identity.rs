@@ -1,8 +1,8 @@
 use std::ops::Deref;
 
 use crate::{
-    codec, ByteSlice, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, QlHash, VarInt,
-    WireEncode, WireError, QID,
+    codec, derive_qid, ByteSlice, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, QlHash,
+    VarInt, WireEncode, WireError, QID,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +67,7 @@ impl QlIdentity {
         name: impl Into<String>,
     ) -> Result<Self, WireError> {
         let name = QlName::new(name)?;
-        let qid = QID::derive(crypto, &mlkem_public_key);
+        let qid = derive_qid(crypto, &mlkem_public_key);
         Ok(Self {
             qid,
             mlkem_private_key,

@@ -2,9 +2,6 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use ql_rpc::{RouteId, RpcRead, RpcStream, RpcWrite, ServiceId, StreamCloseCode, StreamError};
-use ql_wire::{
-    RouteId as WireRouteId, ServiceId as WireServiceId, StreamCloseCode as WireStreamCloseCode,
-};
 
 use crate::{QlStream, QlStreamError, StreamReader, StreamWriter};
 
@@ -14,12 +11,11 @@ impl RpcStream for QlStream {
     type Writer = StreamWriter;
 
     fn service_id(&self) -> Option<ServiceId> {
-        Some(ServiceId::from_bytes(self.service_id.0))
+        Some(self.service_id)
     }
 
     fn route_id(&self) -> Option<RouteId> {
-        let route_id = u32::try_from(self.route_id.into_inner()).ok()?;
-        Some(RouteId::from_u32(route_id))
+        Some(self.route_id)
     }
 
     fn split(self) -> (Self::Reader, Self::Writer) {
@@ -39,7 +35,7 @@ impl RpcRead for StreamReader {
     }
 
     fn close(self, code: StreamCloseCode) {
-        StreamReader::close(self, to_wire_close_code(code));
+        StreamReader::close(self, code);
     }
 }
 
@@ -59,34 +55,20 @@ impl RpcWrite for StreamWriter {
     }
 
     fn close(self, code: StreamCloseCode) {
-        StreamWriter::close(self, to_wire_close_code(code));
+        StreamWriter::close(self, code);
     }
-}
-
-pub(super) fn to_wire_route_id(route_id: RouteId) -> WireRouteId {
-    WireRouteId::from_u32(route_id.into_inner())
-}
-
-pub(super) fn to_wire_service_id(service_id: ServiceId) -> WireServiceId {
-    WireServiceId(service_id.into_inner())
-}
-
-pub(super) fn to_wire_close_code(code: StreamCloseCode) -> WireStreamCloseCode {
-    WireStreamCloseCode(code.into_inner())
 }
 
 impl From<StreamCloseCode> for QlStreamError {
     fn from(code: StreamCloseCode) -> Self {
-        Self::StreamClosed {
-            code: WireStreamCloseCode(code.into_inner()),
-        }
+        Self::StreamClosed { code }
     }
 }
 
 impl StreamError for QlStreamError {
     fn close_code(&self) -> Option<StreamCloseCode> {
         match self {
-            QlStreamError::StreamClosed { code } => Some(StreamCloseCode(code.0)),
+            QlStreamError::StreamClosed { code } => Some(*code),
             QlStreamError::NoSession => None,
         }
     }

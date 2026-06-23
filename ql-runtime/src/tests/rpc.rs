@@ -20,7 +20,7 @@ use ql_rpc::{
 use super::*;
 use crate::{rpc::RpcError, QlStream, StreamWriter};
 
-const TEST_SERVICE: ServiceId = ServiceId::from_bytes([7; 16]);
+const TEST_SERVICE: ServiceId = ServiceId([7; 16]);
 
 #[derive(Debug, Clone, Copy)]
 struct TokioLocalSpawner;

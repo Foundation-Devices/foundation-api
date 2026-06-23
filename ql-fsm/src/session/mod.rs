@@ -585,7 +585,7 @@ impl SessionFsm {
             .state
             .tracked_records
             .extract_if(.., |_, record| {
-                record.sent_at.is_some() && ack.contains(record.seq.into_inner())
+                record.sent_at.is_some() && ack.contains(record.seq.0.into_inner())
             })
             .map(|(_, record)| record)
             .collect::<Vec<_>>();
@@ -941,9 +941,10 @@ fn local_stream_was_opened(
     stream_id: StreamId,
 ) -> bool {
     local_parity.matches(stream_id)
-        && stream_id.into_inner()
+        && stream_id.0.into_inner()
             < local_parity
                 .make_stream_id(next_stream_ordinal)
+                .0
                 .into_inner()
 }
 
@@ -1034,6 +1035,7 @@ fn acknowledge_tracked_frame(
 #[track_caller]
 fn next_seq(seq: &mut RecordSeq) {
     *seq = seq
+        .0
         .into_inner()
         .checked_add(1)
         .and_then(|next| RecordSeq::from_u64(next).ok())

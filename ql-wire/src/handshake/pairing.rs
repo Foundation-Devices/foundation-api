@@ -5,7 +5,7 @@ use crate::QlCrypto;
 const PAIRING_ID_DOMAIN: &[u8] = b"ql-wire:pairing-id:v1";
 const PAIRING_PSK_DOMAIN: &[u8] = b"ql-wire:pairing-psk:v1";
 
-crate::array_wrapper!(PairingToken, 16);
+array_wrapper!(PairingToken, 16);
 
 impl PairingToken {
     pub fn id(&self, crypto: &impl QlCrypto) -> PairingId {
@@ -29,7 +29,7 @@ impl Display for PairingToken {
     }
 }
 
-crate::array_wrapper!(PairingId, 16);
+array_wrapper!(PairingId, 16);
 
 impl Display for PairingId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {

@@ -114,7 +114,7 @@ impl SessionRecordBuilder {
             seq: self.seq,
         };
         let aad = header.aad();
-        let nonce = Nonce::from_counter(self.seq.into_inner());
+        let nonce = Nonce::from_counter(self.seq.0.into_inner());
         let auth = crypto.aes256_gcm_encrypt(
             session_key,
             &nonce,

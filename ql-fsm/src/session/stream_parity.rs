@@ -23,8 +23,8 @@ impl StreamParity {
 
     pub const fn matches(self, stream_id: StreamId) -> bool {
         match self {
-            Self::Even => stream_id.into_inner() % 2 == 0,
-            Self::Odd => stream_id.into_inner() % 2 == 1,
+            Self::Even => stream_id.0.into_inner() % 2 == 0,
+            Self::Odd => stream_id.0.into_inner() % 2 == 1,
         }
     }
 

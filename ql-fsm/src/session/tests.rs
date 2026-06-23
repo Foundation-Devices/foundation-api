@@ -465,8 +465,8 @@ fn stream_ids_follow_even_odd_xid_ordering() {
     .unwrap()
     .stream_id();
 
-    assert_eq!(even_id.into_inner() % 2, 0);
-    assert_eq!(odd_id.into_inner() % 2, 1);
+    assert_eq!(even_id.0.into_inner() % 2, 0);
+    assert_eq!(odd_id.0.into_inner() % 2, 1);
 }
 
 #[test]
@@ -837,7 +837,7 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
 
     for (seq, record) in originals
         .iter()
-        .filter(|(seq, _)| seq.into_inner() % 2 == 1)
+        .filter(|(seq, _)| seq.0.into_inner() % 2 == 1)
     {
         let _ = receive_events(&mut receiver, now, *seq, record);
     }

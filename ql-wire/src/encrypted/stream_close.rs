@@ -1,5 +1,5 @@
 use super::StreamId;
-use crate::{codec, ByteSlice, WireEncode, WireError};
+use crate::{codec, ByteSlice, StreamCloseCode, WireEncode, WireError};
 
 /// aborts one or both lanes of a stream with a close code
 ///
@@ -84,15 +84,6 @@ impl<B: ByteSlice> codec::WireDecode<B> for CloseTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct StreamCloseCode(pub u16);
-
-impl StreamCloseCode {
-    /// the stream was aborted intentionally before graceful completion
-    pub const CANCELLED: Self = Self(0);
-}
-
 impl<B: ByteSlice> codec::WireDecode<B> for StreamCloseCode {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self(reader.decode()?))
@@ -106,11 +97,5 @@ impl WireEncode for StreamCloseCode {
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
         self.0.encode(out);
-    }
-}
-
-impl std::fmt::Display for StreamCloseCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
     }
 }

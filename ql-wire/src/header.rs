@@ -8,9 +8,11 @@ pub struct SessionHeader {
     pub seq: RecordSeq,
 }
 
-crate::varint_wrapper!(RecordSeq);
+ql_common::varint_wrapper!(RecordSeq);
 
-crate::array_wrapper!(ConnectionId, 8);
+varint_wrapper_codec!(RecordSeq);
+
+array_wrapper!(ConnectionId, 8);
 
 impl SessionHeader {
     pub const MAX_ENCODED_LEN: usize = ConnectionId::SIZE + RecordSeq::MAX_ENCODED_LEN;

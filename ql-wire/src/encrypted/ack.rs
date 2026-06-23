@@ -46,7 +46,7 @@ impl RecordAck {
 
     pub fn ranges(&self) -> RecordAckRangeIter<'_> {
         RecordAckRangeIter {
-            largest_acked: self.largest_acked.into_inner(),
+            largest_acked: self.largest_acked.0.into_inner(),
             first_range_len: Some(self.first_range_len),
             previous_start: None,
             blocks: self.blocks.iter(),
@@ -164,6 +164,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for RecordAck {
         {
             let mut previous_start = ack
                 .largest_acked
+                .0
                 .into_inner()
                 .checked_sub(ack.first_range_len.into_inner())
                 .ok_or(WireError::InvalidPayload)?;
@@ -206,8 +207,8 @@ impl RecordAckBuilder {
         range: RangeInclusive<RecordSeq>,
         max_wire_size: usize,
     ) -> Result<bool, RecordAckRangeError> {
-        let start = range.start().into_inner();
-        let end = range.end().into_inner();
+        let start = range.start().0.into_inner();
+        let end = range.end().0.into_inner();
         if start > end {
             return Err(RecordAckRangeError::InvertedRange);
         }
