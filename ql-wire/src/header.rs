@@ -10,7 +10,7 @@ pub struct SessionHeader {
 
 crate::varint_wrapper!(RecordSeq);
 
-crate::array_wrapper!(ConnectionId, 16);
+crate::array_wrapper!(ConnectionId, 8);
 
 impl SessionHeader {
     pub const MAX_ENCODED_LEN: usize = ConnectionId::SIZE + RecordSeq::MAX_ENCODED_LEN;
