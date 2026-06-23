@@ -13,8 +13,8 @@ use ql_rpc::{
     DownloadHandlerLocal, DownloadStart, DuplexHandlerLocal, DuplexPeer, LocalSpawner,
     NotificationHandlerLocal, ProgressHandlerLocal, ProgressResponder, RequestHandler,
     RequestHandlerLocal, Response, RouteId, SendSpawner, ServiceId, Spawner, StreamCloseCode,
-    SubscriptionHandlerLocal, SubscriptionResponder, UploadHandlerLocal, UploadReader,
-    UploadResponder,
+    StreamCloseOrigin, SubscriptionHandlerLocal, SubscriptionResponder, UploadHandlerLocal,
+    UploadReader, UploadResponder,
 };
 
 use super::*;
@@ -330,7 +330,8 @@ async fn rpc_router_enforces_max_request_bytes() {
         let response = rpc.request::<Echo>(&"hello".to_string()).await;
         assert!(matches!(
             response,
-            Err(RpcError::Closed(code)) if code == StreamCloseCode::LIMIT
+            Err(RpcError::Closed { code, origin })
+                if code == StreamCloseCode::LIMIT && origin == StreamCloseOrigin::Peer
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)

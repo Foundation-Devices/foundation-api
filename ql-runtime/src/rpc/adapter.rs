@@ -61,14 +61,17 @@ impl RpcWrite for StreamWriter {
 
 impl From<StreamCloseCode> for QlStreamError {
     fn from(code: StreamCloseCode) -> Self {
-        Self::StreamClosed { code }
+        Self::StreamClosed {
+            code,
+            origin: ql_wire::StreamCloseOrigin::Local,
+        }
     }
 }
 
 impl StreamError for QlStreamError {
     fn close_code(&self) -> Option<StreamCloseCode> {
         match self {
-            QlStreamError::StreamClosed { code } => Some(*code),
+            QlStreamError::StreamClosed { code, .. } => Some(*code),
             QlStreamError::NoSession => None,
         }
     }

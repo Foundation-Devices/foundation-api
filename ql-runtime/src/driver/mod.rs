@@ -16,7 +16,7 @@ use std::{
 use async_channel::Recv;
 use futures_lite::future::{poll_fn, yield_now};
 use ql_fsm::{Event, QlFsm, WriteId};
-use ql_wire::{CloseTarget, StreamCloseCode, StreamHeader, StreamId};
+use ql_wire::{CloseTarget, StreamCloseCode, StreamCloseOrigin, StreamHeader, StreamId};
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
@@ -488,10 +488,16 @@ impl DriverState {
         let stream = entry.get_mut();
 
         if frame.target == CloseTarget::Both || frame.target == stream.inbound_target() {
-            stream.inbound_fail(QlStreamError::StreamClosed { code: frame.code });
+            stream.inbound_fail(QlStreamError::StreamClosed {
+                code: frame.code,
+                origin: StreamCloseOrigin::Peer,
+            });
         }
         if frame.target == CloseTarget::Both || frame.target == stream.outbound_target() {
-            stream.outbound_fail(QlStreamError::StreamClosed { code: frame.code });
+            stream.outbound_fail(QlStreamError::StreamClosed {
+                code: frame.code,
+                origin: StreamCloseOrigin::Peer,
+            });
         }
         Self::try_reap_stream(entry);
     }
@@ -507,7 +513,10 @@ impl DriverState {
             return;
         };
         let stream = entry.get_mut();
-        stream.outbound_fail(QlStreamError::StreamClosed { code: frame.code });
+        stream.outbound_fail(QlStreamError::StreamClosed {
+            code: frame.code,
+            origin: StreamCloseOrigin::Peer,
+        });
         Self::try_reap_stream(entry);
     }
 

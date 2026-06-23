@@ -5,7 +5,10 @@ use crate::QlStreamError;
 #[derive(Debug)]
 pub enum RpcError<E> {
     NoSession,
-    Closed(ql_rpc::StreamCloseCode),
+    Closed {
+        code: ql_rpc::StreamCloseCode,
+        origin: ql_rpc::StreamCloseOrigin,
+    },
     Protocol(ql_rpc::Error),
     Codec(E),
 }
@@ -19,7 +22,7 @@ impl<E> From<NoSessionError> for RpcError<E> {
 impl<E> From<QlStreamError> for RpcError<E> {
     fn from(error: QlStreamError) -> Self {
         match error {
-            QlStreamError::StreamClosed { code } => Self::Closed(ql_rpc::StreamCloseCode(code.0)),
+            QlStreamError::StreamClosed { code, origin } => Self::Closed { code, origin },
             QlStreamError::NoSession => Self::NoSession,
         }
     }
@@ -57,7 +60,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoSession => write!(f, "no session"),
-            Self::Closed(code) => write!(f, "stream closed {code:?}"),
+            Self::Closed { code, origin } => write!(f, "stream closed {code:?} ({origin:?})"),
             Self::Protocol(error) => write!(f, "{error}"),
             Self::Codec(error) => write!(f, "{error}"),
         }
@@ -73,7 +76,7 @@ where
             Self::Protocol(error) => Some(error),
             Self::Codec(error) => Some(error),
             RpcError::NoSession => None,
-            RpcError::Closed(_) => None,
+            RpcError::Closed { .. } => None,
         }
     }
 }

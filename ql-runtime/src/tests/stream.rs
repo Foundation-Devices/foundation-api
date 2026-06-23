@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ql_wire::StreamCloseCode;
+use ql_wire::{StreamCloseCode, StreamCloseOrigin};
 
 use super::*;
 use crate::QlStreamError;
@@ -174,13 +174,15 @@ async fn dropping_responder_closes_initiator_response() {
         let err = stream.writer.finish().await.unwrap_err();
         assert!(matches!(
             err,
-            QlStreamError::StreamClosed { code } if code == StreamCloseCode::CANCELLED
+            QlStreamError::StreamClosed { code, origin }
+                if code == StreamCloseCode::CANCELLED && origin == StreamCloseOrigin::Peer
         ));
 
         let err = next_chunk(&mut stream.reader).await.unwrap_err();
         assert!(matches!(
             err,
-            QlStreamError::StreamClosed { code } if code == StreamCloseCode::CANCELLED
+            QlStreamError::StreamClosed { code, origin }
+                if code == StreamCloseCode::CANCELLED && origin == StreamCloseOrigin::Peer
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -213,7 +215,8 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             let err = writer.finish().await.unwrap_err();
             assert!(matches!(
                 err,
-                QlStreamError::StreamClosed { code } if code == StreamCloseCode::CANCELLED
+                QlStreamError::StreamClosed { code, origin }
+                    if code == StreamCloseCode::CANCELLED && origin == StreamCloseOrigin::Peer
             ));
         });
 

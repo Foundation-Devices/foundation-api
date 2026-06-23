@@ -14,7 +14,7 @@ pub use chunk_queue::ChunkQueue;
 pub use codec::RpcCodec;
 pub use error::*;
 use framed_value::*;
-pub use ql_common::{RouteId, ServiceId, StreamCloseCode};
+pub use ql_common::{RouteId, ServiceId, StreamCloseCode, StreamCloseOrigin};
 pub use router::*;
 pub use rpc::*;
 pub use stream::*;

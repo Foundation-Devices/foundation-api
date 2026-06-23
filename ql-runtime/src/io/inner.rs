@@ -292,7 +292,7 @@ mod loom_tests {
 
     use bytes::Bytes;
     use loom::thread;
-    use ql_wire::StreamCloseCode;
+    use ql_wire::{StreamCloseCode, StreamCloseOrigin};
 
     use super::*;
     use crate::{
@@ -409,6 +409,7 @@ mod loom_tests {
                 thread::spawn(move || {
                     shared.rx.fail(QlStreamError::StreamClosed {
                         code: StreamCloseCode::CANCELLED,
+                        origin: StreamCloseOrigin::Local,
                     })
                 })
             };
@@ -420,13 +421,13 @@ mod loom_tests {
                 (Ok(Item::Chunk(bytes)), None) => {
                     assert_eq!(bytes, Bytes::from_static(b"abc"));
                     match shared.rx.pop() {
-                        Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
+                        Ok(Item::Error(QlStreamError::StreamClosed { code, .. })) => {
                             assert_eq!(code, StreamCloseCode::CANCELLED);
                         }
                         _ => panic!("expected terminal reader error"),
                     }
                 }
-                (Ok(Item::Error(QlStreamError::StreamClosed { code })), Some(bytes)) => {
+                (Ok(Item::Error(QlStreamError::StreamClosed { code, .. })), Some(bytes)) => {
                     assert_eq!(code, StreamCloseCode::CANCELLED);
                     assert_eq!(bytes, Bytes::from_static(b"abc"));
                     assert!(matches!(shared.rx.pop(), Err(PopError)));
@@ -500,6 +501,7 @@ mod loom_tests {
                 thread::spawn(move || {
                     let displaced = shared.tx.fail(QlStreamError::StreamClosed {
                         code: StreamCloseCode::CANCELLED,
+                        origin: StreamCloseOrigin::Local,
                     });
                     assert_eq!(displaced.unwrap(), Some(Bytes::from_static(b"abc")));
                 })
@@ -510,7 +512,7 @@ mod loom_tests {
             assert!(TxInner::terminal_ready(shared.tx.load_state()));
             shared.tx.unregister_waiter();
             match shared.tx.pop() {
-                Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
+                Ok(Item::Error(QlStreamError::StreamClosed { code, .. })) => {
                     assert_eq!(code, StreamCloseCode::CANCELLED);
                 }
                 _ => panic!("expected terminal writer error"),
@@ -570,6 +572,7 @@ mod loom_tests {
                 thread::spawn(move || {
                     shared.tx.fail(QlStreamError::StreamClosed {
                         code: StreamCloseCode::CANCELLED,
+                        origin: StreamCloseOrigin::Local,
                     })
                 })
             };
@@ -594,7 +597,7 @@ mod loom_tests {
             }
 
             match shared.tx.pop() {
-                Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
+                Ok(Item::Error(QlStreamError::StreamClosed { code, .. })) => {
                     assert_eq!(code, StreamCloseCode::CANCELLED);
                 }
                 _ => panic!("expected terminal writer error"),
@@ -616,6 +619,7 @@ mod loom_tests {
                 thread::spawn(move || {
                     shared.tx.fail(QlStreamError::StreamClosed {
                         code: StreamCloseCode::CANCELLED,
+                        origin: StreamCloseOrigin::Local,
                     })
                 })
             };
@@ -631,7 +635,7 @@ mod loom_tests {
                 Ok(_) => {
                     assert!(!TxInner::terminal_ok(shared.tx.load_state()));
                     match shared.tx.pop() {
-                        Ok(Item::Error(QlStreamError::StreamClosed { code })) => {
+                        Ok(Item::Error(QlStreamError::StreamClosed { code, .. })) => {
                             assert_eq!(code, StreamCloseCode::CANCELLED);
                         }
                         _ => panic!("expected terminal writer error"),

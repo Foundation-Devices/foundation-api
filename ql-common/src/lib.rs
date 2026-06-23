@@ -28,6 +28,15 @@ impl std::fmt::Display for StreamCloseCode {
     }
 }
 
+/// origin of a stream close: either we triggered it locally or the peer sent it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StreamCloseOrigin {
+    /// the close code originated from the peer
+    Peer,
+    /// the close code originated from local logic
+    Local,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct QID(pub [u8; Self::SIZE]);
