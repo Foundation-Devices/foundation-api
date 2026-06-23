@@ -175,14 +175,14 @@ async fn dropping_responder_closes_initiator_response() {
         assert!(matches!(
             err,
             QlStreamError::StreamClosed { code, origin }
-                if code == StreamCloseCode::CANCELLED && origin == StreamCloseOrigin::Peer
+                if code == StreamCloseCode::DROPPED && origin == StreamCloseOrigin::Peer
         ));
 
         let err = next_chunk(&mut stream.reader).await.unwrap_err();
         assert!(matches!(
             err,
             QlStreamError::StreamClosed { code, origin }
-                if code == StreamCloseCode::CANCELLED && origin == StreamCloseOrigin::Peer
+                if code == StreamCloseCode::DROPPED && origin == StreamCloseOrigin::Peer
         ));
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -216,7 +216,7 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
             assert!(matches!(
                 err,
                 QlStreamError::StreamClosed { code, origin }
-                    if code == StreamCloseCode::CANCELLED && origin == StreamCloseOrigin::Peer
+                    if code == StreamCloseCode::DROPPED && origin == StreamCloseOrigin::Peer
             ));
         });
 

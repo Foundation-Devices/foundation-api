@@ -93,7 +93,7 @@ where
 {
     fn drop(&mut self) {
         if self.stream.is_some() {
-            self.close_inner(StreamCloseCode::CANCELLED);
+            self.close_inner(StreamCloseCode::DROPPED);
         }
     }
 }

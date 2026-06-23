@@ -68,7 +68,7 @@ where
 {
     fn drop(&mut self) {
         if let Some(writer) = self.writer.take() {
-            writer.close(StreamCloseCode::CANCELLED);
+            writer.close(StreamCloseCode::DROPPED);
         }
     }
 }

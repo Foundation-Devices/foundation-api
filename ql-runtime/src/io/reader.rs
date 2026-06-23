@@ -181,12 +181,12 @@ impl Drop for StreamReader {
             "byte reader drop close: stream_id={:?} target={:?} code={:?}",
             self.rx.stream_id(),
             self.target,
-            StreamCloseCode::CANCELLED
+            StreamCloseCode::DROPPED
         );
         self.handle.try_send(Command::CloseStream {
             stream_id: self.rx.stream_id(),
             target: self.target,
-            code: StreamCloseCode::CANCELLED,
+            code: StreamCloseCode::DROPPED,
         });
     }
 }

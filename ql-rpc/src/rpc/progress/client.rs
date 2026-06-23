@@ -117,7 +117,7 @@ where
 {
     fn drop(&mut self) {
         if matches!(self.state, State::Reading(_)) {
-            self.close_inner(StreamCloseCode::CANCELLED);
+            self.close_inner(StreamCloseCode::DROPPED);
         }
     }
 }

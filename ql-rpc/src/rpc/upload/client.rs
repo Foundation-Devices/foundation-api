@@ -101,7 +101,7 @@ where
     R: RpcRead<Error = W::Error>,
 {
     fn drop(&mut self) {
-        self.close(StreamCloseCode::CANCELLED);
+        self.close(StreamCloseCode::DROPPED);
     }
 }
 
@@ -136,7 +136,7 @@ where
 {
     fn drop(&mut self) {
         if !self.finished {
-            self.parent.close(StreamCloseCode::CANCELLED);
+            self.parent.close(StreamCloseCode::DROPPED);
         }
     }
 }

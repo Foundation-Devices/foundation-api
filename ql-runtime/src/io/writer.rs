@@ -215,7 +215,7 @@ impl StreamWriter {
 
 impl Drop for StreamWriter {
     fn drop(&mut self) {
-        self.close_inner(StreamCloseCode::CANCELLED);
+        self.close_inner(StreamCloseCode::DROPPED);
     }
 }
 

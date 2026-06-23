@@ -255,7 +255,7 @@ impl DriverState {
                         stream.inbound_close();
                         stream.outbound_close();
                     }
-                    stream_ops.close(CloseTarget::Both, StreamCloseCode::CANCELLED);
+                    stream_ops.close(CloseTarget::Both, StreamCloseCode::DROPPED);
                     drop(stream_ops);
                     return;
                 }
@@ -368,7 +368,7 @@ impl DriverState {
                 "dropping inbound stream because handle channel is unavailable: stream_id={stream_id}"
             );
             if let Ok(mut stream) = fsm.stream(stream_id) {
-                stream.close(CloseTarget::Both, StreamCloseCode::CANCELLED);
+                stream.close(CloseTarget::Both, StreamCloseCode::DISCONNECTED);
             }
             return;
         };
@@ -456,7 +456,7 @@ impl DriverState {
             stream_ops.commit_read(accepted).unwrap();
         }
         if peer_closed {
-            stream_ops.close(target, StreamCloseCode::CANCELLED);
+            stream_ops.close(target, StreamCloseCode::DROPPED);
             if let Entry::Occupied(entry) = self.streams.entry(stream_id) {
                 Self::try_reap_stream(entry);
             }

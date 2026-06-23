@@ -77,7 +77,7 @@ where
 {
     fn drop(&mut self) {
         if let Some(writer) = self.writer.take() {
-            writer.close(StreamCloseCode::CANCELLED);
+            writer.close(StreamCloseCode::DROPPED);
         }
     }
 }
@@ -158,7 +158,7 @@ where
 {
     fn drop(&mut self) {
         if self.stream.is_some() {
-            self.close_inner(StreamCloseCode::CANCELLED);
+            self.close_inner(StreamCloseCode::DROPPED);
         }
     }
 }

@@ -30,7 +30,7 @@ impl Error {
             Self::Truncated
             | Self::UnexpectedFrameKind(_)
             | Self::MissingResponse
-            | Self::TrailingBytes => StreamCloseCode::REFUSED,
+            | Self::TrailingBytes => StreamCloseCode::PROTOCOL,
         }
     }
 }
@@ -46,7 +46,7 @@ impl<C, T> RpcError<C, T> {
     pub const fn close_code(&self) -> Option<StreamCloseCode> {
         match self {
             Self::Protocol(error) => Some(error.close_code()),
-            Self::Codec(_) => Some(StreamCloseCode::REFUSED),
+            Self::Codec(_) => Some(StreamCloseCode::CODEC),
             Self::Transport(_) => None,
         }
     }
