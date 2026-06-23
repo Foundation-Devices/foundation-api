@@ -1,5 +1,5 @@
 use std::{
-    future::poll_fn,
+    future::{poll_fn, Future},
     task::{Context, Poll},
 };
 
@@ -37,10 +37,13 @@ pub trait RpcWrite {
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>>;
 
-    /// completes the write side and must be polled until ready without further write or reset calls
+    /// queues a graceful write-side finish
+    fn queue_finish(&mut self);
+
+    /// waits for the queued finish to be delivered
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
 
-    /// aborts the write side before finish
+    /// aborts the write side before finish; must not replace a queued finish
     fn reset(self, code: ResetCode);
 }
 
@@ -59,11 +62,12 @@ where
     poll_fn(|cx| writer.poll_write(&mut bytes, cx)).await
 }
 
-pub async fn finish_bytes<W>(writer: &mut W) -> Result<(), W::Error>
+pub fn finish_bytes<W>(writer: &mut W) -> impl Future<Output = Result<(), W::Error>> + '_
 where
     W: RpcWrite,
 {
-    poll_fn(|cx| writer.poll_finish(cx)).await
+    writer.queue_finish();
+    poll_fn(|cx| writer.poll_finish(cx))
 }
 
 pub fn reset_stream<St>(stream: St, code: ResetCode)
@@ -156,6 +160,10 @@ mod drop {
             cx: &mut Context<'_>,
         ) -> Poll<Result<(), Self::Error>> {
             self.inner.as_mut().unwrap().poll_write(bytes, cx)
+        }
+
+        fn queue_finish(&mut self) {
+            self.inner.as_mut().unwrap().queue_finish();
         }
 
         #[track_caller]

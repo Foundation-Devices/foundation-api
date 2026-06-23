@@ -150,7 +150,7 @@ impl RpcHandle {
             .open_stream(open_stream_params(service_id, route_id))
             .await?;
         stream.writer.write(Bytes::from(payload)).await?;
-        stream.writer.finish().await?;
+        stream.writer.queue_finish();
         Ok(stream.reader)
     }
 }

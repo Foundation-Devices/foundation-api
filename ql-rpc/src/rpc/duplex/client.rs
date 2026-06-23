@@ -8,8 +8,7 @@ use bytes::Bytes;
 
 use crate::{
     duplex::{codec, Duplex, EventReader, ReadStep},
-    finish_bytes, write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcCodec, RpcError,
-    RpcRead, RpcWrite,
+    write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcCodec, RpcError, RpcRead, RpcWrite,
 };
 
 pub struct DuplexCall<M, W, R>
@@ -59,8 +58,8 @@ where
         write_bytes(writer, Bytes::from(encoded)).await
     }
 
-    pub async fn finish(mut self) -> Result<(), W::Error> {
-        finish_bytes(&mut self.writer).await
+    pub fn finish(mut self) {
+        self.writer.queue_finish();
     }
 
     pub fn reset(mut self, code: ResetCode) {

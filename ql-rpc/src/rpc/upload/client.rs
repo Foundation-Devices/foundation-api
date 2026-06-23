@@ -1,7 +1,7 @@
 use bytes::{BufMut, Bytes};
 
 use crate::{
-    finish_bytes, read_bytes,
+    read_bytes,
     rpc::parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
     upload::Upload,
     write_bytes, ChunkQueue, DropResetRead, DropResetWrite, ResetCode, RpcCodec, RpcError, RpcRead,
@@ -64,7 +64,7 @@ where
         write_bytes(writer, Bytes::from(encoded))
             .await
             .map_err(RpcError::Transport)?;
-        finish_bytes(writer).await.map_err(RpcError::Transport)?;
+        writer.queue_finish();
 
         let reader = &mut self.reader;
         let mut bytes = ChunkQueue::default();

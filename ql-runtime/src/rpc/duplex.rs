@@ -31,8 +31,8 @@ where
         self.inner.send(event).await
     }
 
-    pub async fn finish(self) -> Result<(), QlStreamError> {
-        self.inner.finish().await
+    pub fn finish(self) {
+        self.inner.finish();
     }
 
     pub fn reset(self, code: ql_wire::ResetCode) {

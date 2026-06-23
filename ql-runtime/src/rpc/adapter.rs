@@ -46,6 +46,10 @@ impl RpcWrite for StreamWriter {
         StreamWriter::poll_write(self, bytes, cx)
     }
 
+    fn queue_finish(&mut self) {
+        StreamWriter::queue_finish(self);
+    }
+
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
         StreamWriter::poll_finish(self, cx)
     }

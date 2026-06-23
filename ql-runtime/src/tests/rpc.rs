@@ -640,7 +640,7 @@ async fn rpc_duplex() {
             let second = peer.receiver.next_event().await.unwrap().unwrap();
             seen.borrow_mut().push(second);
 
-            peer.sender.finish().await.unwrap();
+            peer.sender.finish();
         }
     }
 
@@ -670,7 +670,7 @@ async fn rpc_duplex() {
             b"challenge-response".to_vec()
         );
         chat.sender.send(&b"verification".to_vec()).await.unwrap();
-        chat.sender.finish().await.unwrap();
+        chat.sender.finish();
         assert!(chat.receiver.next_event().await.is_none());
 
         assert_eq!(
