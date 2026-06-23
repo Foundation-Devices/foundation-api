@@ -16,7 +16,6 @@ use crate::{command::Command, log, QlStreamError, RuntimeHandle};
 pub struct StreamReader {
     rx: Rx,
     target: CloseTarget,
-    pending: Bytes,
     terminal: ReaderTerminalState,
     handle: RuntimeHandle,
 }
@@ -46,7 +45,6 @@ impl StreamReader {
         Self {
             rx: shared,
             target,
-            pending: Bytes::new(),
             terminal: ReaderTerminalState::Open,
             handle,
         }
@@ -54,21 +52,20 @@ impl StreamReader {
 
     pub fn poll_read(
         &mut self,
-        max_len: usize,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
         if matches!(self.terminal, ReaderTerminalState::Delivered) {
             return Poll::Ready(Ok(None));
         }
 
-        match self.try_read_ready(max_len) {
+        match self.try_read_ready() {
             Poll::Ready(result) => return Poll::Ready(result),
             Poll::Pending => {}
         }
 
         self.rx.register_waiter(cx.waker());
 
-        match self.try_read_ready(max_len) {
+        match self.try_read_ready() {
             Poll::Ready(result) => {
                 self.rx.unregister_waiter();
                 Poll::Ready(result)
@@ -77,22 +74,9 @@ impl StreamReader {
         }
     }
 
-    fn try_read_ready(&mut self, max_len: usize) -> Poll<Result<Option<Bytes>, QlStreamError>> {
-        if !self.pending.is_empty() {
-            let pending = &mut self.pending;
-            let bytes = if pending.len() <= max_len {
-                std::mem::take(pending)
-            } else {
-                pending.split_to(max_len)
-            };
-            self.handle.try_send(Command::PollInbound {
-                stream_id: self.rx.stream_id(),
-            });
-            return Poll::Ready(Ok(Some(bytes)));
-        }
-
+    fn try_read_ready(&mut self) -> Poll<Result<Option<Bytes>, QlStreamError>> {
         match self.rx.pop() {
-            Ok(Item::Chunk(mut bytes)) => {
+            Ok(Item::Chunk(bytes)) => {
                 log::trace!(
                     "byte reader received chunk: stream_id={} target={:?} len={}",
                     self.rx.stream_id(),
@@ -102,12 +86,7 @@ impl StreamReader {
                 self.handle.try_send(Command::PollInbound {
                     stream_id: self.rx.stream_id(),
                 });
-                if bytes.len() <= max_len {
-                    return Poll::Ready(Ok(Some(bytes)));
-                }
-                let head = bytes.split_to(max_len);
-                self.pending = bytes;
-                Poll::Ready(Ok(Some(head)))
+                Poll::Ready(Ok(Some(bytes)))
             }
             Ok(Item::Error(error)) => {
                 log::debug!(
@@ -134,19 +113,8 @@ impl StreamReader {
         }
     }
 
-    pub fn poll_read_chunk(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
-        self.poll_read(usize::MAX, cx)
-    }
-
-    pub async fn read(&mut self, max_len: usize) -> Result<Option<Bytes>, QlStreamError> {
-        poll_fn(|cx| self.poll_read(max_len, cx)).await
-    }
-
-    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, QlStreamError> {
-        self.read(usize::MAX).await
+    pub async fn read(&mut self) -> Result<Option<Bytes>, QlStreamError> {
+        poll_fn(|cx| self.poll_read(cx)).await
     }
 
     pub fn close(mut self, code: StreamCloseCode) {
@@ -216,7 +184,7 @@ mod loom_tests {
                 })
             };
 
-            let first = reader.poll_read(usize::MAX, &mut cx);
+            let first = reader.poll_read(&mut cx);
             producer.join().unwrap();
 
             match first {
@@ -225,7 +193,7 @@ mod loom_tests {
                 }
                 Poll::Pending => {
                     assert_eq!(
-                        reader.poll_read(usize::MAX, &mut cx),
+                        reader.poll_read(&mut cx),
                         Poll::Ready(Ok(Some(Bytes::from_static(b"abc"))))
                     );
                 }

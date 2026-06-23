@@ -13,8 +13,6 @@ where
     R: RpcRead,
 {
     let mut value_reader = FramedReader::<T>::default();
-    let mut total_read = 0usize;
-
     let value = loop {
         match value_reader.advance::<R::Error>() {
             Ok(FramedReadStep::Value(value)) => break value,
@@ -22,26 +20,18 @@ where
             Err(error) => return Err(error),
         }
 
-        let remaining = config.max_request_bytes.saturating_sub(total_read);
-        if remaining == 0 {
-            return Err(RpcError::Protocol(Error::LengthOverflow));
-        }
-
-        match read_bytes(reader, remaining).await {
+        match read_bytes(reader).await {
             Ok(Some(chunk)) => {
-                total_read += chunk.len();
                 value_reader = value_reader.push(chunk);
+                reject_oversized_frame(&value_reader, config)?;
             }
             Ok(None) => return Err(RpcError::Protocol(Error::Truncated)),
             Err(error) => return Err(RpcError::Transport(error)),
         }
     };
 
-    let remaining = config.max_request_bytes.saturating_sub(total_read);
-    let probe = remaining.max(1);
-    match read_bytes(reader, probe).await {
+    match read_bytes(reader).await {
         Ok(None) => Ok(value),
-        Ok(Some(_)) if remaining == 0 => Err(RpcError::Protocol(Error::LengthOverflow)),
         Ok(Some(_)) => Err(RpcError::Protocol(Error::TrailingBytes)),
         Err(error) => Err(RpcError::Transport(error)),
     }
@@ -57,8 +47,6 @@ where
     R: RpcRead,
 {
     let mut value_reader = FramedReader::<T>::default();
-    let mut total_read = 0usize;
-
     loop {
         match value_reader.advance_prefix::<R::Error>() {
             Ok(FramedPrefixStep::Value { value, bytes }) => return Ok((value, bytes)),
@@ -66,15 +54,10 @@ where
             Err(error) => return Err(error),
         }
 
-        let remaining = config.max_request_bytes.saturating_sub(total_read);
-        if remaining == 0 {
-            return Err(RpcError::Protocol(Error::LengthOverflow));
-        }
-
-        match read_bytes(reader, remaining).await {
+        match read_bytes(reader).await {
             Ok(Some(chunk)) => {
-                total_read += chunk.len();
                 value_reader = value_reader.push(chunk);
+                reject_oversized_frame(&value_reader, config)?;
             }
             Ok(None) => return Err(RpcError::Protocol(Error::Truncated)),
             Err(error) => return Err(RpcError::Transport(error)),
@@ -96,8 +79,7 @@ where
 
     loop {
         let remaining = config.max_request_bytes.saturating_sub(total_read);
-        let probe = remaining.max(1);
-        match read_bytes(reader, probe).await {
+        match read_bytes(reader).await {
             Ok(Some(chunk)) => {
                 if chunk.len() > remaining {
                     return Err(RpcError::Protocol(Error::LengthOverflow));
@@ -115,4 +97,20 @@ where
         return Err(RpcError::Protocol(Error::TrailingBytes));
     }
     Ok(value)
+}
+
+fn reject_oversized_frame<T, E>(
+    value_reader: &FramedReader<T>,
+    config: RouterConfig,
+) -> Result<(), RpcError<T::Error, E>>
+where
+    T: RpcCodec,
+{
+    if value_reader
+        .exceeds_total_len(config.max_request_bytes)
+        .map_err(RpcError::Protocol)?
+    {
+        return Err(RpcError::Protocol(Error::LengthOverflow));
+    }
+    Ok(())
 }

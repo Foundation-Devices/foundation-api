@@ -69,10 +69,7 @@ where
         let reader = &mut self.reader;
         let mut bytes = ChunkQueue::default();
 
-        while let Some(chunk) = read_bytes(reader, usize::MAX)
-            .await
-            .map_err(RpcError::Transport)?
-        {
+        while let Some(chunk) = read_bytes(reader).await.map_err(RpcError::Transport)? {
             bytes.push(chunk);
         }
 

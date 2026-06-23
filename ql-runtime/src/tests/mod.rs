@@ -655,18 +655,11 @@ async fn read_all(mut stream: crate::StreamReader) -> Result<Vec<u8>, QlStreamEr
     Ok(data)
 }
 
-async fn next_chunk_max(
-    stream: &mut crate::StreamReader,
-    max_len: usize,
-) -> Result<Option<Vec<u8>>, crate::QlStreamError> {
+async fn next_chunk(stream: &mut crate::StreamReader) -> Result<Option<Vec<u8>>, QlStreamError> {
     stream
-        .read(max_len)
+        .read()
         .await
         .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
-}
-
-async fn next_chunk(stream: &mut crate::StreamReader) -> Result<Option<Vec<u8>>, QlStreamError> {
-    next_chunk_max(stream, usize::MAX).await
 }
 
 fn default_runtime_config() -> RuntimeConfig {

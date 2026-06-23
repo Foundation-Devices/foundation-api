@@ -74,7 +74,7 @@ where
                 }
             }
 
-            match self.stream.poll_read(usize::MAX, cx) {
+            match self.stream.poll_read(cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
                     let State::Reading(reader) = &mut self.state else {
                         panic!("invalid state");

@@ -21,11 +21,7 @@ pub trait RpcRead {
     type Error;
 
     /// reads inbound bytes until eof or error
-    fn poll_read(
-        &mut self,
-        max_len: usize,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Bytes>, Self::Error>>;
+    fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, Self::Error>>;
 
     /// aborts the read side
     fn close(self, code: StreamCloseCode);
@@ -48,11 +44,11 @@ pub trait RpcWrite {
     fn close(self, code: StreamCloseCode);
 }
 
-pub async fn read_bytes<R>(reader: &mut R, max_len: usize) -> Result<Option<Bytes>, R::Error>
+pub async fn read_bytes<R>(reader: &mut R) -> Result<Option<Bytes>, R::Error>
 where
     R: RpcRead,
 {
-    poll_fn(|cx| reader.poll_read(max_len, cx)).await
+    poll_fn(|cx| reader.poll_read(cx)).await
 }
 
 pub async fn write_bytes<W>(writer: &mut W, bytes: Bytes) -> Result<(), W::Error>
@@ -116,12 +112,8 @@ mod drop {
         type Error = R::Error;
 
         #[track_caller]
-        fn poll_read(
-            &mut self,
-            max_len: usize,
-            cx: &mut Context<'_>,
-        ) -> Poll<Result<Option<Bytes>, Self::Error>> {
-            self.inner.as_mut().unwrap().poll_read(max_len, cx)
+        fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, Self::Error>> {
+            self.inner.as_mut().unwrap().poll_read(cx)
         }
 
         fn close(mut self, code: StreamCloseCode) {

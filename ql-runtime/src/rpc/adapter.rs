@@ -26,12 +26,8 @@ impl RpcStream for QlStream {
 impl RpcRead for StreamReader {
     type Error = QlStreamError;
 
-    fn poll_read(
-        &mut self,
-        max_len: usize,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
-        StreamReader::poll_read(self, max_len, cx)
+    fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, QlStreamError>> {
+        StreamReader::poll_read(self, cx)
     }
 
     fn close(self, code: StreamCloseCode) {

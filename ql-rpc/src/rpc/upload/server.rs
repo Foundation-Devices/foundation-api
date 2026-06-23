@@ -97,7 +97,7 @@ where
                 Err(error) => return Err(error),
             }
 
-            match poll_fn(|cx| self.stream.poll_read(usize::MAX, cx)).await {
+            match poll_fn(|cx| self.stream.poll_read(cx)).await {
                 Ok(Some(chunk)) => {
                     self.reader.push(chunk);
                 }

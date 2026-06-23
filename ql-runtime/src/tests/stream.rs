@@ -60,56 +60,6 @@ async fn open_stream_duplex_happy_path() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn reader_respects_max_len() {
-    run_local_test(async {
-        let mut pair = TestPair::new(default_runtime_config());
-        pair.connect_and_wait(Side::A).await;
-        let inbound_b = pair.take_inbound(Side::B);
-
-        let responder = tokio::task::spawn_local(async move {
-            let inbound = inbound_b.recv().await.unwrap();
-            let mut reader = inbound.reader;
-
-            assert_eq!(
-                next_chunk_max(&mut reader, 2).await.unwrap(),
-                Some(vec![1, 2])
-            );
-            assert_eq!(
-                next_chunk_max(&mut reader, 2).await.unwrap(),
-                Some(vec![3, 4])
-            );
-            assert_eq!(
-                next_chunk_max(&mut reader, 2).await.unwrap(),
-                Some(vec![5, 6])
-            );
-            assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
-
-            inbound.writer.finish().await.unwrap();
-        });
-
-        let mut stream = pair
-            .side(Side::A)
-            .handle
-            .open_stream(test_open_stream_params())
-            .await
-            .unwrap();
-        stream
-            .writer
-            .write(Bytes::from_static(&[1, 2, 3, 4, 5, 6]))
-            .await
-            .unwrap();
-        stream.writer.finish().await.unwrap();
-        assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
-
-        tokio::time::timeout(Duration::from_secs(2), responder)
-            .await
-            .unwrap()
-            .unwrap();
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn large_stream_payload_round_trips() {
     run_local_test(async {
         let payload: Vec<u8> = (0..40).collect();

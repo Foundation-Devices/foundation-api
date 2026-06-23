@@ -35,6 +35,13 @@ impl<T: RpcCodec> FramedReader<T> {
         self
     }
 
+    pub(crate) fn exceeds_total_len(&self, max_len: usize) -> Result<bool, crate::Error> {
+        let Some(len) = self.bytes.next_part_total_len()? else {
+            return Ok(self.bytes.remaining() > max_len);
+        };
+        Ok(len > max_len)
+    }
+
     pub fn advance<E>(self) -> Result<FramedReadStep<T>, RpcError<T::Error, E>> {
         match self.advance_prefix::<E>()? {
             FramedPrefixStep::NeedMore(next) => Ok(FramedReadStep::NeedMore(next)),
