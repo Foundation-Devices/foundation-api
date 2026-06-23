@@ -4,7 +4,8 @@ use crate::{
     finish_bytes, read_bytes,
     rpc::parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
     upload::Upload,
-    write_bytes, ChunkQueue, RpcCodec, RpcError, RpcRead, RpcWrite, StreamCloseCode,
+    write_bytes, ChunkQueue, DropCloseRead, DropCloseWrite, RpcCodec, RpcError, RpcRead, RpcWrite,
+    StreamCloseCode,
 };
 
 pub struct UploadCall<M, W, R>
@@ -13,8 +14,8 @@ where
     W: RpcWrite,
     R: RpcRead<Error = W::Error>,
 {
-    writer: Option<W>,
-    reader: Option<R>,
+    writer: DropCloseWrite<W>,
+    reader: DropCloseRead<R>,
     marker: std::marker::PhantomData<fn() -> M>,
 }
 
@@ -36,8 +37,8 @@ where
 {
     pub fn new(writer: W, reader: R) -> Self {
         Self {
-            writer: Some(writer),
-            reader: Some(reader),
+            writer: DropCloseWrite::new(writer),
+            reader: DropCloseRead::new(reader),
             marker: std::marker::PhantomData,
         }
     }
@@ -46,7 +47,7 @@ where
         &mut self,
         part_header: M::PartHeader,
     ) -> Result<UploadPartWriter<'_, M, W, R>, W::Error> {
-        let writer = self.writer.as_mut().unwrap();
+        let writer = &mut self.writer;
         let mut encoded = Vec::new();
         encode_part_header(&part_header, &mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await?;
@@ -57,20 +58,18 @@ where
     }
 
     pub async fn finish(mut self) -> Result<M::Response, RpcError<M::Error, W::Error>> {
-        let mut writer = self.writer.take().unwrap();
+        let writer = &mut self.writer;
         let mut encoded = Vec::new();
         encode_finish(&mut encoded);
-        write_bytes(&mut writer, Bytes::from(encoded))
+        write_bytes(writer, Bytes::from(encoded))
             .await
             .map_err(RpcError::Transport)?;
-        finish_bytes(&mut writer)
-            .await
-            .map_err(RpcError::Transport)?;
+        finish_bytes(writer).await.map_err(RpcError::Transport)?;
 
-        let mut reader = self.reader.take().unwrap();
+        let reader = &mut self.reader;
         let mut bytes = ChunkQueue::default();
 
-        while let Some(chunk) = read_bytes(&mut reader, usize::MAX)
+        while let Some(chunk) = read_bytes(reader, usize::MAX)
             .await
             .map_err(RpcError::Transport)?
         {
@@ -85,23 +84,8 @@ where
     }
 
     fn close(&mut self, code: StreamCloseCode) {
-        if let Some(reader) = self.reader.take() {
-            reader.close(code);
-        }
-        if let Some(writer) = self.writer.take() {
-            writer.close(code);
-        }
-    }
-}
-
-impl<M, W, R> Drop for UploadCall<M, W, R>
-where
-    M: Upload,
-    W: RpcWrite,
-    R: RpcRead<Error = W::Error>,
-{
-    fn drop(&mut self) {
-        self.close(StreamCloseCode::DROPPED);
+        DropCloseRead::close(&mut self.reader, code);
+        DropCloseWrite::close(&mut self.writer, code);
     }
 }
 
@@ -112,14 +96,14 @@ where
     R: RpcRead<Error = W::Error>,
 {
     pub async fn send(&mut self, bytes: Bytes) -> Result<(), W::Error> {
-        let writer = self.parent.writer.as_mut().unwrap();
+        let writer = &mut self.parent.writer;
         let mut encoded = Vec::new();
         encode_body_chunk(&bytes, &mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await
     }
 
     pub async fn finish(mut self) -> Result<(), W::Error> {
-        let writer = self.parent.writer.as_mut().unwrap();
+        let writer = &mut self.parent.writer;
         let mut encoded = Vec::new();
         encode_end_part(&mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await?;

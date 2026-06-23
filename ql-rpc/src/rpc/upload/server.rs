@@ -8,7 +8,7 @@ use crate::{
         parts::{FrameKind, PartFrameReader, PartReadStep},
         read_framed_request_prefix,
     },
-    RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode, Upload,
+    DropCloseRead, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode, Upload,
 };
 
 #[trait_variant::make(UploadHandler: Send)]
@@ -32,7 +32,7 @@ where
     M: Upload,
     R: RpcRead,
 {
-    stream: Option<R>,
+    stream: DropCloseRead<R>,
     reader: PartFrameReader<M::PartHeader>,
 }
 
@@ -61,7 +61,7 @@ where
         &mut self,
     ) -> Result<Option<(M::PartHeader, UploadPart<'_, M, R>)>, crate::RpcError<M::Error, R::Error>>
     {
-        if self.stream.is_none() {
+        if !self.stream.is_some() {
             return Ok(None);
         }
 
@@ -74,7 +74,7 @@ where
                 },
             ))),
             PartReadStep::Finish => {
-                self.stream.take();
+                self.stream.disarm();
                 Ok(None)
             }
             PartReadStep::BodyBytes(_) => {
@@ -97,8 +97,7 @@ where
                 Err(error) => return Err(error),
             }
 
-            let stream = self.stream.as_mut().unwrap();
-            match poll_fn(|cx| stream.poll_read(usize::MAX, cx)).await {
+            match poll_fn(|cx| self.stream.poll_read(usize::MAX, cx)).await {
                 Ok(Some(chunk)) => {
                     self.reader.push(chunk);
                 }
@@ -113,21 +112,7 @@ where
     }
 
     fn close_inner(&mut self, code: StreamCloseCode) {
-        if let Some(stream) = self.stream.take() {
-            stream.close(code);
-        }
-    }
-}
-
-impl<M, R> Drop for UploadReader<M, R>
-where
-    M: Upload,
-    R: RpcRead,
-{
-    fn drop(&mut self) {
-        if self.stream.is_some() {
-            self.close_inner(StreamCloseCode::DROPPED);
-        }
+        DropCloseRead::close(&mut self.stream, code);
     }
 }
 
@@ -234,7 +219,7 @@ pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
         state,
         request,
         UploadReader {
-            stream: Some(reader),
+            stream: DropCloseRead::new(reader),
             reader: PartFrameReader::new(buffered),
         },
         UploadResponder::new(writer),

@@ -8,7 +8,8 @@ use bytes::Bytes;
 
 use crate::{
     duplex::{codec, Duplex, EventReader, ReadStep},
-    finish_bytes, write_bytes, RpcCodec, RpcError, RpcRead, RpcWrite, StreamCloseCode,
+    finish_bytes, write_bytes, DropCloseRead, DropCloseWrite, RpcCodec, RpcError, RpcRead,
+    RpcWrite, StreamCloseCode,
 };
 
 pub struct DuplexCall<M, W, R>
@@ -26,7 +27,7 @@ where
     T: RpcCodec,
     W: RpcWrite,
 {
-    writer: Option<W>,
+    writer: DropCloseWrite<W>,
     marker: PhantomData<fn() -> T>,
 }
 
@@ -35,7 +36,7 @@ where
     T: RpcCodec,
     R: RpcRead,
 {
-    stream: Option<R>,
+    stream: DropCloseRead<R>,
     reader: EventReader<T>,
 }
 
@@ -46,39 +47,24 @@ where
 {
     pub fn new(writer: W) -> Self {
         Self {
-            writer: Some(writer),
+            writer: DropCloseWrite::new(writer),
             marker: PhantomData,
         }
     }
 
     pub async fn send(&mut self, event: &T) -> Result<(), W::Error> {
-        let writer = self.writer.as_mut().unwrap();
+        let writer = &mut self.writer;
         let mut encoded = Vec::new();
         codec::encode_event(event, &mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await
     }
 
     pub async fn finish(mut self) -> Result<(), W::Error> {
-        let mut writer = self.writer.take().unwrap();
-        finish_bytes(&mut writer).await
+        finish_bytes(&mut self.writer).await
     }
 
     pub fn close(mut self, code: StreamCloseCode) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(code);
-        }
-    }
-}
-
-impl<T, W> Drop for DuplexSender<T, W>
-where
-    T: RpcCodec,
-    W: RpcWrite,
-{
-    fn drop(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(StreamCloseCode::DROPPED);
-        }
+        DropCloseWrite::close(&mut self.writer, code);
     }
 }
 
@@ -89,7 +75,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: Some(stream),
+            stream: DropCloseRead::new(stream),
             reader: EventReader::default(),
         }
     }
@@ -102,7 +88,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<T, RpcError<T::Error, R::Error>>>> {
-        if self.stream.is_none() {
+        if !self.stream.is_some() {
             return Poll::Ready(None);
         }
 
@@ -116,21 +102,20 @@ where
                 }
             }
 
-            let stream = self.stream.as_mut().unwrap();
-            match stream.poll_read(usize::MAX, cx) {
+            match self.stream.poll_read(usize::MAX, cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
                     self.reader.push(chunk);
                 }
                 Poll::Ready(Ok(None)) => {
                     if self.reader.is_empty() {
-                        self.stream.take();
+                        self.stream.disarm();
                         return Poll::Ready(None);
                     }
-                    self.stream.take();
+                    self.stream.disarm();
                     return Poll::Ready(Some(Err(crate::Error::Truncated.into())));
                 }
                 Poll::Ready(Err(error)) => {
-                    self.stream.take();
+                    self.stream.disarm();
                     return Poll::Ready(Some(Err(RpcError::Transport(error))));
                 }
                 Poll::Pending => {
@@ -145,20 +130,6 @@ where
     }
 
     fn close_inner(&mut self, code: StreamCloseCode) {
-        if let Some(stream) = self.stream.take() {
-            stream.close(code);
-        }
-    }
-}
-
-impl<T, R> Drop for DuplexReceiver<T, R>
-where
-    T: RpcCodec,
-    R: RpcRead,
-{
-    fn drop(&mut self) {
-        if self.stream.is_some() {
-            self.close_inner(StreamCloseCode::DROPPED);
-        }
+        DropCloseRead::close(&mut self.stream, code);
     }
 }

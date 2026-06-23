@@ -6,7 +6,8 @@ use crate::{
     finish_bytes,
     progress::{encode_progress, encode_response, Progress},
     rpc::read_framed_request,
-    write_bytes, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
+    write_bytes, DropCloseWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
+    StreamCloseCode,
 };
 
 #[trait_variant::make(ProgressHandler: Send)]
@@ -25,7 +26,7 @@ where
     M: Progress,
     W: RpcWrite,
 {
-    writer: Option<W>,
+    writer: DropCloseWrite<W>,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -36,42 +37,27 @@ where
 {
     pub(crate) fn new(writer: W) -> Self {
         Self {
-            writer: Some(writer),
+            writer: DropCloseWrite::new(writer),
             marker: PhantomData,
         }
     }
 
     pub async fn send(&mut self, progress: M::Progress) -> Result<(), W::Error> {
-        let writer = self.writer.as_mut().unwrap();
+        let writer = &mut self.writer;
         let mut encoded = Vec::new();
         encode_progress::<M>(&progress, &mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await
     }
 
     pub async fn finish(mut self, response: M::Response) -> Result<(), W::Error> {
-        let mut writer = self.writer.take().unwrap();
         let mut encoded = Vec::new();
         encode_response::<M>(&response, &mut encoded);
-        write_bytes(&mut writer, Bytes::from(encoded)).await?;
-        finish_bytes(&mut writer).await
+        write_bytes(&mut self.writer, Bytes::from(encoded)).await?;
+        finish_bytes(&mut self.writer).await
     }
 
     pub fn close(mut self, code: StreamCloseCode) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(code);
-        }
-    }
-}
-
-impl<M, W> Drop for ProgressResponder<M, W>
-where
-    M: Progress,
-    W: RpcWrite,
-{
-    fn drop(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(StreamCloseCode::DROPPED);
-        }
+        DropCloseWrite::close(&mut self.writer, code);
     }
 }
 

@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     subscription::{ReadStep, ResponseReader, Subscription},
-    RpcError, RpcRead, StreamCloseCode,
+    DropCloseRead, RpcError, RpcRead, StreamCloseCode,
 };
 
 pub struct SubscriptionCall<M, R>
@@ -13,7 +13,7 @@ where
     M: Subscription,
     R: RpcRead,
 {
-    stream: Option<R>,
+    stream: DropCloseRead<R>,
     reader: ResponseReader<M>,
 }
 
@@ -24,7 +24,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: Some(stream),
+            stream: DropCloseRead::new(stream),
             reader: ResponseReader::default(),
         }
     }
@@ -37,7 +37,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<M::Event, RpcError<M::Error, R::Error>>>> {
-        if self.stream.is_none() {
+        if !self.stream.is_some() {
             return Poll::Ready(None);
         }
 
@@ -51,21 +51,20 @@ where
                 }
             }
 
-            let stream = self.stream.as_mut().unwrap();
-            match stream.poll_read(usize::MAX, cx) {
+            match self.stream.poll_read(usize::MAX, cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
                     self.reader.push(chunk);
                 }
                 Poll::Ready(Ok(None)) => {
                     if self.reader.is_empty() {
-                        self.stream.take();
+                        self.stream.disarm();
                         return Poll::Ready(None);
                     }
-                    self.stream.take();
+                    self.stream.disarm();
                     return Poll::Ready(Some(Err(crate::Error::Truncated.into())));
                 }
                 Poll::Ready(Err(error)) => {
-                    self.stream.take();
+                    self.stream.disarm();
                     return Poll::Ready(Some(Err(RpcError::Transport(error))));
                 }
                 Poll::Pending => {
@@ -80,20 +79,6 @@ where
     }
 
     fn close_inner(&mut self, code: StreamCloseCode) {
-        if let Some(stream) = self.stream.take() {
-            stream.close(code);
-        }
-    }
-}
-
-impl<M, R> Drop for SubscriptionCall<M, R>
-where
-    M: Subscription,
-    R: RpcRead,
-{
-    fn drop(&mut self) {
-        if self.stream.is_some() {
-            self.close_inner(StreamCloseCode::DROPPED);
-        }
+        DropCloseRead::close(&mut self.stream, code);
     }
 }

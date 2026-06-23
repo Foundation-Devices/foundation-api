@@ -3,8 +3,9 @@ use std::{future::Future, marker::PhantomData};
 use bytes::Bytes;
 
 use crate::{
-    finish_bytes, request::Request as RequestRpc, rpc::read_eof_request, write_bytes, RouterConfig,
-    RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
+    finish_bytes, request::Request as RequestRpc, rpc::read_eof_request, write_bytes,
+    DropCloseWrite, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
+    StreamCloseCode,
 };
 
 #[trait_variant::make(RequestHandler: Send)]
@@ -22,7 +23,7 @@ pub struct Response<T, W>
 where
     W: RpcWrite,
 {
-    writer: Option<W>,
+    writer: DropCloseWrite<W>,
     marker: PhantomData<fn() -> T>,
 }
 
@@ -33,35 +34,22 @@ where
 {
     pub(crate) fn new(writer: W) -> Self {
         Self {
-            writer: Some(writer),
+            writer: DropCloseWrite::new(writer),
             marker: PhantomData,
         }
     }
 
     pub async fn respond(mut self, response: T) -> Result<(), W::Error> {
-        let mut writer = self.writer.take().unwrap();
+        let writer = &mut self.writer;
         let mut encoded = Vec::new();
         response.encode_value(&mut encoded);
-        write_bytes(&mut writer, Bytes::from(encoded)).await?;
-        finish_bytes(&mut writer).await?;
+        write_bytes(writer, Bytes::from(encoded)).await?;
+        finish_bytes(writer).await?;
         Ok(())
     }
 
     pub fn close(mut self, code: StreamCloseCode) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(code);
-        }
-    }
-}
-
-impl<T, W> Drop for Response<T, W>
-where
-    W: RpcWrite,
-{
-    fn drop(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(StreamCloseCode::DROPPED);
-        }
+        DropCloseWrite::close(&mut self.writer, code);
     }
 }
 

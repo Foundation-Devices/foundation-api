@@ -10,7 +10,8 @@ use crate::{
         parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
         read_eof_request,
     },
-    write_bytes, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
+    write_bytes, DropCloseWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
+    StreamCloseCode,
 };
 
 #[trait_variant::make(DownloadHandler: Send)]
@@ -29,7 +30,7 @@ where
     M: DownloadRpc,
     W: RpcWrite,
 {
-    writer: Option<W>,
+    writer: DropCloseWrite<W>,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -38,7 +39,7 @@ where
     M: DownloadRpc,
     W: RpcWrite,
 {
-    writer: Option<W>,
+    writer: DropCloseWrite<W>,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -58,29 +59,29 @@ where
 {
     pub(crate) fn new(writer: W) -> Self {
         Self {
-            writer: Some(writer),
+            writer: DropCloseWrite::new(writer),
             marker: PhantomData,
         }
     }
 
     /// send the response header and begin streaming parts
     pub async fn start(
-        mut self,
+        self,
         response_header: M::ResponseHeader,
     ) -> Result<DownloadWriter<M, W>, W::Error> {
-        let mut writer = self.writer.take().unwrap();
+        let mut writer = self.writer;
         let mut encoded = Vec::new();
         codec::encode_value_part(&response_header, &mut encoded);
         write_bytes(&mut writer, Bytes::from(encoded)).await?;
         Ok(DownloadWriter {
-            writer: Some(writer),
+            writer,
             marker: PhantomData,
         })
     }
 
     /// send a header-only response and finish the stream
-    pub async fn complete(mut self, response_header: M::ResponseHeader) -> Result<(), W::Error> {
-        let mut writer = self.writer.take().unwrap();
+    pub async fn complete(self, response_header: M::ResponseHeader) -> Result<(), W::Error> {
+        let mut writer = self.writer;
         let mut encoded = Vec::new();
         codec::encode_value_part(&response_header, &mut encoded);
         encode_finish(&mut encoded);
@@ -90,21 +91,7 @@ where
 
     /// close the stream with a transport code
     pub fn close(mut self, code: StreamCloseCode) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(code);
-        }
-    }
-}
-
-impl<M, W> Drop for DownloadStart<M, W>
-where
-    M: DownloadRpc,
-    W: RpcWrite,
-{
-    fn drop(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(StreamCloseCode::DROPPED);
-        }
+        DropCloseWrite::close(&mut self.writer, code);
     }
 }
 
@@ -117,7 +104,7 @@ where
         &mut self,
         part_header: M::PartHeader,
     ) -> Result<DownloadPartWriter<'_, M, W>, W::Error> {
-        let writer = self.writer.as_mut().unwrap();
+        let writer = &mut self.writer;
         let mut encoded = Vec::new();
         encode_part_header(&part_header, &mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await?;
@@ -127,8 +114,8 @@ where
         })
     }
 
-    pub async fn finish(mut self) -> Result<(), W::Error> {
-        let mut writer = self.writer.take().unwrap();
+    pub async fn finish(self) -> Result<(), W::Error> {
+        let mut writer = self.writer;
         let mut encoded = Vec::new();
         encode_finish(&mut encoded);
         write_bytes(&mut writer, Bytes::from(encoded)).await?;
@@ -136,21 +123,7 @@ where
     }
 
     pub fn close(mut self, code: StreamCloseCode) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(code);
-        }
-    }
-}
-
-impl<M, W> Drop for DownloadWriter<M, W>
-where
-    M: DownloadRpc,
-    W: RpcWrite,
-{
-    fn drop(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(StreamCloseCode::DROPPED);
-        }
+        DropCloseWrite::close(&mut self.writer, code);
     }
 }
 
@@ -160,14 +133,14 @@ where
     W: RpcWrite,
 {
     pub async fn send(&mut self, bytes: Bytes) -> Result<(), W::Error> {
-        let writer = self.parent.writer.as_mut().unwrap();
+        let writer = &mut self.parent.writer;
         let mut encoded = Vec::new();
         encode_body_chunk(&bytes, &mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await
     }
 
     pub async fn finish(mut self) -> Result<(), W::Error> {
-        let writer = self.parent.writer.as_mut().unwrap();
+        let writer = &mut self.parent.writer;
         let mut encoded = Vec::new();
         encode_end_part(&mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await?;
@@ -183,9 +156,7 @@ where
 {
     fn drop(&mut self) {
         if !self.finished {
-            if let Some(writer) = self.parent.writer.take() {
-                writer.close(StreamCloseCode::DROPPED);
-            }
+            DropCloseWrite::close(&mut self.parent.writer, StreamCloseCode::DROPPED);
         }
     }
 }

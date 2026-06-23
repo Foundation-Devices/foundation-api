@@ -4,7 +4,8 @@ use bytes::Bytes;
 
 use crate::{
     codec, finish_bytes, rpc::read_eof_request, subscription::Subscription as SubscriptionRpc,
-    write_bytes, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite, StreamCloseCode,
+    write_bytes, DropCloseWrite, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
+    StreamCloseCode,
 };
 
 #[trait_variant::make(SubscriptionHandler: Send)]
@@ -26,7 +27,7 @@ pub struct SubscriptionResponder<T, W>
 where
     W: RpcWrite,
 {
-    writer: Option<W>,
+    writer: DropCloseWrite<W>,
     marker: PhantomData<fn() -> T>,
 }
 
@@ -37,13 +38,13 @@ where
 {
     pub(crate) fn new(writer: W) -> Self {
         Self {
-            writer: Some(writer),
+            writer: DropCloseWrite::new(writer),
             marker: PhantomData,
         }
     }
 
     pub async fn send(&mut self, event: T) -> Result<(), W::Error> {
-        let writer = self.writer.as_mut().unwrap();
+        let writer = &mut self.writer;
         let mut encoded = Vec::new();
         codec::encode_value_part(&event, &mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await?;
@@ -51,25 +52,11 @@ where
     }
 
     pub async fn finish(mut self) -> Result<(), W::Error> {
-        let mut writer = self.writer.take().unwrap();
-        finish_bytes(&mut writer).await
+        finish_bytes(&mut self.writer).await
     }
 
     pub fn close(mut self, code: StreamCloseCode) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(code);
-        }
-    }
-}
-
-impl<T, W> Drop for SubscriptionResponder<T, W>
-where
-    W: RpcWrite,
-{
-    fn drop(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            writer.close(StreamCloseCode::DROPPED);
-        }
+        DropCloseWrite::close(&mut self.writer, code);
     }
 }
 

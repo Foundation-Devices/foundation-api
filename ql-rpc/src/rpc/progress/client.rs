@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     progress::{Progress, ReadStep, ResponseReader},
-    Error, RpcError, RpcRead, StreamCloseCode,
+    DropCloseRead, Error, RpcError, RpcRead, StreamCloseCode,
 };
 
 pub struct ProgressCall<M, R>
@@ -14,7 +14,7 @@ where
     M: Progress,
     R: RpcRead,
 {
-    stream: Option<R>,
+    stream: DropCloseRead<R>,
     state: State<M, R::Error>,
 }
 
@@ -42,7 +42,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: Some(stream),
+            stream: DropCloseRead::new(stream),
             state: State::Reading(ResponseReader::default()),
         }
     }
@@ -62,6 +62,7 @@ where
             match reader.advance() {
                 Ok(ReadStep::Progress(value)) => return Poll::Ready(Some(value)),
                 Ok(ReadStep::Response(response)) => {
+                    self.stream.disarm();
                     self.state = State::Terminal(Ok(response));
                     return Poll::Ready(None);
                 }
@@ -73,8 +74,7 @@ where
                 }
             }
 
-            let stream = self.stream.as_mut().unwrap();
-            match stream.poll_read(usize::MAX, cx) {
+            match self.stream.poll_read(usize::MAX, cx) {
                 Poll::Ready(Ok(Some(chunk))) => {
                     let State::Reading(reader) = &mut self.state else {
                         panic!("invalid state");
@@ -82,10 +82,12 @@ where
                     reader.push(chunk);
                 }
                 Poll::Ready(Ok(None)) => {
+                    self.stream.disarm();
                     self.state = State::Terminal(Err(Error::MissingResponse.into()));
                     return Poll::Ready(None);
                 }
                 Poll::Ready(Err(error)) => {
+                    self.stream.disarm();
                     self.state = State::Terminal(Err(RpcError::Transport(error)));
                     return Poll::Ready(None);
                 }
@@ -104,21 +106,7 @@ where
 
     fn close_inner(&mut self, code: StreamCloseCode) {
         self.state = State::Done;
-        if let Some(stream) = self.stream.take() {
-            stream.close(code);
-        }
-    }
-}
-
-impl<M, R> Drop for ProgressCall<M, R>
-where
-    M: Progress,
-    R: RpcRead,
-{
-    fn drop(&mut self) {
-        if matches!(self.state, State::Reading(_)) {
-            self.close_inner(StreamCloseCode::DROPPED);
-        }
+        DropCloseRead::close(&mut self.stream, code);
     }
 }
 

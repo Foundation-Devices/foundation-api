@@ -5,7 +5,7 @@ use bytes::{BufMut, Bytes};
 use crate::{
     download::{Download, PartReadStep},
     rpc::parts::FrameKind,
-    FramedPrefixStep, FramedReader, RpcCodec, RpcError, RpcRead, StreamCloseCode,
+    DropCloseRead, FramedPrefixStep, FramedReader, RpcCodec, RpcError, RpcRead, StreamCloseCode,
 };
 
 pub struct DownloadCall<M, R>
@@ -13,7 +13,7 @@ where
     M: Download,
     R: RpcRead,
 {
-    stream: Option<R>,
+    stream: DropCloseRead<R>,
     reader: Option<FramedReader<M::ResponseHeader>>,
 }
 
@@ -31,7 +31,7 @@ where
     M: Download,
     R: RpcRead,
 {
-    stream: Option<R>,
+    stream: DropCloseRead<R>,
     reader: crate::download::PartFrameReader<M::PartHeader>,
 }
 
@@ -42,7 +42,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: Some(stream),
+            stream: DropCloseRead::new(stream),
             reader: Some(FramedReader::default()),
         }
     }
@@ -54,11 +54,10 @@ where
             let reader = self.reader.take().unwrap();
             let reader = match reader.advance_prefix() {
                 Ok(FramedPrefixStep::Value { value, bytes }) => {
-                    let stream = self.stream.take().unwrap();
                     return Ok((
                         value,
                         DownloadReader {
-                            stream: Some(stream),
+                            stream: self.stream,
                             reader: crate::download::PartFrameReader::<M::PartHeader>::new(bytes),
                         },
                     ));
@@ -67,8 +66,7 @@ where
                 Err(error) => return Err(error),
             };
 
-            let stream = self.stream.as_mut().unwrap();
-            match poll_fn(|cx| stream.poll_read(usize::MAX, cx)).await {
+            match poll_fn(|cx| self.stream.poll_read(usize::MAX, cx)).await {
                 Ok(Some(chunk)) => {
                     self.reader = Some(reader.push(chunk));
                 }
@@ -83,19 +81,7 @@ where
     }
 
     fn close_inner(&mut self, code: StreamCloseCode) {
-        if let Some(stream) = self.stream.take() {
-            stream.close(code);
-        }
-    }
-}
-
-impl<M, R> Drop for DownloadCall<M, R>
-where
-    M: Download,
-    R: RpcRead,
-{
-    fn drop(&mut self) {
-        self.close_inner(StreamCloseCode::DROPPED);
+        DropCloseRead::close(&mut self.stream, code);
     }
 }
 
@@ -107,7 +93,7 @@ where
     pub async fn next_part(
         &mut self,
     ) -> Result<Option<(M::PartHeader, DownloadPart<'_, M, R>)>, RpcError<M::Error, R::Error>> {
-        if self.stream.is_none() {
+        if !self.stream.is_some() {
             return Ok(None);
         }
 
@@ -120,7 +106,7 @@ where
                 },
             ))),
             PartReadStep::Finish => {
-                self.stream.take();
+                self.stream.disarm();
                 Ok(None)
             }
             PartReadStep::BodyBytes(_) => {
@@ -136,7 +122,7 @@ where
     pub async fn complete(mut self) -> Result<(), RpcError<M::Error, R::Error>> {
         match self.read_frame().await? {
             PartReadStep::Finish => {
-                self.stream.take();
+                self.stream.disarm();
                 Ok(())
             }
             PartReadStep::PartHeader(_) => {
@@ -166,8 +152,7 @@ where
                 Err(error) => return Err(error),
             }
 
-            let stream = self.stream.as_mut().unwrap();
-            match poll_fn(|cx| stream.poll_read(usize::MAX, cx)).await {
+            match poll_fn(|cx| self.stream.poll_read(usize::MAX, cx)).await {
                 Ok(Some(chunk)) => {
                     self.reader.push(chunk);
                 }
@@ -178,21 +163,7 @@ where
     }
 
     fn close_inner(&mut self, code: StreamCloseCode) {
-        if let Some(stream) = self.stream.take() {
-            stream.close(code);
-        }
-    }
-}
-
-impl<M, R> Drop for DownloadReader<M, R>
-where
-    M: Download,
-    R: RpcRead,
-{
-    fn drop(&mut self) {
-        if self.stream.is_some() {
-            self.close_inner(StreamCloseCode::DROPPED);
-        }
+        DropCloseRead::close(&mut self.stream, code);
     }
 }
 
