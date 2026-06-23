@@ -9,6 +9,7 @@ mod framed_value;
 mod route_id;
 mod router;
 mod rpc;
+mod service_id;
 mod stream;
 
 pub use chunk_queue::ChunkQueue;
@@ -18,6 +19,7 @@ use framed_value::*;
 pub use route_id::RouteId;
 pub use router::*;
 pub use rpc::*;
+pub use service_id::ServiceId;
 pub use stream::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

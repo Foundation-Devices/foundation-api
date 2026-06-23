@@ -9,6 +9,7 @@ mod subscription;
 mod upload;
 
 use bytes::Bytes;
+use ql_fsm::OpenStreamParams;
 use ql_rpc::{
     download::{self as rpc_download, Download as DownloadRpc},
     duplex::{self as rpc_duplex, Duplex as DuplexRpc},
@@ -35,7 +36,7 @@ impl RpcHandle {
         notification::encode_notification::<M>(event, &mut payload);
         let mut stream = self
             .inner
-            .open_stream(adapter::to_wire_route_id(M::ROUTE))
+            .open_stream(open_stream_params(M::SERVICE, M::ROUTE))
             .await?;
         stream.reader.close(ql_wire::StreamCloseCode::CANCELLED);
         stream.writer.write(Bytes::from(payload)).await?;
@@ -49,7 +50,7 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         request::encode_request::<M>(request, &mut payload);
-        let response = self.start_request(M::ROUTE, payload).await?;
+        let response = self.start_request(M::SERVICE, M::ROUTE, payload).await?;
         Ok(request::read_response::<M, _>(response).await?)
     }
 
@@ -62,7 +63,7 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         rpc_subscription::encode_request::<M>(request, &mut payload);
-        let response = self.start_request(M::ROUTE, payload).await?;
+        let response = self.start_request(M::SERVICE, M::ROUTE, payload).await?;
         Ok(Subscription {
             inner: rpc_subscription::SubscriptionCall::new(response),
         })
@@ -77,7 +78,7 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         rpc_download::encode_request::<M>(request, &mut payload);
-        let response = self.start_request(M::ROUTE, payload).await?;
+        let response = self.start_request(M::SERVICE, M::ROUTE, payload).await?;
         Ok(DownloadCall {
             inner: rpc_download::DownloadCall::new(response),
         })
@@ -92,7 +93,7 @@ impl RpcHandle {
     {
         let mut payload = Vec::new();
         rpc_progress::encode_request::<M>(request, &mut payload);
-        let response = self.start_request(M::ROUTE, payload).await?;
+        let response = self.start_request(M::SERVICE, M::ROUTE, payload).await?;
         Ok(ProgressCall {
             inner: rpc_progress::ProgressCall::new(response),
         })
@@ -106,7 +107,7 @@ impl RpcHandle {
         rpc_upload::encode_request::<M>(request, &mut payload);
         let mut stream = self
             .inner
-            .open_stream(adapter::to_wire_route_id(M::ROUTE))
+            .open_stream(open_stream_params(M::SERVICE, M::ROUTE))
             .await?;
         stream.writer.write(Bytes::from(payload)).await?;
         Ok(UploadCall {
@@ -120,7 +121,7 @@ impl RpcHandle {
     {
         let stream = self
             .inner
-            .open_stream(adapter::to_wire_route_id(M::ROUTE))
+            .open_stream(open_stream_params(M::SERVICE, M::ROUTE))
             .await?;
         Ok(DuplexCall {
             sender: DuplexSender {
@@ -140,15 +141,26 @@ impl RpcHandle {
 
     async fn start_request<E>(
         &self,
+        service_id: ql_rpc::ServiceId,
         route_id: ql_rpc::RouteId,
         payload: Vec<u8>,
     ) -> Result<StreamReader, RpcError<E>> {
         let mut stream = self
             .inner
-            .open_stream(adapter::to_wire_route_id(route_id))
+            .open_stream(open_stream_params(service_id, route_id))
             .await?;
         stream.writer.write(Bytes::from(payload)).await?;
         stream.writer.finish().await?;
         Ok(stream.reader)
+    }
+}
+
+fn open_stream_params(
+    service_id: ql_rpc::ServiceId,
+    route_id: ql_rpc::RouteId,
+) -> OpenStreamParams {
+    OpenStreamParams {
+        service_id: adapter::to_wire_service_id(service_id),
+        route_id: adapter::to_wire_route_id(route_id),
     }
 }

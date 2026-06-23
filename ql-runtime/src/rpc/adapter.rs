@@ -1,8 +1,10 @@
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use ql_rpc::{RouteId, RpcRead, RpcStream, RpcWrite, StreamCloseCode, StreamError};
-use ql_wire::{RouteId as WireRouteId, StreamCloseCode as WireStreamCloseCode};
+use ql_rpc::{RouteId, RpcRead, RpcStream, RpcWrite, ServiceId, StreamCloseCode, StreamError};
+use ql_wire::{
+    RouteId as WireRouteId, ServiceId as WireServiceId, StreamCloseCode as WireStreamCloseCode,
+};
 
 use crate::{QlStream, QlStreamError, StreamReader, StreamWriter};
 
@@ -10,6 +12,10 @@ impl RpcStream for QlStream {
     type Error = QlStreamError;
     type Reader = StreamReader;
     type Writer = StreamWriter;
+
+    fn service_id(&self) -> Option<ServiceId> {
+        Some(ServiceId::from_bytes(self.service_id.0))
+    }
 
     fn route_id(&self) -> Option<RouteId> {
         let route_id = u32::try_from(self.route_id.into_inner()).ok()?;
@@ -59,6 +65,10 @@ impl RpcWrite for StreamWriter {
 
 pub(super) fn to_wire_route_id(route_id: RouteId) -> WireRouteId {
     WireRouteId::from_u32(route_id.into_inner())
+}
+
+pub(super) fn to_wire_service_id(service_id: ServiceId) -> WireServiceId {
+    WireServiceId(service_id.into_inner())
 }
 
 pub(super) fn to_wire_close_code(code: StreamCloseCode) -> WireStreamCloseCode {

@@ -1,4 +1,4 @@
-use crate::{RouteId, StreamCloseCode};
+use crate::{RouteId, ServiceId, StreamCloseCode};
 
 mod builder;
 mod config;
@@ -30,11 +30,27 @@ where
     routes: Vec<RouteEntry<S, St, Sp>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RouteKey {
+    pub service_id: ServiceId,
+    pub route_id: RouteId,
+}
+
+impl RouteKey {
+    pub const fn new<R: crate::Route>() -> Self {
+        Self {
+            service_id: R::SERVICE,
+            route_id: R::ROUTE,
+        }
+    }
+
+}
+
 struct RouteEntry<S, St, Sp>
 where
     Sp: Spawner,
 {
-    route_id: RouteId,
+    key: RouteKey,
     route: RouteFn<S, St, Sp>,
 }
 
@@ -42,8 +58,8 @@ impl<S, St, Sp> RouteEntry<S, St, Sp>
 where
     Sp: Spawner,
 {
-    fn new(route_id: RouteId, route: RouteFn<S, St, Sp>) -> Self {
-        Self { route_id, route }
+    fn new(key: RouteKey, route: RouteFn<S, St, Sp>) -> Self {
+        Self { key, route }
     }
 }
 
@@ -68,11 +84,10 @@ where
     }
 
     pub fn handle(&self, stream: St) -> Option<(RouteId, Sp::Handle)> {
+        let service_id = stream.service_id()?;
         let route_id = stream.route_id()?;
-        let Ok(index) = self
-            .routes
-            .binary_search_by_key(&route_id, |entry| entry.route_id)
-        else {
+        let key = RouteKey { service_id, route_id };
+        let Ok(index) = self.routes.binary_search_by_key(&key, |entry| entry.key) else {
             close_stream(stream, StreamCloseCode::UNKNOWN_ROUTE);
             return None;
         };
@@ -84,6 +99,10 @@ where
     }
 
     pub fn route_ids(&self) -> impl ExactSizeIterator<Item = RouteId> + '_ {
-        self.routes.iter().map(|entry| entry.route_id)
+        self.routes.iter().map(|entry| entry.key.route_id)
+    }
+
+    pub fn route_keys(&self) -> impl ExactSizeIterator<Item = RouteKey> + '_ {
+        self.routes.iter().map(|entry| entry.key)
     }
 }

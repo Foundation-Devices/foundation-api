@@ -5,7 +5,7 @@
 //! route dispatch uses [`crate::RouteId`] and the submodules provide the matching
 //! client and server helpers for encoding, decoding, and handler glue
 
-use crate::RouteId;
+use crate::{RouteId, ServiceId};
 
 pub mod download;
 pub mod duplex;
@@ -18,7 +18,10 @@ pub mod upload;
 mod utils;
 
 pub trait Route {
-    /// route used to dispatch this rpc family
+    /// service used to scope this rpc route.
+    const SERVICE: ServiceId;
+
+    /// route used to dispatch this rpc family within [`Self::SERVICE`].
     const ROUTE: RouteId;
 }
 

@@ -93,11 +93,14 @@ mod tests {
     use bytes::Bytes;
 
     use super::{encode_progress, encode_response, ReadStep, ResponseReader};
-    use crate::{progress::Progress, Route, RouteId};
+    use crate::{progress::Progress, Route, RouteId, ServiceId};
+
+    const TEST_SERVICE: ServiceId = ServiceId::from_bytes([7; 16]);
 
     struct Watch;
 
     impl Route for Watch {
+        const SERVICE: ServiceId = TEST_SERVICE;
         const ROUTE: RouteId = RouteId::from_u32(11);
     }
 

@@ -12,13 +12,15 @@ use futures_lite::StreamExt;
 use ql_rpc::{
     DownloadHandlerLocal, DownloadStart, DuplexHandlerLocal, DuplexPeer, LocalSpawner,
     NotificationHandlerLocal, ProgressHandlerLocal, ProgressResponder, RequestHandler,
-    RequestHandlerLocal, Response, RouteId, SendSpawner, Spawner, StreamCloseCode,
+    RequestHandlerLocal, Response, RouteId, SendSpawner, ServiceId, Spawner, StreamCloseCode,
     SubscriptionHandlerLocal, SubscriptionResponder, UploadHandlerLocal, UploadReader,
     UploadResponder,
 };
 
 use super::*;
 use crate::{rpc::RpcError, QlStream, StreamWriter};
+
+const TEST_SERVICE: ServiceId = ServiceId::from_bytes([7; 16]);
 
 #[derive(Debug, Clone, Copy)]
 struct TokioLocalSpawner;
@@ -55,6 +57,7 @@ impl SendSpawner for TokioSendSpawner {
 struct Echo;
 
 impl ql_rpc::Route for Echo {
+    const SERVICE: ServiceId = TEST_SERVICE;
     const ROUTE: RouteId = RouteId::from_u32(51);
 }
 
@@ -68,6 +71,7 @@ impl ql_rpc::request::Request for Echo {
 struct Feed;
 
 impl ql_rpc::Route for Feed {
+    const SERVICE: ServiceId = TEST_SERVICE;
     const ROUTE: RouteId = RouteId::from_u32(52);
 }
 
@@ -80,6 +84,7 @@ impl ql_rpc::subscription::Subscription for Feed {
 struct Notice;
 
 impl ql_rpc::Route for Notice {
+    const SERVICE: ServiceId = TEST_SERVICE;
     const ROUTE: RouteId = RouteId::from_u32(521);
 }
 
@@ -91,6 +96,7 @@ impl ql_rpc::notification::Notification for Notice {
 struct Download;
 
 impl ql_rpc::Route for Download {
+    const SERVICE: ServiceId = TEST_SERVICE;
     const ROUTE: RouteId = RouteId::from_u32(53);
 }
 
@@ -104,6 +110,7 @@ impl ql_rpc::progress::Progress for Download {
 struct BlobDownload;
 
 impl ql_rpc::Route for BlobDownload {
+    const SERVICE: ServiceId = TEST_SERVICE;
     const ROUTE: RouteId = RouteId::from_u32(54);
 }
 
@@ -117,6 +124,7 @@ impl ql_rpc::download::Download for BlobDownload {
 struct BlobUpload;
 
 impl ql_rpc::Route for BlobUpload {
+    const SERVICE: ServiceId = TEST_SERVICE;
     const ROUTE: RouteId = RouteId::from_u32(55);
 }
 
@@ -130,6 +138,7 @@ impl ql_rpc::upload::Upload for BlobUpload {
 struct Chat;
 
 impl ql_rpc::Route for Chat {
+    const SERVICE: ServiceId = TEST_SERVICE;
     const ROUTE: RouteId = RouteId::from_u32(56);
 }
 

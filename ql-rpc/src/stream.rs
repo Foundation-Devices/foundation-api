@@ -5,13 +5,14 @@ use std::{
 
 use bytes::Bytes;
 
-use crate::{RouteId, StreamCloseCode};
+use crate::{RouteId, ServiceId, StreamCloseCode};
 
 pub trait RpcStream {
     type Error: StreamError;
     type Reader: RpcRead<Error = Self::Error>;
     type Writer: RpcWrite<Error = Self::Error>;
 
+    fn service_id(&self) -> Option<ServiceId>;
     fn route_id(&self) -> Option<RouteId>;
     fn split(self) -> (Self::Reader, Self::Writer);
 }
