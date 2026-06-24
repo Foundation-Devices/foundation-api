@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use ql_fsm::{NoSessionError, OpenStreamParams, PairingInvite};
 use ql_wire::{PairingToken, PeerBundle, SessionCloseCode};
 
@@ -12,7 +14,7 @@ pub struct QlStream {
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    tx: async_channel::Sender<Command>,
+    inner: Arc<Inner>,
 }
 
 impl RuntimeHandle {
@@ -79,16 +81,24 @@ impl RuntimeHandle {
 
 impl RuntimeHandle {
     pub(crate) fn new(tx: async_channel::Sender<Command>) -> Self {
-        Self { tx }
+        Self {
+            inner: Arc::new(Inner { tx }),
+        }
     }
 
     #[inline]
     #[track_caller]
     pub(crate) fn send(&self, cmd: Command) {
-        self.tx.try_send(cmd).expect("runtime is alive");
+        self.inner.tx.try_send(cmd).expect("runtime is alive");
     }
+}
 
-    pub(crate) fn try_send(&self, cmd: Command) -> bool {
-        self.tx.try_send(cmd).is_ok()
+struct Inner {
+    tx: async_channel::Sender<Command>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.tx.close();
     }
 }

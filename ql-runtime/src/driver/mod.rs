@@ -23,7 +23,7 @@ use crate::{
     command::Command,
     io, log,
     platform::{QlInbound, QlInboundStream, QlPlatform, QlTimer},
-    QlStreamError, Runtime, RuntimeHandle,
+    QlStreamError, Runtime,
 };
 
 impl<P: QlPlatform> Runtime<P> {
@@ -215,11 +215,6 @@ impl DriverState {
                 start,
             } => {
                 log::info!("open stream requested: route_id={route_id}");
-                let Some(runtime_tx) = self.runtime_tx.upgrade() else {
-                    log::warn!("open stream aborted: runtime channel unavailable");
-                    let _ = start.send(Err(ql_fsm::NoSessionError));
-                    return;
-                };
 
                 let mut stream_ops = match fsm.open_stream(ql_fsm::OpenStreamParams {
                     service_id,
@@ -238,7 +233,7 @@ impl DriverState {
                     stream_id,
                     ResetTarget::Return,
                     ResetTarget::Origin,
-                    RuntimeHandle::new(runtime_tx),
+                    self.runtime_tx.clone(),
                 );
                 self.streams.insert(
                     stream_id,
@@ -361,21 +356,11 @@ impl DriverState {
         platform: &P,
         stream_id: StreamId,
     ) {
-        let Some(runtime_tx) = self.runtime_tx.upgrade() else {
-            log::warn!(
-                "dropping inbound stream because handle channel is unavailable: stream_id={stream_id}"
-            );
-            if let Ok(mut stream) = fsm.stream(stream_id) {
-                stream.reset(ResetTarget::Both, ResetCode::DISCONNECTED);
-            }
-            return;
-        };
-
         let (reader, writer, reader_io, writer_io) = io::new_stream(
             stream_id,
             ResetTarget::Origin,
             ResetTarget::Return,
-            RuntimeHandle::new(runtime_tx),
+            self.runtime_tx.clone(),
         );
 
         self.streams.insert(

@@ -38,7 +38,7 @@ pub struct Runtime<P> {
     platform: P,
     config: RuntimeConfig,
     rx: async_channel::Receiver<command::Command>,
-    tx: async_channel::WeakSender<command::Command>,
+    tx: async_channel::Sender<command::Command>,
 }
 
 pub fn new_runtime<P>(
@@ -50,14 +50,15 @@ where
     P: QlPlatform,
 {
     let (tx, rx) = async_channel::unbounded();
+    let handle = RuntimeHandle::new(tx.clone());
     (
         Runtime {
             identity,
             platform,
             config,
             rx,
-            tx: tx.downgrade(),
+            tx,
         },
-        RuntimeHandle::new(tx),
+        handle,
     )
 }

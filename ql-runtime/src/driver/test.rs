@@ -53,7 +53,7 @@ fn new_driver_state() -> (DriverState, QlFsm) {
     (
         DriverState {
             streams: HashMap::new(),
-            runtime_tx: runtime_tx.downgrade(),
+            runtime_tx,
             max_concurrent_message_writes: 1,
         },
         QlFsm::new(
@@ -71,7 +71,7 @@ fn new_inbound_io(capacity: usize) -> InboundIo {
         StreamId(99u32.into()),
         ResetTarget::Origin,
         ResetTarget::Return,
-        RuntimeHandle::new(runtime_tx),
+        runtime_tx,
     );
     let (_, _, reader_io, _) = stream;
     InboundIo::new(reader_io)
@@ -83,7 +83,7 @@ fn new_outbound_io() -> OutboundIo {
         StreamId(100u32.into()),
         ResetTarget::Return,
         ResetTarget::Origin,
-        RuntimeHandle::new(runtime_tx),
+        runtime_tx,
     );
     let (_, _, _, writer_io) = stream;
     OutboundIo::new(writer_io)
@@ -132,7 +132,7 @@ fn poll_stream_keeps_outbound_pending_after_local_finish_when_inbound_is_closed(
         stream_id,
         ResetTarget::Return,
         ResetTarget::Origin,
-        RuntimeHandle::new(runtime_tx),
+        runtime_tx,
     );
     writer.queue_finish();
     state.streams.insert(
@@ -156,7 +156,7 @@ fn local_reset_command_reaps_when_other_half_is_already_closed() {
         stream_id,
         ResetTarget::Return,
         ResetTarget::Origin,
-        RuntimeHandle::new(runtime_tx),
+        runtime_tx,
     );
 
     state.streams.insert(
@@ -187,7 +187,7 @@ fn unpaired_status_fails_and_reaps_all_streams() {
         stream_id,
         ResetTarget::Origin,
         ResetTarget::Return,
-        RuntimeHandle::new(runtime_tx),
+        runtime_tx,
     );
 
     state.streams.insert(

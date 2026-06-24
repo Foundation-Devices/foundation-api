@@ -11,14 +11,14 @@ use super::{
     slot::PopError,
     PushError, Tx,
 };
-use crate::{command::Command, log, QlStreamError, RuntimeHandle};
+use crate::{command::Command, log, QlStreamError};
 
 pub struct StreamWriter {
     tx: Tx,
     target: ResetTarget,
     open: bool,
     terminal: WriterTerminalState,
-    handle: RuntimeHandle,
+    runtime_tx: async_channel::Sender<Command>,
 }
 
 enum WriterTerminalState {
@@ -39,13 +39,17 @@ impl std::fmt::Debug for StreamWriter {
 }
 
 impl StreamWriter {
-    pub(crate) fn new(shared: Tx, target: ResetTarget, handle: RuntimeHandle) -> Self {
+    pub(crate) fn new(
+        shared: Tx,
+        target: ResetTarget,
+        runtime_tx: async_channel::Sender<Command>,
+    ) -> Self {
         Self {
             tx: shared,
             target,
             open: true,
             terminal: WriterTerminalState::Pending,
-            handle,
+            runtime_tx,
         }
     }
 
@@ -148,7 +152,7 @@ impl StreamWriter {
     }
 
     fn poll_runtime(&self) {
-        self.handle.try_send(Command::PollStream {
+        let _ = self.runtime_tx.try_send(Command::PollStream {
             stream_id: self.tx.stream_id(),
         });
     }
@@ -209,7 +213,7 @@ impl StreamWriter {
             self.target,
             code
         );
-        self.handle.try_send(Command::ResetStream {
+        let _ = self.runtime_tx.try_send(Command::ResetStream {
             stream_id: self.tx.stream_id(),
             target: self.target,
             code,

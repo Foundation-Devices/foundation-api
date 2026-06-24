@@ -11,13 +11,13 @@ use super::{
     slot::PopError,
     Rx,
 };
-use crate::{command::Command, log, QlStreamError, RuntimeHandle};
+use crate::{command::Command, log, QlStreamError};
 
 pub struct StreamReader {
     rx: Rx,
     target: ResetTarget,
     terminal: ReaderTerminalState,
-    handle: RuntimeHandle,
+    runtime_tx: async_channel::Sender<Command>,
 }
 
 enum ReaderTerminalState {
@@ -41,12 +41,16 @@ impl std::fmt::Debug for StreamReader {
 }
 
 impl StreamReader {
-    pub(crate) fn new(shared: Rx, target: ResetTarget, handle: RuntimeHandle) -> Self {
+    pub(crate) fn new(
+        shared: Rx,
+        target: ResetTarget,
+        runtime_tx: async_channel::Sender<Command>,
+    ) -> Self {
         Self {
             rx: shared,
             target,
             terminal: ReaderTerminalState::Open,
-            handle,
+            runtime_tx,
         }
     }
 
@@ -87,7 +91,7 @@ impl StreamReader {
                     self.target,
                     bytes.len()
                 );
-                self.handle.try_send(Command::PollInbound {
+                let _ = self.runtime_tx.try_send(Command::PollInbound {
                     stream_id: self.rx.stream_id(),
                 });
                 Poll::Ready(Ok(Some(bytes)))
@@ -136,7 +140,7 @@ impl StreamReader {
             code
         );
         self.terminal = ReaderTerminalState::Delivered;
-        self.handle.try_send(Command::ResetStream {
+        let _ = self.runtime_tx.try_send(Command::ResetStream {
             stream_id: self.rx.stream_id(),
             target: self.target,
             code,
@@ -155,7 +159,7 @@ impl Drop for StreamReader {
             self.target,
             ResetCode::DROPPED
         );
-        self.handle.try_send(Command::ResetStream {
+        let _ = self.runtime_tx.try_send(Command::ResetStream {
             stream_id: self.rx.stream_id(),
             target: self.target,
             code: ResetCode::DROPPED,

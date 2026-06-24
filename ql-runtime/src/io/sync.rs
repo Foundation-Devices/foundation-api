@@ -71,7 +71,7 @@ pub(crate) mod loom {
     use ql_wire::StreamId;
 
     use super::Arc;
-    use crate::{io::inner::Inner, RuntimeHandle};
+    use crate::{command::Command, io::inner::Inner};
 
     pub(crate) fn check_model(f: impl Fn() + Sync + Send + 'static) {
         let builder = model::Builder::new();
@@ -82,8 +82,8 @@ pub(crate) mod loom {
         crate::io::inner::new(StreamId(1u32.into()))
     }
 
-    pub(crate) fn handle() -> RuntimeHandle {
+    pub(crate) fn handle() -> async_channel::Sender<Command> {
         let (tx, _rx) = async_channel::unbounded();
-        RuntimeHandle::new(tx)
+        tx
     }
 }

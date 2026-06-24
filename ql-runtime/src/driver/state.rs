@@ -11,7 +11,7 @@ use crate::{
 
 pub struct DriverState {
     pub streams: HashMap<StreamId, DriverStreamIo>,
-    pub runtime_tx: async_channel::WeakSender<Command>,
+    pub runtime_tx: async_channel::Sender<Command>,
     pub max_concurrent_message_writes: usize,
 }
 
