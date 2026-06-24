@@ -15,8 +15,8 @@ use std::{
 
 use async_channel::Recv;
 use futures_lite::future::{poll_fn, yield_now};
-use ql_fsm::{Event, QlFsm, WriteId};
-use ql_wire::{ResetCode, ResetOrigin, ResetTarget, StreamHeader, StreamId};
+use ql_fsm::{Event, QlFsm, StreamResetEvent, StreamResetTarget, WriteId};
+use ql_wire::{ResetCode, ResetOrigin, StreamHeader, StreamId};
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
@@ -229,16 +229,11 @@ impl DriverState {
                 };
                 let stream_id = stream_ops.stream_id();
                 log::info!("open stream allocated: service_id={service_id} route_id={route_id} stream_id={stream_id}");
-                let (reader, writer, reader_io, writer_io) = io::new_stream(
-                    stream_id,
-                    ResetTarget::Return,
-                    ResetTarget::Origin,
-                    self.runtime_tx.clone(),
-                );
+                let (reader, writer, reader_io, writer_io) =
+                    io::new_stream(stream_id, self.runtime_tx.clone());
                 self.streams.insert(
                     stream_id,
                     DriverStreamIo::new(
-                        true,
                         Some(OutboundIo::new(writer_io)),
                         Some(InboundIo::new(reader_io)),
                     ),
@@ -249,7 +244,7 @@ impl DriverState {
                         stream.inbound_close();
                         stream.outbound_close();
                     }
-                    stream_ops.reset(ResetTarget::Both, ResetCode::DROPPED);
+                    stream_ops.reset(StreamResetTarget::Both, ResetCode::DROPPED);
                     return;
                 }
                 drop(stream_ops);
@@ -273,10 +268,10 @@ impl DriverState {
                 );
                 if let Entry::Occupied(mut entry) = self.streams.entry(stream_id) {
                     let stream = entry.get_mut();
-                    if target == ResetTarget::Both || target == stream.inbound_target() {
+                    if target.reader() {
                         stream.inbound_close();
                     }
-                    if target == ResetTarget::Both || target == stream.outbound_target() {
+                    if target.writer() {
                         stream.outbound_close();
                     }
                     Self::try_reap_stream(entry);
@@ -334,11 +329,8 @@ impl DriverState {
                     log::info!("outbound finish acknowledged: stream_id={stream_id}");
                     self.handle_outbound_finished(stream_id);
                 }
-                Event::Reset(frame) => {
-                    self.handle_reset_stream(&frame);
-                }
-                Event::WritableReset(frame) => {
-                    self.handle_writable_reset(&frame);
+                Event::Reset(reset) => {
+                    self.handle_stream_reset(reset);
                 }
                 Event::SessionClosed(close) => {
                     log::info!("session closed: frame={close:?}");
@@ -356,17 +348,12 @@ impl DriverState {
         platform: &P,
         stream_id: StreamId,
     ) {
-        let (reader, writer, reader_io, writer_io) = io::new_stream(
-            stream_id,
-            ResetTarget::Origin,
-            ResetTarget::Return,
-            self.runtime_tx.clone(),
-        );
+        let (reader, writer, reader_io, writer_io) =
+            io::new_stream(stream_id, self.runtime_tx.clone());
 
         self.streams.insert(
             stream_id,
             DriverStreamIo::new(
-                false,
                 Some(OutboundIo::new(writer_io)),
                 Some(InboundIo::new(reader_io)),
             ),
@@ -405,12 +392,10 @@ impl DriverState {
         log::trace!("draining inbound bytes: stream_id={stream_id} readable={readable}");
         let mut accepted = 0usize;
         let mut peer_closed = false;
-        let target;
         {
             let Some(stream) = self.streams.get_mut(&stream_id) else {
                 return;
             };
-            target = stream.inbound_target();
             for chunk in stream_ops.read() {
                 if chunk.is_empty() {
                     continue;
@@ -427,7 +412,7 @@ impl DriverState {
                     }
                     InboundWriteResult::Closed => {
                         log::warn!(
-                            "inbound consumer closed; sending CANCELLED: stream_id={stream_id} target={target:?}"
+                            "inbound consumer closed; sending CANCELLED: stream_id={stream_id}"
                         );
                         peer_closed = true;
                         break;
@@ -441,7 +426,7 @@ impl DriverState {
             stream_ops.commit_read(accepted).unwrap();
         }
         if peer_closed {
-            stream_ops.reset(target, ResetCode::DROPPED);
+            stream_ops.reset(StreamResetTarget::Reader, ResetCode::DROPPED);
             if let Entry::Occupied(entry) = self.streams.entry(stream_id) {
                 Self::try_reap_stream(entry);
             }
@@ -460,48 +445,25 @@ impl DriverState {
         Self::try_reap_stream(entry);
     }
 
-    fn handle_reset_stream(&mut self, frame: &ql_wire::StreamReset) {
-        log::info!(
-            "inbound reset frame: stream_id={} target={:?} code={}",
-            frame.stream_id,
-            frame.target,
-            frame.code
-        );
-        let Entry::Occupied(mut entry) = self.streams.entry(frame.stream_id) else {
+    fn handle_stream_reset(&mut self, reset: StreamResetEvent) {
+        log::info!("stream reset: {reset:?}",);
+        let Entry::Occupied(mut entry) = self.streams.entry(reset.stream_id) else {
             return;
         };
         let stream = entry.get_mut();
 
-        if frame.target == ResetTarget::Both || frame.target == stream.inbound_target() {
+        if reset.target.reader() {
             stream.inbound_fail(QlStreamError::StreamReset {
-                code: frame.code,
+                code: reset.code,
                 origin: ResetOrigin::Peer,
             });
         }
-        if frame.target == ResetTarget::Both || frame.target == stream.outbound_target() {
+        if reset.target.writer() {
             stream.outbound_fail(QlStreamError::StreamReset {
-                code: frame.code,
+                code: reset.code,
                 origin: ResetOrigin::Peer,
             });
         }
-        Self::try_reap_stream(entry);
-    }
-
-    fn handle_writable_reset(&mut self, frame: &ql_wire::StreamReset) {
-        log::info!(
-            "writable reset frame: stream_id={} target={:?} code={}",
-            frame.stream_id,
-            frame.target,
-            frame.code
-        );
-        let Entry::Occupied(mut entry) = self.streams.entry(frame.stream_id) else {
-            return;
-        };
-        let stream = entry.get_mut();
-        stream.outbound_fail(QlStreamError::StreamReset {
-            code: frame.code,
-            origin: ResetOrigin::Peer,
-        });
         Self::try_reap_stream(entry);
     }
 

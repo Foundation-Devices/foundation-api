@@ -4,7 +4,8 @@ use std::{
 };
 
 use bytes::Bytes;
-use ql_wire::{ResetCode, ResetTarget, StreamId};
+use ql_fsm::StreamResetTarget;
+use ql_wire::{ResetCode, StreamId};
 
 use super::{
     inner::{Item, RxInner},
@@ -15,7 +16,6 @@ use crate::{command::Command, log, QlStreamError};
 
 pub struct StreamReader {
     rx: Rx,
-    target: ResetTarget,
     terminal: ReaderTerminalState,
     runtime_tx: async_channel::Sender<Command>,
 }
@@ -31,7 +31,6 @@ impl std::fmt::Debug for StreamReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamReader")
             .field("stream_id", &self.rx.stream_id())
-            .field("target", &self.target)
             .field(
                 "terminal",
                 &matches!(self.terminal, ReaderTerminalState::Delivered),
@@ -41,14 +40,9 @@ impl std::fmt::Debug for StreamReader {
 }
 
 impl StreamReader {
-    pub(crate) fn new(
-        shared: Rx,
-        target: ResetTarget,
-        runtime_tx: async_channel::Sender<Command>,
-    ) -> Self {
+    pub(crate) fn new(shared: Rx, runtime_tx: async_channel::Sender<Command>) -> Self {
         Self {
             rx: shared,
-            target,
             terminal: ReaderTerminalState::Open,
             runtime_tx,
         }
@@ -86,9 +80,8 @@ impl StreamReader {
         match self.rx.pop() {
             Ok(Item::Chunk(bytes)) => {
                 log::trace!(
-                    "byte reader received chunk: stream_id={} target={:?} len={}",
+                    "byte reader received chunk: stream_id={} len={}",
                     self.rx.stream_id(),
-                    self.target,
                     bytes.len()
                 );
                 let _ = self.runtime_tx.try_send(Command::PollInbound {
@@ -98,9 +91,8 @@ impl StreamReader {
             }
             Ok(Item::Error(error)) => {
                 log::debug!(
-                    "byte reader delivered terminal error: stream_id={} target={:?} error={:?}",
+                    "byte reader delivered terminal error: stream_id={} error={:?}",
                     self.rx.stream_id(),
-                    self.target,
                     error
                 );
                 self.terminal = ReaderTerminalState::Delivered;
@@ -109,9 +101,8 @@ impl StreamReader {
             Err(PopError) => {
                 if RxInner::is_finished(self.rx.load_state()) {
                     log::debug!(
-                        "byte reader delivered clean eof: stream_id={} target={:?}",
-                        self.rx.stream_id(),
-                        self.target
+                        "byte reader delivered clean eof: stream_id={}",
+                        self.rx.stream_id()
                     );
                     self.terminal = ReaderTerminalState::Delivered;
                     return Poll::Ready(Ok(None));
@@ -134,15 +125,14 @@ impl StreamReader {
             return;
         }
         log::debug!(
-            "byte reader explicit reset: stream_id={:?} target={:?} code={:?}",
+            "byte reader explicit reset: stream_id={:?} code={:?}",
             self.rx.stream_id(),
-            self.target,
             code
         );
         self.terminal = ReaderTerminalState::Delivered;
         let _ = self.runtime_tx.try_send(Command::ResetStream {
             stream_id: self.rx.stream_id(),
-            target: self.target,
+            target: StreamResetTarget::Reader,
             code,
         });
     }
@@ -154,14 +144,13 @@ impl Drop for StreamReader {
             return;
         }
         log::debug!(
-            "byte reader drop reset: stream_id={:?} target={:?} code={:?}",
+            "byte reader drop reset: stream_id={:?} code={:?}",
             self.rx.stream_id(),
-            self.target,
             ResetCode::DROPPED
         );
         let _ = self.runtime_tx.try_send(Command::ResetStream {
             stream_id: self.rx.stream_id(),
-            target: self.target,
+            target: StreamResetTarget::Reader,
             code: ResetCode::DROPPED,
         });
     }
@@ -173,7 +162,7 @@ mod loom_tests {
 
     use bytes::Bytes;
     use loom::thread;
-    use ql_wire::ResetTarget;
+    use ql_fsm::StreamResetTarget;
 
     use super::*;
     use crate::io::sync::loom::*;
@@ -182,7 +171,7 @@ mod loom_tests {
     fn poll_read_observes_chunk_racing_with_registration() {
         check_model(|| {
             let inner = shared();
-            let mut reader = StreamReader::new(Rx(inner.clone()), ResetTarget::Origin, handle());
+            let mut reader = StreamReader::new(Rx(inner.clone()), handle());
             let mut cx = Context::from_waker(Waker::noop());
 
             let producer = {

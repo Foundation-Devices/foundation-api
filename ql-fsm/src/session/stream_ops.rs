@@ -1,11 +1,11 @@
-use ql_wire::{ResetCode, ResetTarget, StreamHeader, StreamId, StreamReset};
+use ql_wire::{ResetCode, StreamHeader, StreamId, StreamReset};
 
 use super::{
     state::{InboundState, StreamState},
     stream_rx::StreamReadIter,
     EventSink, SessionEvent, SessionFsm,
 };
-use crate::CommitReadError;
+use crate::{CommitReadError, StreamResetTarget};
 
 pub struct StreamOps<'a, E> {
     session: &'a mut SessionFsm,
@@ -86,14 +86,19 @@ impl<'a, E: EventSink> StreamOps<'a, E> {
         Some(StreamWriter::new(stream, send_buffer_size))
     }
 
-    /// resets the origin lane, return lane, or both lanes of the stream
-    pub fn reset(&mut self, target: ResetTarget, code: ResetCode) {
+    /// resets the local read side, write side, or both sides of the stream
+    pub fn reset(&mut self, target: StreamResetTarget, code: ResetCode) {
         let stream_id = self.stream_id;
         let stream = self.stream_mut();
-        SessionFsm::apply_local_reset_to_stream(stream, target);
+        let wire_target = match target {
+            StreamResetTarget::Reader => stream.role.inbound_target(),
+            StreamResetTarget::Writer => stream.role.outbound_target(),
+            StreamResetTarget::Both => ql_wire::ResetTarget::Both,
+        };
+        SessionFsm::apply_local_reset_to_stream(stream, wire_target);
         stream.pending_reset = Some(StreamReset {
             stream_id,
-            target,
+            target: wire_target,
             code,
         });
         self.reap_on_drop = true;

@@ -7,10 +7,12 @@ extern crate proptest as proptest_crate;
 
 use bytes::Bytes;
 use proptest_crate::{collection::vec, prelude::*, test_runner::TestCaseResult};
-use ql_wire::{ResetCode, ResetTarget, RouteId, ServiceId, StreamId, WireError};
+use ql_wire::{ResetCode, RouteId, ServiceId, StreamId, WireError};
 
 use super::*;
-use crate::{state::LinkState, Event, OpenStreamParams, PeerStatus, ReceiveError, WriteId};
+use crate::{
+    state::LinkState, Event, OpenStreamParams, PeerStatus, ReceiveError, StreamResetTarget, WriteId,
+};
 
 const SLOT_COUNT: usize = 4;
 
@@ -337,7 +339,7 @@ impl Runner {
                         .fsm
                         .stream(stream_id)
                         .is_ok_and(|mut stream| {
-                            stream.reset(ResetTarget::Both, ResetCode::CANCELLED);
+                            stream.reset(StreamResetTarget::Both, ResetCode::CANCELLED);
                             true
                         });
                     if reset {
@@ -463,28 +465,28 @@ impl Runner {
                         "side {side:?} emitted duplicate OutboundFinished for {stream_id:?}"
                     );
                 }
-                Event::Reset(frame) => {
+                Event::Reset(reset) => {
                     prop_assert!(
-                        self.known_streams.contains(&frame.stream_id),
+                        self.known_streams.contains(&reset.stream_id),
                         "side {side:?} emitted Reset for unknown stream {:?}",
-                        frame.stream_id
+                        reset.stream_id
                     );
-                    prop_assert!(
-                        self.events[side.idx()].reset.insert(frame.stream_id),
-                        "side {side:?} emitted duplicate Reset for {:?}",
-                        frame.stream_id
-                    );
-                }
-                Event::WritableReset(frame) => {
-                    let stream_id = frame.stream_id;
-                    prop_assert!(
-                        self.known_streams.contains(&stream_id),
-                        "side {side:?} emitted WritableReset for unknown stream {stream_id:?}"
-                    );
-                    prop_assert!(
-                        self.events[side.idx()].writable_reset.insert(stream_id),
-                        "side {side:?} emitted duplicate WritableReset for {stream_id:?}"
-                    );
+                    if reset.target.reader() {
+                        prop_assert!(
+                            self.events[side.idx()].reset.insert(reset.stream_id),
+                            "side {side:?} emitted duplicate inbound Reset for {:?}",
+                            reset.stream_id
+                        );
+                    }
+                    if reset.target.writer() {
+                        prop_assert!(
+                            self.events[side.idx()]
+                                .writable_reset
+                                .insert(reset.stream_id),
+                            "side {side:?} emitted duplicate outbound Reset for {:?}",
+                            reset.stream_id
+                        );
+                    }
                 }
                 Event::SessionClosed(_) => {
                     let state = &mut self.events[side.idx()];
@@ -547,6 +549,7 @@ impl Runner {
                         | ReceiveError::InvalidRemoteBundle
                         | ReceiveError::InvalidSessionPayload(WireError::InvalidPayload)
                         | ReceiveError::InvalidSessionPayload(WireError::DecryptFailed)
+                        | ReceiveError::InvalidSessionConnectionId
                         | ReceiveError::InvalidIkHandshake(WireError::InvalidPayload)
                         | ReceiveError::InvalidIkHandshake(WireError::InvalidState)
                         | ReceiveError::InvalidKkHandshake(WireError::InvalidPayload)

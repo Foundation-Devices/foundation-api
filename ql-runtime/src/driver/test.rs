@@ -1,4 +1,5 @@
-use ql_wire::{generate_identity, NoopCrypto, PeerBundle, SoftwareCrypto, StreamReset, QID};
+use ql_fsm::StreamResetEvent;
+use ql_wire::{generate_identity, NoopCrypto, PeerBundle, SoftwareCrypto, QID};
 
 use super::*;
 use crate::{
@@ -67,24 +68,14 @@ fn new_driver_state() -> (DriverState, QlFsm) {
 fn new_inbound_io(capacity: usize) -> InboundIo {
     let _ = capacity;
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
-    let stream = io::new_stream(
-        StreamId(99u32.into()),
-        ResetTarget::Origin,
-        ResetTarget::Return,
-        runtime_tx,
-    );
+    let stream = io::new_stream(StreamId(99u32.into()), runtime_tx);
     let (_, _, reader_io, _) = stream;
     InboundIo::new(reader_io)
 }
 
 fn new_outbound_io() -> OutboundIo {
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
-    let stream = io::new_stream(
-        StreamId(100u32.into()),
-        ResetTarget::Return,
-        ResetTarget::Origin,
-        runtime_tx,
-    );
+    let stream = io::new_stream(StreamId(100u32.into()), runtime_tx);
     let (_, _, _, writer_io) = stream;
     OutboundIo::new(writer_io)
 }
@@ -96,7 +87,7 @@ fn handle_inbound_finished_reaps_reset_initiator_stream() {
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(true, None, Some(new_inbound_io(1))),
+        DriverStreamIo::new(None, Some(new_inbound_io(1))),
     );
 
     state.handle_inbound_finished(stream_id);
@@ -105,19 +96,19 @@ fn handle_inbound_finished_reaps_reset_initiator_stream() {
 }
 
 #[test]
-fn handle_reset_stream_reaps_when_both_halves_reset() {
+fn handle_stream_reset_reaps_when_both_halves_reset() {
     let (mut state, _fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(false, Some(new_outbound_io()), Some(new_inbound_io(1))),
+        DriverStreamIo::new(Some(new_outbound_io()), Some(new_inbound_io(1))),
     );
 
-    state.handle_reset_stream(&StreamReset {
+    state.handle_stream_reset(StreamResetEvent {
         stream_id,
-        target: ResetTarget::Both,
         code: ResetCode::CANCELLED,
+        target: StreamResetTarget::Both,
     });
 
     assert!(!state.streams.contains_key(&stream_id));
@@ -128,16 +119,11 @@ fn poll_stream_keeps_outbound_pending_after_local_finish_when_inbound_is_closed(
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
-    let (_, mut writer, _, writer_io) = io::new_stream(
-        stream_id,
-        ResetTarget::Return,
-        ResetTarget::Origin,
-        runtime_tx,
-    );
+    let (_, mut writer, _, writer_io) = io::new_stream(stream_id, runtime_tx);
     writer.queue_finish();
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(true, Some(OutboundIo::new(writer_io)), None),
+        DriverStreamIo::new(Some(OutboundIo::new(writer_io)), None),
     );
 
     state.poll_stream(&mut fsm, stream_id);
@@ -152,23 +138,18 @@ fn local_reset_command_reaps_when_other_half_is_already_closed() {
     let (mut state, mut fsm) = new_driver_state();
     let stream_id = StreamId(1u32.into());
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
-    let (_, _, _, writer_io) = io::new_stream(
-        stream_id,
-        ResetTarget::Return,
-        ResetTarget::Origin,
-        runtime_tx,
-    );
+    let (_, _, _, writer_io) = io::new_stream(stream_id, runtime_tx);
 
     state.streams.insert(
         stream_id,
-        DriverStreamIo::new(true, Some(OutboundIo::new(writer_io)), None),
+        DriverStreamIo::new(Some(OutboundIo::new(writer_io)), None),
     );
 
     state.drive_command(
         &mut fsm,
         Command::ResetStream {
             stream_id,
-            target: ResetTarget::Origin,
+            target: StreamResetTarget::Writer,
             code: ResetCode::CANCELLED,
         },
         &NoopCrypto,
@@ -183,17 +164,11 @@ fn unpaired_status_fails_and_reaps_all_streams() {
     let peer = generate_identity(&SoftwareCrypto, "peer").unwrap().bundle();
     let stream_id = StreamId(1u32.into());
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
-    let (_, _, reader_io, writer_io) = io::new_stream(
-        stream_id,
-        ResetTarget::Origin,
-        ResetTarget::Return,
-        runtime_tx,
-    );
+    let (_, _, reader_io, writer_io) = io::new_stream(stream_id, runtime_tx);
 
     state.streams.insert(
         stream_id,
         DriverStreamIo::new(
-            false,
             Some(OutboundIo::new(writer_io)),
             Some(InboundIo::new(reader_io)),
         ),

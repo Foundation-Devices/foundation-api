@@ -30,7 +30,7 @@ use self::{
     stream_tx::StreamTxRange,
     tracked::{TrackedFrame, TrackedRecord, TrackedStreamData},
 };
-use crate::{NoSessionError, StreamError};
+use crate::{NoSessionError, StreamError, StreamResetEvent, StreamResetTarget};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
@@ -72,8 +72,7 @@ pub enum SessionEvent {
     Writable(StreamId),
     Finished(StreamId),
     OutboundFinished(StreamId),
-    Reset(StreamReset),
-    WritableReset(StreamReset),
+    Reset(StreamResetEvent),
     SessionClosed(SessionClose),
     Unpaired,
 }
@@ -754,23 +753,35 @@ impl SessionFsm {
             },
         };
 
-        if Self::target_affects_inbound(stream.role, frame.target)
+        let inbound = Self::target_affects_inbound(stream.role, frame.target)
             && !matches!(
                 stream.inbound_state,
                 InboundState::Reset(_) | InboundState::Discarding
-            )
-        {
+            );
+        let outbound = Self::target_affects_outbound(stream.role, frame.target)
+            && !matches!(stream.outbound_state, OutboundState::Closed);
+
+        if inbound {
             stream.inbound_state = InboundState::Reset(frame.clone());
             stream.reset_recv();
-            sink.emit(SessionEvent::Reset(frame.clone()));
         }
-        if Self::target_affects_outbound(stream.role, frame.target)
-            && !matches!(stream.outbound_state, OutboundState::Closed)
-        {
+        if outbound {
             stream.outbound_state = OutboundState::Closed;
             stream.tx.clear();
             stream.pending_reset = None;
-            sink.emit(SessionEvent::WritableReset(frame.clone()));
+        }
+        if inbound || outbound {
+            let target = match (inbound, outbound) {
+                (true, true) => StreamResetTarget::Both,
+                (true, false) => StreamResetTarget::Reader,
+                (false, true) => StreamResetTarget::Writer,
+                (false, false) => unreachable!(),
+            };
+            sink.emit(SessionEvent::Reset(StreamResetEvent {
+                stream_id,
+                code: frame.code,
+                target,
+            }));
         }
         self.try_reap_stream(frame.stream_id);
         Ok(())

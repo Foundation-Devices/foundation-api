@@ -8,7 +8,7 @@ use ql_wire::{
 };
 
 use super::{SessionConfig, SessionEvent, SessionFsm};
-use crate::session::stream_parity::StreamParity;
+use crate::{session::stream_parity::StreamParity, StreamResetEvent};
 
 fn seq(value: u64) -> RecordSeq {
     RecordSeq::from_u64(value).unwrap()
@@ -421,7 +421,7 @@ fn remote_stream_reset_is_reliable_and_retried() {
 
     fsm.stream(stream_id, |_| {})
         .unwrap()
-        .reset(ResetTarget::Both, ResetCode::CANCELLED);
+        .reset(crate::StreamResetTarget::Both, ResetCode::CANCELLED);
 
     let (write_id, builder) = fsm.take_next_write(now).unwrap();
     fsm.complete_write(now, write_id.expect("stream reset should be tracked"), true);
@@ -501,10 +501,11 @@ fn duplicate_remote_reset_after_reap_is_ignored() {
     let first = receive_events(&mut fsm, now, seq(1), &record);
     assert_eq!(
         first,
-        vec![
-            SessionEvent::Reset(reset.clone()),
-            SessionEvent::WritableReset(reset),
-        ]
+        vec![SessionEvent::Reset(StreamResetEvent {
+            stream_id: reset.stream_id,
+            code: reset.code,
+            target: crate::StreamResetTarget::Both,
+        })]
     );
 
     let second = receive_events(&mut fsm, now + Duration::from_millis(1), seq(2), &record);
@@ -532,18 +533,11 @@ fn late_remote_stream_data_after_reset_is_ignored() {
     let first = receive_events(&mut fsm, now, seq(1), &reset);
     assert_eq!(
         first,
-        vec![
-            SessionEvent::Reset(StreamReset {
-                stream_id,
-                target: ResetTarget::Both,
-                code: ResetCode(9),
-            }),
-            SessionEvent::WritableReset(StreamReset {
-                stream_id,
-                target: ResetTarget::Both,
-                code: ResetCode(9),
-            }),
-        ]
+        vec![SessionEvent::Reset(StreamResetEvent {
+            stream_id,
+            code: ResetCode(9),
+            target: crate::StreamResetTarget::Both,
+        })]
     );
 
     let second = receive_events(&mut fsm, now + Duration::from_millis(1), seq(2), &data);
@@ -626,35 +620,21 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
     let first = receive_events(&mut fsm, now, seq(1), &reset3);
     assert_eq!(
         first,
-        vec![
-            SessionEvent::Reset(StreamReset {
-                stream_id: stream_id(3),
-                target: ResetTarget::Both,
-                code: REFUSED,
-            }),
-            SessionEvent::WritableReset(StreamReset {
-                stream_id: stream_id(3),
-                target: ResetTarget::Both,
-                code: REFUSED,
-            }),
-        ]
+        vec![SessionEvent::Reset(StreamResetEvent {
+            stream_id: stream_id(3),
+            code: REFUSED,
+            target: crate::StreamResetTarget::Both,
+        })]
     );
 
     let second = receive_events(&mut fsm, now + Duration::from_millis(1), seq(2), &reset1);
     assert_eq!(
         second,
-        vec![
-            SessionEvent::Reset(StreamReset {
-                stream_id: stream_id(1),
-                target: ResetTarget::Both,
-                code: TIMEOUT,
-            }),
-            SessionEvent::WritableReset(StreamReset {
-                stream_id: stream_id(1),
-                target: ResetTarget::Both,
-                code: TIMEOUT,
-            }),
-        ]
+        vec![SessionEvent::Reset(StreamResetEvent {
+            stream_id: stream_id(1),
+            code: TIMEOUT,
+            target: crate::StreamResetTarget::Both,
+        })]
     );
 
     let third = receive_events(&mut fsm, now + Duration::from_millis(2), seq(3), &reset3);

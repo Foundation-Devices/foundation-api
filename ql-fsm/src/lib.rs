@@ -36,8 +36,8 @@ pub use bytes::Bytes;
 pub use error::*;
 pub use pairing::PairingInvite;
 use ql_wire::{
-    PairingToken, PeerBundle, QlCrypto, QlIdentity, RouteId, ServiceId, SessionClose,
-    SessionCloseCode, StreamHeader, StreamId, StreamReset,
+    PairingToken, PeerBundle, QlCrypto, QlIdentity, ResetCode, RouteId, ServiceId, SessionClose,
+    SessionCloseCode, StreamHeader, StreamId,
 };
 pub use session::{SessionEvent, StreamReadIter, StreamWriter};
 
@@ -76,16 +76,42 @@ pub enum Event {
     Finished(StreamId),
     /// our local FIN was acknowledged by the peer at the session layer
     OutboundFinished(StreamId),
-    /// a stream was reset
-    Reset(StreamReset),
-    /// local writes on this stream are reset
-    WritableReset(StreamReset),
+    /// one or both local stream halves were reset by the peer
+    Reset(StreamResetEvent),
     /// the encrypted session was closed
     ///
     /// session close is abortive and best-effort. the session ends immediately
     /// one final write remains: a record containing only `SessionFrame::Close`
     /// the FSM does not wait for an ack for that record
     SessionClosed(SessionClose),
+}
+
+/// stream was reset by remote peer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamResetEvent {
+    pub stream_id: StreamId,
+    pub code: ResetCode,
+    pub target: StreamResetTarget,
+}
+
+/// local stream halves that can be reset
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamResetTarget {
+    Reader,
+    Writer,
+    Both,
+}
+
+impl StreamResetTarget {
+    #[inline]
+    pub fn reader(self) -> bool {
+        matches!(self, Self::Reader | Self::Both)
+    }
+
+    #[inline]
+    pub fn writer(self) -> bool {
+        matches!(self, Self::Writer | Self::Both)
+    }
 }
 
 /// handle for a session write returned by `QlFsm::take_next_write`
@@ -135,8 +161,8 @@ impl StreamOps<'_> {
         self.inner.writer()
     }
 
-    /// resets the origin lane, return lane, or both lanes of the stream
-    pub fn reset(&mut self, target: ql_wire::ResetTarget, code: ql_wire::ResetCode) {
+    /// resets the local read side, write side, or both sides of the stream
+    pub fn reset(&mut self, target: StreamResetTarget, code: ql_wire::ResetCode) {
         self.inner.reset(target, code);
     }
 }

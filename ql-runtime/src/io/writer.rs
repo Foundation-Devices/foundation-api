@@ -4,7 +4,8 @@ use std::{
 };
 
 use bytes::Bytes;
-use ql_wire::{ResetCode, ResetTarget, StreamId};
+use ql_fsm::StreamResetTarget;
+use ql_wire::{ResetCode, StreamId};
 
 use super::{
     inner::{Item, TxInner},
@@ -15,7 +16,6 @@ use crate::{command::Command, log, QlStreamError};
 
 pub struct StreamWriter {
     tx: Tx,
-    target: ResetTarget,
     open: bool,
     terminal: WriterTerminalState,
     runtime_tx: async_channel::Sender<Command>,
@@ -32,21 +32,15 @@ impl std::fmt::Debug for StreamWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamWriter")
             .field("stream_id", &self.tx.stream_id())
-            .field("target", &self.target)
             .field("closed", &!self.open)
             .finish_non_exhaustive()
     }
 }
 
 impl StreamWriter {
-    pub(crate) fn new(
-        shared: Tx,
-        target: ResetTarget,
-        runtime_tx: async_channel::Sender<Command>,
-    ) -> Self {
+    pub(crate) fn new(shared: Tx, runtime_tx: async_channel::Sender<Command>) -> Self {
         Self {
             tx: shared,
-            target,
             open: true,
             terminal: WriterTerminalState::Pending,
             runtime_tx,
@@ -73,9 +67,8 @@ impl StreamWriter {
         match self.tx.try_write(std::mem::take(bytes)) {
             Ok(()) => {
                 log::trace!(
-                    "byte writer accepted chunk: stream_id={} target={:?}",
-                    self.tx.stream_id(),
-                    self.target
+                    "byte writer accepted chunk: stream_id={}",
+                    self.tx.stream_id()
                 );
                 self.poll_runtime();
                 return Poll::Ready(Ok(()));
@@ -96,9 +89,8 @@ impl StreamWriter {
             Ok(()) => {
                 self.tx.unregister_waiter();
                 log::trace!(
-                    "byte writer accepted chunk: stream_id={} target={:?}",
-                    self.tx.stream_id(),
-                    self.target
+                    "byte writer accepted chunk: stream_id={}",
+                    self.tx.stream_id()
                 );
                 self.poll_runtime();
                 Poll::Ready(Ok(()))
@@ -125,11 +117,7 @@ impl StreamWriter {
         if !self.open {
             return;
         }
-        log::debug!(
-            "byte writer finish: stream_id={} target={:?}",
-            self.tx.stream_id(),
-            self.target
-        );
+        log::debug!("byte writer finish: stream_id={}", self.tx.stream_id());
         self.open = false;
         self.tx.request_finish();
         self.poll_runtime();
@@ -208,14 +196,13 @@ impl StreamWriter {
         }
         self.open = false;
         log::debug!(
-            "byte writer reset: stream_id={:?} target={:?} code={:?}",
+            "byte writer reset: stream_id={:?} code={:?}",
             self.tx.stream_id(),
-            self.target,
             code
         );
         let _ = self.runtime_tx.try_send(Command::ResetStream {
             stream_id: self.tx.stream_id(),
-            target: self.target,
+            target: StreamResetTarget::Writer,
             code,
         });
     }
@@ -233,7 +220,7 @@ mod loom_tests {
 
     use bytes::Bytes;
     use loom::thread;
-    use ql_wire::ResetTarget;
+    use ql_fsm::StreamResetTarget;
 
     use super::*;
     use crate::io::sync::loom::*;
@@ -244,7 +231,7 @@ mod loom_tests {
             let inner = shared();
             inner.tx.try_write(Bytes::from_static(b"abc")).unwrap();
 
-            let mut writer = StreamWriter::new(Tx(inner.clone()), ResetTarget::Origin, handle());
+            let mut writer = StreamWriter::new(Tx(inner.clone()), handle());
             let mut bytes = Bytes::from_static(b"xyz");
             let mut cx = Context::from_waker(Waker::noop());
 
@@ -275,7 +262,7 @@ mod loom_tests {
     fn poll_finish_observes_terminal_racing_with_registration() {
         check_model(|| {
             let inner = shared();
-            let mut writer = StreamWriter::new(Tx(inner.clone()), ResetTarget::Origin, handle());
+            let mut writer = StreamWriter::new(Tx(inner.clone()), handle());
             let mut cx = Context::from_waker(Waker::noop());
 
             writer.queue_finish();

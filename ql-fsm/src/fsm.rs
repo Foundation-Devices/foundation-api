@@ -46,11 +46,8 @@ impl session::EventSink for EventSink<'_> {
             SessionEvent::OutboundFinished(stream_id) => {
                 self.events.push_back(Event::OutboundFinished(stream_id));
             }
-            SessionEvent::Reset(frame) => {
-                self.events.push_back(Event::Reset(frame));
-            }
-            SessionEvent::WritableReset(frame) => {
-                self.events.push_back(Event::WritableReset(frame));
+            SessionEvent::Reset(reset) => {
+                self.events.push_back(Event::Reset(reset));
             }
             SessionEvent::SessionClosed(close) => {
                 self.termination = Some(TerminalFrame::Close(close.clone()));

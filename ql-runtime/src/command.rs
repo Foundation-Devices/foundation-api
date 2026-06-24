@@ -1,7 +1,6 @@
-use ql_fsm::{NoSessionError, PairingInvite};
+use ql_fsm::{NoSessionError, PairingInvite, StreamResetTarget};
 use ql_wire::{
-    PairingToken, PeerBundle, ResetCode, ResetTarget, RouteId, ServiceId, SessionCloseCode,
-    StreamId,
+    PairingToken, PeerBundle, ResetCode, RouteId, ServiceId, SessionCloseCode, StreamId,
 };
 
 use crate::{StreamReader, StreamWriter};
@@ -35,7 +34,7 @@ pub enum Command {
     Unpair,
     ResetStream {
         stream_id: StreamId,
-        target: ResetTarget,
+        target: StreamResetTarget,
         code: ResetCode,
     },
 }

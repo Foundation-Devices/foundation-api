@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use ql_wire::{ResetTarget, StreamId};
+use ql_wire::StreamId;
 
 use crate::{
     command::Command,
@@ -16,38 +16,13 @@ pub struct DriverState {
 }
 
 pub struct DriverStreamIo {
-    is_initiator: bool,
     outbound: Option<OutboundIo>,
     inbound: Option<InboundIo>,
 }
 
 impl DriverStreamIo {
-    pub fn new(
-        is_initiator: bool,
-        outbound: Option<OutboundIo>,
-        inbound: Option<InboundIo>,
-    ) -> Self {
-        Self {
-            is_initiator,
-            outbound,
-            inbound,
-        }
-    }
-
-    pub fn inbound_target(&self) -> ResetTarget {
-        if self.is_initiator {
-            ResetTarget::Return
-        } else {
-            ResetTarget::Origin
-        }
-    }
-
-    pub fn outbound_target(&self) -> ResetTarget {
-        if self.is_initiator {
-            ResetTarget::Origin
-        } else {
-            ResetTarget::Return
-        }
+    pub fn new(outbound: Option<OutboundIo>, inbound: Option<InboundIo>) -> Self {
+        Self { outbound, inbound }
     }
 
     pub fn fail_all(&mut self) {
