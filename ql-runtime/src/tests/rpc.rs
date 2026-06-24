@@ -8,7 +8,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures_lite::StreamExt;
 use ql_rpc::{
     Context, DownloadHandlerLocal, DownloadStart, DuplexHandlerLocal, DuplexPeer, LocalSpawner,
     NotificationHandlerLocal, ProgressHandlerLocal, ProgressResponder, RequestHandler,
@@ -18,7 +17,7 @@ use ql_rpc::{
 };
 
 use super::*;
-use crate::{rpc::RpcError, QlInboundStream, StreamWriter};
+use crate::{QlInboundStream, QlStreamError, StreamWriter};
 
 const TEST_SERVICE: ServiceId = ServiceId([7; 16]);
 
@@ -293,9 +292,15 @@ async fn rpc_subscrption() {
 
         let rpc = pair.side_mut(Side::A).handle.rpc();
         let mut subscription = rpc.subscribe::<Feed>(&b"watch".to_vec()).await.unwrap();
-        assert_eq!(subscription.next().await.unwrap().unwrap(), b"one".to_vec());
-        assert_eq!(subscription.next().await.unwrap().unwrap(), b"two".to_vec());
-        assert!(subscription.next().await.is_none());
+        assert_eq!(
+            subscription.next_event().await.unwrap().unwrap(),
+            b"one".to_vec()
+        );
+        assert_eq!(
+            subscription.next_event().await.unwrap().unwrap(),
+            b"two".to_vec()
+        );
+        assert!(subscription.next_event().await.is_none());
         assert_eq!(seen.borrow().as_slice(), &[b"watch".to_vec()]);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -344,7 +349,7 @@ async fn rpc_router_enforces_max_request_bytes() {
         let response = rpc.request::<Echo>(&"hello".to_string()).await;
         assert!(matches!(
             response,
-            Err(RpcError::Reset { code, origin })
+            Err(ql_rpc::RpcError::Transport(QlStreamError::StreamReset { code, origin }))
                 if code == ResetCode::LIMIT && origin == ResetOrigin::Peer
         ));
 
@@ -400,9 +405,9 @@ async fn rpc_progress() {
         let rpc = pair.side_mut(Side::A).handle.rpc();
         let mut download = rpc.progress::<Download>(&b"logo".to_vec()).await.unwrap();
 
-        assert_eq!(download.next().await, Some(b"10".to_vec()));
-        assert_eq!(download.next().await, Some(b"90".to_vec()));
-        assert_eq!(download.next().await, None);
+        assert_eq!(download.next_progress().await, Some(b"10".to_vec()));
+        assert_eq!(download.next_progress().await, Some(b"90".to_vec()));
+        assert_eq!(download.next_progress().await, None);
         assert_eq!(download.await.unwrap(), b"done".to_vec());
         assert_eq!(seen.borrow().as_slice(), &[b"logo".to_vec()]);
 

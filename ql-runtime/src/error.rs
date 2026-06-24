@@ -1,3 +1,4 @@
+use ql_fsm::NoSessionError;
 use ql_wire::{ResetCode, ResetOrigin};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,3 +20,9 @@ impl std::fmt::Display for QlStreamError {
 }
 
 impl std::error::Error for QlStreamError {}
+
+impl From<NoSessionError> for QlStreamError {
+    fn from(_: NoSessionError) -> Self {
+        Self::NoSession
+    }
+}
