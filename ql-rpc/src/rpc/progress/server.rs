@@ -3,9 +3,9 @@ use std::{future::Future, marker::PhantomData};
 use bytes::Bytes;
 
 use crate::{
-    finish_bytes,
-    progress::{encode_progress, encode_response, Progress},
-    rpc::read_framed_request,
+    codec, finish_bytes,
+    progress::Progress,
+    rpc::{progress::codec::FrameKind, read_framed_request},
     write_bytes, Context, DropResetWrite, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream,
     RpcWrite,
 };
@@ -40,23 +40,16 @@ where
     M: Progress,
     W: RpcWrite,
 {
-    pub(crate) fn new(writer: W) -> Self {
-        Self {
-            writer: DropResetWrite::new(writer),
-            marker: PhantomData,
-        }
-    }
-
     pub async fn send(&mut self, progress: M::Progress) -> Result<(), W::Error> {
         let writer = &mut self.writer;
         let mut encoded = Vec::new();
-        encode_progress::<M>(&progress, &mut encoded);
+        codec::encode_tagged_value_part(FrameKind::Progress as u8, &progress, &mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await
     }
 
     pub async fn finish(mut self, response: M::Response) -> Result<(), W::Error> {
         let mut encoded = Vec::new();
-        encode_response::<M>(&response, &mut encoded);
+        codec::encode_tagged_value_part(FrameKind::Response as u8, &response, &mut encoded);
         write_bytes(&mut self.writer, Bytes::from(encoded)).await?;
         finish_bytes(&mut self.writer).await
     }
@@ -94,5 +87,14 @@ pub(crate) async fn handle_progress_inner<S, M, St, H, HF, E>(
         }
     };
 
-    handle(state, context, request, ProgressResponder::new(writer)).await;
+    handle(
+        state,
+        context,
+        request,
+        ProgressResponder {
+            writer: DropResetWrite::new(writer),
+            marker: PhantomData,
+        },
+    )
+    .await;
 }

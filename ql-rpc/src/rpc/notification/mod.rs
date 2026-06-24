@@ -4,7 +4,7 @@ use crate::RpcCodec;
 pub(crate) mod client;
 pub(crate) mod server;
 
-pub use client::encode_notification;
+pub use client::send;
 pub use server::{NotificationHandler, NotificationHandlerLocal};
 
 /// one-way rpc that carries a single typed payload and no typed response

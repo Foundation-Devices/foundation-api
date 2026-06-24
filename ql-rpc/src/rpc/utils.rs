@@ -1,10 +1,41 @@
+use bytes::Bytes;
+
 use crate::{
-    read_bytes, ChunkQueue, Error, FramedPrefixStep, FramedReadStep, FramedReader, RouterConfig,
-    RpcCodec, RpcError, RpcRead,
+    finish_bytes, read_bytes, write_bytes, ChunkQueue, Error, FramedPrefixStep, FramedReadStep,
+    FramedReader, RouterConfig, RpcCodec, RpcError, RpcRead, RpcWrite,
 };
 
+pub async fn write_eof_value<T, W>(writer: &mut W, value: &T) -> Result<(), W::Error>
+where
+    T: RpcCodec,
+    W: RpcWrite,
+{
+    let mut encoded = Vec::new();
+    value.encode_value(&mut encoded);
+    write_bytes(writer, Bytes::from(encoded)).await?;
+    finish_bytes(writer).await
+}
+
+pub async fn read_eof_value<T, R>(reader: &mut R) -> Result<T, RpcError<T::Error, R::Error>>
+where
+    T: RpcCodec,
+    R: RpcRead,
+{
+    let mut bytes = ChunkQueue::default();
+
+    while let Some(chunk) = read_bytes(reader).await.map_err(RpcError::Transport)? {
+        bytes.push(chunk);
+    }
+
+    let value = T::decode_value(&mut bytes).map_err(RpcError::Codec)?;
+    if bytes.remaining() > 0 {
+        return Err(RpcError::Protocol(Error::TrailingBytes));
+    }
+    Ok(value)
+}
+
 /// reads one length-delimited value and rejects trailing bytes
-pub(crate) async fn read_framed_request<T, R>(
+pub async fn read_framed_request<T, R>(
     reader: &mut R,
     config: RouterConfig,
 ) -> Result<T, RpcError<T::Error, R::Error>>
@@ -38,7 +69,7 @@ where
 }
 
 /// reads one length-delimited value and returns any bytes already buffered
-pub(crate) async fn read_framed_request_prefix<T, R>(
+pub async fn read_framed_request_prefix<T, R>(
     reader: &mut R,
     config: RouterConfig,
 ) -> Result<(T, ChunkQueue), RpcError<T::Error, R::Error>>
@@ -66,7 +97,7 @@ where
 }
 
 /// reads one eof-delimited value up to the configured request limit
-pub(crate) async fn read_eof_request<T, R>(
+pub async fn read_eof_request<T, R>(
     reader: &mut R,
     config: RouterConfig,
 ) -> Result<T, RpcError<T::Error, R::Error>>

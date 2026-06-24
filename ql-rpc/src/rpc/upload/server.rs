@@ -47,12 +47,7 @@ where
     finished: bool,
 }
 
-pub struct UploadResponder<T, W>
-where
-    W: RpcWrite,
-{
-    inner: Response<T, W>,
-}
+pub type UploadResponder<T, W> = Response<T, W>;
 
 impl<M, R> UploadReader<M, R>
 where
@@ -164,26 +159,6 @@ where
     }
 }
 
-impl<T, W> UploadResponder<T, W>
-where
-    T: crate::RpcCodec,
-    W: RpcWrite,
-{
-    pub(crate) fn new(writer: W) -> Self {
-        Self {
-            inner: Response::new(writer),
-        }
-    }
-
-    pub async fn respond(self, response: T) -> Result<(), W::Error> {
-        self.inner.respond(response).await
-    }
-
-    pub fn reset(self, code: ResetCode) {
-        self.inner.reset(code);
-    }
-}
-
 pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
     state: S,
     context: Context,
@@ -227,7 +202,7 @@ pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
             stream: DropResetRead::new(reader),
             reader: PartFrameReader::new(buffered),
         },
-        UploadResponder::new(writer),
+        Response::new(writer),
     )
     .await;
 }

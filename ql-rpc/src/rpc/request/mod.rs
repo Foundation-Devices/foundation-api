@@ -4,7 +4,7 @@ use crate::RpcCodec;
 pub(crate) mod client;
 pub(crate) mod server;
 
-pub use client::{encode_request, encode_response, read_response};
+pub use client::call;
 pub use server::{RequestHandler, RequestHandlerLocal, Response};
 
 /// request-response rpc with exactly one typed value in each direction

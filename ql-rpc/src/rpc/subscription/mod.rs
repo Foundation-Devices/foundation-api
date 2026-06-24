@@ -5,8 +5,7 @@ pub(crate) mod client;
 pub(crate) mod codec;
 pub(crate) mod server;
 
-pub use client::SubscriptionCall;
-pub use codec::{encode_item, encode_request, ReadStep, ResponseReader};
+pub use client::{start, SubscriptionCall};
 pub use server::{SubscriptionHandler, SubscriptionHandlerLocal, SubscriptionResponder};
 
 /// rpc where one request opens a stream of typed events

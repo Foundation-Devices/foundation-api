@@ -4,10 +4,35 @@ use std::{
     task::{Context, Poll},
 };
 
+use bytes::Bytes;
+
 use crate::{
-    progress::{Progress, ReadStep, ResponseReader},
-    DropResetRead, Error, ResetCode, RpcError, RpcRead,
+    codec, finish_bytes,
+    progress::Progress,
+    rpc::progress::codec::{ReadStep, ResponseReader},
+    write_bytes, DropResetRead, Error, ResetCode, RpcError, RpcRead, RpcWrite,
 };
+
+pub async fn start<M, R, W>(
+    reader: R,
+    mut writer: W,
+    request: &M::Request,
+) -> Result<ProgressCall<M, R>, RpcError<M::Error, W::Error>>
+where
+    M: Progress,
+    R: RpcRead<Error = W::Error>,
+    W: RpcWrite,
+{
+    let mut payload = Vec::new();
+    codec::encode_value_part(request, &mut payload);
+    write_bytes(&mut writer, Bytes::from(payload))
+        .await
+        .map_err(RpcError::Transport)?;
+    finish_bytes(&mut writer)
+        .await
+        .map_err(RpcError::Transport)?;
+    Ok(ProgressCall::new(reader))
+}
 
 pub struct ProgressCall<M, R>
 where

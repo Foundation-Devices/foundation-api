@@ -67,6 +67,15 @@ pub fn encode_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(value: &T, out: &
     backpatch_length(out, payload_start);
 }
 
+pub fn encode_tagged_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
+    tag: u8,
+    value: &T,
+    out: &mut B,
+) {
+    out.put_u8(tag);
+    encode_value_part(value, out);
+}
+
 /// reads one length-delimited rpc value from buffered byte chunks
 pub fn reserve_length<B: BufMut + AsMut<[u8]>>(out: &mut B) -> usize {
     let start = out.as_mut().len();

@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use bytes::{BufMut, Bytes};
+use bytes::Bytes;
 
 use crate::{codec, progress::Progress, Error, RpcCodec, RpcError};
 
@@ -61,91 +61,9 @@ impl<M: Progress> ResponseReader<M> {
     }
 }
 
-pub fn encode_request<M: Progress>(request: &M::Request, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    codec::encode_value_part(request, out)
-}
-
-pub fn encode_progress<M: Progress>(progress: &M::Progress, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    encode_tagged_value_part(FrameKind::Progress, progress, out)
-}
-
-pub fn encode_response<M: Progress>(response: &M::Response, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    encode_tagged_value_part(FrameKind::Response, response, out)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-enum FrameKind {
+pub enum FrameKind {
     Progress = 1,
     Response = 2,
-}
-
-fn encode_tagged_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
-    kind: FrameKind,
-    value: &T,
-    out: &mut B,
-) {
-    out.put_u8(kind as u8);
-    let payload_start = codec::reserve_length(out);
-    value.encode_value(out);
-    codec::backpatch_length(out, payload_start);
-}
-
-#[cfg(test)]
-mod tests {
-    use bytes::Bytes;
-
-    use super::{encode_progress, encode_response, ReadStep, ResponseReader};
-    use crate::{progress::Progress, Route, RouteId, ServiceId};
-
-    const TEST_SERVICE: ServiceId = ServiceId([7; 16]);
-
-    struct Watch;
-
-    impl Route for Watch {
-        const SERVICE: ServiceId = TEST_SERVICE;
-        const ROUTE: RouteId = RouteId::from_u32(11);
-    }
-
-    impl Progress for Watch {
-        type Error = core::convert::Infallible;
-        type Request = Vec<u8>;
-        type Progress = Vec<u8>;
-        type Response = Vec<u8>;
-    }
-
-    #[test]
-    fn response_reader_emits_progress_then_response() {
-        let mut encoded = Vec::new();
-        encode_progress::<Watch>(&b"10%".to_vec(), &mut encoded);
-        encode_response::<Watch>(&b"done".to_vec(), &mut encoded);
-
-        let mut reader = ResponseReader::<Watch>::default();
-        reader.push(Bytes::from(encoded));
-
-        match reader.advance::<std::convert::Infallible>().unwrap() {
-            ReadStep::Progress(value) => {
-                assert_eq!(value, b"10%".to_vec());
-            }
-            _ => unreachable!(),
-        };
-        match reader.advance::<std::convert::Infallible>().unwrap() {
-            ReadStep::Response(value) => assert_eq!(value, b"done".to_vec()),
-            _ => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn response_reader_handles_response_only() {
-        let mut encoded = Vec::new();
-        encode_response::<Watch>(&b"done".to_vec(), &mut encoded);
-
-        let mut reader = ResponseReader::<Watch>::default();
-        reader.push(Bytes::from(encoded));
-
-        match reader.advance::<std::convert::Infallible>().unwrap() {
-            ReadStep::Response(value) => assert_eq!(value, b"done".to_vec()),
-            _ => unreachable!(),
-        }
-    }
 }

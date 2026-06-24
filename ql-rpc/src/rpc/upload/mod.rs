@@ -4,7 +4,7 @@ use crate::RpcCodec;
 pub(crate) mod client;
 pub(crate) mod server;
 
-pub use client::{encode_request, UploadCall, UploadPartWriter};
+pub use client::{start, UploadCall, UploadPartWriter};
 pub use server::{UploadHandler, UploadHandlerLocal, UploadPart, UploadReader, UploadResponder};
 
 /// rpc where the caller uploads zero or more byte parts after a typed request

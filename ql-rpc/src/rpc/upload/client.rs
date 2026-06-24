@@ -1,12 +1,29 @@
-use bytes::{BufMut, Bytes};
+use bytes::Bytes;
 
 use crate::{
-    read_bytes,
-    rpc::parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
+    rpc::{
+        parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
+        read_eof_value,
+    },
     upload::Upload,
-    write_bytes, ChunkQueue, DropResetRead, DropResetWrite, ResetCode, RpcCodec, RpcError, RpcRead,
-    RpcWrite,
+    write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcError, RpcRead, RpcWrite,
 };
+
+pub async fn start<M, W, R>(
+    mut writer: W,
+    reader: R,
+    request: &M::Request,
+) -> Result<UploadCall<M, W, R>, W::Error>
+where
+    M: Upload,
+    W: RpcWrite,
+    R: RpcRead<Error = W::Error>,
+{
+    let mut payload = Vec::new();
+    crate::codec::encode_value_part(request, &mut payload);
+    write_bytes(&mut writer, Bytes::from(payload)).await?;
+    Ok(UploadCall::new(writer, reader))
+}
 
 pub struct UploadCall<M, W, R>
 where
@@ -66,18 +83,7 @@ where
             .map_err(RpcError::Transport)?;
         writer.queue_finish();
 
-        let reader = &mut self.reader;
-        let mut bytes = ChunkQueue::default();
-
-        while let Some(chunk) = read_bytes(reader).await.map_err(RpcError::Transport)? {
-            bytes.push(chunk);
-        }
-
-        let value = M::Response::decode_value(&mut bytes).map_err(RpcError::Codec)?;
-        if bytes.remaining() > 0 {
-            return Err(crate::Error::TrailingBytes.into());
-        }
-        Ok(value)
+        read_eof_value::<M::Response, _>(&mut self.reader).await
     }
 
     fn reset(&mut self, code: ResetCode) {
@@ -120,8 +126,4 @@ where
             self.parent.reset(ResetCode::DROPPED);
         }
     }
-}
-
-pub fn encode_request<M: Upload>(request: &M::Request, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    crate::codec::encode_value_part(request, out)
 }

@@ -4,9 +4,29 @@ use std::{
 };
 
 use crate::{
-    subscription::{ReadStep, ResponseReader, Subscription},
-    DropResetRead, ResetCode, RpcError, RpcRead,
+    rpc::{
+        subscription::codec::{ReadStep, ResponseReader},
+        write_eof_value,
+    },
+    subscription::Subscription,
+    DropResetRead, ResetCode, RpcError, RpcRead, RpcWrite,
 };
+
+pub async fn start<M, R, W>(
+    reader: R,
+    mut writer: W,
+    request: &M::Request,
+) -> Result<SubscriptionCall<M, R>, RpcError<M::Error, W::Error>>
+where
+    M: Subscription,
+    R: RpcRead<Error = W::Error>,
+    W: RpcWrite,
+{
+    write_eof_value(&mut writer, request)
+        .await
+        .map_err(RpcError::Transport)?;
+    Ok(SubscriptionCall::new(reader))
+}
 
 pub struct SubscriptionCall<M, R>
 where

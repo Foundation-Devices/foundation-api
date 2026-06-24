@@ -1,12 +1,29 @@
 use std::future::poll_fn;
 
-use bytes::{BufMut, Bytes};
+use bytes::Bytes;
 
 use crate::{
-    download::{Download, PartReadStep},
-    rpc::parts::FrameKind,
-    DropResetRead, FramedPrefixStep, FramedReader, ResetCode, RpcCodec, RpcError, RpcRead,
+    download::Download,
+    parts::{PartFrameReader, PartReadStep},
+    rpc::{parts::FrameKind, write_eof_value},
+    DropResetRead, FramedPrefixStep, FramedReader, ResetCode, RpcError, RpcRead, RpcWrite,
 };
+
+pub async fn start<M, R, W>(
+    reader: R,
+    mut writer: W,
+    request: &M::Request,
+) -> Result<DownloadCall<M, R>, RpcError<M::Error, W::Error>>
+where
+    M: Download,
+    R: RpcRead<Error = W::Error>,
+    W: RpcWrite,
+{
+    write_eof_value(&mut writer, request)
+        .await
+        .map_err(RpcError::Transport)?;
+    Ok(DownloadCall::new(reader))
+}
 
 pub struct DownloadCall<M, R>
 where
@@ -32,7 +49,7 @@ where
     R: RpcRead,
 {
     stream: DropResetRead<R>,
-    reader: crate::download::PartFrameReader<M::PartHeader>,
+    reader: PartFrameReader<M::PartHeader>,
 }
 
 impl<M, R> DownloadCall<M, R>
@@ -58,7 +75,7 @@ where
                         value,
                         DownloadReader {
                             stream: self.stream,
-                            reader: crate::download::PartFrameReader::<M::PartHeader>::new(bytes),
+                            reader: PartFrameReader::<M::PartHeader>::new(bytes),
                         },
                     ));
                 }
@@ -209,8 +226,4 @@ where
             self.parent.reset_inner(ResetCode::DROPPED);
         }
     }
-}
-
-pub fn encode_request<M: Download>(request: &M::Request, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    request.encode_value(out)
 }

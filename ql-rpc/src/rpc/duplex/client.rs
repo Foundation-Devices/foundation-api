@@ -7,9 +7,21 @@ use std::{
 use bytes::Bytes;
 
 use crate::{
-    duplex::{codec, Duplex, EventReader, ReadStep},
-    write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcCodec, RpcError, RpcRead, RpcWrite,
+    codec, duplex::Duplex, write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcCodec,
+    RpcError, RpcRead, RpcWrite,
 };
+
+pub fn start<M, W, R>(writer: W, reader: R) -> DuplexCall<M, W, R>
+where
+    M: Duplex,
+    W: RpcWrite,
+    R: RpcRead,
+{
+    DuplexCall {
+        sender: DuplexSender::new(writer),
+        receiver: DuplexReceiver::new(reader),
+    }
+}
 
 pub struct DuplexCall<M, W, R>
 where
@@ -54,7 +66,7 @@ where
     pub async fn send(&mut self, event: &T) -> Result<(), W::Error> {
         let writer = &mut self.writer;
         let mut encoded = Vec::new();
-        codec::encode_event(event, &mut encoded);
+        codec::encode_value_part(event, &mut encoded);
         write_bytes(writer, Bytes::from(encoded)).await
     }
 
@@ -130,5 +142,47 @@ where
 
     fn reset_inner(&mut self, code: ResetCode) {
         DropResetRead::reset(&mut self.stream, code);
+    }
+}
+
+enum ReadStep<T: RpcCodec> {
+    NeedMore,
+    Event(T),
+}
+
+struct EventReader<T: RpcCodec> {
+    bytes: codec::ChunkQueue,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T: RpcCodec> Default for EventReader<T> {
+    fn default() -> Self {
+        Self {
+            bytes: codec::ChunkQueue::default(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T: RpcCodec> EventReader<T> {
+    fn push(&mut self, chunk: Bytes) {
+        self.bytes.push(chunk);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bytes.remaining() == 0
+    }
+
+    fn advance<E>(&mut self) -> Result<ReadStep<T>, RpcError<T::Error, E>> {
+        let Some(mut body) = self.bytes.try_take_part().map_err(RpcError::Protocol)? else {
+            return Ok(ReadStep::NeedMore);
+        };
+
+        let value = {
+            let value = T::decode_value(&mut body).map_err(RpcError::Codec)?;
+            drop(body);
+            value
+        };
+        Ok(ReadStep::Event(value))
     }
 }

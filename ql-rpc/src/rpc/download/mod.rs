@@ -4,14 +4,9 @@ use crate::RpcCodec;
 pub(crate) mod client;
 pub(crate) mod server;
 
-pub use client::{encode_request, DownloadCall, DownloadPart, DownloadReader};
+pub use client::{start, DownloadCall, DownloadPart, DownloadReader};
 pub use server::{
     DownloadHandler, DownloadHandlerLocal, DownloadPartWriter, DownloadStart, DownloadWriter,
-};
-
-pub use crate::rpc::parts::{
-    encode_body_chunk, encode_end_part, encode_finish, encode_part_header, PartFrameReader,
-    PartReadStep,
 };
 
 /// rpc where the responder returns metadata first and then zero or more byte parts

@@ -164,6 +164,7 @@ mod drop {
             self.inner.as_mut().unwrap().poll_write(bytes, cx)
         }
 
+        #[track_caller]
         fn queue_finish(&mut self) {
             self.inner.as_mut().unwrap().queue_finish();
         }

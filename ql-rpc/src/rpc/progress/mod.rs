@@ -5,8 +5,7 @@ pub(crate) mod client;
 pub(crate) mod codec;
 pub(crate) mod server;
 
-pub use client::ProgressCall;
-pub use codec::{encode_progress, encode_request, encode_response, ReadStep, ResponseReader};
+pub use client::{start, ProgressCall};
 pub use server::{ProgressHandler, ProgressHandlerLocal, ProgressResponder};
 
 /// rpc where the responder streams progress values before a final response

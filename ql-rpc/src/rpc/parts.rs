@@ -111,11 +111,11 @@ impl<H: RpcCodec> PartFrameReader<H> {
 }
 
 pub fn encode_part_header<H: RpcCodec>(part_header: &H, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    encode_tagged_value_part(FrameKind::PartHeader, part_header, out)
+    codec::encode_tagged_value_part(FrameKind::PartHeader.tag(), part_header, out)
 }
 
 pub fn encode_body_chunk(bytes: &Bytes, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    encode_tagged_value_part(FrameKind::BodyChunk, bytes, out)
+    codec::encode_tagged_value_part(FrameKind::BodyChunk.tag(), bytes, out)
 }
 
 pub fn encode_end_part(out: &mut (impl BufMut + AsMut<[u8]>)) {
@@ -153,17 +153,6 @@ impl TryFrom<u8> for FrameKind {
             other => Err(crate::Error::UnexpectedFrameKind(other)),
         }
     }
-}
-
-fn encode_tagged_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
-    kind: FrameKind,
-    value: &T,
-    out: &mut B,
-) {
-    out.put_u8(kind.tag());
-    let payload_start = codec::reserve_length(out);
-    value.encode_value(out);
-    codec::backpatch_length(out, payload_start);
 }
 
 fn encode_tagged_empty_part<B: BufMut + AsMut<[u8]>>(kind: FrameKind, out: &mut B) {

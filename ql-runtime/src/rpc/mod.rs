@@ -1,8 +1,7 @@
 mod adapter;
 
-use bytes::Bytes;
 use ql_fsm::OpenStreamParams;
-use ql_rpc::{download, duplex, notification, progress, request, subscription, upload};
+use ql_rpc::{download, duplex, notification, progress, request, subscription, upload, Route};
 
 use crate::{QlStream, QlStreamError, RuntimeHandle, StreamReader, StreamWriter};
 
@@ -18,31 +17,18 @@ impl RpcHandle {
     where
         M: notification::Notification,
     {
-        let mut payload = Vec::new();
-        notification::encode_notification::<M>(event, &mut payload);
-        let mut stream = self.open_rpc_stream::<M, M::Error>().await?;
-        stream.reader.reset(ql_rpc::ResetCode::CANCELLED);
-        stream
-            .writer
-            .write(Bytes::from(payload))
+        let stream = self.open_rpc_stream::<M, _>().await?;
+        notification::send::<M, _, _>(stream.reader, stream.writer, event)
             .await
-            .map_err(ql_rpc::RpcError::Transport)?;
-        stream
-            .writer
-            .finish()
-            .await
-            .map_err(ql_rpc::RpcError::Transport)?;
-        Ok(())
+            .map_err(ql_rpc::RpcError::Transport)
     }
 
     pub async fn request<M>(&self, request: &M::Request) -> RpcResult<M::Response, M::Error>
     where
         M: request::Request,
     {
-        let mut payload = Vec::new();
-        request::encode_request::<M>(request, &mut payload);
-        let response = self.start_request::<M, _>(payload).await?;
-        request::read_response::<M, _>(response).await
+        let stream = self.open_rpc_stream::<M, _>().await?;
+        request::call::<M, _, _>(stream.reader, stream.writer, request).await
     }
 
     pub async fn subscribe<M>(
@@ -52,10 +38,8 @@ impl RpcHandle {
     where
         M: subscription::Subscription,
     {
-        let mut payload = Vec::new();
-        subscription::encode_request::<M>(request, &mut payload);
-        let response = self.start_request::<M, _>(payload).await?;
-        Ok(subscription::SubscriptionCall::new(response))
+        let stream = self.open_rpc_stream::<M, _>().await?;
+        subscription::start::<M, _, _>(stream.reader, stream.writer, request).await
     }
 
     pub async fn download<M>(
@@ -65,10 +49,8 @@ impl RpcHandle {
     where
         M: download::Download,
     {
-        let mut payload = Vec::new();
-        download::encode_request::<M>(request, &mut payload);
-        let response = self.start_request::<M, _>(payload).await?;
-        Ok(download::DownloadCall::new(response))
+        let stream = self.open_rpc_stream::<M, _>().await?;
+        download::start::<M, _, _>(stream.reader, stream.writer, request).await
     }
 
     pub async fn progress<M>(
@@ -78,10 +60,8 @@ impl RpcHandle {
     where
         M: progress::Progress,
     {
-        let mut payload = Vec::new();
-        progress::encode_request::<M>(request, &mut payload);
-        let response = self.start_request::<M, _>(payload).await?;
-        Ok(progress::ProgressCall::new(response))
+        let stream = self.open_rpc_stream::<M, _>().await?;
+        progress::start::<M, _, _>(stream.reader, stream.writer, request).await
     }
 
     pub async fn upload<M>(
@@ -91,15 +71,10 @@ impl RpcHandle {
     where
         M: upload::Upload,
     {
-        let mut payload = Vec::new();
-        upload::encode_request::<M>(request, &mut payload);
-        let mut stream = self.open_rpc_stream::<M, M::Error>().await?;
-        stream
-            .writer
-            .write(Bytes::from(payload))
+        let stream = self.open_rpc_stream::<M, _>().await?;
+        upload::start::<M, _, _>(stream.writer, stream.reader, request)
             .await
-            .map_err(ql_rpc::RpcError::Transport)?;
-        Ok(upload::UploadCall::new(stream.writer, stream.reader))
+            .map_err(ql_rpc::RpcError::Transport)
     }
 
     pub async fn duplex<M>(
@@ -108,11 +83,8 @@ impl RpcHandle {
     where
         M: duplex::Duplex,
     {
-        let stream = self.open_rpc_stream::<M, M::Error>().await?;
-        Ok(duplex::DuplexCall {
-            sender: duplex::DuplexSender::new(stream.writer),
-            receiver: duplex::DuplexReceiver::new(stream.reader),
-        })
+        let stream = self.open_rpc_stream::<M, _>().await?;
+        Ok(duplex::start::<M, _, _>(stream.writer, stream.reader))
     }
 }
 
@@ -121,21 +93,7 @@ impl RpcHandle {
         Self { inner }
     }
 
-    async fn start_request<R: ql_rpc::Route, E>(
-        &self,
-        payload: Vec<u8>,
-    ) -> RpcResult<StreamReader, E> {
-        let mut stream = self.open_rpc_stream::<R, E>().await?;
-        stream
-            .writer
-            .write(Bytes::from(payload))
-            .await
-            .map_err(ql_rpc::RpcError::Transport)?;
-        stream.writer.queue_finish();
-        Ok(stream.reader)
-    }
-
-    async fn open_rpc_stream<R: ql_rpc::Route, E>(&self) -> RpcResult<QlStream, E> {
+    async fn open_rpc_stream<R: Route, E>(&self) -> RpcResult<QlStream, E> {
         self.inner
             .open_stream(OpenStreamParams {
                 service_id: R::SERVICE,

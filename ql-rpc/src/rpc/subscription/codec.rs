@@ -1,19 +1,8 @@
 use std::marker::PhantomData;
 
-use bytes::{BufMut, Bytes};
+use bytes::Bytes;
 
 use crate::{codec, subscription::Subscription, RpcCodec, RpcError};
-
-pub fn encode_request<M: Subscription>(
-    request: &M::Request,
-    out: &mut (impl BufMut + AsMut<[u8]>),
-) {
-    request.encode_value(out)
-}
-
-pub fn encode_item<M: Subscription>(item: &M::Event, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    codec::encode_value_part(item, out)
-}
 
 pub enum ReadStep<M: Subscription> {
     NeedMore,
