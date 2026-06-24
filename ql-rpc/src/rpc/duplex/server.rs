@@ -2,7 +2,7 @@ use std::future::Future;
 
 use crate::{
     duplex::{Duplex, DuplexReceiver, DuplexSender},
-    RpcRead, RpcStream, RpcWrite,
+    Context, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(DuplexHandler: Send)]
@@ -11,7 +11,9 @@ where
     M: Duplex,
     St: RpcStream,
 {
-    async fn handle(self, peer: DuplexPeer<M, St::Writer, St::Reader>);
+    async fn handle(self, context: Context, peer: DuplexPeer<M, St::Writer, St::Reader>);
+
+    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
 }
 
 pub struct DuplexPeer<M, W, R>
@@ -26,6 +28,7 @@ where
 
 pub(crate) async fn handle_duplex_inner<S, M, St, H, HF>(
     state: S,
+    context: Context,
     _config: crate::RouterConfig,
     reader: St::Reader,
     writer: St::Writer,
@@ -33,11 +36,12 @@ pub(crate) async fn handle_duplex_inner<S, M, St, H, HF>(
 ) where
     M: Duplex + 'static,
     St: RpcStream + 'static,
-    H: FnOnce(S, DuplexPeer<M, St::Writer, St::Reader>) -> HF,
+    H: FnOnce(S, Context, DuplexPeer<M, St::Writer, St::Reader>) -> HF,
     HF: Future<Output = ()>,
 {
     handle(
         state,
+        context,
         DuplexPeer {
             sender: DuplexSender::new(writer),
             receiver: DuplexReceiver::new(reader),

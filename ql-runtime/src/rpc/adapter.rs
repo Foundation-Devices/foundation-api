@@ -1,21 +1,29 @@
-use std::task::{Context, Poll};
+use std::task::{Context as TaskContext, Poll};
 
 use bytes::Bytes;
-use ql_rpc::{ResetCode, RouteId, RpcRead, RpcStream, RpcWrite, ServiceId};
+use ql_rpc::{ResetCode, RouteId, RpcRead, RpcStream, RpcWrite, ServiceId, StreamId, QID};
 
-use crate::{QlStream, QlStreamError, StreamReader, StreamWriter};
+use crate::{QlInboundStream, QlStreamError, StreamReader, StreamWriter};
 
-impl RpcStream for QlStream {
+impl RpcStream for QlInboundStream {
     type Error = QlStreamError;
     type Reader = StreamReader;
     type Writer = StreamWriter;
 
-    fn service_id(&self) -> Option<ServiceId> {
-        Some(self.service_id)
+    fn qid(&self) -> QID {
+        self.qid
     }
 
-    fn route_id(&self) -> Option<RouteId> {
-        Some(self.route_id)
+    fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
+    fn service_id(&self) -> ServiceId {
+        self.service_id
+    }
+
+    fn route_id(&self) -> RouteId {
+        self.route_id
     }
 
     fn split(self) -> (Self::Reader, Self::Writer) {
@@ -26,7 +34,10 @@ impl RpcStream for QlStream {
 impl RpcRead for StreamReader {
     type Error = QlStreamError;
 
-    fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, QlStreamError>> {
+    fn poll_read(
+        &mut self,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
         StreamReader::poll_read(self, cx)
     }
 
@@ -41,7 +52,7 @@ impl RpcWrite for StreamWriter {
     fn poll_write(
         &mut self,
         bytes: &mut Bytes,
-        cx: &mut Context<'_>,
+        cx: &mut TaskContext<'_>,
     ) -> Poll<Result<(), QlStreamError>> {
         StreamWriter::poll_write(self, bytes, cx)
     }
@@ -50,7 +61,7 @@ impl RpcWrite for StreamWriter {
         StreamWriter::queue_finish(self);
     }
 
-    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
+    fn poll_finish(&mut self, cx: &mut TaskContext<'_>) -> Poll<Result<(), QlStreamError>> {
         StreamWriter::poll_finish(self, cx)
     }
 

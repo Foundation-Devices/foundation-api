@@ -21,7 +21,7 @@ pub enum Command {
     OpenStream {
         service_id: ServiceId,
         route_id: RouteId,
-        start: oneshot::Sender<Result<(StreamId, StreamReader, StreamWriter), NoSessionError>>,
+        start: oneshot::Sender<Result<(StreamReader, StreamWriter), NoSessionError>>,
     },
     PollInbound {
         stream_id: StreamId,

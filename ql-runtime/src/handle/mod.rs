@@ -1,15 +1,11 @@
 use ql_fsm::{NoSessionError, OpenStreamParams, PairingInvite};
-use ql_wire::{PairingToken, PeerBundle, RouteId, ServiceId, SessionCloseCode, StreamId};
+use ql_wire::{PairingToken, PeerBundle, SessionCloseCode};
 
 use crate::command::Command;
 pub use crate::io::{StreamReader, StreamWriter};
 
 #[derive(Debug)]
 pub struct QlStream {
-    pub service_id: ServiceId,
-    pub route_id: RouteId,
-    pub stream_id: StreamId,
-
     pub writer: StreamWriter,
     pub reader: StreamReader,
 }
@@ -70,15 +66,9 @@ impl RuntimeHandle {
         });
 
         // runtime cannot be shutdown while we have a handle
-        let (stream_id, reader, writer) = start_rx.await.unwrap()?;
+        let (reader, writer) = start_rx.await.unwrap()?;
 
-        Ok(QlStream {
-            route_id,
-            service_id,
-            stream_id,
-            writer,
-            reader,
-        })
+        Ok(QlStream { writer, reader })
     }
 
     #[cfg(feature = "rpc")]

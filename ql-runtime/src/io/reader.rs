@@ -4,7 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use ql_wire::{ResetCode, ResetTarget};
+use ql_wire::{ResetCode, ResetTarget, StreamId};
 
 use super::{
     inner::{Item, RxInner},
@@ -48,6 +48,10 @@ impl StreamReader {
             terminal: ReaderTerminalState::Open,
             handle,
         }
+    }
+
+    pub fn stream_id(&self) -> StreamId {
+        self.rx.stream_id()
     }
 
     pub fn poll_read(

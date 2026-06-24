@@ -20,7 +20,7 @@ use ql_wire::{
 use tokio::{task::LocalSet, time::Sleep};
 
 use crate::{
-    new_runtime, platform::QlTimer, NoSessionError, PairingInvite, QlFsmConfig, QlStream,
+    new_runtime, platform::QlTimer, NoSessionError, PairingInvite, QlFsmConfig, QlInboundStream,
     QlStreamError, RuntimeConfig, RuntimeHandle,
 };
 
@@ -97,7 +97,7 @@ struct TestPlatform {
     _inbound_messages_tx: Sender<Vec<u8>>,
     inbound_messages: Option<Receiver<Vec<u8>>>,
     status: Sender<StatusEvent>,
-    inbound: Option<Sender<QlStream>>,
+    inbound: Option<Sender<QlInboundStream>>,
     crypto: SoftwareCrypto,
     encrypted_write_counter: AtomicUsize,
     fail_encrypted_write_at: Option<usize>,
@@ -121,7 +121,7 @@ type TestPlatformPartsWithInbound = (
     Receiver<Vec<u8>>,
     Sender<Vec<u8>>,
     Receiver<StatusEvent>,
-    Receiver<QlStream>,
+    Receiver<QlInboundStream>,
 );
 
 impl TestPlatform {
@@ -151,7 +151,7 @@ impl TestPlatform {
     }
 
     fn new_inner(
-        inbound: Option<Sender<QlStream>>,
+        inbound: Option<Sender<QlInboundStream>>,
         fail_encrypted_write_at: Option<usize>,
         write_delay: Duration,
         write_stats: Option<WriteStats>,
@@ -183,7 +183,7 @@ struct TestSide {
     handle: RuntimeHandle,
     status: Receiver<StatusEvent>,
     peer: QID,
-    inbound: Receiver<QlStream>,
+    inbound: Receiver<QlInboundStream>,
 }
 
 struct TestPair {
@@ -310,7 +310,7 @@ impl TestPair {
         .await;
     }
 
-    fn take_inbound(&mut self, side: Side) -> Receiver<QlStream> {
+    fn take_inbound(&mut self, side: Side) -> Receiver<QlInboundStream> {
         let replacement = async_channel::unbounded().1;
         std::mem::replace(&mut self.side_mut(side).inbound, replacement)
     }
@@ -450,7 +450,7 @@ impl crate::platform::QlPlatform for TestPlatform {
         let _ = self.status.try_send(StatusEvent { peer, status });
     }
 
-    fn handle_inbound(&self, event: QlStream) {
+    fn handle_inbound(&self, event: QlInboundStream) {
         if let Some(tx) = &self.inbound {
             let _ = tx.try_send(event);
         }

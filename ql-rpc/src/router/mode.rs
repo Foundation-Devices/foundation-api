@@ -1,8 +1,9 @@
 use std::future::Future;
 
+use super::Context;
 use crate::RouterConfig;
 
-pub type RouteFn<S, St, Sp> = fn(&Sp, S, RouterConfig, St) -> <Sp as Spawner>::Handle;
+pub type RouteFn<S, St, Sp> = fn(&Sp, S, Context, RouterConfig, St) -> <Sp as Spawner>::Handle;
 
 pub trait Spawner: Clone + 'static {
     type Handle;

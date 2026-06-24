@@ -84,17 +84,21 @@ where
         M: RequestRpc + 'static,
         S: RequestHandlerLocal<M, St> + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_request_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_request_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn notification<M>(self) -> Self
@@ -102,17 +106,21 @@ where
         M: NotificationRpc + 'static,
         S: NotificationHandlerLocal<M, St> + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_notification_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_notification_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn duplex<M>(self) -> Self
@@ -120,16 +128,20 @@ where
         M: DuplexRpc + 'static,
         S: DuplexHandlerLocal<M, St> + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_duplex_inner::<S, M, St, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_duplex_inner::<S, M, St, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                ))
+            },
+        )
     }
 
     pub fn download<M>(self) -> Self
@@ -137,17 +149,21 @@ where
         M: DownloadRpc + 'static,
         S: DownloadHandlerLocal<M, St> + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_download_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_download_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn subscription<M>(self) -> Self
@@ -155,17 +171,21 @@ where
         M: SubscriptionRpc + 'static,
         S: SubscriptionHandlerLocal<M, St> + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_subscription_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_subscription_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn progress<M>(self) -> Self
@@ -173,17 +193,21 @@ where
         M: ProgressRpc + 'static,
         S: ProgressHandlerLocal<M, St> + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_progress_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_progress_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn upload<M>(self) -> Self
@@ -191,17 +215,21 @@ where
         M: UploadRpc + 'static,
         S: UploadHandlerLocal<M, St> + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_upload_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_upload_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 }
 
@@ -218,17 +246,21 @@ where
         St::Reader: Send + 'static,
         St::Writer: Send + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_request_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_request_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn notification<M>(self) -> Self
@@ -239,17 +271,21 @@ where
         St::Reader: Send + 'static,
         St::Writer: Send + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_notification_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_notification_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn duplex<M>(self) -> Self
@@ -261,16 +297,20 @@ where
         St::Reader: Send + 'static,
         St::Writer: Send + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_duplex_inner::<S, M, St, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_duplex_inner::<S, M, St, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                ))
+            },
+        )
     }
 
     pub fn download<M>(self) -> Self
@@ -281,17 +321,21 @@ where
         St::Reader: Send + 'static,
         St::Writer: Send + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_download_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_download_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn subscription<M>(self) -> Self
@@ -302,17 +346,21 @@ where
         St::Reader: Send + 'static,
         St::Writer: Send + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_subscription_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_subscription_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn progress<M>(self) -> Self
@@ -323,17 +371,21 @@ where
         St::Reader: Send + 'static,
         St::Writer: Send + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_progress_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_progress_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 
     pub fn upload<M>(self) -> Self
@@ -344,16 +396,20 @@ where
         St::Reader: Send + 'static,
         St::Writer: Send + 'static,
     {
-        self.add_route(RouteKey::new::<M>(), |spawner, state, config, stream| {
-            let (reader, writer) = stream.split();
-            spawner.spawn(handle_upload_inner::<S, M, St, _, _, _>(
-                state,
-                config,
-                reader,
-                writer,
-                S::handle,
-                S::handle_error,
-            ))
-        })
+        self.add_route(
+            RouteKey::new::<M>(),
+            |spawner, state, context, config, stream| {
+                let (reader, writer) = stream.split();
+                spawner.spawn(handle_upload_inner::<S, M, St, _, _, _>(
+                    state,
+                    context,
+                    config,
+                    reader,
+                    writer,
+                    S::handle,
+                    S::handle_error,
+                ))
+            },
+        )
     }
 }

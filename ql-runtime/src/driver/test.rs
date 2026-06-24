@@ -39,7 +39,7 @@ impl QlPlatform for NoopCrypto {
 
     fn handle_peer_status(&self, _peer: Option<QID>, _status: ql_fsm::PeerStatus) {}
 
-    fn handle_inbound(&self, _event: QlStream) {}
+    fn handle_inbound(&self, _event: QlInboundStream) {}
 }
 
 impl QlInbound for NoopInbound {

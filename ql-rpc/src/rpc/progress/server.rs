@@ -6,7 +6,8 @@ use crate::{
     finish_bytes,
     progress::{encode_progress, encode_response, Progress},
     rpc::read_framed_request,
-    write_bytes, DropResetWrite, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
+    write_bytes, Context, DropResetWrite, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream,
+    RpcWrite,
 };
 
 #[trait_variant::make(ProgressHandler: Send)]
@@ -15,7 +16,12 @@ where
     M: Progress,
     St: RpcStream,
 {
-    async fn handle(self, request: M::Request, responder: ProgressResponder<M, St::Writer>);
+    async fn handle(
+        self,
+        context: Context,
+        request: M::Request,
+        responder: ProgressResponder<M, St::Writer>,
+    );
 
     fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
 }
@@ -62,6 +68,7 @@ where
 
 pub(crate) async fn handle_progress_inner<S, M, St, H, HF, E>(
     state: S,
+    context: Context,
     config: RouterConfig,
     mut reader: St::Reader,
     writer: St::Writer,
@@ -70,7 +77,7 @@ pub(crate) async fn handle_progress_inner<S, M, St, H, HF, E>(
 ) where
     M: Progress + 'static,
     St: RpcStream + 'static,
-    H: FnOnce(S, M::Request, ProgressResponder<M, St::Writer>) -> HF,
+    H: FnOnce(S, Context, M::Request, ProgressResponder<M, St::Writer>) -> HF,
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
@@ -87,5 +94,5 @@ pub(crate) async fn handle_progress_inner<S, M, St, H, HF, E>(
         }
     };
 
-    handle(state, request, ProgressResponder::new(writer)).await;
+    handle(state, context, request, ProgressResponder::new(writer)).await;
 }

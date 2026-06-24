@@ -21,9 +21,8 @@ use ql_wire::{ResetCode, ResetOrigin, ResetTarget, StreamHeader, StreamId};
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
     command::Command,
-    handle::QlStream,
     io, log,
-    platform::{QlInbound, QlPlatform, QlTimer},
+    platform::{QlInbound, QlInboundStream, QlPlatform, QlTimer},
     QlStreamError, Runtime, RuntimeHandle,
 };
 
@@ -249,14 +248,13 @@ impl DriverState {
                         Some(InboundIo::new(reader_io)),
                     ),
                 );
-                if start.send(Ok((stream_id, reader, writer))).is_err() {
+                if start.send(Ok((reader, writer))).is_err() {
                     log::warn!("open stream cancelled before delivery: stream_id={stream_id}");
                     if let Some(stream) = self.streams.get_mut(&stream_id) {
                         stream.inbound_close();
                         stream.outbound_close();
                     }
                     stream_ops.reset(ResetTarget::Both, ResetCode::DROPPED);
-                    drop(stream_ops);
                     return;
                 }
                 drop(stream_ops);
@@ -389,6 +387,7 @@ impl DriverState {
             ),
         );
 
+        let qid = fsm.peer().unwrap().qid;
         let stream = fsm.stream(stream_id).unwrap();
         let StreamHeader {
             service_id,
@@ -399,10 +398,11 @@ impl DriverState {
             "delivering inbound stream to platform: service_id={service_id} route_id={route_id} stream_id={stream_id}",
         );
 
-        platform.handle_inbound(QlStream {
-            stream_id,
+        platform.handle_inbound(QlInboundStream {
+            qid,
             route_id,
             service_id,
+            stream_id,
             writer,
             reader,
         });

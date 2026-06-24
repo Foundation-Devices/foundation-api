@@ -8,7 +8,8 @@ use crate::{
         parts::{FrameKind, PartFrameReader, PartReadStep},
         read_framed_request_prefix,
     },
-    DropResetRead, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, Upload,
+    Context, DropResetRead, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
+    Upload,
 };
 
 #[trait_variant::make(UploadHandler: Send)]
@@ -19,6 +20,7 @@ where
 {
     async fn handle(
         self,
+        context: Context,
         request: M::Request,
         upload: UploadReader<M, St::Reader>,
         responder: UploadResponder<M::Response, St::Writer>,
@@ -184,6 +186,7 @@ where
 
 pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
     state: S,
+    context: Context,
     config: RouterConfig,
     mut reader: St::Reader,
     writer: St::Writer,
@@ -194,6 +197,7 @@ pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
     St: RpcStream + 'static,
     H: FnOnce(
         S,
+        Context,
         M::Request,
         UploadReader<M, St::Reader>,
         UploadResponder<M::Response, St::Writer>,
@@ -217,6 +221,7 @@ pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
 
     handle(
         state,
+        context,
         request,
         UploadReader {
             stream: DropResetRead::new(reader),

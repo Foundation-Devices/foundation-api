@@ -4,7 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use ql_wire::{ResetCode, ResetTarget};
+use ql_wire::{ResetCode, ResetTarget, StreamId};
 
 use super::{
     inner::{Item, TxInner},
@@ -47,6 +47,10 @@ impl StreamWriter {
             terminal: WriterTerminalState::Pending,
             handle,
         }
+    }
+
+    pub fn stream_id(&self) -> StreamId {
+        self.tx.stream_id()
     }
 
     pub fn poll_write(

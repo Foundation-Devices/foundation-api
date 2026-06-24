@@ -10,7 +10,8 @@ use crate::{
         parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
         read_eof_request,
     },
-    write_bytes, DropResetWrite, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
+    write_bytes, Context, DropResetWrite, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream,
+    RpcWrite,
 };
 
 #[trait_variant::make(DownloadHandler: Send)]
@@ -19,7 +20,12 @@ where
     M: DownloadRpc,
     St: RpcStream,
 {
-    async fn handle(self, message: M::Request, download: DownloadStart<M, St::Writer>);
+    async fn handle(
+        self,
+        context: Context,
+        message: M::Request,
+        download: DownloadStart<M, St::Writer>,
+    );
 
     fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
 }
@@ -162,6 +168,7 @@ where
 
 pub(crate) async fn handle_download_inner<S, M, St, H, HF, E>(
     state: S,
+    context: Context,
     config: RouterConfig,
     mut reader: St::Reader,
     writer: St::Writer,
@@ -170,7 +177,7 @@ pub(crate) async fn handle_download_inner<S, M, St, H, HF, E>(
 ) where
     M: DownloadRpc + 'static,
     St: RpcStream + 'static,
-    H: FnOnce(S, M::Request, DownloadStart<M, St::Writer>) -> HF,
+    H: FnOnce(S, Context, M::Request, DownloadStart<M, St::Writer>) -> HF,
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
@@ -187,5 +194,5 @@ pub(crate) async fn handle_download_inner<S, M, St, H, HF, E>(
         }
     };
 
-    handle(state, request, DownloadStart::new(writer)).await;
+    handle(state, context, request, DownloadStart::new(writer)).await;
 }

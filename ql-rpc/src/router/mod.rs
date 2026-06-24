@@ -1,4 +1,4 @@
-use crate::{ResetCode, RouteId, ServiceId};
+use crate::{ResetCode, RouteId, ServiceId, StreamId, QID};
 
 mod builder;
 mod config;
@@ -28,6 +28,12 @@ where
     state: S,
     spawner: Sp,
     routes: Vec<RouteEntry<S, St, Sp>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Context {
+    pub qid: QID,
+    pub stream_id: StreamId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,8 +89,12 @@ where
     }
 
     pub fn handle(&self, stream: St) -> Option<(RouteId, Sp::Handle)> {
-        let service_id = stream.service_id()?;
-        let route_id = stream.route_id()?;
+        let service_id = stream.service_id();
+        let route_id = stream.route_id();
+        let context = Context {
+            qid: stream.qid(),
+            stream_id: stream.stream_id(),
+        };
         let key = RouteKey {
             service_id,
             route_id,
@@ -96,7 +106,13 @@ where
         let route = self.routes[index].route;
         Some((
             route_id,
-            route(&self.spawner, self.state.clone(), self.config, stream),
+            route(
+                &self.spawner,
+                self.state.clone(),
+                context,
+                self.config,
+                stream,
+            ),
         ))
     }
 

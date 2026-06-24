@@ -4,8 +4,8 @@ use bytes::Bytes;
 
 use crate::{
     codec, finish_bytes, rpc::read_eof_request, subscription::Subscription as SubscriptionRpc,
-    write_bytes, DropResetWrite, ResetCode, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream,
-    RpcWrite,
+    write_bytes, Context, DropResetWrite, ResetCode, RouterConfig, RpcCodec, RpcError, RpcRead,
+    RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(SubscriptionHandler: Send)]
@@ -16,6 +16,7 @@ where
 {
     async fn handle(
         self,
+        context: Context,
         message: M::Request,
         responder: SubscriptionResponder<M::Event, St::Writer>,
     );
@@ -62,6 +63,7 @@ where
 
 pub(crate) async fn handle_subscription_inner<S, M, St, H, HF, E>(
     state: S,
+    context: Context,
     config: RouterConfig,
     mut reader: St::Reader,
     writer: St::Writer,
@@ -70,7 +72,7 @@ pub(crate) async fn handle_subscription_inner<S, M, St, H, HF, E>(
 ) where
     M: SubscriptionRpc + 'static,
     St: RpcStream + 'static,
-    H: FnOnce(S, M::Request, SubscriptionResponder<M::Event, St::Writer>) -> HF,
+    H: FnOnce(S, Context, M::Request, SubscriptionResponder<M::Event, St::Writer>) -> HF,
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
@@ -87,5 +89,5 @@ pub(crate) async fn handle_subscription_inner<S, M, St, H, HF, E>(
         }
     };
 
-    handle(state, request, SubscriptionResponder::new(writer)).await;
+    handle(state, context, request, SubscriptionResponder::new(writer)).await;
 }

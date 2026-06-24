@@ -3,7 +3,7 @@ use std::{future::Future, marker::PhantomData};
 use bytes::Bytes;
 
 use crate::{
-    finish_bytes, request::Request as RequestRpc, rpc::read_eof_request, write_bytes,
+    finish_bytes, request::Request as RequestRpc, rpc::read_eof_request, write_bytes, Context,
     DropResetWrite, ResetCode, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
@@ -13,7 +13,12 @@ where
     M: RequestRpc,
     St: RpcStream,
 {
-    async fn handle(self, message: M::Request, responder: Response<M::Response, St::Writer>);
+    async fn handle(
+        self,
+        context: Context,
+        message: M::Request,
+        responder: Response<M::Response, St::Writer>,
+    );
 
     fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
 }
@@ -54,6 +59,7 @@ where
 
 pub(crate) async fn handle_request_inner<S, M, St, H, HF, E>(
     state: S,
+    context: Context,
     config: RouterConfig,
     mut reader: St::Reader,
     writer: St::Writer,
@@ -62,7 +68,7 @@ pub(crate) async fn handle_request_inner<S, M, St, H, HF, E>(
 ) where
     M: RequestRpc + 'static,
     St: RpcStream + 'static,
-    H: FnOnce(S, M::Request, Response<M::Response, St::Writer>) -> HF,
+    H: FnOnce(S, Context, M::Request, Response<M::Response, St::Writer>) -> HF,
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
@@ -79,5 +85,5 @@ pub(crate) async fn handle_request_inner<S, M, St, H, HF, E>(
         }
     };
 
-    handle(state, request, Response::new(writer)).await;
+    handle(state, context, request, Response::new(writer)).await;
 }
