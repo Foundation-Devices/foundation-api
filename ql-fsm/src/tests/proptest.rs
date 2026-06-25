@@ -550,7 +550,6 @@ impl Runner {
                         | ReceiveError::InvalidRemoteBundle
                         | ReceiveError::InvalidSessionPayload(WireError::InvalidPayload)
                         | ReceiveError::InvalidSessionPayload(WireError::DecryptFailed)
-                        | ReceiveError::InvalidSessionConnectionId
                         | ReceiveError::InvalidIkHandshake(WireError::InvalidPayload)
                         | ReceiveError::InvalidIkHandshake(WireError::InvalidState)
                         | ReceiveError::InvalidKkHandshake(WireError::InvalidPayload)

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use ql_common::QID;
 use ql_wire::{
-    self, generate_identity, test_identities, ConnectionId, HandshakeId, PairingToken, QlCrypto,
-    SessionKey, SoftwareCrypto, TransportParams,
+    self, generate_identity, test_identities, HandshakeId, PairingToken, QlCrypto, SessionKey,
+    SoftwareCrypto, TransportParams,
 };
 
 use crate::{
@@ -99,8 +99,6 @@ impl Harness {
         let mut harness = Self::paired_known(config);
         let a_to_b_key = SessionKey([7; SessionKey::SIZE]);
         let b_to_a_key = SessionKey([9; SessionKey::SIZE]);
-        let a_to_b_conn = ConnectionId([0xA1; ConnectionId::SIZE]);
-        let b_to_a_conn = ConnectionId([0xB2; ConnectionId::SIZE]);
 
         harness.a.fsm.state.link = LinkState::Connected(ConnectedState {
             handshake_id: HandshakeId(0),
@@ -108,8 +106,6 @@ impl Harness {
                 remote_qid: harness.b.fsm.identity.qid,
                 tx_key: a_to_b_key.clone(),
                 rx_key: b_to_a_key.clone(),
-                tx_connection_id: a_to_b_conn,
-                rx_connection_id: b_to_a_conn,
                 remote_transport_params: TransportParams {
                     initial_stream_receive_window: harness
                         .b
@@ -126,8 +122,6 @@ impl Harness {
                 remote_qid: harness.a.fsm.identity.qid,
                 tx_key: b_to_a_key,
                 rx_key: a_to_b_key,
-                tx_connection_id: b_to_a_conn,
-                rx_connection_id: a_to_b_conn,
                 remote_transport_params: TransportParams {
                     initial_stream_receive_window: harness
                         .a

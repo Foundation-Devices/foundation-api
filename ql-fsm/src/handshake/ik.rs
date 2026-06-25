@@ -120,11 +120,9 @@ pub fn should_ignore_inbound(fsm: &QlFsm, route: RouteHeader, message: &Ik1) -> 
         | LinkState::KkInitiator(_)
         | LinkState::XxInitiator(_)
         | LinkState::XxResponder(_) => false,
-        LinkState::Connected(_) => super::is_connected_replay(
-            fsm,
-            message.meta.handshake_id,
-            route.sender,
-        ),
+        LinkState::Connected(_) => {
+            super::is_connected_replay(fsm, message.meta.handshake_id, route.sender)
+        }
         LinkState::IkInitiator(state) => {
             if fsm.state.peer.as_ref().map(|peer| peer.qid) != Some(route.sender) {
                 return false;

@@ -35,18 +35,14 @@ impl<B: ByteSlice> codec::WireDecode<B> for RouteHeader {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionHeader {
-    pub connection_id: ConnectionId,
     pub seq: RecordSeq,
 }
 
 ql_common::varint_wrapper!(RecordSeq);
-
 varint_wrapper_codec!(RecordSeq);
 
-array_wrapper!(ConnectionId, 8);
-
 impl SessionHeader {
-    pub const MAX_ENCODED_LEN: usize = ConnectionId::SIZE + RecordSeq::MAX_ENCODED_LEN;
+    pub const MAX_ENCODED_LEN: usize = RecordSeq::MAX_ENCODED_LEN;
     const AAD_DOMAIN: &[u8] = b"ql-wire:session-aad:v1";
     const AAD_RECORD_KIND_SESSION: u8 = 1;
 
@@ -55,14 +51,12 @@ impl SessionHeader {
             + size_of::<u8>()
             + size_of::<u8>()
             + RouteHeader::WIRE_SIZE
-            + ConnectionId::SIZE
             + self.seq.encoded_len();
         let mut aad = Vec::with_capacity(aad_len);
         aad.put_slice(Self::AAD_DOMAIN);
         aad.put_u8(QL_WIRE_VERSION);
         aad.put_u8(Self::AAD_RECORD_KIND_SESSION);
         route.encode(&mut aad);
-        self.connection_id.encode(&mut aad);
         self.seq.encode(&mut aad);
         debug_assert_eq!(aad.len(), aad_len);
         aad
@@ -71,11 +65,10 @@ impl SessionHeader {
 
 impl WireEncode for SessionHeader {
     fn encoded_len(&self) -> usize {
-        ConnectionId::SIZE + self.seq.encoded_len()
+        self.seq.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.connection_id.encode(out);
         self.seq.encode(out);
     }
 }
@@ -83,7 +76,6 @@ impl WireEncode for SessionHeader {
 impl<B: ByteSlice> codec::WireDecode<B> for SessionHeader {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            connection_id: reader.decode()?,
             seq: reader.decode()?,
         })
     }

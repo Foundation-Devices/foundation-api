@@ -131,9 +131,6 @@ pub fn receive(
                 let (decrypt_len, seq) = {
                     let record = wire::QlSessionRecord::decode(&mut reader)
                         .map_err(ReceiveError::InvalidSessionRecord)?;
-                    if record.header.connection_id != conn.transport.rx_connection_id {
-                        return Err(ReceiveError::InvalidSessionConnectionId);
-                    }
                     let payload = wire::decrypt_record(
                         crypto,
                         &header,
@@ -212,12 +209,7 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     };
 
     let (write_id, builder) = conn.session.take_next_write(state.now)?;
-    let record = builder.encrypt(
-        crypto,
-        route,
-        conn.transport.tx_connection_id,
-        &conn.transport.tx_key,
-    );
+    let record = builder.encrypt(crypto, route, &conn.transport.tx_key);
     if conn.session.is_closed() && matches!(fsm.state.link, LinkState::Connected(_)) {
         fsm.state.link = LinkState::Idle;
         emit_peer_status(fsm, fsm.state.link.status());

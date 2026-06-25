@@ -65,11 +65,7 @@ fn encrypt_record(
         let pushed = builder.push_frame(frame);
         debug_assert!(pushed);
     }
-    decode_session_record(
-        builder
-            .encrypt(crypto, route, header.connection_id, session_key)
-            .as_slice(),
-    )
+    decode_session_record(builder.encrypt(crypto, route, session_key).as_slice())
 }
 
 #[test]
@@ -362,14 +358,6 @@ fn ik_handshake_round_trip_derives_matching_transport_and_learns_remote() {
     );
     assert_eq!(initiator_final.tx_key, responder_final.rx_key);
     assert_eq!(initiator_final.rx_key, responder_final.tx_key);
-    assert_eq!(
-        initiator_final.tx_connection_id,
-        responder_final.rx_connection_id
-    );
-    assert_eq!(
-        initiator_final.rx_connection_id,
-        responder_final.tx_connection_id
-    );
     assert_eq!(initiator_final.remote_bundle, responder.bundle());
     assert_eq!(responder_final.remote_bundle, initiator.bundle());
     assert_eq!(initiator_final.remote_transport_params, responder_params);
@@ -420,14 +408,6 @@ fn ik_handshake_round_trip_derives_matching_transport_with_bound_responder() {
     );
     assert_eq!(initiator_final.tx_key, responder_final.rx_key);
     assert_eq!(initiator_final.rx_key, responder_final.tx_key);
-    assert_eq!(
-        initiator_final.tx_connection_id,
-        responder_final.rx_connection_id
-    );
-    assert_eq!(
-        initiator_final.rx_connection_id,
-        responder_final.tx_connection_id
-    );
     assert_eq!(initiator_final.remote_bundle, responder.bundle());
     assert_eq!(responder_final.remote_bundle, initiator.bundle());
     assert_eq!(initiator_final.remote_transport_params, responder_params);
@@ -478,14 +458,6 @@ fn kk_handshake_round_trip_derives_matching_transport() {
     );
     assert_eq!(initiator_final.tx_key, responder_final.rx_key);
     assert_eq!(initiator_final.rx_key, responder_final.tx_key);
-    assert_eq!(
-        initiator_final.tx_connection_id,
-        responder_final.rx_connection_id
-    );
-    assert_eq!(
-        initiator_final.rx_connection_id,
-        responder_final.tx_connection_id
-    );
     assert_eq!(initiator_final.remote_bundle, responder.bundle());
     assert_eq!(responder_final.remote_bundle, initiator.bundle());
     assert_eq!(initiator_final.remote_transport_params, responder_params);
@@ -739,14 +711,6 @@ fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
     );
     assert_eq!(initiator_final.tx_key, responder_final.rx_key);
     assert_eq!(initiator_final.rx_key, responder_final.tx_key);
-    assert_eq!(
-        initiator_final.tx_connection_id,
-        responder_final.rx_connection_id
-    );
-    assert_eq!(
-        initiator_final.rx_connection_id,
-        responder_final.tx_connection_id
-    );
     assert_eq!(initiator_final.remote_bundle, responder.bundle());
     assert_eq!(responder_final.remote_bundle, initiator.bundle());
     assert_eq!(initiator_final.remote_transport_params, responder_params);
@@ -754,10 +718,9 @@ fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
 }
 
 #[test]
-fn encrypted_session_record_round_trip_uses_connection_id_header() {
+fn encrypted_session_record_round_trip_authenticates_header() {
     let crypto = SoftwareCrypto;
     let header = SessionHeader {
-        connection_id: ConnectionId([0x44; ConnectionId::SIZE]),
         seq: RecordSeq(varint(11)),
     };
     let session_route = route(1, 2);
@@ -814,21 +777,6 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     .unwrap();
     assert_eq!(decode_session_frames(&decrypted).unwrap(), body);
 
-    let wrong_header = SessionHeader {
-        connection_id: ConnectionId([0x99; ConnectionId::SIZE]),
-        seq: header.seq,
-    };
-    assert_eq!(
-        encrypted::decrypt_record(
-            &crypto,
-            &record_header,
-            &wrong_header,
-            encrypted.clone(),
-            &session_key,
-        ),
-        Err(WireError::DecryptFailed)
-    );
-
     let wrong_record_header = RecordHeader::new(route(2, 1), RecordType::Session);
     assert_eq!(
         encrypted::decrypt_record(
@@ -842,7 +790,6 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     );
 
     let wrong_seq_header = SessionHeader {
-        connection_id: header.connection_id,
         seq: RecordSeq(varint(header.seq.0.into_inner() + 1)),
     };
     assert_eq!(
@@ -965,7 +912,6 @@ fn protocol_record_size_breakdown() {
         &crypto,
         session_route,
         SessionHeader {
-            connection_id: session.tx_connection_id,
             seq: RecordSeq(varint(1)),
         },
         &session.tx_key,
@@ -975,7 +921,6 @@ fn protocol_record_size_breakdown() {
         &crypto,
         session_route,
         SessionHeader {
-            connection_id: session.tx_connection_id,
             seq: RecordSeq(varint(2)),
         },
         &session.tx_key,
@@ -987,7 +932,6 @@ fn protocol_record_size_breakdown() {
         &crypto,
         session_route,
         SessionHeader {
-            connection_id: session.tx_connection_id,
             seq: RecordSeq(varint(3)),
         },
         &session.tx_key,
@@ -997,7 +941,6 @@ fn protocol_record_size_breakdown() {
         &crypto,
         session_route,
         SessionHeader {
-            connection_id: session.tx_connection_id,
             seq: RecordSeq(varint(4)),
         },
         &session.tx_key,
@@ -1013,7 +956,6 @@ fn protocol_record_size_breakdown() {
         &crypto,
         session_route,
         SessionHeader {
-            connection_id: session.tx_connection_id,
             seq: RecordSeq(varint(5)),
         },
         &session.tx_key,

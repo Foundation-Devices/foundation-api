@@ -224,11 +224,9 @@ pub fn should_ignore_inbound(
 ) -> bool {
     match &fsm.state.link {
         LinkState::Idle => false,
-        LinkState::Connected(_) => super::is_connected_replay(
-            fsm,
-            message.meta.handshake_id,
-            route.sender,
-        ),
+        LinkState::Connected(_) => {
+            super::is_connected_replay(fsm, message.meta.handshake_id, route.sender)
+        }
         LinkState::IkInitiator(_) | LinkState::KkInitiator(_) | LinkState::XxResponder(_) => true,
         LinkState::XxInitiator(state) => {
             if state.handshake.pairing_id(crypto) != message.pairing_id {

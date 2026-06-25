@@ -1,7 +1,7 @@
 use crate::{
-    codec, derive_qid, ByteSlice, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair,
-    MlKemPublicKey, Nonce, PeerBundle, QlCrypto, RouteHeader, SessionKey, WireDecode, WireEncode,
-    WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
+    codec, derive_qid, ByteSlice, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey,
+    Nonce, PeerBundle, QlCrypto, RouteHeader, SessionKey, WireDecode, WireEncode, WireError,
+    ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 mod ik;
@@ -22,7 +22,6 @@ const SHA256_BLOCK_LEN: usize = 64;
 const PROTOCOL_IK: &[u8] = b"ql-wire:pq-ik:v1";
 const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
-const CONNECTION_ID_DOMAIN: &[u8] = b"ql-wire:conn-id:v1";
 const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,8 +112,6 @@ impl<B: ByteSlice> codec::WireDecode<B> for EncryptedPeerBundle {
 pub struct FinalizedHandshake {
     pub tx_key: SessionKey,
     pub rx_key: SessionKey,
-    pub tx_connection_id: ConnectionId,
-    pub rx_connection_id: ConnectionId,
     pub handshake_hash: [u8; 32],
     pub remote_bundle: PeerBundle,
     /// Transport parameters advertised by the remote peer
@@ -476,33 +473,13 @@ fn finalize_handshake(
 ) -> FinalizedHandshake {
     let handshake_hash = symmetric.handshake_hash;
     let (tx_key, rx_key) = symmetric.split_for_role(crypto, role);
-    let (initiator_rx, responder_rx) = derive_connection_ids(crypto, &handshake_hash);
-    let (tx_connection_id, rx_connection_id) = match role {
-        Role::Initiator => (responder_rx, initiator_rx),
-        Role::Responder => (initiator_rx, responder_rx),
-    };
     FinalizedHandshake {
         tx_key,
         rx_key,
-        tx_connection_id,
-        rx_connection_id,
         handshake_hash,
         remote_bundle,
         remote_transport_params,
     }
-}
-
-fn derive_connection_ids(
-    crypto: &impl QlCrypto,
-    handshake_hash: &[u8; 32],
-) -> (ConnectionId, ConnectionId) {
-    let initiator = crypto.sha256(&[CONNECTION_ID_DOMAIN, handshake_hash, b"initiator-rx"]);
-    let responder = crypto.sha256(&[CONNECTION_ID_DOMAIN, handshake_hash, b"responder-rx"]);
-    let mut initiator_rx = [0u8; ConnectionId::SIZE];
-    let mut responder_rx = [0u8; ConnectionId::SIZE];
-    initiator_rx.copy_from_slice(&initiator[..ConnectionId::SIZE]);
-    responder_rx.copy_from_slice(&responder[..ConnectionId::SIZE]);
-    (ConnectionId(initiator_rx), ConnectionId(responder_rx))
 }
 
 fn hkdf2(

@@ -2,8 +2,8 @@ use bytes::BufMut;
 
 use super::{RecordAck, SessionClose, SessionFrame, StreamData, StreamReset, StreamWindow};
 use crate::{
-    BufView, ConnectionId, Nonce, QlCrypto, RecordHeader, RecordSeq, RecordType, RouteHeader,
-    SessionHeader, SessionKey, WireEncode,
+    BufView, Nonce, QlCrypto, RecordHeader, RecordSeq, RecordType, RouteHeader, SessionHeader,
+    SessionKey, WireEncode,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,16 +15,12 @@ pub struct SessionRecordBuilder {
 }
 
 impl SessionRecordBuilder {
-    pub const MIN_CAPACITY: usize = RecordHeader::WIRE_SIZE
-        + ConnectionId::SIZE
-        + RecordSeq::MAX_ENCODED_LEN
-        + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
+    pub const MIN_CAPACITY: usize =
+        RecordHeader::WIRE_SIZE + RecordSeq::MAX_ENCODED_LEN + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
 
     pub fn new(seq: RecordSeq, max_capacity: usize) -> Self {
-        let prefix_len = RecordHeader::WIRE_SIZE
-            + ConnectionId::SIZE
-            + seq.encoded_len()
-            + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
+        let prefix_len =
+            RecordHeader::WIRE_SIZE + seq.encoded_len() + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
         assert!(max_capacity >= prefix_len);
         Self {
             seq,
@@ -107,15 +103,11 @@ impl SessionRecordBuilder {
         mut self,
         crypto: &impl QlCrypto,
         route: RouteHeader,
-        connection_id: ConnectionId,
         session_key: &SessionKey,
     ) -> Vec<u8> {
         self.ensure_prefix_capacity(0);
         let record_header = RecordHeader::new(route, RecordType::Session);
-        let header = SessionHeader {
-            connection_id,
-            seq: self.seq,
-        };
+        let header = SessionHeader { seq: self.seq };
         let aad = header.aad(route);
         let nonce = Nonce::from_counter(self.seq.0.into_inner());
         let auth = crypto.aes256_gcm_encrypt(

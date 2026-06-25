@@ -2,9 +2,8 @@ use std::time::Instant;
 
 use ql_common::QID;
 use ql_wire::{
-    ConnectionId, EphemeralPublicKey, HandshakeId, HandshakeMeta, IkHandshake, KkHandshake,
-    PairingToken, PeerBundle, QlHandshakeRecord, RouteHeader, SessionKey, TransportParams,
-    XxHandshake,
+    EphemeralPublicKey, HandshakeId, HandshakeMeta, IkHandshake, KkHandshake, PairingToken,
+    PeerBundle, QlHandshakeRecord, RouteHeader, SessionKey, TransportParams, XxHandshake,
 };
 
 use crate::{session::SessionFsm, NoSessionError, PeerStatus};
@@ -23,8 +22,6 @@ pub struct SessionTransport {
     pub remote_qid: QID,
     pub tx_key: SessionKey,
     pub rx_key: SessionKey,
-    pub tx_connection_id: ConnectionId,
-    pub rx_connection_id: ConnectionId,
     pub remote_transport_params: TransportParams,
 }
 

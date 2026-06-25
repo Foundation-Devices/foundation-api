@@ -11,7 +11,6 @@ pub enum ReceiveError {
     InvalidRecordVersion,
     InvalidHandshakeRecord(WireError),
     InvalidSessionRecord(WireError),
-    InvalidSessionConnectionId,
     InvalidSessionPayload(WireError),
     InvalidIkHandshake(WireError),
     InvalidKkHandshake(WireError),
@@ -36,7 +35,6 @@ impl Display for ReceiveError {
                 write!(f, "invalid handshake record: {error}")
             }
             Self::InvalidSessionRecord(error) => write!(f, "invalid session record: {error}"),
-            Self::InvalidSessionConnectionId => f.write_str("invalid session connection id"),
             Self::InvalidSessionPayload(error) => write!(f, "invalid session payload: {error}"),
             Self::InvalidIkHandshake(error) => write!(f, "invalid ik handshake: {error}"),
             Self::InvalidKkHandshake(error) => write!(f, "invalid kk handshake: {error}"),

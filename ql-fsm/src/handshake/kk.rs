@@ -119,11 +119,9 @@ pub fn handle_kk2(
 pub fn should_ignore_inbound(fsm: &QlFsm, route: RouteHeader, message: &Kk1) -> bool {
     match &fsm.state.link {
         LinkState::Idle | LinkState::XxInitiator(_) | LinkState::XxResponder(_) => false,
-        LinkState::Connected(_) => super::is_connected_replay(
-            fsm,
-            message.meta.handshake_id,
-            route.sender,
-        ),
+        LinkState::Connected(_) => {
+            super::is_connected_replay(fsm, message.meta.handshake_id, route.sender)
+        }
         LinkState::IkInitiator(_) => true,
         LinkState::KkInitiator(state) => {
             if fsm.state.peer.as_ref().map(|peer| peer.qid) != Some(route.sender) {

@@ -148,8 +148,6 @@ pub fn establish_session(
         remote_qid: finalized.remote_bundle.qid,
         tx_key: finalized.tx_key,
         rx_key: finalized.rx_key,
-        tx_connection_id: finalized.tx_connection_id,
-        rx_connection_id: finalized.rx_connection_id,
         remote_transport_params: finalized.remote_transport_params,
     };
     finish_handshake(fsm, handshake_id, transport, finalized.remote_bundle)
@@ -165,14 +163,11 @@ fn local_start_wins(local: &EphemeralPublicKey, inbound: &EphemeralPublicKey) ->
     local.mlkem_public_key.as_bytes() <= inbound.mlkem_public_key.as_bytes()
 }
 
-fn is_connected_replay(
-    fsm: &QlFsm,
-    handshake_id: HandshakeId,
-    sender: QID,
-) -> bool {
+fn is_connected_replay(fsm: &QlFsm, handshake_id: HandshakeId, sender: QID) -> bool {
     let LinkState::Connected(connected) = &fsm.state.link else {
         return false;
     };
 
-    connected.handshake_id == handshake_id && fsm.state.peer.as_ref().map(|peer| peer.qid) == Some(sender)
+    connected.handshake_id == handshake_id
+        && fsm.state.peer.as_ref().map(|peer| peer.qid) == Some(sender)
 }
