@@ -89,7 +89,6 @@ impl Error for NoSessionError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamError {
     MissingStream,
-    NotWritable,
     NoSession,
 }
 
@@ -97,7 +96,6 @@ impl Display for StreamError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::MissingStream => "missing stream",
-            Self::NotWritable => "stream is not writable",
             Self::NoSession => "no session",
         };
         f.write_str(message)

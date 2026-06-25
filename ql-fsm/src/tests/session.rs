@@ -30,9 +30,7 @@ fn write_stream_bytes(
 ) -> Result<usize, StreamError> {
     let mut bytes = Bytes::copy_from_slice(bytes);
     let mut stream = fsm.stream(stream_id)?;
-    let Some(mut writer) = stream.writer() else {
-        return Err(StreamError::NotWritable);
-    };
+    let mut writer = stream.writer().expect("stream is not writable");
     Ok(writer.write(&mut bytes))
 }
 
