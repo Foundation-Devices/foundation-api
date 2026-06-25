@@ -1,9 +1,7 @@
-use ql_common::QID;
-
 use crate::{
     codec, derive_qid, ByteSlice, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair,
-    MlKemPublicKey, Nonce, PeerBundle, QlCrypto, SessionKey, WireDecode, WireEncode, WireError,
-    ENCRYPTED_MESSAGE_AUTH_SIZE,
+    MlKemPublicKey, Nonce, PeerBundle, QlCrypto, RouteHeader, SessionKey, WireDecode, WireEncode,
+    WireError, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 mod ik;
@@ -26,36 +24,6 @@ const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
 const CONNECTION_ID_DOMAIN: &[u8] = b"ql-wire:conn-id:v1";
 const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HandshakeHeader {
-    pub sender: QID,
-    pub recipient: QID,
-}
-
-impl HandshakeHeader {
-    pub const WIRE_SIZE: usize = QID::SIZE * 2;
-}
-
-impl WireEncode for HandshakeHeader {
-    fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.sender.encode(out);
-        self.recipient.encode(out);
-    }
-}
-
-impl<B: ByteSlice> codec::WireDecode<B> for HandshakeHeader {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self {
-            sender: reader.decode()?,
-            recipient: reader.decode()?,
-        })
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EphemeralPublicKey {
@@ -361,7 +329,7 @@ fn mix_hash_ephemeral(
 fn mix_hash_routed_handshake(
     symmetric: &mut SymmetricState,
     crypto: &impl QlCrypto,
-    header: HandshakeHeader,
+    header: RouteHeader,
     kind: HandshakeKind,
     meta: HandshakeMeta,
     transport_params: TransportParams,
@@ -379,7 +347,7 @@ fn mix_hash_routed_handshake(
 fn mix_hash_pairing_handshake(
     symmetric: &mut SymmetricState,
     crypto: &impl QlCrypto,
-    header: HandshakeHeader,
+    header: RouteHeader,
     kind: HandshakeKind,
     meta: HandshakeMeta,
     pairing_id: PairingId,

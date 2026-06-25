@@ -105,6 +105,7 @@ impl Harness {
         harness.a.fsm.state.link = LinkState::Connected(ConnectedState {
             handshake_id: HandshakeId(0),
             transport: SessionTransport {
+                remote_qid: harness.b.fsm.identity.qid,
                 tx_key: a_to_b_key.clone(),
                 rx_key: b_to_a_key.clone(),
                 tx_connection_id: a_to_b_conn,
@@ -122,6 +123,7 @@ impl Harness {
         harness.b.fsm.state.link = LinkState::Connected(ConnectedState {
             handshake_id: HandshakeId(0),
             transport: SessionTransport {
+                remote_qid: harness.a.fsm.identity.qid,
                 tx_key: b_to_a_key,
                 rx_key: a_to_b_key,
                 tx_connection_id: b_to_a_conn,
@@ -338,10 +340,11 @@ fn decrypt_record(
     record: &[u8],
     session_key: &SessionKey,
 ) -> (ql_wire::SessionHeader, Vec<ql_wire::SessionFrame<Vec<u8>>>) {
-    let (_header, record) =
+    let (header, record) =
         ql_wire::decode_record::<ql_wire::QlSessionRecord<_>, _>(record).unwrap();
     let plaintext = ql_wire::decrypt_record(
         crypto,
+        &header,
         &record.header,
         record.payload.into_owned(),
         session_key,

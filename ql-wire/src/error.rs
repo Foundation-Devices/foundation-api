@@ -3,7 +3,7 @@ use core::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
     InvalidPayload,
-    InvalidHandshakeHeader,
+    InvalidRouteHeader,
     InvalidHandshakeMeta,
     InvalidPairingId,
     InvalidRemoteBundle,
@@ -17,7 +17,7 @@ impl fmt::Display for WireError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::InvalidPayload => "invalid payload",
-            Self::InvalidHandshakeHeader => "invalid handshake header",
+            Self::InvalidRouteHeader => "invalid route header",
             Self::InvalidHandshakeMeta => "invalid handshake meta",
             Self::InvalidPairingId => "invalid pairing id",
             Self::InvalidRemoteBundle => "invalid remote bundle",

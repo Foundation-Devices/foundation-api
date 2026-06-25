@@ -968,7 +968,7 @@ proptest_crate::proptest! {
         let config = QlFsmConfig {
             session_record_ack_delay: Duration::from_millis(1),
             session_record_retransmit_timeout: Duration::from_millis(10),
-            session_record_max_size: 96,
+            session_record_max_size: ql_wire::SessionRecordBuilder::MIN_CAPACITY + 94,
             session_pending_ack_range_limit: 512,
             ..QlFsmConfig::default()
         };

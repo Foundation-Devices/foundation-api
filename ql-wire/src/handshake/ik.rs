@@ -3,7 +3,7 @@ use super::{
     finalize_handshake, generate_ephemeral_keypair, init_ik_symmetric, initialize_handshake_meta,
     mix_hash_ephemeral, mix_hash_routed_handshake, require_handshake_meta,
     EncryptedMlKemCiphertext, EncryptedPeerBundle, EphemeralKeyPair, EphemeralPublicKey,
-    FinalizedHandshake, HandshakeHeader, Role, SymmetricState, TransportParams,
+    FinalizedHandshake, Role, RouteHeader, SymmetricState, TransportParams,
 };
 use crate::{
     codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto,
@@ -12,7 +12,6 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ik1 {
-    pub header: HandshakeHeader,
     pub meta: HandshakeMeta,
     pub transport_params: TransportParams,
     pub skem_ciphertext: MlKemCiphertext,
@@ -23,7 +22,6 @@ pub struct Ik1 {
 impl<B: ByteSlice> codec::WireDecode<B> for Ik1 {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            header: reader.decode()?,
             meta: reader.decode()?,
             transport_params: reader.decode()?,
             skem_ciphertext: reader.decode()?,
@@ -35,8 +33,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for Ik1 {
 
 impl WireEncode for Ik1 {
     fn encoded_len(&self) -> usize {
-        HandshakeHeader::WIRE_SIZE
-            + HandshakeMeta::WIRE_SIZE
+        HandshakeMeta::WIRE_SIZE
             + TransportParams::WIRE_SIZE
             + MlKemCiphertext::SIZE
             + EphemeralPublicKey::WIRE_SIZE
@@ -44,7 +41,6 @@ impl WireEncode for Ik1 {
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.header.encode(out);
         self.meta.encode(out);
         self.transport_params.encode(out);
         self.skem_ciphertext.encode(out);
@@ -55,7 +51,6 @@ impl WireEncode for Ik1 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ik2 {
-    pub header: HandshakeHeader,
     pub meta: HandshakeMeta,
     pub transport_params: TransportParams,
     pub ekem_ciphertext: MlKemCiphertext,
@@ -63,8 +58,7 @@ pub struct Ik2 {
 }
 
 impl Ik2 {
-    pub const WIRE_SIZE: usize = HandshakeHeader::WIRE_SIZE
-        + HandshakeMeta::WIRE_SIZE
+    pub const WIRE_SIZE: usize = HandshakeMeta::WIRE_SIZE
         + TransportParams::WIRE_SIZE
         + MlKemCiphertext::SIZE
         + EncryptedMlKemCiphertext::WIRE_SIZE;
@@ -73,7 +67,6 @@ impl Ik2 {
 impl<B: ByteSlice> codec::WireDecode<B> for Ik2 {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            header: reader.decode()?,
             meta: reader.decode()?,
             transport_params: reader.decode()?,
             ekem_ciphertext: reader.decode()?,
@@ -88,7 +81,6 @@ impl WireEncode for Ik2 {
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.header.encode(out);
         self.meta.encode(out);
         self.transport_params.encode(out);
         self.ekem_ciphertext.encode(out);
@@ -166,15 +158,15 @@ impl IkHandshake {
         self.step == IkStep::Done
     }
 
-    fn outbound_header(&self) -> Result<HandshakeHeader, WireError> {
+    fn outbound_header(&self) -> Result<RouteHeader, WireError> {
         let remote_bundle = self.remote_bundle.as_ref().ok_or(WireError::InvalidState)?;
-        Ok(HandshakeHeader {
+        Ok(RouteHeader {
             sender: self.local.qid,
             recipient: remote_bundle.qid,
         })
     }
 
-    fn ensure_inbound_recipient(&self, header: HandshakeHeader) -> Result<(), WireError> {
+    fn ensure_inbound_recipient(&self, header: RouteHeader) -> Result<(), WireError> {
         if header.recipient == self.local.qid {
             Ok(())
         } else {
@@ -182,7 +174,7 @@ impl IkHandshake {
         }
     }
 
-    fn ensure_known_remote_sender(&self, header: HandshakeHeader) -> Result<(), WireError> {
+    fn ensure_known_remote_sender(&self, header: RouteHeader) -> Result<(), WireError> {
         if let Some(remote_bundle) = self.remote_bundle.as_ref() {
             if header.sender != remote_bundle.qid {
                 return Err(WireError::InvalidPayload);
@@ -225,7 +217,6 @@ impl IkHandshake {
         self.local_ephemeral = Some(local_ephemeral);
         self.step = IkStep::Recv2;
         Ok(Ik1 {
-            header,
             meta,
             transport_params: self.local_transport_params,
             skem_ciphertext,
@@ -271,7 +262,6 @@ impl IkHandshake {
 
         self.step = IkStep::Done;
         Ok(Ik2 {
-            header,
             meta,
             transport_params: self.local_transport_params,
             ekem_ciphertext,
@@ -279,17 +269,22 @@ impl IkHandshake {
         })
     }
 
-    pub fn read_1(&mut self, crypto: &impl QlCrypto, message: &Ik1) -> Result<(), WireError> {
+    pub fn read_1(
+        &mut self,
+        crypto: &impl QlCrypto,
+        header: RouteHeader,
+        message: &Ik1,
+    ) -> Result<(), WireError> {
         if self.step != IkStep::Recv1 {
             return Err(WireError::InvalidState);
         }
         initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
-        self.ensure_inbound_recipient(message.header)?;
-        self.ensure_known_remote_sender(message.header)?;
+        self.ensure_inbound_recipient(header)?;
+        self.ensure_known_remote_sender(header)?;
         mix_hash_routed_handshake(
             &mut self.symmetric,
             crypto,
-            message.header,
+            header,
             HandshakeKind::Ik1,
             message.meta,
             message.transport_params,
@@ -306,7 +301,7 @@ impl IkHandshake {
 
         let remote_bundle =
             decrypt_peer_bundle(crypto, &mut self.symmetric, &message.static_bundle)?;
-        if remote_bundle.qid != message.header.sender {
+        if remote_bundle.qid != header.sender {
             return Err(WireError::InvalidPayload);
         }
         match self.remote_bundle.as_ref() {
@@ -321,17 +316,22 @@ impl IkHandshake {
         Ok(())
     }
 
-    pub fn read_2(&mut self, crypto: &impl QlCrypto, message: &Ik2) -> Result<(), WireError> {
+    pub fn read_2(
+        &mut self,
+        crypto: &impl QlCrypto,
+        header: RouteHeader,
+        message: &Ik2,
+    ) -> Result<(), WireError> {
         if self.step != IkStep::Recv2 {
             return Err(WireError::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
-        self.ensure_inbound_recipient(message.header)?;
-        self.ensure_known_remote_sender(message.header)?;
+        self.ensure_inbound_recipient(header)?;
+        self.ensure_known_remote_sender(header)?;
         mix_hash_routed_handshake(
             &mut self.symmetric,
             crypto,
-            message.header,
+            header,
             HandshakeKind::Ik2,
             message.meta,
             message.transport_params,

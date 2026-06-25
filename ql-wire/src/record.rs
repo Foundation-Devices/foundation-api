@@ -2,25 +2,21 @@ use crate::{
     codec,
     encrypted_message::EncryptedMessage,
     handshake::{Ik1, Ik2, Kk1, Kk2, Xx1, Xx2, Xx3, Xx4},
-    ByteSlice, SessionHeader, WireDecode, WireEncode, WireError, QL_WIRE_VERSION,
+    ByteSlice, RouteHeader, SessionHeader, WireDecode, WireEncode, WireError, QL_WIRE_VERSION,
 };
 
-pub fn encode_record<W, T>(out: &mut W, record_type: RecordType, body: &T)
+pub fn encode_record<W, T>(out: &mut W, header: RecordHeader, body: &T)
 where
     W: bytes::BufMut + ?Sized,
     T: WireEncode + ?Sized,
 {
-    RecordHeader {
-        version: QL_WIRE_VERSION,
-        record_type,
-    }
-    .encode(out);
+    header.encode(out);
     body.encode(out);
 }
 
-pub fn encode_record_vec<T: WireEncode + ?Sized>(record_type: RecordType, body: &T) -> Vec<u8> {
+pub fn encode_record_vec<T: WireEncode + ?Sized>(header: RecordHeader, body: &T) -> Vec<u8> {
     let mut out = Vec::with_capacity(RecordHeader::WIRE_SIZE + body.encoded_len());
-    encode_record(&mut out, record_type, body);
+    encode_record(&mut out, header, body);
     out
 }
 
@@ -36,17 +32,27 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordHeader {
     pub version: u8,
+    pub route: RouteHeader,
     pub record_type: RecordType,
 }
 
 impl RecordHeader {
-    pub const WIRE_SIZE: usize = size_of::<u8>() + size_of::<u8>();
+    pub const WIRE_SIZE: usize = size_of::<u8>() + RouteHeader::WIRE_SIZE + size_of::<u8>();
+
+    pub fn new(route: RouteHeader, record_type: RecordType) -> Self {
+        Self {
+            version: QL_WIRE_VERSION,
+            route,
+            record_type,
+        }
+    }
 }
 
 impl<B: ByteSlice> WireDecode<B> for RecordHeader {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
             version: reader.decode()?,
+            route: reader.decode()?,
             record_type: reader.decode()?,
         })
     }
@@ -59,6 +65,7 @@ impl WireEncode for RecordHeader {
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
         out.put_u8(self.version);
+        self.route.encode(out);
         self.record_type.encode(out);
     }
 }

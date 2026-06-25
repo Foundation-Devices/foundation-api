@@ -170,11 +170,12 @@ impl<B: ByteSlice> Iterator for SessionFrameIter<B> {
 
 pub fn decrypt_record<B: AsMut<[u8]>>(
     crypto: &impl QlCrypto,
+    record_header: &crate::RecordHeader,
     header: &SessionHeader,
     encrypted: EncryptedMessage<B>,
     session_key: &SessionKey,
 ) -> Result<B, WireError> {
-    let aad = header.aad();
+    let aad = header.aad(record_header.route);
     let nonce = Nonce::from_counter(header.seq.0.into_inner());
     let mut ciphertext = encrypted.ciphertext;
     if !crypto.aes256_gcm_decrypt(

@@ -13,24 +13,12 @@ fn decode_session_record(bytes: &[u8]) -> QlSessionRecord<Vec<u8>> {
     record.into_owned()
 }
 
-fn qid(byte: u8) -> QID {
-    QID([byte; QID::SIZE])
-}
-
 fn varint(value: u64) -> VarInt {
     VarInt::from_u64(value).unwrap()
 }
 
-fn record_seq(value: u64) -> RecordSeq {
-    RecordSeq(varint(value))
-}
-
 fn record_ack_range(start: u64, end: u64) -> RangeInclusive<RecordSeq> {
-    record_seq(start)..=record_seq(end)
-}
-
-fn stream_id(value: u64) -> StreamId {
-    StreamId(varint(value))
+    RecordSeq(varint(start))..=RecordSeq(varint(end))
 }
 
 fn handshake_meta(id: u32) -> HandshakeMeta {
@@ -45,30 +33,29 @@ fn handshake_transport_params(window: u32) -> TransportParams {
     }
 }
 
-fn handshake_header(sender: u8, recipient: u8) -> HandshakeHeader {
-    HandshakeHeader {
-        sender: qid(sender),
-        recipient: qid(recipient),
+fn route(sender: u8, recipient: u8) -> RouteHeader {
+    RouteHeader {
+        sender: QID([sender; QID::SIZE]),
+        recipient: QID([recipient; QID::SIZE]),
     }
 }
 
-fn pairing_token(byte: u8) -> PairingToken {
-    PairingToken([byte; PairingToken::SIZE])
-}
-
-fn pairing_id(byte: u8) -> PairingId {
-    PairingId([byte; PairingId::SIZE])
-}
-
-fn xx_header(sender: u8, recipient: u8) -> HandshakeHeader {
-    HandshakeHeader {
-        sender: qid(sender),
-        recipient: qid(recipient),
-    }
+fn identity_routes(a: &QlIdentity, b: &QlIdentity) -> (RouteHeader, RouteHeader) {
+    (
+        RouteHeader {
+            sender: a.qid,
+            recipient: b.qid,
+        },
+        RouteHeader {
+            sender: b.qid,
+            recipient: a.qid,
+        },
+    )
 }
 
 fn encrypt_record(
     crypto: &impl QlCrypto,
+    route: RouteHeader,
     header: SessionHeader,
     session_key: &SessionKey,
     body: &[SessionFrame<Vec<u8>>],
@@ -80,7 +67,7 @@ fn encrypt_record(
     }
     decode_session_record(
         builder
-            .encrypt(crypto, header.connection_id, session_key)
+            .encrypt(crypto, route, header.connection_id, session_key)
             .as_slice(),
     )
 }
@@ -115,7 +102,6 @@ fn identity_name_validation() {
 #[test]
 fn handshake_record_round_trip_supports_ik_kk_and_xx() {
     let ik = QlHandshakeRecord::Ik1(Ik1 {
-        header: handshake_header(1, 2),
         meta: handshake_meta(1),
         transport_params: handshake_transport_params(65_536),
         skem_ciphertext: MlKemCiphertext::new(Box::new([7; MlKemCiphertext::SIZE])),
@@ -124,18 +110,19 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
         },
         static_bundle: EncryptedPeerBundle(vec![13; 64].into_boxed_slice()),
     });
-    let ik_encoded = encode_record_vec(RecordType::Handshake, &ik);
+    let ik_route = route(1, 2);
+    let ik_encoded = encode_record_vec(RecordHeader::new(ik_route, RecordType::Handshake), &ik);
     assert_eq!(
         RecordHeader::decode_bytes(ik_encoded.as_slice()).unwrap(),
         RecordHeader {
             version: QL_WIRE_VERSION,
+            route: ik_route,
             record_type: RecordType::Handshake,
         }
     );
     assert_eq!(decode_handshake_record(ik_encoded.as_slice()), ik);
 
     let kk = QlHandshakeRecord::Kk1(Kk1 {
-        header: handshake_header(1, 2),
         meta: handshake_meta(2),
         transport_params: handshake_transport_params(131_072),
         skem_ciphertext: MlKemCiphertext::new(Box::new([11; MlKemCiphertext::SIZE])),
@@ -143,30 +130,33 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
             mlkem_public_key: MlKemPublicKey::new(Box::new([15; MlKemPublicKey::SIZE])),
         },
     });
-    let kk_encoded = encode_record_vec(RecordType::Handshake, &kk);
+    let kk_route = route(1, 2);
+    let kk_encoded = encode_record_vec(RecordHeader::new(kk_route, RecordType::Handshake), &kk);
     assert_eq!(
         RecordHeader::decode_bytes(kk_encoded.as_slice()).unwrap(),
         RecordHeader {
             version: QL_WIRE_VERSION,
+            route: kk_route,
             record_type: RecordType::Handshake,
         }
     );
     assert_eq!(decode_handshake_record(kk_encoded.as_slice()), kk);
 
     let xx = QlHandshakeRecord::Xx1(Xx1 {
-        header: xx_header(1, 2),
         meta: handshake_meta(3),
-        pairing_id: pairing_id(3),
+        pairing_id: PairingId([3; PairingId::SIZE]),
         transport_params: handshake_transport_params(196_608),
         ephemeral: EphemeralPublicKey {
             mlkem_public_key: MlKemPublicKey::new(Box::new([17; MlKemPublicKey::SIZE])),
         },
     });
-    let xx_encoded = encode_record_vec(RecordType::Handshake, &xx);
+    let xx_route = route(1, 2);
+    let xx_encoded = encode_record_vec(RecordHeader::new(xx_route, RecordType::Handshake), &xx);
     assert_eq!(
         RecordHeader::decode_bytes(xx_encoded.as_slice()).unwrap(),
         RecordHeader {
             version: QL_WIRE_VERSION,
+            route: xx_route,
             record_type: RecordType::Handshake,
         }
     );
@@ -177,6 +167,7 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
 fn ik_handshake_rejects_tampered_handshake_meta() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
+    let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
     let mut initiator_state = IkHandshake::new_initiator(
         &crypto,
@@ -190,7 +181,9 @@ fn ik_handshake_rejects_tampered_handshake_meta() {
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(77))
         .unwrap();
-    responder_state.read_1(&crypto, &m1).unwrap();
+    responder_state
+        .read_1(&crypto, initiator_to_responder, &m1)
+        .unwrap();
 
     let mut m2 = responder_state
         .write_2(&crypto, handshake_meta(77))
@@ -198,7 +191,7 @@ fn ik_handshake_rejects_tampered_handshake_meta() {
     m2.meta.handshake_id = HandshakeId(78);
 
     assert_eq!(
-        initiator_state.read_2(&crypto, &m2),
+        initiator_state.read_2(&crypto, responder_to_initiator, &m2),
         Err(WireError::InvalidHandshakeMeta)
     );
 }
@@ -207,6 +200,7 @@ fn ik_handshake_rejects_tampered_handshake_meta() {
 fn kk_handshake_rejects_tampered_handshake_header() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
+    let (initiator_to_responder, _) = identity_routes(&initiator, &responder);
 
     let mut initiator_state = KkHandshake::new_initiator(
         &crypto,
@@ -224,15 +218,17 @@ fn kk_handshake_rejects_tampered_handshake_header() {
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(88))
         .unwrap();
-    responder_state.read_1(&crypto, &m1).unwrap();
+    responder_state
+        .read_1(&crypto, initiator_to_responder, &m1)
+        .unwrap();
 
-    let mut m2 = responder_state
+    let m2 = responder_state
         .write_2(&crypto, handshake_meta(88))
         .unwrap();
-    m2.header = handshake_header(9, 1);
+    let tampered_route = route(9, 1);
 
     assert_eq!(
-        initiator_state.read_2(&crypto, &m2),
+        initiator_state.read_2(&crypto, tampered_route, &m2),
         Err(WireError::InvalidPayload)
     );
 }
@@ -241,6 +237,7 @@ fn kk_handshake_rejects_tampered_handshake_header() {
 fn ik_handshake_rejects_tampered_transport_params() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
+    let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
     let mut initiator_state = IkHandshake::new_initiator(
         &crypto,
@@ -254,7 +251,9 @@ fn ik_handshake_rejects_tampered_transport_params() {
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(89))
         .unwrap();
-    responder_state.read_1(&crypto, &m1).unwrap();
+    responder_state
+        .read_1(&crypto, initiator_to_responder, &m1)
+        .unwrap();
 
     let mut m2 = responder_state
         .write_2(&crypto, handshake_meta(89))
@@ -262,7 +261,7 @@ fn ik_handshake_rejects_tampered_transport_params() {
     m2.transport_params.initial_stream_receive_window += 1;
 
     assert_eq!(
-        initiator_state.read_2(&crypto, &m2),
+        initiator_state.read_2(&crypto, responder_to_initiator, &m2),
         Err(WireError::DecryptFailed)
     );
 }
@@ -271,6 +270,7 @@ fn ik_handshake_rejects_tampered_transport_params() {
 fn ik_handshake_rejects_tampered_handshake_header() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
+    let (mut initiator_to_responder, _) = identity_routes(&initiator, &responder);
 
     let mut initiator_state = IkHandshake::new_initiator(
         &crypto,
@@ -281,13 +281,13 @@ fn ik_handshake_rejects_tampered_handshake_header() {
     let mut responder_state =
         IkHandshake::new_responder(&crypto, responder, None, TransportParams::default());
 
-    let mut m1 = initiator_state
+    let m1 = initiator_state
         .write_1(&crypto, handshake_meta(90))
         .unwrap();
-    m1.header.sender = qid(9);
+    initiator_to_responder.sender = QID([9; QID::SIZE]);
 
     assert_eq!(
-        responder_state.read_1(&crypto, &m1),
+        responder_state.read_1(&crypto, initiator_to_responder, &m1),
         Err(WireError::DecryptFailed)
     );
 }
@@ -297,6 +297,7 @@ fn ik_handshake_rejects_bound_remote_bundle_mismatch() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
     let bogus = generate_identity(&crypto, "bogus").unwrap();
+    let (initiator_to_responder, _) = identity_routes(&initiator, &responder);
 
     let mut initiator_state = IkHandshake::new_initiator(
         &crypto,
@@ -316,7 +317,7 @@ fn ik_handshake_rejects_bound_remote_bundle_mismatch() {
         .unwrap();
 
     assert_eq!(
-        responder_state.read_1(&crypto, &m1),
+        responder_state.read_1(&crypto, initiator_to_responder, &m1),
         Err(WireError::InvalidPayload)
     );
 }
@@ -325,6 +326,7 @@ fn ik_handshake_rejects_bound_remote_bundle_mismatch() {
 fn ik_handshake_round_trip_derives_matching_transport_and_learns_remote() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
+    let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
     let initiator_params = handshake_transport_params(4096);
     let responder_params = handshake_transport_params(8192);
@@ -340,12 +342,16 @@ fn ik_handshake_round_trip_derives_matching_transport_and_learns_remote() {
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(11))
         .unwrap();
-    responder_state.read_1(&crypto, &m1).unwrap();
+    responder_state
+        .read_1(&crypto, initiator_to_responder, &m1)
+        .unwrap();
 
     let m2 = responder_state
         .write_2(&crypto, handshake_meta(11))
         .unwrap();
-    initiator_state.read_2(&crypto, &m2).unwrap();
+    initiator_state
+        .read_2(&crypto, responder_to_initiator, &m2)
+        .unwrap();
 
     let initiator_final = initiator_state.finalize(&crypto).unwrap();
     let responder_final = responder_state.finalize(&crypto).unwrap();
@@ -374,6 +380,7 @@ fn ik_handshake_round_trip_derives_matching_transport_and_learns_remote() {
 fn ik_handshake_round_trip_derives_matching_transport_with_bound_responder() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
+    let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
     let initiator_params = handshake_transport_params(16_384);
     let responder_params = handshake_transport_params(32_768);
@@ -393,12 +400,16 @@ fn ik_handshake_round_trip_derives_matching_transport_with_bound_responder() {
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(12))
         .unwrap();
-    responder_state.read_1(&crypto, &m1).unwrap();
+    responder_state
+        .read_1(&crypto, initiator_to_responder, &m1)
+        .unwrap();
 
     let m2 = responder_state
         .write_2(&crypto, handshake_meta(12))
         .unwrap();
-    initiator_state.read_2(&crypto, &m2).unwrap();
+    initiator_state
+        .read_2(&crypto, responder_to_initiator, &m2)
+        .unwrap();
 
     let initiator_final = initiator_state.finalize(&crypto).unwrap();
     let responder_final = responder_state.finalize(&crypto).unwrap();
@@ -427,6 +438,7 @@ fn ik_handshake_round_trip_derives_matching_transport_with_bound_responder() {
 fn kk_handshake_round_trip_derives_matching_transport() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
+    let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
     let initiator_params = handshake_transport_params(24_576);
     let responder_params = handshake_transport_params(49_152);
@@ -446,12 +458,16 @@ fn kk_handshake_round_trip_derives_matching_transport() {
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(21))
         .unwrap();
-    responder_state.read_1(&crypto, &m1).unwrap();
+    responder_state
+        .read_1(&crypto, initiator_to_responder, &m1)
+        .unwrap();
 
     let m2 = responder_state
         .write_2(&crypto, handshake_meta(21))
         .unwrap();
-    initiator_state.read_2(&crypto, &m2).unwrap();
+    initiator_state
+        .read_2(&crypto, responder_to_initiator, &m2)
+        .unwrap();
 
     let initiator_final = initiator_state.finalize(&crypto).unwrap();
     let responder_final = responder_state.finalize(&crypto).unwrap();
@@ -480,6 +496,7 @@ fn kk_handshake_round_trip_derives_matching_transport() {
 fn kk_handshake_rejects_tampered_transport_params() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
+    let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
     let mut initiator_state = KkHandshake::new_initiator(
         &crypto,
@@ -497,7 +514,9 @@ fn kk_handshake_rejects_tampered_transport_params() {
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(22))
         .unwrap();
-    responder_state.read_1(&crypto, &m1).unwrap();
+    responder_state
+        .read_1(&crypto, initiator_to_responder, &m1)
+        .unwrap();
 
     let mut m2 = responder_state
         .write_2(&crypto, handshake_meta(22))
@@ -505,7 +524,7 @@ fn kk_handshake_rejects_tampered_transport_params() {
     m2.transport_params.initial_stream_receive_window += 1;
 
     assert_eq!(
-        initiator_state.read_2(&crypto, &m2),
+        initiator_state.read_2(&crypto, responder_to_initiator, &m2),
         Err(WireError::DecryptFailed)
     );
 }
@@ -514,7 +533,8 @@ fn kk_handshake_rejects_tampered_transport_params() {
 fn xx_handshake_rejects_tampered_pairing_id() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
-    let token = pairing_token(7);
+    let token = PairingToken([7; PairingToken::SIZE]);
+    let (initiator_to_responder, _) = identity_routes(&initiator, &responder);
 
     let mut initiator_state = XxHandshake::new_initiator(
         &crypto,
@@ -534,10 +554,10 @@ fn xx_handshake_rejects_tampered_pairing_id() {
     let mut m1 = initiator_state
         .write_1(&crypto, handshake_meta(31))
         .unwrap();
-    m1.pairing_id = pairing_id(8);
+    m1.pairing_id = PairingId([8; PairingId::SIZE]);
 
     assert_eq!(
-        responder_state.read_1(&crypto, &m1),
+        responder_state.read_1(&crypto, initiator_to_responder, &m1),
         Err(WireError::InvalidPairingId)
     );
 }
@@ -546,7 +566,7 @@ fn xx_handshake_rejects_tampered_pairing_id() {
 fn xx_handshake_rejects_tampered_sender_or_recipient() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
-    let token = pairing_token(7);
+    let token = PairingToken([7; PairingToken::SIZE]);
 
     let mut initiator_state = XxHandshake::new_initiator(
         &crypto,
@@ -563,14 +583,15 @@ fn xx_handshake_rejects_tampered_sender_or_recipient() {
         TransportParams::default(),
     );
 
-    let mut m1 = initiator_state
+    let m1 = initiator_state
         .write_1(&crypto, handshake_meta(31))
         .unwrap();
-    m1.header.sender = responder.qid;
+    let (mut route, _) = identity_routes(&initiator, &responder);
+    route.sender = responder.qid;
 
     assert_eq!(
-        responder_state.read_1(&crypto, &m1),
-        Err(WireError::InvalidHandshakeHeader)
+        responder_state.read_1(&crypto, route, &m1),
+        Err(WireError::InvalidRouteHeader)
     );
 
     let mut initiator_state = XxHandshake::new_initiator(
@@ -588,14 +609,15 @@ fn xx_handshake_rejects_tampered_sender_or_recipient() {
         TransportParams::default(),
     );
 
-    let mut m1 = initiator_state
+    let m1 = initiator_state
         .write_1(&crypto, handshake_meta(31))
         .unwrap();
-    m1.header.recipient = initiator.qid;
+    let (mut route, _) = identity_routes(&initiator, &responder);
+    route.recipient = initiator.qid;
 
     assert_eq!(
-        responder_state.read_1(&crypto, &m1),
-        Err(WireError::InvalidHandshakeHeader)
+        responder_state.read_1(&crypto, route, &m1),
+        Err(WireError::InvalidRouteHeader)
     );
 }
 
@@ -603,7 +625,8 @@ fn xx_handshake_rejects_tampered_sender_or_recipient() {
 fn xx_handshake_rejects_repeated_transport_param_change() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
-    let token = pairing_token(9);
+    let token = PairingToken([9; PairingToken::SIZE]);
+    let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
     let mut initiator_state = XxHandshake::new_initiator(
         &crypto,
@@ -623,12 +646,16 @@ fn xx_handshake_rejects_repeated_transport_param_change() {
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(32))
         .unwrap();
-    responder_state.read_1(&crypto, &m1).unwrap();
+    responder_state
+        .read_1(&crypto, initiator_to_responder, &m1)
+        .unwrap();
 
     let m2 = responder_state
         .write_2(&crypto, handshake_meta(32))
         .unwrap();
-    initiator_state.read_2(&crypto, &m2).unwrap();
+    initiator_state
+        .read_2(&crypto, responder_to_initiator, &m2)
+        .unwrap();
 
     let mut m3 = initiator_state
         .write_3(&crypto, handshake_meta(32))
@@ -636,7 +663,7 @@ fn xx_handshake_rejects_repeated_transport_param_change() {
     m3.transport_params.initial_stream_receive_window += 1;
 
     assert_eq!(
-        responder_state.read_3(&crypto, &m3),
+        responder_state.read_3(&crypto, initiator_to_responder, &m3),
         Err(WireError::InvalidTransportParams)
     );
 }
@@ -645,7 +672,8 @@ fn xx_handshake_rejects_repeated_transport_param_change() {
 fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
-    let token = pairing_token(10);
+    let token = PairingToken([10; PairingToken::SIZE]);
+    let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
     let initiator_params = handshake_transport_params(28_672);
     let responder_params = handshake_transport_params(57_344);
@@ -674,25 +702,33 @@ fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
     let m1 = initiator_state
         .write_1(&crypto, handshake_meta(33))
         .unwrap();
-    responder_state.read_1(&crypto, &m1).unwrap();
+    responder_state
+        .read_1(&crypto, initiator_to_responder, &m1)
+        .unwrap();
 
     let m2 = responder_state
         .write_2(&crypto, handshake_meta(33))
         .unwrap();
-    initiator_state.read_2(&crypto, &m2).unwrap();
+    initiator_state
+        .read_2(&crypto, responder_to_initiator, &m2)
+        .unwrap();
     assert_eq!(initiator_state.remote_bundle(), Some(&responder.bundle()));
     assert!(responder_state.remote_bundle().is_none());
 
     let m3 = initiator_state
         .write_3(&crypto, handshake_meta(33))
         .unwrap();
-    responder_state.read_3(&crypto, &m3).unwrap();
+    responder_state
+        .read_3(&crypto, initiator_to_responder, &m3)
+        .unwrap();
     assert_eq!(responder_state.remote_bundle(), Some(&initiator.bundle()));
 
     let m4 = responder_state
         .write_4(&crypto, handshake_meta(33))
         .unwrap();
-    initiator_state.read_4(&crypto, &m4).unwrap();
+    initiator_state
+        .read_4(&crypto, responder_to_initiator, &m4)
+        .unwrap();
 
     let initiator_final = initiator_state.finalize(&crypto).unwrap();
     let responder_final = responder_state.finalize(&crypto).unwrap();
@@ -722,8 +758,9 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     let crypto = SoftwareCrypto;
     let header = SessionHeader {
         connection_id: ConnectionId([0x44; ConnectionId::SIZE]),
-        seq: record_seq(11),
+        seq: RecordSeq(varint(11)),
     };
+    let session_route = route(1, 2);
     let body = vec![
         SessionFrame::Ping,
         SessionFrame::Unpair,
@@ -731,18 +768,18 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
             RecordAck::from_ranges([record_ack_range(20, 23), record_ack_range(12, 13)]).unwrap(),
         ),
         SessionFrame::StreamWindow(StreamWindow {
-            stream_id: stream_id(9),
+            stream_id: StreamId(varint(9)),
             maximum_offset: varint(65_536),
         }),
         SessionFrame::StreamData(StreamData {
-            stream_id: stream_id(9),
+            stream_id: StreamId(varint(9)),
             offset: varint(1024),
             header: None,
             bytes: b"hello".to_vec(),
             fin: true,
         }),
         SessionFrame::StreamReset(StreamReset {
-            stream_id: stream_id(9),
+            stream_id: StreamId(varint(9)),
             target: ResetTarget::Both,
             code: ResetCode::CANCELLED,
         }),
@@ -751,13 +788,15 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         }),
     ];
     let session_key = SessionKey([7; SessionKey::SIZE]);
-    let record = encrypt_record(&crypto, header, &session_key, &body);
+    let record = encrypt_record(&crypto, session_route, header, &session_key, &body);
 
-    let bytes = encode_record_vec(RecordType::Session, &record);
+    let record_header = RecordHeader::new(session_route, RecordType::Session);
+    let bytes = encode_record_vec(record_header, &record);
     assert_eq!(
         RecordHeader::decode_bytes(bytes.as_slice()).unwrap(),
         RecordHeader {
             version: QL_WIRE_VERSION,
+            route: session_route,
             record_type: RecordType::Session,
         }
     );
@@ -765,8 +804,14 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
     assert_eq!(decoded.header, header);
     let encrypted = decoded.payload;
 
-    let decrypted =
-        encrypted::decrypt_record(&crypto, &header, encrypted.clone(), &session_key).unwrap();
+    let decrypted = encrypted::decrypt_record(
+        &crypto,
+        &record_header,
+        &header,
+        encrypted.clone(),
+        &session_key,
+    )
+    .unwrap();
     assert_eq!(decode_session_frames(&decrypted).unwrap(), body);
 
     let wrong_header = SessionHeader {
@@ -774,16 +819,40 @@ fn encrypted_session_record_round_trip_uses_connection_id_header() {
         seq: header.seq,
     };
     assert_eq!(
-        encrypted::decrypt_record(&crypto, &wrong_header, encrypted.clone(), &session_key),
+        encrypted::decrypt_record(
+            &crypto,
+            &record_header,
+            &wrong_header,
+            encrypted.clone(),
+            &session_key,
+        ),
+        Err(WireError::DecryptFailed)
+    );
+
+    let wrong_record_header = RecordHeader::new(route(2, 1), RecordType::Session);
+    assert_eq!(
+        encrypted::decrypt_record(
+            &crypto,
+            &wrong_record_header,
+            &header,
+            encrypted.clone(),
+            &session_key,
+        ),
         Err(WireError::DecryptFailed)
     );
 
     let wrong_seq_header = SessionHeader {
         connection_id: header.connection_id,
-        seq: record_seq(header.seq.0.into_inner() + 1),
+        seq: RecordSeq(varint(header.seq.0.into_inner() + 1)),
     };
     assert_eq!(
-        encrypted::decrypt_record(&crypto, &wrong_seq_header, encrypted, &session_key),
+        encrypted::decrypt_record(
+            &crypto,
+            &record_header,
+            &wrong_seq_header,
+            encrypted,
+            &session_key,
+        ),
         Err(WireError::DecryptFailed)
     );
 }
@@ -796,6 +865,7 @@ fn protocol_record_size_breakdown() {
 
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
+    let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
     let mut ik_initiator = IkHandshake::new_initiator(
         &crypto,
@@ -807,10 +877,14 @@ fn protocol_record_size_breakdown() {
         IkHandshake::new_responder(&crypto, responder.clone(), None, TransportParams::default());
 
     let ik1 = ik_initiator.write_1(&crypto, handshake_meta(101)).unwrap();
-    ik_responder.read_1(&crypto, &ik1).unwrap();
+    ik_responder
+        .read_1(&crypto, initiator_to_responder, &ik1)
+        .unwrap();
 
     let ik2 = ik_responder.write_2(&crypto, handshake_meta(101)).unwrap();
-    ik_initiator.read_2(&crypto, &ik2).unwrap();
+    ik_initiator
+        .read_2(&crypto, responder_to_initiator, &ik2)
+        .unwrap();
 
     let ik1 = QlHandshakeRecord::Ik1(ik1);
     let ik2 = QlHandshakeRecord::Ik2(ik2);
@@ -829,15 +903,19 @@ fn protocol_record_size_breakdown() {
     );
 
     let kk1 = kk_initiator.write_1(&crypto, handshake_meta(201)).unwrap();
-    kk_responder.read_1(&crypto, &kk1).unwrap();
+    kk_responder
+        .read_1(&crypto, initiator_to_responder, &kk1)
+        .unwrap();
 
     let kk2 = kk_responder.write_2(&crypto, handshake_meta(201)).unwrap();
-    kk_initiator.read_2(&crypto, &kk2).unwrap();
+    kk_initiator
+        .read_2(&crypto, responder_to_initiator, &kk2)
+        .unwrap();
 
     let kk1 = QlHandshakeRecord::Kk1(kk1);
     let kk2 = QlHandshakeRecord::Kk2(kk2);
 
-    let token = pairing_token(0x42);
+    let token = PairingToken([0x42; PairingToken::SIZE]);
     let mut xx_initiator = XxHandshake::new_initiator(
         &crypto,
         initiator.clone(),
@@ -854,16 +932,24 @@ fn protocol_record_size_breakdown() {
     );
 
     let xx1 = xx_initiator.write_1(&crypto, handshake_meta(301)).unwrap();
-    xx_responder.read_1(&crypto, &xx1).unwrap();
+    xx_responder
+        .read_1(&crypto, initiator_to_responder, &xx1)
+        .unwrap();
 
     let xx2 = xx_responder.write_2(&crypto, handshake_meta(301)).unwrap();
-    xx_initiator.read_2(&crypto, &xx2).unwrap();
+    xx_initiator
+        .read_2(&crypto, responder_to_initiator, &xx2)
+        .unwrap();
 
     let xx3 = xx_initiator.write_3(&crypto, handshake_meta(301)).unwrap();
-    xx_responder.read_3(&crypto, &xx3).unwrap();
+    xx_responder
+        .read_3(&crypto, initiator_to_responder, &xx3)
+        .unwrap();
 
     let xx4 = xx_responder.write_4(&crypto, handshake_meta(301)).unwrap();
-    xx_initiator.read_4(&crypto, &xx4).unwrap();
+    xx_initiator
+        .read_4(&crypto, responder_to_initiator, &xx4)
+        .unwrap();
 
     let xx1 = QlHandshakeRecord::Xx1(xx1);
     let xx2 = QlHandshakeRecord::Xx2(xx2);
@@ -871,20 +957,26 @@ fn protocol_record_size_breakdown() {
     let xx4 = QlHandshakeRecord::Xx4(xx4);
 
     let session = ik_initiator.finalize(&crypto).unwrap();
+    let session_route = RouteHeader {
+        sender: initiator.qid,
+        recipient: responder.qid,
+    };
     let session_ping = encrypt_record(
         &crypto,
+        session_route,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: record_seq(1),
+            seq: RecordSeq(varint(1)),
         },
         &session.tx_key,
         &[SessionFrame::Ping],
     );
     let session_ack = encrypt_record(
         &crypto,
+        session_route,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: record_seq(2),
+            seq: RecordSeq(varint(2)),
         },
         &session.tx_key,
         &[SessionFrame::Ack(
@@ -893,22 +985,24 @@ fn protocol_record_size_breakdown() {
     );
     let session_unpair = encrypt_record(
         &crypto,
+        session_route,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: record_seq(3),
+            seq: RecordSeq(varint(3)),
         },
         &session.tx_key,
         &[SessionFrame::Unpair],
     );
     let session_stream_empty = encrypt_record(
         &crypto,
+        session_route,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: record_seq(4),
+            seq: RecordSeq(varint(4)),
         },
         &session.tx_key,
         &[SessionFrame::StreamData(StreamData {
-            stream_id: stream_id(1),
+            stream_id: StreamId(varint(1)),
             offset: varint(0),
             header: None,
             fin: false,
@@ -917,9 +1011,10 @@ fn protocol_record_size_breakdown() {
     );
     let session_close = encrypt_record(
         &crypto,
+        session_route,
         SessionHeader {
             connection_id: session.tx_connection_id,
-            seq: record_seq(5),
+            seq: RecordSeq(varint(5)),
         },
         &session.tx_key,
         &[SessionFrame::Close(SessionClose {

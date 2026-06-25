@@ -5,6 +5,7 @@ mod xx;
 use ql_common::QID;
 use ql_wire::{
     self as wire, EphemeralPublicKey, HandshakeId, HandshakeMeta, QlCrypto, QlHandshakeRecord,
+    RouteHeader,
 };
 
 use crate::{
@@ -39,9 +40,9 @@ pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
     HandshakeMeta { handshake_id }
 }
 
-pub fn enqueue_handshake(fsm: &mut QlFsm, record: QlHandshakeRecord) {
+pub fn enqueue_handshake(fsm: &mut QlFsm, route: RouteHeader, record: QlHandshakeRecord) {
     debug_assert!(fsm.state.handshake.is_none());
-    fsm.state.handshake = Some(record);
+    fsm.state.handshake = Some((route, record));
 }
 
 pub fn handle_disarm_pairing(fsm: &mut QlFsm) {
@@ -62,17 +63,18 @@ pub fn prepare_for_outbound_connect(fsm: &mut QlFsm) {
 pub fn handle_handshake_record(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
+    route: RouteHeader,
     record: &QlHandshakeRecord,
 ) -> Result<(), ReceiveError> {
     match record {
-        QlHandshakeRecord::Ik1(message) => ik::handle_ik1(fsm, crypto, message),
-        QlHandshakeRecord::Ik2(message) => ik::handle_ik2(fsm, crypto, message),
-        QlHandshakeRecord::Kk1(message) => kk::handle_kk1(fsm, crypto, message),
-        QlHandshakeRecord::Kk2(message) => kk::handle_kk2(fsm, crypto, message),
-        QlHandshakeRecord::Xx1(message) => xx::handle_xx1(fsm, crypto, message),
-        QlHandshakeRecord::Xx2(message) => xx::handle_xx2(fsm, crypto, message),
-        QlHandshakeRecord::Xx3(message) => xx::handle_xx3(fsm, crypto, message),
-        QlHandshakeRecord::Xx4(message) => xx::handle_xx4(fsm, crypto, message),
+        QlHandshakeRecord::Ik1(message) => ik::handle_ik1(fsm, crypto, route, message),
+        QlHandshakeRecord::Ik2(message) => ik::handle_ik2(fsm, crypto, route, message),
+        QlHandshakeRecord::Kk1(message) => kk::handle_kk1(fsm, crypto, route, message),
+        QlHandshakeRecord::Kk2(message) => kk::handle_kk2(fsm, crypto, route, message),
+        QlHandshakeRecord::Xx1(message) => xx::handle_xx1(fsm, crypto, route, message),
+        QlHandshakeRecord::Xx2(message) => xx::handle_xx2(fsm, crypto, route, message),
+        QlHandshakeRecord::Xx3(message) => xx::handle_xx3(fsm, crypto, route, message),
+        QlHandshakeRecord::Xx4(message) => xx::handle_xx4(fsm, crypto, route, message),
     }
 }
 
@@ -143,6 +145,7 @@ pub fn establish_session(
     finalized: wire::FinalizedHandshake,
 ) -> Result<(), ReceiveError> {
     let transport = SessionTransport {
+        remote_qid: finalized.remote_bundle.qid,
         tx_key: finalized.tx_key,
         rx_key: finalized.rx_key,
         tx_connection_id: finalized.tx_connection_id,
@@ -166,13 +169,10 @@ fn is_connected_replay(
     fsm: &QlFsm,
     handshake_id: HandshakeId,
     sender: QID,
-    recipient: QID,
 ) -> bool {
     let LinkState::Connected(connected) = &fsm.state.link else {
         return false;
     };
 
-    connected.handshake_id == handshake_id
-        && recipient == fsm.identity.qid
-        && fsm.state.peer.as_ref().map(|peer| peer.qid) == Some(sender)
+    connected.handshake_id == handshake_id && fsm.state.peer.as_ref().map(|peer| peer.qid) == Some(sender)
 }

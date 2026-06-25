@@ -111,17 +111,23 @@ pub fn receive(
     if header.version != wire::QL_WIRE_VERSION {
         return Err(ReceiveError::InvalidRecordVersion);
     }
+    if header.route.recipient != fsm.identity.qid {
+        return Err(ReceiveError::InvalidQid);
+    }
 
     match header.record_type {
         wire::RecordType::Handshake => {
             let record = wire::QlHandshakeRecord::decode(&mut reader)
                 .map_err(ReceiveError::InvalidHandshakeRecord)?;
-            handshake::handle_handshake_record(fsm, crypto, &record)
+            handshake::handle_handshake_record(fsm, crypto, header.route, &record)
         }
         wire::RecordType::Session => {
             let termination = {
                 let QlFsm { state, events, .. } = fsm;
                 let conn = state.link.connected_mut_or_err()?;
+                if header.route.sender != conn.transport.remote_qid {
+                    return Err(ReceiveError::InvalidQid);
+                }
                 let (decrypt_len, seq) = {
                     let record = wire::QlSessionRecord::decode(&mut reader)
                         .map_err(ReceiveError::InvalidSessionRecord)?;
@@ -130,6 +136,7 @@ pub fn receive(
                     }
                     let payload = wire::decrypt_record(
                         crypto,
+                        &header,
                         &record.header,
                         record.payload,
                         &conn.transport.rx_key,
@@ -186,8 +193,11 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
 }
 
 pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
-    if let Some(record) = fsm.state.handshake.take() {
-        let record = wire::encode_record_vec(ql_wire::RecordType::Handshake, &record);
+    if let Some((route, record)) = fsm.state.handshake.take() {
+        let record = wire::encode_record_vec(
+            wire::RecordHeader::new(route, ql_wire::RecordType::Handshake),
+            &record,
+        );
         return Some(OutboundWrite {
             record,
             write_id: None,
@@ -196,10 +206,15 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
 
     let QlFsm { state, .. } = fsm;
     let conn = state.link.connected_mut()?;
+    let route = wire::RouteHeader {
+        sender: fsm.identity.qid,
+        recipient: conn.transport.remote_qid,
+    };
 
     let (write_id, builder) = conn.session.take_next_write(state.now)?;
     let record = builder.encrypt(
         crypto,
+        route,
         conn.transport.tx_connection_id,
         &conn.transport.tx_key,
     );

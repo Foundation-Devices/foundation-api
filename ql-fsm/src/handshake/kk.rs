@@ -1,4 +1,4 @@
-use ql_wire::{self as wire, Kk1, Kk2, PeerBundle, QlCrypto, QlHandshakeRecord};
+use ql_wire::{self as wire, Kk1, Kk2, PeerBundle, QlCrypto, QlHandshakeRecord, RouteHeader};
 
 use super::{
     emit_peer_status, enqueue_handshake, establish_session, reset_connected_session_if_needed,
@@ -10,6 +10,10 @@ use crate::{
 
 pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, peer: PeerBundle) {
     let meta = super::next_handshake_meta(fsm);
+    let route = RouteHeader {
+        sender: fsm.identity.qid,
+        recipient: peer.qid,
+    };
     let mut handshake = wire::KkHandshake::new_initiator(
         crypto,
         fsm.identity.clone(),
@@ -24,23 +28,24 @@ pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, peer: PeerBundle
         handshake,
         deadline: fsm.state.now + fsm.config.handshake_timeout,
     });
-    enqueue_handshake(fsm, QlHandshakeRecord::Kk1(message));
+    enqueue_handshake(fsm, route, QlHandshakeRecord::Kk1(message));
     emit_peer_status(fsm, fsm.state.link.status());
 }
 
 pub fn handle_kk1(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
+    route: RouteHeader,
     message: &Kk1,
 ) -> Result<(), ReceiveError> {
-    if should_ignore_inbound(fsm, message) {
+    if should_ignore_inbound(fsm, route, message) {
         return Ok(());
     }
 
     let Some(peer) = fsm.state.peer.clone() else {
         return Err(ReceiveError::NoPeer);
     };
-    if message.header.recipient != fsm.identity.qid || message.header.sender != peer.qid {
+    if route.sender != peer.qid {
         return Err(ReceiveError::InvalidQid);
     }
 
@@ -53,7 +58,7 @@ pub fn handle_kk1(
         super::local_transport_params(fsm),
     );
     handshake
-        .read_1(crypto, message)
+        .read_1(crypto, route, message)
         .map_err(ReceiveError::InvalidKkHandshake)?;
     let outbound = handshake
         .write_2(crypto, message.meta)
@@ -66,13 +71,21 @@ pub fn handle_kk1(
             .map_err(ReceiveError::InvalidKkHandshake)?,
     )?;
     fsm.state.handshake = None;
-    enqueue_handshake(fsm, QlHandshakeRecord::Kk2(outbound));
+    enqueue_handshake(
+        fsm,
+        RouteHeader {
+            sender: fsm.identity.qid,
+            recipient: route.sender,
+        },
+        QlHandshakeRecord::Kk2(outbound),
+    );
     Ok(())
 }
 
 pub fn handle_kk2(
     fsm: &mut QlFsm,
     crypto: &impl QlCrypto,
+    route: RouteHeader,
     message: &Kk2,
 ) -> Result<(), ReceiveError> {
     {
@@ -86,7 +99,7 @@ pub fn handle_kk2(
 
         state
             .handshake
-            .read_2(crypto, message)
+            .read_2(crypto, route, message)
             .map_err(ReceiveError::InvalidKkHandshake)?;
     }
 
@@ -103,18 +116,17 @@ pub fn handle_kk2(
     )
 }
 
-pub fn should_ignore_inbound(fsm: &QlFsm, message: &Kk1) -> bool {
+pub fn should_ignore_inbound(fsm: &QlFsm, route: RouteHeader, message: &Kk1) -> bool {
     match &fsm.state.link {
         LinkState::Idle | LinkState::XxInitiator(_) | LinkState::XxResponder(_) => false,
         LinkState::Connected(_) => super::is_connected_replay(
             fsm,
             message.meta.handshake_id,
-            message.header.sender,
-            message.header.recipient,
+            route.sender,
         ),
         LinkState::IkInitiator(_) => true,
         LinkState::KkInitiator(state) => {
-            if fsm.state.peer.as_ref().map(|peer| peer.qid) != Some(message.header.sender) {
+            if fsm.state.peer.as_ref().map(|peer| peer.qid) != Some(route.sender) {
                 return false;
             }
             super::local_start_wins(&state.initial_ephemeral, &message.ephemeral)

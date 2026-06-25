@@ -6,7 +6,7 @@ use super::{
     initialize_transport_params, mix_hash_ephemeral, mix_hash_pairing_handshake,
     mix_psk_pairing_token, require_handshake_meta, require_transport_params,
     EncryptedMlKemCiphertext, EncryptedPeerBundle, EphemeralKeyPair, EphemeralPublicKey,
-    FinalizedHandshake, HandshakeHeader, Role, SymmetricState, TransportParams,
+    FinalizedHandshake, Role, RouteHeader, SymmetricState, TransportParams,
 };
 use crate::{
     codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PairingId, PairingToken,
@@ -15,7 +15,6 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xx1 {
-    pub header: HandshakeHeader,
     pub meta: HandshakeMeta,
     pub pairing_id: PairingId,
     pub transport_params: TransportParams,
@@ -23,8 +22,7 @@ pub struct Xx1 {
 }
 
 impl Xx1 {
-    pub const WIRE_SIZE: usize = HandshakeHeader::WIRE_SIZE
-        + HandshakeMeta::WIRE_SIZE
+    pub const WIRE_SIZE: usize = HandshakeMeta::WIRE_SIZE
         + PairingId::SIZE
         + TransportParams::WIRE_SIZE
         + EphemeralPublicKey::WIRE_SIZE;
@@ -33,7 +31,6 @@ impl Xx1 {
 impl<B: ByteSlice> codec::WireDecode<B> for Xx1 {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            header: reader.decode()?,
             meta: reader.decode()?,
             pairing_id: reader.decode()?,
             transport_params: reader.decode()?,
@@ -48,7 +45,6 @@ impl WireEncode for Xx1 {
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.header.encode(out);
         self.meta.encode(out);
         self.pairing_id.encode(out);
         self.transport_params.encode(out);
@@ -58,7 +54,6 @@ impl WireEncode for Xx1 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xx2 {
-    pub header: HandshakeHeader,
     pub meta: HandshakeMeta,
     pub pairing_id: PairingId,
     pub transport_params: TransportParams,
@@ -69,7 +64,6 @@ pub struct Xx2 {
 impl<B: ByteSlice> codec::WireDecode<B> for Xx2 {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            header: reader.decode()?,
             meta: reader.decode()?,
             pairing_id: reader.decode()?,
             transport_params: reader.decode()?,
@@ -81,8 +75,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for Xx2 {
 
 impl WireEncode for Xx2 {
     fn encoded_len(&self) -> usize {
-        HandshakeHeader::WIRE_SIZE
-            + HandshakeMeta::WIRE_SIZE
+        HandshakeMeta::WIRE_SIZE
             + PairingId::SIZE
             + TransportParams::WIRE_SIZE
             + MlKemCiphertext::SIZE
@@ -90,7 +83,6 @@ impl WireEncode for Xx2 {
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.header.encode(out);
         self.meta.encode(out);
         self.pairing_id.encode(out);
         self.transport_params.encode(out);
@@ -101,7 +93,6 @@ impl WireEncode for Xx2 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xx3 {
-    pub header: HandshakeHeader,
     pub meta: HandshakeMeta,
     pub pairing_id: PairingId,
     pub transport_params: TransportParams,
@@ -112,7 +103,6 @@ pub struct Xx3 {
 impl<B: ByteSlice> codec::WireDecode<B> for Xx3 {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            header: reader.decode()?,
             meta: reader.decode()?,
             pairing_id: reader.decode()?,
             transport_params: reader.decode()?,
@@ -124,8 +114,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for Xx3 {
 
 impl WireEncode for Xx3 {
     fn encoded_len(&self) -> usize {
-        HandshakeHeader::WIRE_SIZE
-            + HandshakeMeta::WIRE_SIZE
+        HandshakeMeta::WIRE_SIZE
             + PairingId::SIZE
             + TransportParams::WIRE_SIZE
             + EncryptedMlKemCiphertext::WIRE_SIZE
@@ -133,7 +122,6 @@ impl WireEncode for Xx3 {
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.header.encode(out);
         self.meta.encode(out);
         self.pairing_id.encode(out);
         self.transport_params.encode(out);
@@ -144,7 +132,6 @@ impl WireEncode for Xx3 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xx4 {
-    pub header: HandshakeHeader,
     pub meta: HandshakeMeta,
     pub pairing_id: PairingId,
     pub transport_params: TransportParams,
@@ -152,8 +139,7 @@ pub struct Xx4 {
 }
 
 impl Xx4 {
-    pub const WIRE_SIZE: usize = HandshakeHeader::WIRE_SIZE
-        + HandshakeMeta::WIRE_SIZE
+    pub const WIRE_SIZE: usize = HandshakeMeta::WIRE_SIZE
         + PairingId::SIZE
         + TransportParams::WIRE_SIZE
         + EncryptedMlKemCiphertext::WIRE_SIZE;
@@ -162,7 +148,6 @@ impl Xx4 {
 impl<B: ByteSlice> codec::WireDecode<B> for Xx4 {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         Ok(Self {
-            header: reader.decode()?,
             meta: reader.decode()?,
             pairing_id: reader.decode()?,
             transport_params: reader.decode()?,
@@ -177,7 +162,6 @@ impl WireEncode for Xx4 {
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.header.encode(out);
         self.meta.encode(out);
         self.pairing_id.encode(out);
         self.transport_params.encode(out);
@@ -281,8 +265,8 @@ impl XxHandshake {
         self.remote_bundle.as_ref()
     }
 
-    fn header(&self) -> HandshakeHeader {
-        HandshakeHeader {
+    fn header(&self) -> RouteHeader {
+        RouteHeader {
             sender: self.local.qid,
             recipient: self.remote_qid,
         }
@@ -291,11 +275,11 @@ impl XxHandshake {
     fn ensure_inbound_header(
         &self,
         crypto: &impl QlCrypto,
-        header: HandshakeHeader,
+        header: RouteHeader,
         pairing_id: PairingId,
     ) -> Result<(), WireError> {
         if header.sender != self.remote_qid || header.recipient != self.local.qid {
-            return Err(WireError::InvalidHandshakeHeader);
+            return Err(WireError::InvalidRouteHeader);
         }
         if pairing_id != self.pairing_token.id(crypto) {
             return Err(WireError::InvalidPairingId);
@@ -340,7 +324,6 @@ impl XxHandshake {
         self.local_ephemeral = Some(local_ephemeral);
         self.step = XxStep::Recv2;
         Ok(Xx1 {
-            header,
             meta,
             pairing_id,
             transport_params: self.local_transport_params,
@@ -348,16 +331,21 @@ impl XxHandshake {
         })
     }
 
-    pub fn read_1(&mut self, crypto: &impl QlCrypto, message: &Xx1) -> Result<(), WireError> {
+    pub fn read_1(
+        &mut self,
+        crypto: &impl QlCrypto,
+        header: RouteHeader,
+        message: &Xx1,
+    ) -> Result<(), WireError> {
         if self.step != XxStep::Recv1 {
             return Err(WireError::InvalidState);
         }
         initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
-        self.ensure_inbound_header(crypto, message.header, message.pairing_id)?;
+        self.ensure_inbound_header(crypto, header, message.pairing_id)?;
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
-            message.header,
+            header,
             HandshakeKind::Xx1,
             message.meta,
             message.pairing_id,
@@ -406,7 +394,6 @@ impl XxHandshake {
 
         self.step = XxStep::Recv3;
         Ok(Xx2 {
-            header,
             meta,
             pairing_id,
             transport_params: self.local_transport_params,
@@ -415,16 +402,21 @@ impl XxHandshake {
         })
     }
 
-    pub fn read_2(&mut self, crypto: &impl QlCrypto, message: &Xx2) -> Result<(), WireError> {
+    pub fn read_2(
+        &mut self,
+        crypto: &impl QlCrypto,
+        header: RouteHeader,
+        message: &Xx2,
+    ) -> Result<(), WireError> {
         if self.step != XxStep::Recv2 {
             return Err(WireError::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
-        self.ensure_inbound_header(crypto, message.header, message.pairing_id)?;
+        self.ensure_inbound_header(crypto, header, message.pairing_id)?;
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
-            message.header,
+            header,
             HandshakeKind::Xx2,
             message.meta,
             message.pairing_id,
@@ -483,7 +475,6 @@ impl XxHandshake {
 
         self.step = XxStep::Recv4;
         Ok(Xx3 {
-            header,
             meta,
             pairing_id,
             transport_params: self.local_transport_params,
@@ -492,12 +483,17 @@ impl XxHandshake {
         })
     }
 
-    pub fn read_3(&mut self, crypto: &impl QlCrypto, message: &Xx3) -> Result<(), WireError> {
+    pub fn read_3(
+        &mut self,
+        crypto: &impl QlCrypto,
+        header: RouteHeader,
+        message: &Xx3,
+    ) -> Result<(), WireError> {
         if self.step != XxStep::Recv3 {
             return Err(WireError::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
-        self.ensure_inbound_header(crypto, message.header, message.pairing_id)?;
+        self.ensure_inbound_header(crypto, header, message.pairing_id)?;
         require_transport_params(
             self.remote_transport_params.as_ref(),
             message.transport_params,
@@ -505,7 +501,7 @@ impl XxHandshake {
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
-            message.header,
+            header,
             HandshakeKind::Xx3,
             message.meta,
             message.pairing_id,
@@ -557,7 +553,6 @@ impl XxHandshake {
 
         self.step = XxStep::Done;
         Ok(Xx4 {
-            header,
             meta,
             pairing_id,
             transport_params: self.local_transport_params,
@@ -565,12 +560,17 @@ impl XxHandshake {
         })
     }
 
-    pub fn read_4(&mut self, crypto: &impl QlCrypto, message: &Xx4) -> Result<(), WireError> {
+    pub fn read_4(
+        &mut self,
+        crypto: &impl QlCrypto,
+        header: RouteHeader,
+        message: &Xx4,
+    ) -> Result<(), WireError> {
         if self.step != XxStep::Recv4 {
             return Err(WireError::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
-        self.ensure_inbound_header(crypto, message.header, message.pairing_id)?;
+        self.ensure_inbound_header(crypto, header, message.pairing_id)?;
         require_transport_params(
             self.remote_transport_params.as_ref(),
             message.transport_params,
@@ -578,7 +578,7 @@ impl XxHandshake {
         mix_hash_pairing_handshake(
             &mut self.symmetric,
             crypto,
-            message.header,
+            header,
             HandshakeKind::Xx4,
             message.meta,
             message.pairing_id,
