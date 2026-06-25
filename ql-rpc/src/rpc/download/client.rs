@@ -1,12 +1,13 @@
 use std::future::poll_fn;
 
 use bytes::Bytes;
+use ql_common::ResetCode;
 
 use crate::{
     download::Download,
     parts::{PartFrameReader, PartReadStep},
     rpc::{parts::FrameKind, write_eof_value},
-    DropResetRead, FramedPrefixStep, FramedReader, ResetCode, RpcError, RpcRead, RpcStream,
+    DropResetRead, FramedPrefixStep, FramedReader, RpcError, RpcRead, RpcStream,
 };
 
 pub async fn start<M, St>(

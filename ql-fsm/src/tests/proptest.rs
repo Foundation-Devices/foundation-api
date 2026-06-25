@@ -7,7 +7,8 @@ extern crate proptest as proptest_crate;
 
 use bytes::Bytes;
 use proptest_crate::{collection::vec, prelude::*, test_runner::TestCaseResult};
-use ql_wire::{ResetCode, RouteId, ServiceId, StreamId, WireError};
+use ql_common::{ResetCode, RouteId, ServiceId, StreamId};
+use ql_wire::WireError;
 
 use super::*;
 use crate::{

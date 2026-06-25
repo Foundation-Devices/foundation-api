@@ -1,5 +1,7 @@
+use ql_common::VarInt;
+
 use super::StreamId;
-use crate::{codec, ByteSlice, VarInt, WireEncode, WireError};
+use crate::{codec, ByteSlice, WireEncode, WireError};
 
 /// advertises the highest byte offset the peer may send on a stream.
 #[derive(Debug, Clone, PartialEq, Eq)]

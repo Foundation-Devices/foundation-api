@@ -1,10 +1,11 @@
+use ql_common::{StreamInfo, QID};
 use ql_fsm::StreamResetEvent;
-use ql_wire::{generate_identity, NoopCrypto, PeerBundle, SoftwareCrypto, QID};
+use ql_wire::{generate_identity, NoopCrypto, PeerBundle, SoftwareCrypto};
 
 use super::*;
 use crate::{
     driver::state::{InboundIo, OutboundIo},
-    io, StreamInfo,
+    io,
 };
 
 pub struct NoopTimer;

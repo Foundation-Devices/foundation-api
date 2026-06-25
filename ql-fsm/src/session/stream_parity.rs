@@ -1,4 +1,4 @@
-use ql_wire::{StreamId, QID};
+use ql_common::{StreamId, VarInt, QID};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamParity {
@@ -36,7 +36,7 @@ impl StreamParity {
     }
 
     pub fn make_stream_id(self, ordinal: u32) -> StreamId {
-        StreamId(ql_wire::VarInt::from_u32(
+        StreamId(VarInt::from_u32(
             self.first_stream_id()
                 .saturating_add(ordinal.saturating_mul(2)),
         ))

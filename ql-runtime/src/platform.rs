@@ -5,9 +5,9 @@ use std::{
     time::Instant,
 };
 
-pub use ql_common::StreamInfo;
+use ql_common::{StreamInfo, QID};
 use ql_fsm::{PeerStatus, ReceiveError};
-use ql_wire::{PeerBundle, QlCrypto, QID};
+use ql_wire::{PeerBundle, QlCrypto};
 
 pub trait QlTimer {
     fn set_deadline(self: Pin<&mut Self>, deadline: Option<Instant>);

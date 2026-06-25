@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ql_wire::{ResetCode, ResetOrigin};
+use ql_common::{ResetCode, ResetOrigin};
 
 use super::*;
 use crate::QlStreamError;

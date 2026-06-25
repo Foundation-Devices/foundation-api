@@ -1,4 +1,4 @@
-use crate::{ResetCode, RouteId, ServiceId, StreamId, StreamInfo, QID};
+use ql_common::{ResetCode, RouteId, ServiceId, StreamId, StreamInfo, QID};
 
 mod builder;
 mod config;

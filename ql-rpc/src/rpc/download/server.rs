@@ -1,6 +1,7 @@
 use std::{future::Future, marker::PhantomData};
 
 use bytes::Bytes;
+use ql_common::ResetCode;
 
 use crate::{
     codec,
@@ -10,8 +11,7 @@ use crate::{
         parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
         read_eof_request,
     },
-    write_bytes, Context, DropResetWrite, ResetCode, RouterConfig, RpcError, RpcRead, RpcStream,
-    RpcWrite,
+    write_bytes, Context, DropResetWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(DownloadHandler: Send)]

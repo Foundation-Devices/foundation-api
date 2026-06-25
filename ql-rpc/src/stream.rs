@@ -4,8 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
-
-use crate::ResetCode;
+use ql_common::ResetCode;
 
 pub trait RpcStream {
     type Error;

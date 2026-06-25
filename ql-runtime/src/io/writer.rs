@@ -6,7 +6,6 @@ use std::{
 use bytes::Bytes;
 use ql_common::ResetCode;
 use ql_fsm::StreamResetTarget;
-use ql_wire::{ResetCode, StreamId};
 
 use super::{
     inner::{Item, TxInner},

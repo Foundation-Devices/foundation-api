@@ -106,7 +106,7 @@ fn connect_methods_require_bound_peer() {
     fsm.connect_xx(
         time,
         PairingInvite {
-            qid: ql_wire::QID([2; ql_wire::QID::SIZE]),
+            qid: ql_common::QID([2; ql_common::QID::SIZE]),
             token: pairing_token(2),
         },
         &crypto,

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use ql_wire::StreamId;
+use ql_common::StreamId;
 
 use crate::{
     command::Command,

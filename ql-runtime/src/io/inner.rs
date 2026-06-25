@@ -6,7 +6,7 @@ use std::task::Waker;
 
 use bytes::Bytes;
 use diatomic_waker::DiatomicWaker;
-use ql_wire::StreamId;
+use ql_common::StreamId;
 
 use super::{
     slot::{PopError, PushError, Slot},
@@ -292,7 +292,7 @@ mod loom_tests {
 
     use bytes::Bytes;
     use loom::thread;
-    use ql_wire::{ResetCode, ResetOrigin};
+    use ql_common::{ResetCode, ResetOrigin};
 
     use super::*;
     use crate::{

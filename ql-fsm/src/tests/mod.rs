@@ -4,9 +4,10 @@ mod session;
 
 use std::time::{Duration, Instant};
 
+use ql_common::QID;
 use ql_wire::{
     self, generate_identity, test_identities, ConnectionId, HandshakeId, PairingToken, QlCrypto,
-    SessionKey, SoftwareCrypto, TransportParams, QID,
+    SessionKey, SoftwareCrypto, TransportParams,
 };
 
 use crate::{

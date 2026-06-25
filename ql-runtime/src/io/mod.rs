@@ -6,10 +6,9 @@ mod writer;
 
 use std::ops::Deref;
 
-use ql_wire::StreamId;
+use ql_common::StreamId;
 
 pub use self::{reader::StreamReader, slot::PushError, writer::StreamWriter};
-use crate::command::Command;
 
 pub struct Rx(sync::Arc<inner::Inner>);
 
@@ -45,7 +44,7 @@ impl Tx {
 
 pub fn new_stream(
     stream_id: StreamId,
-    runtime_tx: async_channel::Sender<Command>,
+    runtime_tx: async_channel::Sender<crate::command::Command>,
 ) -> (StreamReader, StreamWriter, Rx, Tx) {
     let shared = inner::new(stream_id);
     (

@@ -1,4 +1,4 @@
-use crate::ResetCode;
+use ql_common::ResetCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

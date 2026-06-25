@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ql_wire::{RouteId, ServiceId, SessionClose, StreamId, VarInt};
+use ql_common::{RouteId, ServiceId, StreamId, VarInt};
+use ql_wire::SessionClose;
 
 use super::*;
 use crate::{
@@ -220,7 +221,7 @@ fn disconnected_stream_operations_fail_with_no_session() {
         harness.a.fsm.stream(missing).map(|mut stream| {
             stream.reset(
                 crate::StreamResetTarget::Both,
-                ql_wire::ResetCode::CANCELLED,
+                ql_common::ResetCode::CANCELLED,
             );
         }),
         Err(StreamError::NoSession)

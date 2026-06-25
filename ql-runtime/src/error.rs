@@ -1,5 +1,5 @@
+use ql_common::{ResetCode, ResetOrigin};
 use ql_fsm::NoSessionError;
-use ql_wire::{ResetCode, ResetOrigin};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlStreamError {

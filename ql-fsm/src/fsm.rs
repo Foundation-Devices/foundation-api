@@ -1,7 +1,8 @@
 use std::{collections::VecDeque, time::Instant};
 
 use bytes::Bytes;
-use ql_wire::{self as wire, QlCrypto, SessionCloseCode, StreamId, WireDecode};
+use ql_common::StreamId;
+use ql_wire::{self as wire, QlCrypto, SessionCloseCode, WireDecode};
 
 use crate::{
     handshake,

@@ -1,5 +1,7 @@
+use ql_common::ResetCode;
+
 use super::StreamId;
-use crate::{codec, ByteSlice, ResetCode, WireEncode, WireError};
+use crate::{codec, ByteSlice, WireEncode, WireError};
 
 /// aborts one or both lanes of a stream with a reset code
 ///

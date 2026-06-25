@@ -8,6 +8,7 @@ license = "Proprietary"
 [dependencies]
 bytes = { workspace = true }
 indexmap = "2"
+ql-common = { workspace = true }
 ql-wire = { workspace = true }
 
 [dev-dependencies]

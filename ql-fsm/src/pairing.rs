@@ -1,4 +1,5 @@
-use ql_wire::{ByteSlice, PairingToken, Reader, WireDecode, WireEncode, WireError, QID};
+use ql_common::QID;
+use ql_wire::{ByteSlice, PairingToken, Reader, WireDecode, WireEncode, WireError};
 
 /// Out-of-band invite consumed by the initiator of an XX pairing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

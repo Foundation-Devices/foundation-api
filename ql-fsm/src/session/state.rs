@@ -1,7 +1,8 @@
 use std::time::Instant;
 
 use indexmap::IndexMap;
-use ql_wire::{RecordSeq, ResetTarget, SessionClose, StreamHeader, StreamId, StreamReset};
+use ql_common::StreamId;
+use ql_wire::{RecordSeq, ResetTarget, SessionClose, StreamHeader, StreamReset};
 
 use super::{
     ack_tracker::AckTracker, remote_stream_history::RemoteStreamHistory, stream_rx::StreamRx,

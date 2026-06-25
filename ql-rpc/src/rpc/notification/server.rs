@@ -1,8 +1,10 @@
 use std::future::Future;
 
+use ql_common::ResetCode;
+
 use crate::{
-    notification::Notification as NotificationRpc, rpc::read_eof_request, Context, ResetCode,
-    RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
+    notification::Notification as NotificationRpc, rpc::read_eof_request, Context, RouterConfig,
+    RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(NotificationHandler: Send)]

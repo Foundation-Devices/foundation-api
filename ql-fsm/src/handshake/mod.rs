@@ -2,8 +2,9 @@ mod ik;
 mod kk;
 mod xx;
 
+use ql_common::QID;
 use ql_wire::{
-    self as wire, EphemeralPublicKey, HandshakeId, HandshakeMeta, QlCrypto, QlHandshakeRecord, QID,
+    self as wire, EphemeralPublicKey, HandshakeId, HandshakeMeta, QlCrypto, QlHandshakeRecord,
 };
 
 use crate::{

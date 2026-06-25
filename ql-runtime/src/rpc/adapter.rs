@@ -1,7 +1,8 @@
 use std::task::{Context as TaskContext, Poll};
 
 use bytes::Bytes;
-use ql_rpc::{ResetCode, RpcRead, RpcStream, RpcWrite};
+use ql_common::ResetCode;
+use ql_rpc::{RpcRead, RpcStream, RpcWrite};
 
 use crate::{QlStream, QlStreamError, StreamReader, StreamWriter};
 

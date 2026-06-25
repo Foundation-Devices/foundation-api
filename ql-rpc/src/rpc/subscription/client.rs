@@ -3,13 +3,15 @@ use std::{
     task::{Context, Poll},
 };
 
+use ql_common::ResetCode;
+
 use crate::{
     rpc::{
         subscription::codec::{ReadStep, ResponseReader},
         write_eof_value,
     },
     subscription::Subscription,
-    DropResetRead, ResetCode, RpcError, RpcRead, RpcStream,
+    DropResetRead, RpcError, RpcRead, RpcStream,
 };
 
 pub async fn start<M, St>(

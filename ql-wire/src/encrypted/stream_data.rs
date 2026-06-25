@@ -1,9 +1,7 @@
 use bytes::Buf;
+use ql_common::{RouteId, ServiceId, StreamId, VarInt};
 
-use crate::{
-    codec, BufView, ByteSlice, RouteId, ServiceId, StreamId, VarInt, WireDecode, WireEncode,
-    WireError,
-};
+use crate::{codec, BufView, ByteSlice, WireDecode, WireEncode, WireError};
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]

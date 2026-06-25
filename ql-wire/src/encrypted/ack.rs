@@ -1,6 +1,8 @@
 use std::{fmt, ops::RangeInclusive};
 
-use crate::{codec, ByteSlice, RecordSeq, VarInt, WireEncode, WireError};
+use ql_common::VarInt;
+
+use crate::{codec, ByteSlice, RecordSeq, WireEncode, WireError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordAck {
@@ -272,8 +274,10 @@ impl RecordAckBuilder {
 mod tests {
     use std::ops::RangeInclusive;
 
+    use ql_common::VarInt;
+
     use super::{RecordAck, RecordAckBlock, RecordAckBuilder, RecordAckRangeError};
-    use crate::{RecordSeq, VarInt, WireDecode, WireEncode, WireError};
+    use crate::{RecordSeq, WireDecode, WireEncode, WireError};
 
     fn seq(value: u64) -> RecordSeq {
         RecordSeq::from_u64(value).unwrap()

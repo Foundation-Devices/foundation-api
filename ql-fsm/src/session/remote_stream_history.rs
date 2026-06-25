@@ -1,4 +1,4 @@
-use ql_wire::StreamId;
+use ql_common::StreamId;
 
 use super::{range_set::RangeSet, stream_parity::StreamParity};
 

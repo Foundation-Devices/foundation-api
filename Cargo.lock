@@ -1061,6 +1061,7 @@ dependencies = [
  "bytes",
  "indexmap",
  "proptest",
+ "ql-common",
  "ql-wire",
 ]
 

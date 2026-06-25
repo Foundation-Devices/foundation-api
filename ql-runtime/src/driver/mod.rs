@@ -15,14 +15,15 @@ use std::{
 
 use async_channel::Recv;
 use futures_lite::future::{poll_fn, yield_now};
+use ql_common::{ResetCode, ResetOrigin, StreamId, StreamInfo};
 use ql_fsm::{Event, QlFsm, StreamResetEvent, StreamResetTarget, WriteId};
-use ql_wire::{ResetCode, ResetOrigin, StreamHeader, StreamId};
+use ql_wire::StreamHeader;
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
     command::Command,
     io, log,
-    platform::{QlInbound, QlPlatform, QlTimer, StreamInfo},
+    platform::{QlInbound, QlPlatform, QlTimer},
     QlStreamError, Runtime,
 };
 

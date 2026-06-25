@@ -35,9 +35,9 @@ use std::{
 pub use bytes::Bytes;
 pub use error::*;
 pub use pairing::PairingInvite;
+use ql_common::{ResetCode, RouteId, ServiceId, StreamId};
 use ql_wire::{
-    PairingToken, PeerBundle, QlCrypto, QlIdentity, ResetCode, RouteId, ServiceId, SessionClose,
-    SessionCloseCode, StreamHeader, StreamId,
+    PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamHeader,
 };
 pub use session::{SessionEvent, StreamReadIter, StreamWriter};
 
@@ -162,7 +162,7 @@ impl StreamOps<'_> {
     }
 
     /// resets the local read side, write side, or both sides of the stream
-    pub fn reset(&mut self, target: StreamResetTarget, code: ql_wire::ResetCode) {
+    pub fn reset(&mut self, target: StreamResetTarget, code: ResetCode) {
         self.inner.reset(target, code);
     }
 }

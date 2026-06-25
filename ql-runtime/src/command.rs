@@ -1,7 +1,6 @@
+use ql_common::{ResetCode, RouteId, ServiceId, StreamId};
 use ql_fsm::{NoSessionError, PairingInvite, StreamResetTarget};
-use ql_wire::{
-    PairingToken, PeerBundle, ResetCode, RouteId, ServiceId, SessionCloseCode, StreamId,
-};
+use ql_wire::{PairingToken, PeerBundle, SessionCloseCode};
 
 use crate::{StreamReader, StreamWriter};
 

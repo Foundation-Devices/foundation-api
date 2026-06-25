@@ -1,3 +1,5 @@
+use ql_common::QID;
+
 use super::{
     decrypt_mlkem_ciphertext, decrypt_peer_bundle, encrypt_mlkem_ciphertext, encrypt_peer_bundle,
     finalize_handshake, generate_ephemeral_keypair, init_xx_symmetric, initialize_handshake_meta,
@@ -8,7 +10,7 @@ use super::{
 };
 use crate::{
     codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PairingId, PairingToken,
-    PeerBundle, QlCrypto, QlIdentity, WireEncode, WireError, QID,
+    PeerBundle, QlCrypto, QlIdentity, WireEncode, WireError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,7 +1,9 @@
+use ql_common::QID;
+
 use crate::{
     codec, derive_qid, ByteSlice, ConnectionId, HandshakeKind, MlKemCiphertext, MlKemKeyPair,
     MlKemPublicKey, Nonce, PeerBundle, QlCrypto, SessionKey, WireDecode, WireEncode, WireError,
-    ENCRYPTED_MESSAGE_AUTH_SIZE, QID,
+    ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 mod ik;

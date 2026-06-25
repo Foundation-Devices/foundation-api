@@ -5,7 +5,7 @@
 //! route dispatch uses [`crate::RouteId`] and the submodules provide the matching
 //! client and server helpers for encoding, decoding, and handler glue
 
-use crate::{RouteId, ServiceId};
+use ql_common::{RouteId, ServiceId};
 
 pub mod download;
 pub mod duplex;

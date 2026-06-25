@@ -1,4 +1,6 @@
-use crate::{MlKemPublicKey, QlHash, ML_KEM_SUITE_TAG, QID};
+use ql_common::QID;
+
+use crate::{MlKemPublicKey, QlHash, ML_KEM_SUITE_TAG};
 
 array_wrapper_codec!(QID);
 

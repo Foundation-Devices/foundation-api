@@ -1,4 +1,5 @@
-use ql_wire::{self as wire, PairingToken, QlCrypto, QlHandshakeRecord, Xx1, Xx2, Xx3, Xx4, QID};
+use ql_common::QID;
+use ql_wire::{self as wire, PairingToken, QlCrypto, QlHandshakeRecord, Xx1, Xx2, Xx3, Xx4};
 
 use super::{
     emit_peer_status, enqueue_handshake, establish_session, reset_connected_session_if_needed,

@@ -12,7 +12,7 @@ macro_rules! varint_wrapper_codec {
 
         impl<B: $crate::ByteSlice> $crate::WireDecode<B> for $name {
             fn decode(reader: &mut $crate::Reader<B>) -> Result<Self, $crate::WireError> {
-                Ok(<$name>::from(reader.decode::<$crate::VarInt>()?))
+                Ok(<$name>::from(reader.decode::<::ql_common::VarInt>()?))
             }
         }
     };

@@ -1,10 +1,11 @@
 use std::{future::Future, marker::PhantomData};
 
 use bytes::Bytes;
+use ql_common::ResetCode;
 
 use crate::{
     finish_bytes, request::Request as RequestRpc, rpc::read_eof_request, write_bytes, Context,
-    DropResetWrite, ResetCode, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
+    DropResetWrite, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(RequestHandler: Send)]

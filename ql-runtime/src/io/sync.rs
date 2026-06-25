@@ -68,7 +68,7 @@ pub use inner::*;
 #[cfg(all(test, loom))]
 pub(crate) mod loom {
     use loom::model;
-    use ql_wire::StreamId;
+    use ql_common::StreamId;
 
     use super::Arc;
     use crate::{command::Command, io::inner::Inner};

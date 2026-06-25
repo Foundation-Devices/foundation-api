@@ -1,8 +1,10 @@
 use std::ops::Deref;
 
+use ql_common::{VarInt, QID};
+
 use crate::{
     codec, derive_qid, ByteSlice, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, QlHash,
-    VarInt, WireEncode, WireError, QID,
+    WireEncode, WireError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

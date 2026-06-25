@@ -2,7 +2,8 @@
 
 use std::time::Instant;
 
-use ql_wire::{RecordAck, RecordSeq, StreamId, StreamReset};
+use ql_common::StreamId;
+use ql_wire::{RecordAck, RecordSeq, StreamReset};
 
 #[derive(Debug, Clone)]
 pub struct TrackedRecord {

@@ -5,12 +5,13 @@ use std::{
 };
 
 use bytes::Bytes;
+use ql_common::ResetCode;
 
 use crate::{
     codec, finish_bytes,
     progress::Progress,
     rpc::progress::codec::{ReadStep, ResponseReader},
-    write_bytes, DropResetRead, Error, ResetCode, RpcError, RpcRead, RpcStream,
+    write_bytes, DropResetRead, Error, RpcError, RpcRead, RpcStream,
 };
 
 pub async fn start<M, St>(

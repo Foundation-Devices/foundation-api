@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use ql_common::ResetCode;
 
 use crate::{
     rpc::{
@@ -6,7 +7,7 @@ use crate::{
         read_eof_value,
     },
     upload::Upload,
-    write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcError, RpcRead, RpcStream, RpcWrite,
+    write_bytes, DropResetRead, DropResetWrite, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 pub async fn start<M, St>(

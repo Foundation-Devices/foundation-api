@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use indexmap::IndexMap;
+use ql_common::{RouteId, ServiceId, StreamId, VarInt};
 use ql_wire::{
-    RecordAck, RecordSeq, ResetTarget, RouteId, ServiceId, SessionClose, SessionCloseCode,
-    SessionFrame, SessionRecordBuilder, StreamData, StreamHeader, StreamId, StreamReset,
-    StreamWindow, VarInt, WireError,
+    RecordAck, RecordSeq, ResetTarget, SessionClose, SessionCloseCode, SessionFrame,
+    SessionRecordBuilder, StreamData, StreamHeader, StreamReset, StreamWindow, WireError,
 };
 
 use self::{

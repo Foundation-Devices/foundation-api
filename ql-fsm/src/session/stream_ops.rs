@@ -1,4 +1,5 @@
-use ql_wire::{ResetCode, StreamHeader, StreamId, StreamReset};
+use ql_common::{ResetCode, StreamId};
+use ql_wire::{StreamHeader, StreamReset};
 
 use super::{
     state::{InboundState, StreamState},
