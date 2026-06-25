@@ -10,19 +10,18 @@ use crate::{
     codec, finish_bytes,
     progress::Progress,
     rpc::progress::codec::{ReadStep, ResponseReader},
-    write_bytes, DropResetRead, Error, ResetCode, RpcError, RpcRead, RpcWrite,
+    write_bytes, DropResetRead, Error, ResetCode, RpcError, RpcRead, RpcStream,
 };
 
-pub async fn start<M, R, W>(
-    reader: R,
-    mut writer: W,
+pub async fn start<M, St>(
+    stream: St,
     request: &M::Request,
-) -> Result<ProgressCall<M, R>, RpcError<M::Error, W::Error>>
+) -> Result<ProgressCall<M, St::Reader>, RpcError<M::Error, St::Error>>
 where
     M: Progress,
-    R: RpcRead<Error = W::Error>,
-    W: RpcWrite,
+    St: RpcStream,
 {
+    let (reader, mut writer) = stream.split();
     let mut payload = Vec::new();
     codec::encode_value_part(request, &mut payload);
     write_bytes(&mut writer, Bytes::from(payload))

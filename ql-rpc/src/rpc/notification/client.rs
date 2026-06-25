@@ -1,11 +1,11 @@
-use crate::{notification::Notification, rpc::write_eof_value, ResetCode, RpcRead, RpcWrite};
+use crate::{notification::Notification, rpc::write_eof_value, ResetCode, RpcRead, RpcStream};
 
-pub async fn send<M, R, W>(reader: R, mut writer: W, payload: &M::Payload) -> Result<(), W::Error>
+pub async fn send<M, St>(stream: St, payload: &M::Payload) -> Result<(), St::Error>
 where
     M: Notification,
-    R: RpcRead<Error = W::Error>,
-    W: RpcWrite,
+    St: RpcStream,
 {
+    let (reader, mut writer) = stream.split();
     reader.reset(ResetCode::CANCELLED);
     write_eof_value(&mut writer, payload).await
 }

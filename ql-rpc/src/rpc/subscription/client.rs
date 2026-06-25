@@ -9,19 +9,18 @@ use crate::{
         write_eof_value,
     },
     subscription::Subscription,
-    DropResetRead, ResetCode, RpcError, RpcRead, RpcWrite,
+    DropResetRead, ResetCode, RpcError, RpcRead, RpcStream,
 };
 
-pub async fn start<M, R, W>(
-    reader: R,
-    mut writer: W,
+pub async fn start<M, St>(
+    stream: St,
     request: &M::Request,
-) -> Result<SubscriptionCall<M, R>, RpcError<M::Error, W::Error>>
+) -> Result<SubscriptionCall<M, St::Reader>, RpcError<M::Error, St::Error>>
 where
     M: Subscription,
-    R: RpcRead<Error = W::Error>,
-    W: RpcWrite,
+    St: RpcStream,
 {
+    let (reader, mut writer) = stream.split();
     write_eof_value(&mut writer, request)
         .await
         .map_err(RpcError::Transport)?;

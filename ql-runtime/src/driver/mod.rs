@@ -22,7 +22,7 @@ use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, Ou
 use crate::{
     command::Command,
     io, log,
-    platform::{QlInbound, QlInboundStream, QlPlatform, QlTimer},
+    platform::{QlInbound, QlPlatform, QlTimer, StreamInfo},
     QlStreamError, Runtime,
 };
 
@@ -370,14 +370,15 @@ impl DriverState {
             "delivering inbound stream to platform: service_id={service_id} route_id={route_id} stream_id={stream_id}",
         );
 
-        platform.handle_inbound(QlInboundStream {
-            qid,
-            route_id,
-            service_id,
-            stream_id,
-            writer,
-            reader,
-        });
+        platform.handle_inbound(
+            StreamInfo {
+                qid,
+                stream_id,
+                service_id,
+                route_id,
+            },
+            crate::QlStream { writer, reader },
+        );
     }
 
     fn handle_inbound_readable(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {

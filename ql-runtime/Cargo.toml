@@ -18,6 +18,7 @@ futures-lite = { version = "2.5" }
 log = { version = "0.4", optional = true }
 oneshot = { version = "0.1.11" }
 ql-fsm = { workspace = true }
+ql-common = { workspace = true }
 ql-rpc = { workspace = true, optional = true }
 ql-wire = { workspace = true }
 

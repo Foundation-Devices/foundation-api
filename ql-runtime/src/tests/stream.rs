@@ -14,7 +14,7 @@ async fn open_stream_duplex_happy_path() {
         let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
-            let inbound = inbound_b.recv().await.unwrap();
+            let (_, inbound) = inbound_b.recv().await.unwrap();
 
             let mut writer = inbound.writer;
             let mut reader = inbound.reader;
@@ -69,7 +69,7 @@ async fn large_stream_payload_round_trips() {
         let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             let request_data = read_all(stream.reader).await.unwrap();
             stream.writer.finish().await.unwrap();
             done_tx.send(request_data).await.unwrap();
@@ -111,7 +111,7 @@ async fn dropping_responder_closes_initiator_response() {
         let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             drop(stream.reader);
         });
 
@@ -152,7 +152,7 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
         pair.connect_and_wait(Side::A).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             let mut writer = stream.writer;
             let mut reader = stream.reader;
             assert_eq!(next_chunk(&mut reader).await.unwrap(), None);
@@ -201,7 +201,7 @@ async fn closing_initiator_reader_preserves_initiator_writer() {
         let (done_tx, done_rx) = async_channel::bounded(1);
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             let request = read_all(stream.reader).await.unwrap();
             done_tx.send(request).await.unwrap();
         });
@@ -264,7 +264,7 @@ async fn max_concurrent_message_writes_is_respected() {
 
         let responder = tokio::task::spawn_local(async move {
             for _ in 0..4 {
-                let stream = inbound_b.recv().await.unwrap();
+                let (_, stream) = inbound_b.recv().await.unwrap();
                 let _ = read_all(stream.reader).await;
                 let mut writer = stream.writer;
                 writer.queue_finish();
@@ -338,7 +338,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
         await_status(&status_b, Some(identity_a.qid), PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             let received_request = read_all(stream.reader).await.unwrap();
             let mut writer = stream.writer;
             writer
@@ -421,7 +421,7 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
         let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             eprintln!("responder accepted inbound stream");
             let mut reader = stream.reader;
             let mut received = Vec::new();
@@ -540,7 +540,7 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
         let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             let mut reader = stream.reader;
             while next_chunk(&mut reader).await.unwrap().is_some() {}
         });
@@ -591,7 +591,7 @@ async fn responder_drains_multiple_local_chunks_per_writable_wake() {
         let inbound_b = pair.take_inbound(Side::B);
 
         let responder = tokio::task::spawn_local(async move {
-            let inbound = inbound_b.recv().await.unwrap();
+            let (_, inbound) = inbound_b.recv().await.unwrap();
             let _ = read_all(inbound.reader).await.unwrap();
 
             let mut writer = inbound.writer;

@@ -4,6 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use ql_common::ResetCode;
 use ql_fsm::StreamResetTarget;
 use ql_wire::{ResetCode, StreamId};
 
@@ -46,10 +47,6 @@ impl StreamReader {
             terminal: ReaderTerminalState::Open,
             runtime_tx,
         }
-    }
-
-    pub fn stream_id(&self) -> StreamId {
-        self.rx.stream_id()
     }
 
     pub fn poll_read(

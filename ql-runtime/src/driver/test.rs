@@ -4,8 +4,7 @@ use ql_wire::{generate_identity, NoopCrypto, PeerBundle, SoftwareCrypto, QID};
 use super::*;
 use crate::{
     driver::state::{InboundIo, OutboundIo},
-    io,
-    platform::QlInbound,
+    io, StreamInfo,
 };
 
 pub struct NoopTimer;
@@ -40,7 +39,7 @@ impl QlPlatform for NoopCrypto {
 
     fn handle_peer_status(&self, _peer: Option<QID>, _status: ql_fsm::PeerStatus) {}
 
-    fn handle_inbound(&self, _event: QlInboundStream) {}
+    fn handle_inbound(&self, _info: StreamInfo, _stream: crate::QlStream) {}
 }
 
 impl QlInbound for NoopInbound {

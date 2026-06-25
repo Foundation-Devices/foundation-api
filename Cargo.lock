@@ -1086,6 +1086,7 @@ dependencies = [
  "log",
  "loom",
  "oneshot",
+ "ql-common",
  "ql-fsm",
  "ql-rpc",
  "ql-wire",

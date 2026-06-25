@@ -5,17 +5,13 @@ use std::{
 
 use bytes::Bytes;
 
-use crate::{ResetCode, RouteId, ServiceId, StreamId, QID};
+use crate::ResetCode;
 
 pub trait RpcStream {
     type Error;
     type Reader: RpcRead<Error = Self::Error>;
     type Writer: RpcWrite<Error = Self::Error>;
 
-    fn qid(&self) -> QID;
-    fn stream_id(&self) -> StreamId;
-    fn service_id(&self) -> ServiceId;
-    fn route_id(&self) -> RouteId;
     fn split(self) -> (Self::Reader, Self::Writer);
 }
 

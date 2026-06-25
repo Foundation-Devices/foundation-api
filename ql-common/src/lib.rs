@@ -84,3 +84,11 @@ impl std::fmt::Display for ServiceId {
 
 varint_wrapper!(RouteId);
 varint_wrapper!(StreamId);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StreamInfo {
+    pub qid: QID,
+    pub stream_id: StreamId,
+    pub service_id: ServiceId,
+    pub route_id: RouteId,
+}

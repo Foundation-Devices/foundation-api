@@ -1,19 +1,18 @@
 use crate::{
     request::Request,
     rpc::{read_eof_value, write_eof_value},
-    RpcError, RpcRead, RpcWrite,
+    RpcError, RpcStream,
 };
 
-pub async fn call<M, R, W>(
-    mut reader: R,
-    mut writer: W,
+pub async fn call<M, St>(
+    stream: St,
     request: &M::Request,
-) -> Result<M::Response, RpcError<M::Error, W::Error>>
+) -> Result<M::Response, RpcError<M::Error, St::Error>>
 where
     M: Request,
-    R: RpcRead<Error = W::Error>,
-    W: RpcWrite,
+    St: RpcStream,
 {
+    let (mut reader, mut writer) = stream.split();
     write_eof_value(&mut writer, request)
         .await
         .map_err(RpcError::Transport)?;

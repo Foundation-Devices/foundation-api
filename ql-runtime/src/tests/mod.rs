@@ -20,9 +20,13 @@ use ql_wire::{
 use tokio::{task::LocalSet, time::Sleep};
 
 use crate::{
-    new_runtime, platform::QlTimer, NoSessionError, PairingInvite, QlFsmConfig, QlInboundStream,
-    QlStreamError, RuntimeConfig, RuntimeHandle,
+    new_runtime,
+    platform::{QlTimer, StreamInfo},
+    NoSessionError, PairingInvite, QlFsmConfig, QlStream, QlStreamError, RuntimeConfig,
+    RuntimeHandle,
 };
+
+type InboundStream = (StreamInfo, QlStream);
 
 mod handshake;
 #[cfg(feature = "rpc")]
@@ -97,7 +101,7 @@ struct TestPlatform {
     _inbound_messages_tx: Sender<Vec<u8>>,
     inbound_messages: Option<Receiver<Vec<u8>>>,
     status: Sender<StatusEvent>,
-    inbound: Option<Sender<QlInboundStream>>,
+    inbound: Option<Sender<InboundStream>>,
     crypto: SoftwareCrypto,
     encrypted_write_counter: AtomicUsize,
     fail_encrypted_write_at: Option<usize>,
@@ -121,7 +125,7 @@ type TestPlatformPartsWithInbound = (
     Receiver<Vec<u8>>,
     Sender<Vec<u8>>,
     Receiver<StatusEvent>,
-    Receiver<QlInboundStream>,
+    Receiver<InboundStream>,
 );
 
 impl TestPlatform {
@@ -151,7 +155,7 @@ impl TestPlatform {
     }
 
     fn new_inner(
-        inbound: Option<Sender<QlInboundStream>>,
+        inbound: Option<Sender<InboundStream>>,
         fail_encrypted_write_at: Option<usize>,
         write_delay: Duration,
         write_stats: Option<WriteStats>,
@@ -183,7 +187,7 @@ struct TestSide {
     handle: RuntimeHandle,
     status: Receiver<StatusEvent>,
     peer: QID,
-    inbound: Receiver<QlInboundStream>,
+    inbound: Receiver<InboundStream>,
 }
 
 struct TestPair {
@@ -310,7 +314,7 @@ impl TestPair {
         .await;
     }
 
-    fn take_inbound(&mut self, side: Side) -> Receiver<QlInboundStream> {
+    fn take_inbound(&mut self, side: Side) -> Receiver<InboundStream> {
         let replacement = async_channel::unbounded().1;
         std::mem::replace(&mut self.side_mut(side).inbound, replacement)
     }
@@ -450,9 +454,9 @@ impl crate::platform::QlPlatform for TestPlatform {
         let _ = self.status.try_send(StatusEvent { peer, status });
     }
 
-    fn handle_inbound(&self, event: QlInboundStream) {
+    fn handle_inbound(&self, info: StreamInfo, stream: QlStream) {
         if let Some(tx) = &self.inbound {
-            let _ = tx.try_send(event);
+            let _ = tx.try_send((info, stream));
         }
     }
 }

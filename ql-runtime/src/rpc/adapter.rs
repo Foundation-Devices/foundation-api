@@ -1,30 +1,14 @@
 use std::task::{Context as TaskContext, Poll};
 
 use bytes::Bytes;
-use ql_rpc::{ResetCode, RouteId, RpcRead, RpcStream, RpcWrite, ServiceId, StreamId, QID};
+use ql_rpc::{ResetCode, RpcRead, RpcStream, RpcWrite};
 
-use crate::{QlInboundStream, QlStreamError, StreamReader, StreamWriter};
+use crate::{QlStream, QlStreamError, StreamReader, StreamWriter};
 
-impl RpcStream for QlInboundStream {
+impl RpcStream for QlStream {
     type Error = QlStreamError;
     type Reader = StreamReader;
     type Writer = StreamWriter;
-
-    fn qid(&self) -> QID {
-        self.qid
-    }
-
-    fn stream_id(&self) -> StreamId {
-        self.stream_id
-    }
-
-    fn service_id(&self) -> ServiceId {
-        self.service_id
-    }
-
-    fn route_id(&self) -> RouteId {
-        self.route_id
-    }
 
     fn split(self) -> (Self::Reader, Self::Writer) {
         (self.reader, self.writer)

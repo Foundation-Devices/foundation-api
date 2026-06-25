@@ -8,15 +8,15 @@ use bytes::Bytes;
 
 use crate::{
     codec, duplex::Duplex, write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcCodec,
-    RpcError, RpcRead, RpcWrite,
+    RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
-pub fn start<M, W, R>(writer: W, reader: R) -> DuplexCall<M, W, R>
+pub fn start<M, St>(stream: St) -> DuplexCall<M, St::Writer, St::Reader>
 where
     M: Duplex,
-    W: RpcWrite,
-    R: RpcRead,
+    St: RpcStream,
 {
+    let (reader, writer) = stream.split();
     DuplexCall {
         sender: DuplexSender::new(writer),
         receiver: DuplexReceiver::new(reader),

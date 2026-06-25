@@ -6,19 +6,18 @@ use crate::{
     download::Download,
     parts::{PartFrameReader, PartReadStep},
     rpc::{parts::FrameKind, write_eof_value},
-    DropResetRead, FramedPrefixStep, FramedReader, ResetCode, RpcError, RpcRead, RpcWrite,
+    DropResetRead, FramedPrefixStep, FramedReader, ResetCode, RpcError, RpcRead, RpcStream,
 };
 
-pub async fn start<M, R, W>(
-    reader: R,
-    mut writer: W,
+pub async fn start<M, St>(
+    stream: St,
     request: &M::Request,
-) -> Result<DownloadCall<M, R>, RpcError<M::Error, W::Error>>
+) -> Result<DownloadCall<M, St::Reader>, RpcError<M::Error, St::Error>>
 where
     M: Download,
-    R: RpcRead<Error = W::Error>,
-    W: RpcWrite,
+    St: RpcStream,
 {
+    let (reader, mut writer) = stream.split();
     write_eof_value(&mut writer, request)
         .await
         .map_err(RpcError::Transport)?;

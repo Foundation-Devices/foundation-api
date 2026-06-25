@@ -6,19 +6,18 @@ use crate::{
         read_eof_value,
     },
     upload::Upload,
-    write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcError, RpcRead, RpcWrite,
+    write_bytes, DropResetRead, DropResetWrite, ResetCode, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
-pub async fn start<M, W, R>(
-    mut writer: W,
-    reader: R,
+pub async fn start<M, St>(
+    stream: St,
     request: &M::Request,
-) -> Result<UploadCall<M, W, R>, W::Error>
+) -> Result<UploadCall<M, St::Writer, St::Reader>, St::Error>
 where
     M: Upload,
-    W: RpcWrite,
-    R: RpcRead<Error = W::Error>,
+    St: RpcStream,
 {
+    let (reader, mut writer) = stream.split();
     let mut payload = Vec::new();
     crate::codec::encode_value_part(request, &mut payload);
     write_bytes(&mut writer, Bytes::from(payload)).await?;

@@ -82,7 +82,7 @@ async fn rejected_session_write_is_reissued() {
         await_status(&status_b, Some(identity_a.qid), PeerStatus::Connected).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             let request = read_all(stream.reader).await.unwrap();
             stream.writer.finish().await.unwrap();
             request

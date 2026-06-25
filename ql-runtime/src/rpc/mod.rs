@@ -18,7 +18,7 @@ impl RpcHandle {
         M: notification::Notification,
     {
         let stream = self.open_rpc_stream::<M, _>().await?;
-        notification::send::<M, _, _>(stream.reader, stream.writer, event)
+        notification::send::<M, _>(stream, event)
             .await
             .map_err(ql_rpc::RpcError::Transport)
     }
@@ -28,7 +28,7 @@ impl RpcHandle {
         M: request::Request,
     {
         let stream = self.open_rpc_stream::<M, _>().await?;
-        request::call::<M, _, _>(stream.reader, stream.writer, request).await
+        request::call::<M, _>(stream, request).await
     }
 
     pub async fn subscribe<M>(
@@ -39,7 +39,7 @@ impl RpcHandle {
         M: subscription::Subscription,
     {
         let stream = self.open_rpc_stream::<M, _>().await?;
-        subscription::start::<M, _, _>(stream.reader, stream.writer, request).await
+        subscription::start::<M, _>(stream, request).await
     }
 
     pub async fn download<M>(
@@ -50,7 +50,7 @@ impl RpcHandle {
         M: download::Download,
     {
         let stream = self.open_rpc_stream::<M, _>().await?;
-        download::start::<M, _, _>(stream.reader, stream.writer, request).await
+        download::start::<M, _>(stream, request).await
     }
 
     pub async fn progress<M>(
@@ -61,7 +61,7 @@ impl RpcHandle {
         M: progress::Progress,
     {
         let stream = self.open_rpc_stream::<M, _>().await?;
-        progress::start::<M, _, _>(stream.reader, stream.writer, request).await
+        progress::start::<M, _>(stream, request).await
     }
 
     pub async fn upload<M>(
@@ -72,7 +72,7 @@ impl RpcHandle {
         M: upload::Upload,
     {
         let stream = self.open_rpc_stream::<M, _>().await?;
-        upload::start::<M, _, _>(stream.writer, stream.reader, request)
+        upload::start::<M, _>(stream, request)
             .await
             .map_err(ql_rpc::RpcError::Transport)
     }
@@ -84,7 +84,7 @@ impl RpcHandle {
         M: duplex::Duplex,
     {
         let stream = self.open_rpc_stream::<M, _>().await?;
-        Ok(duplex::start::<M, _, _>(stream.writer, stream.reader))
+        Ok(duplex::start::<M, _>(stream))
     }
 }
 

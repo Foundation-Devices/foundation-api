@@ -5,20 +5,9 @@ use std::{
     time::Instant,
 };
 
+pub use ql_common::StreamInfo;
 use ql_fsm::{PeerStatus, ReceiveError};
-use ql_wire::{PeerBundle, QlCrypto, RouteId, ServiceId, StreamId, QID};
-
-use crate::{StreamReader, StreamWriter};
-
-#[derive(Debug)]
-pub struct QlInboundStream {
-    pub qid: QID,
-    pub service_id: ServiceId,
-    pub route_id: RouteId,
-    pub stream_id: StreamId,
-    pub writer: StreamWriter,
-    pub reader: StreamReader,
-}
+use ql_wire::{PeerBundle, QlCrypto, QID};
 
 pub trait QlTimer {
     fn set_deadline(self: Pin<&mut Self>, deadline: Option<Instant>);
@@ -48,6 +37,6 @@ pub trait QlPlatform: QlCrypto {
     fn persist_peer(&self, peer: PeerBundle);
 
     fn handle_peer_status(&self, peer: Option<QID>, status: PeerStatus);
-    fn handle_inbound(&self, event: QlInboundStream);
+    fn handle_inbound(&self, info: StreamInfo, stream: crate::QlStream);
     fn handle_recv_error(&self, _error: ReceiveError) {}
 }

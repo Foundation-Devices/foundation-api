@@ -4,6 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use ql_common::ResetCode;
 use ql_fsm::StreamResetTarget;
 use ql_wire::{ResetCode, StreamId};
 
@@ -45,10 +46,6 @@ impl StreamWriter {
             terminal: WriterTerminalState::Pending,
             runtime_tx,
         }
-    }
-
-    pub fn stream_id(&self) -> StreamId {
-        self.tx.stream_id()
     }
 
     pub fn poll_write(

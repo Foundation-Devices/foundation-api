@@ -21,7 +21,7 @@ async fn close_session_aborts_active_streams_and_allows_reconnect() {
         pair.connect_and_wait(Side::A).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             let mut reader = stream.reader;
 
             assert_eq!(
@@ -86,7 +86,7 @@ async fn unpair_aborts_active_streams_and_prevents_reconnect() {
         pair.connect_and_wait(Side::A).await;
 
         let responder = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             let mut reader = stream.reader;
 
             assert_eq!(
@@ -193,7 +193,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
         await_status(&status_b, Some(identity_a.qid), PeerStatus::Connected).await;
 
         let responder_task = tokio::task::spawn_local(async move {
-            let stream = inbound_b.recv().await.unwrap();
+            let (_, stream) = inbound_b.recv().await.unwrap();
             let _ = read_all(stream.reader).await;
             let err = stream.writer.finish().await.unwrap_err();
             assert!(matches!(err, QlStreamError::NoSession));

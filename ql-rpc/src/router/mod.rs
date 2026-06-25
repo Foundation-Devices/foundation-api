@@ -1,4 +1,4 @@
-use crate::{ResetCode, RouteId, ServiceId, StreamId, QID};
+use crate::{ResetCode, RouteId, ServiceId, StreamId, StreamInfo, QID};
 
 mod builder;
 mod config;
@@ -88,13 +88,14 @@ where
         RouterBuilder::<S, St, Sp, SendRoutes>::new(spawner)
     }
 
-    pub fn handle(&self, stream: St) -> Option<(RouteId, Sp::Handle)> {
-        let service_id = stream.service_id();
-        let route_id = stream.route_id();
-        let context = Context {
-            qid: stream.qid(),
-            stream_id: stream.stream_id(),
-        };
+    pub fn handle(&self, info: StreamInfo, stream: St) -> Option<(RouteId, Sp::Handle)> {
+        let StreamInfo {
+            qid,
+            stream_id,
+            service_id,
+            route_id,
+        } = info;
+        let context = Context { qid, stream_id };
         let key = RouteKey {
             service_id,
             route_id,
