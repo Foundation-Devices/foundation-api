@@ -67,15 +67,6 @@ where
     poll_fn(|cx| writer.poll_finish(cx))
 }
 
-pub fn reset_stream<St>(stream: St, code: ResetCode)
-where
-    St: RpcStream,
-{
-    let (reader, writer) = stream.split();
-    reader.reset(code);
-    writer.reset(code);
-}
-
 pub(crate) use drop::*;
 mod drop {
     use super::*;

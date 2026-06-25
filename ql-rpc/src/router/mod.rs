@@ -4,21 +4,8 @@ mod builder;
 mod config;
 mod mode;
 
-pub use self::{
-    builder::{LocalRoutes, RouterBuilder, SendRoutes},
-    config::RouterConfig,
-    mode::*,
-};
-pub use crate::{
-    download::{DownloadHandler, DownloadHandlerLocal, DownloadStart, DownloadWriter},
-    duplex::{DuplexHandler, DuplexHandlerLocal, DuplexPeer},
-    notification::{NotificationHandler, NotificationHandlerLocal},
-    progress::{ProgressHandler, ProgressHandlerLocal, ProgressResponder},
-    request::{RequestHandler, RequestHandlerLocal, Response},
-    subscription::{SubscriptionHandler, SubscriptionHandlerLocal, SubscriptionResponder},
-    upload::{UploadHandler, UploadHandlerLocal, UploadReader, UploadResponder},
-};
-use crate::{reset_stream, RpcStream};
+pub use self::{builder::*, config::*, mode::*};
+use crate::{RpcRead, RpcStream, RpcWrite};
 
 pub struct Router<S, St, Sp>
 where
@@ -88,7 +75,7 @@ where
         RouterBuilder::<S, St, Sp, SendRoutes>::new(spawner)
     }
 
-    pub fn handle(&self, info: StreamInfo, stream: St) -> Option<(RouteId, Sp::Handle)> {
+    pub fn handle(&self, info: StreamInfo, stream: St) -> Option<Sp::Handle> {
         let StreamInfo {
             qid,
             stream_id,
@@ -101,19 +88,18 @@ where
             route_id,
         };
         let Ok(index) = self.routes.binary_search_by_key(&key, |entry| entry.key) else {
-            reset_stream(stream, ResetCode::UNKNOWN_ROUTE);
+            let (reader, writer) = stream.split();
+            reader.reset(ResetCode::UNKNOWN_ROUTE);
+            writer.reset(ResetCode::UNKNOWN_ROUTE);
             return None;
         };
         let route = self.routes[index].route;
-        Some((
-            route_id,
-            route(
-                &self.spawner,
-                self.state.clone(),
-                context,
-                self.config,
-                stream,
-            ),
+        Some(route(
+            &self.spawner,
+            self.state.clone(),
+            context,
+            self.config,
+            stream,
         ))
     }
 

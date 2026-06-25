@@ -1,12 +1,11 @@
 use super::Route;
 use crate::RpcCodec;
 
-pub(crate) mod client;
+mod client;
 pub(crate) mod codec;
-pub(crate) mod server;
+mod server;
 
-pub use client::{start, SubscriptionCall};
-pub use server::{SubscriptionHandler, SubscriptionHandlerLocal, SubscriptionResponder};
+pub use self::{client::*, server::*};
 
 /// rpc where one request opens a stream of typed events
 ///

@@ -59,42 +59,46 @@ where
     }
 }
 
-pub(crate) async fn handle_progress_inner<S, M, St, H, HF, E>(
+pub(crate) fn handle_progress<S, M, St, H, HF, E>(
     state: S,
     context: Context,
     config: RouterConfig,
-    mut reader: St::Reader,
-    writer: St::Writer,
+    stream: St,
     handle: H,
     handle_error: E,
-) where
+) -> impl Future<Output = ()>
+where
     M: Progress + 'static,
     St: RpcStream + 'static,
     H: FnOnce(S, Context, M::Request, ProgressResponder<M, St::Writer>) -> HF,
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
-    let request = match read_framed_request::<M::Request, _>(&mut reader, config).await {
-        Ok(request) => request,
-        Err(error) => {
-            let code = error.reset_code();
-            handle_error(&state, &error);
-            if let Some(code) = code {
-                reader.reset(code);
-                writer.reset(code);
-            }
-            return;
-        }
-    };
+    let (mut reader, writer) = stream.split();
 
-    handle(
-        state,
-        context,
-        request,
-        ProgressResponder {
-            writer: DropResetWrite::new(writer),
-            marker: PhantomData,
-        },
-    )
-    .await;
+    async move {
+        let request = match read_framed_request::<M::Request, _>(&mut reader, config).await {
+            Ok(request) => request,
+            Err(error) => {
+                let code = error.reset_code();
+                handle_error(&state, &error);
+                if let Some(code) = code {
+                    reader.reset(code);
+                    writer.reset(code);
+                }
+                return;
+            }
+        };
+
+        handle(
+            state,
+            context,
+            request,
+            ProgressResponder {
+                writer: DropResetWrite::new(writer),
+                marker: PhantomData,
+            },
+        )
+        .await;
+    }
 }

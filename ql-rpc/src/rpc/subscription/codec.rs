@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::Bytes;
 
-use crate::{codec, subscription::Subscription, RpcCodec, RpcError};
+use crate::{subscription::Subscription, ChunkQueue, RpcCodec, RpcError};
 
 pub enum ReadStep<M: Subscription> {
     NeedMore,
@@ -10,14 +10,14 @@ pub enum ReadStep<M: Subscription> {
 }
 
 pub struct ResponseReader<M: Subscription> {
-    bytes: codec::ChunkQueue,
+    bytes: ChunkQueue,
     marker: PhantomData<fn() -> M>,
 }
 
 impl<M: Subscription> Default for ResponseReader<M> {
     fn default() -> Self {
         Self {
-            bytes: codec::ChunkQueue::default(),
+            bytes: ChunkQueue::default(),
             marker: PhantomData,
         }
     }

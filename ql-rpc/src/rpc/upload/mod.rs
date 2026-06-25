@@ -1,11 +1,10 @@
-use super::Route;
+use super::*;
 use crate::RpcCodec;
 
-pub(crate) mod client;
-pub(crate) mod server;
+mod client;
+mod server;
 
-pub use client::{start, UploadCall, UploadPartWriter};
-pub use server::{UploadHandler, UploadHandlerLocal, UploadPart, UploadReader, UploadResponder};
+pub use self::{client::*, server::*};
 
 /// rpc where the caller uploads zero or more byte parts after a typed request
 ///

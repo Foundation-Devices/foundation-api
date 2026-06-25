@@ -13,7 +13,7 @@ pub enum PartReadStep<H: RpcCodec> {
 }
 
 pub struct PartFrameReader<H: RpcCodec> {
-    bytes: codec::ChunkQueue,
+    bytes: ChunkQueue,
     pending_frame: PendingFrame,
     marker: PhantomData<fn() -> H>,
 }

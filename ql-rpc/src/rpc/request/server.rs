@@ -4,14 +4,14 @@ use bytes::Bytes;
 use ql_common::ResetCode;
 
 use crate::{
-    finish_bytes, request::Request as RequestRpc, rpc::read_eof_request, write_bytes, Context,
-    DropResetWrite, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
+    finish_bytes, request::Request, rpc::read_eof_request, write_bytes, Context, DropResetWrite,
+    RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(RequestHandler: Send)]
 pub trait RequestHandlerLocal<M, St>
 where
-    M: RequestRpc,
+    M: Request,
     St: RpcStream,
 {
     async fn handle(
@@ -58,33 +58,38 @@ where
     }
 }
 
-pub(crate) async fn handle_request_inner<S, M, St, H, HF, E>(
+pub(crate) fn handle_request<S, Req, Res, Err, St, H, HF, E>(
     state: S,
     context: Context,
     config: RouterConfig,
-    mut reader: St::Reader,
-    writer: St::Writer,
+    stream: St,
     handle: H,
     handle_error: E,
-) where
-    M: RequestRpc + 'static,
+) -> impl Future<Output = ()>
+where
+    Req: RpcCodec<Error = Err> + 'static,
+    Res: RpcCodec<Error = Err> + 'static,
     St: RpcStream + 'static,
-    H: FnOnce(S, Context, M::Request, Response<M::Response, St::Writer>) -> HF,
+    H: FnOnce(S, Context, Req, Response<Res, St::Writer>) -> HF,
     HF: Future<Output = ()>,
-    E: FnOnce(&S, &RpcError<M::Error, St::Error>),
+    E: FnOnce(&S, &RpcError<Err, St::Error>),
 {
-    let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
-        Ok(request) => request,
-        Err(error) => {
-            let code = error.reset_code();
-            handle_error(&state, &error);
-            if let Some(code) = code {
-                reader.reset(code);
-                writer.reset(code);
-            }
-            return;
-        }
-    };
+    let (mut reader, writer) = stream.split();
 
-    handle(state, context, request, Response::new(writer)).await;
+    async move {
+        let request = match read_eof_request::<Req, _>(&mut reader, config).await {
+            Ok(request) => request,
+            Err(error) => {
+                let code = error.reset_code();
+                handle_error(&state, &error);
+                if let Some(code) = code {
+                    reader.reset(code);
+                    writer.reset(code);
+                }
+                return;
+            }
+        };
+
+        handle(state, context, request, Response::new(writer)).await;
+    }
 }

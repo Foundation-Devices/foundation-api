@@ -1,12 +1,11 @@
 use super::Route;
 use crate::RpcCodec;
 
-pub(crate) mod client;
+mod client;
 pub(crate) mod codec;
-pub(crate) mod server;
+mod server;
 
-pub use client::{start, ProgressCall};
-pub use server::{ProgressHandler, ProgressHandlerLocal, ProgressResponder};
+pub use self::{client::*, server::*};
 
 /// rpc where the responder streams progress values before a final response
 ///

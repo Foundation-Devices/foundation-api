@@ -2,8 +2,6 @@ use std::{convert::Infallible, str::Utf8Error};
 
 use bytes::{Buf, BufMut, Bytes};
 
-pub use crate::chunk_queue::ChunkQueue;
-
 pub trait RpcCodec: Sized {
     type Error;
 

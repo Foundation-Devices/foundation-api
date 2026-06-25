@@ -1,11 +1,10 @@
 use super::Route;
 use crate::RpcCodec;
 
-pub(crate) mod client;
-pub(crate) mod server;
+mod client;
+mod server;
 
-pub use client::send;
-pub use server::{NotificationHandler, NotificationHandlerLocal};
+pub use self::{client::*, server::*};
 
 /// one-way rpc that carries a single typed payload and no typed response
 ///

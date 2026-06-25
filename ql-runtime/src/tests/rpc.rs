@@ -10,10 +10,14 @@ use std::{
 use bytes::Bytes;
 use ql_common::{ResetCode, ResetOrigin, RouteId, ServiceId};
 use ql_rpc::{
-    Context, DownloadHandlerLocal, DownloadStart, DuplexHandlerLocal, DuplexPeer, LocalSpawner,
-    NotificationHandlerLocal, ProgressHandlerLocal, ProgressResponder, RequestHandler,
-    RequestHandlerLocal, Response, SendSpawner, Spawner, SubscriptionHandlerLocal,
-    SubscriptionResponder, UploadHandlerLocal, UploadReader, UploadResponder,
+    download::{DownloadHandlerLocal, DownloadStart},
+    duplex::{DuplexHandlerLocal, DuplexPeer},
+    notification::NotificationHandlerLocal,
+    progress::{ProgressHandlerLocal, ProgressResponder},
+    request::{RequestHandler, RequestHandlerLocal, Response},
+    subscription::{SubscriptionHandlerLocal, SubscriptionResponder},
+    upload::{UploadHandlerLocal, UploadReader, UploadResponder},
+    Context, LocalSpawner, SendSpawner, Spawner,
 };
 
 use super::*;
@@ -180,7 +184,7 @@ async fn rpc_request() {
 
         let responder = tokio::task::spawn_local(async move {
             let (info, stream) = inbound_b.recv().await.unwrap();
-            if let Some((_, fut)) = router.handle(info, stream) {
+            if let Some(fut) = router.handle(info, stream) {
                 let fut = assert_send(fut);
                 fut.await.unwrap();
             }
@@ -229,7 +233,7 @@ async fn rpc_notification() {
 
         let responder = tokio::task::spawn_local(async move {
             let (info, stream) = inbound_b.recv().await.unwrap();
-            if let Some((_, fut)) = router.handle(info, stream) {
+            if let Some(fut) = router.handle(info, stream) {
                 fut.await.unwrap();
             }
         });
@@ -283,7 +287,7 @@ async fn rpc_subscrption() {
 
         let responder = tokio::task::spawn_local(async move {
             let (info, stream) = inbound_b.recv().await.unwrap();
-            if let Some((_, fut)) = router.handle(info, stream) {
+            if let Some(fut) = router.handle(info, stream) {
                 fut.await.unwrap();
             }
         });
@@ -337,7 +341,7 @@ async fn rpc_router_enforces_max_request_bytes() {
 
         let responder = tokio::task::spawn_local(async move {
             let (info, stream) = inbound_b.recv().await.unwrap();
-            if let Some((_, fut)) = router.handle(info, stream) {
+            if let Some(fut) = router.handle(info, stream) {
                 fut.await.unwrap();
             }
         });
@@ -393,7 +397,7 @@ async fn rpc_progress() {
 
         let responder = tokio::task::spawn_local(async move {
             let (info, stream) = inbound_b.recv().await.unwrap();
-            if let Some((_, fut)) = router.handle(info, stream) {
+            if let Some(fut) = router.handle(info, stream) {
                 fut.await.unwrap();
             }
         });
@@ -456,7 +460,7 @@ async fn rpc_download() {
 
         let responder = tokio::task::spawn_local(async move {
             let (info, stream) = inbound_b.recv().await.unwrap();
-            if let Some((_, fut)) = router.handle(info, stream) {
+            if let Some(fut) = router.handle(info, stream) {
                 fut.await.unwrap();
             }
         });
@@ -533,7 +537,7 @@ async fn rpc_download_complete() {
 
         let responder = tokio::task::spawn_local(async move {
             let (info, stream) = inbound_b.recv().await.unwrap();
-            if let Some((_, fut)) = router.handle(info, stream) {
+            if let Some(fut) = router.handle(info, stream) {
                 fut.await.unwrap();
             }
         });
@@ -608,7 +612,7 @@ async fn rpc_upload() {
 
         let responder = tokio::task::spawn_local(async move {
             let (info, stream) = inbound_b.recv().await.unwrap();
-            if let Some((_, fut)) = router.handle(info, stream) {
+            if let Some(fut) = router.handle(info, stream) {
                 fut.await.unwrap();
             }
         });
@@ -681,7 +685,7 @@ async fn rpc_duplex() {
 
         let responder = tokio::task::spawn_local(async move {
             let (info, stream) = inbound_b.recv().await.unwrap();
-            if let Some((_, fut)) = router.handle(info, stream) {
+            if let Some(fut) = router.handle(info, stream) {
                 fut.await.unwrap();
             }
         });

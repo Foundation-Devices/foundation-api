@@ -1,11 +1,10 @@
 use super::Route;
 use crate::RpcCodec;
 
-pub(crate) mod client;
-pub(crate) mod server;
+mod client;
+mod server;
 
-pub use client::{start, DuplexCall, DuplexReceiver, DuplexSender};
-pub use server::{DuplexHandler, DuplexHandlerLocal, DuplexPeer};
+pub use self::{client::*, server::*};
 
 /// rpc where both sides exchange typed events on the same stream
 ///

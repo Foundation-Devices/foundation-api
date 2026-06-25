@@ -159,15 +159,15 @@ where
     }
 }
 
-pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
+pub(crate) fn handle_upload<S, M, St, H, HF, E>(
     state: S,
     context: Context,
     config: RouterConfig,
-    mut reader: St::Reader,
-    writer: St::Writer,
+    stream: St,
     handle: H,
     handle_error: E,
-) where
+) -> impl Future<Output = ()>
+where
     M: Upload + 'static,
     St: RpcStream + 'static,
     H: FnOnce(
@@ -180,29 +180,33 @@ pub(crate) async fn handle_upload_inner<S, M, St, H, HF, E>(
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
-    let (request, buffered) =
-        match read_framed_request_prefix::<M::Request, _>(&mut reader, config).await {
-            Ok(value) => value,
-            Err(error) => {
-                let code = error.reset_code();
-                handle_error(&state, &error);
-                if let Some(code) = code {
-                    reader.reset(code);
-                    writer.reset(code);
-                }
-                return;
-            }
-        };
+    let (mut reader, writer) = stream.split();
 
-    handle(
-        state,
-        context,
-        request,
-        UploadReader {
-            stream: DropResetRead::new(reader),
-            reader: PartFrameReader::new(buffered),
-        },
-        Response::new(writer),
-    )
-    .await;
+    async move {
+        let (request, buffered) =
+            match read_framed_request_prefix::<M::Request, _>(&mut reader, config).await {
+                Ok(value) => value,
+                Err(error) => {
+                    let code = error.reset_code();
+                    handle_error(&state, &error);
+                    if let Some(code) = code {
+                        reader.reset(code);
+                        writer.reset(code);
+                    }
+                    return;
+                }
+            };
+
+        handle(
+            state,
+            context,
+            request,
+            UploadReader {
+                stream: DropResetRead::new(reader),
+                reader: PartFrameReader::new(buffered),
+            },
+            Response::new(writer),
+        )
+        .await;
+    }
 }

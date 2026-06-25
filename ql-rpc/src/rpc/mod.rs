@@ -25,11 +25,9 @@ pub trait Route {
     const ROUTE: RouteId;
 }
 
-pub use download::Download;
-pub use duplex::Duplex;
-pub use notification::Notification;
-pub use progress::Progress;
-pub use request::Request;
-pub use subscription::Subscription;
-pub use upload::Upload;
 use utils::*;
+
+pub use self::{
+    download::Download, duplex::Duplex, notification::Notification, progress::Progress,
+    request::Request, subscription::Subscription, upload::Upload,
+};

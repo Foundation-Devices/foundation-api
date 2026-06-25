@@ -1,13 +1,10 @@
 use super::Route;
 use crate::RpcCodec;
 
-pub(crate) mod client;
-pub(crate) mod server;
+mod client;
+mod server;
 
-pub use client::{start, DownloadCall, DownloadPart, DownloadReader};
-pub use server::{
-    DownloadHandler, DownloadHandlerLocal, DownloadPartWriter, DownloadStart, DownloadWriter,
-};
+pub use self::{client::*, server::*};
 
 /// rpc where the responder returns metadata first and then zero or more byte parts
 ///

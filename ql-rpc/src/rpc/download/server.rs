@@ -5,7 +5,7 @@ use ql_common::ResetCode;
 
 use crate::{
     codec,
-    download::Download as DownloadRpc,
+    download::Download,
     finish_bytes,
     rpc::{
         parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
@@ -17,7 +17,7 @@ use crate::{
 #[trait_variant::make(DownloadHandler: Send)]
 pub trait DownloadHandlerLocal<M, St>
 where
-    M: DownloadRpc,
+    M: Download,
     St: RpcStream,
 {
     async fn handle(
@@ -32,7 +32,7 @@ where
 
 pub struct DownloadStart<M, W>
 where
-    M: DownloadRpc,
+    M: Download,
     W: RpcWrite,
 {
     writer: DropResetWrite<W>,
@@ -41,7 +41,7 @@ where
 
 pub struct DownloadWriter<M, W>
 where
-    M: DownloadRpc,
+    M: Download,
     W: RpcWrite,
 {
     writer: DropResetWrite<W>,
@@ -50,7 +50,7 @@ where
 
 pub struct DownloadPartWriter<'a, M, W>
 where
-    M: DownloadRpc,
+    M: Download,
     W: RpcWrite,
 {
     parent: &'a mut DownloadWriter<M, W>,
@@ -59,7 +59,7 @@ where
 
 impl<M, W> DownloadStart<M, W>
 where
-    M: DownloadRpc,
+    M: Download,
     W: RpcWrite,
 {
     pub(crate) fn new(writer: W) -> Self {
@@ -102,7 +102,7 @@ where
 
 impl<M, W> DownloadWriter<M, W>
 where
-    M: DownloadRpc,
+    M: Download,
     W: RpcWrite,
 {
     pub async fn start_part(
@@ -134,7 +134,7 @@ where
 
 impl<M, W> DownloadPartWriter<'_, M, W>
 where
-    M: DownloadRpc,
+    M: Download,
     W: RpcWrite,
 {
     pub async fn send(&mut self, bytes: Bytes) -> Result<(), W::Error> {
@@ -156,7 +156,7 @@ where
 
 impl<M, W> Drop for DownloadPartWriter<'_, M, W>
 where
-    M: DownloadRpc,
+    M: Download,
     W: RpcWrite,
 {
     fn drop(&mut self) {
@@ -166,33 +166,37 @@ where
     }
 }
 
-pub(crate) async fn handle_download_inner<S, M, St, H, HF, E>(
+pub(crate) fn handle_download<S, M, St, H, HF, E>(
     state: S,
     context: Context,
     config: RouterConfig,
-    mut reader: St::Reader,
-    writer: St::Writer,
+    stream: St,
     handle: H,
     handle_error: E,
-) where
-    M: DownloadRpc + 'static,
+) -> impl Future<Output = ()>
+where
+    M: Download + 'static,
     St: RpcStream + 'static,
     H: FnOnce(S, Context, M::Request, DownloadStart<M, St::Writer>) -> HF,
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
-    let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
-        Ok(request) => request,
-        Err(error) => {
-            let code = error.reset_code();
-            handle_error(&state, &error);
-            if let Some(code) = code {
-                reader.reset(code);
-                writer.reset(code);
-            }
-            return;
-        }
-    };
+    let (mut reader, writer) = stream.split();
 
-    handle(state, context, request, DownloadStart::new(writer)).await;
+    async move {
+        let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
+            Ok(request) => request,
+            Err(error) => {
+                let code = error.reset_code();
+                handle_error(&state, &error);
+                if let Some(code) = code {
+                    reader.reset(code);
+                    writer.reset(code);
+                }
+                return;
+            }
+        };
+
+        handle(state, context, request, DownloadStart::new(writer)).await;
+    }
 }

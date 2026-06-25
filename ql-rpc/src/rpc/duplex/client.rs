@@ -8,8 +8,8 @@ use bytes::Bytes;
 use ql_common::ResetCode;
 
 use crate::{
-    codec, duplex::Duplex, write_bytes, DropResetRead, DropResetWrite, RpcCodec, RpcError, RpcRead,
-    RpcStream, RpcWrite,
+    codec, duplex::Duplex, write_bytes, ChunkQueue, DropResetRead, DropResetWrite, RpcCodec,
+    RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 pub fn start<M, St>(stream: St) -> DuplexCall<M, St::Writer, St::Reader>
@@ -152,14 +152,14 @@ enum ReadStep<T: RpcCodec> {
 }
 
 struct EventReader<T: RpcCodec> {
-    bytes: codec::ChunkQueue,
+    bytes: ChunkQueue,
     marker: PhantomData<fn() -> T>,
 }
 
 impl<T: RpcCodec> Default for EventReader<T> {
     fn default() -> Self {
         Self {
-            bytes: codec::ChunkQueue::default(),
+            bytes: ChunkQueue::default(),
             marker: PhantomData,
         }
     }

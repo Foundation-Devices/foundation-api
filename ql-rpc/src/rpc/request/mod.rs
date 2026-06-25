@@ -1,11 +1,10 @@
 use super::Route;
 use crate::RpcCodec;
 
-pub(crate) mod client;
-pub(crate) mod server;
+mod client;
+mod server;
 
-pub use client::call;
-pub use server::{RequestHandler, RequestHandlerLocal, Response};
+pub use self::{client::*, server::*};
 
 /// request-response rpc with exactly one typed value in each direction
 ///
