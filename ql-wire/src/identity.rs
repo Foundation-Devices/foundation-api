@@ -1,5 +1,6 @@
 use std::ops::Deref;
 
+use codec::LenBytes;
 use ql_common::{VarInt, QID};
 
 use crate::{
@@ -149,26 +150,20 @@ impl Deref for QlName {
 
 impl WireEncode for QlName {
     fn encoded_len(&self) -> usize {
-        let len = VarInt::try_from(self.0.len()).unwrap();
-        len.encoded_len() + self.0.len()
+        LenBytes(self.0.as_bytes()).encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        VarInt::try_from(self.0.len())
-            .expect("identity name length fits in varint")
-            .encode(out);
-        self.0.as_bytes().encode(out);
+        LenBytes(self.0.as_bytes()).encode(out)
     }
 }
 
 impl<B: ByteSlice> codec::WireDecode<B> for QlName {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        let len = usize::try_from(reader.decode::<VarInt>()?.into_inner())
-            .map_err(|_| WireError::InvalidPayload)?;
-        if len == 0 || len > Self::MAX_LEN {
+        let bytes = reader.decode::<LenBytes<B>>()?.0;
+        if bytes.is_empty() || bytes.len() > Self::MAX_LEN {
             return Err(WireError::InvalidPayload);
         }
-        let bytes = reader.take_bytes(len)?;
         let name = std::str::from_utf8(&bytes).map_err(|_| WireError::InvalidPayload)?;
         QlName::new(name)
     }

@@ -1,6 +1,7 @@
-use bytes::BufMut;
+use bytes::{Buf, BufMut};
+use ql_common::VarInt;
 
-use crate::{ByteSlice, WireError};
+use crate::{BufView, ByteSlice, WireError};
 
 pub trait WireEncode {
     fn encoded_len(&self) -> usize;
@@ -241,5 +242,43 @@ impl<B: ByteSlice> Reader<B> {
         T: WireDecode<B>,
     {
         T::decode(self)
+    }
+}
+
+/// bytes encoded with a VarInt len prefix
+pub struct LenBytes<B>(pub B);
+
+impl<B> WireEncode for LenBytes<B>
+where
+    B: BufView,
+{
+    fn encoded_len(&self) -> usize {
+        let len = self.0.buf().remaining();
+        let len_prefix = VarInt::try_from(len).unwrap();
+        len_prefix.encoded_len() + len
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        let mut bytes = self.0.buf();
+        let len = bytes.remaining();
+        let len_prefix = VarInt::try_from(len).unwrap();
+        len_prefix.encode(out);
+        while bytes.has_remaining() {
+            let chunk = bytes.chunk();
+            out.put_slice(chunk);
+            bytes.advance(chunk.len());
+        }
+    }
+}
+
+impl<B> WireDecode<B> for LenBytes<B>
+where
+    B: ByteSlice,
+{
+    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+        let len = reader.decode::<VarInt>()?.into_inner();
+        let len = usize::try_from(len).map_err(|_| WireError::InvalidPayload)?;
+        let bytes = reader.take_bytes(len)?;
+        Ok(Self(bytes))
     }
 }

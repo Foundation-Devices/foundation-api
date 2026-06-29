@@ -1,7 +1,9 @@
-use bytes::Buf;
 use ql_common::{RouteId, ServiceId, StreamId, VarInt};
 
-use crate::{codec, BufView, ByteSlice, WireDecode, WireEncode, WireError};
+use crate::{
+    codec::{self, LenBytes},
+    BufView, ByteSlice, WireDecode, WireEncode, WireError,
+};
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,15 +35,14 @@ impl<B: ByteSlice> WireDecode<B> for StreamData<B> {
         } else {
             None
         };
-        let bytes_len = usize::try_from(reader.decode::<VarInt>()?.into_inner())
-            .map_err(|_| WireError::InvalidPayload)?;
+        let bytes = reader.decode::<LenBytes<B>>()?.0;
 
         Ok(Self {
             stream_id,
             offset,
             header,
             fin,
-            bytes: reader.take_bytes(bytes_len)?,
+            bytes,
         })
     }
 }
@@ -63,14 +64,11 @@ impl<B> StreamData<B> {
 
 impl<B: BufView> WireEncode for StreamData<B> {
     fn encoded_len(&self) -> usize {
-        let bytes = self.bytes.buf();
-        let bytes_len = bytes.remaining();
         self.stream_id.encoded_len()
             + self.offset.encoded_len()
             + size_of::<u8>()
             + self.header.as_ref().map_or(0, WireEncode::encoded_len)
-            + VarInt::try_from(bytes_len).unwrap().encoded_len()
-            + bytes_len
+            + LenBytes(&self.bytes).encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -92,13 +90,7 @@ impl<B: BufView> WireEncode for StreamData<B> {
         if let Some(header) = &self.header {
             header.encode(out);
         }
-        let mut bytes = self.bytes.buf();
-        VarInt::try_from(bytes.remaining()).unwrap().encode(out);
-        while bytes.has_remaining() {
-            let chunk = bytes.chunk();
-            out.put_slice(chunk);
-            bytes.advance(chunk.len());
-        }
+        LenBytes(&self.bytes).encode(out);
     }
 }
 
