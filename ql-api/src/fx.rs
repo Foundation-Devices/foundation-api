@@ -1,6 +1,8 @@
-use ql_rpc::{Notification, Request, Subscription};
+use ql_rpc::{Request, Subscription};
 
-use crate::{route, Error};
+use crate::Error;
+
+// COMMON TYPES
 
 rpc! {
     #[PartialEq]
@@ -19,8 +21,31 @@ rpc! {
     }
 }
 
+// APP ROUTES
+
+// SERVICE ROUTES
+
+service_routes! {
+    crate::service_id::FX => {
+        SubscribeExchangeRate: Subscription = 1,
+        RequestExchangeRateHistory: Request = 2,
+    }
+}
+
 rpc! {
-    pub struct ExchangeRateHistoryRequest {
+    pub struct ExchangeRateParams {
+        pub currency_code: String,
+    }
+}
+
+impl Subscription for SubscribeExchangeRate {
+    type Error = Error;
+    type Request = ExchangeRateParams;
+    type Event = ExchangeRate;
+}
+
+rpc! {
+    pub struct ExchangeRateHistoryParams {
         pub currency_code: String,
     }
 }
@@ -33,52 +58,8 @@ rpc! {
     }
 }
 
-impl Notification for route::ExchangeRateUpdate {
+impl Request for RequestExchangeRateHistory {
     type Error = Error;
-    type Payload = ExchangeRate;
-}
-
-rpc! {
-    pub struct ExchangeRateSubscriptionRequest {
-        pub currency_code: String,
-    }
-}
-
-impl Subscription for route::ExchangeRateSubscription {
-    type Error = Error;
-    type Request = ExchangeRateSubscriptionRequest;
-    type Event = ExchangeRate;
-}
-
-impl Request for route::ExchangeRateHistory {
-    type Error = Error;
-    type Request = ExchangeRateHistoryRequest;
+    type Request = ExchangeRateHistoryParams;
     type Response = ExchangeRateHistory;
-}
-
-rpc! {
-    pub struct PassportFiatPreferencePayload {
-        pub currency_code: String,
-    }
-}
-
-impl Notification for route::PassportFiatPreference {
-    type Error = Error;
-    type Payload = PassportFiatPreferencePayload;
-}
-
-rpc! {
-    pub struct PassportFiatPreferenceRequest {}
-}
-
-rpc! {
-    pub struct PassportFiatPreferenceResponse {
-        pub currency_code: String,
-    }
-}
-
-impl Request for route::PassportFiatPreferenceRequest {
-    type Error = Error;
-    type Request = PassportFiatPreferenceRequest;
-    type Response = PassportFiatPreferenceResponse;
 }

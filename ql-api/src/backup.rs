@@ -1,6 +1,8 @@
-use ql_rpc::{Download, Notification, Request, Upload};
+use ql_rpc::{Download, Request, Subscription, Upload};
 
-use crate::{route, Error};
+use crate::{Empty, Error};
+
+// COMMON TYPES
 
 rpc! {
     pub struct Shard(pub Vec<u8>);
@@ -10,8 +12,55 @@ rpc! {
     pub struct SeedFingerprint(pub [u8; 32]);
 }
 
+// APP ROUTES
+
+app_routes! {
+    crate::app_id::BACKUP => {
+        SubscribePassportMagicBackupEnabled: Subscription = 1,
+        SubscribeMagicBackupRestoreCompleted: Subscription = 2,
+    }
+}
+
 rpc! {
-    pub struct BackupShardRequest {
+    pub struct PassportMagicBackupEnabled {
+        pub enabled: bool,
+        pub seed_fingerprint: SeedFingerprint,
+    }
+}
+
+impl Subscription for SubscribePassportMagicBackupEnabled {
+    type Error = Error;
+    type Request = Empty;
+    type Event = PassportMagicBackupEnabled;
+}
+
+rpc! {
+    pub enum MagicBackupRestoreResult {
+        Success,
+        Error { error: String },
+    }
+}
+
+impl Subscription for SubscribeMagicBackupRestoreCompleted {
+    type Error = Error;
+    type Request = Empty;
+    type Event = MagicBackupRestoreResult;
+}
+
+// SERVICE ROUTES
+
+service_routes! {
+    crate::service_id::BACKUP => {
+        RequestBackupShard: Request = 1,
+        RequestRestoreShard: Request = 2,
+        RequestPassportMagicBackupStatus: Request = 3,
+        UploadMagicBackup: Upload = 4,
+        DownloadMagicBackup: Download = 5,
+    }
+}
+
+rpc! {
+    pub struct BackupShardParams {
         pub shard: Shard,
     }
 }
@@ -23,14 +72,14 @@ rpc! {
     }
 }
 
-impl Request for route::BackupShard {
+impl Request for RequestBackupShard {
     type Error = Error;
-    type Request = BackupShardRequest;
+    type Request = BackupShardParams;
     type Response = BackupShardResponse;
 }
 
 rpc! {
-    pub struct RestoreShardRequest {
+    pub struct RestoreShardParams {
         pub seed_fingerprint: SeedFingerprint,
         pub timestamp: Option<u32>,
     }
@@ -44,42 +93,14 @@ rpc! {
     }
 }
 
-impl Request for route::RestoreShard {
+impl Request for RequestRestoreShard {
     type Error = Error;
-    type Request = RestoreShardRequest;
+    type Request = RestoreShardParams;
     type Response = RestoreShardResponse;
 }
 
 rpc! {
-    pub struct EnvoyMagicBackupEnabledRequest {}
-}
-
-rpc! {
-    pub struct EnvoyMagicBackupEnabledResponse {
-        pub enabled: bool,
-    }
-}
-
-impl Request for route::EnvoyMagicBackupEnabled {
-    type Error = Error;
-    type Request = EnvoyMagicBackupEnabledRequest;
-    type Response = EnvoyMagicBackupEnabledResponse;
-}
-
-rpc! {
-    pub struct PassportMagicBackupEnabledPayload {
-        pub enabled: bool,
-        pub seed_fingerprint: SeedFingerprint,
-    }
-}
-
-impl Notification for route::PassportMagicBackupEnabled {
-    type Error = Error;
-    type Payload = PassportMagicBackupEnabledPayload;
-}
-
-rpc! {
-    pub struct PassportMagicBackupStatusRequest {
+    pub struct PassportMagicBackupStatusParams {
         pub seed_fingerprint: SeedFingerprint,
         pub timestamp: Option<u32>,
     }
@@ -91,14 +112,14 @@ rpc! {
     }
 }
 
-impl Request for route::PassportMagicBackupStatus {
+impl Request for RequestPassportMagicBackupStatus {
     type Error = Error;
-    type Request = PassportMagicBackupStatusRequest;
+    type Request = PassportMagicBackupStatusParams;
     type Response = PassportMagicBackupStatusResponse;
 }
 
 rpc! {
-    pub struct UploadMagicBackupRequest {
+    pub struct UploadMagicBackupParams {
         pub seed_fingerprint: SeedFingerprint,
         pub total_size: Option<u64>,
         pub hash: [u8; 32],
@@ -106,7 +127,7 @@ rpc! {
 }
 
 rpc! {
-    pub enum UploadMagicBackupResult {
+    pub enum UploadMagicBackupResponse {
         Success,
         Error { error: String },
     }
@@ -116,16 +137,22 @@ rpc! {
     pub struct UploadMagicBackupPartHeader {}
 }
 
-impl Upload for route::UploadMagicBackup {
+impl Upload for UploadMagicBackup {
     type Error = Error;
-    type Request = UploadMagicBackupRequest;
+    type Request = UploadMagicBackupParams;
     type PartHeader = UploadMagicBackupPartHeader;
-    type Response = UploadMagicBackupResult;
+    type Response = UploadMagicBackupResponse;
 }
 
 rpc! {
-    pub struct DownloadMagicBackupRequest {
+    pub struct DownloadMagicBackupParams {
         pub seed_fingerprint: SeedFingerprint,
+    }
+}
+
+rpc! {
+    pub struct BackupMetadata {
+        pub total_size: Option<u64>,
     }
 }
 
@@ -137,31 +164,9 @@ rpc! {
     }
 }
 
-rpc! {
-    pub struct BackupMetadata {
-        pub total_size: Option<u64>,
-    }
-}
-
-rpc! {
-    pub struct DownloadMagicBackupPartHeader {}
-}
-
-impl Download for route::DownloadMagicBackup {
+impl Download for DownloadMagicBackup {
     type Error = Error;
-    type Request = DownloadMagicBackupRequest;
+    type Request = DownloadMagicBackupParams;
     type ResponseHeader = DownloadMagicBackupHeader;
-    type PartHeader = DownloadMagicBackupPartHeader;
-}
-
-rpc! {
-    pub enum RestoreMagicBackupResult {
-        Success,
-        Error { error: String },
-    }
-}
-
-impl Notification for route::RestoreMagicBackupComplete {
-    type Error = Error;
-    type Payload = RestoreMagicBackupResult;
+    type PartHeader = Empty;
 }

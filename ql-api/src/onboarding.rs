@@ -1,11 +1,17 @@
-use ql_rpc::Notification;
+use ql_rpc::Subscription;
 
-use crate::{route, Error};
+use crate::{Empty, Error};
+
+// APP ROUTES
+
+app_routes! {
+    crate::app_id::ONBOARDING => {
+        SubscribeOnboardingStatus: Subscription = 1,
+    }
+}
 
 rpc! {
     pub enum OnboardingState {
-        SecurityChecked,
-        SecurityCheckFailed,
         FirmwareUpdateScreen,
         SecuringDevice,
         DeviceSecured,
@@ -18,13 +24,14 @@ rpc! {
         CreatingManualBackup,
         CreatingKeycardBackup,
         WritingDownSeedWords,
-        ConnectingWallet,
-        WalletConnected,
         Completed,
     }
 }
 
-impl Notification for route::OnboardingStatus {
+impl Subscription for SubscribeOnboardingStatus {
     type Error = Error;
-    type Payload = OnboardingState;
+    type Request = Empty;
+    type Event = OnboardingState;
 }
+
+// SERVICE ROUTES

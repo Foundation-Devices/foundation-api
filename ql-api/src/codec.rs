@@ -1,9 +1,26 @@
 use std::io;
 
 use bytes::{Buf, BufMut};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::Error;
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "frb", flutter_rust_bridge::frb(non_opaque))]
+pub struct Empty {}
+
+impl ql_rpc::RpcCodec for Empty {
+    type Error = Error;
+
+    fn encode_value<B: BufMut + ?Sized>(&self, out: &mut B) {
+        encode_cbor(&self, out);
+    }
+
+    fn decode_value<B: Buf>(bytes: &mut B) -> Result<Self, Self::Error> {
+        decode_cbor::<Self, _>(bytes)?;
+        Ok(Self {})
+    }
+}
 
 pub fn encode_cbor<T, B>(value: &T, out: &mut B)
 where
@@ -52,5 +69,52 @@ impl<B: Buf> io::Read for BufReader<'_, B> {
 
         self.0.copy_to_slice(&mut out[..len]);
         Ok(len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct OldHeader {}
+
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct NewHeader {
+        field: Option<u32>,
+    }
+
+    #[test]
+    fn cbor_empty_struct_can_evolve_with_optional_fields() {
+        let mut old_bytes = BytesMut::new();
+        encode_cbor(&OldHeader {}, &mut old_bytes);
+
+        let decoded_new: NewHeader = decode_cbor(&mut old_bytes.freeze()).unwrap();
+        assert_eq!(decoded_new, NewHeader { field: None });
+
+        let mut new_bytes = BytesMut::new();
+        encode_cbor(&NewHeader { field: Some(7) }, &mut new_bytes);
+
+        let decoded_old: OldHeader = decode_cbor(&mut new_bytes.freeze()).unwrap();
+        assert_eq!(decoded_old, OldHeader {});
+    }
+
+    #[test]
+    fn empty_codec_can_evolve_into_cbor_fields() {
+        let mut empty_bytes = BytesMut::new();
+        ql_rpc::RpcCodec::encode_value(&Empty {}, &mut empty_bytes);
+        assert!(!empty_bytes.is_empty());
+
+        let decoded_new: NewHeader = decode_cbor(&mut empty_bytes.freeze()).unwrap();
+        assert_eq!(decoded_new, NewHeader { field: None });
+
+        let mut new_bytes = BytesMut::new();
+        encode_cbor(&NewHeader { field: Some(7) }, &mut new_bytes);
+
+        let decoded_empty =
+            <Empty as ql_rpc::RpcCodec>::decode_value(&mut new_bytes.freeze()).unwrap();
+        assert_eq!(decoded_empty, Empty {});
     }
 }

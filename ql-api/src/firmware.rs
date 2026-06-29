@@ -1,19 +1,8 @@
-use ql_rpc::{Download, Notification, Request};
+use ql_rpc::{Download, Request, Subscription};
 
-use crate::{route, Error};
+use crate::{Empty, Error};
 
-rpc! {
-    pub struct FirmwareUpdateCheckRequest {
-        pub current_version: String,
-    }
-}
-
-rpc! {
-    pub enum FirmwareUpdateCheckResponse {
-        Available(FirmwareUpdateAvailable),
-        NotAvailable,
-    }
-}
+// COMMON TYPES
 
 rpc! {
     pub struct FirmwareUpdateAvailable {
@@ -25,38 +14,20 @@ rpc! {
     }
 }
 
-impl Request for route::FirmwareUpdateCheck {
-    type Error = Error;
-    type Request = FirmwareUpdateCheckRequest;
-    type Response = FirmwareUpdateCheckResponse;
-}
+// APP ROUTES
 
-rpc! {
-    pub struct FirmwareDownloadRequest {
-        pub current_version: String,
+app_routes! {
+    crate::app_id::UPDATE => {
+        SubscribeFirmwareInstallStatus: Subscription = 1,
     }
 }
 
 rpc! {
-    pub enum FirmwareDownloadHeader {
-        Available(FirmwareUpdateAvailable),
-        NotAvailable,
-        Error { error: String },
+    pub enum InstallErrorStage {
+        Download,
+        Verify,
+        Install,
     }
-}
-
-rpc! {
-    pub struct FirmwareDownloadPartHeader {
-        pub patch_name: String,
-        pub size_bytes: u64,
-    }
-}
-
-impl Download for route::FirmwareDownload {
-    type Error = Error;
-    type Request = FirmwareDownloadRequest;
-    type ResponseHeader = FirmwareDownloadHeader;
-    type PartHeader = FirmwareDownloadPartHeader;
 }
 
 rpc! {
@@ -73,15 +44,64 @@ rpc! {
     }
 }
 
-rpc! {
-    pub enum InstallErrorStage {
-        Download,
-        Verify,
-        Install,
+impl Subscription for SubscribeFirmwareInstallStatus {
+    type Error = Error;
+    type Request = Empty;
+    type Event = FirmwareInstallEvent;
+}
+
+// SERVICE ROUTES
+
+service_routes! {
+    crate::service_id::FIRMWARE => {
+        RequestCheckFirmwareUpdate: Request = 1,
+        DownloadFirmware: Download = 2,
     }
 }
 
-impl Notification for route::FirmwareInstallStatus {
+rpc! {
+    pub struct FirmwareUpdateCheckParams {
+        pub current_version: String,
+    }
+}
+
+rpc! {
+    pub enum FirmwareUpdateCheckResponse {
+        Available(FirmwareUpdateAvailable),
+        NotAvailable,
+    }
+}
+
+impl Request for RequestCheckFirmwareUpdate {
     type Error = Error;
-    type Payload = FirmwareInstallEvent;
+    type Request = FirmwareUpdateCheckParams;
+    type Response = FirmwareUpdateCheckResponse;
+}
+
+rpc! {
+    pub struct DownloadFirmwareParams {
+        pub current_version: String,
+    }
+}
+
+rpc! {
+    pub enum DownloadFirmwareHeader {
+        Available(FirmwareUpdateAvailable),
+        NotAvailable,
+        Error { error: String },
+    }
+}
+
+rpc! {
+    pub struct DownloadFirmwarePartHeader {
+        pub patch_name: String,
+        pub size_bytes: u64,
+    }
+}
+
+impl Download for DownloadFirmware {
+    type Error = Error;
+    type Request = DownloadFirmwareParams;
+    type ResponseHeader = DownloadFirmwareHeader;
+    type PartHeader = DownloadFirmwarePartHeader;
 }

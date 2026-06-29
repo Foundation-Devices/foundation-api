@@ -1,6 +1,16 @@
 use ql_rpc::Duplex;
 
-use crate::{route, Error};
+use crate::Error;
+
+// APP ROUTES
+
+// SERVICE ROUTES
+
+service_routes! {
+    crate::service_id::SCV => {
+        RunSecurityCheck: Duplex = 1,
+    }
+}
 
 rpc! {
     pub struct ChallengeRequest {
@@ -24,21 +34,21 @@ rpc! {
 }
 
 rpc! {
-    pub enum SecurityCheckRemoteEvent {
+    pub enum RunSecurityCheckResponderEvent {
         ChallengeRequest(ChallengeRequest),
         VerificationResult(VerificationResult),
     }
 }
 
 rpc! {
-    pub enum SecurityCheckPassportEvent {
+    pub enum RunSecurityCheckInitiatorEvent {
         Start,
         ChallengeResponse(ChallengeResponseResult),
     }
 }
 
-impl Duplex for route::SecurityCheck {
+impl Duplex for RunSecurityCheck {
     type Error = Error;
-    type InitiatorEvent = SecurityCheckPassportEvent;
-    type ResponderEvent = SecurityCheckRemoteEvent;
+    type InitiatorEvent = RunSecurityCheckInitiatorEvent;
+    type ResponderEvent = RunSecurityCheckResponderEvent;
 }

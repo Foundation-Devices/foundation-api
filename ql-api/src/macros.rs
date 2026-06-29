@@ -16,35 +16,77 @@ macro_rules! impl_codec {
     };
 }
 
-macro_rules! routes {
-    ($($service:ident => $route_enum:ident { $($route:ident = $id:literal,)* })*) => {
-        $(
-            #[repr(u32)]
-            #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-            pub enum $route_enum {
-                $($route = $id,)*
+macro_rules! duplicate_route_check {
+    ($($id:literal,)*) => {
+        const _: () = {
+            const IDS: &[u32] = &[$($id,)*];
+            let mut i = 0;
+            while i < IDS.len() {
+                let mut j = i + 1;
+                while j < IDS.len() {
+                    assert!(IDS[i] != IDS[j], "duplicate route id");
+                    j += 1;
+                }
+                i += 1;
             }
+        };
+    };
+}
 
-            impl $route_enum {
-                pub const fn id(self) -> ql_common::RouteId {
-                    ql_common::RouteId::from_u32(self as u32)
+macro_rules! assert_route_impl {
+    ($route:ident: $kind:ident) => {
+        const _: () = {
+            struct Assert<T: ql_rpc::$kind>(core::marker::PhantomData<T>);
+            let _ = Assert::<$route>(core::marker::PhantomData);
+        };
+    };
+}
+
+macro_rules! service_routes {
+    ($service_id:expr => { $($route:ident: $kind:ident = $id:literal,)* }) => {
+        duplicate_route_check!($($id,)*);
+
+        $(
+            #[derive(Debug)]
+            pub struct $route;
+
+            impl ql_rpc::Route for $route {
+                type Key = crate::ServiceRouteKey;
+
+                fn key() -> Self::Key {
+                    crate::ServiceRouteKey {
+                        service_id: $service_id,
+                        route_id: ql_keyos::RouteId::from_u32($id),
+                    }
                 }
             }
+
+            assert_route_impl!($route: $kind);
         )*
+    };
+}
 
-        pub mod route {
-            $(
-                $(
-                    #[derive(Debug)]
-                    pub struct $route;
+macro_rules! app_routes {
+    ($app_id:expr => { $($route:ident: $kind:ident = $id:literal,)* }) => {
+        duplicate_route_check!($($id,)*);
 
-                    impl ql_rpc::Route for $route {
-                        const SERVICE: ql_common::ServiceId = crate::$service;
-                        const ROUTE: ql_common::RouteId = super::$route_enum::$route.id();
+        $(
+            #[derive(Debug)]
+            pub struct $route;
+
+            impl ql_rpc::Route for $route {
+                type Key = crate::AppRouteKey;
+
+                fn key() -> Self::Key {
+                    crate::AppRouteKey {
+                        app_id: $app_id,
+                        route_id: ql_keyos::RouteId::from_u32($id),
                     }
-                )*
-            )*
-        }
+                }
+            }
+
+            assert_route_impl!($route: $kind);
+        )*
     };
 }
 

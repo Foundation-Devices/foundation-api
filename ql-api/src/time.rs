@@ -1,9 +1,16 @@
 use ql_rpc::Request;
 
-use crate::{route, Error};
+use crate::{Empty, Error};
 
-rpc! {
-    pub struct TimezoneRequest {}
+// APP ROUTES
+
+// SERVICE ROUTES
+
+service_routes! {
+    crate::service_id::TIME => {
+        RequestTimezone: Request = 1,
+        RequestCurrentTime: Request = 2,
+    }
 }
 
 rpc! {
@@ -13,14 +20,10 @@ rpc! {
     }
 }
 
-impl Request for route::Timezone {
+impl Request for RequestTimezone {
     type Error = Error;
-    type Request = TimezoneRequest;
+    type Request = Empty;
     type Response = TimezoneResponse;
-}
-
-rpc! {
-    pub struct CurrentTimeRequest {}
 }
 
 rpc! {
@@ -29,8 +32,8 @@ rpc! {
     }
 }
 
-impl Request for route::CurrentTime {
+impl Request for RequestCurrentTime {
     type Error = Error;
-    type Request = CurrentTimeRequest;
+    type Request = Empty;
     type Response = CurrentTimeResponse;
 }
