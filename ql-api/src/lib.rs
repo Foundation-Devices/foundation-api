@@ -1,97 +1,46 @@
-// 1. list catalog of apps (request/response)
-// 2. get app by id
-// 3. download version?
-
 #[macro_use]
 mod macros;
 
-mod app_store;
-mod backup;
-mod benchmark;
-mod bitcoin;
-mod codec;
-mod firmware;
-mod fx;
-mod onboarding;
-mod scv;
-mod status;
-mod time;
+pub mod app_store;
+pub mod backup;
+pub mod bitcoin;
+pub mod codec;
+pub mod debug;
+pub mod firmware;
+pub mod fx;
+pub mod key;
+pub mod onboarding;
+pub mod scv;
+pub mod settings;
+pub mod time;
 
-pub use app_store::*;
-pub use backup::*;
-pub use benchmark::*;
-pub use bitcoin::*;
-pub use firmware::*;
-pub use fx::*;
-pub use onboarding::*;
-pub use scv::*;
-pub use status::*;
-pub use time::*;
+pub use self::{
+    app_store::*, backup::*, bitcoin::*, codec::Empty, debug::*, firmware::*, fx::*, key::*,
+    onboarding::*, scv::*, settings::*, time::*,
+};
 
 pub type Error = ciborium::de::Error<std::io::Error>;
 
-pub const FOUNDATION_APP: ql_common::ServiceId = ql_common::ServiceId([1; 16]);
-pub const PASSPORT: ql_common::ServiceId = ql_common::ServiceId([2; 16]);
-
-routes! {
-    FOUNDATION_APP => FoundationAppRoute {
-        // app store
-        ListApps = 200,
-        AppDownload = 201,
-
-        // time
-        Timezone = 303,
-        CurrentTime = 304,
-
-        // status and presence
-        PassportDetailsUpdated = 403,
-
-        // security and onboarding
-        SecurityCheck = 500,
-        OnboardingStatus = 501,
-
-        // firmware
-        FirmwareUpdateCheck = 600,
-        FirmwareDownload = 601,
-        FirmwareInstallStatus = 602,
-
-        // market data
-        ExchangeRateUpdate = 700,
-        ExchangeRateSubscription = 701,
-        ExchangeRateHistory = 702,
-        PassportFiatPreference = 703,
-
-        // bitcoin and wallet
-        BroadcastTransaction = 801,
-        AccountUpdate = 802,
-        PassportActiveSeedFingerprint = 803,
-
-        // backup
-        BackupShard = 900,
-        RestoreShard = 901,
-        EnvoyMagicBackupEnabled = 902,
-        PassportMagicBackupEnabled = 903,
-        PassportMagicBackupStatus = 904,
-        UploadMagicBackup = 905,
-        DownloadMagicBackup = 906,
-        RestoreMagicBackupComplete = 907,
-
-        // debug
-        Echo = 1000,
-        BytesBenchmark = 1001,
-        DownloadBenchmark = 1002,
-    }
-
-    PASSPORT => PassportRoute {
-        // status and presence
-        PassportDetails = 402,
-
-        // market data
-        PassportFiatPreferenceRequest = 704,
-
-        // bitcoin and wallet
-        SignPsbt = 800,
-        PassportAccountUpdate = 802,
-        GetPassportActiveSeedFingerprint = 804,
-    }
-}
+// naming scheme
+// Request:
+// - Request{Thing}
+// - {Thing}Params
+// - {Thing}Response
+// Subscription:
+// - Subscribe{Thing}
+// - {Thing}Params
+// - {Thing}Event
+// Download:
+// - Download{Thing}
+// - Download{Thing}Params
+// - Download{Thing}Header
+// - Download{Thing}PartHeader
+// Upload:
+// - Upload{Thing}
+// - Upload{Thing}Params
+// - Upload{Thing}PartHeader
+// - Upload{Thing}Response
+// Duplex:
+// - {Action}{Thing}
+// - {Action}{Thing}InitiatorEvent
+// - {Action}{Thing}ResponderEvent

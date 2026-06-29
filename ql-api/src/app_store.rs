@@ -1,26 +1,12 @@
 use ql_rpc::{Download, Request};
 
-use crate::{route, Error};
+use crate::{Empty, Error};
+
+// COMMON TYPES
 
 rpc! {
     #[derive(Copy)]
     pub struct AppVersion(pub u32, pub u32, pub u32);
-}
-
-//
-// LIST APPS
-//
-
-rpc! {
-    pub struct ListAppsRequest {
-        //
-    }
-}
-
-rpc! {
-    pub struct ListAppsResponse {
-        pub apps: Vec<AppDetails>,
-    }
 }
 
 rpc! {
@@ -32,41 +18,48 @@ rpc! {
     }
 }
 
-impl Request for route::ListApps {
+// APP ROUTES
+
+// SERVICE ROUTES
+
+service_routes! {
+    crate::service_id::APP_STORE => {
+        RequestListApps: Request = 1,
+        DownloadApp: Download = 2,
+    }
+}
+
+rpc! {
+    pub struct ListAppsResponse {
+        pub apps: Vec<AppDetails>,
+    }
+}
+
+impl Request for RequestListApps {
     type Error = Error;
-    type Request = ListAppsRequest;
+    type Request = Empty;
     type Response = ListAppsResponse;
 }
 
-//
-// APP DOWNLOAD
-//
-// download a single tar file that contains:
-// - app.elf
-// - manifest.json
-
 rpc! {
-    pub struct AppDownloadRequest {
+    pub struct DownloadAppParams {
         pub version: Option<String>,
     }
 }
 
 rpc! {
-    pub struct AppDownloadHeader {
+    pub struct DownloadAppHeader {
         pub version: String,
     }
 }
 
 rpc! {
-    pub struct AppDownloadPartHeader {}
+    pub struct DownloadAppPartHeader {}
 }
 
-impl Download for route::AppDownload {
+impl Download for DownloadApp {
     type Error = Error;
-
-    type Request = AppDownloadRequest;
-
-    type ResponseHeader = AppDownloadHeader;
-
-    type PartHeader = AppDownloadPartHeader;
+    type Request = DownloadAppParams;
+    type ResponseHeader = DownloadAppHeader;
+    type PartHeader = DownloadAppPartHeader;
 }

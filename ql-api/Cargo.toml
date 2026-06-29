@@ -8,6 +8,7 @@ license = "Proprietary"
 
 [dependencies]
 ql-common = { workspace = true }
+ql-keyos = { workspace = true, features = ["serde"] }
 ql-rpc = { workspace = true }
 bytes = { workspace = true }
 ciborium = "0.2.2"
