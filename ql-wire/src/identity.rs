@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use codec::LenBytes;
-use ql_common::{VarInt, QID};
+use ql_common::QID;
 
 use crate::{
     codec, derive_qid, ByteSlice, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, QlHash,
@@ -61,23 +61,22 @@ pub struct QlIdentity {
 impl QlIdentity {
     pub const FIXED_WIRE_SIZE: usize =
         QID::SIZE + MlKemPrivateKey::SIZE + MlKemPublicKey::SIZE + size_of::<u32>();
-    pub const MAX_WIRE_SIZE: usize = Self::FIXED_WIRE_SIZE + VarInt::MAX_SIZE + QlName::MAX_LEN;
 
     pub fn new(
         crypto: &impl QlHash,
         mlkem_private_key: MlKemPrivateKey,
         mlkem_public_key: MlKemPublicKey,
         name: impl Into<String>,
-    ) -> Result<Self, WireError> {
-        let name = QlName::new(name)?;
+    ) -> Self {
+        let name = QlName(name.into());
         let qid = derive_qid(crypto, &mlkem_public_key);
-        Ok(Self {
+        Self {
             qid,
             mlkem_private_key,
             mlkem_public_key,
             capabilities: 0,
             name,
-        })
+        }
     }
 
     pub fn bundle(&self) -> PeerBundle {
@@ -117,28 +116,13 @@ impl<B: ByteSlice> codec::WireDecode<B> for QlIdentity {
     }
 }
 
-pub fn generate_identity(
-    crypto: &impl QlCrypto,
-    name: impl Into<String>,
-) -> Result<QlIdentity, WireError> {
+pub fn generate_identity(crypto: &impl QlCrypto, name: impl Into<String>) -> QlIdentity {
     let MlKemKeyPair { private, public } = crypto.mlkem_generate_keypair();
     QlIdentity::new(crypto, private, public, name)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QlName(String);
-
-impl QlName {
-    pub const MAX_LEN: usize = 256;
-
-    pub fn new(name: impl Into<String>) -> Result<Self, WireError> {
-        let name = name.into();
-        if name.is_empty() || name.len() > Self::MAX_LEN {
-            return Err(WireError::InvalidPayload);
-        }
-        Ok(Self(name))
-    }
-}
+pub struct QlName(pub String);
 
 impl Deref for QlName {
     type Target = str;
@@ -161,10 +145,7 @@ impl WireEncode for QlName {
 impl<B: ByteSlice> codec::WireDecode<B> for QlName {
     fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
         let bytes = reader.decode::<LenBytes<B>>()?.0;
-        if bytes.is_empty() || bytes.len() > Self::MAX_LEN {
-            return Err(WireError::InvalidPayload);
-        }
         let name = std::str::from_utf8(&bytes).map_err(|_| WireError::InvalidPayload)?;
-        QlName::new(name)
+        Ok(QlName(name.into()))
     }
 }

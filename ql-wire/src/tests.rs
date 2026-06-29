@@ -71,7 +71,7 @@ fn encrypt_record(
 #[test]
 fn peer_bundle_round_trip() {
     let crypto = SoftwareCrypto;
-    let mut identity = generate_identity(&crypto, "alice").unwrap();
+    let mut identity = generate_identity(&crypto, "alice");
     identity.capabilities = 1231;
     let bundle = identity.bundle();
 
@@ -80,19 +80,6 @@ fn peer_bundle_round_trip() {
 
     assert_eq!(decoded, bundle);
     assert_eq!(&*decoded.name, "alice");
-}
-
-#[test]
-fn identity_name_validation() {
-    assert_eq!(
-        QlName::new("a".repeat(QlName::MAX_LEN)).unwrap().len(),
-        QlName::MAX_LEN
-    );
-    assert!(matches!(QlName::new(""), Err(WireError::InvalidPayload)));
-    assert!(matches!(
-        QlName::new("a".repeat(QlName::MAX_LEN + 1)),
-        Err(WireError::InvalidPayload)
-    ));
 }
 
 #[test]
@@ -292,7 +279,7 @@ fn ik_handshake_rejects_tampered_handshake_header() {
 fn ik_handshake_rejects_bound_remote_bundle_mismatch() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
-    let bogus = generate_identity(&crypto, "bogus").unwrap();
+    let bogus = generate_identity(&crypto, "bogus");
     let (initiator_to_responder, _) = identity_routes(&initiator, &responder);
 
     let mut initiator_state = IkHandshake::new_initiator(

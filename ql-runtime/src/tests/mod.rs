@@ -682,7 +682,7 @@ fn default_runtime_config() -> RuntimeConfig {
 #[test]
 fn runtime_is_send() {
     let config = default_runtime_config();
-    let identity = generate_identity(&SoftwareCrypto, "runtime").unwrap();
+    let identity = generate_identity(&SoftwareCrypto, "runtime");
     let (platform, _, _, _) = TestPlatform::new();
     let (runtime, _handle) = new_runtime(identity, platform, config);
     let _run: Box<dyn Future<Output = ()> + Send> = Box::new(runtime.run());
@@ -691,7 +691,7 @@ fn runtime_is_send() {
 #[test]
 fn runtime_exits_when_last_handle_drops() {
     let config = default_runtime_config();
-    let identity = generate_identity(&SoftwareCrypto, "runtime").unwrap();
+    let identity = generate_identity(&SoftwareCrypto, "runtime");
     let (platform, _, _, _) = TestPlatform::new();
     let (runtime, handle) = new_runtime(identity, platform, config);
     let (done_tx, done_rx) = oneshot::channel();

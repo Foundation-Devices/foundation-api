@@ -59,7 +59,7 @@ fn new_driver_state() -> (DriverState, QlFsm) {
         },
         QlFsm::new(
             ql_fsm::QlFsmConfig::default(),
-            generate_identity(&SoftwareCrypto, "driver").unwrap(),
+            generate_identity(&SoftwareCrypto, "driver"),
             Instant::now(),
         ),
     )
@@ -161,7 +161,7 @@ fn local_reset_command_reaps_when_other_half_is_already_closed() {
 #[test]
 fn unpaired_status_fails_and_reaps_all_streams() {
     let (mut state, mut fsm) = new_driver_state();
-    let peer = generate_identity(&SoftwareCrypto, "peer").unwrap().bundle();
+    let peer = generate_identity(&SoftwareCrypto, "peer").bundle();
     let stream_id = StreamId(1u32.into());
     let (runtime_tx, _runtime_rx) = async_channel::unbounded();
     let (_, _, reader_io, writer_io) = io::new_stream(stream_id, runtime_tx);

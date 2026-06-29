@@ -15,8 +15,8 @@ pub struct NoopCrypto;
 
 pub fn test_identities(crypto: &impl QlCrypto) -> (QlIdentity, QlIdentity) {
     (
-        crate::generate_identity(crypto, "alice").unwrap(),
-        crate::generate_identity(crypto, "bob").unwrap(),
+        crate::generate_identity(crypto, "alice"),
+        crate::generate_identity(crypto, "bob"),
     )
 }
 
