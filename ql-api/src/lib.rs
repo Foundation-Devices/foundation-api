@@ -30,58 +30,68 @@ pub use time::*;
 
 pub type Error = ciborium::de::Error<std::io::Error>;
 
-pub const SERVICE_ID: ql_common::ServiceId = ql_common::ServiceId([0; 16]);
+pub const FOUNDATION_APP: ql_common::ServiceId = ql_common::ServiceId([1; 16]);
+pub const PASSPORT: ql_common::ServiceId = ql_common::ServiceId([2; 16]);
 
 routes! {
-    // app store
-    ListApps = 200,
-    AppDownload = 201,
+    FOUNDATION_APP => FoundationAppRoute {
+        // app store
+        ListApps = 200,
+        AppDownload = 201,
 
-    // status and presence
-    DeviceStatus = 300,
-    EnvoyStatus = 301,
-    Timezone = 303,
-    CurrentTime = 304,
+        // time
+        Timezone = 303,
+        CurrentTime = 304,
 
-    // status and presence
-    PassportDetails = 402,
-    PassportDetailsUpdated = 403,
+        // status and presence
+        PassportDetailsUpdated = 403,
 
-    // security and onboarding
-    SecurityCheck = 500,
-    OnboardingStatus = 501,
+        // security and onboarding
+        SecurityCheck = 500,
+        OnboardingStatus = 501,
 
-    // firmware
-    FirmwareUpdateCheck = 600,
-    FirmwareDownload = 601,
-    FirmwareInstallStatus = 602,
+        // firmware
+        FirmwareUpdateCheck = 600,
+        FirmwareDownload = 601,
+        FirmwareInstallStatus = 602,
 
-    // market data
-    ExchangeRateUpdate = 700,
-    ExchangeRateSubscription = 701,
-    ExchangeRateHistory = 702,
-    PassportFiatPreference = 703,
-    PassportFiatPreferenceRequest = 704,
+        // market data
+        ExchangeRateUpdate = 700,
+        ExchangeRateSubscription = 701,
+        ExchangeRateHistory = 702,
+        PassportFiatPreference = 703,
 
-    // bitcoin and wallet
-    SignPsbt = 800,
-    BroadcastTransaction = 801,
-    AccountUpdate = 802,
-    PassportActiveSeedFingerprint = 803,
-    GetPassportActiveSeedFingerprint = 804,
+        // bitcoin and wallet
+        BroadcastTransaction = 801,
+        AccountUpdate = 802,
+        PassportActiveSeedFingerprint = 803,
 
-    // backup
-    BackupShard = 900,
-    RestoreShard = 901,
-    EnvoyMagicBackupEnabled = 902,
-    PassportMagicBackupEnabled = 903,
-    PassportMagicBackupStatus = 904,
-    UploadMagicBackup = 905,
-    DownloadMagicBackup = 906,
-    RestoreMagicBackupComplete = 907,
+        // backup
+        BackupShard = 900,
+        RestoreShard = 901,
+        EnvoyMagicBackupEnabled = 902,
+        PassportMagicBackupEnabled = 903,
+        PassportMagicBackupStatus = 904,
+        UploadMagicBackup = 905,
+        DownloadMagicBackup = 906,
+        RestoreMagicBackupComplete = 907,
 
-    // debug
-    Echo = 1000,
-    BytesBenchmark = 1001,
-    DownloadBenchmark = 1002,
+        // debug
+        Echo = 1000,
+        BytesBenchmark = 1001,
+        DownloadBenchmark = 1002,
+    }
+
+    PASSPORT => PassportRoute {
+        // status and presence
+        PassportDetails = 402,
+
+        // market data
+        PassportFiatPreferenceRequest = 704,
+
+        // bitcoin and wallet
+        SignPsbt = 800,
+        PassportAccountUpdate = 802,
+        GetPassportActiveSeedFingerprint = 804,
+    }
 }

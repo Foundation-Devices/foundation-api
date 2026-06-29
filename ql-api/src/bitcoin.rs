@@ -55,6 +55,11 @@ impl Notification for route::AccountUpdate {
     type Payload = AccountUpdatePayload;
 }
 
+impl Notification for route::PassportAccountUpdate {
+    type Error = Error;
+    type Payload = AccountUpdatePayload;
+}
+
 rpc! {
     pub struct ActiveSeedFingerprint {
         pub fingerprint: String,

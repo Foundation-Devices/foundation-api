@@ -17,28 +17,32 @@ macro_rules! impl_codec {
 }
 
 macro_rules! routes {
-    ($($route:ident = $id:literal,)*) => {
-        #[repr(u32)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub enum Route {
-            $($route = $id,)*
-        }
-
-        impl Route {
-            pub const fn id(self) -> ql_common::RouteId {
-                ql_common::RouteId::from_u32(self as u32)
+    ($($service:ident => $route_enum:ident { $($route:ident = $id:literal,)* })*) => {
+        $(
+            #[repr(u32)]
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+            pub enum $route_enum {
+                $($route = $id,)*
             }
-        }
+
+            impl $route_enum {
+                pub const fn id(self) -> ql_common::RouteId {
+                    ql_common::RouteId::from_u32(self as u32)
+                }
+            }
+        )*
 
         pub mod route {
             $(
-                #[derive(Debug)]
-                pub struct $route;
+                $(
+                    #[derive(Debug)]
+                    pub struct $route;
 
-                impl ql_rpc::Route for $route {
-                    const SERVICE: ql_common::ServiceId = crate::SERVICE_ID;
-                    const ROUTE: ql_common::RouteId = super::Route::$route.id();
-                }
+                    impl ql_rpc::Route for $route {
+                        const SERVICE: ql_common::ServiceId = crate::$service;
+                        const ROUTE: ql_common::RouteId = super::$route_enum::$route.id();
+                    }
+                )*
             )*
         }
     };
