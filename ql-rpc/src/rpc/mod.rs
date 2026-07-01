@@ -2,10 +2,10 @@
 //!
 //! each trait in this module names one rpc shape and the typed values that
 //! travel on that stream
-//! route dispatch uses [`crate::RouteId`] and the submodules provide the matching
-//! client and server helpers for encoding, decoding, and handler glue
+//! route dispatch uses caller-defined route keys and the submodules provide the
+//! matching client and server helpers for encoding, decoding, and handler glue
 
-use ql_common::{RouteId, ServiceId};
+use bytes::BufMut;
 
 pub mod download;
 pub mod duplex;
@@ -17,12 +17,18 @@ pub mod subscription;
 pub mod upload;
 mod utils;
 
-pub trait Route {
-    /// service used to scope this rpc route.
-    const SERVICE: ServiceId;
+pub trait RpcRouteKey: Sized + std::fmt::Debug + Ord + Clone + 'static {
+    fn encoded_len(&self) -> usize;
 
-    /// route used to dispatch this rpc family within [`Self::SERVICE`].
-    const ROUTE: RouteId;
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W);
+
+    fn decode(bytes: &[u8]) -> Option<Self>;
+}
+
+pub trait Route {
+    type Key: RpcRouteKey;
+
+    fn key() -> Self::Key;
 }
 
 use utils::*;

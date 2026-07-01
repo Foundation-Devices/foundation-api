@@ -1,6 +1,8 @@
 mod adapter;
 
-use ql_rpc::{download, duplex, notification, progress, request, subscription, upload, Route};
+use ql_rpc::{
+    download, duplex, notification, progress, request, subscription, upload, Route, RpcRouteKey,
+};
 
 use crate::{QlStream, QlStreamError, RuntimeHandle, StreamReader, StreamWriter};
 
@@ -92,9 +94,16 @@ impl RpcHandle {
         Self { inner }
     }
 
-    async fn open_rpc_stream<R: Route, E>(&self) -> RpcResult<QlStream, E> {
+    async fn open_rpc_stream<R, E>(&self) -> RpcResult<QlStream, E>
+    where
+        R: Route,
+        R::Key: RpcRouteKey,
+    {
+        let key = R::key();
+        let mut header = Vec::with_capacity(key.encoded_len());
+        key.encode(&mut header);
         self.inner
-            .open_stream(ql_rpc::encode_stream_header::<R>())
+            .open_stream(header.into_boxed_slice())
             .await
             .map_err(QlStreamError::from)
             .map_err(ql_rpc::RpcError::Transport)

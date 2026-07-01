@@ -3,24 +3,26 @@ use std::marker::PhantomData;
 use super::*;
 use crate::{
     download::*, duplex::*, notification::*, progress::*, request::*, subscription::*, upload::*,
-    RouteKey,
+    Route,
 };
 
 pub struct LocalRoutes;
 pub struct SendRoutes;
 
-pub struct RouterBuilder<S, St, Sp, Mode>
+pub struct RouterBuilder<K, S, St, Sp, Mode>
 where
+    K: RpcRouteKey,
     Sp: Spawner,
 {
     config: RouterConfig,
     spawner: Sp,
-    routes: Vec<RouteEntry<S, St, Sp>>,
+    routes: Vec<RouteEntry<K, S, St, Sp>>,
     marker: PhantomData<fn() -> Mode>,
 }
 
-impl<S, St, Sp, Mode> RouterBuilder<S, St, Sp, Mode>
+impl<K, S, St, Sp, Mode> RouterBuilder<K, S, St, Sp, Mode>
 where
+    K: RpcRouteKey,
     Sp: Spawner,
 {
     pub(crate) fn new(spawner: Sp) -> Self {
@@ -42,8 +44,8 @@ where
         self
     }
 
-    pub fn build(mut self, state: S) -> Router<S, St, Sp> {
-        self.routes.sort_by_key(|entry| entry.key);
+    pub fn build(mut self, state: S) -> Router<K, S, St, Sp> {
+        self.routes.sort_by_key(|entry| entry.key.clone());
         self.routes.shrink_to_fit();
         Router {
             config: self.config,
@@ -53,27 +55,24 @@ where
         }
     }
 
-    fn add_route(mut self, key: RouteKey, route: RouteFn<S, St, Sp>) -> Self {
+    fn add_route(mut self, key: K, route: RouteFn<S, St, Sp>) -> Self {
         if self.routes.iter().any(|entry| entry.key == key) {
-            panic!(
-                "duplicate rpc route {} for service {:?}",
-                key.route_id.0.into_inner(),
-                key.service_id.0
-            );
+            panic!("duplicate rpc route {key:?}");
         }
         self.routes.push(RouteEntry::new(key, route));
         self
     }
 }
 
-impl<S, St, Sp> RouterBuilder<S, St, Sp, LocalRoutes>
+impl<K, S, St, Sp> RouterBuilder<K, S, St, Sp, LocalRoutes>
 where
+    K: RpcRouteKey,
     Sp: LocalSpawner,
     St: RpcStream + 'static,
 {
     pub fn request<M>(self) -> Self
     where
-        M: Request + 'static,
+        M: Request<Key = K> + 'static,
         S: RequestHandlerLocal<M, St> + 'static,
     {
         add_route!(self, M, handle_request, S::handle, S::handle_error)
@@ -81,7 +80,7 @@ where
 
     pub fn notification<M>(self) -> Self
     where
-        M: Notification + 'static,
+        M: Notification<Key = K> + 'static,
         S: NotificationHandlerLocal<M, St> + 'static,
     {
         add_route!(self, M, handle_notification, S::handle, S::handle_error)
@@ -89,7 +88,7 @@ where
 
     pub fn duplex<M>(self) -> Self
     where
-        M: Duplex + 'static,
+        M: Duplex<Key = K> + 'static,
         S: DuplexHandlerLocal<M, St> + 'static,
     {
         add_route!(self, M, handle_duplex, S::handle)
@@ -97,7 +96,7 @@ where
 
     pub fn download<M>(self) -> Self
     where
-        M: Download + 'static,
+        M: Download<Key = K> + 'static,
         S: DownloadHandlerLocal<M, St> + 'static,
     {
         add_route!(self, M, handle_download, S::handle, S::handle_error)
@@ -105,7 +104,7 @@ where
 
     pub fn subscription<M>(self) -> Self
     where
-        M: Subscription + 'static,
+        M: Subscription<Key = K> + 'static,
         S: SubscriptionHandlerLocal<M, St> + 'static,
     {
         add_route!(self, M, handle_subscription, S::handle, S::handle_error)
@@ -113,7 +112,7 @@ where
 
     pub fn progress<M>(self) -> Self
     where
-        M: Progress + 'static,
+        M: Progress<Key = K> + 'static,
         S: ProgressHandlerLocal<M, St> + 'static,
     {
         add_route!(self, M, handle_progress, S::handle, S::handle_error)
@@ -121,21 +120,22 @@ where
 
     pub fn upload<M>(self) -> Self
     where
-        M: Upload + 'static,
+        M: Upload<Key = K> + 'static,
         S: UploadHandlerLocal<M, St> + 'static,
     {
         add_route!(self, M, handle_upload, S::handle, S::handle_error)
     }
 }
 
-impl<S, St, Sp> RouterBuilder<S, St, Sp, SendRoutes>
+impl<K, S, St, Sp> RouterBuilder<K, S, St, Sp, SendRoutes>
 where
+    K: RpcRouteKey,
     Sp: SendSpawner + Send,
     St: RpcStream + 'static,
 {
     pub fn request<M>(self) -> Self
     where
-        M: Request + 'static,
+        M: Request<Key = K> + 'static,
         M::Request: Send + 'static,
         S: RequestHandler<M, St> + Send + 'static,
         St::Reader: Send + 'static,
@@ -146,7 +146,7 @@ where
 
     pub fn notification<M>(self) -> Self
     where
-        M: Notification + 'static,
+        M: Notification<Key = K> + 'static,
         M::Payload: Send + 'static,
         S: NotificationHandler<M, St> + Send + 'static,
         St::Reader: Send + 'static,
@@ -157,7 +157,7 @@ where
 
     pub fn duplex<M>(self) -> Self
     where
-        M: Duplex + 'static,
+        M: Duplex<Key = K> + 'static,
         M::InitiatorEvent: Send + 'static,
         M::ResponderEvent: Send + 'static,
         S: DuplexHandler<M, St> + Send + 'static,
@@ -169,7 +169,7 @@ where
 
     pub fn download<M>(self) -> Self
     where
-        M: Download + 'static,
+        M: Download<Key = K> + 'static,
         M::Request: Send + 'static,
         S: DownloadHandler<M, St> + Send + 'static,
         St::Reader: Send + 'static,
@@ -180,7 +180,7 @@ where
 
     pub fn subscription<M>(self) -> Self
     where
-        M: Subscription + 'static,
+        M: Subscription<Key = K> + 'static,
         M::Request: Send + 'static,
         S: SubscriptionHandler<M, St> + Send + 'static,
         St::Reader: Send + 'static,
@@ -191,7 +191,7 @@ where
 
     pub fn progress<M>(self) -> Self
     where
-        M: Progress + 'static,
+        M: Progress<Key = K> + 'static,
         M::Request: Send + 'static,
         S: ProgressHandler<M, St> + Send + 'static,
         St::Reader: Send + 'static,
@@ -202,7 +202,7 @@ where
 
     pub fn upload<M>(self) -> Self
     where
-        M: Upload + 'static,
+        M: Upload<Key = K> + 'static,
         M::Request: Send + 'static,
         S: UploadHandler<M, St> + Send + 'static,
         St::Reader: Send + 'static,
@@ -215,7 +215,7 @@ where
 macro_rules! add_route {
     ($builder:expr, $rpc:ty, $handler:ident, $($arg:path),+ $(,)?) => {
         $builder.add_route(
-            RouteKey::new::<$rpc>(),
+            <$rpc as Route>::key(),
             |spawner, state, context, config, stream| {
                 spawner.spawn($handler(
                     state,
