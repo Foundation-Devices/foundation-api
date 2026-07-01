@@ -1,4 +1,4 @@
-use ql_common::{RouteId, ServiceId, StreamId, VarInt};
+use ql_common::{StreamId, VarInt};
 
 use crate::{
     codec::{self, LenBytes},
@@ -7,19 +7,19 @@ use crate::{
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamData<B> {
+pub struct StreamData<B, H = B> {
     pub stream_id: StreamId,
     pub offset: VarInt,
-    pub header: Option<StreamHeader>,
+    pub header: Option<LenBytes<H>>,
     pub fin: bool,
     pub bytes: B,
 }
 
-impl<B> StreamData<B> {
+impl<B, H> StreamData<B, H> {
     pub const MIN_WIRE_SIZE: usize = StreamId::MAX_ENCODED_LEN
         + VarInt::MAX_SIZE
         + size_of::<u8>()
-        + StreamHeader::MAX_WIRE_SIZE
+        + VarInt::MAX_SIZE
         + VarInt::MAX_SIZE;
 }
 
@@ -47,22 +47,23 @@ impl<B: ByteSlice> WireDecode<B> for StreamData<B> {
     }
 }
 
-impl<B> StreamData<B> {
+impl<B, H> StreamData<B, H> {
     pub fn into_owned(self) -> StreamData<Vec<u8>>
     where
         B: ByteSlice,
+        H: ByteSlice,
     {
         StreamData {
             stream_id: self.stream_id,
             offset: self.offset,
-            header: self.header,
+            header: self.header.map(|header| LenBytes(header.0.to_vec())),
             fin: self.fin,
             bytes: self.bytes.to_vec(),
         }
     }
 }
 
-impl<B: BufView> WireEncode for StreamData<B> {
+impl<B: BufView, H: BufView> WireEncode for StreamData<B, H> {
     fn encoded_len(&self) -> usize {
         self.stream_id.encoded_len()
             + self.offset.encoded_len()
@@ -91,36 +92,6 @@ impl<B: BufView> WireEncode for StreamData<B> {
             header.encode(out);
         }
         LenBytes(&self.bytes).encode(out);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamHeader {
-    pub service_id: ServiceId,
-    pub route_id: RouteId,
-}
-
-impl StreamHeader {
-    pub const MAX_WIRE_SIZE: usize = ServiceId::SIZE + RouteId::MAX_ENCODED_LEN;
-}
-
-impl<B: ByteSlice> WireDecode<B> for StreamHeader {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self {
-            service_id: reader.decode()?,
-            route_id: reader.decode()?,
-        })
-    }
-}
-
-impl WireEncode for StreamHeader {
-    fn encoded_len(&self) -> usize {
-        self.service_id.encoded_len() + self.route_id.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.service_id.encode(out);
-        self.route_id.encode(out);
     }
 }
 

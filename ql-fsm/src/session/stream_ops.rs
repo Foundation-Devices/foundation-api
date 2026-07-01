@@ -1,5 +1,5 @@
 use ql_common::{ResetCode, StreamId};
-use ql_wire::{StreamHeader, StreamReset};
+use ql_wire::StreamReset;
 
 use super::{
     state::{InboundState, StreamState},
@@ -40,7 +40,7 @@ impl<'a, E: EventSink> StreamOps<'a, E> {
 
     /// returns the streams details
     #[inline]
-    pub fn header(&self) -> &StreamHeader {
+    pub fn header(&self) -> &[u8] {
         self.stream().header.as_ref().unwrap()
     }
 

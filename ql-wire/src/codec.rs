@@ -246,6 +246,7 @@ impl<B: ByteSlice> Reader<B> {
 }
 
 /// bytes encoded with a VarInt len prefix
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LenBytes<B>(pub B);
 
 impl<B> WireEncode for LenBytes<B>

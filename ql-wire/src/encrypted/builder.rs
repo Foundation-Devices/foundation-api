@@ -71,7 +71,7 @@ impl SessionRecordBuilder {
         self.push_frame_payload(super::SessionFrameKind::Ack, ack)
     }
 
-    pub fn push_stream_data<B: BufView>(&mut self, frame: &StreamData<B>) -> bool {
+    pub fn push_stream_data<B: BufView, H: BufView>(&mut self, frame: &StreamData<B, H>) -> bool {
         self.push_frame_payload(super::SessionFrameKind::StreamData, frame)
     }
 

@@ -35,10 +35,8 @@ use std::{
 pub use bytes::Bytes;
 pub use error::*;
 pub use pairing::PairingInvite;
-use ql_common::{ResetCode, RouteId, ServiceId, StreamId};
-use ql_wire::{
-    PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode, StreamHeader,
-};
+use ql_common::{ResetCode, StreamId};
+use ql_wire::{PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode};
 pub use session::{SessionEvent, StreamReadIter, StreamWriter};
 
 use crate::state::{LinkState, QlFsmState};
@@ -137,7 +135,7 @@ impl StreamOps<'_> {
         self.inner.stream_id()
     }
 
-    pub fn header(&self) -> &StreamHeader {
+    pub fn header(&self) -> &[u8] {
         self.inner.header()
     }
 
@@ -208,11 +206,6 @@ impl Default for QlFsmConfig {
             session_pending_ack_range_limit: s.pending_ack_range_limit,
         }
     }
-}
-
-pub struct OpenStreamParams {
-    pub service_id: ServiceId,
-    pub route_id: RouteId,
 }
 
 /// synchronous driver for peer binding, handshake, and encrypted streams
@@ -350,11 +343,8 @@ impl QlFsm {
     }
 
     /// opens a new outgoing stream
-    pub fn open_stream(
-        &mut self,
-        params: OpenStreamParams,
-    ) -> Result<StreamOps<'_>, NoSessionError> {
-        fsm::open_stream(self, params)
+    pub fn open_stream(&mut self, header: Box<[u8]>) -> Result<StreamOps<'_>, NoSessionError> {
+        fsm::open_stream(self, header)
     }
 
     /// returns a facade for an open stream

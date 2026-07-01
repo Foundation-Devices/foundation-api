@@ -7,13 +7,11 @@ extern crate proptest as proptest_crate;
 
 use bytes::Bytes;
 use proptest_crate::{collection::vec, prelude::*, test_runner::TestCaseResult};
-use ql_common::{ResetCode, RouteId, ServiceId, StreamId};
+use ql_common::{ResetCode, StreamId};
 use ql_wire::WireError;
 
 use super::*;
-use crate::{
-    state::LinkState, Event, OpenStreamParams, PeerStatus, ReceiveError, StreamResetTarget, WriteId,
-};
+use crate::{state::LinkState, Event, PeerStatus, ReceiveError, StreamResetTarget, WriteId};
 
 const SLOT_COUNT: usize = 4;
 
@@ -284,10 +282,7 @@ impl Runner {
                     .harness
                     .node_mut(*side)
                     .fsm
-                    .open_stream(OpenStreamParams {
-                        service_id: ServiceId([1; 16]),
-                        route_id: RouteId::from(1u32),
-                    })
+                    .open_stream(Box::from([1]))
                     .ok()
                     .map(|stream| stream.stream_id());
                 if let Some(stream_id) = stream_id {

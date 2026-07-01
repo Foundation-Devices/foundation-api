@@ -1,4 +1,4 @@
-use ql_common::{RouteId, ServiceId, StreamId};
+use ql_common::StreamId;
 
 use crate::{
     codec, encrypted_message::EncryptedMessage, BufView, ByteSlice, Nonce, QlCrypto, Reader,
@@ -19,9 +19,7 @@ pub use stream_data::*;
 pub use stream_reset::*;
 pub use stream_window::*;
 
-varint_wrapper_codec!(RouteId);
 varint_wrapper_codec!(StreamId);
-array_wrapper_codec!(ServiceId);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionFrame<B> {

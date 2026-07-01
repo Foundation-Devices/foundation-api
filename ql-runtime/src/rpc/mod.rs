@@ -1,6 +1,5 @@
 mod adapter;
 
-use ql_fsm::OpenStreamParams;
 use ql_rpc::{download, duplex, notification, progress, request, subscription, upload, Route};
 
 use crate::{QlStream, QlStreamError, RuntimeHandle, StreamReader, StreamWriter};
@@ -95,10 +94,7 @@ impl RpcHandle {
 
     async fn open_rpc_stream<R: Route, E>(&self) -> RpcResult<QlStream, E> {
         self.inner
-            .open_stream(OpenStreamParams {
-                service_id: R::SERVICE,
-                route_id: R::ROUTE,
-            })
+            .open_stream(ql_rpc::encode_stream_header::<R>())
             .await
             .map_err(QlStreamError::from)
             .map_err(ql_rpc::RpcError::Transport)

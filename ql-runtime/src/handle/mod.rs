@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ql_fsm::{NoSessionError, OpenStreamParams, PairingInvite};
+use ql_fsm::{NoSessionError, PairingInvite};
 use ql_wire::{PairingToken, PeerBundle, SessionCloseCode};
 
 use crate::command::Command;
@@ -54,16 +54,10 @@ impl RuntimeHandle {
     }
 
     /// opens a new stream on the active encrypted session
-    pub async fn open_stream(&self, params: OpenStreamParams) -> Result<QlStream, NoSessionError> {
+    pub async fn open_stream(&self, header: Box<[u8]>) -> Result<QlStream, NoSessionError> {
         let (start_tx, start_rx) = oneshot::channel();
-        let OpenStreamParams {
-            service_id,
-            route_id,
-        } = params;
-
         self.send(Command::OpenStream {
-            route_id,
-            service_id,
+            header,
             start: start_tx,
         });
 

@@ -1,8 +1,9 @@
 use std::time::Instant;
 
+use bytes::Bytes;
 use indexmap::IndexMap;
 use ql_common::StreamId;
-use ql_wire::{RecordSeq, ResetTarget, SessionClose, StreamHeader, StreamReset};
+use ql_wire::{RecordSeq, ResetTarget, SessionClose, StreamReset};
 
 use super::{
     ack_tracker::AckTracker, remote_stream_history::RemoteStreamHistory, stream_rx::StreamRx,
@@ -46,7 +47,7 @@ pub enum TerminalFrame {
 #[derive(Debug)]
 pub struct StreamState {
     pub role: StreamRole,
-    pub header: Option<StreamHeader>,
+    pub header: Option<Bytes>,
     pub rx: StreamRx,
     pub tx: StreamTx,
     pub pending_reset: Option<StreamReset>,
@@ -60,14 +61,14 @@ pub struct StreamState {
 impl StreamState {
     pub fn new(
         role: StreamRole,
-        route_id: Option<StreamHeader>,
+        header: Option<Bytes>,
         receive_buffer_size: u32,
         initial_peer_stream_receive_window: u32,
     ) -> Self {
         let receive_buffer_size = receive_buffer_size as usize;
         Self {
             role,
-            header: route_id,
+            header,
             tx: StreamTx::new(),
             pending_reset: None,
             peer_max_offset: u64::from(initial_peer_stream_receive_window),

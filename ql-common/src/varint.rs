@@ -52,6 +52,65 @@ impl VarInt {
             8
         }
     }
+
+    /// Return the encoded length from the first encoded byte.
+    pub const fn encoded_len_from_first_byte(first: u8) -> usize {
+        1usize << (first >> 6)
+    }
+
+    /// Encode this value by writing its encoded bytes to `write`.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn write_bytes(self, mut write: impl FnMut(&[u8])) {
+        let value = self.0;
+        match self.size() {
+            1 => write(&[value as u8]),
+            2 => write(&((value as u16) | 0x4000).to_be_bytes()),
+            4 => write(&((value as u32) | 0x8000_0000).to_be_bytes()),
+            8 => write(&(value | 0xC000_0000_0000_0000).to_be_bytes()),
+            _ => unreachable!(),
+        }
+    }
+
+    /// decode a value from the start of `bytes`, returning the value and remaining bytes
+    pub fn decode_bytes(bytes: &[u8]) -> Option<(Self, &[u8])> {
+        let first = *bytes.first()?;
+        let len = Self::encoded_len_from_first_byte(first);
+        Some((
+            Self::decode_with_first_byte(first, bytes.get(1..len)?)?,
+            &bytes[len..],
+        ))
+    }
+
+    /// decode a value after the first encoded byte has already been consumed
+    pub fn decode_with_first_byte(first: u8, tail: &[u8]) -> Option<Self> {
+        let len = Self::encoded_len_from_first_byte(first);
+        if tail.len() != len - 1 {
+            return None;
+        }
+        let value = match len {
+            1 => u64::from(first & 0x3f),
+            2 => u64::from(u16::from_be_bytes([first & 0x3f, tail[0]])),
+            4 => {
+                let bytes = [first & 0x3f, tail[0], tail[1], tail[2]];
+                u64::from(u32::from_be_bytes(bytes))
+            }
+            8 => {
+                let bytes = [
+                    first & 0x3f,
+                    tail[0],
+                    tail[1],
+                    tail[2],
+                    tail[3],
+                    tail[4],
+                    tail[5],
+                    tail[6],
+                ];
+                u64::from_be_bytes(bytes)
+            }
+            _ => unreachable!(),
+        };
+        Self::from_u64(value).ok()
+    }
 }
 
 impl From<VarInt> for u64 {

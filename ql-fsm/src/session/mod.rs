@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use indexmap::IndexMap;
-use ql_common::{RouteId, ServiceId, StreamId, VarInt};
+use ql_common::{StreamId, VarInt};
 use ql_wire::{
-    RecordAck, RecordSeq, ResetTarget, SessionClose, SessionCloseCode, SessionFrame,
-    SessionRecordBuilder, StreamData, StreamHeader, StreamReset, StreamWindow, WireError,
+    LenBytes, RecordAck, RecordSeq, ResetTarget, SessionClose, SessionCloseCode, SessionFrame,
+    SessionRecordBuilder, StreamData, StreamReset, StreamWindow, WireError,
 };
 
 use self::{
@@ -128,8 +128,7 @@ impl SessionFsm {
 
     pub fn open_stream<E>(
         &mut self,
-        service_id: ServiceId,
-        route_id: RouteId,
+        header: Box<[u8]>,
         sink: E,
     ) -> Result<StreamOps<'_, E>, NoSessionError>
     where
@@ -145,10 +144,7 @@ impl SessionFsm {
             stream_id,
             StreamState::new(
                 StreamRole::Initiator,
-                Some(StreamHeader {
-                    service_id,
-                    route_id,
-                }),
+                Some(Bytes::from(header)),
                 self.config.stream_receive_buffer_size,
                 self.config.initial_peer_stream_receive_window,
             ),
@@ -543,7 +539,7 @@ impl SessionFsm {
                 stream_id,
                 offset,
                 header: if matches!(stream.role, StreamRole::Initiator) && candidate.offset == 0 {
-                    stream.header
+                    stream.header.as_ref().map(LenBytes)
                 } else {
                     None
                 },
@@ -659,9 +655,9 @@ impl SessionFsm {
         let readable_before = stream.readable_bytes();
         let was_finished = matches!(stream.inbound_state, InboundState::Finished);
 
-        let opened = match (stream.role, stream.header, header, frame_offset) {
+        let opened = match (stream.role, stream.header.as_ref(), header, frame_offset) {
             (StreamRole::Responder, None, Some(header), 0) => {
-                stream.header = Some(header);
+                stream.header = Some(header.0);
                 true
             }
             (StreamRole::Initiator, _, Some(_), _)

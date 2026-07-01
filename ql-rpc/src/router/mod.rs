@@ -5,7 +5,7 @@ mod config;
 mod mode;
 
 pub use self::{builder::*, config::*, mode::*};
-use crate::{RpcRead, RpcStream, RpcWrite};
+use crate::{decode_stream_header, RpcRead, RpcStream, RpcWrite};
 
 pub struct Router<S, St, Sp>
 where
@@ -79,13 +79,14 @@ where
         let StreamInfo {
             qid,
             stream_id,
-            service_id,
-            route_id,
+            header,
         } = info;
         let context = Context { qid, stream_id };
-        let key = RouteKey {
-            service_id,
-            route_id,
+        let Some(key) = decode_stream_header(&header) else {
+            let (reader, writer) = stream.split();
+            reader.reset(ResetCode::PROTOCOL);
+            writer.reset(ResetCode::PROTOCOL);
+            return None;
         };
         let Ok(index) = self.routes.binary_search_by_key(&key, |entry| entry.key) else {
             let (reader, writer) = stream.split();

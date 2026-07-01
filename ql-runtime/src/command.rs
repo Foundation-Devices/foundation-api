@@ -1,4 +1,4 @@
-use ql_common::{ResetCode, RouteId, ServiceId, StreamId};
+use ql_common::{ResetCode, StreamId};
 use ql_fsm::{NoSessionError, PairingInvite, StreamResetTarget};
 use ql_wire::{PairingToken, PeerBundle, SessionCloseCode};
 
@@ -17,8 +17,7 @@ pub enum Command {
         invite: PairingInvite,
     },
     OpenStream {
-        service_id: ServiceId,
-        route_id: RouteId,
+        header: Box<[u8]>,
         start: oneshot::Sender<Result<(StreamReader, StreamWriter), NoSessionError>>,
     },
     PollInbound {

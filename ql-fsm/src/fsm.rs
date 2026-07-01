@@ -8,8 +8,7 @@ use crate::{
     handshake,
     session::{self, SessionEvent, TerminalFrame},
     state::LinkState,
-    Event, NoPeerError, NoSessionError, OpenStreamParams, OutboundWrite, QlFsm, ReceiveError,
-    StreamError, WriteId,
+    Event, NoPeerError, NoSessionError, OutboundWrite, QlFsm, ReceiveError, StreamError, WriteId,
 };
 
 pub struct EventSink<'a> {
@@ -238,13 +237,11 @@ pub fn close_session(fsm: &mut QlFsm, code: SessionCloseCode) {
 
 pub fn open_stream(
     fsm: &mut QlFsm,
-    params: OpenStreamParams,
+    header: Box<[u8]>,
 ) -> Result<crate::StreamOps<'_>, NoSessionError> {
     let QlFsm { state, events, .. } = fsm;
     let conn = state.link.connected_mut_or_err()?;
-    let inner =
-        conn.session
-            .open_stream(params.service_id, params.route_id, EventSink::new(events))?;
+    let inner = conn.session.open_stream(header, EventSink::new(events))?;
     Ok(crate::StreamOps { inner })
 }
 

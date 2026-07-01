@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use ql_common::{ResetCode, RouteId, ServiceId, StreamId, VarInt, QID};
+use ql_common::{ResetCode, StreamId, VarInt, QID};
 use ql_wire::{
-    decode_session_frames, parse_session_frames, RecordAck, RecordSeq, ResetTarget, SessionFrame,
-    SessionRecordBuilder, StreamData, StreamHeader, StreamReset,
+    decode_session_frames, parse_session_frames, LenBytes, RecordAck, RecordSeq, ResetTarget,
+    SessionFrame, SessionRecordBuilder, StreamData, StreamReset,
 };
 
 use super::{SessionConfig, SessionEvent, SessionFsm};
@@ -22,10 +22,6 @@ fn offset(value: u64) -> VarInt {
     VarInt::from_u64(value).unwrap()
 }
 
-fn route_id(value: u64) -> RouteId {
-    RouteId::from_u64(value).unwrap()
-}
-
 fn record_ack(seq: RecordSeq) -> RecordAck {
     RecordAck::from_ranges([seq..=seq]).unwrap()
 }
@@ -33,11 +29,8 @@ fn record_ack(seq: RecordSeq) -> RecordAck {
 const REFUSED: ResetCode = ResetCode(1);
 const TIMEOUT: ResetCode = ResetCode(2);
 
-fn header(value: u64) -> StreamHeader {
-    StreamHeader {
-        route_id: route_id(value),
-        service_id: ServiceId([0; 16]),
-    }
+fn header(value: u64) -> LenBytes<Vec<u8>> {
+    LenBytes(vec![value as u8])
 }
 
 // todo: remove
@@ -46,7 +39,7 @@ fn opened(stream_id: StreamId) -> SessionEvent {
 }
 
 fn open_stream_id(fsm: &mut SessionFsm) -> StreamId {
-    fsm.open_stream(ServiceId([0; 16]), route_id(1), |_| {})
+    fsm.open_stream(header(1).0.into_boxed_slice(), |_| {})
         .unwrap()
         .stream_id()
 }
@@ -451,7 +444,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream(ServiceId([0; 16]), route_id(1), |_| {})
+    .open_stream(header(1).0.into_boxed_slice(), |_| {})
     .unwrap()
     .stream_id();
     let odd_id = SessionFsm::new(
@@ -461,7 +454,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream(ServiceId([0; 16]), route_id(1), |_| {})
+    .open_stream(header(1).0.into_boxed_slice(), |_| {})
     .unwrap()
     .stream_id();
 

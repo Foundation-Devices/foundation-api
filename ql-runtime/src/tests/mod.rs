@@ -11,8 +11,8 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 use futures_lite::Stream;
-use ql_common::{RouteId, ServiceId, StreamInfo, QID};
-use ql_fsm::{OpenStreamParams, PeerStatus};
+use ql_common::{StreamInfo, QID};
+use ql_fsm::PeerStatus;
 use ql_wire::{
     generate_identity, test_identities, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
     MlKemPublicKey, Nonce, PairingToken, PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom,
@@ -65,15 +65,8 @@ impl Side {
     }
 }
 
-fn test_route_id() -> RouteId {
-    RouteId::from_u32(1)
-}
-
-fn test_open_stream_params() -> OpenStreamParams {
-    OpenStreamParams {
-        service_id: ServiceId([1; 16]),
-        route_id: test_route_id(),
-    }
+fn test_open_stream_params() -> Box<[u8]> {
+    Box::from([1])
 }
 
 #[derive(Debug, Clone)]

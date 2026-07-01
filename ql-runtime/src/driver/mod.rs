@@ -17,7 +17,6 @@ use async_channel::Recv;
 use futures_lite::future::{poll_fn, yield_now};
 use ql_common::{ResetCode, ResetOrigin, StreamId, StreamInfo};
 use ql_fsm::{Event, QlFsm, StreamResetEvent, StreamResetTarget, WriteId};
-use ql_wire::StreamHeader;
 
 use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
 use crate::{
@@ -210,26 +209,19 @@ impl DriverState {
                 log::info!("unpairing peer");
                 fsm.unpair();
             }
-            Command::OpenStream {
-                service_id,
-                route_id,
-                start,
-            } => {
-                log::info!("open stream requested: route_id={route_id}");
+            Command::OpenStream { header, start } => {
+                log::info!("open stream requested");
 
-                let mut stream_ops = match fsm.open_stream(ql_fsm::OpenStreamParams {
-                    service_id,
-                    route_id,
-                }) {
+                let mut stream_ops = match fsm.open_stream(header) {
                     Ok(stream_ops) => stream_ops,
                     Err(error) => {
-                        log::warn!("open stream failed: route_id={route_id}");
+                        log::warn!("open stream failed");
                         let _ = start.send(Err(error));
                         return;
                     }
                 };
                 let stream_id = stream_ops.stream_id();
-                log::info!("open stream allocated: service_id={service_id} route_id={route_id} stream_id={stream_id}");
+                log::info!("open stream allocated: stream_id={stream_id}");
                 let (reader, writer, reader_io, writer_io) =
                     io::new_stream(stream_id, self.runtime_tx.clone());
                 self.streams.insert(
@@ -362,21 +354,15 @@ impl DriverState {
 
         let qid = fsm.peer().unwrap().qid;
         let stream = fsm.stream(stream_id).unwrap();
-        let StreamHeader {
-            service_id,
-            route_id,
-        } = *stream.header();
+        let header = Box::<[u8]>::from(stream.header());
 
-        log::info!(
-            "delivering inbound stream to platform: service_id={service_id} route_id={route_id} stream_id={stream_id}",
-        );
+        log::info!("delivering inbound stream to platform: stream_id={stream_id}",);
 
         platform.handle_inbound(
             StreamInfo {
                 qid,
                 stream_id,
-                service_id,
-                route_id,
+                header,
             },
             crate::QlStream { writer, reader },
         );
