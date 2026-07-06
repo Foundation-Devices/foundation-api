@@ -222,9 +222,29 @@ macro_rules! varint_wrapper {
             }
         }
 
+        impl From<$name> for $crate::VarInt {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl From<$name> for u64 {
+            fn from(value: $name) -> Self {
+                value.0.into_inner()
+            }
+        }
+
         impl From<u32> for $name {
             fn from(value: u32) -> Self {
                 Self::from_u32(value)
+            }
+        }
+
+        impl TryFrom<u64> for $name {
+            type Error = $crate::VarIntBoundsExceeded;
+
+            fn try_from(value: u64) -> Result<Self, Self::Error> {
+                Self::from_u64(value)
             }
         }
 
