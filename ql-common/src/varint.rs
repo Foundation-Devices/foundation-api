@@ -186,7 +186,8 @@ impl std::error::Error for VarIntBoundsExceeded {}
 
 #[macro_export]
 macro_rules! varint_wrapper {
-    ($name:ident) => {
+    ($(#[$attr:meta])* $name:ident $(,)?) => {
+        $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(transparent)]
         pub struct $name(pub $crate::VarInt);

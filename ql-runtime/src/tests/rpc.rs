@@ -8,7 +8,7 @@ use std::{
 };
 
 use bytes::{BufMut, Bytes};
-use ql_common::{ResetCode, ResetOrigin, RouteId, VarInt};
+use ql_common::{ResetCode, ResetOrigin, VarInt};
 use ql_rpc::{
     download::{DownloadHandlerLocal, DownloadStart},
     duplex::{DuplexHandlerLocal, DuplexPeer},
@@ -24,20 +24,20 @@ use super::*;
 use crate::{QlStream, QlStreamError, StreamWriter};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct TestRouteKey(RouteId);
+struct TestRouteKey(VarInt);
 
 impl ql_rpc::RpcRouteKey for TestRouteKey {
     fn encoded_len(&self) -> usize {
-        self.0 .0.size()
+        self.0.size()
     }
 
     fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
-        self.0 .0.write_bytes(|bytes| out.put_slice(bytes));
+        self.0.write_bytes(|bytes| out.put_slice(bytes));
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
         let (route_id, rest) = VarInt::decode_bytes(bytes)?;
-        rest.is_empty().then_some(Self(RouteId(route_id)))
+        rest.is_empty().then_some(Self(route_id))
     }
 }
 
@@ -47,7 +47,7 @@ macro_rules! test_route {
             type Key = TestRouteKey;
 
             fn key() -> Self::Key {
-                TestRouteKey(RouteId::from_u32($id))
+                TestRouteKey(VarInt::from_u32($id))
             }
         }
     };
