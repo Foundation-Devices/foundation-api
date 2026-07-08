@@ -1,8 +1,5 @@
 //! KeyOS addressing primitives for QuantumLink
 
-use bytes::BufMut;
-pub use ql_common::VarInt;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(transparent)]
@@ -12,7 +9,7 @@ impl AppId {
     pub const SIZE: usize = 16;
 
     pub const fn from_hex(hex: &str) -> Self {
-        const fn hex_nibble(byte: u8) -> u8 {
+        const fn nibble(byte: u8) -> u8 {
             match byte {
                 b'0'..=b'9' => byte - b'0',
                 b'a'..=b'f' => byte - b'a' + 10,
@@ -28,7 +25,7 @@ impl AppId {
         let mut app_id = [0; Self::SIZE];
         let mut i = 0;
         while i < Self::SIZE {
-            app_id[i] = (hex_nibble(bytes[i * 2 + 2]) << 4) | hex_nibble(bytes[i * 2 + 3]);
+            app_id[i] = (nibble(bytes[i * 2 + 2]) << 4) | nibble(bytes[i * 2 + 3]);
             i += 1;
         }
 
@@ -36,24 +33,7 @@ impl AppId {
     }
 }
 
-ql_common::varint_wrapper!(
-    /// Identifier for a route within a KeyOS app or service namespace
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde", serde(into = "u64", try_from = "u64"))]
-    RouteId
-);
-
-ql_common::varint_wrapper!(
-    /// Identifier for a KeyOS service advertised by a peer
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde", serde(into = "u64", try_from = "u64"))]
-    ServiceId
-);
-
-pub trait ServiceTargetKey {
-    fn service_id(&self) -> ServiceId;
-}
-
+// TODO: version
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PeerMetadata {
@@ -64,19 +44,32 @@ pub struct PeerMetadata {
 }
 
 impl PeerMetadata {
-    pub fn write_bytes<B: BufMut + ?Sized>(&self, out: &mut B) {
-        write_varint(len_varint(self.app_ids.len()), out);
-        for app_id in &self.app_ids {
-            out.put_slice(&app_id.0);
+    pub fn write_bytes(&self, out: &mut Vec<u8>) {
+        fn len_u64(len: usize) -> u64 {
+            len.try_into().expect("metadata length exceeds u64")
         }
 
-        write_varint(len_varint(self.service_ids.len()), out);
+        out.extend_from_slice(&len_u64(self.app_ids.len()).to_be_bytes());
+        for app_id in &self.app_ids {
+            out.extend_from_slice(&app_id.0);
+        }
+
+        out.extend_from_slice(&len_u64(self.service_ids.len()).to_be_bytes());
         for service_id in &self.service_ids {
-            write_varint(service_id.0, out);
+            out.extend_from_slice(&service_id.0.to_be_bytes());
         }
     }
 
     pub fn from_bytes(mut bytes: &[u8]) -> Option<Self> {
+        fn read_len(bytes: &mut &[u8]) -> Option<usize> {
+            read_u64(bytes)?.try_into().ok()
+        }
+        fn read_u64(bytes: &mut &[u8]) -> Option<u64> {
+            let value = u64::from_be_bytes(bytes.get(..8)?.try_into().ok()?);
+            *bytes = &bytes[8..];
+            Some(value)
+        }
+
         let app_count = read_len(&mut bytes)?;
         let app_bytes_len = app_count.checked_mul(AppId::SIZE)?;
         if app_bytes_len > bytes.len() {
@@ -95,9 +88,7 @@ impl PeerMetadata {
         }
         let mut service_ids = Vec::with_capacity(service_count);
         for _ in 0..service_count {
-            let (service_id, rest) = VarInt::decode_bytes(bytes)?;
-            bytes = rest;
-            service_ids.push(ServiceId(service_id));
+            service_ids.push(ServiceId(read_u64(&mut bytes)?));
         }
 
         bytes.is_empty().then_some(Self {
@@ -105,18 +96,41 @@ impl PeerMetadata {
             service_ids,
         })
     }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut bytes = Vec::default();
+        self.write_bytes(&mut bytes);
+        bytes
+    }
 }
 
-fn len_varint(len: usize) -> VarInt {
-    VarInt::from_u64(len as u64).expect("metadata length exceeds varint bounds")
+macro_rules! wrapper {
+    ($(#[$attr:meta])* $name:ident, $ty:ty) => {
+        $(#[$attr])*
+        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[repr(transparent)]
+        pub struct $name(pub $ty);
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+    };
 }
 
-fn read_len(bytes: &mut &[u8]) -> Option<usize> {
-    let (len, rest) = VarInt::decode_bytes(bytes)?;
-    *bytes = rest;
-    usize::try_from(len.into_inner()).ok()
-}
+wrapper!(
+    /// Identifier for a route within a KeyOS app or service namespace
+    RouteId,
+    u32
+);
+wrapper!(
+    /// Identifier for a KeyOS service advertised by a peer
+    ServiceId,
+    u64
+);
 
-fn write_varint<B: BufMut + ?Sized>(value: VarInt, out: &mut B) {
-    value.write_bytes(|bytes| out.put_slice(bytes));
+pub trait ServiceTargetKey {
+    fn service_id(&self) -> ServiceId;
 }

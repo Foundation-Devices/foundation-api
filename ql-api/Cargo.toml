@@ -7,7 +7,6 @@ license = "Proprietary"
 
 
 [dependencies]
-ql-common = { workspace = true }
 ql-keyos = { workspace = true, features = ["serde"] }
 ql-rpc = { workspace = true }
 bytes = { workspace = true }

@@ -6,8 +6,6 @@ description = "KeyOS QuantumLink addressing primitives"
 license = "Proprietary"
 
 [dependencies]
-bytes = { workspace = true }
-ql-common = { workspace = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]

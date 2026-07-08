@@ -56,7 +56,7 @@ macro_rules! service_routes {
                 fn key() -> Self::Key {
                     crate::ServiceRouteKey {
                         service_id: $service_id,
-                        route_id: ql_keyos::RouteId::from_u32($id),
+                        route_id: ql_keyos::RouteId($id),
                     }
                 }
             }
@@ -80,7 +80,7 @@ macro_rules! app_routes {
                 fn key() -> Self::Key {
                     crate::AppRouteKey {
                         app_id: $app_id,
-                        route_id: ql_keyos::RouteId::from_u32($id),
+                        route_id: ql_keyos::RouteId($id),
                     }
                 }
             }
