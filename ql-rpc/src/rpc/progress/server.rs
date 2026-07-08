@@ -23,7 +23,9 @@ where
         responder: ProgressResponder<M, St::Writer>,
     );
 
-    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
+    fn handle_error(&self, error: &RpcError<M::Error, St::Error>) {
+        let _ = error;
+    }
 }
 
 pub struct ProgressResponder<M, W>

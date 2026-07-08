@@ -1,8 +1,8 @@
 use bytes::Bytes;
 
 use crate::{
-    finish_bytes, read_bytes, write_bytes, ChunkQueue, Error, FramedPrefixStep, FramedReadStep,
-    FramedReader, RouterConfig, RpcCodec, RpcError, RpcRead, RpcWrite,
+    finish_bytes, read_bytes, write_bytes, ChunkQueue, Error, RouterConfig, RpcCodec, RpcError,
+    RpcRead, RpcWrite,
 };
 
 pub async fn write_eof_value<T, W>(writer: &mut W, value: &T) -> Result<(), W::Error>
@@ -43,23 +43,8 @@ where
     T: RpcCodec,
     R: RpcRead,
 {
-    let mut value_reader = FramedReader::<T>::default();
-    let value = loop {
-        match value_reader.advance::<R::Error>() {
-            Ok(FramedReadStep::Value(value)) => break value,
-            Ok(FramedReadStep::NeedMore(next)) => value_reader = next,
-            Err(error) => return Err(error),
-        }
-
-        match read_bytes(reader).await {
-            Ok(Some(chunk)) => {
-                value_reader = value_reader.push(chunk);
-                reject_oversized_frame(&value_reader, config)?;
-            }
-            Ok(None) => return Err(RpcError::Protocol(Error::Truncated)),
-            Err(error) => return Err(RpcError::Transport(error)),
-        }
-    };
+    let (value, buffered) = read_framed_prefix(reader, Some(config.max_request_bytes)).await?;
+    buffered.expect_empty().map_err(RpcError::Protocol)?;
 
     match read_bytes(reader).await {
         Ok(None) => Ok(value),
@@ -68,27 +53,27 @@ where
     }
 }
 
-/// reads one length-delimited value and returns any bytes already buffered
-pub async fn read_framed_request_prefix<T, R>(
+pub async fn read_framed_prefix<T, R>(
     reader: &mut R,
-    config: RouterConfig,
+    max_len: Option<usize>,
 ) -> Result<(T, ChunkQueue), RpcError<T::Error, R::Error>>
 where
     T: RpcCodec,
     R: RpcRead,
 {
-    let mut value_reader = FramedReader::<T>::default();
+    let mut bytes = ChunkQueue::default();
+
     loop {
-        match value_reader.advance_prefix::<R::Error>() {
-            Ok(FramedPrefixStep::Value { value, bytes }) => return Ok((value, bytes)),
-            Ok(FramedPrefixStep::NeedMore(next)) => value_reader = next,
-            Err(error) => return Err(error),
+        if let Some(value) = try_take_framed_value(&mut bytes)? {
+            return Ok((value, bytes));
         }
 
         match read_bytes(reader).await {
             Ok(Some(chunk)) => {
-                value_reader = value_reader.push(chunk);
-                reject_oversized_frame(&value_reader, config)?;
+                bytes.push(chunk);
+                if let Some(max_len) = max_len {
+                    reject_oversized_frame(&bytes, max_len).map_err(RpcError::Protocol)?;
+                }
             }
             Ok(None) => return Err(RpcError::Protocol(Error::Truncated)),
             Err(error) => return Err(RpcError::Transport(error)),
@@ -130,18 +115,26 @@ where
     Ok(value)
 }
 
-fn reject_oversized_frame<T, E>(
-    value_reader: &FramedReader<T>,
-    config: RouterConfig,
-) -> Result<(), RpcError<T::Error, E>>
+fn try_take_framed_value<T, E>(bytes: &mut ChunkQueue) -> Result<Option<T>, RpcError<T::Error, E>>
 where
     T: RpcCodec,
 {
-    if value_reader
-        .exceeds_total_len(config.max_request_bytes)
-        .map_err(RpcError::Protocol)?
-    {
-        return Err(RpcError::Protocol(Error::LengthOverflow));
+    let Some(mut body) = bytes.try_take_part().map_err(RpcError::Protocol)? else {
+        return Ok(None);
+    };
+
+    let value = T::decode_value(&mut body).map_err(RpcError::Codec)?;
+    Ok(Some(value))
+}
+
+fn reject_oversized_frame(bytes: &ChunkQueue, max_len: usize) -> Result<(), Error> {
+    let oversized = match bytes.next_part_total_len()? {
+        Some(len) => len > max_len,
+        None => bytes.remaining() > max_len,
+    };
+
+    if oversized {
+        return Err(Error::LengthOverflow);
     }
     Ok(())
 }

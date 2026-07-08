@@ -1,12 +1,11 @@
-use std::{future::Future, marker::PhantomData};
-
-use bytes::Bytes;
-use ql_common::ResetCode;
+use std::future::Future;
 
 use crate::{
-    codec, finish_bytes, rpc::read_eof_request, subscription::Subscription, write_bytes, Context,
-    DropResetWrite, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
+    duplex::DuplexSender, rpc::read_eof_request, subscription::Subscription, Context, RouterConfig,
+    RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
 };
+
+pub type SubscriptionResponder<T, W> = DuplexSender<T, W>;
 
 #[trait_variant::make(SubscriptionHandler: Send)]
 pub trait SubscriptionHandlerLocal<M, St>
@@ -18,46 +17,11 @@ where
         self,
         context: Context,
         message: M::Request,
-        responder: SubscriptionResponder<M::Event, St::Writer>,
+        responder: DuplexSender<M::Event, St::Writer>,
     );
 
-    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
-}
-
-pub struct SubscriptionResponder<T, W>
-where
-    W: RpcWrite,
-{
-    writer: DropResetWrite<W>,
-    marker: PhantomData<fn() -> T>,
-}
-
-impl<T, W> SubscriptionResponder<T, W>
-where
-    T: RpcCodec,
-    W: RpcWrite,
-{
-    pub(crate) fn new(writer: W) -> Self {
-        Self {
-            writer: DropResetWrite::new(writer),
-            marker: PhantomData,
-        }
-    }
-
-    pub async fn send(&mut self, event: T) -> Result<(), W::Error> {
-        let writer = &mut self.writer;
-        let mut encoded = Vec::new();
-        codec::encode_value_part(&event, &mut encoded);
-        write_bytes(writer, Bytes::from(encoded)).await?;
-        Ok(())
-    }
-
-    pub async fn finish(mut self) -> Result<(), W::Error> {
-        finish_bytes(&mut self.writer).await
-    }
-
-    pub fn reset(mut self, code: ResetCode) {
-        DropResetWrite::reset(&mut self.writer, code);
+    fn handle_error(&self, error: &RpcError<M::Error, St::Error>) {
+        let _ = error;
     }
 }
 
@@ -73,7 +37,7 @@ where
     Req: RpcCodec<Error = Err> + 'static,
     Event: RpcCodec<Error = Err> + 'static,
     St: RpcStream + 'static,
-    H: FnOnce(S, Context, Req, SubscriptionResponder<Event, St::Writer>) -> HF,
+    H: FnOnce(S, Context, Req, DuplexSender<Event, St::Writer>) -> HF,
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<Err, St::Error>),
 {
@@ -93,6 +57,6 @@ where
             }
         };
 
-        handle(state, context, request, SubscriptionResponder::new(writer)).await;
+        handle(state, context, request, DuplexSender::new(writer)).await;
     }
 }

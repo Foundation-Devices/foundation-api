@@ -2,7 +2,6 @@ use super::Route;
 use crate::RpcCodec;
 
 mod client;
-pub(crate) mod codec;
 mod server;
 
 pub use self::{client::*, server::*};

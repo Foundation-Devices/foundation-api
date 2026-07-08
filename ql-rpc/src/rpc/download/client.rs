@@ -1,4 +1,4 @@
-use std::future::poll_fn;
+use std::{future::poll_fn, marker::PhantomData};
 
 use bytes::Bytes;
 use ql_common::ResetCode;
@@ -6,8 +6,8 @@ use ql_common::ResetCode;
 use crate::{
     download::Download,
     parts::{PartFrameReader, PartReadStep},
-    rpc::{parts::FrameKind, write_eof_value},
-    DropResetRead, FramedPrefixStep, FramedReader, RpcError, RpcRead, RpcStream,
+    rpc::{parts::FrameKind, read_framed_prefix, write_eof_value},
+    DropResetRead, RpcError, RpcRead, RpcStream,
 };
 
 pub async fn start<M, St>(
@@ -31,7 +31,7 @@ where
     R: RpcRead,
 {
     stream: DropResetRead<R>,
-    reader: Option<FramedReader<M::ResponseHeader>>,
+    marker: PhantomData<fn() -> M>,
 }
 
 pub struct DownloadPart<'a, M, R>
@@ -60,37 +60,22 @@ where
     pub fn new(stream: R) -> Self {
         Self {
             stream: DropResetRead::new(stream),
-            reader: Some(FramedReader::default()),
+            marker: PhantomData,
         }
     }
 
     pub async fn start(
         mut self,
     ) -> Result<(M::ResponseHeader, DownloadReader<M, R>), RpcError<M::Error, R::Error>> {
-        loop {
-            let reader = self.reader.take().unwrap();
-            let reader = match reader.advance_prefix() {
-                Ok(FramedPrefixStep::Value { value, bytes }) => {
-                    return Ok((
-                        value,
-                        DownloadReader {
-                            stream: self.stream,
-                            reader: PartFrameReader::<M::PartHeader>::new(bytes),
-                        },
-                    ));
-                }
-                Ok(FramedPrefixStep::NeedMore(next)) => next,
-                Err(error) => return Err(error),
-            };
-
-            match poll_fn(|cx| self.stream.poll_read(cx)).await {
-                Ok(Some(chunk)) => {
-                    self.reader = Some(reader.push(chunk));
-                }
-                Ok(None) => return Err(crate::Error::Truncated.into()),
-                Err(error) => return Err(RpcError::Transport(error)),
-            }
-        }
+        let (value, bytes) =
+            read_framed_prefix::<M::ResponseHeader, _>(&mut self.stream, None).await?;
+        Ok((
+            value,
+            DownloadReader {
+                stream: self.stream,
+                reader: PartFrameReader::<M::PartHeader>::new(bytes),
+            },
+        ))
     }
 
     pub fn reset(mut self, code: ResetCode) {

@@ -7,7 +7,7 @@ use crate::{
     request::Response,
     rpc::{
         parts::{FrameKind, PartFrameReader, PartReadStep},
-        read_framed_request_prefix,
+        read_framed_prefix,
     },
     Context, DropResetRead, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, Upload,
 };
@@ -26,7 +26,9 @@ where
         responder: UploadResponder<M::Response, St::Writer>,
     );
 
-    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
+    fn handle_error(&self, error: &RpcError<M::Error, St::Error>) {
+        let _ = error;
+    }
 }
 
 pub struct UploadReader<M, R>
@@ -184,7 +186,9 @@ where
 
     async move {
         let (request, buffered) =
-            match read_framed_request_prefix::<M::Request, _>(&mut reader, config).await {
+            match read_framed_prefix::<M::Request, _>(&mut reader, Some(config.max_request_bytes))
+                .await
+            {
                 Ok(value) => value,
                 Err(error) => {
                     let code = error.reset_code();

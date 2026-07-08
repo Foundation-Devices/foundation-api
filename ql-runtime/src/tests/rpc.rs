@@ -277,9 +277,9 @@ async fn rpc_subscrption() {
         ) {
             let seen = self.seen.clone();
             seen.borrow_mut().push(request);
-            let _ = response.send(b"one".to_vec()).await;
-            let _ = response.send(b"two".to_vec()).await;
-            let _ = response.finish().await;
+            let _ = response.send(&b"one".to_vec()).await;
+            let _ = response.send(&b"two".to_vec()).await;
+            let _ = response.finish_wait().await;
         }
     }
 

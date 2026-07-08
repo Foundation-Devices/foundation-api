@@ -167,7 +167,7 @@ mod drop {
 
     impl<W: RpcWrite> Drop for DropResetWrite<W> {
         fn drop(&mut self) {
-            self.reset(ResetCode::DROPPED)
+            self.reset(ResetCode::DROPPED);
         }
     }
 }

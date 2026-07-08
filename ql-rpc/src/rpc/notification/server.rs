@@ -15,7 +15,9 @@ where
 {
     async fn handle(self, context: Context, message: M::Payload);
 
-    fn handle_error(&self, _error: &RpcError<M::Error, St::Error>) {}
+    fn handle_error(&self, error: &RpcError<M::Error, St::Error>) {
+        let _ = error;
+    }
 }
 
 pub(crate) fn handle_notification<S, Payload, Err, St, H, HF, E>(

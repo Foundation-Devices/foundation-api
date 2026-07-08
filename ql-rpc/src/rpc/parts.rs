@@ -111,19 +111,19 @@ impl<H: RpcCodec> PartFrameReader<H> {
 }
 
 pub fn encode_part_header<H: RpcCodec>(part_header: &H, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    codec::encode_tagged_value_part(FrameKind::PartHeader.tag(), part_header, out)
+    codec::encode_tagged_value_part(FrameKind::PartHeader.tag(), part_header, out);
 }
 
 pub fn encode_body_chunk(bytes: &Bytes, out: &mut (impl BufMut + AsMut<[u8]>)) {
-    codec::encode_tagged_value_part(FrameKind::BodyChunk.tag(), bytes, out)
+    codec::encode_tagged_value_part(FrameKind::BodyChunk.tag(), bytes, out);
 }
 
 pub fn encode_end_part(out: &mut (impl BufMut + AsMut<[u8]>)) {
-    encode_tagged_empty_part(FrameKind::EndPart, out)
+    encode_tagged_empty_part(FrameKind::EndPart, out);
 }
 
 pub fn encode_finish(out: &mut (impl BufMut + AsMut<[u8]>)) {
-    encode_tagged_empty_part(FrameKind::Finish, out)
+    encode_tagged_empty_part(FrameKind::Finish, out);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,34 +189,34 @@ mod tests {
                 assert_eq!(value, b"a.txt".to_vec());
             }
             _ => unreachable!(),
-        };
+        }
 
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::BodyBytes(bytes) => assert_eq!(bytes, Bytes::from_static(b"hel")),
             _ => unreachable!(),
-        };
+        }
 
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::BodyBytes(bytes) => assert_eq!(bytes, Bytes::from_static(b"lo")),
             _ => unreachable!(),
-        };
+        }
 
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::EndPart => {}
             _ => unreachable!(),
-        };
+        }
 
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::PartHeader(value) => {
                 assert_eq!(value, b"b.txt".to_vec());
             }
             _ => unreachable!(),
-        };
+        }
 
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::EndPart => {}
             _ => unreachable!(),
-        };
+        }
 
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::Finish => {}
@@ -235,7 +235,7 @@ mod tests {
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::NeedMore => {}
             _ => unreachable!(),
-        };
+        }
 
         reader.push(encoded.slice(4..));
         match reader.advance::<std::convert::Infallible>().unwrap() {
@@ -255,18 +255,18 @@ mod tests {
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::NeedMore => {}
             _ => unreachable!(),
-        };
+        }
 
         reader.push(encoded.slice(9..11));
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::BodyBytes(bytes) => assert_eq!(bytes, Bytes::from_static(b"he")),
             _ => unreachable!(),
-        };
+        }
 
         reader.push(encoded.slice(11..));
         match reader.advance::<std::convert::Infallible>().unwrap() {
             PartReadStep::BodyBytes(bytes) => assert_eq!(bytes, Bytes::from_static(b"llo")),
             _ => unreachable!(),
-        };
+        }
     }
 }
