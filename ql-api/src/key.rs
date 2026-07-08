@@ -14,14 +14,14 @@ pub mod app_id {
 pub mod service_id {
     use ql_keyos::ServiceId;
 
-    pub const APP_STORE: ServiceId = ServiceId::from_u32(1);
-    pub const BACKUP: ServiceId = ServiceId::from_u32(2);
-    pub const BITCOIN: ServiceId = ServiceId::from_u32(3);
-    pub const DEBUG: ServiceId = ServiceId::from_u32(4);
-    pub const FIRMWARE: ServiceId = ServiceId::from_u32(5);
-    pub const FX: ServiceId = ServiceId::from_u32(6);
-    pub const SCV: ServiceId = ServiceId::from_u32(7);
-    pub const TIME: ServiceId = ServiceId::from_u32(8);
+    pub const APP_STORE: ServiceId = ServiceId(1);
+    pub const BACKUP: ServiceId = ServiceId(2);
+    pub const BITCOIN: ServiceId = ServiceId(3);
+    pub const DEBUG: ServiceId = ServiceId(4);
+    pub const FIRMWARE: ServiceId = ServiceId(5);
+    pub const FX: ServiceId = ServiceId(6);
+    pub const SCV: ServiceId = ServiceId(7);
+    pub const TIME: ServiceId = ServiceId(8);
 }
 
 /// Route key for a remote peer rpc
@@ -33,18 +33,18 @@ pub struct ServiceRouteKey {
 
 impl ql_rpc::RpcRouteKey for ServiceRouteKey {
     fn encoded_len(&self) -> usize {
-        self.service_id.0.size() + self.route_id.0.size()
+        size_of::<u64>() + size_of::<u32>()
     }
 
     fn encode<W: bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.service_id.0.write_bytes(|bytes| out.put_slice(bytes));
-        self.route_id.0.write_bytes(|bytes| out.put_slice(bytes));
+        out.put_u64(self.service_id.0);
+        out.put_u32(self.route_id.0);
     }
 
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        let (service_id, bytes) = ql_common::VarInt::decode_bytes(bytes)?;
-        let (route_id, rest) = ql_common::VarInt::decode_bytes(bytes)?;
-        rest.is_empty().then_some(Self {
+    fn decode(mut bytes: &[u8]) -> Option<Self> {
+        let service_id = read_u64(&mut bytes)?;
+        let route_id = read_u32(&mut bytes)?;
+        bytes.is_empty().then_some(Self {
             service_id: ServiceId(service_id),
             route_id: RouteId(route_id),
         })
@@ -66,20 +66,33 @@ pub struct AppRouteKey {
 
 impl ql_rpc::RpcRouteKey for AppRouteKey {
     fn encoded_len(&self) -> usize {
-        AppId::SIZE + self.route_id.0.size()
+        AppId::SIZE + size_of::<u32>()
     }
 
     fn encode<W: bytes::BufMut + ?Sized>(&self, out: &mut W) {
         out.put_slice(&self.app_id.0);
-        self.route_id.0.write_bytes(|bytes| out.put_slice(bytes));
+        out.put_u32(self.route_id.0);
     }
 
-    fn decode(bytes: &[u8]) -> Option<Self> {
+    fn decode(mut bytes: &[u8]) -> Option<Self> {
         let app_id = AppId(bytes.get(..AppId::SIZE)?.try_into().ok()?);
-        let (route_id, rest) = ql_common::VarInt::decode_bytes(&bytes[AppId::SIZE..])?;
-        rest.is_empty().then_some(Self {
+        bytes = &bytes[AppId::SIZE..];
+        let route_id = read_u32(&mut bytes)?;
+        bytes.is_empty().then_some(Self {
             app_id,
             route_id: RouteId(route_id),
         })
     }
+}
+
+fn read_u64(bytes: &mut &[u8]) -> Option<u64> {
+    let value = u64::from_be_bytes(bytes.get(..8)?.try_into().ok()?);
+    *bytes = &bytes[8..];
+    Some(value)
+}
+
+fn read_u32(bytes: &mut &[u8]) -> Option<u32> {
+    let value = u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?);
+    *bytes = &bytes[4..];
+    Some(value)
 }
