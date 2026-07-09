@@ -45,7 +45,7 @@ impl AckTracker {
     }
 
     pub fn insert(&mut self, seq: RecordSeq) -> ReceiveOutcome {
-        let seq = seq.0.into_inner();
+        let seq = seq.0;
         let largest_accepted = self.accepted_records.max();
         if largest_accepted.is_some_and(|largest| seq < self.accepted_cutoff(largest)) {
             return ReceiveOutcome::TooOld;
@@ -163,12 +163,12 @@ fn single_range(seq: u64) -> std::ops::Range<u64> {
 
 fn to_ack_range(range: std::ops::Range<u64>) -> RangeInclusive<RecordSeq> {
     let end = range.end.checked_sub(1).unwrap();
-    RecordSeq::from_u64(range.start).unwrap()..=RecordSeq::from_u64(end).unwrap()
+    RecordSeq(range.start)..=RecordSeq(end)
 }
 
 fn from_ack_range(range: RangeInclusive<RecordSeq>) -> std::ops::Range<u64> {
-    let start = range.start().0.into_inner();
-    let end = range.end().0.into_inner().checked_add(1).unwrap();
+    let start = range.start().0;
+    let end = range.end().0.checked_add(1).unwrap();
     start..end
 }
 
@@ -180,15 +180,11 @@ mod tests {
 
     use super::{AckTracker, PendingAck, ReceiveOutcome};
 
-    fn seq(value: u64) -> RecordSeq {
-        RecordSeq::from_u64(value).unwrap()
-    }
-
     fn ack_ranges(pending_ack: &PendingAck) -> Vec<(u64, u64)> {
         pending_ack
             .ack
             .ranges()
-            .map(|range| (range.start().0.into_inner(), range.end().0.into_inner()))
+            .map(|range| (range.start().0, range.end().0))
             .collect()
     }
 
@@ -197,9 +193,9 @@ mod tests {
         let now = Instant::now();
         let mut ack_tracker = AckTracker::new(128, 8);
 
-        assert_eq!(ack_tracker.insert(seq(10)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(11)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(12)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(10)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(11)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(12)), ReceiveOutcome::New);
 
         ack_tracker.schedule_ack(now);
         let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
@@ -211,10 +207,10 @@ mod tests {
         let now = Instant::now();
         let mut ack_tracker = AckTracker::new(128, 8);
 
-        assert_eq!(ack_tracker.insert(seq(10)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(15)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(16)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(12)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(10)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(15)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(16)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(12)), ReceiveOutcome::New);
 
         ack_tracker.schedule_ack(now + Duration::from_millis(5));
         let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
@@ -225,10 +221,10 @@ mod tests {
     fn accepted_record_window_evicts_old_sequences() {
         let mut ack_tracker = AckTracker::new(4, 8);
 
-        assert_eq!(ack_tracker.insert(seq(10)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(15)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(10)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(15)), ReceiveOutcome::New);
 
-        assert_eq!(ack_tracker.insert(seq(10)), ReceiveOutcome::TooOld);
+        assert_eq!(ack_tracker.insert(RecordSeq(10)), ReceiveOutcome::TooOld);
     }
 
     #[test]
@@ -236,9 +232,9 @@ mod tests {
         let now = Instant::now();
         let mut ack_tracker = AckTracker::new(128, 2);
 
-        assert_eq!(ack_tracker.insert(seq(1)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(3)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(5)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(1)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(3)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(5)), ReceiveOutcome::New);
 
         ack_tracker.schedule_ack(now);
         let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
@@ -250,9 +246,9 @@ mod tests {
         let now = Instant::now();
         let mut ack_tracker = AckTracker::new(128, 8);
 
-        assert_eq!(ack_tracker.insert(seq(1)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(3)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(seq(5)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(1)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(3)), ReceiveOutcome::New);
+        assert_eq!(ack_tracker.insert(RecordSeq(5)), ReceiveOutcome::New);
         ack_tracker.schedule_ack(now);
 
         let first_ack = ack_tracker.pending_ack(4).unwrap();

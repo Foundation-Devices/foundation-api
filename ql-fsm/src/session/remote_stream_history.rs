@@ -29,7 +29,6 @@ impl RemoteStreamHistory {
     fn stream_ordinal(&self, stream_id: StreamId) -> Option<u64> {
         let delta = stream_id
             .0
-            .into_inner()
             .checked_sub(u64::from(self.parity.first_stream_id()))?;
         if delta % 2 != 0 {
             return None;

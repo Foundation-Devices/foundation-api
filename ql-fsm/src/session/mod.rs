@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use indexmap::IndexMap;
-use ql_common::{StreamId, VarInt};
+use ql_common::StreamId;
 use ql_wire::{
-    LenBytes, RecordAck, RecordSeq, ResetTarget, SessionClose, SessionCloseCode, SessionFrame,
-    SessionRecordBuilder, StreamData, StreamReset, StreamWindow, WireError,
+    RecordAck, RecordSeq, ResetTarget, SessionClose, SessionCloseCode, SessionFrame,
+    SessionRecordBuilder, StreamData, StreamReset, StreamWindow,
 };
 
 use self::{
@@ -111,7 +111,7 @@ impl SessionFsm {
                 last_inbound_at: now,
                 phase: SessionPhase::Open,
                 next_stream_ordinal: 0,
-                next_record_seq: RecordSeq::from_u32(0),
+                next_record_seq: RecordSeq(0),
                 next_write_id: 0,
                 tracked_records: IndexMap::default(),
                 ack_tracker: AckTracker::new(
@@ -202,7 +202,7 @@ impl SessionFsm {
 
     pub fn receive<I>(&mut self, now: Instant, seq: RecordSeq, frames: I, sink: &mut impl EventSink)
     where
-        I: IntoIterator<Item = Result<SessionFrame<Bytes>, WireError>>,
+        I: IntoIterator<Item = Result<SessionFrame<Bytes>, ql_wire::Error>>,
     {
         if self.state.phase != SessionPhase::Open {
             return;
@@ -490,17 +490,17 @@ impl SessionFsm {
             }
             let frame = StreamWindow {
                 stream_id,
-                maximum_offset: VarInt::from_u64(stream.recv_limit()).unwrap(),
+                maximum_offset: stream.recv_limit(),
             };
             if !builder.push_stream_window(&frame) {
                 break;
             }
 
             stream.pending_window = false;
-            stream.advertised_max_offset = frame.maximum_offset.into_inner();
+            stream.advertised_max_offset = frame.maximum_offset;
             outbound
                 .window_updates
-                .push((stream_id, frame.maximum_offset.into_inner()));
+                .push((stream_id, frame.maximum_offset));
         }
     }
 
@@ -533,13 +533,11 @@ impl SessionFsm {
             else {
                 continue;
             };
-            let offset =
-                VarInt::from_u64(candidate.offset).expect("stream offsets must fit ql-wire varint");
             let frame = StreamData {
                 stream_id,
-                offset,
+                offset: candidate.offset,
                 header: if matches!(stream.role, StreamRole::Initiator) && candidate.offset == 0 {
-                    stream.header.as_ref().map(LenBytes)
+                    stream.header.as_deref()
                 } else {
                     None
                 },
@@ -580,7 +578,7 @@ impl SessionFsm {
             .state
             .tracked_records
             .extract_if(.., |_, record| {
-                record.sent_at.is_some() && ack.contains(record.seq.0.into_inner())
+                record.sent_at.is_some() && ack.contains(record.seq.0)
             })
             .map(|(_, record)| record)
             .collect::<Vec<_>>();
@@ -648,7 +646,7 @@ impl SessionFsm {
             },
         };
 
-        let frame_offset = offset.into_inner();
+        let frame_offset = offset;
         let Some(frame_end) = frame_offset.checked_add(bytes.len() as u64) else {
             return Err(());
         };
@@ -657,7 +655,7 @@ impl SessionFsm {
 
         let opened = match (stream.role, stream.header.as_ref(), header, frame_offset) {
             (StreamRole::Responder, None, Some(header), 0) => {
-                stream.header = Some(header.0);
+                stream.header = Some(header);
                 true
             }
             (StreamRole::Initiator, _, Some(_), _)
@@ -726,7 +724,7 @@ impl SessionFsm {
         };
 
         let was_full = stream.send_capacity(self.config.stream_send_buffer_size) == 0;
-        let maximum_offset = frame.maximum_offset.into_inner();
+        let maximum_offset = frame.maximum_offset;
         if maximum_offset > stream.peer_max_offset {
             stream.peer_max_offset = maximum_offset;
         }
@@ -948,11 +946,7 @@ fn local_stream_was_opened(
     stream_id: StreamId,
 ) -> bool {
     local_parity.matches(stream_id)
-        && stream_id.0.into_inner()
-            < local_parity
-                .make_stream_id(next_stream_ordinal)
-                .0
-                .into_inner()
+        && stream_id.0 < local_parity.make_stream_id(next_stream_ordinal).0
 }
 
 fn restore_tracked_record(
@@ -1043,8 +1037,7 @@ fn acknowledge_tracked_frame(
 fn next_seq(seq: &mut RecordSeq) {
     *seq = seq
         .0
-        .into_inner()
         .checked_add(1)
-        .and_then(|next| RecordSeq::from_u64(next).ok())
+        .map(RecordSeq)
         .expect("record sequence overflow");
 }

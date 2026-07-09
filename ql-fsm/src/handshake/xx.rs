@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     state::{InitiatorState, LinkState, XxResponderState},
-    QlFsm, ReceiveError,
+    QlFsm, ReceiveError, ReceiveStage,
 };
 
 pub fn start_initiator(
@@ -52,10 +52,7 @@ pub fn handle_xx1(
     }
     match fsm.state.armed_pairing_token {
         Some(expected) if expected.id(crypto) != message.pairing_id => {
-            Err(ReceiveError::InvalidPairingId {
-                expected: expected.id(crypto),
-                actual: message.pairing_id,
-            })
+            Err(ReceiveError::InvalidPairingId)
         }
         Some(token) => {
             reset_connected_session_if_needed(fsm);
@@ -69,10 +66,10 @@ pub fn handle_xx1(
             );
             handshake
                 .read_1(crypto, route, message)
-                .map_err(ReceiveError::InvalidXxHandshake)?;
+                .map_err(wire_error)?;
             let outbound = handshake
                 .write_2(crypto, message.meta)
-                .map_err(ReceiveError::InvalidXxHandshake)?;
+                .map_err(wire_error)?;
             fsm.state.link = LinkState::XxResponder(XxResponderState {
                 handshake,
                 handshake_meta: message.meta,
@@ -111,11 +108,11 @@ pub fn handle_xx2(
         state
             .handshake
             .read_2(crypto, route, message)
-            .map_err(ReceiveError::InvalidXxHandshake)?;
+            .map_err(wire_error)?;
         let outbound = state
             .handshake
             .write_3(crypto, message.meta)
-            .map_err(ReceiveError::InvalidXxHandshake)?;
+            .map_err(wire_error)?;
         fsm.state.handshake = None;
         enqueue_handshake(
             fsm,
@@ -147,7 +144,7 @@ pub fn handle_xx3(
     state
         .handshake
         .read_3(crypto, route, message)
-        .map_err(ReceiveError::InvalidXxHandshake)?;
+        .map_err(wire_error)?;
     let handshake_meta = state.handshake_meta;
     let LinkState::XxResponder(mut state) = fsm.state.link.take() else {
         unreachable!("active XX responder was checked above");
@@ -155,7 +152,7 @@ pub fn handle_xx3(
     let outbound = state
         .handshake
         .write_4(crypto, handshake_meta)
-        .map_err(ReceiveError::InvalidXxHandshake)?;
+        .map_err(wire_error)?;
     fsm.state.handshake = None;
     enqueue_handshake(
         fsm,
@@ -168,10 +165,7 @@ pub fn handle_xx3(
     establish_session(
         fsm,
         message.meta.handshake_id,
-        state
-            .handshake
-            .finalize(crypto)
-            .map_err(ReceiveError::InvalidXxHandshake)?,
+        state.handshake.finalize(crypto).map_err(wire_error)?,
     )
 }
 
@@ -193,7 +187,7 @@ pub fn handle_xx4(
         state
             .handshake
             .read_4(crypto, route, message)
-            .map_err(ReceiveError::InvalidXxHandshake)?;
+            .map_err(wire_error)?;
     }
 
     let LinkState::XxInitiator(state) = fsm.state.link.take() else {
@@ -202,10 +196,7 @@ pub fn handle_xx4(
     establish_session(
         fsm,
         message.meta.handshake_id,
-        state
-            .handshake
-            .finalize(crypto)
-            .map_err(ReceiveError::InvalidXxHandshake)?,
+        state.handshake.finalize(crypto).map_err(wire_error)?,
     )
 }
 
@@ -238,4 +229,8 @@ pub fn should_ignore_inbound(
             super::local_start_wins(&state.initial_ephemeral, &message.ephemeral)
         }
     }
+}
+
+fn wire_error(source: ql_wire::Error) -> ReceiveError {
+    ReceiveError::wire(ReceiveStage::XxHandshake, source)
 }

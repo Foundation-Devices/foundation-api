@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, ops::Range};
 
 use bytes::{Buf, Bytes};
-use ql_wire::BufView;
+use ql_codec::BufView;
 
 use super::range_set::RangeSet;
 

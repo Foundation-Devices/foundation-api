@@ -1,4 +1,4 @@
-use ql_common::{StreamId, VarInt, QID};
+use ql_common::{StreamId, QID};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamParity {
@@ -23,8 +23,8 @@ impl StreamParity {
 
     pub const fn matches(self, stream_id: StreamId) -> bool {
         match self {
-            Self::Even => stream_id.0.into_inner() % 2 == 0,
-            Self::Odd => stream_id.0.into_inner() % 2 == 1,
+            Self::Even => stream_id.0 % 2 == 0,
+            Self::Odd => stream_id.0 % 2 == 1,
         }
     }
 
@@ -36,7 +36,7 @@ impl StreamParity {
     }
 
     pub fn make_stream_id(self, ordinal: u32) -> StreamId {
-        StreamId(VarInt::from_u32(
+        StreamId(u64::from(
             self.first_stream_id()
                 .saturating_add(ordinal.saturating_mul(2)),
         ))

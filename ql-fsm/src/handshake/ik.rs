@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     state::{InitiatorState, LinkState},
-    QlFsm, ReceiveError,
+    QlFsm, ReceiveError, ReceiveStage,
 };
 
 pub fn start_initiator(fsm: &mut QlFsm, crypto: &impl QlCrypto, peer: PeerBundle) {
@@ -57,16 +57,14 @@ pub fn handle_ik1(
     );
     handshake
         .read_1(crypto, route, message)
-        .map_err(ReceiveError::InvalidIkHandshake)?;
+        .map_err(wire_error)?;
     let outbound = handshake
         .write_2(crypto, message.meta)
-        .map_err(ReceiveError::InvalidIkHandshake)?;
+        .map_err(wire_error)?;
     establish_session(
         fsm,
         message.meta.handshake_id,
-        handshake
-            .finalize(crypto)
-            .map_err(ReceiveError::InvalidIkHandshake)?,
+        handshake.finalize(crypto).map_err(wire_error)?,
     )?;
     fsm.state.handshake = None;
     enqueue_handshake(
@@ -98,7 +96,7 @@ pub fn handle_ik2(
         state
             .handshake
             .read_2(crypto, route, message)
-            .map_err(ReceiveError::InvalidIkHandshake)?;
+            .map_err(wire_error)?;
     }
 
     let LinkState::IkInitiator(state) = fsm.state.link.take() else {
@@ -107,10 +105,7 @@ pub fn handle_ik2(
     establish_session(
         fsm,
         message.meta.handshake_id,
-        state
-            .handshake
-            .finalize(crypto)
-            .map_err(ReceiveError::InvalidIkHandshake)?,
+        state.handshake.finalize(crypto).map_err(wire_error)?,
     )
 }
 
@@ -130,4 +125,8 @@ pub fn should_ignore_inbound(fsm: &QlFsm, route: RouteHeader, message: &Ik1) -> 
             super::local_start_wins(&state.initial_ephemeral, &message.ephemeral)
         }
     }
+}
+
+fn wire_error(source: ql_wire::Error) -> ReceiveError {
+    ReceiveError::wire(ReceiveStage::IkHandshake, source)
 }

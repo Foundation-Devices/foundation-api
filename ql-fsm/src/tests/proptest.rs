@@ -8,10 +8,11 @@ extern crate proptest as proptest_crate;
 use bytes::Bytes;
 use proptest_crate::{collection::vec, prelude::*, test_runner::TestCaseResult};
 use ql_common::{ResetCode, StreamId};
-use ql_wire::WireError;
 
 use super::*;
-use crate::{state::LinkState, Event, PeerStatus, ReceiveError, StreamResetTarget, WriteId};
+use crate::{
+    state::LinkState, Event, PeerStatus, ReceiveError, ReceiveStage, StreamResetTarget, WriteId,
+};
 
 const SLOT_COUNT: usize = 4;
 
@@ -543,15 +544,20 @@ impl Runner {
                     ReceiveError::NoSession
                         | ReceiveError::NoPeer
                         | ReceiveError::InvalidRemoteBundle
-                        | ReceiveError::InvalidSessionPayload(WireError::InvalidPayload)
-                        | ReceiveError::InvalidSessionPayload(WireError::DecryptFailed)
-                        | ReceiveError::InvalidIkHandshake(WireError::InvalidPayload)
-                        | ReceiveError::InvalidIkHandshake(WireError::InvalidState)
-                        | ReceiveError::InvalidKkHandshake(WireError::InvalidPayload)
-                        | ReceiveError::InvalidKkHandshake(WireError::InvalidState)
-                        | ReceiveError::InvalidXxHandshake(WireError::InvalidPayload)
-                        | ReceiveError::InvalidXxHandshake(WireError::InvalidState)
-                        | ReceiveError::InvalidXxHandshake(WireError::DecryptFailed)
+                        | ReceiveError::Wire {
+                            stage: ReceiveStage::SessionPayload,
+                            source: ql_wire::Error::InvalidPayload | ql_wire::Error::DecryptFailed,
+                        }
+                        | ReceiveError::Wire {
+                            stage: ReceiveStage::IkHandshake | ReceiveStage::KkHandshake,
+                            source: ql_wire::Error::InvalidPayload | ql_wire::Error::InvalidState,
+                        }
+                        | ReceiveError::Wire {
+                            stage: ReceiveStage::XxHandshake,
+                            source: ql_wire::Error::InvalidPayload
+                                | ql_wire::Error::InvalidState
+                                | ql_wire::Error::DecryptFailed,
+                        }
                 ),
                 "unexpected receive error on side {side:?}: {error:?}"
             );

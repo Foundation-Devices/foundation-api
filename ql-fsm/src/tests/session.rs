@@ -1,15 +1,11 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ql_common::{StreamId, VarInt};
+use ql_common::StreamId;
 use ql_wire::SessionClose;
 
 use super::*;
 use crate::{state::LinkState, CommitReadError, Event, NoSessionError, PeerStatus, StreamError};
-
-fn stream_id(value: u32) -> StreamId {
-    StreamId(VarInt::from_u32(value))
-}
 
 fn open_stream_id(fsm: &mut QlFsm) -> StreamId {
     fsm.open_stream(Box::from([1])).unwrap().stream_id()
@@ -186,7 +182,7 @@ fn simultaneous_opens_use_even_and_odd_stream_ids() {
 #[test]
 fn disconnected_stream_operations_fail_with_no_session() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
-    let missing = stream_id(0);
+    let missing = StreamId(0);
 
     assert!(matches!(
         harness.a.fsm.open_stream(Box::from([1])),
@@ -223,7 +219,7 @@ fn disconnected_stream_operations_fail_with_no_session() {
 #[test]
 fn disconnected_stream_read_accessors_return_none() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
-    let missing = stream_id(0);
+    let missing = StreamId(0);
 
     assert!(matches!(
         harness.a.fsm.stream(missing),

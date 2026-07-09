@@ -1072,6 +1072,7 @@ dependencies = [
  "bytes",
  "indexmap",
  "proptest",
+ "ql-codec",
  "ql-common",
  "ql-wire",
 ]

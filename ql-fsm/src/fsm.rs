@@ -1,14 +1,16 @@
 use std::{collections::VecDeque, time::Instant};
 
 use bytes::Bytes;
+use ql_codec::{Decode, Reader};
 use ql_common::StreamId;
-use ql_wire::{self as wire, QlCrypto, SessionCloseCode, WireDecode};
+use ql_wire::{self as wire, QlCrypto, SessionCloseCode};
 
 use crate::{
     handshake,
     session::{self, SessionEvent, TerminalFrame},
     state::LinkState,
-    Event, NoPeerError, NoSessionError, OutboundWrite, QlFsm, ReceiveError, StreamError, WriteId,
+    Event, NoPeerError, NoSessionError, OutboundWrite, QlFsm, ReceiveError, ReceiveStage,
+    StreamError, WriteId,
 };
 
 pub struct EventSink<'a> {
@@ -103,9 +105,9 @@ pub fn receive(
     mut bytes: Vec<u8>,
     crypto: &impl QlCrypto,
 ) -> Result<(), ReceiveError> {
-    let mut reader = wire::Reader::new(bytes.as_mut_slice());
-    let header =
-        wire::RecordHeader::decode(&mut reader).map_err(ReceiveError::InvalidRecordHeader)?;
+    let mut reader = Reader::new(bytes.as_mut_slice());
+    let header = wire::RecordHeader::decode(&mut reader)
+        .map_err(|error| ReceiveError::wire(ReceiveStage::RecordHeader, error))?;
 
     if header.version != wire::QL_WIRE_VERSION {
         return Err(ReceiveError::InvalidRecordVersion);
@@ -117,7 +119,7 @@ pub fn receive(
     match header.record_type {
         wire::RecordType::Handshake => {
             let record = wire::QlHandshakeRecord::decode(&mut reader)
-                .map_err(ReceiveError::InvalidHandshakeRecord)?;
+                .map_err(|error| ReceiveError::wire(ReceiveStage::HandshakeRecord, error))?;
             handshake::handle_handshake_record(fsm, crypto, header.route, &record)
         }
         wire::RecordType::Session => {
@@ -129,7 +131,7 @@ pub fn receive(
                 }
                 let (decrypt_len, seq) = {
                     let record = wire::QlSessionRecord::decode(&mut reader)
-                        .map_err(ReceiveError::InvalidSessionRecord)?;
+                        .map_err(|error| ReceiveError::wire(ReceiveStage::SessionRecord, error))?;
                     let payload = wire::decrypt_record(
                         crypto,
                         &header,
@@ -137,10 +139,11 @@ pub fn receive(
                         record.payload,
                         &conn.transport.rx_key,
                     )
-                    .map_err(ReceiveError::InvalidSessionPayload)?;
+                    .map_err(|error| ReceiveError::wire(ReceiveStage::SessionPayload, error))?;
                     (payload.len(), record.header.seq)
                 };
 
+                drop(reader);
                 let len = bytes.len();
                 let plaintext = Bytes::from(bytes).slice(len - decrypt_len..);
                 let frames = wire::parse_session_frames(plaintext);

@@ -1,5 +1,6 @@
+use ql_codec::{ByteSlice, Decode, Encode, Reader};
 use ql_common::QID;
-use ql_wire::{ByteSlice, PairingToken, Reader, WireDecode, WireEncode, WireError};
+use ql_wire::PairingToken;
 
 /// Out-of-band invite consumed by the initiator of an XX pairing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,12 +11,11 @@ pub struct PairingInvite {
 
 impl PairingInvite {
     pub const VERSION: u8 = 1;
-    pub const WIRE_SIZE: usize = size_of::<u8>() + QID::SIZE + PairingToken::SIZE;
 }
 
-impl WireEncode for PairingInvite {
+impl Encode for PairingInvite {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        size_of::<u8>() + QID::SIZE + PairingToken::SIZE
     }
 
     fn encode<W: bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -25,10 +25,10 @@ impl WireEncode for PairingInvite {
     }
 }
 
-impl<B: ByteSlice> WireDecode<B> for PairingInvite {
-    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> Decode<B> for PairingInvite {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, ql_codec::Error> {
         if reader.decode::<u8>()? != Self::VERSION {
-            return Err(WireError::InvalidPayload);
+            return Err(ql_codec::Error::InvalidDiscriminant);
         }
 
         Ok(Self {
