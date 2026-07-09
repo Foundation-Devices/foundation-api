@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "backup-shard",
   "btp",
+  "ql-codec",
   "ql-common",
   "ql-fsm",
   "ql-rpc",
@@ -23,6 +24,7 @@ rkyv = { version = "0.8" }
 # workspace crates
 backup-shard = { path = "backup-shard" }
 btp = { path = "btp" }
+ql-codec = { path = "ql-codec" }
 ql-common = { path = "ql-common" }
 ql-fsm = { path = "ql-fsm" }
 ql-rpc = { path = "ql-rpc" }
