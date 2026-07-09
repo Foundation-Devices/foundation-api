@@ -2,8 +2,6 @@ use ql_common::QID;
 
 use crate::{MlKemPublicKey, QlHash, ML_KEM_SUITE_TAG};
 
-array_wrapper_codec!(QID);
-
 pub fn derive_qid(crypto: &impl QlHash, mlkem_public_key: &MlKemPublicKey) -> QID {
     let digest = crypto.sha256(&[
         b"quantum-link qid v1",

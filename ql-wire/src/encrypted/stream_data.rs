@@ -1,41 +1,39 @@
-use ql_common::{StreamId, VarInt};
-
-use crate::{
-    codec::{self, LenBytes},
-    BufView, ByteSlice, WireDecode, WireEncode, WireError,
+use ql_codec::{
+    encode_bytes, encoded_len_bytes, varint, BufView, ByteSlice, Decode, Encode, Error,
 };
+use ql_common::StreamId;
 
 /// carries bytes for a stream and may finish that sending direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamData<B, H = B> {
     pub stream_id: StreamId,
-    pub offset: VarInt,
-    pub header: Option<LenBytes<H>>,
+    pub offset: u64,
+    pub header: Option<H>,
     pub fin: bool,
     pub bytes: B,
 }
 
 impl<B, H> StreamData<B, H> {
     pub const MIN_WIRE_SIZE: usize = StreamId::MAX_ENCODED_LEN
-        + VarInt::MAX_SIZE
+        + <u64 as varint::VarInt>::MAX_ENCODED_LEN
         + size_of::<u8>()
-        + VarInt::MAX_SIZE
-        + VarInt::MAX_SIZE;
+        + <usize as varint::VarInt>::MAX_ENCODED_LEN
+        + <usize as varint::VarInt>::MAX_ENCODED_LEN;
 }
 
-impl<B: ByteSlice> WireDecode<B> for StreamData<B> {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> Decode<B> for StreamData<B> {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, Error> {
         let stream_id = reader.decode()?;
-        let offset: VarInt = reader.decode()?;
+        let offset = reader.decode_varint()?;
         let flags = reader.decode::<u8>()?;
         let fin = (flags & flag::FIN) != 0;
         let has_header = (flags & flag::HEADER) != 0;
         let header = if has_header {
-            Some(reader.decode()?)
+            Some(reader.take_len_prefixed()?)
         } else {
             None
         };
-        let bytes = reader.decode::<LenBytes<B>>()?.0;
+        let bytes = reader.take_len_prefixed()?;
 
         Ok(Self {
             stream_id,
@@ -56,30 +54,30 @@ impl<B, H> StreamData<B, H> {
         StreamData {
             stream_id: self.stream_id,
             offset: self.offset,
-            header: self.header.map(|header| LenBytes(header.0.to_vec())),
+            header: self.header.map(|header| header.to_vec()),
             fin: self.fin,
             bytes: self.bytes.to_vec(),
         }
     }
 }
 
-impl<B: BufView, H: BufView> WireEncode for StreamData<B, H> {
+impl<B: BufView, H: BufView> Encode for StreamData<B, H> {
     fn encoded_len(&self) -> usize {
         self.stream_id.encoded_len()
-            + self.offset.encoded_len()
+            + varint::encoded_len(self.offset)
             + size_of::<u8>()
-            + self.header.as_ref().map_or(0, WireEncode::encoded_len)
-            + LenBytes(&self.bytes).encoded_len()
+            + self.header.as_ref().map_or(0, encoded_len_bytes)
+            + encoded_len_bytes(&self.bytes)
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
         debug_assert!(
-            self.offset.into_inner() == 0 || self.header.is_none(),
+            self.offset == 0 || self.header.is_none(),
             "stream header is only valid at offset 0"
         );
 
         self.stream_id.encode(out);
-        self.offset.encode(out);
+        varint::encode(self.offset, out);
         let mut flags = 0;
         if self.fin {
             flags |= flag::FIN;
@@ -89,9 +87,9 @@ impl<B: BufView, H: BufView> WireEncode for StreamData<B, H> {
         }
         flags.encode(out);
         if let Some(header) = &self.header {
-            header.encode(out);
+            encode_bytes(header, out);
         }
-        LenBytes(&self.bytes).encode(out);
+        encode_bytes(&self.bytes, out);
     }
 }
 

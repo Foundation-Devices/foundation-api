@@ -1,31 +1,32 @@
+use ql_codec::{ByteSlice, Decode, Encode};
+
 use crate::{
-    codec,
     encrypted_message::EncryptedMessage,
     handshake::{Ik1, Ik2, Kk1, Kk2, Xx1, Xx2, Xx3, Xx4},
-    ByteSlice, RouteHeader, SessionHeader, WireDecode, WireEncode, WireError, QL_WIRE_VERSION,
+    Error, RouteHeader, SessionHeader, QL_WIRE_VERSION,
 };
 
 pub fn encode_record<W, T>(out: &mut W, header: RecordHeader, body: &T)
 where
     W: bytes::BufMut + ?Sized,
-    T: WireEncode + ?Sized,
+    T: Encode + ?Sized,
 {
     header.encode(out);
     body.encode(out);
 }
 
-pub fn encode_record_vec<T: WireEncode + ?Sized>(header: RecordHeader, body: &T) -> Vec<u8> {
+pub fn encode_record_vec<T: Encode + ?Sized>(header: RecordHeader, body: &T) -> Vec<u8> {
     let mut out = Vec::with_capacity(RecordHeader::WIRE_SIZE + body.encoded_len());
     encode_record(&mut out, header, body);
     out
 }
 
-pub fn decode_record<T, B>(bytes: B) -> Result<(RecordHeader, T), WireError>
+pub fn decode_record<T, B>(bytes: B) -> Result<(RecordHeader, T), Error>
 where
-    T: WireDecode<B>,
+    T: Decode<B>,
     B: ByteSlice,
 {
-    let mut reader = codec::Reader::new(bytes);
+    let mut reader = ql_codec::Reader::new(bytes);
     Ok((reader.decode()?, reader.decode()?))
 }
 
@@ -48,8 +49,8 @@ impl RecordHeader {
     }
 }
 
-impl<B: ByteSlice> WireDecode<B> for RecordHeader {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> Decode<B> for RecordHeader {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             version: reader.decode()?,
             route: reader.decode()?,
@@ -58,7 +59,7 @@ impl<B: ByteSlice> WireDecode<B> for RecordHeader {
     }
 }
 
-impl WireEncode for RecordHeader {
+impl Encode for RecordHeader {
     fn encoded_len(&self) -> usize {
         Self::WIRE_SIZE
     }
@@ -78,24 +79,24 @@ pub enum RecordType {
 }
 
 impl TryFrom<u8> for RecordType {
-    type Error = WireError;
+    type Error = ql_codec::Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::Handshake),
             2 => Ok(Self::Session),
-            _ => Err(WireError::InvalidPayload),
+            _ => Err(ql_codec::Error::InvalidDiscriminant),
         }
     }
 }
 
-impl<B: ByteSlice> WireDecode<B> for RecordType {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> Decode<B> for RecordType {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         reader.decode::<u8>()?.try_into()
     }
 }
 
-impl WireEncode for RecordType {
+impl Encode for RecordType {
     fn encoded_len(&self) -> usize {
         size_of::<u8>()
     }
@@ -131,7 +132,7 @@ pub enum HandshakeKind {
 }
 
 impl TryFrom<u8> for HandshakeKind {
-    type Error = WireError;
+    type Error = ql_codec::Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
@@ -143,18 +144,18 @@ impl TryFrom<u8> for HandshakeKind {
             6 => Ok(Self::Xx2),
             7 => Ok(Self::Xx3),
             8 => Ok(Self::Xx4),
-            _ => Err(WireError::InvalidPayload),
+            _ => Err(ql_codec::Error::InvalidDiscriminant),
         }
     }
 }
 
-impl<B: ByteSlice> WireDecode<B> for HandshakeKind {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> Decode<B> for HandshakeKind {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         reader.decode::<u8>()?.try_into()
     }
 }
 
-impl WireEncode for HandshakeKind {
+impl Encode for HandshakeKind {
     fn encoded_len(&self) -> usize {
         size_of::<u8>()
     }
@@ -179,7 +180,7 @@ impl QlHandshakeRecord {
     }
 }
 
-impl WireEncode for QlHandshakeRecord {
+impl Encode for QlHandshakeRecord {
     fn encoded_len(&self) -> usize {
         self.kind().encoded_len()
             + match self {
@@ -209,8 +210,8 @@ impl WireEncode for QlHandshakeRecord {
     }
 }
 
-impl<B: ByteSlice> WireDecode<B> for QlHandshakeRecord {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> Decode<B> for QlHandshakeRecord {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         let kind = reader.decode::<HandshakeKind>()?;
         match kind {
             HandshakeKind::Ik1 => Ok(Self::Ik1(reader.decode()?)),
@@ -231,7 +232,7 @@ pub struct QlSessionRecord<B> {
     pub payload: EncryptedMessage<B>,
 }
 
-impl<B: AsRef<[u8]>> WireEncode for QlSessionRecord<B> {
+impl<B: AsRef<[u8]>> Encode for QlSessionRecord<B> {
     fn encoded_len(&self) -> usize {
         self.header.encoded_len() + self.payload.encoded_len()
     }
@@ -251,8 +252,8 @@ impl<B: ByteSlice> QlSessionRecord<B> {
     }
 }
 
-impl<B: ByteSlice> WireDecode<B> for QlSessionRecord<B> {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> Decode<B> for QlSessionRecord<B> {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             header: reader.decode()?,
             payload: reader.decode()?,

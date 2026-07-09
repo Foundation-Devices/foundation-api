@@ -1,4 +1,4 @@
-use crate::{codec, ByteSlice, WireEncode, WireError};
+use ql_codec::{ByteSlice, Encode};
 
 /// Session parameters advertised in the handshake
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,7 +11,7 @@ impl TransportParams {
     pub const WIRE_SIZE: usize = size_of::<u32>();
 }
 
-impl WireEncode for TransportParams {
+impl Encode for TransportParams {
     fn encoded_len(&self) -> usize {
         Self::WIRE_SIZE
     }
@@ -29,8 +29,8 @@ impl Default for TransportParams {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for TransportParams {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for TransportParams {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             initial_stream_receive_window: reader.decode()?,
         })

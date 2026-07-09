@@ -1,6 +1,5 @@
-use std::ops::RangeInclusive;
-
-use ql_common::{ResetCode, StreamId, VarInt, QID};
+use ql_codec::{Decode, Encode};
+use ql_common::{ResetCode, StreamId, QID};
 
 use super::*;
 
@@ -11,14 +10,6 @@ fn decode_handshake_record(bytes: &[u8]) -> QlHandshakeRecord {
 fn decode_session_record(bytes: &[u8]) -> QlSessionRecord<Vec<u8>> {
     let (_, record) = decode_record::<QlSessionRecord<_>, _>(bytes).unwrap();
     record.into_owned()
-}
-
-fn varint(value: u64) -> VarInt {
-    VarInt::from_u64(value).unwrap()
-}
-
-fn record_ack_range(start: u64, end: u64) -> RangeInclusive<RecordSeq> {
-    RecordSeq(varint(start))..=RecordSeq(varint(end))
 }
 
 fn handshake_meta(id: u32) -> HandshakeMeta {
@@ -77,7 +68,7 @@ fn peer_bundle_round_trip() {
     let bundle = identity.bundle();
 
     let encoded = bundle.encode_vec();
-    let decoded = PeerBundle::decode_exact(encoded.as_slice()).unwrap();
+    let decoded = PeerBundle::decode_bytes(encoded.as_slice()).unwrap();
 
     assert_eq!(decoded, bundle);
     assert_eq!(&*decoded.name, "alice");
@@ -177,7 +168,7 @@ fn ik_handshake_rejects_tampered_handshake_meta() {
 
     assert_eq!(
         initiator_state.read_2(&crypto, responder_to_initiator, &m2),
-        Err(WireError::InvalidHandshakeMeta)
+        Err(Error::InvalidHandshakeMeta)
     );
 }
 
@@ -214,7 +205,7 @@ fn kk_handshake_rejects_tampered_handshake_header() {
 
     assert_eq!(
         initiator_state.read_2(&crypto, tampered_route, &m2),
-        Err(WireError::InvalidPayload)
+        Err(Error::InvalidRouteHeader)
     );
 }
 
@@ -247,7 +238,7 @@ fn ik_handshake_rejects_tampered_transport_params() {
 
     assert_eq!(
         initiator_state.read_2(&crypto, responder_to_initiator, &m2),
-        Err(WireError::DecryptFailed)
+        Err(Error::DecryptFailed)
     );
 }
 
@@ -273,7 +264,7 @@ fn ik_handshake_rejects_tampered_handshake_header() {
 
     assert_eq!(
         responder_state.read_1(&crypto, initiator_to_responder, &m1),
-        Err(WireError::DecryptFailed)
+        Err(Error::DecryptFailed)
     );
 }
 
@@ -303,7 +294,7 @@ fn ik_handshake_rejects_bound_remote_bundle_mismatch() {
 
     assert_eq!(
         responder_state.read_1(&crypto, initiator_to_responder, &m1),
-        Err(WireError::InvalidPayload)
+        Err(Error::InvalidRouteHeader)
     );
 }
 
@@ -486,7 +477,7 @@ fn kk_handshake_rejects_tampered_transport_params() {
 
     assert_eq!(
         initiator_state.read_2(&crypto, responder_to_initiator, &m2),
-        Err(WireError::DecryptFailed)
+        Err(Error::DecryptFailed)
     );
 }
 
@@ -519,7 +510,7 @@ fn xx_handshake_rejects_tampered_pairing_id() {
 
     assert_eq!(
         responder_state.read_1(&crypto, initiator_to_responder, &m1),
-        Err(WireError::InvalidPairingId)
+        Err(Error::InvalidPairingId)
     );
 }
 
@@ -552,7 +543,7 @@ fn xx_handshake_rejects_tampered_sender_or_recipient() {
 
     assert_eq!(
         responder_state.read_1(&crypto, route, &m1),
-        Err(WireError::InvalidRouteHeader)
+        Err(Error::InvalidRouteHeader)
     );
 
     let mut initiator_state = XxHandshake::new_initiator(
@@ -578,7 +569,7 @@ fn xx_handshake_rejects_tampered_sender_or_recipient() {
 
     assert_eq!(
         responder_state.read_1(&crypto, route, &m1),
-        Err(WireError::InvalidRouteHeader)
+        Err(Error::InvalidRouteHeader)
     );
 }
 
@@ -625,7 +616,7 @@ fn xx_handshake_rejects_repeated_transport_param_change() {
 
     assert_eq!(
         responder_state.read_3(&crypto, initiator_to_responder, &m3),
-        Err(WireError::InvalidTransportParams)
+        Err(Error::InvalidTransportParams)
     );
 }
 
@@ -709,29 +700,28 @@ fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
 #[test]
 fn encrypted_session_record_round_trip_authenticates_header() {
     let crypto = SoftwareCrypto;
-    let header = SessionHeader {
-        seq: RecordSeq(varint(11)),
-    };
+    let header = SessionHeader { seq: RecordSeq(11) };
     let session_route = route(1, 2);
     let body = vec![
         SessionFrame::Ping,
         SessionFrame::Unpair,
         SessionFrame::Ack(
-            RecordAck::from_ranges([record_ack_range(20, 23), record_ack_range(12, 13)]).unwrap(),
+            RecordAck::from_ranges([RecordSeq(20)..=RecordSeq(23), RecordSeq(12)..=RecordSeq(13)])
+                .unwrap(),
         ),
         SessionFrame::StreamWindow(StreamWindow {
-            stream_id: StreamId(varint(9)),
-            maximum_offset: varint(65_536),
+            stream_id: StreamId(9),
+            maximum_offset: 65_536,
         }),
         SessionFrame::StreamData(StreamData {
-            stream_id: StreamId(varint(9)),
-            offset: varint(1024),
+            stream_id: StreamId(9),
+            offset: 1024,
             header: None,
             bytes: b"hello".to_vec(),
             fin: true,
         }),
         SessionFrame::StreamReset(StreamReset {
-            stream_id: StreamId(varint(9)),
+            stream_id: StreamId(9),
             target: ResetTarget::Both,
             code: ResetCode::CANCELLED,
         }),
@@ -775,11 +765,11 @@ fn encrypted_session_record_round_trip_authenticates_header() {
             encrypted.clone(),
             &session_key,
         ),
-        Err(WireError::DecryptFailed)
+        Err(Error::DecryptFailed)
     );
 
     let wrong_seq_header = SessionHeader {
-        seq: RecordSeq(varint(header.seq.0.into_inner() + 1)),
+        seq: RecordSeq(header.seq.0 + 1),
     };
     assert_eq!(
         encrypted::decrypt_record(
@@ -789,7 +779,7 @@ fn encrypted_session_record_round_trip_authenticates_header() {
             encrypted,
             &session_key,
         ),
-        Err(WireError::DecryptFailed)
+        Err(Error::DecryptFailed)
     );
 }
 
@@ -797,6 +787,10 @@ fn encrypted_session_record_round_trip_authenticates_header() {
 fn protocol_record_size_breakdown() {
     fn print_size(label: &str, size: usize) {
         println!("{label:<32}: {size} bytes");
+    }
+
+    fn record_size(record: &impl Encode) -> usize {
+        RecordHeader::WIRE_SIZE + record.encoded_len()
     }
 
     let crypto = SoftwareCrypto;
@@ -900,42 +894,35 @@ fn protocol_record_size_breakdown() {
     let session_ping = encrypt_record(
         &crypto,
         session_route,
-        SessionHeader {
-            seq: RecordSeq(varint(1)),
-        },
+        SessionHeader { seq: RecordSeq(1) },
         &session.tx_key,
         &[SessionFrame::Ping],
     );
     let session_ack = encrypt_record(
         &crypto,
         session_route,
-        SessionHeader {
-            seq: RecordSeq(varint(2)),
-        },
+        SessionHeader { seq: RecordSeq(2) },
         &session.tx_key,
         &[SessionFrame::Ack(
-            RecordAck::from_ranges([record_ack_range(6, 6), record_ack_range(1, 2)]).unwrap(),
+            RecordAck::from_ranges([RecordSeq(6)..=RecordSeq(6), RecordSeq(1)..=RecordSeq(2)])
+                .unwrap(),
         )],
     );
     let session_unpair = encrypt_record(
         &crypto,
         session_route,
-        SessionHeader {
-            seq: RecordSeq(varint(3)),
-        },
+        SessionHeader { seq: RecordSeq(3) },
         &session.tx_key,
         &[SessionFrame::Unpair],
     );
     let session_stream_empty = encrypt_record(
         &crypto,
         session_route,
-        SessionHeader {
-            seq: RecordSeq(varint(4)),
-        },
+        SessionHeader { seq: RecordSeq(4) },
         &session.tx_key,
         &[SessionFrame::StreamData(StreamData {
-            stream_id: StreamId(varint(1)),
-            offset: varint(0),
+            stream_id: StreamId(1),
+            offset: 0,
             header: None,
             fin: false,
             bytes: Vec::new(),
@@ -944,9 +931,7 @@ fn protocol_record_size_breakdown() {
     let session_close = encrypt_record(
         &crypto,
         session_route,
-        SessionHeader {
-            seq: RecordSeq(varint(5)),
-        },
+        SessionHeader { seq: RecordSeq(5) },
         &session.tx_key,
         &[SessionFrame::Close(SessionClose {
             code: SessionCloseCode::PROTOCOL,
@@ -956,20 +941,20 @@ fn protocol_record_size_breakdown() {
     print_size("ql-wire peer bundle", initiator.bundle().encode_vec().len());
     print_size("ql-wire mlkem public key", MlKemPublicKey::SIZE);
     print_size("ql-wire mlkem ciphertext", MlKemCiphertext::SIZE);
-    print_size("ql-wire pq ik1", ik1.encode_vec().len());
-    print_size("ql-wire pq ik2", ik2.encode_vec().len());
-    print_size("ql-wire pq kk1", kk1.encode_vec().len());
-    print_size("ql-wire pq kk2", kk2.encode_vec().len());
-    print_size("ql-wire pq xx1", xx1.encode_vec().len());
-    print_size("ql-wire pq xx2", xx2.encode_vec().len());
-    print_size("ql-wire pq xx3", xx3.encode_vec().len());
-    print_size("ql-wire pq xx4", xx4.encode_vec().len());
-    print_size("ql-wire session ping", session_ping.encode_vec().len());
-    print_size("ql-wire session ack", session_ack.encode_vec().len());
-    print_size("ql-wire session unpair", session_unpair.encode_vec().len());
+    print_size("ql-wire pq ik1", record_size(&ik1));
+    print_size("ql-wire pq ik2", record_size(&ik2));
+    print_size("ql-wire pq kk1", record_size(&kk1));
+    print_size("ql-wire pq kk2", record_size(&kk2));
+    print_size("ql-wire pq xx1", record_size(&xx1));
+    print_size("ql-wire pq xx2", record_size(&xx2));
+    print_size("ql-wire pq xx3", record_size(&xx3));
+    print_size("ql-wire pq xx4", record_size(&xx4));
+    print_size("ql-wire session ping", record_size(&session_ping));
+    print_size("ql-wire session ack", record_size(&session_ack));
+    print_size("ql-wire session unpair", record_size(&session_unpair));
     print_size(
         "ql-wire session stream empty",
-        session_stream_empty.encode_vec().len(),
+        record_size(&session_stream_empty),
     );
-    print_size("ql-wire session close", session_close.encode_vec().len());
+    print_size("ql-wire session close", record_size(&session_close));
 }

@@ -1060,6 +1060,10 @@ dependencies = [
 [[package]]
 name = "ql-common"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ql-codec",
+]
 
 [[package]]
 name = "ql-fsm"
@@ -1109,6 +1113,7 @@ dependencies = [
  "getrandom 0.2.16",
  "libcrux-aesgcm",
  "libcrux-ml-kem",
+ "ql-codec",
  "ql-common",
  "sha2",
 ]

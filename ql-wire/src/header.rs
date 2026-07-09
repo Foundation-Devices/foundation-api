@@ -1,7 +1,8 @@
 use ::bytes::BufMut;
+use ql_codec::{ByteSlice, Encode, Error};
 use ql_common::QID;
 
-use crate::{codec, ByteSlice, WireEncode, WireError, QL_WIRE_VERSION};
+use crate::QL_WIRE_VERSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteHeader {
@@ -13,7 +14,7 @@ impl RouteHeader {
     pub const WIRE_SIZE: usize = QID::SIZE * 2;
 }
 
-impl WireEncode for RouteHeader {
+impl Encode for RouteHeader {
     fn encoded_len(&self) -> usize {
         Self::WIRE_SIZE
     }
@@ -24,8 +25,8 @@ impl WireEncode for RouteHeader {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for RouteHeader {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for RouteHeader {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, Error> {
         Ok(Self {
             sender: reader.decode()?,
             recipient: reader.decode()?,
@@ -38,11 +39,19 @@ pub struct SessionHeader {
     pub seq: RecordSeq,
 }
 
-ql_common::varint_wrapper!(RecordSeq);
-varint_wrapper_codec!(RecordSeq);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct RecordSeq(pub u64);
+
+impl std::fmt::Display for RecordSeq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+ql_codec::varint_wrapper!(RecordSeq, u64);
 
 impl SessionHeader {
-    pub const MAX_ENCODED_LEN: usize = RecordSeq::MAX_ENCODED_LEN;
     const AAD_DOMAIN: &[u8] = b"ql-wire:session-aad:v1";
     const AAD_RECORD_KIND_SESSION: u8 = 1;
 
@@ -63,7 +72,7 @@ impl SessionHeader {
     }
 }
 
-impl WireEncode for SessionHeader {
+impl Encode for SessionHeader {
     fn encoded_len(&self) -> usize {
         self.seq.encoded_len()
     }
@@ -73,8 +82,8 @@ impl WireEncode for SessionHeader {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for SessionHeader {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for SessionHeader {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, Error> {
         Ok(Self {
             seq: reader.decode()?,
         })

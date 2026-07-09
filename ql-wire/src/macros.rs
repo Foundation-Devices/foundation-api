@@ -1,43 +1,3 @@
-macro_rules! varint_wrapper_codec {
-    ($name:ty) => {
-        impl $crate::WireEncode for $name {
-            fn encoded_len(&self) -> usize {
-                self.0.size()
-            }
-
-            fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-                self.0.encode(out);
-            }
-        }
-
-        impl<B: $crate::ByteSlice> $crate::WireDecode<B> for $name {
-            fn decode(reader: &mut $crate::Reader<B>) -> Result<Self, $crate::WireError> {
-                Ok(<$name>::from(reader.decode::<::ql_common::VarInt>()?))
-            }
-        }
-    };
-}
-
-macro_rules! array_wrapper_codec {
-    ($name:ty) => {
-        impl $crate::WireEncode for $name {
-            fn encoded_len(&self) -> usize {
-                <$name>::SIZE
-            }
-
-            fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-                self.0.encode(out);
-            }
-        }
-
-        impl<B: $crate::ByteSlice> $crate::codec::WireDecode<B> for $name {
-            fn decode(reader: &mut $crate::codec::Reader<B>) -> Result<Self, $crate::WireError> {
-                Ok(Self(reader.decode()?))
-            }
-        }
-    };
-}
-
 macro_rules! array_wrapper {
     ($name:ident, $size:expr) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,7 +12,7 @@ macro_rules! array_wrapper {
             }
         }
 
-        impl $crate::WireEncode for $name {
+        impl ql_codec::Encode for $name {
             fn encoded_len(&self) -> usize {
                 Self::SIZE
             }
@@ -62,8 +22,8 @@ macro_rules! array_wrapper {
             }
         }
 
-        impl<B: $crate::ByteSlice> $crate::codec::WireDecode<B> for $name {
-            fn decode(reader: &mut $crate::codec::Reader<B>) -> Result<Self, $crate::WireError> {
+        impl<B: ql_codec::ByteSlice> ql_codec::Decode<B> for $name {
+            fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
                 Ok(Self(reader.decode()?))
             }
         }

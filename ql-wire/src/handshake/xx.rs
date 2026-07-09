@@ -1,3 +1,4 @@
+use ql_codec::{ByteSlice, Encode};
 use ql_common::QID;
 
 use super::{
@@ -9,8 +10,8 @@ use super::{
     FinalizedHandshake, Role, RouteHeader, SymmetricState, TransportParams,
 };
 use crate::{
-    codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PairingId, PairingToken,
-    PeerBundle, QlCrypto, QlIdentity, WireEncode, WireError,
+    Error, HandshakeKind, HandshakeMeta, MlKemCiphertext, PairingId, PairingToken, PeerBundle,
+    QlCrypto, QlIdentity,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,15 +22,8 @@ pub struct Xx1 {
     pub ephemeral: EphemeralPublicKey,
 }
 
-impl Xx1 {
-    pub const WIRE_SIZE: usize = HandshakeMeta::WIRE_SIZE
-        + PairingId::SIZE
-        + TransportParams::WIRE_SIZE
-        + EphemeralPublicKey::WIRE_SIZE;
-}
-
-impl<B: ByteSlice> codec::WireDecode<B> for Xx1 {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for Xx1 {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             meta: reader.decode()?,
             pairing_id: reader.decode()?,
@@ -39,9 +33,12 @@ impl<B: ByteSlice> codec::WireDecode<B> for Xx1 {
     }
 }
 
-impl WireEncode for Xx1 {
+impl Encode for Xx1 {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        HandshakeMeta::WIRE_SIZE
+            + PairingId::SIZE
+            + TransportParams::WIRE_SIZE
+            + EphemeralPublicKey::WIRE_SIZE
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -61,8 +58,8 @@ pub struct Xx2 {
     pub static_bundle: EncryptedPeerBundle,
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for Xx2 {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for Xx2 {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             meta: reader.decode()?,
             pairing_id: reader.decode()?,
@@ -73,7 +70,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for Xx2 {
     }
 }
 
-impl WireEncode for Xx2 {
+impl Encode for Xx2 {
     fn encoded_len(&self) -> usize {
         HandshakeMeta::WIRE_SIZE
             + PairingId::SIZE
@@ -100,8 +97,8 @@ pub struct Xx3 {
     pub static_bundle: EncryptedPeerBundle,
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for Xx3 {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for Xx3 {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             meta: reader.decode()?,
             pairing_id: reader.decode()?,
@@ -112,7 +109,7 @@ impl<B: ByteSlice> codec::WireDecode<B> for Xx3 {
     }
 }
 
-impl WireEncode for Xx3 {
+impl Encode for Xx3 {
     fn encoded_len(&self) -> usize {
         HandshakeMeta::WIRE_SIZE
             + PairingId::SIZE
@@ -138,15 +135,8 @@ pub struct Xx4 {
     pub skem_ciphertext: EncryptedMlKemCiphertext,
 }
 
-impl Xx4 {
-    pub const WIRE_SIZE: usize = HandshakeMeta::WIRE_SIZE
-        + PairingId::SIZE
-        + TransportParams::WIRE_SIZE
-        + EncryptedMlKemCiphertext::WIRE_SIZE;
-}
-
-impl<B: ByteSlice> codec::WireDecode<B> for Xx4 {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for Xx4 {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             meta: reader.decode()?,
             pairing_id: reader.decode()?,
@@ -156,9 +146,12 @@ impl<B: ByteSlice> codec::WireDecode<B> for Xx4 {
     }
 }
 
-impl WireEncode for Xx4 {
+impl Encode for Xx4 {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        HandshakeMeta::WIRE_SIZE
+            + PairingId::SIZE
+            + TransportParams::WIRE_SIZE
+            + EncryptedMlKemCiphertext::WIRE_SIZE
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -277,31 +270,27 @@ impl XxHandshake {
         crypto: &impl QlCrypto,
         header: RouteHeader,
         pairing_id: PairingId,
-    ) -> Result<(), WireError> {
+    ) -> Result<(), Error> {
         if header.sender != self.remote_qid || header.recipient != self.local.qid {
-            return Err(WireError::InvalidRouteHeader);
+            return Err(Error::InvalidRouteHeader);
         }
         if pairing_id != self.pairing_token.id(crypto) {
-            return Err(WireError::InvalidPairingId);
+            return Err(Error::InvalidPairingId);
         }
         Ok(())
     }
 
-    fn ensure_remote_bundle(&self, bundle: &PeerBundle) -> Result<(), WireError> {
+    fn ensure_remote_bundle(&self, bundle: &PeerBundle) -> Result<(), Error> {
         if bundle.qid == self.remote_qid {
             Ok(())
         } else {
-            Err(WireError::InvalidRemoteBundle)
+            Err(Error::InvalidRemoteBundle)
         }
     }
 
-    pub fn write_1(
-        &mut self,
-        crypto: &impl QlCrypto,
-        meta: HandshakeMeta,
-    ) -> Result<Xx1, WireError> {
+    pub fn write_1(&mut self, crypto: &impl QlCrypto, meta: HandshakeMeta) -> Result<Xx1, Error> {
         if self.step != XxStep::Send1 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         initialize_handshake_meta(&mut self.handshake_meta, meta)?;
         let header = self.header();
@@ -336,9 +325,9 @@ impl XxHandshake {
         crypto: &impl QlCrypto,
         header: RouteHeader,
         message: &Xx1,
-    ) -> Result<(), WireError> {
+    ) -> Result<(), Error> {
         if self.step != XxStep::Recv1 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
         self.ensure_inbound_header(crypto, header, message.pairing_id)?;
@@ -360,13 +349,9 @@ impl XxHandshake {
         Ok(())
     }
 
-    pub fn write_2(
-        &mut self,
-        crypto: &impl QlCrypto,
-        meta: HandshakeMeta,
-    ) -> Result<Xx2, WireError> {
+    pub fn write_2(&mut self, crypto: &impl QlCrypto, meta: HandshakeMeta) -> Result<Xx2, Error> {
         if self.step != XxStep::Send2 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
         let header = self.header();
@@ -381,10 +366,7 @@ impl XxHandshake {
             self.local_transport_params,
         );
 
-        let remote_ephemeral = self
-            .remote_ephemeral
-            .as_ref()
-            .ok_or(WireError::InvalidState)?;
+        let remote_ephemeral = self.remote_ephemeral.as_ref().ok_or(Error::InvalidState)?;
         let (ekem_ciphertext, ekem_secret) =
             crypto.mlkem_encapsulate(&remote_ephemeral.mlkem_public_key);
         self.symmetric.mix_hash(crypto, ekem_ciphertext.as_bytes());
@@ -407,9 +389,9 @@ impl XxHandshake {
         crypto: &impl QlCrypto,
         header: RouteHeader,
         message: &Xx2,
-    ) -> Result<(), WireError> {
+    ) -> Result<(), Error> {
         if self.step != XxStep::Recv2 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_header(crypto, header, message.pairing_id)?;
@@ -423,10 +405,7 @@ impl XxHandshake {
             message.transport_params,
         );
 
-        let local_ephemeral = self
-            .local_ephemeral
-            .as_ref()
-            .ok_or(WireError::InvalidState)?;
+        let local_ephemeral = self.local_ephemeral.as_ref().ok_or(Error::InvalidState)?;
         self.symmetric
             .mix_hash(crypto, message.ekem_ciphertext.as_bytes());
         let ekem_secret =
@@ -442,13 +421,9 @@ impl XxHandshake {
         Ok(())
     }
 
-    pub fn write_3(
-        &mut self,
-        crypto: &impl QlCrypto,
-        meta: HandshakeMeta,
-    ) -> Result<Xx3, WireError> {
+    pub fn write_3(&mut self, crypto: &impl QlCrypto, meta: HandshakeMeta) -> Result<Xx3, Error> {
         if self.step != XxStep::Send3 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
         let header = self.header();
@@ -463,7 +438,7 @@ impl XxHandshake {
             self.local_transport_params,
         );
 
-        let remote_bundle = self.remote_bundle.as_ref().ok_or(WireError::InvalidState)?;
+        let remote_bundle = self.remote_bundle.as_ref().ok_or(Error::InvalidState)?;
         let (skem_ciphertext, skem_secret) =
             crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
         let skem_ciphertext =
@@ -488,9 +463,9 @@ impl XxHandshake {
         crypto: &impl QlCrypto,
         header: RouteHeader,
         message: &Xx3,
-    ) -> Result<(), WireError> {
+    ) -> Result<(), Error> {
         if self.step != XxStep::Recv3 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_header(crypto, header, message.pairing_id)?;
@@ -522,13 +497,9 @@ impl XxHandshake {
         Ok(())
     }
 
-    pub fn write_4(
-        &mut self,
-        crypto: &impl QlCrypto,
-        meta: HandshakeMeta,
-    ) -> Result<Xx4, WireError> {
+    pub fn write_4(&mut self, crypto: &impl QlCrypto, meta: HandshakeMeta) -> Result<Xx4, Error> {
         if self.step != XxStep::Send4 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
         let header = self.header();
@@ -543,7 +514,7 @@ impl XxHandshake {
             self.local_transport_params,
         );
 
-        let remote_bundle = self.remote_bundle.as_ref().ok_or(WireError::InvalidState)?;
+        let remote_bundle = self.remote_bundle.as_ref().ok_or(Error::InvalidState)?;
         let (skem_ciphertext, skem_secret) =
             crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
         let skem_ciphertext =
@@ -565,9 +536,9 @@ impl XxHandshake {
         crypto: &impl QlCrypto,
         header: RouteHeader,
         message: &Xx4,
-    ) -> Result<(), WireError> {
+    ) -> Result<(), Error> {
         if self.step != XxStep::Recv4 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_header(crypto, header, message.pairing_id)?;
@@ -595,14 +566,12 @@ impl XxHandshake {
         Ok(())
     }
 
-    pub fn finalize(self, crypto: &impl QlCrypto) -> Result<FinalizedHandshake, WireError> {
+    pub fn finalize(self, crypto: &impl QlCrypto) -> Result<FinalizedHandshake, Error> {
         if !self.is_finished() {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
-        let remote_bundle = self.remote_bundle.ok_or(WireError::InvalidState)?;
-        let remote_transport_params = self
-            .remote_transport_params
-            .ok_or(WireError::InvalidState)?;
+        let remote_bundle = self.remote_bundle.ok_or(Error::InvalidState)?;
+        let remote_transport_params = self.remote_transport_params.ok_or(Error::InvalidState)?;
         Ok(finalize_handshake(
             crypto,
             &self.symmetric,

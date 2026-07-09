@@ -1,7 +1,8 @@
+use ql_codec::{ByteSlice, Decode, Encode};
+
 use crate::{
-    codec, derive_qid, ByteSlice, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey,
-    Nonce, PeerBundle, QlCrypto, RouteHeader, SessionKey, WireDecode, WireEncode, WireError,
-    ENCRYPTED_MESSAGE_AUTH_SIZE,
+    derive_qid, Error, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey, Nonce,
+    PeerBundle, QlCrypto, RouteHeader, SessionKey, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
 mod ik;
@@ -33,7 +34,7 @@ impl EphemeralPublicKey {
     pub const WIRE_SIZE: usize = MlKemPublicKey::SIZE;
 }
 
-impl WireEncode for EphemeralPublicKey {
+impl Encode for EphemeralPublicKey {
     fn encoded_len(&self) -> usize {
         Self::WIRE_SIZE
     }
@@ -43,8 +44,8 @@ impl WireEncode for EphemeralPublicKey {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for EphemeralPublicKey {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for EphemeralPublicKey {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             mlkem_public_key: reader.decode()?,
         })
@@ -66,7 +67,7 @@ impl EncryptedMlKemCiphertext {
     }
 }
 
-impl WireEncode for EncryptedMlKemCiphertext {
+impl Encode for EncryptedMlKemCiphertext {
     fn encoded_len(&self) -> usize {
         Self::WIRE_SIZE
     }
@@ -76,8 +77,8 @@ impl WireEncode for EncryptedMlKemCiphertext {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for EncryptedMlKemCiphertext {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for EncryptedMlKemCiphertext {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self::new(reader.decode()?))
     }
 }
@@ -91,20 +92,20 @@ impl EncryptedPeerBundle {
     }
 }
 
-impl WireEncode for EncryptedPeerBundle {
+impl Encode for EncryptedPeerBundle {
     fn encoded_len(&self) -> usize {
         self.0.len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.as_bytes().encode(out);
+        out.put_slice(self.as_bytes());
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for EncryptedPeerBundle {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        let data = reader.take_rest();
-        Ok(Self(data.to_vec().into_boxed_slice()))
+impl<B: ByteSlice> ql_codec::Decode<B> for EncryptedPeerBundle {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
+        let data = reader.take_all();
+        Ok(Self(Box::from(&*data)))
     }
 }
 
@@ -165,8 +166,8 @@ impl CipherState {
         crypto: &impl QlCrypto,
         aad: &[u8],
         plaintext: &[u8],
-    ) -> Result<Vec<u8>, WireError> {
-        let key = self.key.as_ref().ok_or(WireError::InvalidState)?;
+    ) -> Result<Vec<u8>, Error> {
+        let key = self.key.as_ref().ok_or(Error::InvalidState)?;
         let nonce = Nonce::from_counter(self.nonce);
         let mut ciphertext = Vec::with_capacity(plaintext.len() + ENCRYPTED_MESSAGE_AUTH_SIZE);
         ciphertext.extend_from_slice(plaintext);
@@ -181,19 +182,19 @@ impl CipherState {
         crypto: &impl QlCrypto,
         aad: &[u8],
         ciphertext: &[u8],
-    ) -> Result<Vec<u8>, WireError> {
+    ) -> Result<Vec<u8>, Error> {
         if ciphertext.len() < ENCRYPTED_MESSAGE_AUTH_SIZE {
-            return Err(WireError::InvalidPayload);
+            return Err(Error::InvalidPayload);
         }
         let split = ciphertext.len() - ENCRYPTED_MESSAGE_AUTH_SIZE;
         let (ciphertext, auth) = ciphertext.split_at(split);
         let mut plaintext = ciphertext.to_vec();
-        let key = self.key.as_ref().ok_or(WireError::InvalidState)?;
+        let key = self.key.as_ref().ok_or(Error::InvalidState)?;
         let nonce = Nonce::from_counter(self.nonce);
         let mut auth_tag = [0u8; ENCRYPTED_MESSAGE_AUTH_SIZE];
         auth_tag.copy_from_slice(auth);
         if !crypto.aes256_gcm_decrypt(key, &nonce, aad, &mut plaintext, &auth_tag) {
-            return Err(WireError::DecryptFailed);
+            return Err(Error::DecryptFailed);
         }
         self.nonce = self.nonce.wrapping_add(1);
         Ok(plaintext)
@@ -239,7 +240,7 @@ impl SymmetricState {
         &mut self,
         crypto: &impl QlCrypto,
         plaintext: &[u8],
-    ) -> Result<Vec<u8>, WireError> {
+    ) -> Result<Vec<u8>, Error> {
         if self.cipher.has_key() {
             let ciphertext = self
                 .cipher
@@ -256,7 +257,7 @@ impl SymmetricState {
         &mut self,
         crypto: &impl QlCrypto,
         ciphertext: &[u8],
-    ) -> Result<Vec<u8>, WireError> {
+    ) -> Result<Vec<u8>, Error> {
         if self.cipher.has_key() {
             let plaintext = self
                 .cipher
@@ -373,9 +374,9 @@ fn mix_hash_handshake_preamble(
 fn initialize_handshake_meta(
     expected: &mut Option<HandshakeMeta>,
     meta: HandshakeMeta,
-) -> Result<(), WireError> {
+) -> Result<(), Error> {
     match expected {
-        Some(stored) if *stored != meta => Err(WireError::InvalidHandshakeMeta),
+        Some(stored) if *stored != meta => Err(Error::InvalidHandshakeMeta),
         Some(_) => Ok(()),
         None => {
             *expected = Some(meta);
@@ -387,19 +388,19 @@ fn initialize_handshake_meta(
 fn require_handshake_meta(
     expected: Option<&HandshakeMeta>,
     meta: HandshakeMeta,
-) -> Result<(), WireError> {
+) -> Result<(), Error> {
     match expected {
         Some(stored) if *stored == meta => Ok(()),
-        _ => Err(WireError::InvalidHandshakeMeta),
+        _ => Err(Error::InvalidHandshakeMeta),
     }
 }
 
 fn initialize_transport_params(
     expected: &mut Option<TransportParams>,
     transport_params: TransportParams,
-) -> Result<(), WireError> {
+) -> Result<(), Error> {
     match expected {
-        Some(stored) if *stored != transport_params => Err(WireError::InvalidTransportParams),
+        Some(stored) if *stored != transport_params => Err(Error::InvalidTransportParams),
         Some(_) => Ok(()),
         None => {
             *expected = Some(transport_params);
@@ -411,10 +412,10 @@ fn initialize_transport_params(
 fn require_transport_params(
     expected: Option<&TransportParams>,
     transport_params: TransportParams,
-) -> Result<(), WireError> {
+) -> Result<(), Error> {
     match expected {
         Some(stored) if *stored == transport_params => Ok(()),
-        _ => Err(WireError::InvalidTransportParams),
+        _ => Err(Error::InvalidTransportParams),
     }
 }
 
@@ -422,7 +423,7 @@ fn encrypt_peer_bundle(
     crypto: &impl QlCrypto,
     symmetric: &mut SymmetricState,
     bundle: &PeerBundle,
-) -> Result<EncryptedPeerBundle, WireError> {
+) -> Result<EncryptedPeerBundle, Error> {
     let ciphertext = symmetric.encrypt_and_hash(crypto, &bundle.encode_vec())?;
     Ok(EncryptedPeerBundle(ciphertext.into_boxed_slice()))
 }
@@ -431,12 +432,12 @@ fn decrypt_peer_bundle(
     crypto: &impl QlCrypto,
     symmetric: &mut SymmetricState,
     bundle: &EncryptedPeerBundle,
-) -> Result<PeerBundle, WireError> {
+) -> Result<PeerBundle, Error> {
     let plaintext = symmetric.decrypt_and_hash(crypto, bundle.as_bytes())?;
-    let bundle = PeerBundle::decode_exact(plaintext.as_slice())?;
+    let bundle = PeerBundle::decode_bytes(plaintext.as_slice())?;
     let peer_qid = derive_qid(crypto, &bundle.mlkem_public_key);
     if peer_qid != bundle.qid {
-        return Err(WireError::InvalidRemoteBundle);
+        return Err(Error::InvalidRemoteBundle);
     }
     Ok(bundle)
 }
@@ -445,10 +446,10 @@ fn encrypt_mlkem_ciphertext(
     crypto: &impl QlCrypto,
     symmetric: &mut SymmetricState,
     ciphertext: &MlKemCiphertext,
-) -> Result<EncryptedMlKemCiphertext, WireError> {
+) -> Result<EncryptedMlKemCiphertext, Error> {
     let encrypted = symmetric.encrypt_and_hash(crypto, ciphertext.as_bytes())?;
     let out: Box<[u8; EncryptedMlKemCiphertext::WIRE_SIZE]> =
-        encrypted.try_into().map_err(|_| WireError::InvalidState)?;
+        encrypted.try_into().map_err(|_| Error::InvalidState)?;
     Ok(EncryptedMlKemCiphertext::new(out))
 }
 
@@ -456,11 +457,10 @@ fn decrypt_mlkem_ciphertext(
     crypto: &impl QlCrypto,
     symmetric: &mut SymmetricState,
     ciphertext: &EncryptedMlKemCiphertext,
-) -> Result<MlKemCiphertext, WireError> {
+) -> Result<MlKemCiphertext, Error> {
     let plaintext = symmetric.decrypt_and_hash(crypto, ciphertext.as_bytes())?;
-    let out: Box<[u8; MlKemCiphertext::SIZE]> = plaintext
-        .try_into()
-        .map_err(|_| WireError::InvalidPayload)?;
+    let out: Box<[u8; MlKemCiphertext::SIZE]> =
+        plaintext.try_into().map_err(|_| Error::InvalidPayload)?;
     Ok(MlKemCiphertext::new(out))
 }
 

@@ -1,4 +1,4 @@
-use crate::{codec, ByteSlice, WireEncode, WireError};
+use ql_codec::{ByteSlice, Encode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -9,13 +9,13 @@ pub struct HandshakeMeta {
     pub handshake_id: HandshakeId,
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for HandshakeId {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for HandshakeId {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self(reader.decode()?))
     }
 }
 
-impl WireEncode for HandshakeId {
+impl Encode for HandshakeId {
     fn encoded_len(&self) -> usize {
         size_of::<u32>()
     }
@@ -29,7 +29,7 @@ impl HandshakeMeta {
     pub const WIRE_SIZE: usize = size_of::<u32>();
 }
 
-impl WireEncode for HandshakeMeta {
+impl Encode for HandshakeMeta {
     fn encoded_len(&self) -> usize {
         Self::WIRE_SIZE
     }
@@ -39,8 +39,8 @@ impl WireEncode for HandshakeMeta {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for HandshakeMeta {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for HandshakeMeta {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             handshake_id: reader.decode()?,
         })

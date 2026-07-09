@@ -1,11 +1,10 @@
 //! Shared QuantumLink primitive types.
 
-mod varint;
-pub use varint::*;
+use ql_codec::{ByteSlice, Decode, Encode, Error, Reader};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
-pub struct ResetCode(pub u16);
+pub struct ResetCode(pub u64);
 
 impl ResetCode {
     /// operation was explicitly cancelled
@@ -48,6 +47,8 @@ impl std::fmt::Display for ResetCode {
     }
 }
 
+ql_codec::varint_wrapper!(ResetCode, u64);
+
 /// origin of a stream reset: either we triggered it locally or the peer sent it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResetOrigin {
@@ -65,10 +66,34 @@ impl QID {
     pub const SIZE: usize = 16;
 }
 
-varint_wrapper!(
-    /// Identifier for a stream within a QL session.
-    StreamId
-);
+impl Encode for QID {
+    fn encoded_len(&self) -> usize {
+        Self::SIZE
+    }
+
+    fn encode<W: bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.encode(out);
+    }
+}
+
+impl<B: ByteSlice> Decode<B> for QID {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, Error> {
+        Ok(Self(reader.decode()?))
+    }
+}
+
+/// Identifier for a stream within a QL session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct StreamId(pub u64);
+
+impl std::fmt::Display for StreamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+ql_codec::varint_wrapper!(StreamId, u64);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StreamInfo {

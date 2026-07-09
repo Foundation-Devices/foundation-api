@@ -1,8 +1,8 @@
+use ql_codec::{BufView, ByteSlice, Decode, Encode, Reader};
 use ql_common::StreamId;
 
 use crate::{
-    codec, encrypted_message::EncryptedMessage, BufView, ByteSlice, Nonce, QlCrypto, Reader,
-    SessionHeader, SessionKey, WireDecode, WireEncode, WireError,
+    encrypted_message::EncryptedMessage, Error, Nonce, QlCrypto, SessionHeader, SessionKey,
 };
 
 mod ack;
@@ -19,8 +19,6 @@ pub use stream_data::*;
 pub use stream_reset::*;
 pub use stream_window::*;
 
-varint_wrapper_codec!(StreamId);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionFrame<B> {
     // todo: do we need ping as explicit frame?
@@ -33,8 +31,8 @@ pub enum SessionFrame<B> {
     Close(SessionClose),
 }
 
-impl<B: ByteSlice> WireDecode<B> for SessionFrame<B> {
-    fn decode(reader: &mut Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> Decode<B> for SessionFrame<B> {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, ql_codec::Error> {
         let kind = reader.decode::<SessionFrameKind>()?;
         let frame = match kind {
             SessionFrameKind::Ping => Self::Ping,
@@ -77,7 +75,7 @@ impl<B: ByteSlice> SessionFrame<B> {
     }
 }
 
-impl<B: BufView> WireEncode for SessionFrame<B> {
+impl<B: BufView> Encode for SessionFrame<B> {
     fn encoded_len(&self) -> usize {
         1 + match self {
             Self::Ping | Self::Unpair => 0,
@@ -115,7 +113,7 @@ pub enum SessionFrameKind {
 }
 
 impl TryFrom<u8> for SessionFrameKind {
-    type Error = WireError;
+    type Error = ql_codec::Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
@@ -126,13 +124,13 @@ impl TryFrom<u8> for SessionFrameKind {
             5 => Ok(Self::StreamReset),
             6 => Ok(Self::Close),
             7 => Ok(Self::Unpair),
-            _ => Err(WireError::InvalidPayload),
+            _ => Err(ql_codec::Error::InvalidDiscriminant),
         }
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for SessionFrameKind {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for SessionFrameKind {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         reader.decode::<u8>()?.try_into()
     }
 }
@@ -143,7 +141,7 @@ pub fn parse_session_frames<B: ByteSlice>(bytes: B) -> SessionFrameIter<B> {
     }
 }
 
-pub fn decode_session_frames(bytes: &[u8]) -> Result<Vec<SessionFrame<Vec<u8>>>, WireError> {
+pub fn decode_session_frames(bytes: &[u8]) -> Result<Vec<SessionFrame<Vec<u8>>>, Error> {
     parse_session_frames(bytes)
         .map(|frame| frame.map(SessionFrame::into_owned))
         .collect()
@@ -155,13 +153,13 @@ pub struct SessionFrameIter<B> {
 }
 
 impl<B: ByteSlice> Iterator for SessionFrameIter<B> {
-    type Item = Result<SessionFrame<B>, WireError>;
+    type Item = Result<SessionFrame<B>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.reader.is_empty() {
             None
         } else {
-            Some(self.reader.decode::<SessionFrame<B>>())
+            Some(self.reader.decode::<SessionFrame<B>>().map_err(Into::into))
         }
     }
 }
@@ -172,9 +170,9 @@ pub fn decrypt_record<B: AsMut<[u8]>>(
     header: &SessionHeader,
     encrypted: EncryptedMessage<B>,
     session_key: &SessionKey,
-) -> Result<B, WireError> {
+) -> Result<B, Error> {
     let aad = header.aad(record_header.route);
-    let nonce = Nonce::from_counter(header.seq.0.into_inner());
+    let nonce = Nonce::from_counter(header.seq.0);
     let mut ciphertext = encrypted.ciphertext;
     if !crypto.aes256_gcm_decrypt(
         session_key,
@@ -183,7 +181,7 @@ pub fn decrypt_record<B: AsMut<[u8]>>(
         ciphertext.as_mut(),
         &encrypted.auth,
     ) {
-        return Err(WireError::DecryptFailed);
+        return Err(Error::DecryptFailed);
     }
     Ok(ciphertext)
 }

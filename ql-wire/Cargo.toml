@@ -16,6 +16,7 @@ test-utils = [
 [dependencies]
 bytes = { workspace = true }
 getrandom = { workspace = true, optional = true }
+ql-codec = { workspace = true }
 ql-common = { workspace = true }
 libcrux-aesgcm = { version = "0.0.7", optional = true }
 libcrux-ml-kem = { version = "0.0.7", optional = true }

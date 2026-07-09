@@ -1,9 +1,9 @@
 use bytes::BufMut;
+use ql_codec::{BufView, Encode};
 
 use super::{RecordAck, SessionClose, SessionFrame, StreamData, StreamReset, StreamWindow};
 use crate::{
-    BufView, Nonce, QlCrypto, RecordHeader, RecordSeq, RecordType, RouteHeader, SessionHeader,
-    SessionKey, WireEncode,
+    Nonce, QlCrypto, RecordHeader, RecordSeq, RecordType, RouteHeader, SessionHeader, SessionKey,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,7 +109,7 @@ impl SessionRecordBuilder {
         let record_header = RecordHeader::new(route, RecordType::Session);
         let header = SessionHeader { seq: self.seq };
         let aad = header.aad(route);
-        let nonce = Nonce::from_counter(self.seq.0.into_inner());
+        let nonce = Nonce::from_counter(self.seq.0);
         let auth = crypto.aes256_gcm_encrypt(
             session_key,
             &nonce,
@@ -140,7 +140,7 @@ impl SessionRecordBuilder {
         self.push_wire_size(1, |out| out.put_u8(kind as u8))
     }
 
-    fn push_frame_payload<T: WireEncode + ?Sized>(
+    fn push_frame_payload<T: Encode + ?Sized>(
         &mut self,
         kind: super::SessionFrameKind,
         payload: &T,

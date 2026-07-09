@@ -6,8 +6,6 @@
 
 #[macro_use]
 mod macros;
-mod bytes;
-mod codec;
 mod crypto;
 mod encrypted;
 mod encrypted_message;
@@ -20,10 +18,7 @@ mod qid;
 mod record;
 #[cfg(any(feature = "test-utils", test))]
 mod testing;
-mod varint;
 
-pub use bytes::*;
-pub use codec::*;
 pub use crypto::*;
 pub use encrypted::*;
 pub use encrypted_message::*;

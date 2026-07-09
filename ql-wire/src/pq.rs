@@ -1,4 +1,4 @@
-use crate::{codec, ByteSlice, WireEncode, WireError};
+use ql_codec::{ByteSlice, Encode};
 
 pub const ML_KEM_SUITE_TAG: &[u8] = b"ml-kem-1024";
 
@@ -33,7 +33,7 @@ impl Drop for SessionKey {
     }
 }
 
-impl WireEncode for SessionKey {
+impl Encode for SessionKey {
     fn encoded_len(&self) -> usize {
         Self::SIZE
     }
@@ -43,8 +43,8 @@ impl WireEncode for SessionKey {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for SessionKey {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for SessionKey {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self(reader.decode()?))
     }
 }
@@ -70,13 +70,13 @@ impl Drop for MlKemPublicKey {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for MlKemPublicKey {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for MlKemPublicKey {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self::new(reader.decode()?))
     }
 }
 
-impl WireEncode for MlKemPublicKey {
+impl Encode for MlKemPublicKey {
     fn encoded_len(&self) -> usize {
         Self::SIZE
     }
@@ -128,13 +128,13 @@ impl Drop for MlKemCiphertext {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for MlKemCiphertext {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for MlKemCiphertext {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self::new(reader.decode()?))
     }
 }
 
-impl WireEncode for MlKemCiphertext {
+impl Encode for MlKemCiphertext {
     fn encoded_len(&self) -> usize {
         Self::SIZE
     }

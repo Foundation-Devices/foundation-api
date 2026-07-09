@@ -1,12 +1,9 @@
 use std::ops::Deref;
 
-use codec::LenBytes;
+use ql_codec::{ByteSlice, Encode};
 use ql_common::QID;
 
-use crate::{
-    codec, derive_qid, ByteSlice, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, QlHash,
-    WireEncode, WireError,
-};
+use crate::{derive_qid, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, QlHash};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerBundle {
@@ -20,13 +17,16 @@ pub struct PeerBundle {
 
 impl PeerBundle {
     pub const VERSION: u16 = 1;
-    pub const FIXED_WIRE_SIZE: usize =
-        size_of::<u16>() + QID::SIZE + size_of::<u32>() + MlKemPublicKey::SIZE;
 }
 
-impl WireEncode for PeerBundle {
+impl Encode for PeerBundle {
     fn encoded_len(&self) -> usize {
-        Self::FIXED_WIRE_SIZE + self.name.encoded_len() + LenBytes(&*self.metadata).encoded_len()
+        size_of::<u16>()
+            + QID::SIZE
+            + size_of::<u32>()
+            + MlKemPublicKey::SIZE
+            + self.name.encoded_len()
+            + self.metadata.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -35,23 +35,19 @@ impl WireEncode for PeerBundle {
         self.capabilities.encode(out);
         self.mlkem_public_key.encode(out);
         self.name.encode(out);
-        LenBytes(&*self.metadata).encode(out);
+        self.metadata.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for PeerBundle {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for PeerBundle {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             version: reader.decode()?,
             qid: reader.decode()?,
             capabilities: reader.decode()?,
             mlkem_public_key: reader.decode()?,
             name: reader.decode()?,
-            metadata: reader
-                .decode::<LenBytes<B>>()?
-                .0
-                .to_vec()
-                .into_boxed_slice(),
+            metadata: reader.decode()?,
         })
     }
 }
@@ -67,9 +63,6 @@ pub struct QlIdentity {
 }
 
 impl QlIdentity {
-    pub const FIXED_WIRE_SIZE: usize =
-        QID::SIZE + MlKemPrivateKey::SIZE + MlKemPublicKey::SIZE + size_of::<u32>();
-
     pub fn new(
         crypto: &impl QlHash,
         mlkem_private_key: MlKemPrivateKey,
@@ -105,9 +98,14 @@ impl QlIdentity {
     }
 }
 
-impl WireEncode for QlIdentity {
+impl Encode for QlIdentity {
     fn encoded_len(&self) -> usize {
-        Self::FIXED_WIRE_SIZE + self.name.encoded_len() + LenBytes(&*self.metadata).encoded_len()
+        QID::SIZE
+            + MlKemPrivateKey::SIZE
+            + MlKemPublicKey::SIZE
+            + size_of::<u32>()
+            + self.name.encoded_len()
+            + self.metadata.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -116,23 +114,19 @@ impl WireEncode for QlIdentity {
         self.mlkem_public_key.encode(out);
         self.capabilities.encode(out);
         self.name.encode(out);
-        LenBytes(&*self.metadata).encode(out);
+        self.metadata.encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for QlIdentity {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for QlIdentity {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             qid: reader.decode()?,
             mlkem_private_key: MlKemPrivateKey::new(reader.decode()?),
             mlkem_public_key: reader.decode()?,
             capabilities: reader.decode()?,
             name: reader.decode()?,
-            metadata: reader
-                .decode::<LenBytes<B>>()?
-                .0
-                .to_vec()
-                .into_boxed_slice(),
+            metadata: reader.decode()?,
         })
     }
 }
@@ -153,20 +147,20 @@ impl Deref for QlName {
     }
 }
 
-impl WireEncode for QlName {
+impl Encode for QlName {
     fn encoded_len(&self) -> usize {
-        LenBytes(self.0.as_bytes()).encoded_len()
+        self.0.as_bytes().encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        LenBytes(self.0.as_bytes()).encode(out)
+        self.0.as_bytes().encode(out);
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for QlName {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        let bytes = reader.decode::<LenBytes<B>>()?.0;
-        let name = std::str::from_utf8(&bytes).map_err(|_| WireError::InvalidPayload)?;
+impl<B: ByteSlice> ql_codec::Decode<B> for QlName {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
+        let bytes = reader.take_len_prefixed()?;
+        let name = std::str::from_utf8(&bytes).map_err(|_| ql_codec::Error::InvalidUtf8)?;
         Ok(QlName(name.into()))
     }
 }

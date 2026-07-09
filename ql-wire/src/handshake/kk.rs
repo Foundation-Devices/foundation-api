@@ -1,3 +1,5 @@
+use ql_codec::{ByteSlice, Encode};
+
 use super::{
     decrypt_mlkem_ciphertext, encrypt_mlkem_ciphertext, finalize_handshake,
     generate_ephemeral_keypair, init_kk_symmetric, initialize_handshake_meta, mix_hash_ephemeral,
@@ -5,8 +7,7 @@ use super::{
     EphemeralPublicKey, FinalizedHandshake, Role, RouteHeader, SymmetricState, TransportParams,
 };
 use crate::{
-    codec, ByteSlice, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto,
-    QlIdentity, WireEncode, WireError,
+    Error, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,15 +18,8 @@ pub struct Kk1 {
     pub ephemeral: EphemeralPublicKey,
 }
 
-impl Kk1 {
-    pub const WIRE_SIZE: usize = HandshakeMeta::WIRE_SIZE
-        + TransportParams::WIRE_SIZE
-        + MlKemCiphertext::SIZE
-        + EphemeralPublicKey::WIRE_SIZE;
-}
-
-impl<B: ByteSlice> codec::WireDecode<B> for Kk1 {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for Kk1 {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             meta: reader.decode()?,
             transport_params: reader.decode()?,
@@ -35,9 +29,12 @@ impl<B: ByteSlice> codec::WireDecode<B> for Kk1 {
     }
 }
 
-impl WireEncode for Kk1 {
+impl Encode for Kk1 {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        HandshakeMeta::WIRE_SIZE
+            + TransportParams::WIRE_SIZE
+            + MlKemCiphertext::SIZE
+            + EphemeralPublicKey::WIRE_SIZE
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -56,15 +53,8 @@ pub struct Kk2 {
     pub skem_ciphertext: EncryptedMlKemCiphertext,
 }
 
-impl Kk2 {
-    pub const WIRE_SIZE: usize = HandshakeMeta::WIRE_SIZE
-        + TransportParams::WIRE_SIZE
-        + MlKemCiphertext::SIZE
-        + EncryptedMlKemCiphertext::WIRE_SIZE;
-}
-
-impl<B: ByteSlice> codec::WireDecode<B> for Kk2 {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for Kk2 {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             meta: reader.decode()?,
             transport_params: reader.decode()?,
@@ -74,9 +64,12 @@ impl<B: ByteSlice> codec::WireDecode<B> for Kk2 {
     }
 }
 
-impl WireEncode for Kk2 {
+impl Encode for Kk2 {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        HandshakeMeta::WIRE_SIZE
+            + TransportParams::WIRE_SIZE
+            + MlKemCiphertext::SIZE
+            + EncryptedMlKemCiphertext::WIRE_SIZE
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -171,21 +164,17 @@ impl KkHandshake {
         }
     }
 
-    fn ensure_inbound_header(&self, header: RouteHeader) -> Result<(), WireError> {
+    fn ensure_inbound_header(&self, header: RouteHeader) -> Result<(), Error> {
         if header == self.inbound_header() {
             Ok(())
         } else {
-            Err(WireError::InvalidPayload)
+            Err(Error::InvalidRouteHeader)
         }
     }
 
-    pub fn write_1(
-        &mut self,
-        crypto: &impl QlCrypto,
-        meta: HandshakeMeta,
-    ) -> Result<Kk1, WireError> {
+    pub fn write_1(&mut self, crypto: &impl QlCrypto, meta: HandshakeMeta) -> Result<Kk1, Error> {
         if self.step != KkStep::Send1 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         initialize_handshake_meta(&mut self.handshake_meta, meta)?;
         let header = self.outbound_header();
@@ -218,13 +207,9 @@ impl KkHandshake {
         })
     }
 
-    pub fn write_2(
-        &mut self,
-        crypto: &impl QlCrypto,
-        meta: HandshakeMeta,
-    ) -> Result<Kk2, WireError> {
+    pub fn write_2(&mut self, crypto: &impl QlCrypto, meta: HandshakeMeta) -> Result<Kk2, Error> {
         if self.step != KkStep::Send2 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
         let header = self.outbound_header();
@@ -236,10 +221,7 @@ impl KkHandshake {
             meta,
             self.local_transport_params,
         );
-        let remote_ephemeral = self
-            .remote_ephemeral
-            .clone()
-            .ok_or(WireError::InvalidState)?;
+        let remote_ephemeral = self.remote_ephemeral.clone().ok_or(Error::InvalidState)?;
         let (ekem_ciphertext, ekem_secret) =
             crypto.mlkem_encapsulate(&remote_ephemeral.mlkem_public_key);
         self.symmetric.mix_hash(crypto, ekem_ciphertext.as_bytes());
@@ -266,9 +248,9 @@ impl KkHandshake {
         crypto: &impl QlCrypto,
         header: RouteHeader,
         message: &Kk1,
-    ) -> Result<(), WireError> {
+    ) -> Result<(), Error> {
         if self.step != KkStep::Recv1 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
         self.ensure_inbound_header(header)?;
@@ -299,9 +281,9 @@ impl KkHandshake {
         crypto: &impl QlCrypto,
         header: RouteHeader,
         message: &Kk2,
-    ) -> Result<(), WireError> {
+    ) -> Result<(), Error> {
         if self.step != KkStep::Recv2 {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
         require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
         self.ensure_inbound_header(header)?;
@@ -313,10 +295,7 @@ impl KkHandshake {
             message.meta,
             message.transport_params,
         );
-        let local_ephemeral = self
-            .local_ephemeral
-            .as_ref()
-            .ok_or(WireError::InvalidState)?;
+        let local_ephemeral = self.local_ephemeral.as_ref().ok_or(Error::InvalidState)?;
         self.symmetric
             .mix_hash(crypto, message.ekem_ciphertext.as_bytes());
         let ekem_secret =
@@ -334,13 +313,11 @@ impl KkHandshake {
         Ok(())
     }
 
-    pub fn finalize(self, crypto: &impl QlCrypto) -> Result<FinalizedHandshake, WireError> {
+    pub fn finalize(self, crypto: &impl QlCrypto) -> Result<FinalizedHandshake, Error> {
         if !self.is_finished() {
-            return Err(WireError::InvalidState);
+            return Err(Error::InvalidState);
         }
-        let remote_transport_params = self
-            .remote_transport_params
-            .ok_or(WireError::InvalidState)?;
+        let remote_transport_params = self.remote_transport_params.ok_or(Error::InvalidState)?;
         Ok(finalize_handshake(
             crypto,
             &self.symmetric,

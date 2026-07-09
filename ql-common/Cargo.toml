@@ -6,3 +6,5 @@ description = "QuantumLink shared primitive types"
 license = "Proprietary"
 
 [dependencies]
+bytes = { workspace = true }
+ql-codec = { workspace = true }

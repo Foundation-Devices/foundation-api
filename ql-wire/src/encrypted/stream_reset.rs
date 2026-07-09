@@ -1,7 +1,8 @@
+use ql_codec::{ByteSlice, Encode};
 use ql_common::ResetCode;
 
 use super::StreamId;
-use crate::{codec, ByteSlice, WireEncode, WireError};
+use crate::Error;
 
 /// aborts one or both lanes of a stream with a reset code
 ///
@@ -17,7 +18,7 @@ pub struct StreamReset {
 
 impl StreamReset {}
 
-impl WireEncode for StreamReset {
+impl Encode for StreamReset {
     fn encoded_len(&self) -> usize {
         self.stream_id.encoded_len() + self.target.encoded_len() + self.code.encoded_len()
     }
@@ -29,8 +30,8 @@ impl WireEncode for StreamReset {
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for StreamReset {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for StreamReset {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
             stream_id: reader.decode()?,
             target: reader.decode()?,
@@ -57,7 +58,7 @@ impl ResetTarget {
     }
 }
 
-impl WireEncode for ResetTarget {
+impl Encode for ResetTarget {
     fn encoded_len(&self) -> usize {
         size_of::<u8>()
     }
@@ -68,36 +69,23 @@ impl WireEncode for ResetTarget {
 }
 
 impl TryFrom<u8> for ResetTarget {
-    type Error = WireError;
+    type Error = Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::Origin),
             2 => Ok(Self::Return),
             3 => Ok(Self::Both),
-            _ => Err(WireError::InvalidPayload),
+            _ => Err(Error::InvalidDiscriminant),
         }
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for ResetTarget {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        reader.decode::<u8>()?.try_into()
-    }
-}
-
-impl<B: ByteSlice> codec::WireDecode<B> for ResetCode {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
-        Ok(Self(reader.decode()?))
-    }
-}
-
-impl WireEncode for ResetCode {
-    fn encoded_len(&self) -> usize {
-        size_of::<u16>()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.0.encode(out);
+impl<B: ByteSlice> ql_codec::Decode<B> for ResetTarget {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
+        reader
+            .decode::<u8>()?
+            .try_into()
+            .map_err(|_| ql_codec::Error::InvalidDiscriminant)
     }
 }

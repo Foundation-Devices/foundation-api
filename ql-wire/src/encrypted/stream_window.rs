@@ -1,31 +1,30 @@
-use ql_common::VarInt;
+use ql_codec::{ByteSlice, Encode, Error};
 
 use super::StreamId;
-use crate::{codec, ByteSlice, WireEncode, WireError};
 
 /// advertises the highest byte offset the peer may send on a stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamWindow {
     pub stream_id: StreamId,
-    pub maximum_offset: VarInt,
+    pub maximum_offset: u64,
 }
 
-impl WireEncode for StreamWindow {
+impl Encode for StreamWindow {
     fn encoded_len(&self) -> usize {
-        self.stream_id.encoded_len() + self.maximum_offset.encoded_len()
+        self.stream_id.encoded_len() + ql_codec::varint::encoded_len(self.maximum_offset)
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
         self.stream_id.encode(out);
-        self.maximum_offset.encode(out);
+        ql_codec::varint::encode(self.maximum_offset, out);
     }
 }
 
-impl<B: ByteSlice> codec::WireDecode<B> for StreamWindow {
-    fn decode(reader: &mut codec::Reader<B>) -> Result<Self, WireError> {
+impl<B: ByteSlice> ql_codec::Decode<B> for StreamWindow {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, Error> {
         Ok(Self {
             stream_id: reader.decode()?,
-            maximum_offset: reader.decode()?,
+            maximum_offset: reader.decode_varint()?,
         })
     }
 }
