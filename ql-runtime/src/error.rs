@@ -1,5 +1,14 @@
-use ql_common::{ResetCode, ResetOrigin};
+use ql_common::ResetCode;
 use ql_fsm::NoSessionError;
+
+/// origin of a stream reset: either we triggered it locally or the peer sent it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResetOrigin {
+    /// the reset code originated from the peer
+    Peer,
+    /// the reset code originated from local logic
+    Local,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QlStreamError {

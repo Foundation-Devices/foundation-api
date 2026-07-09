@@ -11,12 +11,13 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 use futures_lite::Stream;
+use ql_codec::Decode;
 use ql_common::{StreamInfo, QID};
 use ql_fsm::PeerStatus;
 use ql_wire::{
     generate_identity, test_identities, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
     MlKemPublicKey, Nonce, PairingToken, PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom,
-    RecordHeader, RecordType, SessionKey, SoftwareCrypto, WireDecode,
+    RecordHeader, RecordType, SessionKey, SoftwareCrypto,
 };
 use tokio::{task::LocalSet, time::Sleep};
 

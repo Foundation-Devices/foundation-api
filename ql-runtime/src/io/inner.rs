@@ -292,12 +292,12 @@ mod loom_tests {
 
     use bytes::Bytes;
     use loom::thread;
-    use ql_common::{ResetCode, ResetOrigin};
+    use ql_common::ResetCode;
 
     use super::*;
     use crate::{
         io::{sync::loom::*, Tx},
-        QlStreamError,
+        QlStreamError, ResetOrigin,
     };
 
     #[test]

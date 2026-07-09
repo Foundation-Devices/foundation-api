@@ -1099,6 +1099,7 @@ dependencies = [
  "log",
  "loom",
  "oneshot",
+ "ql-codec",
  "ql-common",
  "ql-fsm",
  "ql-rpc",

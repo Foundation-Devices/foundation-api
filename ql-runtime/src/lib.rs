@@ -1,6 +1,10 @@
 pub use ql_fsm::{NoSessionError, PairingInvite};
 
-pub use self::{error::QlStreamError, handle::*, platform::*};
+pub use self::{
+    error::{QlStreamError, ResetOrigin},
+    handle::*,
+    platform::*,
+};
 
 pub(crate) mod command;
 pub(crate) mod driver;
