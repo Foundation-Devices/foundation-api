@@ -1,4 +1,4 @@
-use ql_keyos::AppId;
+use ql_keyos::{AppId, PeerPermissions};
 use ql_rpc::{Request, Subscription};
 
 use crate::{Empty, Error};
@@ -37,6 +37,7 @@ app_routes! {
         RequestPassportFiatPreference: Request = 3,
         SubscribePassportFiatPreference: Subscription = 4,
         SubscribeAppActivity: Subscription = 5,
+        RequestUpdatePeerPermissions: Request = 6,
     }
 }
 
@@ -98,6 +99,23 @@ impl Subscription for SubscribeAppActivity {
     type Error = Error;
     type Request = Empty;
     type Event = AppActivityEvent;
+}
+
+rpc! {
+    pub struct UpdatePeerPermissionsParams(pub PeerPermissions);
+}
+
+rpc! {
+    pub enum UpdatePeerPermissionsResponse {
+        Updated,
+        Denied,
+    }
+}
+
+impl Request for RequestUpdatePeerPermissions {
+    type Error = Error;
+    type Request = UpdatePeerPermissionsParams;
+    type Response = UpdatePeerPermissionsResponse;
 }
 
 // SERVICE ROUTES
