@@ -51,10 +51,10 @@ macro_rules! service_routes {
             pub struct $route;
 
             impl ql_rpc::Route for $route {
-                type Key = crate::ServiceRouteKey;
+                type Key = ql_keyos::ServiceRouteKey;
 
                 fn key() -> Self::Key {
-                    crate::ServiceRouteKey {
+                    ql_keyos::ServiceRouteKey {
                         service_id: $service_id,
                         route_id: ql_keyos::RouteId($id),
                     }
@@ -75,10 +75,10 @@ macro_rules! app_routes {
             pub struct $route;
 
             impl ql_rpc::Route for $route {
-                type Key = crate::AppRouteKey;
+                type Key = ql_keyos::AppRouteKey;
 
                 fn key() -> Self::Key {
-                    crate::AppRouteKey {
+                    ql_keyos::AppRouteKey {
                         app_id: $app_id,
                         route_id: ql_keyos::RouteId($id),
                     }

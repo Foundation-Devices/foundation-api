@@ -1,5 +1,4 @@
-use ql_codec::{Encode, Reader};
-use ql_keyos::{AppId, RouteId, ServiceId};
+pub use ql_keyos::{AppRouteKey, ServiceRouteKey};
 
 pub mod app_id {
     use ql_keyos::AppId;
@@ -23,64 +22,4 @@ pub mod service_id {
     pub const FX: ServiceId = ServiceId(6);
     pub const SCV: ServiceId = ServiceId(7);
     pub const TIME: ServiceId = ServiceId(8);
-}
-
-/// Route key for a remote peer rpc
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ServiceRouteKey {
-    pub service_id: ServiceId,
-    pub route_id: RouteId,
-}
-
-impl ql_rpc::RpcRouteKey for ServiceRouteKey {
-    fn encoded_len(&self) -> usize {
-        self.service_id.encoded_len() + self.route_id.encoded_len()
-    }
-
-    fn encode<W: bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.service_id.encode(out);
-        self.route_id.encode(out);
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut reader = Reader::new(bytes);
-        let key = Self {
-            service_id: reader.decode().ok()?,
-            route_id: reader.decode().ok()?,
-        };
-        reader.is_empty().then_some(key)
-    }
-}
-
-impl ql_keyos::ServiceTargetKey for ServiceRouteKey {
-    fn service_id(&self) -> ServiceId {
-        self.service_id
-    }
-}
-
-/// Route key for an keyos handled rpc
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AppRouteKey {
-    pub app_id: AppId,
-    pub route_id: RouteId,
-}
-
-impl ql_rpc::RpcRouteKey for AppRouteKey {
-    fn encoded_len(&self) -> usize {
-        self.app_id.encoded_len() + self.route_id.encoded_len()
-    }
-
-    fn encode<W: bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.app_id.encode(out);
-        self.route_id.encode(out);
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut reader = Reader::new(bytes);
-        let key = Self {
-            app_id: reader.decode().ok()?,
-            route_id: reader.decode().ok()?,
-        };
-        reader.is_empty().then_some(key)
-    }
 }
