@@ -62,15 +62,13 @@ fn peer_bundle_round_trip() {
     let crypto = SoftwareCrypto;
     let mut identity = generate_identity(&crypto, "alice");
     identity.capabilities = 1231;
-    identity.metadata = b"peer metadata".to_vec().into_boxed_slice();
     let bundle = identity.bundle();
 
     let encoded = bundle.encode_vec();
     let decoded = PeerBundle::decode_bytes(encoded.as_slice()).unwrap();
 
     assert_eq!(decoded, bundle);
-    assert_eq!(&*decoded.name, "alice");
-    assert_eq!(&*decoded.metadata, b"peer metadata");
+    assert_eq!(decoded.name, "alice");
 }
 
 #[test]

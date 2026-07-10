@@ -108,6 +108,41 @@ impl Decode<bytes::Bytes> for bytes::Bytes {
 
 impl_codec!(owned_byte_decode: Vec<u8>, Box<[u8]>);
 
+impl Encode for str {
+    fn encoded_len(&self) -> usize {
+        self.as_bytes().encoded_len()
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        self.as_bytes().encode(out);
+    }
+}
+
+impl<'a> Decode<&'a [u8]> for &'a str {
+    fn decode(reader: &mut Reader<&'a [u8]>) -> Result<Self, Error> {
+        std::str::from_utf8(reader.take_len_prefixed()?).map_err(|_| Error::InvalidUtf8)
+    }
+}
+
+impl Encode for String {
+    fn encoded_len(&self) -> usize {
+        self.as_str().encoded_len()
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        self.as_str().encode(out);
+    }
+}
+
+impl<B: ByteSlice> Decode<B> for String {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, Error> {
+        let bytes = reader.take_len_prefixed()?;
+        std::str::from_utf8(&bytes)
+            .map(str::to_owned)
+            .map_err(|_| Error::InvalidUtf8)
+    }
+}
+
 impl<B: ByteSlice> Decode<B> for u8 {
     fn decode(reader: &mut Reader<B>) -> Result<Self, Error> {
         reader.take_u8()
@@ -233,6 +268,15 @@ mod tests {
                 .unwrap()
                 .as_ref(),
             [1, 2, 3]
+        );
+
+        let encoded = String::from("hello").encode_vec();
+        assert_eq!(encoded, [5, b'h', b'e', b'l', b'l', b'o']);
+        assert_eq!(<&str>::decode_bytes(encoded.as_slice()).unwrap(), "hello");
+        assert_eq!(String::decode_bytes(encoded.as_slice()).unwrap(), "hello");
+        assert_eq!(
+            String::decode_bytes([1, 0xff].as_slice()),
+            Err(Error::InvalidUtf8)
         );
     }
 }

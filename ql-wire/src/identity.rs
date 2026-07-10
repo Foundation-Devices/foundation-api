@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use ql_codec::{ByteSlice, Encode};
 use ql_common::QID;
 
@@ -11,8 +9,7 @@ pub struct PeerBundle {
     pub qid: QID,
     pub capabilities: u32,
     pub mlkem_public_key: MlKemPublicKey,
-    pub name: QlName,
-    pub metadata: Box<[u8]>,
+    pub name: String,
 }
 
 impl PeerBundle {
@@ -26,7 +23,6 @@ impl Encode for PeerBundle {
             + size_of::<u32>()
             + MlKemPublicKey::SIZE
             + self.name.encoded_len()
-            + self.metadata.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -35,7 +31,6 @@ impl Encode for PeerBundle {
         self.capabilities.encode(out);
         self.mlkem_public_key.encode(out);
         self.name.encode(out);
-        self.metadata.encode(out);
     }
 }
 
@@ -47,7 +42,6 @@ impl<B: ByteSlice> ql_codec::Decode<B> for PeerBundle {
             capabilities: reader.decode()?,
             mlkem_public_key: reader.decode()?,
             name: reader.decode()?,
-            metadata: reader.decode()?,
         })
     }
 }
@@ -58,8 +52,7 @@ pub struct QlIdentity {
     pub mlkem_private_key: MlKemPrivateKey,
     pub mlkem_public_key: MlKemPublicKey,
     pub capabilities: u32,
-    pub name: QlName,
-    pub metadata: Box<[u8]>,
+    pub name: String,
 }
 
 impl QlIdentity {
@@ -69,21 +62,14 @@ impl QlIdentity {
         mlkem_public_key: MlKemPublicKey,
         name: impl Into<String>,
     ) -> Self {
-        let name = QlName(name.into());
         let qid = derive_qid(crypto, &mlkem_public_key);
         Self {
             qid,
             mlkem_private_key,
             mlkem_public_key,
             capabilities: 0,
-            name,
-            metadata: Box::default(),
+            name: name.into(),
         }
-    }
-
-    pub fn with_metadata(mut self, metadata: impl Into<Box<[u8]>>) -> Self {
-        self.metadata = metadata.into();
-        self
     }
 
     pub fn bundle(&self) -> PeerBundle {
@@ -93,7 +79,6 @@ impl QlIdentity {
             capabilities: self.capabilities,
             mlkem_public_key: self.mlkem_public_key.clone(),
             name: self.name.clone(),
-            metadata: self.metadata.clone(),
         }
     }
 }
@@ -105,7 +90,6 @@ impl Encode for QlIdentity {
             + MlKemPublicKey::SIZE
             + size_of::<u32>()
             + self.name.encoded_len()
-            + self.metadata.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -114,7 +98,6 @@ impl Encode for QlIdentity {
         self.mlkem_public_key.encode(out);
         self.capabilities.encode(out);
         self.name.encode(out);
-        self.metadata.encode(out);
     }
 }
 
@@ -126,7 +109,6 @@ impl<B: ByteSlice> ql_codec::Decode<B> for QlIdentity {
             mlkem_public_key: reader.decode()?,
             capabilities: reader.decode()?,
             name: reader.decode()?,
-            metadata: reader.decode()?,
         })
     }
 }
@@ -134,33 +116,4 @@ impl<B: ByteSlice> ql_codec::Decode<B> for QlIdentity {
 pub fn generate_identity(crypto: &impl QlCrypto, name: impl Into<String>) -> QlIdentity {
     let MlKemKeyPair { private, public } = crypto.mlkem_generate_keypair();
     QlIdentity::new(crypto, private, public, name)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QlName(pub String);
-
-impl Deref for QlName {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Encode for QlName {
-    fn encoded_len(&self) -> usize {
-        self.0.as_bytes().encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.0.as_bytes().encode(out);
-    }
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for QlName {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        let bytes = reader.take_len_prefixed()?;
-        let name = std::str::from_utf8(&bytes).map_err(|_| ql_codec::Error::InvalidUtf8)?;
-        Ok(QlName(name.into()))
-    }
 }
