@@ -5,16 +5,14 @@ use crate::{
     PeerBundle, QlCrypto, RouteHeader, SessionKey, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
+mod id;
 mod ik;
-mod kk;
-mod meta;
 mod pairing;
 mod transport_params;
 mod xx;
 
-pub use ik::{Ik1, Ik2, IkHandshake};
-pub use kk::{Kk1, Kk2, KkHandshake};
-pub use meta::{HandshakeId, HandshakeMeta};
+pub use id::HandshakeId;
+pub use ik::{Ik1, Ik2, IkHandshake, IkPattern};
 pub use pairing::{PairingId, PairingToken};
 pub use transport_params::TransportParams;
 pub use xx::{Xx1, Xx2, Xx3, Xx4, XxHandshake};
@@ -22,7 +20,6 @@ pub use xx::{Xx1, Xx2, Xx3, Xx4, XxHandshake};
 const SHA256_BLOCK_LEN: usize = 64;
 const PROTOCOL_IK: &[u8] = b"ql-wire:pq-ik:v1";
 const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
-const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
 const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +219,10 @@ impl SymmetricState {
         self.handshake_hash = crypto.sha256(&[&self.handshake_hash, data]);
     }
 
+    fn mix_hash_ephemeral(&mut self, crypto: &impl QlCrypto, public: &EphemeralPublicKey) {
+        self.mix_hash(crypto, public.mlkem_public_key.as_bytes());
+    }
+
     fn mix_key(&mut self, crypto: &impl QlCrypto, input_key_material: &[u8]) {
         let (chaining_key, cipher_key) = hkdf2(crypto, &self.chaining_key, input_key_material);
         self.chaining_key = chaining_key;
@@ -234,6 +235,10 @@ impl SymmetricState {
         self.chaining_key = chaining_key;
         self.mix_hash(crypto, &hash_input);
         self.cipher.initialize_key(cipher_key);
+    }
+
+    fn mix_psk_pairing_token(&mut self, crypto: &impl QlCrypto, pairing_token: PairingToken) {
+        self.mix_key_and_hash(crypto, &pairing_token.psk(crypto));
     }
 
     fn encrypt_and_hash(
@@ -281,47 +286,10 @@ impl SymmetricState {
     }
 }
 
-fn init_kk_symmetric(
-    crypto: &impl QlCrypto,
-    initiator_bundle: &PeerBundle,
-    responder_bundle: &PeerBundle,
-) -> SymmetricState {
-    let mut symmetric = SymmetricState::new(crypto, PROTOCOL_KK);
-    symmetric.mix_hash(crypto, &initiator_bundle.encode_vec());
-    symmetric.mix_hash(crypto, &responder_bundle.encode_vec());
-    symmetric
-}
-
-fn init_ik_symmetric(crypto: &impl QlCrypto, responder_bundle: &PeerBundle) -> SymmetricState {
-    let mut symmetric = SymmetricState::new(crypto, PROTOCOL_IK);
-    symmetric.mix_hash(crypto, &responder_bundle.encode_vec());
-    symmetric
-}
-
-fn init_xx_symmetric(crypto: &impl QlCrypto) -> SymmetricState {
-    SymmetricState::new(crypto, PROTOCOL_XX)
-}
-
-fn mix_psk_pairing_token(
-    symmetric: &mut SymmetricState,
-    crypto: &impl QlCrypto,
-    pairing_token: PairingToken,
-) {
-    symmetric.mix_key_and_hash(crypto, &pairing_token.psk(crypto));
-}
-
 fn generate_ephemeral_keypair(crypto: &impl QlCrypto) -> EphemeralKeyPair {
     EphemeralKeyPair {
         mlkem: crypto.mlkem_generate_keypair(),
     }
-}
-
-fn mix_hash_ephemeral(
-    symmetric: &mut SymmetricState,
-    crypto: &impl QlCrypto,
-    public: &EphemeralPublicKey,
-) {
-    symmetric.mix_hash(crypto, public.mlkem_public_key.as_bytes());
 }
 
 fn mix_hash_routed_handshake(
@@ -329,7 +297,7 @@ fn mix_hash_routed_handshake(
     crypto: &impl QlCrypto,
     header: RouteHeader,
     kind: HandshakeKind,
-    meta: HandshakeMeta,
+    handshake_id: HandshakeId,
     transport_params: TransportParams,
 ) {
     mix_hash_handshake_preamble(
@@ -337,7 +305,7 @@ fn mix_hash_routed_handshake(
         crypto,
         &header.encode_vec(),
         kind,
-        meta,
+        handshake_id,
         transport_params,
     );
 }
@@ -347,13 +315,20 @@ fn mix_hash_pairing_handshake(
     crypto: &impl QlCrypto,
     header: RouteHeader,
     kind: HandshakeKind,
-    meta: HandshakeMeta,
+    handshake_id: HandshakeId,
     pairing_id: PairingId,
     transport_params: TransportParams,
 ) {
     let mut preamble = header.encode_vec();
     pairing_id.encode(&mut preamble);
-    mix_hash_handshake_preamble(symmetric, crypto, &preamble, kind, meta, transport_params);
+    mix_hash_handshake_preamble(
+        symmetric,
+        crypto,
+        &preamble,
+        kind,
+        handshake_id,
+        transport_params,
+    );
 }
 
 fn mix_hash_handshake_preamble(
@@ -361,61 +336,37 @@ fn mix_hash_handshake_preamble(
     crypto: &impl QlCrypto,
     header: &[u8],
     kind: HandshakeKind,
-    meta: HandshakeMeta,
+    handshake_id: HandshakeId,
     transport_params: TransportParams,
 ) {
     symmetric.mix_hash(crypto, HANDSHAKE_PREAMBLE_DOMAIN);
     symmetric.mix_hash(crypto, header);
     symmetric.mix_hash(crypto, &[kind as u8]);
-    symmetric.mix_hash(crypto, &meta.encode_vec());
+    symmetric.mix_hash(crypto, &handshake_id.encode_vec());
     symmetric.mix_hash(crypto, &transport_params.encode_vec());
 }
 
-fn initialize_handshake_meta(
-    expected: &mut Option<HandshakeMeta>,
-    meta: HandshakeMeta,
+fn initialize_handshake_id(
+    expected: &mut Option<HandshakeId>,
+    handshake_id: HandshakeId,
 ) -> Result<(), Error> {
     match expected {
-        Some(stored) if *stored != meta => Err(Error::InvalidHandshakeMeta),
+        Some(stored) if *stored != handshake_id => Err(Error::InvalidHandshakeId),
         Some(_) => Ok(()),
         None => {
-            *expected = Some(meta);
+            *expected = Some(handshake_id);
             Ok(())
         }
     }
 }
 
-fn require_handshake_meta(
-    expected: Option<&HandshakeMeta>,
-    meta: HandshakeMeta,
+fn require_handshake_id(
+    expected: Option<&HandshakeId>,
+    handshake_id: HandshakeId,
 ) -> Result<(), Error> {
     match expected {
-        Some(stored) if *stored == meta => Ok(()),
-        _ => Err(Error::InvalidHandshakeMeta),
-    }
-}
-
-fn initialize_transport_params(
-    expected: &mut Option<TransportParams>,
-    transport_params: TransportParams,
-) -> Result<(), Error> {
-    match expected {
-        Some(stored) if *stored != transport_params => Err(Error::InvalidTransportParams),
-        Some(_) => Ok(()),
-        None => {
-            *expected = Some(transport_params);
-            Ok(())
-        }
-    }
-}
-
-fn require_transport_params(
-    expected: Option<&TransportParams>,
-    transport_params: TransportParams,
-) -> Result<(), Error> {
-    match expected {
-        Some(stored) if *stored == transport_params => Ok(()),
-        _ => Err(Error::InvalidTransportParams),
+        Some(stored) if *stored == handshake_id => Ok(()),
+        _ => Err(Error::InvalidHandshakeId),
     }
 }
 

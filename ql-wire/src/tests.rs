@@ -12,10 +12,8 @@ fn decode_session_record(bytes: &[u8]) -> QlSessionRecord<Vec<u8>> {
     record.into_owned()
 }
 
-fn handshake_meta(id: u32) -> HandshakeMeta {
-    HandshakeMeta {
-        handshake_id: HandshakeId(id),
-    }
+fn handshake_id(id: u32) -> HandshakeId {
+    HandshakeId(id)
 }
 
 fn handshake_transport_params(window: u32) -> TransportParams {
@@ -78,13 +76,13 @@ fn peer_bundle_round_trip() {
 #[test]
 fn handshake_record_round_trip_supports_ik_kk_and_xx() {
     let ik = QlHandshakeRecord::Ik1(Ik1 {
-        meta: handshake_meta(1),
+        handshake_id: handshake_id(1),
         transport_params: handshake_transport_params(65_536),
         skem_ciphertext: MlKemCiphertext::new(Box::new([7; MlKemCiphertext::SIZE])),
         ephemeral: EphemeralPublicKey {
             mlkem_public_key: MlKemPublicKey::new(Box::new([9; MlKemPublicKey::SIZE])),
         },
-        static_bundle: EncryptedPeerBundle(vec![13; 64].into_boxed_slice()),
+        static_bundle: Some(EncryptedPeerBundle(vec![13; 64].into_boxed_slice())),
     });
     let ik_route = route(1, 2);
     let ik_encoded = encode_record_vec(RecordHeader::new(ik_route, RecordType::Handshake), &ik);
@@ -98,13 +96,14 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
     );
     assert_eq!(decode_handshake_record(ik_encoded.as_slice()), ik);
 
-    let kk = QlHandshakeRecord::Kk1(Kk1 {
-        meta: handshake_meta(2),
+    let kk = QlHandshakeRecord::Kk1(Ik1 {
+        handshake_id: handshake_id(2),
         transport_params: handshake_transport_params(131_072),
         skem_ciphertext: MlKemCiphertext::new(Box::new([11; MlKemCiphertext::SIZE])),
         ephemeral: EphemeralPublicKey {
             mlkem_public_key: MlKemPublicKey::new(Box::new([15; MlKemPublicKey::SIZE])),
         },
+        static_bundle: None,
     });
     let kk_route = route(1, 2);
     let kk_encoded = encode_record_vec(RecordHeader::new(kk_route, RecordType::Handshake), &kk);
@@ -119,7 +118,7 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
     assert_eq!(decode_handshake_record(kk_encoded.as_slice()), kk);
 
     let xx = QlHandshakeRecord::Xx1(Xx1 {
-        meta: handshake_meta(3),
+        handshake_id: handshake_id(3),
         pairing_id: PairingId([3; PairingId::SIZE]),
         transport_params: handshake_transport_params(196_608),
         ephemeral: EphemeralPublicKey {
@@ -140,35 +139,31 @@ fn handshake_record_round_trip_supports_ik_kk_and_xx() {
 }
 
 #[test]
-fn ik_handshake_rejects_tampered_handshake_meta() {
+fn ik_handshake_rejects_tampered_handshake_id() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
     let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
-    let mut initiator_state = IkHandshake::new_initiator(
+    let mut initiator_state = IkHandshake::new_ik_initiator(
         &crypto,
         initiator,
         responder.bundle(),
         TransportParams::default(),
     );
     let mut responder_state =
-        IkHandshake::new_responder(&crypto, responder, None, TransportParams::default());
+        IkHandshake::new_ik_responder(&crypto, responder, None, TransportParams::default());
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(77))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(77)).unwrap();
     responder_state
         .read_1(&crypto, initiator_to_responder, &m1)
         .unwrap();
 
-    let mut m2 = responder_state
-        .write_2(&crypto, handshake_meta(77))
-        .unwrap();
-    m2.meta.handshake_id = HandshakeId(78);
+    let mut m2 = responder_state.write_2(&crypto, handshake_id(77)).unwrap();
+    m2.handshake_id = HandshakeId(78);
 
     assert_eq!(
         initiator_state.read_2(&crypto, responder_to_initiator, &m2),
-        Err(Error::InvalidHandshakeMeta)
+        Err(Error::InvalidHandshakeId)
     );
 }
 
@@ -178,29 +173,25 @@ fn kk_handshake_rejects_tampered_handshake_header() {
     let (initiator, responder) = test_identities(&crypto);
     let (initiator_to_responder, _) = identity_routes(&initiator, &responder);
 
-    let mut initiator_state = KkHandshake::new_initiator(
+    let mut initiator_state = IkHandshake::new_kk_initiator(
         &crypto,
         initiator.clone(),
         responder.bundle(),
         TransportParams::default(),
     );
-    let mut responder_state = KkHandshake::new_responder(
+    let mut responder_state = IkHandshake::new_kk_responder(
         &crypto,
         responder,
         initiator.bundle(),
         TransportParams::default(),
     );
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(88))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(88)).unwrap();
     responder_state
         .read_1(&crypto, initiator_to_responder, &m1)
         .unwrap();
 
-    let m2 = responder_state
-        .write_2(&crypto, handshake_meta(88))
-        .unwrap();
+    let m2 = responder_state.write_2(&crypto, handshake_id(88)).unwrap();
     let tampered_route = route(9, 1);
 
     assert_eq!(
@@ -215,25 +206,21 @@ fn ik_handshake_rejects_tampered_transport_params() {
     let (initiator, responder) = test_identities(&crypto);
     let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
-    let mut initiator_state = IkHandshake::new_initiator(
+    let mut initiator_state = IkHandshake::new_ik_initiator(
         &crypto,
         initiator,
         responder.bundle(),
         handshake_transport_params(4096),
     );
     let mut responder_state =
-        IkHandshake::new_responder(&crypto, responder, None, handshake_transport_params(8192));
+        IkHandshake::new_ik_responder(&crypto, responder, None, handshake_transport_params(8192));
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(89))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(89)).unwrap();
     responder_state
         .read_1(&crypto, initiator_to_responder, &m1)
         .unwrap();
 
-    let mut m2 = responder_state
-        .write_2(&crypto, handshake_meta(89))
-        .unwrap();
+    let mut m2 = responder_state.write_2(&crypto, handshake_id(89)).unwrap();
     m2.transport_params.initial_stream_receive_window += 1;
 
     assert_eq!(
@@ -248,18 +235,16 @@ fn ik_handshake_rejects_tampered_handshake_header() {
     let (initiator, responder) = test_identities(&crypto);
     let (mut initiator_to_responder, _) = identity_routes(&initiator, &responder);
 
-    let mut initiator_state = IkHandshake::new_initiator(
+    let mut initiator_state = IkHandshake::new_ik_initiator(
         &crypto,
         initiator,
         responder.bundle(),
         TransportParams::default(),
     );
     let mut responder_state =
-        IkHandshake::new_responder(&crypto, responder, None, TransportParams::default());
+        IkHandshake::new_ik_responder(&crypto, responder, None, TransportParams::default());
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(90))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(90)).unwrap();
     initiator_to_responder.sender = QID([9; QID::SIZE]);
 
     assert_eq!(
@@ -275,22 +260,20 @@ fn ik_handshake_rejects_bound_remote_bundle_mismatch() {
     let bogus = generate_identity(&crypto, "bogus");
     let (initiator_to_responder, _) = identity_routes(&initiator, &responder);
 
-    let mut initiator_state = IkHandshake::new_initiator(
+    let mut initiator_state = IkHandshake::new_ik_initiator(
         &crypto,
         initiator,
         responder.bundle(),
         TransportParams::default(),
     );
-    let mut responder_state = IkHandshake::new_responder(
+    let mut responder_state = IkHandshake::new_ik_responder(
         &crypto,
         responder,
         Some(bogus.bundle()),
         TransportParams::default(),
     );
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(91))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(91)).unwrap();
 
     assert_eq!(
         responder_state.read_1(&crypto, initiator_to_responder, &m1),
@@ -306,25 +289,21 @@ fn ik_handshake_round_trip_derives_matching_transport_and_learns_remote() {
 
     let initiator_params = handshake_transport_params(4096);
     let responder_params = handshake_transport_params(8192);
-    let mut initiator_state = IkHandshake::new_initiator(
+    let mut initiator_state = IkHandshake::new_ik_initiator(
         &crypto,
         initiator.clone(),
         responder.bundle(),
         initiator_params,
     );
     let mut responder_state =
-        IkHandshake::new_responder(&crypto, responder.clone(), None, responder_params);
+        IkHandshake::new_ik_responder(&crypto, responder.clone(), None, responder_params);
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(11))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(11)).unwrap();
     responder_state
         .read_1(&crypto, initiator_to_responder, &m1)
         .unwrap();
 
-    let m2 = responder_state
-        .write_2(&crypto, handshake_meta(11))
-        .unwrap();
+    let m2 = responder_state.write_2(&crypto, handshake_id(11)).unwrap();
     initiator_state
         .read_2(&crypto, responder_to_initiator, &m2)
         .unwrap();
@@ -352,29 +331,25 @@ fn ik_handshake_round_trip_derives_matching_transport_with_bound_responder() {
 
     let initiator_params = handshake_transport_params(16_384);
     let responder_params = handshake_transport_params(32_768);
-    let mut initiator_state = IkHandshake::new_initiator(
+    let mut initiator_state = IkHandshake::new_ik_initiator(
         &crypto,
         initiator.clone(),
         responder.bundle(),
         initiator_params,
     );
-    let mut responder_state = IkHandshake::new_responder(
+    let mut responder_state = IkHandshake::new_ik_responder(
         &crypto,
         responder.clone(),
         Some(initiator.bundle()),
         responder_params,
     );
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(12))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(12)).unwrap();
     responder_state
         .read_1(&crypto, initiator_to_responder, &m1)
         .unwrap();
 
-    let m2 = responder_state
-        .write_2(&crypto, handshake_meta(12))
-        .unwrap();
+    let m2 = responder_state.write_2(&crypto, handshake_id(12)).unwrap();
     initiator_state
         .read_2(&crypto, responder_to_initiator, &m2)
         .unwrap();
@@ -402,29 +377,25 @@ fn kk_handshake_round_trip_derives_matching_transport() {
 
     let initiator_params = handshake_transport_params(24_576);
     let responder_params = handshake_transport_params(49_152);
-    let mut initiator_state = KkHandshake::new_initiator(
+    let mut initiator_state = IkHandshake::new_kk_initiator(
         &crypto,
         initiator.clone(),
         responder.bundle(),
         initiator_params,
     );
-    let mut responder_state = KkHandshake::new_responder(
+    let mut responder_state = IkHandshake::new_kk_responder(
         &crypto,
         responder.clone(),
         initiator.bundle(),
         responder_params,
     );
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(21))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(21)).unwrap();
     responder_state
         .read_1(&crypto, initiator_to_responder, &m1)
         .unwrap();
 
-    let m2 = responder_state
-        .write_2(&crypto, handshake_meta(21))
-        .unwrap();
+    let m2 = responder_state.write_2(&crypto, handshake_id(21)).unwrap();
     initiator_state
         .read_2(&crypto, responder_to_initiator, &m2)
         .unwrap();
@@ -450,29 +421,25 @@ fn kk_handshake_rejects_tampered_transport_params() {
     let (initiator, responder) = test_identities(&crypto);
     let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
-    let mut initiator_state = KkHandshake::new_initiator(
+    let mut initiator_state = IkHandshake::new_kk_initiator(
         &crypto,
         initiator.clone(),
         responder.bundle(),
         handshake_transport_params(12288),
     );
-    let mut responder_state = KkHandshake::new_responder(
+    let mut responder_state = IkHandshake::new_kk_responder(
         &crypto,
         responder,
         initiator.bundle(),
         handshake_transport_params(24576),
     );
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(22))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(22)).unwrap();
     responder_state
         .read_1(&crypto, initiator_to_responder, &m1)
         .unwrap();
 
-    let mut m2 = responder_state
-        .write_2(&crypto, handshake_meta(22))
-        .unwrap();
+    let mut m2 = responder_state.write_2(&crypto, handshake_id(22)).unwrap();
     m2.transport_params.initial_stream_receive_window += 1;
 
     assert_eq!(
@@ -503,9 +470,7 @@ fn xx_handshake_rejects_tampered_pairing_id() {
         TransportParams::default(),
     );
 
-    let mut m1 = initiator_state
-        .write_1(&crypto, handshake_meta(31))
-        .unwrap();
+    let mut m1 = initiator_state.write_1(&crypto, handshake_id(31)).unwrap();
     m1.pairing_id = PairingId([8; PairingId::SIZE]);
 
     assert_eq!(
@@ -535,9 +500,7 @@ fn xx_handshake_rejects_tampered_sender_or_recipient() {
         TransportParams::default(),
     );
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(31))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(31)).unwrap();
     let (mut route, _) = identity_routes(&initiator, &responder);
     route.sender = responder.qid;
 
@@ -561,9 +524,7 @@ fn xx_handshake_rejects_tampered_sender_or_recipient() {
         TransportParams::default(),
     );
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(31))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(31)).unwrap();
     let (mut route, _) = identity_routes(&initiator, &responder);
     route.recipient = initiator.qid;
 
@@ -574,7 +535,7 @@ fn xx_handshake_rejects_tampered_sender_or_recipient() {
 }
 
 #[test]
-fn xx_handshake_rejects_repeated_transport_param_change() {
+fn xx_handshake_rejects_tampered_transport_params() {
     let crypto = SoftwareCrypto;
     let (initiator, responder) = test_identities(&crypto);
     let token = PairingToken([9; PairingToken::SIZE]);
@@ -595,28 +556,17 @@ fn xx_handshake_rejects_repeated_transport_param_change() {
         handshake_transport_params(24_576),
     );
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(32))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(32)).unwrap();
     responder_state
         .read_1(&crypto, initiator_to_responder, &m1)
         .unwrap();
 
-    let m2 = responder_state
-        .write_2(&crypto, handshake_meta(32))
-        .unwrap();
-    initiator_state
-        .read_2(&crypto, responder_to_initiator, &m2)
-        .unwrap();
-
-    let mut m3 = initiator_state
-        .write_3(&crypto, handshake_meta(32))
-        .unwrap();
-    m3.transport_params.initial_stream_receive_window += 1;
+    let mut m2 = responder_state.write_2(&crypto, handshake_id(32)).unwrap();
+    m2.transport_params.initial_stream_receive_window += 1;
 
     assert_eq!(
-        responder_state.read_3(&crypto, initiator_to_responder, &m3),
-        Err(Error::InvalidTransportParams)
+        initiator_state.read_2(&crypto, responder_to_initiator, &m2),
+        Err(Error::DecryptFailed)
     );
 }
 
@@ -651,33 +601,25 @@ fn xx_handshake_round_trip_derives_matching_transport_and_learns_remote() {
     assert!(initiator_state.remote_bundle().is_none());
     assert!(responder_state.remote_bundle().is_none());
 
-    let m1 = initiator_state
-        .write_1(&crypto, handshake_meta(33))
-        .unwrap();
+    let m1 = initiator_state.write_1(&crypto, handshake_id(33)).unwrap();
     responder_state
         .read_1(&crypto, initiator_to_responder, &m1)
         .unwrap();
 
-    let m2 = responder_state
-        .write_2(&crypto, handshake_meta(33))
-        .unwrap();
+    let m2 = responder_state.write_2(&crypto, handshake_id(33)).unwrap();
     initiator_state
         .read_2(&crypto, responder_to_initiator, &m2)
         .unwrap();
     assert_eq!(initiator_state.remote_bundle(), Some(&responder.bundle()));
     assert!(responder_state.remote_bundle().is_none());
 
-    let m3 = initiator_state
-        .write_3(&crypto, handshake_meta(33))
-        .unwrap();
+    let m3 = initiator_state.write_3(&crypto, handshake_id(33)).unwrap();
     responder_state
         .read_3(&crypto, initiator_to_responder, &m3)
         .unwrap();
     assert_eq!(responder_state.remote_bundle(), Some(&initiator.bundle()));
 
-    let m4 = responder_state
-        .write_4(&crypto, handshake_meta(33))
-        .unwrap();
+    let m4 = responder_state.write_4(&crypto, handshake_id(33)).unwrap();
     initiator_state
         .read_4(&crypto, responder_to_initiator, &m4)
         .unwrap();
@@ -797,21 +739,21 @@ fn protocol_record_size_breakdown() {
     let (initiator, responder) = test_identities(&crypto);
     let (initiator_to_responder, responder_to_initiator) = identity_routes(&initiator, &responder);
 
-    let mut ik_initiator = IkHandshake::new_initiator(
+    let mut ik_initiator = IkHandshake::new_ik_initiator(
         &crypto,
         initiator.clone(),
         responder.bundle(),
         TransportParams::default(),
     );
     let mut ik_responder =
-        IkHandshake::new_responder(&crypto, responder.clone(), None, TransportParams::default());
+        IkHandshake::new_ik_responder(&crypto, responder.clone(), None, TransportParams::default());
 
-    let ik1 = ik_initiator.write_1(&crypto, handshake_meta(101)).unwrap();
+    let ik1 = ik_initiator.write_1(&crypto, handshake_id(101)).unwrap();
     ik_responder
         .read_1(&crypto, initiator_to_responder, &ik1)
         .unwrap();
 
-    let ik2 = ik_responder.write_2(&crypto, handshake_meta(101)).unwrap();
+    let ik2 = ik_responder.write_2(&crypto, handshake_id(101)).unwrap();
     ik_initiator
         .read_2(&crypto, responder_to_initiator, &ik2)
         .unwrap();
@@ -819,25 +761,25 @@ fn protocol_record_size_breakdown() {
     let ik1 = QlHandshakeRecord::Ik1(ik1);
     let ik2 = QlHandshakeRecord::Ik2(ik2);
 
-    let mut kk_initiator = KkHandshake::new_initiator(
+    let mut kk_initiator = IkHandshake::new_kk_initiator(
         &crypto,
         initiator.clone(),
         responder.bundle(),
         TransportParams::default(),
     );
-    let mut kk_responder = KkHandshake::new_responder(
+    let mut kk_responder = IkHandshake::new_kk_responder(
         &crypto,
         responder.clone(),
         initiator.bundle(),
         TransportParams::default(),
     );
 
-    let kk1 = kk_initiator.write_1(&crypto, handshake_meta(201)).unwrap();
+    let kk1 = kk_initiator.write_1(&crypto, handshake_id(201)).unwrap();
     kk_responder
         .read_1(&crypto, initiator_to_responder, &kk1)
         .unwrap();
 
-    let kk2 = kk_responder.write_2(&crypto, handshake_meta(201)).unwrap();
+    let kk2 = kk_responder.write_2(&crypto, handshake_id(201)).unwrap();
     kk_initiator
         .read_2(&crypto, responder_to_initiator, &kk2)
         .unwrap();
@@ -861,22 +803,22 @@ fn protocol_record_size_breakdown() {
         TransportParams::default(),
     );
 
-    let xx1 = xx_initiator.write_1(&crypto, handshake_meta(301)).unwrap();
+    let xx1 = xx_initiator.write_1(&crypto, handshake_id(301)).unwrap();
     xx_responder
         .read_1(&crypto, initiator_to_responder, &xx1)
         .unwrap();
 
-    let xx2 = xx_responder.write_2(&crypto, handshake_meta(301)).unwrap();
+    let xx2 = xx_responder.write_2(&crypto, handshake_id(301)).unwrap();
     xx_initiator
         .read_2(&crypto, responder_to_initiator, &xx2)
         .unwrap();
 
-    let xx3 = xx_initiator.write_3(&crypto, handshake_meta(301)).unwrap();
+    let xx3 = xx_initiator.write_3(&crypto, handshake_id(301)).unwrap();
     xx_responder
         .read_3(&crypto, initiator_to_responder, &xx3)
         .unwrap();
 
-    let xx4 = xx_responder.write_4(&crypto, handshake_meta(301)).unwrap();
+    let xx4 = xx_responder.write_4(&crypto, handshake_id(301)).unwrap();
     xx_initiator
         .read_4(&crypto, responder_to_initiator, &xx4)
         .unwrap();

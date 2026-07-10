@@ -14,10 +14,9 @@ pub enum Error {
 
     // protocol validation
     InvalidRouteHeader,
-    InvalidHandshakeMeta,
+    InvalidHandshakeId,
     InvalidPairingId,
     InvalidRemoteBundle,
-    InvalidTransportParams,
 
     // cryptographic/session
     DecryptFailed,
@@ -38,10 +37,9 @@ impl fmt::Display for Error {
             Self::InvalidUtf8 => "invalid utf-8",
             Self::InvalidPayload => "invalid payload",
             Self::InvalidRouteHeader => "invalid route header",
-            Self::InvalidHandshakeMeta => "invalid handshake meta",
+            Self::InvalidHandshakeId => "invalid handshake id",
             Self::InvalidPairingId => "invalid pairing id",
             Self::InvalidRemoteBundle => "invalid remote bundle",
-            Self::InvalidTransportParams => "invalid transport params",
             Self::DecryptFailed => "decryption failed",
             Self::Expired => "expired",
             Self::InvalidState => "invalid state",

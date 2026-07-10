@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use ql_common::QID;
 use ql_wire::{
-    EphemeralPublicKey, HandshakeId, HandshakeMeta, IkHandshake, KkHandshake, PairingToken,
-    PeerBundle, QlHandshakeRecord, RouteHeader, SessionKey, TransportParams, XxHandshake,
+    HandshakeId, IkHandshake, PairingToken, PeerBundle, QlHandshakeRecord, RouteHeader, SessionKey,
+    TransportParams, XxHandshake,
 };
 
 use crate::{session::SessionFsm, NoSessionError, PeerStatus};
@@ -29,7 +29,6 @@ pub struct SessionTransport {
 pub enum LinkState {
     Idle,
     IkInitiator(InitiatorState<IkHandshake>),
-    KkInitiator(InitiatorState<KkHandshake>),
     XxInitiator(InitiatorState<XxHandshake>),
     XxResponder(XxResponderState),
     Connected(ConnectedState),
@@ -44,15 +43,12 @@ pub struct ConnectedState {
 #[derive(Debug, Clone)]
 pub struct InitiatorState<H> {
     pub handshake: H,
-    pub handshake_id: HandshakeId,
     pub deadline: Instant,
-    pub initial_ephemeral: EphemeralPublicKey,
 }
 
 #[derive(Debug, Clone)]
 pub struct XxResponderState {
     pub handshake: XxHandshake,
-    pub handshake_meta: HandshakeMeta,
     pub deadline: Instant,
 }
 
@@ -64,9 +60,7 @@ impl LinkState {
     pub fn status(&self) -> PeerStatus {
         match self {
             Self::Idle | Self::XxResponder(_) => PeerStatus::Disconnected,
-            Self::IkInitiator(_) | Self::KkInitiator(_) | Self::XxInitiator(_) => {
-                PeerStatus::Initiator
-            }
+            Self::IkInitiator(_) | Self::XxInitiator(_) => PeerStatus::Initiator,
             Self::Connected(_) => PeerStatus::Connected,
         }
     }
@@ -96,7 +90,6 @@ impl LinkState {
         match self {
             Self::Idle | Self::Connected(_) => None,
             Self::IkInitiator(state) => Some(state.deadline),
-            Self::KkInitiator(state) => Some(state.deadline),
             Self::XxInitiator(state) => Some(state.deadline),
             Self::XxResponder(state) => Some(state.deadline),
         }

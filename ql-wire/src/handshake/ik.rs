@@ -2,66 +2,97 @@ use ql_codec::{ByteSlice, Encode};
 
 use super::{
     decrypt_mlkem_ciphertext, decrypt_peer_bundle, encrypt_mlkem_ciphertext, encrypt_peer_bundle,
-    finalize_handshake, generate_ephemeral_keypair, init_ik_symmetric, initialize_handshake_meta,
-    mix_hash_ephemeral, mix_hash_routed_handshake, require_handshake_meta,
-    EncryptedMlKemCiphertext, EncryptedPeerBundle, EphemeralKeyPair, EphemeralPublicKey,
-    FinalizedHandshake, Role, RouteHeader, SymmetricState, TransportParams,
+    finalize_handshake, generate_ephemeral_keypair, initialize_handshake_id,
+    mix_hash_routed_handshake, require_handshake_id, EncryptedMlKemCiphertext, EncryptedPeerBundle,
+    EphemeralKeyPair, EphemeralPublicKey, FinalizedHandshake, Role, RouteHeader, SymmetricState,
+    TransportParams, PROTOCOL_IK, PROTOCOL_KK,
 };
 use crate::{
-    Error, HandshakeKind, HandshakeMeta, MlKemCiphertext, PeerBundle, QlCrypto, QlIdentity,
+    Error, HandshakeId, HandshakeKind, MlKemCiphertext, MlKemPublicKey, PeerBundle, QlCrypto,
+    QlIdentity,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ik1 {
-    pub meta: HandshakeMeta,
+    pub handshake_id: HandshakeId,
     pub transport_params: TransportParams,
     pub skem_ciphertext: MlKemCiphertext,
     pub ephemeral: EphemeralPublicKey,
-    pub static_bundle: EncryptedPeerBundle,
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for Ik1 {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self {
-            meta: reader.decode()?,
-            transport_params: reader.decode()?,
-            skem_ciphertext: reader.decode()?,
-            ephemeral: reader.decode()?,
-            static_bundle: reader.decode()?,
-        })
-    }
+    pub static_bundle: Option<EncryptedPeerBundle>,
 }
 
 impl Encode for Ik1 {
     fn encoded_len(&self) -> usize {
-        HandshakeMeta::WIRE_SIZE
+        HandshakeId::WIRE_SIZE
             + TransportParams::WIRE_SIZE
             + MlKemCiphertext::SIZE
             + EphemeralPublicKey::WIRE_SIZE
-            + self.static_bundle.encoded_len()
+            + self
+                .static_bundle
+                .as_ref()
+                .map_or(0, EncryptedPeerBundle::encoded_len)
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.meta.encode(out);
+        self.handshake_id.encode(out);
         self.transport_params.encode(out);
         self.skem_ciphertext.encode(out);
         self.ephemeral.encode(out);
-        self.static_bundle.encode(out);
+        if let Some(static_bundle) = self.static_bundle.as_ref() {
+            static_bundle.encode(out);
+        }
+    }
+}
+
+impl<B: ByteSlice> ql_codec::Decode<B> for Ik1 {
+    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
+        let handshake_id = reader.decode()?;
+        let transport_params = reader.decode()?;
+        let skem_ciphertext = reader.decode()?;
+        let ephemeral = reader.decode()?;
+        let static_bundle = if reader.is_empty() {
+            None
+        } else {
+            Some(reader.decode()?)
+        };
+        Ok(Self {
+            handshake_id,
+            transport_params,
+            skem_ciphertext,
+            ephemeral,
+            static_bundle,
+        })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ik2 {
-    pub meta: HandshakeMeta,
+    pub handshake_id: HandshakeId,
     pub transport_params: TransportParams,
     pub ekem_ciphertext: MlKemCiphertext,
     pub skem_ciphertext: EncryptedMlKemCiphertext,
 }
 
+impl Encode for Ik2 {
+    fn encoded_len(&self) -> usize {
+        HandshakeId::WIRE_SIZE
+            + TransportParams::WIRE_SIZE
+            + MlKemCiphertext::SIZE
+            + EncryptedMlKemCiphertext::WIRE_SIZE
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.handshake_id.encode(out);
+        self.transport_params.encode(out);
+        self.ekem_ciphertext.encode(out);
+        self.skem_ciphertext.encode(out);
+    }
+}
+
 impl<B: ByteSlice> ql_codec::Decode<B> for Ik2 {
     fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         Ok(Self {
-            meta: reader.decode()?,
+            handshake_id: reader.decode()?,
             transport_params: reader.decode()?,
             ekem_ciphertext: reader.decode()?,
             skem_ciphertext: reader.decode()?,
@@ -69,24 +100,8 @@ impl<B: ByteSlice> ql_codec::Decode<B> for Ik2 {
     }
 }
 
-impl Encode for Ik2 {
-    fn encoded_len(&self) -> usize {
-        HandshakeMeta::WIRE_SIZE
-            + TransportParams::WIRE_SIZE
-            + MlKemCiphertext::SIZE
-            + EncryptedMlKemCiphertext::WIRE_SIZE
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.meta.encode(out);
-        self.transport_params.encode(out);
-        self.ekem_ciphertext.encode(out);
-        self.skem_ciphertext.encode(out);
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IkStep {
+enum Step {
     Send1,
     Recv1,
     Send2,
@@ -94,107 +109,172 @@ enum IkStep {
     Done,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IkPattern {
+    Ik,
+    Kk,
+}
+
 #[derive(Debug, Clone)]
 pub struct IkHandshake {
+    pattern: IkPattern,
     role: Role,
-    step: IkStep,
+    step: Step,
     symmetric: SymmetricState,
     local: QlIdentity,
     remote_bundle: Option<PeerBundle>,
     local_ephemeral: Option<EphemeralKeyPair>,
     remote_ephemeral: Option<EphemeralPublicKey>,
-    handshake_meta: Option<HandshakeMeta>,
+    handshake_id: Option<HandshakeId>,
     local_transport_params: TransportParams,
     remote_transport_params: Option<TransportParams>,
 }
 
 impl IkHandshake {
-    pub fn new_initiator(
+    pub fn pattern(&self) -> IkPattern {
+        self.pattern
+    }
+
+    pub fn handshake_id(&self) -> Option<HandshakeId> {
+        self.handshake_id
+    }
+
+    pub fn local_ephemeral(&self) -> Option<&MlKemPublicKey> {
+        self.local_ephemeral
+            .as_ref()
+            .map(|keypair| &keypair.mlkem.public)
+    }
+
+    pub fn new_ik_initiator(
         crypto: &impl QlCrypto,
         local: QlIdentity,
         remote_bundle: PeerBundle,
         local_transport_params: TransportParams,
     ) -> Self {
-        let symmetric = init_ik_symmetric(crypto, &remote_bundle);
-        Self {
-            role: Role::Initiator,
-            step: IkStep::Send1,
+        let mut symmetric = SymmetricState::new(crypto, PROTOCOL_IK);
+        symmetric.mix_hash(crypto, &remote_bundle.encode_vec());
+        Self::new(
+            IkPattern::Ik,
+            Role::Initiator,
             symmetric,
             local,
-            remote_bundle: Some(remote_bundle),
-            local_ephemeral: None,
-            remote_ephemeral: None,
-            handshake_meta: None,
+            Some(remote_bundle),
             local_transport_params,
-            remote_transport_params: None,
-        }
+        )
     }
 
-    pub fn new_responder(
+    pub fn new_ik_responder(
         crypto: &impl QlCrypto,
         local: QlIdentity,
         expected_remote: Option<PeerBundle>,
         local_transport_params: TransportParams,
     ) -> Self {
-        let symmetric = init_ik_symmetric(crypto, &local.bundle());
-        Self {
-            role: Role::Responder,
-            step: IkStep::Recv1,
+        let mut symmetric = SymmetricState::new(crypto, PROTOCOL_IK);
+        symmetric.mix_hash(crypto, &local.bundle().encode_vec());
+        Self::new(
+            IkPattern::Ik,
+            Role::Responder,
             symmetric,
             local,
-            remote_bundle: expected_remote,
+            expected_remote,
+            local_transport_params,
+        )
+    }
+
+    pub fn new_kk_initiator(
+        crypto: &impl QlCrypto,
+        local: QlIdentity,
+        remote_bundle: PeerBundle,
+        local_transport_params: TransportParams,
+    ) -> Self {
+        let mut symmetric = SymmetricState::new(crypto, PROTOCOL_KK);
+        symmetric.mix_hash(crypto, &local.bundle().encode_vec());
+        symmetric.mix_hash(crypto, &remote_bundle.encode_vec());
+        Self::new(
+            IkPattern::Kk,
+            Role::Initiator,
+            symmetric,
+            local,
+            Some(remote_bundle),
+            local_transport_params,
+        )
+    }
+
+    pub fn new_kk_responder(
+        crypto: &impl QlCrypto,
+        local: QlIdentity,
+        remote_bundle: PeerBundle,
+        local_transport_params: TransportParams,
+    ) -> Self {
+        let mut symmetric = SymmetricState::new(crypto, PROTOCOL_KK);
+        symmetric.mix_hash(crypto, &remote_bundle.encode_vec());
+        symmetric.mix_hash(crypto, &local.bundle().encode_vec());
+        Self::new(
+            IkPattern::Kk,
+            Role::Responder,
+            symmetric,
+            local,
+            Some(remote_bundle),
+            local_transport_params,
+        )
+    }
+
+    fn new(
+        pattern: IkPattern,
+        role: Role,
+        symmetric: SymmetricState,
+        local: QlIdentity,
+        remote_bundle: Option<PeerBundle>,
+        local_transport_params: TransportParams,
+    ) -> Self {
+        Self {
+            pattern,
+            role,
+            step: match role {
+                Role::Initiator => Step::Send1,
+                Role::Responder => Step::Recv1,
+            },
+            symmetric,
+            local,
+            remote_bundle,
             local_ephemeral: None,
             remote_ephemeral: None,
-            handshake_meta: None,
+            handshake_id: None,
             local_transport_params,
             remote_transport_params: None,
         }
     }
 
     pub fn is_finished(&self) -> bool {
-        self.step == IkStep::Done
+        self.step == Step::Done
     }
 
-    fn outbound_header(&self) -> Result<RouteHeader, Error> {
-        let remote_bundle = self.remote_bundle.as_ref().ok_or(Error::InvalidState)?;
-        Ok(RouteHeader {
-            sender: self.local.qid,
-            recipient: remote_bundle.qid,
-        })
-    }
-
-    fn ensure_inbound_recipient(&self, header: RouteHeader) -> Result<(), Error> {
-        if header.recipient == self.local.qid {
-            Ok(())
-        } else {
-            Err(Error::InvalidRouteHeader)
-        }
-    }
-
-    fn ensure_known_remote_sender(&self, header: RouteHeader) -> Result<(), Error> {
-        if let Some(remote_bundle) = self.remote_bundle.as_ref() {
-            if header.sender != remote_bundle.qid {
-                return Err(Error::InvalidRouteHeader);
-            }
-        }
-        Ok(())
-    }
-
-    pub fn write_1(&mut self, crypto: &impl QlCrypto, meta: HandshakeMeta) -> Result<Ik1, Error> {
-        if self.step != IkStep::Send1 {
+    pub fn write_1(
+        &mut self,
+        crypto: &impl QlCrypto,
+        handshake_id: HandshakeId,
+    ) -> Result<Ik1, Error> {
+        if self.step != Step::Send1 {
             return Err(Error::InvalidState);
         }
-        initialize_handshake_meta(&mut self.handshake_meta, meta)?;
+        initialize_handshake_id(&mut self.handshake_id, handshake_id)?;
         let remote_bundle = self.remote_bundle.as_ref().ok_or(Error::InvalidState)?;
-        let header = self.outbound_header()?;
+        let header = RouteHeader {
+            sender: self.local.qid,
+            recipient: remote_bundle.qid,
+        };
         mix_hash_routed_handshake(
             &mut self.symmetric,
             crypto,
             header,
-            HandshakeKind::Ik1,
-            meta,
+            match self.pattern {
+                IkPattern::Ik => HandshakeKind::Ik1,
+                IkPattern::Kk => HandshakeKind::Kk1,
+            },
+            handshake_id,
             self.local_transport_params,
         );
+
         let (skem_ciphertext, skem_secret) =
             crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
         self.symmetric.mix_hash(crypto, skem_ciphertext.as_bytes());
@@ -202,56 +282,26 @@ impl IkHandshake {
             .mix_key_and_hash(crypto, skem_secret.as_bytes());
 
         let local_ephemeral = generate_ephemeral_keypair(crypto);
-        let public = local_ephemeral.public();
-        mix_hash_ephemeral(&mut self.symmetric, crypto, &public);
+        let ephemeral = local_ephemeral.public();
+        self.symmetric.mix_hash_ephemeral(crypto, &ephemeral);
 
-        let static_bundle = encrypt_peer_bundle(crypto, &mut self.symmetric, &self.local.bundle())?;
+        let static_bundle = match self.pattern {
+            IkPattern::Ik => Some(encrypt_peer_bundle(
+                crypto,
+                &mut self.symmetric,
+                &self.local.bundle(),
+            )?),
+            IkPattern::Kk => None,
+        };
 
         self.local_ephemeral = Some(local_ephemeral);
-        self.step = IkStep::Recv2;
+        self.step = Step::Recv2;
         Ok(Ik1 {
-            meta,
+            handshake_id,
             transport_params: self.local_transport_params,
             skem_ciphertext,
-            ephemeral: public,
+            ephemeral,
             static_bundle,
-        })
-    }
-
-    pub fn write_2(&mut self, crypto: &impl QlCrypto, meta: HandshakeMeta) -> Result<Ik2, Error> {
-        if self.step != IkStep::Send2 {
-            return Err(Error::InvalidState);
-        }
-        require_handshake_meta(self.handshake_meta.as_ref(), meta)?;
-        let header = self.outbound_header()?;
-        mix_hash_routed_handshake(
-            &mut self.symmetric,
-            crypto,
-            header,
-            HandshakeKind::Ik2,
-            meta,
-            self.local_transport_params,
-        );
-        let remote_ephemeral = self.remote_ephemeral.clone().ok_or(Error::InvalidState)?;
-        let (ekem_ciphertext, ekem_secret) =
-            crypto.mlkem_encapsulate(&remote_ephemeral.mlkem_public_key);
-        self.symmetric.mix_hash(crypto, ekem_ciphertext.as_bytes());
-        self.symmetric.mix_key(crypto, ekem_secret.as_bytes());
-
-        let remote_bundle = self.remote_bundle.as_ref().ok_or(Error::InvalidState)?;
-        let (skem_ciphertext, skem_secret) =
-            crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
-        let skem_ciphertext =
-            encrypt_mlkem_ciphertext(crypto, &mut self.symmetric, &skem_ciphertext)?;
-        self.symmetric
-            .mix_key_and_hash(crypto, skem_secret.as_bytes());
-
-        self.step = IkStep::Done;
-        Ok(Ik2 {
-            meta,
-            transport_params: self.local_transport_params,
-            ekem_ciphertext,
-            skem_ciphertext,
         })
     }
 
@@ -261,18 +311,20 @@ impl IkHandshake {
         header: RouteHeader,
         message: &Ik1,
     ) -> Result<(), Error> {
-        if self.step != IkStep::Recv1 {
+        if self.step != Step::Recv1 {
             return Err(Error::InvalidState);
         }
-        initialize_handshake_meta(&mut self.handshake_meta, message.meta)?;
-        self.ensure_inbound_recipient(header)?;
-        self.ensure_known_remote_sender(header)?;
+        initialize_handshake_id(&mut self.handshake_id, message.handshake_id)?;
+        self.ensure_inbound_header(header)?;
         mix_hash_routed_handshake(
             &mut self.symmetric,
             crypto,
             header,
-            HandshakeKind::Ik1,
-            message.meta,
+            match self.pattern {
+                IkPattern::Ik => HandshakeKind::Ik1,
+                IkPattern::Kk => HandshakeKind::Kk1,
+            },
+            message.handshake_id,
             message.transport_params,
         );
         self.symmetric
@@ -282,24 +334,80 @@ impl IkHandshake {
         self.symmetric
             .mix_key_and_hash(crypto, skem_secret.as_bytes());
 
-        mix_hash_ephemeral(&mut self.symmetric, crypto, &message.ephemeral);
+        self.symmetric
+            .mix_hash_ephemeral(crypto, &message.ephemeral);
         self.remote_ephemeral = Some(message.ephemeral.clone());
 
-        let remote_bundle =
-            decrypt_peer_bundle(crypto, &mut self.symmetric, &message.static_bundle)?;
-        if remote_bundle.qid != header.sender {
-            return Err(Error::InvalidRemoteBundle);
-        }
-        match self.remote_bundle.as_ref() {
-            Some(expected) if expected != &remote_bundle => {
-                return Err(Error::InvalidRemoteBundle);
+        match (self.pattern, message.static_bundle.as_ref()) {
+            (IkPattern::Ik, Some(static_bundle)) => {
+                let remote_bundle =
+                    decrypt_peer_bundle(crypto, &mut self.symmetric, static_bundle)?;
+                if remote_bundle.qid != header.sender {
+                    return Err(Error::InvalidRemoteBundle);
+                }
+                match self.remote_bundle.as_ref() {
+                    Some(expected) if expected != &remote_bundle => {
+                        return Err(Error::InvalidRemoteBundle);
+                    }
+                    Some(_) => {}
+                    None => self.remote_bundle = Some(remote_bundle),
+                }
             }
-            Some(_) => {}
-            None => self.remote_bundle = Some(remote_bundle),
+            (IkPattern::Kk, None) => {}
+            _ => return Err(Error::InvalidState),
         }
+
         self.remote_transport_params = Some(message.transport_params);
-        self.step = IkStep::Send2;
+        self.step = Step::Send2;
         Ok(())
+    }
+
+    pub fn write_2(
+        &mut self,
+        crypto: &impl QlCrypto,
+        handshake_id: HandshakeId,
+    ) -> Result<Ik2, Error> {
+        if self.step != Step::Send2 {
+            return Err(Error::InvalidState);
+        }
+        require_handshake_id(self.handshake_id.as_ref(), handshake_id)?;
+        let remote_bundle = self.remote_bundle.as_ref().ok_or(Error::InvalidState)?;
+        let header = RouteHeader {
+            sender: self.local.qid,
+            recipient: remote_bundle.qid,
+        };
+        mix_hash_routed_handshake(
+            &mut self.symmetric,
+            crypto,
+            header,
+            match self.pattern {
+                IkPattern::Ik => HandshakeKind::Ik2,
+                IkPattern::Kk => HandshakeKind::Kk2,
+            },
+            handshake_id,
+            self.local_transport_params,
+        );
+
+        let remote_ephemeral = self.remote_ephemeral.as_ref().ok_or(Error::InvalidState)?;
+        let (ekem_ciphertext, ekem_secret) =
+            crypto.mlkem_encapsulate(&remote_ephemeral.mlkem_public_key);
+        self.symmetric.mix_hash(crypto, ekem_ciphertext.as_bytes());
+        self.symmetric.mix_key(crypto, ekem_secret.as_bytes());
+
+        let (skem_ciphertext, skem_secret) =
+            crypto.mlkem_encapsulate(&remote_bundle.mlkem_public_key);
+        let skem_ciphertext =
+            encrypt_mlkem_ciphertext(crypto, &mut self.symmetric, &skem_ciphertext)?;
+        self.symmetric
+            .mix_key_and_hash(crypto, skem_secret.as_bytes());
+
+        self.step = Step::Done;
+        Ok(Ik2 {
+            handshake_id,
+            transport_params: self.local_transport_params,
+            ekem_ciphertext,
+            skem_ciphertext,
+        })
     }
 
     pub fn read_2(
@@ -308,20 +416,23 @@ impl IkHandshake {
         header: RouteHeader,
         message: &Ik2,
     ) -> Result<(), Error> {
-        if self.step != IkStep::Recv2 {
+        if self.step != Step::Recv2 {
             return Err(Error::InvalidState);
         }
-        require_handshake_meta(self.handshake_meta.as_ref(), message.meta)?;
-        self.ensure_inbound_recipient(header)?;
-        self.ensure_known_remote_sender(header)?;
+        require_handshake_id(self.handshake_id.as_ref(), message.handshake_id)?;
+        self.ensure_inbound_header(header)?;
         mix_hash_routed_handshake(
             &mut self.symmetric,
             crypto,
             header,
-            HandshakeKind::Ik2,
-            message.meta,
+            match self.pattern {
+                IkPattern::Ik => HandshakeKind::Ik2,
+                IkPattern::Kk => HandshakeKind::Kk2,
+            },
+            message.handshake_id,
             message.transport_params,
         );
+
         let local_ephemeral = self.local_ephemeral.as_ref().ok_or(Error::InvalidState)?;
         self.symmetric
             .mix_hash(crypto, message.ekem_ciphertext.as_bytes());
@@ -336,7 +447,7 @@ impl IkHandshake {
             .mix_key_and_hash(crypto, skem_secret.as_bytes());
 
         self.remote_transport_params = Some(message.transport_params);
-        self.step = IkStep::Done;
+        self.step = Step::Done;
         Ok(())
     }
 
@@ -353,5 +464,17 @@ impl IkHandshake {
             remote_bundle,
             remote_transport_params,
         ))
+    }
+
+    fn ensure_inbound_header(&self, header: RouteHeader) -> Result<(), Error> {
+        if header.recipient != self.local.qid {
+            return Err(Error::InvalidRouteHeader);
+        }
+        if let Some(remote_bundle) = self.remote_bundle.as_ref() {
+            if header.sender != remote_bundle.qid {
+                return Err(Error::InvalidRouteHeader);
+            }
+        }
+        Ok(())
     }
 }

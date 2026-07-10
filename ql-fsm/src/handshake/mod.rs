@@ -1,11 +1,10 @@
 mod ik;
-mod kk;
 mod xx;
 
 use ql_common::QID;
 use ql_wire::{
-    self as wire, EphemeralPublicKey, HandshakeId, HandshakeMeta, QlCrypto, QlHandshakeRecord,
-    RouteHeader,
+    self as wire, EphemeralPublicKey, HandshakeId, IkPattern, MlKemPublicKey, QlCrypto,
+    QlHandshakeRecord, RouteHeader,
 };
 
 use crate::{
@@ -18,14 +17,14 @@ use crate::{
 pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
     let peer = fsm.state.peer.clone().ok_or(NoPeerError)?;
     prepare_for_outbound_connect(fsm);
-    ik::start_initiator(fsm, crypto, peer);
+    ik::start_initiator(fsm, crypto, peer, IkPattern::Ik);
     Ok(())
 }
 
 pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
     let peer = fsm.state.peer.clone().ok_or(NoPeerError)?;
     prepare_for_outbound_connect(fsm);
-    kk::start_initiator(fsm, crypto, peer);
+    ik::start_initiator(fsm, crypto, peer, IkPattern::Kk);
     Ok(())
 }
 
@@ -34,10 +33,10 @@ pub fn handle_connect_xx(fsm: &mut QlFsm, invite: crate::PairingInvite, crypto: 
     xx::start_initiator(fsm, crypto, invite.token, invite.qid);
 }
 
-pub fn next_handshake_meta(fsm: &mut QlFsm) -> HandshakeMeta {
+pub fn next_handshake_id(fsm: &mut QlFsm) -> HandshakeId {
     let handshake_id = wire::HandshakeId(fsm.state.next_control_id);
     fsm.state.next_control_id = fsm.state.next_control_id.wrapping_add(1);
-    HandshakeMeta { handshake_id }
+    handshake_id
 }
 
 pub fn enqueue_handshake(fsm: &mut QlFsm, route: RouteHeader, record: QlHandshakeRecord) {
@@ -67,10 +66,10 @@ pub fn handle_handshake_record(
     record: &QlHandshakeRecord,
 ) -> Result<(), ReceiveError> {
     match record {
-        QlHandshakeRecord::Ik1(message) => ik::handle_ik1(fsm, crypto, route, message),
-        QlHandshakeRecord::Ik2(message) => ik::handle_ik2(fsm, crypto, route, message),
-        QlHandshakeRecord::Kk1(message) => kk::handle_kk1(fsm, crypto, route, message),
-        QlHandshakeRecord::Kk2(message) => kk::handle_kk2(fsm, crypto, route, message),
+        QlHandshakeRecord::Ik1(message) => ik::handle_1(fsm, crypto, route, message, IkPattern::Ik),
+        QlHandshakeRecord::Ik2(message) => ik::handle_2(fsm, crypto, route, message, IkPattern::Ik),
+        QlHandshakeRecord::Kk1(message) => ik::handle_1(fsm, crypto, route, message, IkPattern::Kk),
+        QlHandshakeRecord::Kk2(message) => ik::handle_2(fsm, crypto, route, message, IkPattern::Kk),
         QlHandshakeRecord::Xx1(message) => xx::handle_xx1(fsm, crypto, route, message),
         QlHandshakeRecord::Xx2(message) => xx::handle_xx2(fsm, crypto, route, message),
         QlHandshakeRecord::Xx3(message) => xx::handle_xx3(fsm, crypto, route, message),
@@ -159,8 +158,8 @@ pub fn reset_connected_session_if_needed(fsm: &mut QlFsm) {
     }
 }
 
-fn local_start_wins(local: &EphemeralPublicKey, inbound: &EphemeralPublicKey) -> bool {
-    local.mlkem_public_key.as_bytes() <= inbound.mlkem_public_key.as_bytes()
+fn local_start_wins(local: &MlKemPublicKey, inbound: &EphemeralPublicKey) -> bool {
+    local.as_bytes() <= inbound.mlkem_public_key.as_bytes()
 }
 
 fn is_connected_replay(fsm: &QlFsm, handshake_id: HandshakeId, sender: QID) -> bool {

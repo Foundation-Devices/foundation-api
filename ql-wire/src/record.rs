@@ -2,7 +2,7 @@ use ql_codec::{ByteSlice, Decode, Encode};
 
 use crate::{
     encrypted_message::EncryptedMessage,
-    handshake::{Ik1, Ik2, Kk1, Kk2, Xx1, Xx2, Xx3, Xx4},
+    handshake::{Ik1, Ik2, Xx1, Xx2, Xx3, Xx4},
     Error, RouteHeader, SessionHeader, QL_WIRE_VERSION,
 };
 
@@ -110,8 +110,8 @@ impl Encode for RecordType {
 pub enum QlHandshakeRecord {
     Ik1(Ik1),
     Ik2(Ik2),
-    Kk1(Kk1),
-    Kk2(Kk2),
+    Kk1(Ik1),
+    Kk2(Ik2),
     Xx1(Xx1),
     Xx2(Xx2),
     Xx3(Xx3),

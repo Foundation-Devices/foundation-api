@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ql_wire::QlHandshakeRecord;
+use ql_wire::{IkPattern, QlHandshakeRecord};
 
 use super::*;
 use crate::{state::LinkState, Event, NoPeerError, PeerStatus, ReceiveError};
@@ -255,7 +255,7 @@ fn connect_kk_replaces_in_flight_attempt_and_ignores_stale_reply() {
     harness.deliver(Side::A, stale_reply);
     assert!(matches!(
         harness.a.fsm.state.link,
-        LinkState::KkInitiator(_)
+        LinkState::IkInitiator(ref state) if state.handshake.pattern() == IkPattern::Kk
     ));
 
     harness.deliver(Side::B, second);
@@ -370,13 +370,13 @@ fn simultaneous_ik_and_kk_connect_prefers_ik() {
 fn handshake_id(record: &[u8]) -> ql_wire::HandshakeId {
     let (_, record) = ql_wire::decode_record(record).unwrap();
     match record {
-        ql_wire::QlHandshakeRecord::Ik1(message) => message.meta.handshake_id,
-        ql_wire::QlHandshakeRecord::Ik2(message) => message.meta.handshake_id,
-        ql_wire::QlHandshakeRecord::Kk1(message) => message.meta.handshake_id,
-        ql_wire::QlHandshakeRecord::Kk2(message) => message.meta.handshake_id,
-        ql_wire::QlHandshakeRecord::Xx1(message) => message.meta.handshake_id,
-        ql_wire::QlHandshakeRecord::Xx2(message) => message.meta.handshake_id,
-        ql_wire::QlHandshakeRecord::Xx3(message) => message.meta.handshake_id,
-        ql_wire::QlHandshakeRecord::Xx4(message) => message.meta.handshake_id,
+        ql_wire::QlHandshakeRecord::Ik1(message) => message.handshake_id,
+        ql_wire::QlHandshakeRecord::Ik2(message) => message.handshake_id,
+        ql_wire::QlHandshakeRecord::Kk1(message) => message.handshake_id,
+        ql_wire::QlHandshakeRecord::Kk2(message) => message.handshake_id,
+        ql_wire::QlHandshakeRecord::Xx1(message) => message.handshake_id,
+        ql_wire::QlHandshakeRecord::Xx2(message) => message.handshake_id,
+        ql_wire::QlHandshakeRecord::Xx3(message) => message.handshake_id,
+        ql_wire::QlHandshakeRecord::Xx4(message) => message.handshake_id,
     }
 }

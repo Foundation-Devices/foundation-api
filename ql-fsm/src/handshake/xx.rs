@@ -17,7 +17,7 @@ pub fn start_initiator(
     token: PairingToken,
     remote_qid: QID,
 ) {
-    let meta = super::next_handshake_meta(fsm);
+    let handshake_id = super::next_handshake_id(fsm);
     let route = RouteHeader {
         sender: fsm.identity.qid,
         recipient: remote_qid,
@@ -29,11 +29,9 @@ pub fn start_initiator(
         token,
         super::local_transport_params(fsm),
     );
-    let message = handshake.write_1(crypto, meta).unwrap();
+    let message = handshake.write_1(crypto, handshake_id).unwrap();
 
     fsm.state.link = LinkState::XxInitiator(InitiatorState {
-        handshake_id: meta.handshake_id,
-        initial_ephemeral: message.ephemeral.clone(),
         handshake,
         deadline: fsm.state.now + fsm.config.handshake_timeout,
     });
@@ -68,11 +66,10 @@ pub fn handle_xx1(
                 .read_1(crypto, route, message)
                 .map_err(wire_error)?;
             let outbound = handshake
-                .write_2(crypto, message.meta)
+                .write_2(crypto, message.handshake_id)
                 .map_err(wire_error)?;
             fsm.state.link = LinkState::XxResponder(XxResponderState {
                 handshake,
-                handshake_meta: message.meta,
                 deadline: fsm.state.now + fsm.config.handshake_timeout,
             });
             fsm.state.handshake = None;
@@ -101,7 +98,7 @@ pub fn handle_xx2(
             return Ok(());
         };
 
-        if message.meta.handshake_id != state.handshake_id {
+        if state.handshake.handshake_id() != Some(message.handshake_id) {
             return Ok(());
         }
 
@@ -111,7 +108,7 @@ pub fn handle_xx2(
             .map_err(wire_error)?;
         let outbound = state
             .handshake
-            .write_3(crypto, message.meta)
+            .write_3(crypto, message.handshake_id)
             .map_err(wire_error)?;
         fsm.state.handshake = None;
         enqueue_handshake(
@@ -137,7 +134,7 @@ pub fn handle_xx3(
         return Ok(());
     };
 
-    if message.meta.handshake_id != state.handshake_meta.handshake_id {
+    if state.handshake.handshake_id() != Some(message.handshake_id) {
         return Ok(());
     }
 
@@ -145,13 +142,12 @@ pub fn handle_xx3(
         .handshake
         .read_3(crypto, route, message)
         .map_err(wire_error)?;
-    let handshake_meta = state.handshake_meta;
     let LinkState::XxResponder(mut state) = fsm.state.link.take() else {
         unreachable!("active XX responder was checked above");
     };
     let outbound = state
         .handshake
-        .write_4(crypto, handshake_meta)
+        .write_4(crypto, message.handshake_id)
         .map_err(wire_error)?;
     fsm.state.handshake = None;
     enqueue_handshake(
@@ -164,7 +160,7 @@ pub fn handle_xx3(
     );
     establish_session(
         fsm,
-        message.meta.handshake_id,
+        message.handshake_id,
         state.handshake.finalize(crypto).map_err(wire_error)?,
     )
 }
@@ -180,7 +176,7 @@ pub fn handle_xx4(
             return Ok(());
         };
 
-        if message.meta.handshake_id != state.handshake_id {
+        if state.handshake.handshake_id() != Some(message.handshake_id) {
             return Ok(());
         }
 
@@ -195,7 +191,7 @@ pub fn handle_xx4(
     };
     establish_session(
         fsm,
-        message.meta.handshake_id,
+        message.handshake_id,
         state.handshake.finalize(crypto).map_err(wire_error)?,
     )
 }
@@ -216,9 +212,9 @@ pub fn should_ignore_inbound(
     match &fsm.state.link {
         LinkState::Idle => false,
         LinkState::Connected(_) => {
-            super::is_connected_replay(fsm, message.meta.handshake_id, route.sender)
+            super::is_connected_replay(fsm, message.handshake_id, route.sender)
         }
-        LinkState::IkInitiator(_) | LinkState::KkInitiator(_) | LinkState::XxResponder(_) => true,
+        LinkState::IkInitiator(_) | LinkState::XxResponder(_) => true,
         LinkState::XxInitiator(state) => {
             if state.handshake.pairing_id(crypto) != message.pairing_id {
                 return false;
@@ -226,7 +222,13 @@ pub fn should_ignore_inbound(
             if route.sender != state.handshake.remote_qid() {
                 return false;
             }
-            super::local_start_wins(&state.initial_ephemeral, &message.ephemeral)
+            super::local_start_wins(
+                state
+                    .handshake
+                    .local_ephemeral()
+                    .expect("initiator has sent message 1"),
+                &message.ephemeral,
+            )
         }
     }
 }
