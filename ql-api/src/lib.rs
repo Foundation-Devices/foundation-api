@@ -11,12 +11,12 @@ pub mod fx;
 pub mod key;
 pub mod onboarding;
 pub mod scv;
-pub mod settings;
+pub mod system;
 pub mod time;
 
 pub use self::{
     app_store::*, backup::*, bitcoin::*, codec::Empty, debug::*, firmware::*, fx::*, key::*,
-    onboarding::*, scv::*, settings::*, time::*,
+    onboarding::*, scv::*, system::*, time::*,
 };
 
 pub type Error = ciborium::de::Error<std::io::Error>;

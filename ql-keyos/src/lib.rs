@@ -1,5 +1,7 @@
 //! KeyOS addressing primitives for QuantumLink
 
+use ql_codec::{ByteSlice, Decode, Encode, Reader};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(transparent)]
@@ -33,75 +35,30 @@ impl AppId {
     }
 }
 
-// TODO: version
+impl Encode for AppId {
+    fn encoded_len(&self) -> usize {
+        Self::SIZE
+    }
+
+    fn encode<W: bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        self.0.encode(out);
+    }
+}
+
+impl<B: ByteSlice> Decode<B> for AppId {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, ql_codec::Error> {
+        Ok(Self(reader.decode()?))
+    }
+}
+
+// todo: version
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PeerMetadata {
+pub struct PeerPermissions {
     /// KeyOS app ids this peer is allowed to open streams toward
     pub app_ids: Vec<AppId>,
     /// Service ids this peer advertises for KeyOS-opened streams
     pub service_ids: Vec<ServiceId>,
-}
-
-impl PeerMetadata {
-    pub fn write_bytes(&self, out: &mut Vec<u8>) {
-        fn len_u64(len: usize) -> u64 {
-            len.try_into().expect("metadata length exceeds u64")
-        }
-
-        out.extend_from_slice(&len_u64(self.app_ids.len()).to_be_bytes());
-        for app_id in &self.app_ids {
-            out.extend_from_slice(&app_id.0);
-        }
-
-        out.extend_from_slice(&len_u64(self.service_ids.len()).to_be_bytes());
-        for service_id in &self.service_ids {
-            out.extend_from_slice(&service_id.0.to_be_bytes());
-        }
-    }
-
-    pub fn from_bytes(mut bytes: &[u8]) -> Option<Self> {
-        fn read_len(bytes: &mut &[u8]) -> Option<usize> {
-            read_u64(bytes)?.try_into().ok()
-        }
-        fn read_u64(bytes: &mut &[u8]) -> Option<u64> {
-            let value = u64::from_be_bytes(bytes.get(..8)?.try_into().ok()?);
-            *bytes = &bytes[8..];
-            Some(value)
-        }
-
-        let app_count = read_len(&mut bytes)?;
-        let app_bytes_len = app_count.checked_mul(AppId::SIZE)?;
-        if app_bytes_len > bytes.len() {
-            return None;
-        }
-        let mut app_ids = Vec::with_capacity(app_count);
-        for _ in 0..app_count {
-            let app_id = AppId(bytes.get(..AppId::SIZE)?.try_into().ok()?);
-            bytes = &bytes[AppId::SIZE..];
-            app_ids.push(app_id);
-        }
-
-        let service_count = read_len(&mut bytes)?;
-        if service_count > bytes.len() {
-            return None;
-        }
-        let mut service_ids = Vec::with_capacity(service_count);
-        for _ in 0..service_count {
-            service_ids.push(ServiceId(read_u64(&mut bytes)?));
-        }
-
-        bytes.is_empty().then_some(Self {
-            app_ids,
-            service_ids,
-        })
-    }
-
-    pub fn to_vec(&self) -> Vec<u8> {
-        let mut bytes = Vec::default();
-        self.write_bytes(&mut bytes);
-        bytes
-    }
 }
 
 macro_rules! wrapper {
@@ -130,6 +87,9 @@ wrapper!(
     ServiceId,
     u64
 );
+
+ql_codec::varint_wrapper!(RouteId, u32);
+ql_codec::varint_wrapper!(ServiceId, u64);
 
 pub trait ServiceTargetKey {
     fn service_id(&self) -> ServiceId;
