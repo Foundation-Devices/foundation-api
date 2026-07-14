@@ -37,7 +37,7 @@ app_routes! {
         RequestPassportFiatPreference: Request = 3,
         SubscribePassportFiatPreference: Subscription = 4,
         SubscribeAppActivity: Subscription = 5,
-        RequestUpdatePeerPermissions: Request = 6,
+        RequestPeerPermissions: Request = 6,
     }
 }
 
@@ -102,20 +102,20 @@ impl Subscription for SubscribeAppActivity {
 }
 
 rpc! {
-    pub struct UpdatePeerPermissionsParams(pub PeerPermissions);
+    pub struct PeerPermissionsParams(pub PeerPermissions);
 }
 
 rpc! {
-    pub enum UpdatePeerPermissionsResponse {
+    pub enum PeerPermissionsResponse {
         Updated,
         Denied,
     }
 }
 
-impl Request for RequestUpdatePeerPermissions {
+impl Request for RequestPeerPermissions {
     type Error = Error;
-    type Request = UpdatePeerPermissionsParams;
-    type Response = UpdatePeerPermissionsResponse;
+    type Request = PeerPermissionsParams;
+    type Response = PeerPermissionsResponse;
 }
 
 // SERVICE ROUTES
