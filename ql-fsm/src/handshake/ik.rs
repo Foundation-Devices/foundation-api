@@ -74,13 +74,13 @@ pub fn handle_1(
     let mut handshake = match (pattern, peer) {
         (IkPattern::Ik, expected_remote) => wire::IkHandshake::new_ik_responder(
             crypto,
-            fsm.identity.clone(),
+            &fsm.identity,
             expected_remote,
             super::local_transport_params(fsm),
         ),
         (IkPattern::Kk, Some(remote_bundle)) => wire::IkHandshake::new_kk_responder(
             crypto,
-            fsm.identity.clone(),
+            &fsm.identity,
             remote_bundle,
             super::local_transport_params(fsm),
         ),

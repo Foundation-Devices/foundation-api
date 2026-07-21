@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use ql_codec::{ByteSlice, Encode};
 
 use super::{
@@ -116,12 +118,12 @@ pub enum IkPattern {
 }
 
 #[derive(Debug, Clone)]
-pub struct IkHandshake {
+pub struct IkHandshake<I = QlIdentity> {
     pattern: IkPattern,
     role: Role,
     step: Step,
     symmetric: SymmetricState,
-    local: QlIdentity,
+    local: I,
     remote_bundle: Option<PeerBundle>,
     local_ephemeral: Option<EphemeralKeyPair>,
     remote_ephemeral: Option<EphemeralPublicKey>,
@@ -130,7 +132,7 @@ pub struct IkHandshake {
     remote_transport_params: Option<TransportParams>,
 }
 
-impl IkHandshake {
+impl<I: Borrow<QlIdentity>> IkHandshake<I> {
     pub fn pattern(&self) -> IkPattern {
         self.pattern
     }
@@ -147,7 +149,7 @@ impl IkHandshake {
 
     pub fn new_ik_initiator(
         crypto: &impl QlCrypto,
-        local: QlIdentity,
+        local: I,
         remote_bundle: PeerBundle,
         local_transport_params: TransportParams,
     ) -> Self {
@@ -165,12 +167,12 @@ impl IkHandshake {
 
     pub fn new_ik_responder(
         crypto: &impl QlCrypto,
-        local: QlIdentity,
+        local: I,
         expected_remote: Option<PeerBundle>,
         local_transport_params: TransportParams,
     ) -> Self {
         let mut symmetric = SymmetricState::new(crypto, PROTOCOL_IK);
-        symmetric.mix_hash(crypto, &local.bundle().encode_vec());
+        symmetric.mix_hash(crypto, &local.borrow().bundle().encode_vec());
         Self::new(
             IkPattern::Ik,
             Role::Responder,
@@ -183,12 +185,12 @@ impl IkHandshake {
 
     pub fn new_kk_initiator(
         crypto: &impl QlCrypto,
-        local: QlIdentity,
+        local: I,
         remote_bundle: PeerBundle,
         local_transport_params: TransportParams,
     ) -> Self {
         let mut symmetric = SymmetricState::new(crypto, PROTOCOL_KK);
-        symmetric.mix_hash(crypto, &local.bundle().encode_vec());
+        symmetric.mix_hash(crypto, &local.borrow().bundle().encode_vec());
         symmetric.mix_hash(crypto, &remote_bundle.encode_vec());
         Self::new(
             IkPattern::Kk,
@@ -202,13 +204,13 @@ impl IkHandshake {
 
     pub fn new_kk_responder(
         crypto: &impl QlCrypto,
-        local: QlIdentity,
+        local: I,
         remote_bundle: PeerBundle,
         local_transport_params: TransportParams,
     ) -> Self {
         let mut symmetric = SymmetricState::new(crypto, PROTOCOL_KK);
         symmetric.mix_hash(crypto, &remote_bundle.encode_vec());
-        symmetric.mix_hash(crypto, &local.bundle().encode_vec());
+        symmetric.mix_hash(crypto, &local.borrow().bundle().encode_vec());
         Self::new(
             IkPattern::Kk,
             Role::Responder,
@@ -223,7 +225,7 @@ impl IkHandshake {
         pattern: IkPattern,
         role: Role,
         symmetric: SymmetricState,
-        local: QlIdentity,
+        local: I,
         remote_bundle: Option<PeerBundle>,
         local_transport_params: TransportParams,
     ) -> Self {
@@ -244,7 +246,6 @@ impl IkHandshake {
             remote_transport_params: None,
         }
     }
-
     pub fn is_finished(&self) -> bool {
         self.step == Step::Done
     }
@@ -259,8 +260,9 @@ impl IkHandshake {
         }
         initialize_handshake_id(&mut self.handshake_id, handshake_id)?;
         let remote_bundle = self.remote_bundle.as_ref().ok_or(Error::InvalidState)?;
+        let local = self.local.borrow();
         let header = RouteHeader {
-            sender: self.local.qid,
+            sender: local.qid,
             recipient: remote_bundle.qid,
         };
         mix_hash_routed_handshake(
@@ -289,7 +291,7 @@ impl IkHandshake {
             IkPattern::Ik => Some(encrypt_peer_bundle(
                 crypto,
                 &mut self.symmetric,
-                &self.local.bundle(),
+                &local.bundle(),
             )?),
             IkPattern::Kk => None,
         };
@@ -316,6 +318,7 @@ impl IkHandshake {
         }
         initialize_handshake_id(&mut self.handshake_id, message.handshake_id)?;
         self.ensure_inbound_header(header)?;
+        let local = self.local.borrow();
         mix_hash_routed_handshake(
             &mut self.symmetric,
             crypto,
@@ -330,7 +333,7 @@ impl IkHandshake {
         self.symmetric
             .mix_hash(crypto, message.skem_ciphertext.as_bytes());
         let skem_secret =
-            crypto.mlkem_decapsulate(&self.local.mlkem_private_key, &message.skem_ciphertext);
+            crypto.mlkem_decapsulate(&local.mlkem_private_key, &message.skem_ciphertext);
         self.symmetric
             .mix_key_and_hash(crypto, skem_secret.as_bytes());
 
@@ -373,7 +376,7 @@ impl IkHandshake {
         require_handshake_id(self.handshake_id.as_ref(), handshake_id)?;
         let remote_bundle = self.remote_bundle.as_ref().ok_or(Error::InvalidState)?;
         let header = RouteHeader {
-            sender: self.local.qid,
+            sender: self.local.borrow().qid,
             recipient: remote_bundle.qid,
         };
         mix_hash_routed_handshake(
@@ -442,7 +445,8 @@ impl IkHandshake {
 
         let skem_ciphertext =
             decrypt_mlkem_ciphertext(crypto, &mut self.symmetric, &message.skem_ciphertext)?;
-        let skem_secret = crypto.mlkem_decapsulate(&self.local.mlkem_private_key, &skem_ciphertext);
+        let skem_secret =
+            crypto.mlkem_decapsulate(&self.local.borrow().mlkem_private_key, &skem_ciphertext);
         self.symmetric
             .mix_key_and_hash(crypto, skem_secret.as_bytes());
 
@@ -467,7 +471,7 @@ impl IkHandshake {
     }
 
     fn ensure_inbound_header(&self, header: RouteHeader) -> Result<(), Error> {
-        if header.recipient != self.local.qid {
+        if header.recipient != self.local.borrow().qid {
             return Err(Error::InvalidRouteHeader);
         }
         if let Some(remote_bundle) = self.remote_bundle.as_ref() {
