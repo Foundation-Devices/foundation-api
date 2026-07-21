@@ -57,8 +57,6 @@ impl<B: ByteSlice> Decode<B> for AppId {
 pub struct PeerPermissions {
     /// KeyOS app ids this peer is allowed to open streams toward
     pub app_ids: Vec<AppId>,
-    /// Service ids this peer advertises for KeyOS-opened streams
-    pub service_ids: Vec<ServiceId>,
 }
 
 macro_rules! wrapper {
