@@ -1,7 +1,7 @@
 use ql_codec::{ByteSlice, Encode};
 use ql_common::QID;
 
-use crate::{derive_qid, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, QlHash};
+use crate::{derive_qid, Error, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, QlHash};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerBundle {
@@ -14,6 +14,13 @@ pub struct PeerBundle {
 
 impl PeerBundle {
     pub const VERSION: u16 = 1;
+
+    pub fn validate(&self, crypto: &impl QlHash) -> Result<(), Error> {
+        if self.version != Self::VERSION || self.qid != derive_qid(crypto, &self.mlkem_public_key) {
+            return Err(Error::InvalidRemoteBundle);
+        }
+        Ok(())
+    }
 }
 
 impl Encode for PeerBundle {

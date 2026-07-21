@@ -1,16 +1,18 @@
 use ql_codec::{ByteSlice, Decode, Encode};
 
 use crate::{
-    derive_qid, Error, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey, Nonce,
-    PeerBundle, QlCrypto, RouteHeader, SessionKey, ENCRYPTED_MESSAGE_AUTH_SIZE,
+    Error, HandshakeKind, MlKemCiphertext, MlKemKeyPair, MlKemPublicKey, Nonce, PeerBundle,
+    QlCrypto, RouteHeader, SessionKey, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
+mod challenge;
 mod id;
 mod ik;
 mod pairing;
 mod transport_params;
 mod xx;
 
+pub use challenge::{answer_peer_challenge, PeerChallenge, PendingChallengeConfirmation};
 pub use id::HandshakeId;
 pub use ik::{Ik1, Ik2, IkHandshake, IkPattern};
 pub use pairing::{PairingId, PairingToken};
@@ -386,10 +388,7 @@ fn decrypt_peer_bundle(
 ) -> Result<PeerBundle, Error> {
     let plaintext = symmetric.decrypt_and_hash(crypto, bundle.as_bytes())?;
     let bundle = PeerBundle::decode_bytes(plaintext.as_slice())?;
-    let peer_qid = derive_qid(crypto, &bundle.mlkem_public_key);
-    if peer_qid != bundle.qid {
-        return Err(Error::InvalidRemoteBundle);
-    }
+    bundle.validate(crypto)?;
     Ok(bundle)
 }
 
