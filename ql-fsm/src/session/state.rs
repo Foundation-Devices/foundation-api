@@ -6,8 +6,11 @@ use ql_common::StreamId;
 use ql_wire::{RecordSeq, ResetTarget, SessionClose, StreamReset};
 
 use super::{
-    ack_tracker::AckTracker, remote_stream_history::RemoteStreamHistory, stream_rx::StreamRx,
-    stream_tx::StreamTx, tracked::TrackedRecord,
+    ack_tracker::AckTracker,
+    remote_stream_history::RemoteStreamHistory,
+    stream_rx::StreamRx,
+    stream_tx::StreamTx,
+    tracked::{LossRecovery, TrackedRecord},
 };
 
 pub struct SessionState {
@@ -18,6 +21,7 @@ pub struct SessionState {
     pub next_record_seq: RecordSeq,
     pub next_write_id: u64,
     pub tracked_records: IndexMap<u64, TrackedRecord>,
+    pub loss_recovery: LossRecovery,
     pub ack_tracker: AckTracker,
     pub pending_ping: bool,
     pub streams: IndexMap<StreamId, StreamState>,

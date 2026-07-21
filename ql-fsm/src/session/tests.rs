@@ -109,18 +109,152 @@ fn outbound_record_seq_increments_monotonically() {
 #[test]
 fn retransmit_uses_new_record_seq() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(
+        SessionConfig {
+            retransmit_timeout: Duration::from_millis(100),
+            ..SessionConfig::default()
+        },
+        now,
+    );
     let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"retry"), 5);
     let (first_seq, first) = next_outbound(&mut fsm, now).unwrap();
 
     let mut emit = |_| {};
-    fsm.on_timer(now + Duration::from_millis(200), &mut emit);
-    let (retried_seq, retried) = next_outbound(&mut fsm, now + Duration::from_millis(200)).unwrap();
+    fsm.on_timer(now + Duration::from_millis(101), &mut emit);
+    let (retried_seq, retried) = next_outbound(&mut fsm, now + Duration::from_millis(101)).unwrap();
 
     assert_ne!(first_seq, retried_seq);
     assert_eq!(first, retried);
+}
+
+#[test]
+fn retransmitted_record_ack_releases_stream_data() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionConfig {
+            retransmit_timeout: Duration::from_millis(20),
+            stream_send_buffer_size: 4,
+            ..SessionConfig::default()
+        },
+        now,
+    );
+    let stream_id = open_stream_id(&mut fsm);
+
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"data"), 4);
+    let (first_seq, _) = next_outbound(&mut fsm, now).unwrap();
+
+    let mut emit = |_| {};
+    fsm.on_timer(now + Duration::from_millis(21), &mut emit);
+    let (retried_seq, _) = next_outbound(&mut fsm, now + Duration::from_millis(21)).unwrap();
+    assert_ne!(first_seq, retried_seq);
+
+    let mut events = Vec::new();
+    fsm.receive(
+        now + Duration::from_millis(22),
+        RecordSeq(9),
+        std::iter::once(Ok(SessionFrame::Ack(
+            RecordAck::from_ranges([retried_seq..=retried_seq]).unwrap(),
+        ))),
+        &mut |event| events.push(event),
+    );
+
+    assert!(events.contains(&SessionEvent::Writable(stream_id)));
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"z"), 1);
+}
+
+#[test]
+fn acknowledged_rtt_updates_retransmit_timeout() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionConfig {
+            retransmit_timeout: Duration::from_millis(100),
+            ..SessionConfig::default()
+        },
+        now,
+    );
+    let stream_id = open_stream_id(&mut fsm);
+
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"first"), 5);
+    let (first_seq, _) = next_outbound(&mut fsm, now).unwrap();
+    fsm.receive(
+        now + Duration::from_millis(80),
+        RecordSeq(9),
+        std::iter::once(Ok(SessionFrame::Ack(
+            RecordAck::from_ranges([first_seq..=first_seq]).unwrap(),
+        ))),
+        &mut |_| {},
+    );
+
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"second"), 6);
+    next_outbound(&mut fsm, now + Duration::from_millis(80)).unwrap();
+
+    let mut emit = |_| {};
+    fsm.on_timer(now + Duration::from_millis(181), &mut emit);
+    assert!(next_outbound(&mut fsm, now + Duration::from_millis(181)).is_none());
+
+    fsm.on_timer(now + Duration::from_millis(321), &mut emit);
+    assert!(next_outbound(&mut fsm, now + Duration::from_millis(321)).is_some());
+}
+
+#[test]
+fn retransmit_timeout_backs_off() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionConfig {
+            retransmit_timeout: Duration::from_millis(20),
+            ..SessionConfig::default()
+        },
+        now,
+    );
+    let stream_id = open_stream_id(&mut fsm);
+
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"retry"), 5);
+    next_outbound(&mut fsm, now).unwrap();
+
+    let mut emit = |_| {};
+    fsm.on_timer(now + Duration::from_millis(21), &mut emit);
+    next_outbound(&mut fsm, now + Duration::from_millis(21)).unwrap();
+
+    fsm.on_timer(now + Duration::from_millis(42), &mut emit);
+    assert!(next_outbound(&mut fsm, now + Duration::from_millis(42)).is_none());
+
+    fsm.on_timer(now + Duration::from_millis(62), &mut emit);
+    assert!(next_outbound(&mut fsm, now + Duration::from_millis(62)).is_some());
+}
+
+#[test]
+fn tracked_record_count_is_bounded() {
+    const PAYLOAD_LEN: usize = 1024;
+
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionConfig {
+            record_max_size: SessionRecordBuilder::MIN_CAPACITY
+                + 1
+                + StreamData::<Vec<u8>>::MIN_WIRE_SIZE
+                + 1,
+            stream_send_buffer_size: PAYLOAD_LEN,
+            initial_peer_stream_receive_window: PAYLOAD_LEN as u32,
+            ..SessionConfig::default()
+        },
+        now,
+    );
+    let stream_id = open_stream_id(&mut fsm);
+    assert_eq!(
+        write_stream_bytes(&mut fsm, stream_id, &[b'x'; PAYLOAD_LEN]),
+        PAYLOAD_LEN
+    );
+
+    let mut count = 0;
+    while next_outbound(&mut fsm, now).is_some() {
+        count += 1;
+        assert!(count <= 64);
+    }
+
+    assert_eq!(count, 64);
+    assert_eq!(fsm.state.tracked_records.len(), 64);
 }
 
 #[test]
@@ -397,7 +531,13 @@ fn inbound_empty_fin_emits_finished_immediately() {
 #[test]
 fn remote_stream_reset_is_reliable_and_retried() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(
+        SessionConfig {
+            retransmit_timeout: Duration::from_millis(100),
+            ..SessionConfig::default()
+        },
+        now,
+    );
     let stream_id = open_stream_id(&mut fsm);
 
     fsm.stream(stream_id, |_| {})
@@ -413,9 +553,9 @@ fn remote_stream_reset_is_reliable_and_retried() {
     ));
 
     let mut emit = |_| {};
-    fsm.on_timer(now + Duration::from_millis(200), &mut emit);
+    fsm.on_timer(now + Duration::from_millis(101), &mut emit);
     let (_retried_seq, retried) =
-        next_outbound(&mut fsm, now + Duration::from_millis(200)).unwrap();
+        next_outbound(&mut fsm, now + Duration::from_millis(101)).unwrap();
     assert_eq!(first, retried);
 }
 
@@ -828,14 +968,14 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
     let mut receiver = SessionFsm::new(receiver_config, now);
 
     let stream_id = open_stream_id(&mut sender);
-    let payload = vec![b'x'; 2048];
+    let payload = vec![b'x'; 1200];
     assert_eq!(
         write_stream_bytes(&mut sender, stream_id, &payload),
         payload.len()
     );
 
     let originals = drain_outbound(&mut sender, now, 4096);
-    assert!(originals.len() >= 64);
+    assert_eq!(originals.len(), 64);
 
     for (seq, record) in originals.iter().filter(|(seq, _)| seq.0 % 2 == 1) {
         let _ = receive_events(&mut receiver, now, *seq, record);

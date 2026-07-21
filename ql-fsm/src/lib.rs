@@ -172,7 +172,7 @@ pub struct QlFsmConfig {
     pub handshake_timeout: Duration,
     /// delay before sending a pure record ack
     pub session_record_ack_delay: Duration,
-    /// how long to wait before resending unacked session records
+    /// initial wait before resending unacked session records
     pub session_record_retransmit_timeout: Duration,
     /// idle delay before sending a keepalive ping
     pub session_keepalive_interval: Duration,

@@ -28,7 +28,7 @@ use self::{
     remote_stream_history::RemoteStreamHistory,
     state::{InboundState, OutboundState, SessionPhase, SessionState, StreamRole, StreamState},
     stream_tx::StreamTxRange,
-    tracked::{TrackedFrame, TrackedRecord, TrackedStreamData},
+    tracked::{LossRecovery, TrackedFrame, TrackedRecord, TrackedStreamData},
 };
 use crate::{NoSessionError, StreamError, StreamResetEvent, StreamResetTarget};
 
@@ -53,7 +53,7 @@ impl Default for SessionConfig {
             local_parity: StreamParity::Even,
             record_max_size: 8 * 1024,
             ack_delay: Duration::from_millis(5),
-            retransmit_timeout: Duration::from_millis(150),
+            retransmit_timeout: Duration::from_secs(1),
             keepalive_interval: Duration::from_secs(10),
             peer_timeout: Duration::from_secs(30),
             stream_send_buffer_size: 16 * 1024,
@@ -114,6 +114,7 @@ impl SessionFsm {
                 next_record_seq: RecordSeq(0),
                 next_write_id: 0,
                 tracked_records: IndexMap::default(),
+                loss_recovery: LossRecovery::new(config.retransmit_timeout),
                 ack_tracker: AckTracker::new(
                     config.accepted_record_window,
                     config.pending_ack_range_limit,
@@ -235,7 +236,7 @@ impl SessionFsm {
                     self.unpair(sink);
                     return;
                 }
-                SessionFrame::Ack(ack) => self.process_record_ack(&ack, sink),
+                SessionFrame::Ack(ack) => self.process_record_ack(now, &ack, sink),
                 SessionFrame::StreamData(frame) => {
                     if self.handle_stream_data(frame, sink).is_err() {
                         self.close(SessionCloseCode::PROTOCOL, sink);
@@ -291,7 +292,7 @@ impl SessionFsm {
                 &mut self.state.ack_tracker,
                 &mut self.state.pending_ping,
                 &mut self.state.streams,
-                record,
+                &record,
             );
         }
     }
@@ -320,15 +321,12 @@ impl SessionFsm {
             return None;
         }
         let ack_deadline = self.state.ack_tracker.ack_deadline();
+        let rto = self.state.loss_recovery.rto();
         let retransmit_deadline = self
             .state
             .tracked_records
             .values()
-            .filter_map(|record| {
-                record
-                    .sent_at
-                    .map(|sent_at| sent_at + self.config.retransmit_timeout)
-            })
+            .filter_map(|record| record.sent_at.map(|sent_at| sent_at + rto))
             .min();
         let is_open = self.state.phase.is_open();
         let keepalive_deadline =
@@ -354,6 +352,8 @@ impl SessionFsm {
     }
 
     pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
+        const TRACKED_RECORD_LIMIT: usize = 64;
+
         match &self.state.phase {
             SessionPhase::Terminating(frame) => {
                 let seq = self.state.next_record_seq;
@@ -377,12 +377,26 @@ impl SessionFsm {
         }
         self.collect_timeouts(now);
 
+        // ack-only records need no tracking slot and prevent two full peers from stalling
+        if self.state.tracked_records.len() >= TRACKED_RECORD_LIMIT {
+            let seq = self.state.next_record_seq;
+            let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
+            let pending_ack = self.pending_ack(builder.remaining_capacity())?;
+            if pending_ack.due_at > now || !builder.push_ack(&pending_ack.ack) {
+                return None;
+            }
+            self.state.ack_tracker.on_ack_emitted(&pending_ack);
+            next_seq(&mut self.state.next_record_seq);
+            return Some((None, builder));
+        }
+
         let (builder, outbound) = self.build_next_record(now)?;
 
         let should_track = outbound.ping_included
             || !outbound.window_updates.is_empty()
             || !outbound.frames.is_empty();
         let write_id = should_track.then(|| {
+            debug_assert!(self.state.tracked_records.len() < TRACKED_RECORD_LIMIT);
             let write_id = self.state.next_write_id;
             self.state.next_write_id = self.state.next_write_id.wrapping_add(1);
             self.state.tracked_records.insert(write_id, outbound);
@@ -412,7 +426,6 @@ impl SessionFsm {
         }
 
         self.push_next_pending_stream_window(&mut builder, &mut outbound);
-
         self.push_next_stream_data(&mut builder, &mut outbound);
 
         if let Some(pending_ack) = self.pending_ack(builder.remaining_capacity()) {
@@ -572,26 +585,22 @@ impl SessionFsm {
         }
     }
 
-    fn process_record_ack(&mut self, ack: &RecordAck, sink: &mut impl EventSink) {
+    fn process_record_ack(&mut self, now: Instant, ack: &RecordAck, sink: &mut impl EventSink) {
         let stream_send_buffer_size = self.config.stream_send_buffer_size;
-        let acked_records = self
-            .state
-            .tracked_records
-            .extract_if(.., |_, record| {
-                record.sent_at.is_some() && ack.contains(record.seq.0)
-            })
-            .map(|(_, record)| record)
-            .collect::<Vec<_>>();
-
-        for record in acked_records {
+        let mut latest_sent_at = None;
+        let state = &mut self.state;
+        for (_, record) in state.tracked_records.extract_if(.., |_, record| {
+            record.sent_at.is_some() && ack.contains(record.seq.0)
+        }) {
+            latest_sent_at = latest_sent_at.max(record.sent_at);
             for frame in &record.frames {
-                acknowledge_tracked_frame(
-                    &mut self.state.streams,
-                    stream_send_buffer_size,
-                    frame,
-                    sink,
-                );
+                acknowledge_tracked_frame(&mut state.streams, stream_send_buffer_size, frame, sink);
             }
+        }
+        if let Some(sent_at) = latest_sent_at {
+            state
+                .loss_recovery
+                .on_ack(now.saturating_duration_since(sent_at));
         }
         self.reap_reapable_streams();
     }
@@ -610,20 +619,25 @@ impl SessionFsm {
     }
 
     fn collect_timeouts(&mut self, now: Instant) {
-        let retransmit_timeout = self.config.retransmit_timeout;
-        for (_, record) in self.state.tracked_records.extract_if(.., |_, record| {
-            record
-                .sent_at
-                .is_some_and(|sent_at| sent_at + retransmit_timeout <= now)
+        let rto = self.state.loss_recovery.rto();
+        let mut timed_out = false;
+        let state = &mut self.state;
+        for (_, record) in state.tracked_records.extract_if(.., |_, record| {
+            record.sent_at.is_some_and(|sent_at| sent_at + rto <= now)
         }) {
             restore_tracked_record(
                 now,
-                &mut self.state.ack_tracker,
-                &mut self.state.pending_ping,
-                &mut self.state.streams,
-                record,
+                &mut state.ack_tracker,
+                &mut state.pending_ping,
+                &mut state.streams,
+                &record,
             );
+            timed_out = true;
         }
+        if timed_out {
+            state.loss_recovery.on_timeout();
+        }
+        self.reap_reapable_streams();
     }
 
     fn handle_stream_data(
@@ -954,7 +968,7 @@ fn restore_tracked_record(
     ack_tracker: &mut AckTracker,
     pending_ping: &mut bool,
     streams: &mut IndexMap<StreamId, StreamState>,
-    record: TrackedRecord,
+    record: &TrackedRecord,
 ) {
     if let Some(ack) = &record.ack {
         ack_tracker.restore_acked_ranges(ack, now);
@@ -962,22 +976,22 @@ fn restore_tracked_record(
     if record.ping_included {
         *pending_ping = true;
     }
-    for (stream_id, maximum_offset) in record.window_updates {
+    for &(stream_id, maximum_offset) in &record.window_updates {
         if let Some(stream) = streams.get_mut(&stream_id) {
             if stream.recv_limit() >= maximum_offset {
                 stream.pending_window = true;
             }
         }
     }
-    for frame in record.frames {
+    for frame in &record.frames {
         requeue_tracked_frame(streams, frame);
     }
 }
 
-fn requeue_tracked_frame(streams: &mut IndexMap<StreamId, StreamState>, frame: TrackedFrame) {
+fn requeue_tracked_frame(streams: &mut IndexMap<StreamId, StreamState>, frame: &TrackedFrame) {
     match frame {
-        TrackedFrame::StreamReset(reset) => restore_stream_reset(streams, reset),
-        TrackedFrame::StreamData(frame) => restore_stream_data(streams, frame),
+        TrackedFrame::StreamReset(reset) => restore_stream_reset(streams, reset.clone()),
+        TrackedFrame::StreamData(frame) => restore_stream_data(streams, *frame),
     }
 }
 
