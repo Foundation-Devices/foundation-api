@@ -18,13 +18,15 @@ pub trait QlInbound {
     fn poll_recv(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<u8>>;
 }
 
-pub trait QlPlatform: QlCrypto {
+pub trait QlPlatform {
+    type Crypto: QlCrypto;
     type Timer: QlTimer;
     type WriteMessageFut<'a>: Future<Output = bool> + Unpin + 'a
     where
         Self: 'a;
     type Inbound: QlInbound;
 
+    fn crypto(&self) -> &Self::Crypto;
     fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_>;
     /// Returns the platform's inbound transport poller.
     ///

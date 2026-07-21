@@ -81,7 +81,7 @@ impl<P: QlPlatform> Runtime<P> {
                 }
                 DriverStep::Inbound(bytes) => {
                     log::trace!("received transport frame: len={}", bytes.len());
-                    if let Err(e) = fsm.receive(Instant::now(), bytes, &platform) {
+                    if let Err(e) = fsm.receive(Instant::now(), bytes, platform.crypto()) {
                         log::info!("receive rejected frame: error={e:?}");
                         platform.handle_recv_error(e);
                     }
@@ -185,7 +185,7 @@ impl DriverState {
             }
             Command::Connect => {
                 log::info!("starting IK connect");
-                if fsm.connect_ik(Instant::now(), platform).is_err() {
+                if fsm.connect_ik(Instant::now(), platform.crypto()).is_err() {
                     log::warn!("IK connect ignored: no bound peer");
                 }
             }
@@ -199,7 +199,7 @@ impl DriverState {
             }
             Command::StartPairing { invite } => {
                 log::info!(" starting XX pairing");
-                fsm.connect_xx(Instant::now(), invite, platform);
+                fsm.connect_xx(Instant::now(), invite, platform.crypto());
             }
             Command::CloseSession { code } => {
                 log::info!("closing session: code={code:?}");
@@ -476,7 +476,7 @@ impl DriverState {
     ) -> bool {
         let mut filled = false;
         while in_flight.len() < self.max_concurrent_message_writes {
-            let Some(write) = fsm.take_next_write(Instant::now(), platform) else {
+            let Some(write) = fsm.take_next_write(Instant::now(), platform.crypto()) else {
                 break;
             };
             filled = true;

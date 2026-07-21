@@ -20,9 +20,14 @@ impl crate::platform::QlTimer for NoopTimer {
 }
 
 impl QlPlatform for NoopCrypto {
+    type Crypto = Self;
     type Timer = NoopTimer;
     type WriteMessageFut<'a> = std::future::Ready<bool>;
     type Inbound = NoopInbound;
+
+    fn crypto(&self) -> &Self::Crypto {
+        self
+    }
 
     fn write_message(&self, _message: Vec<u8>) -> Self::WriteMessageFut<'_> {
         std::future::ready(true)

@@ -15,9 +15,8 @@ use ql_codec::Decode;
 use ql_common::{StreamInfo, QID};
 use ql_fsm::PeerStatus;
 use ql_wire::{
-    generate_identity, test_identities, MlKemCiphertext, MlKemKeyPair, MlKemPrivateKey,
-    MlKemPublicKey, Nonce, PairingToken, PeerBundle, QlAead, QlHash, QlIdentity, QlKem, QlRandom,
-    RecordHeader, RecordType, SessionKey, SoftwareCrypto,
+    generate_identity, test_identities, PairingToken, PeerBundle, QlIdentity, RecordHeader,
+    RecordType, SoftwareCrypto,
 };
 use tokio::{task::LocalSet, time::Sleep};
 
@@ -336,60 +335,15 @@ impl QlTimer for TokioTimer {
     }
 }
 
-impl QlRandom for TestPlatform {
-    fn fill_random_bytes(&self, data: &mut [u8]) {
-        self.crypto.fill_random_bytes(data);
-    }
-}
-
-impl QlHash for TestPlatform {
-    fn sha256(&self, parts: &[&[u8]]) -> [u8; 32] {
-        self.crypto.sha256(parts)
-    }
-}
-
-impl QlAead for TestPlatform {
-    fn aes256_gcm_encrypt(
-        &self,
-        key: &SessionKey,
-        nonce: &Nonce,
-        aad: &[u8],
-        buffer: &mut [u8],
-    ) -> [u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE] {
-        self.crypto.aes256_gcm_encrypt(key, nonce, aad, buffer)
-    }
-
-    fn aes256_gcm_decrypt(
-        &self,
-        key: &SessionKey,
-        nonce: &Nonce,
-        aad: &[u8],
-        buffer: &mut [u8],
-        auth_tag: &[u8; ql_wire::ENCRYPTED_MESSAGE_AUTH_SIZE],
-    ) -> bool {
-        self.crypto
-            .aes256_gcm_decrypt(key, nonce, aad, buffer, auth_tag)
-    }
-}
-
-impl QlKem for TestPlatform {
-    fn mlkem_generate_keypair(&self) -> MlKemKeyPair {
-        self.crypto.mlkem_generate_keypair()
-    }
-
-    fn mlkem_encapsulate(&self, public_key: &MlKemPublicKey) -> (MlKemCiphertext, SessionKey) {
-        self.crypto.mlkem_encapsulate(public_key)
-    }
-
-    fn mlkem_decapsulate(&self, pk: &MlKemPrivateKey, cipher: &MlKemCiphertext) -> SessionKey {
-        self.crypto.mlkem_decapsulate(pk, cipher)
-    }
-}
-
 impl crate::platform::QlPlatform for TestPlatform {
+    type Crypto = SoftwareCrypto;
     type Timer = TokioTimer;
     type WriteMessageFut<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
     type Inbound = TestInbound;
+
+    fn crypto(&self) -> &Self::Crypto {
+        &self.crypto
+    }
 
     fn write_message(&self, message: Vec<u8>) -> Self::WriteMessageFut<'_> {
         let outbound = self.outbound.clone();
