@@ -38,6 +38,7 @@ app_routes! {
         SubscribePassportFiatPreference: Subscription = 4,
         SubscribeAppActivity: Subscription = 5,
         RequestPeerPermissions: Request = 6,
+        RequestInstallPeerBundles: Request = 7,
     }
 }
 
@@ -116,6 +117,26 @@ impl Request for RequestPeerPermissions {
     type Error = Error;
     type Request = PeerPermissionsParams;
     type Response = PeerPermissionsResponse;
+}
+
+rpc! {
+    pub struct InstallPeerBundlesParams {
+        pub router: Vec<u8>,
+        pub peers: Vec<Vec<u8>>,
+    }
+}
+
+rpc! {
+    pub enum InstallPeerBundlesResponse {
+        Installed,
+        Rejected,
+    }
+}
+
+impl Request for RequestInstallPeerBundles {
+    type Error = Error;
+    type Request = InstallPeerBundlesParams;
+    type Response = InstallPeerBundlesResponse;
 }
 
 // SERVICE ROUTES
