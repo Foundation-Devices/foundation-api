@@ -3,27 +3,23 @@ use core::{mem, ops::Deref};
 use bytes::{Buf, Bytes};
 
 /// A byte slice owner used by the codec reader
-///
-/// # Safety
-///
-/// `split_at_unchecked` must return byte slices matching `self[..mid]` and
-/// `self[mid..]` when `mid <= self.len()`
-pub unsafe trait ByteSlice: Deref<Target = [u8]> + Sized {
-    /// splits the current byte view at `mid` without checking bounds
-    /// mid can be 0
+pub trait ByteSlice: Deref<Target = [u8]> + Sized {
+    /// splits `self[..mid]` off the front, leaving `self[mid..]` behind
     ///
-    /// # Safety
+    /// # Panics
     ///
-    /// `mid` must not exceed the slice length.
-    unsafe fn split_at_unchecked(self, mid: usize) -> (Self, Self);
+    /// Panics if `mid` exceeds the slice length.
+    fn split_off_front(&mut self, mid: usize) -> Self;
 
     fn take_u8(&mut self) -> Option<u8>;
 }
 
-unsafe impl ByteSlice for &[u8] {
+impl ByteSlice for &[u8] {
     #[inline]
-    unsafe fn split_at_unchecked(self, mid: usize) -> (Self, Self) {
-        <[u8]>::split_at_unchecked(self, mid)
+    fn split_off_front(&mut self, mid: usize) -> Self {
+        let (head, tail) = self.split_at(mid);
+        *self = tail;
+        head
     }
 
     #[inline]
@@ -34,10 +30,12 @@ unsafe impl ByteSlice for &[u8] {
     }
 }
 
-unsafe impl ByteSlice for &mut [u8] {
+impl ByteSlice for &mut [u8] {
     #[inline]
-    unsafe fn split_at_unchecked(self, mid: usize) -> (Self, Self) {
-        <[u8]>::split_at_mut_unchecked(self, mid)
+    fn split_off_front(&mut self, mid: usize) -> Self {
+        let (head, tail) = mem::take(self).split_at_mut(mid);
+        *self = tail;
+        head
     }
 
     #[inline]
@@ -49,11 +47,10 @@ unsafe impl ByteSlice for &mut [u8] {
     }
 }
 
-unsafe impl ByteSlice for Bytes {
+impl ByteSlice for Bytes {
     #[inline]
-    unsafe fn split_at_unchecked(mut self, mid: usize) -> (Self, Self) {
-        let head = self.split_to(mid);
-        (head, self)
+    fn split_off_front(&mut self, mid: usize) -> Self {
+        self.split_to(mid)
     }
 
     #[inline]

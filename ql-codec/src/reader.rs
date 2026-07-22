@@ -1,18 +1,14 @@
-use core::mem::ManuallyDrop;
-
 use crate::{varint, ByteSlice, Decode, Error};
 
 #[derive(Clone)]
 pub struct Reader<B> {
-    remaining: ManuallyDrop<B>,
+    remaining: B,
 }
 
 impl<B: ByteSlice> Reader<B> {
     #[inline]
     pub fn new(bytes: B) -> Self {
-        Self {
-            remaining: ManuallyDrop::new(bytes),
-        }
+        Self { remaining: bytes }
     }
 
     #[inline]
@@ -29,13 +25,7 @@ impl<B: ByteSlice> Reader<B> {
         if len > self.remaining.len() {
             return Err(Error::UnexpectedEof);
         }
-        // SAFETY: checked above
-        let (head, tail) = unsafe {
-            let remaining = ManuallyDrop::take(&mut self.remaining);
-            remaining.split_at_unchecked(len)
-        };
-        self.remaining = ManuallyDrop::new(tail);
-        Ok(head)
+        Ok(self.remaining.split_off_front(len))
     }
 
     #[inline]
@@ -44,13 +34,7 @@ impl<B: ByteSlice> Reader<B> {
     }
 
     pub fn take_all(&mut self) -> B {
-        // SAFETY: 0 is always a valid split point
-        let (empty, rest) = unsafe {
-            let remaining = ManuallyDrop::take(&mut self.remaining);
-            remaining.split_at_unchecked(0)
-        };
-        self.remaining = ManuallyDrop::new(empty);
-        rest
+        self.remaining.split_off_front(self.remaining.len())
     }
 
     pub fn take_len_prefixed(&mut self) -> Result<B, Error> {
@@ -72,14 +56,5 @@ impl<B: ByteSlice> Reader<B> {
         T: varint::VarInt,
     {
         varint::decode(self)
-    }
-}
-
-impl<B> Drop for Reader<B> {
-    fn drop(&mut self) {
-        // SAFETY: `remaining` is initialized except during `take_bytes`
-        unsafe {
-            ManuallyDrop::drop(&mut self.remaining);
-        }
     }
 }

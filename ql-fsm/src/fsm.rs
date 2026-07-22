@@ -143,7 +143,6 @@ pub fn receive(
                     (payload.len(), record.header.seq)
                 };
 
-                drop(reader);
                 let len = bytes.len();
                 let plaintext = Bytes::from(bytes).slice(len - decrypt_len..);
                 let frames = wire::parse_session_frames(plaintext);
