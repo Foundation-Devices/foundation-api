@@ -1,8 +1,18 @@
+use core::{fmt, ops::Deref};
+
 use bytes::BufMut;
 
-use crate::{ByteSlice, Error, Reader};
+use crate::{ByteSlice, Decode, Encode, Error, Reader};
 
-pub trait VarInt: Copy {
+/// An integer field carried as a varint
+///
+/// The plain integer codecs are fixed width, so a field only encodes as a
+/// varint when it is wrapped here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct Varint<T>(pub T);
+
+pub trait Primitive: Copy {
     const MAX_ENCODED_LEN: usize;
 
     fn from_u8(value: u8) -> Self;
@@ -12,7 +22,42 @@ pub trait VarInt: Copy {
     fn checked_add_payload(self, payload: u8, shift: usize) -> Option<Self>;
 }
 
-pub fn encoded_len<T: VarInt>(mut value: T) -> usize {
+impl<T: Primitive> Varint<T> {
+    pub const MAX_ENCODED_LEN: usize = T::MAX_ENCODED_LEN;
+}
+
+impl<T> Deref for Varint<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for Varint<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<T: Primitive> Encode for Varint<T> {
+    fn encoded_len(&self) -> usize {
+        encoded_len(self.0)
+    }
+
+    fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
+        encode(self.0, out);
+    }
+}
+
+impl<B: ByteSlice, T: Primitive> Decode<B> for Varint<T> {
+    fn decode(reader: &mut Reader<B>) -> Result<Self, Error> {
+        self::decode(reader).map(Self)
+    }
+}
+
+pub fn encoded_len<T: Primitive>(mut value: T) -> usize {
     let mut len = 1;
     while value.needs_more() {
         value = value.shr_7();
@@ -23,7 +68,7 @@ pub fn encoded_len<T: VarInt>(mut value: T) -> usize {
 
 pub fn encode<T, W>(mut value: T, out: &mut W)
 where
-    T: VarInt,
+    T: Primitive,
     W: BufMut + ?Sized,
 {
     while value.needs_more() {
@@ -35,7 +80,7 @@ where
 
 pub fn decode<T, B>(reader: &mut Reader<B>) -> Result<T, Error>
 where
-    T: VarInt,
+    T: Primitive,
     B: ByteSlice,
 {
     let mut value = T::from_u8(0);
@@ -62,7 +107,7 @@ where
 macro_rules! impl_varint {
     ($($ty:ty),* $(,)?) => {
         $(
-            impl VarInt for $ty {
+            impl Primitive for $ty {
                 const MAX_ENCODED_LEN: usize = (size_of::<Self>() * 8).div_ceil(7);
 
                 #[inline]
@@ -110,7 +155,7 @@ mod tests {
 
     fn assert_decodes<T>(value: T)
     where
-        T: VarInt + Debug + PartialEq,
+        T: Primitive + Debug + PartialEq,
     {
         let mut out = Vec::new();
         encode(value, &mut out);
@@ -122,7 +167,7 @@ mod tests {
 
     fn assert_error<T>(bytes: &[u8], error: Error)
     where
-        T: VarInt + Debug + PartialEq,
+        T: Primitive + Debug + PartialEq,
     {
         let mut reader = Reader::new(bytes);
         assert_eq!(decode::<T, _>(&mut reader), Err(error));
@@ -130,7 +175,7 @@ mod tests {
 
     fn test_type<T>(max: T)
     where
-        T: VarInt + Debug + PartialEq + TryFrom<u64>,
+        T: Primitive + Debug + PartialEq + TryFrom<u64>,
     {
         for value in [0, 1, 127].map(T::from_u8) {
             assert_decodes(value);

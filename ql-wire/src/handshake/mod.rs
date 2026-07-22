@@ -24,61 +24,27 @@ const PROTOCOL_IK: &[u8] = b"ql-wire:pq-ik:v1";
 const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EphemeralPublicKey {
-    pub mlkem_public_key: MlKemPublicKey,
-}
-
-impl EphemeralPublicKey {
-    pub const WIRE_SIZE: usize = MlKemPublicKey::SIZE;
-}
-
-impl Encode for EphemeralPublicKey {
-    fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.mlkem_public_key.encode(out);
+ql_codec::codec! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EphemeralPublicKey {
+        pub mlkem_public_key: MlKemPublicKey,
     }
 }
 
-impl<B: ByteSlice> ql_codec::Decode<B> for EphemeralPublicKey {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self {
-            mlkem_public_key: reader.decode()?,
-        })
-    }
+ql_codec::codec! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EncryptedMlKemCiphertext(pub Box<[u8; Self::SIZE]>);
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncryptedMlKemCiphertext(pub Box<[u8; Self::WIRE_SIZE]>);
 
 impl EncryptedMlKemCiphertext {
-    pub const WIRE_SIZE: usize = MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
+    pub const SIZE: usize = MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
 
-    pub fn new(data: Box<[u8; Self::WIRE_SIZE]>) -> Self {
+    pub fn new(data: Box<[u8; Self::SIZE]>) -> Self {
         Self(data)
     }
 
-    pub fn as_bytes(&self) -> &[u8; Self::WIRE_SIZE] {
+    pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
         self.0.as_ref()
-    }
-}
-
-impl Encode for EncryptedMlKemCiphertext {
-    fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.0.as_ref().encode(out);
-    }
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for EncryptedMlKemCiphertext {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self::new(reader.decode()?))
     }
 }
 
@@ -398,7 +364,7 @@ fn encrypt_mlkem_ciphertext(
     ciphertext: &MlKemCiphertext,
 ) -> Result<EncryptedMlKemCiphertext, Error> {
     let encrypted = symmetric.encrypt_and_hash(crypto, ciphertext.as_bytes())?;
-    let out: Box<[u8; EncryptedMlKemCiphertext::WIRE_SIZE]> =
+    let out: Box<[u8; EncryptedMlKemCiphertext::SIZE]> =
         encrypted.try_into().map_err(|_| Error::InvalidState)?;
     Ok(EncryptedMlKemCiphertext::new(out))
 }

@@ -4,8 +4,6 @@
 
 #![allow(clippy::too_many_arguments)]
 
-#[macro_use]
-mod macros;
 mod crypto;
 mod encrypted;
 mod encrypted_message;

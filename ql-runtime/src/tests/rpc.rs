@@ -8,6 +8,7 @@ use std::{
 };
 
 use bytes::{BufMut, Bytes};
+use ql_codec::Encode;
 use ql_common::ResetCode;
 use ql_rpc::{
     download::{DownloadHandlerLocal, DownloadStart},
@@ -28,17 +29,17 @@ struct TestRouteKey(u64);
 
 impl ql_rpc::RpcRouteKey for TestRouteKey {
     fn encoded_len(&self) -> usize {
-        ql_codec::varint::encoded_len(self.0)
+        ql_codec::Varint(self.0).encoded_len()
     }
 
     fn encode<W: BufMut + ?Sized>(&self, out: &mut W) {
-        ql_codec::varint::encode(self.0, out);
+        ql_codec::Varint(self.0).encode(out);
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
         let mut reader = ql_codec::Reader::new(bytes);
-        let route_id = reader.decode_varint().ok()?;
-        Some(Self(route_id))
+        let route_id = reader.decode::<ql_codec::Varint<u64>>().ok()?;
+        Some(Self(*route_id))
     }
 }
 

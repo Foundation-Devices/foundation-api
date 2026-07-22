@@ -1,4 +1,4 @@
-use ql_codec::{BufView, ByteSlice, Decode, Encode, Reader};
+use ql_codec::{ByteSlice, Reader};
 use ql_common::StreamId;
 
 use crate::{
@@ -19,45 +19,17 @@ pub use stream_data::*;
 pub use stream_reset::*;
 pub use stream_window::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionFrame<B> {
-    // todo: do we need ping as explicit frame?
-    Ping,
-    Unpair,
-    Ack(RecordAck),
-    StreamData(StreamData<B>),
-    StreamWindow(StreamWindow),
-    StreamReset(StreamReset),
-    Close(SessionClose),
-}
-
-impl<B: ByteSlice> Decode<B> for SessionFrame<B> {
-    fn decode(reader: &mut Reader<B>) -> Result<Self, ql_codec::Error> {
-        let kind = reader.decode::<SessionFrameKind>()?;
-        let frame = match kind {
-            SessionFrameKind::Ping => Self::Ping,
-            SessionFrameKind::Unpair => Self::Unpair,
-            SessionFrameKind::Ack => Self::Ack(reader.decode::<RecordAck>()?),
-            SessionFrameKind::StreamData => Self::StreamData(reader.decode::<StreamData<B>>()?),
-            SessionFrameKind::StreamWindow => Self::StreamWindow(reader.decode::<StreamWindow>()?),
-            SessionFrameKind::StreamReset => Self::StreamReset(reader.decode::<StreamReset>()?),
-            SessionFrameKind::Close => Self::Close(reader.decode::<SessionClose>()?),
-        };
-        Ok(frame)
-    }
-}
-
-impl<B> SessionFrame<B> {
-    fn kind(&self) -> SessionFrameKind {
-        match self {
-            Self::Ping => SessionFrameKind::Ping,
-            Self::Unpair => SessionFrameKind::Unpair,
-            Self::Ack(_) => SessionFrameKind::Ack,
-            Self::StreamData(_) => SessionFrameKind::StreamData,
-            Self::StreamWindow(_) => SessionFrameKind::StreamWindow,
-            Self::StreamReset(_) => SessionFrameKind::StreamReset,
-            Self::Close(_) => SessionFrameKind::Close,
-        }
+ql_codec::codec! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum SessionFrame<B> as SessionFrameKind {
+        // todo: do we need ping as explicit frame?
+        Ping = 1,
+        Ack(RecordAck) = 2,
+        StreamData(StreamData<B>) = 3,
+        StreamWindow(StreamWindow) = 4,
+        StreamReset(StreamReset) = 5,
+        Close(SessionClose) = 6,
+        Unpair = 7,
     }
 }
 
@@ -72,66 +44,6 @@ impl<B: ByteSlice> SessionFrame<B> {
             Self::StreamReset(frame) => SessionFrame::StreamReset(frame),
             Self::Close(frame) => SessionFrame::Close(frame),
         }
-    }
-}
-
-impl<B: BufView> Encode for SessionFrame<B> {
-    fn encoded_len(&self) -> usize {
-        1 + match self {
-            Self::Ping | Self::Unpair => 0,
-            Self::Ack(frame) => frame.encoded_len(),
-            Self::StreamData(frame) => frame.encoded_len(),
-            Self::StreamWindow(frame) => frame.encoded_len(),
-            Self::StreamReset(frame) => frame.encoded_len(),
-            Self::Close(frame) => frame.encoded_len(),
-        }
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        out.put_u8(self.kind() as u8);
-        match self {
-            Self::Ping | Self::Unpair => {}
-            Self::Ack(frame) => frame.encode(out),
-            Self::StreamData(frame) => frame.encode(out),
-            Self::StreamWindow(frame) => frame.encode(out),
-            Self::StreamReset(frame) => frame.encode(out),
-            Self::Close(frame) => frame.encode(out),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum SessionFrameKind {
-    Ping = 1,
-    Ack = 2,
-    StreamData = 3,
-    StreamWindow = 4,
-    StreamReset = 5,
-    Close = 6,
-    Unpair = 7,
-}
-
-impl TryFrom<u8> for SessionFrameKind {
-    type Error = ql_codec::Error;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::Ping),
-            2 => Ok(Self::Ack),
-            3 => Ok(Self::StreamData),
-            4 => Ok(Self::StreamWindow),
-            5 => Ok(Self::StreamReset),
-            6 => Ok(Self::Close),
-            7 => Ok(Self::Unpair),
-            _ => Err(ql_codec::Error::InvalidDiscriminant),
-        }
-    }
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for SessionFrameKind {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        reader.decode::<u8>()?.try_into()
     }
 }
 

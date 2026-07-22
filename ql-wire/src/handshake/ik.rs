@@ -25,10 +25,10 @@ pub struct Ik1 {
 
 impl Encode for Ik1 {
     fn encoded_len(&self) -> usize {
-        HandshakeId::WIRE_SIZE
-            + TransportParams::WIRE_SIZE
-            + MlKemCiphertext::SIZE
-            + EphemeralPublicKey::WIRE_SIZE
+        self.handshake_id.encoded_len()
+            + self.transport_params.encoded_len()
+            + self.skem_ciphertext.encoded_len()
+            + self.ephemeral.encoded_len()
             + self
                 .static_bundle
                 .as_ref()
@@ -67,38 +67,13 @@ impl<B: ByteSlice> ql_codec::Decode<B> for Ik1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ik2 {
-    pub handshake_id: HandshakeId,
-    pub transport_params: TransportParams,
-    pub ekem_ciphertext: MlKemCiphertext,
-    pub skem_ciphertext: EncryptedMlKemCiphertext,
-}
-
-impl Encode for Ik2 {
-    fn encoded_len(&self) -> usize {
-        HandshakeId::WIRE_SIZE
-            + TransportParams::WIRE_SIZE
-            + MlKemCiphertext::SIZE
-            + EncryptedMlKemCiphertext::WIRE_SIZE
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.handshake_id.encode(out);
-        self.transport_params.encode(out);
-        self.ekem_ciphertext.encode(out);
-        self.skem_ciphertext.encode(out);
-    }
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for Ik2 {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self {
-            handshake_id: reader.decode()?,
-            transport_params: reader.decode()?,
-            ekem_ciphertext: reader.decode()?,
-            skem_ciphertext: reader.decode()?,
-        })
+ql_codec::codec! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Ik2 {
+        pub handshake_id: HandshakeId,
+        pub transport_params: TransportParams,
+        pub ekem_ciphertext: MlKemCiphertext,
+        pub skem_ciphertext: EncryptedMlKemCiphertext,
     }
 }
 

@@ -1,20 +1,20 @@
 use std::{fmt, ops::RangeInclusive};
 
-use ql_codec::{ByteSlice, Encode, Error};
+use ql_codec::{ByteSlice, Encode, Error, Varint};
 
 use crate::RecordSeq;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordAck {
     largest_acked: RecordSeq,
-    first_range_len: u64,
+    first_range_len: Varint<u64>,
     blocks: Box<[RecordAckBlock]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordAckBlock {
-    pub gap: u64,
-    pub range_len: u64,
+    pub gap: Varint<u64>,
+    pub range_len: Varint<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +49,7 @@ impl RecordAck {
     pub fn ranges(&self) -> RecordAckRangeIter<'_> {
         RecordAckRangeIter {
             largest_acked: self.largest_acked.0,
-            first_range_len: Some(self.first_range_len),
+            first_range_len: Some(*self.first_range_len),
             previous_start: None,
             blocks: self.blocks.iter(),
         }
@@ -60,14 +60,20 @@ impl RecordAck {
         self.ranges().any(|range| range.contains(&seq))
     }
 
-    fn block_count_len(block_count: usize) -> usize {
-        ql_codec::varint::encoded_len(block_count)
+    /// The count is carried as a `u32`, so it encodes the same on a 32-bit target as on the host.
+    /// Blocks are two bytes each at minimum, so a record can never hold `u32::MAX` of them.
+    fn block_count(blocks: usize) -> u32 {
+        u32::try_from(blocks).expect("record ack blocks are bounded by the record size")
+    }
+
+    fn block_count_len(blocks: usize) -> usize {
+        Varint(Self::block_count(blocks)).encoded_len()
     }
 }
 
 impl RecordAckBlock {
     fn encoded_len(&self) -> usize {
-        ql_codec::varint::encoded_len(self.gap) + ql_codec::varint::encoded_len(self.range_len)
+        self.gap.encoded_len() + self.range_len.encoded_len()
     }
 }
 
@@ -110,8 +116,8 @@ impl Iterator for RecordAckRangeIter<'_> {
             .previous_start
             .expect("first ack range is always yielded");
         // gap is encoded as missing_count - 1, so decoding steps back by gap + 2.
-        let end = previous_start - block.gap - 2;
-        let start = end - block.range_len;
+        let end = previous_start - *block.gap - 2;
+        let start = end - *block.range_len;
         self.previous_start = Some(start);
         Some(RecordSeq(start)..=RecordSeq(end))
     }
@@ -121,7 +127,7 @@ impl Encode for RecordAck {
     fn encoded_len(&self) -> usize {
         self.largest_acked.encoded_len()
             + Self::block_count_len(self.blocks.len())
-            + ql_codec::varint::encoded_len(self.first_range_len)
+            + self.first_range_len.encoded_len()
             + self
                 .blocks
                 .iter()
@@ -131,11 +137,11 @@ impl Encode for RecordAck {
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
         self.largest_acked.encode(out);
-        ql_codec::varint::encode(self.blocks.len(), out);
-        ql_codec::varint::encode(self.first_range_len, out);
+        Varint(Self::block_count(self.blocks.len())).encode(out);
+        self.first_range_len.encode(out);
         for block in &self.blocks {
-            ql_codec::varint::encode(block.gap, out);
-            ql_codec::varint::encode(block.range_len, out);
+            block.gap.encode(out);
+            block.range_len.encode(out);
         }
     }
 }
@@ -143,13 +149,13 @@ impl Encode for RecordAck {
 impl<B: ByteSlice> ql_codec::Decode<B> for RecordAck {
     fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, Error> {
         let largest_acked = reader.decode()?;
-        let block_count = reader.decode_varint::<usize>()?;
-        let first_range_len = reader.decode_varint()?;
+        let block_count = *reader.decode::<Varint<u32>>()? as usize;
+        let first_range_len = reader.decode()?;
         let mut blocks = Vec::with_capacity(block_count);
         for _ in 0..block_count {
             blocks.push(RecordAckBlock {
-                gap: reader.decode_varint()?,
-                range_len: reader.decode_varint()?,
+                gap: reader.decode()?,
+                range_len: reader.decode()?,
             });
         }
 
@@ -164,7 +170,7 @@ impl<B: ByteSlice> ql_codec::Decode<B> for RecordAck {
             let mut previous_start = ack
                 .largest_acked
                 .0
-                .checked_sub(ack.first_range_len)
+                .checked_sub(*ack.first_range_len)
                 .ok_or(Error::InvalidRange)?;
 
             for block in &ack.blocks {
@@ -172,7 +178,7 @@ impl<B: ByteSlice> ql_codec::Decode<B> for RecordAck {
                     .checked_sub(block.gap.checked_add(2).ok_or(Error::InvalidRange)?)
                     .ok_or(Error::InvalidRange)?;
                 previous_start = end
-                    .checked_sub(block.range_len)
+                    .checked_sub(*block.range_len)
                     .ok_or(Error::InvalidRange)?;
             }
         }
@@ -183,7 +189,7 @@ impl<B: ByteSlice> ql_codec::Decode<B> for RecordAck {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecordAckBuilder {
     largest_acked: Option<RecordSeq>,
-    first_range_len: Option<u64>,
+    first_range_len: Option<Varint<u64>>,
     blocks: Vec<RecordAckBlock>,
     previous_start: Option<u64>,
     wire_len: usize,
@@ -215,7 +221,10 @@ impl RecordAckBuilder {
                 .checked_sub(end)
                 .and_then(|delta| delta.checked_sub(2))
                 .expect("canonical ack ranges stay separated by at least one sequence");
-            let block = RecordAckBlock { gap, range_len };
+            let block = RecordAckBlock {
+                gap: Varint(gap),
+                range_len: Varint(range_len),
+            };
             let current_block_count_len = RecordAck::block_count_len(self.blocks.len());
             let next_block_count_len = RecordAck::block_count_len(self.blocks.len() + 1);
             let next_wire_len = self.wire_len
@@ -234,13 +243,13 @@ impl RecordAckBuilder {
         let largest_acked = RecordSeq(end);
         let wire_len = largest_acked.encoded_len()
             + RecordAck::block_count_len(0)
-            + ql_codec::varint::encoded_len(range_len);
+            + Varint(range_len).encoded_len();
         if wire_len > max_wire_size {
             return Ok(false);
         }
 
         self.largest_acked = Some(largest_acked);
-        self.first_range_len = Some(range_len);
+        self.first_range_len = Some(Varint(range_len));
         self.previous_start = Some(start);
         self.wire_len = wire_len;
         Ok(true)
@@ -260,7 +269,7 @@ impl RecordAckBuilder {
 }
 #[cfg(test)]
 mod tests {
-    use ql_codec::{Decode, Encode, Error};
+    use ql_codec::{Decode, Encode, Error, Varint};
 
     use super::{RecordAck, RecordAckBlock, RecordAckBuilder, RecordAckRangeError};
     use crate::RecordSeq;
@@ -288,17 +297,17 @@ mod tests {
         .unwrap();
 
         assert_eq!(ack.largest_acked, RecordSeq(100));
-        assert_eq!(ack.first_range_len, 5);
+        assert_eq!(ack.first_range_len, Varint(5));
         assert_eq!(
             ack.blocks.as_ref(),
             &[
                 RecordAckBlock {
-                    gap: 1,
-                    range_len: 2,
+                    gap: Varint(1),
+                    range_len: Varint(2),
                 },
                 RecordAckBlock {
-                    gap: 8,
-                    range_len: 0,
+                    gap: Varint(8),
+                    range_len: Varint(0),
                 }
             ]
         );

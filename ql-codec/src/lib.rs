@@ -3,15 +3,17 @@
 mod buf_view;
 mod codec;
 mod error;
+mod macros;
 mod reader;
 mod slice;
 pub mod varint;
 
 pub use buf_view::BufView;
-pub use codec::{encode_bytes, encoded_len_bytes};
+pub use codec::{encode_bytes, encode_bytes_raw, encoded_len_bytes};
 pub use error::Error;
 pub use reader::Reader;
 pub use slice::ByteSlice;
+pub use varint::Varint;
 
 pub trait Encode {
     fn encoded_len(&self) -> usize;
@@ -39,11 +41,6 @@ pub trait Decode<B: ByteSlice>: Sized {
 #[macro_export]
 macro_rules! varint_wrapper {
     ($name:ty, $inner:ty) => {
-        impl $name {
-            pub const MAX_ENCODED_LEN: usize =
-                <$inner as ql_codec::varint::VarInt>::MAX_ENCODED_LEN;
-        }
-
         impl ql_codec::Encode for $name {
             fn encoded_len(&self) -> usize {
                 ql_codec::varint::encoded_len::<$inner>(self.0)

@@ -152,6 +152,13 @@ impl StreamTx {
         self.base_offset + self.buffered_len as u64
     }
 
+    /// Whether a frame can still start at offset 0, the only one that carries the stream header.
+    ///
+    /// Stays true until offset 0 is acked, because until then it can still be retransmitted.
+    pub fn can_send_header(&self) -> bool {
+        self.base_offset == 0
+    }
+
     pub fn is_empty(&self) -> bool {
         self.buffered_len == 0 && self.final_offset.is_none()
     }
