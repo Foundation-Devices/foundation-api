@@ -38,8 +38,8 @@ impl<B: ByteSlice> Reader<B> {
     }
 
     pub fn take_len_prefixed(&mut self) -> Result<B, Error> {
-        let len = self.decode_varint::<usize>()?;
-        self.take_n(len)
+        let len = self.decode_varint::<u32>()?;
+        self.take_n(len as usize)
     }
 
     #[inline]

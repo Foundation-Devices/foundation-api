@@ -207,9 +207,15 @@ impl<B: ByteSlice, T: Decode<B>> Decode<B> for Option<T> {
     }
 }
 
+/// Length prefixes are `u32`, so a 64-bit host cannot emit one a 32-bit peer would reject: a
+/// `usize` varint is capped at ten bytes on one target and five on the other.
+fn len_prefix(len: usize) -> u32 {
+    u32::try_from(len).expect("byte field longer than u32::MAX")
+}
+
 pub fn encoded_len_bytes<B: BufView + ?Sized>(bytes: &B) -> usize {
     let len = bytes.buf().remaining();
-    varint::encoded_len(len) + len
+    varint::encoded_len(len_prefix(len)) + len
 }
 
 pub fn encode_bytes<B, W>(bytes: &B, out: &mut W)
@@ -217,7 +223,7 @@ where
     B: BufView + ?Sized,
     W: BufMut + ?Sized,
 {
-    varint::encode(bytes.buf().remaining(), out);
+    varint::encode(len_prefix(bytes.buf().remaining()), out);
     encode_bytes_raw(bytes, out);
 }
 

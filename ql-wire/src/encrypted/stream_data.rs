@@ -23,8 +23,8 @@ impl<B, H> StreamData<B, H> {
     pub const MAX_WIRE_OVERHEAD: usize = Varint::<u64>::MAX_ENCODED_LEN // stream id
         + Varint::<u64>::MAX_ENCODED_LEN // offset
         + size_of::<u8>() // flags
-        + Varint::<u64>::MAX_ENCODED_LEN // header length
-        + Varint::<u64>::MAX_ENCODED_LEN; // payload length
+        + Varint::<u32>::MAX_ENCODED_LEN // header length
+        + Varint::<u32>::MAX_ENCODED_LEN; // payload length
 }
 
 impl<B: ByteSlice> Decode<B> for StreamData<B> {

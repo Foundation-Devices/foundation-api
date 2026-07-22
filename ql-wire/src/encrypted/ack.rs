@@ -60,8 +60,14 @@ impl RecordAck {
         self.ranges().any(|range| range.contains(&seq))
     }
 
-    fn block_count_len(block_count: usize) -> usize {
-        Varint(block_count).encoded_len()
+    /// The count is carried as a `u32`, so it encodes the same on a 32-bit target as on the host.
+    /// Blocks are two bytes each at minimum, so a record can never hold `u32::MAX` of them.
+    fn block_count(blocks: usize) -> u32 {
+        u32::try_from(blocks).expect("record ack blocks are bounded by the record size")
+    }
+
+    fn block_count_len(blocks: usize) -> usize {
+        Varint(Self::block_count(blocks)).encoded_len()
     }
 }
 
@@ -131,7 +137,7 @@ impl Encode for RecordAck {
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
         self.largest_acked.encode(out);
-        Varint(self.blocks.len()).encode(out);
+        Varint(Self::block_count(self.blocks.len())).encode(out);
         self.first_range_len.encode(out);
         for block in &self.blocks {
             block.gap.encode(out);
@@ -143,7 +149,7 @@ impl Encode for RecordAck {
 impl<B: ByteSlice> ql_codec::Decode<B> for RecordAck {
     fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, Error> {
         let largest_acked = reader.decode()?;
-        let block_count = *reader.decode::<Varint<usize>>()?;
+        let block_count = *reader.decode::<Varint<u32>>()? as usize;
         let first_range_len = reader.decode()?;
         let mut blocks = Vec::with_capacity(block_count);
         for _ in 0..block_count {
