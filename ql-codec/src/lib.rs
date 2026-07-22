@@ -8,7 +8,7 @@ mod slice;
 pub mod varint;
 
 pub use buf_view::BufView;
-pub use codec::{encode_bytes, encoded_len_bytes};
+pub use codec::{encode_bytes, encode_bytes_raw, encoded_len_bytes};
 pub use error::Error;
 pub use reader::Reader;
 pub use slice::ByteSlice;

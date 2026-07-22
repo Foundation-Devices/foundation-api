@@ -14,7 +14,7 @@ macro_rules! array_wrapper {
 
         impl ql_codec::Encode for $name {
             fn encoded_len(&self) -> usize {
-                Self::SIZE
+                self.0.encoded_len()
             }
 
             fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {

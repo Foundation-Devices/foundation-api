@@ -35,7 +35,7 @@ impl EphemeralPublicKey {
 
 impl Encode for EphemeralPublicKey {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        self.mlkem_public_key.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -68,17 +68,17 @@ impl EncryptedMlKemCiphertext {
 
 impl Encode for EncryptedMlKemCiphertext {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        self.0.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.0.as_ref().encode(out);
+        self.0.encode(out);
     }
 }
 
 impl<B: ByteSlice> ql_codec::Decode<B> for EncryptedMlKemCiphertext {
     fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self::new(reader.decode()?))
+        Ok(Self(reader.decode()?))
     }
 }
 

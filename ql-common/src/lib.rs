@@ -59,7 +59,7 @@ impl QID {
 
 impl Encode for QID {
     fn encoded_len(&self) -> usize {
-        Self::SIZE
+        self.0.encoded_len()
     }
 
     fn encode<W: bytes::BufMut + ?Sized>(&self, out: &mut W) {

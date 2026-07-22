@@ -898,3 +898,168 @@ fn protocol_record_size_breakdown() {
     );
     print_size("ql-wire session close", record_size(&session_close));
 }
+
+/// `encode_vec` asserts the buffer ends up `encoded_len()` long, so encoding is the check.
+fn assert_encoded_len<T: Encode>(label: &str, value: &T) {
+    let encoded = value.encode_vec();
+    assert_eq!(encoded.len(), value.encoded_len(), "{label}");
+}
+
+fn mlkem_public_key() -> MlKemPublicKey {
+    MlKemPublicKey::new(Box::new([7u8; MlKemPublicKey::SIZE]))
+}
+
+fn mlkem_ciphertext() -> MlKemCiphertext {
+    MlKemCiphertext::new(Box::new([9u8; MlKemCiphertext::SIZE]))
+}
+
+fn encrypted_mlkem_ciphertext() -> EncryptedMlKemCiphertext {
+    EncryptedMlKemCiphertext::new(Box::new([3u8; EncryptedMlKemCiphertext::WIRE_SIZE]))
+}
+
+fn encrypted_peer_bundle() -> EncryptedPeerBundle {
+    EncryptedPeerBundle(Box::from(&[1u8, 2, 3, 4, 5][..]))
+}
+
+fn ephemeral_public_key() -> EphemeralPublicKey {
+    EphemeralPublicKey {
+        mlkem_public_key: mlkem_public_key(),
+    }
+}
+
+#[test]
+fn encoded_len_matches_encoding() {
+    let params = handshake_transport_params(1024);
+
+    assert_encoded_len("QID", &QID([1u8; QID::SIZE]));
+    assert_encoded_len("HandshakeId", &handshake_id(0xdead_beef));
+    assert_encoded_len("PairingId", &PairingId([4u8; PairingId::SIZE]));
+    assert_encoded_len("SessionKey", &SessionKey([5u8; SessionKey::SIZE]));
+    assert_encoded_len("MlKemPublicKey", &mlkem_public_key());
+    assert_encoded_len("MlKemCiphertext", &mlkem_ciphertext());
+    assert_encoded_len("EncryptedMlKemCiphertext", &encrypted_mlkem_ciphertext());
+    assert_encoded_len("EncryptedPeerBundle", &encrypted_peer_bundle());
+    assert_encoded_len("EphemeralPublicKey", &ephemeral_public_key());
+    assert_encoded_len("TransportParams", &params);
+    assert_encoded_len("RouteHeader", &route(1, 2));
+    assert_encoded_len(
+        "RecordHeader",
+        &RecordHeader::new(route(1, 2), RecordType::Handshake),
+    );
+    assert_encoded_len("RecordType", &RecordType::Session);
+    assert_encoded_len("HandshakeKind", &HandshakeKind::Xx4);
+    assert_encoded_len("SessionHeader", &SessionHeader { seq: RecordSeq(7) });
+    assert_encoded_len("ResetTarget", &ResetTarget::Both);
+    assert_encoded_len(
+        "PeerBundle",
+        &PeerBundle {
+            version: 1,
+            qid: QID([3u8; QID::SIZE]),
+            capabilities: 0xffff_ffff,
+            mlkem_public_key: mlkem_public_key(),
+            name: "device".to_owned(),
+        },
+    );
+    assert_encoded_len(
+        "StreamReset",
+        &StreamReset {
+            stream_id: StreamId(9),
+            target: ResetTarget::Origin,
+            code: ResetCode::TIMEOUT,
+        },
+    );
+    assert_encoded_len(
+        "StreamWindow",
+        &StreamWindow {
+            stream_id: StreamId(9),
+            maximum_offset: Varint(1 << 40),
+        },
+    );
+    assert_encoded_len(
+        "SessionClose",
+        &SessionClose {
+            code: SessionCloseCode::PROTOCOL,
+        },
+    );
+    let payload = EncryptedMessage {
+        auth: [6u8; ENCRYPTED_MESSAGE_AUTH_SIZE],
+        ciphertext: vec![21u8; 37],
+    };
+    assert_encoded_len("EncryptedMessage", &payload);
+    assert_encoded_len(
+        "QlSessionRecord",
+        &QlSessionRecord {
+            header: SessionHeader { seq: RecordSeq(7) },
+            payload,
+        },
+    );
+    assert_encoded_len("SessionFrame::Ping", &SessionFrame::<Vec<u8>>::Ping);
+    assert_encoded_len(
+        "SessionFrame::Close",
+        &SessionFrame::<Vec<u8>>::Close(SessionClose {
+            code: SessionCloseCode::PROTOCOL,
+        }),
+    );
+    assert_encoded_len(
+        "Xx1",
+        &Xx1 {
+            handshake_id: handshake_id(1),
+            pairing_id: PairingId([4u8; PairingId::SIZE]),
+            transport_params: params,
+            ephemeral: ephemeral_public_key(),
+        },
+    );
+    assert_encoded_len(
+        "Xx2",
+        &Xx2 {
+            handshake_id: handshake_id(2),
+            transport_params: params,
+            ekem_ciphertext: mlkem_ciphertext(),
+            static_bundle: encrypted_peer_bundle(),
+        },
+    );
+    assert_encoded_len(
+        "Xx3",
+        &Xx3 {
+            handshake_id: handshake_id(3),
+            skem_ciphertext: encrypted_mlkem_ciphertext(),
+            static_bundle: encrypted_peer_bundle(),
+        },
+    );
+    assert_encoded_len(
+        "Xx4",
+        &Xx4 {
+            handshake_id: handshake_id(4),
+            skem_ciphertext: encrypted_mlkem_ciphertext(),
+        },
+    );
+    assert_encoded_len(
+        "Ik1",
+        &Ik1 {
+            handshake_id: handshake_id(5),
+            transport_params: params,
+            skem_ciphertext: mlkem_ciphertext(),
+            ephemeral: ephemeral_public_key(),
+            static_bundle: Some(encrypted_peer_bundle()),
+        },
+    );
+    assert_encoded_len(
+        "Ik1 without bundle",
+        &Ik1 {
+            handshake_id: handshake_id(5),
+            transport_params: params,
+            skem_ciphertext: mlkem_ciphertext(),
+            ephemeral: ephemeral_public_key(),
+            static_bundle: None,
+        },
+    );
+    assert_encoded_len(
+        "Ik2",
+        &Ik2 {
+            handshake_id: handshake_id(6),
+            transport_params: params,
+            ekem_ciphertext: mlkem_ciphertext(),
+            skem_ciphertext: encrypted_mlkem_ciphertext(),
+        },
+    );
+}

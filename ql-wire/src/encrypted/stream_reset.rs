@@ -2,7 +2,6 @@ use ql_codec::{ByteSlice, Encode};
 use ql_common::ResetCode;
 
 use super::StreamId;
-use crate::Error;
 
 /// aborts one or both lanes of a stream with a reset code
 ///
@@ -15,8 +14,6 @@ pub struct StreamReset {
     pub target: ResetTarget,
     pub code: ResetCode,
 }
-
-impl StreamReset {}
 
 impl Encode for StreamReset {
     fn encoded_len(&self) -> usize {
@@ -52,40 +49,31 @@ pub enum ResetTarget {
     Both = 3,
 }
 
-impl ResetTarget {
-    pub const fn to_wire(self) -> u8 {
-        self as u8
-    }
-}
-
 impl Encode for ResetTarget {
     fn encoded_len(&self) -> usize {
         size_of::<u8>()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.to_wire().encode(out);
+        out.put_u8(*self as u8);
     }
 }
 
 impl TryFrom<u8> for ResetTarget {
-    type Error = Error;
+    type Error = ql_codec::Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::Origin),
             2 => Ok(Self::Return),
             3 => Ok(Self::Both),
-            _ => Err(Error::InvalidDiscriminant),
+            _ => Err(ql_codec::Error::InvalidDiscriminant),
         }
     }
 }
 
 impl<B: ByteSlice> ql_codec::Decode<B> for ResetTarget {
     fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        reader
-            .decode::<u8>()?
-            .try_into()
-            .map_err(|_| ql_codec::Error::InvalidDiscriminant)
+        reader.decode::<u8>()?.try_into()
     }
 }

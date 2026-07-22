@@ -16,7 +16,7 @@ impl<B: ByteSlice> ql_codec::Decode<B> for HandshakeId {
 
 impl Encode for HandshakeId {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        self.0.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {

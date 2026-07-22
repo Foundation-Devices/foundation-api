@@ -25,10 +25,10 @@ impl PeerBundle {
 
 impl Encode for PeerBundle {
     fn encoded_len(&self) -> usize {
-        size_of::<u16>()
-            + QID::SIZE
-            + size_of::<u32>()
-            + MlKemPublicKey::SIZE
+        self.version.encoded_len()
+            + self.qid.encoded_len()
+            + self.capabilities.encoded_len()
+            + self.mlkem_public_key.encoded_len()
             + self.name.encoded_len()
     }
 

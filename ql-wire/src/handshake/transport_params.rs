@@ -13,7 +13,7 @@ impl TransportParams {
 
 impl Encode for TransportParams {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        self.initial_stream_receive_window.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {

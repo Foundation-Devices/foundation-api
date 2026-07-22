@@ -77,18 +77,19 @@ impl<B: ByteSlice> SessionFrame<B> {
 
 impl<B: BufView> Encode for SessionFrame<B> {
     fn encoded_len(&self) -> usize {
-        1 + match self {
-            Self::Ping | Self::Unpair => 0,
-            Self::Ack(frame) => frame.encoded_len(),
-            Self::StreamData(frame) => frame.encoded_len(),
-            Self::StreamWindow(frame) => frame.encoded_len(),
-            Self::StreamReset(frame) => frame.encoded_len(),
-            Self::Close(frame) => frame.encoded_len(),
-        }
+        self.kind().encoded_len()
+            + match self {
+                Self::Ping | Self::Unpair => 0,
+                Self::Ack(frame) => frame.encoded_len(),
+                Self::StreamData(frame) => frame.encoded_len(),
+                Self::StreamWindow(frame) => frame.encoded_len(),
+                Self::StreamReset(frame) => frame.encoded_len(),
+                Self::Close(frame) => frame.encoded_len(),
+            }
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        out.put_u8(self.kind() as u8);
+        self.kind().encode(out);
         match self {
             Self::Ping | Self::Unpair => {}
             Self::Ack(frame) => frame.encode(out),
@@ -132,6 +133,16 @@ impl TryFrom<u8> for SessionFrameKind {
 impl<B: ByteSlice> ql_codec::Decode<B> for SessionFrameKind {
     fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
         reader.decode::<u8>()?.try_into()
+    }
+}
+
+impl Encode for SessionFrameKind {
+    fn encoded_len(&self) -> usize {
+        size_of::<u8>()
+    }
+
+    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
+        out.put_u8(*self as u8);
     }
 }
 

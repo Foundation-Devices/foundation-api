@@ -217,8 +217,18 @@ where
     B: BufView + ?Sized,
     W: BufMut + ?Sized,
 {
+    varint::encode(bytes.buf().remaining(), out);
+    encode_bytes_raw(bytes, out);
+}
+
+/// Writes the bytes without a length prefix, for a field that runs to the end of the message.
+pub fn encode_bytes_raw<B, W>(bytes: &B, out: &mut W)
+where
+    B: BufView + ?Sized,
+    W: BufMut + ?Sized,
+{
+    // `BufMut::put` needs a sized writer, so feed it a chunk at a time.
     let mut bytes = bytes.buf();
-    varint::encode(bytes.remaining(), out);
     while bytes.has_remaining() {
         let chunk = bytes.chunk();
         out.put_slice(chunk);

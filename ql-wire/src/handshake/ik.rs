@@ -25,10 +25,10 @@ pub struct Ik1 {
 
 impl Encode for Ik1 {
     fn encoded_len(&self) -> usize {
-        HandshakeId::WIRE_SIZE
-            + TransportParams::WIRE_SIZE
-            + MlKemCiphertext::SIZE
-            + EphemeralPublicKey::WIRE_SIZE
+        self.handshake_id.encoded_len()
+            + self.transport_params.encoded_len()
+            + self.skem_ciphertext.encoded_len()
+            + self.ephemeral.encoded_len()
             + self
                 .static_bundle
                 .as_ref()
@@ -77,10 +77,10 @@ pub struct Ik2 {
 
 impl Encode for Ik2 {
     fn encoded_len(&self) -> usize {
-        HandshakeId::WIRE_SIZE
-            + TransportParams::WIRE_SIZE
-            + MlKemCiphertext::SIZE
-            + EncryptedMlKemCiphertext::WIRE_SIZE
+        self.handshake_id.encoded_len()
+            + self.transport_params.encoded_len()
+            + self.ekem_ciphertext.encoded_len()
+            + self.skem_ciphertext.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {

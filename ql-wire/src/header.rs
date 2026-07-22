@@ -16,7 +16,7 @@ impl RouteHeader {
 
 impl Encode for RouteHeader {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        self.sender.encoded_len() + self.recipient.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {

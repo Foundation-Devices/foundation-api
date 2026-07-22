@@ -36,10 +36,10 @@ impl<B: ByteSlice> ql_codec::Decode<B> for Xx1 {
 
 impl Encode for Xx1 {
     fn encoded_len(&self) -> usize {
-        HandshakeId::WIRE_SIZE
-            + PairingId::SIZE
-            + TransportParams::WIRE_SIZE
-            + EphemeralPublicKey::WIRE_SIZE
+        self.handshake_id.encoded_len()
+            + self.pairing_id.encoded_len()
+            + self.transport_params.encoded_len()
+            + self.ephemeral.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
@@ -71,9 +71,9 @@ impl<B: ByteSlice> ql_codec::Decode<B> for Xx2 {
 
 impl Encode for Xx2 {
     fn encoded_len(&self) -> usize {
-        HandshakeId::WIRE_SIZE
-            + TransportParams::WIRE_SIZE
-            + MlKemCiphertext::SIZE
+        self.handshake_id.encoded_len()
+            + self.transport_params.encoded_len()
+            + self.ekem_ciphertext.encoded_len()
             + self.static_bundle.encoded_len()
     }
 
@@ -104,8 +104,8 @@ impl<B: ByteSlice> ql_codec::Decode<B> for Xx3 {
 
 impl Encode for Xx3 {
     fn encoded_len(&self) -> usize {
-        HandshakeId::WIRE_SIZE
-            + EncryptedMlKemCiphertext::WIRE_SIZE
+        self.handshake_id.encoded_len()
+            + self.skem_ciphertext.encoded_len()
             + self.static_bundle.encoded_len()
     }
 
@@ -133,7 +133,7 @@ impl<B: ByteSlice> ql_codec::Decode<B> for Xx4 {
 
 impl Encode for Xx4 {
     fn encoded_len(&self) -> usize {
-        HandshakeId::WIRE_SIZE + EncryptedMlKemCiphertext::WIRE_SIZE
+        self.handshake_id.encoded_len() + self.skem_ciphertext.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {

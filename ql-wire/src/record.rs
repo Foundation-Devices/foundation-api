@@ -1,4 +1,4 @@
-use ql_codec::{ByteSlice, Decode, Encode};
+use ql_codec::{BufView, ByteSlice, Decode, Encode};
 
 use crate::{
     encrypted_message::EncryptedMessage,
@@ -61,11 +61,11 @@ impl<B: ByteSlice> Decode<B> for RecordHeader {
 
 impl Encode for RecordHeader {
     fn encoded_len(&self) -> usize {
-        Self::WIRE_SIZE
+        self.version.encoded_len() + self.route.encoded_len() + self.record_type.encoded_len()
     }
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        out.put_u8(self.version);
+        self.version.encode(out);
         self.route.encode(out);
         self.record_type.encode(out);
     }
@@ -232,7 +232,7 @@ pub struct QlSessionRecord<B> {
     pub payload: EncryptedMessage<B>,
 }
 
-impl<B: AsRef<[u8]>> Encode for QlSessionRecord<B> {
+impl<B: BufView> Encode for QlSessionRecord<B> {
     fn encoded_len(&self) -> usize {
         self.header.encoded_len() + self.payload.encoded_len()
     }
