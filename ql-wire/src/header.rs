@@ -12,10 +12,6 @@ ql_codec::codec_struct! {
     }
 }
 
-impl RouteHeader {
-    pub const WIRE_SIZE: usize = QID::SIZE * 2;
-}
-
 ql_codec::codec_struct! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct SessionHeader {
@@ -43,7 +39,7 @@ impl SessionHeader {
         let aad_len = Self::AAD_DOMAIN.len()
             + size_of::<u8>()
             + size_of::<u8>()
-            + RouteHeader::WIRE_SIZE
+            + route.encoded_len()
             + self.seq.encoded_len();
         let mut aad = Vec::with_capacity(aad_len);
         aad.put_slice(Self::AAD_DOMAIN);

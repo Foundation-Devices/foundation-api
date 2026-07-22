@@ -41,11 +41,6 @@ pub trait Decode<B: ByteSlice>: Sized {
 #[macro_export]
 macro_rules! varint_wrapper {
     ($name:ty, $inner:ty) => {
-        impl $name {
-            pub const MAX_ENCODED_LEN: usize =
-                <$inner as ql_codec::varint::Primitive>::MAX_ENCODED_LEN;
-        }
-
         impl ql_codec::Encode for $name {
             fn encoded_len(&self) -> usize {
                 ql_codec::varint::encoded_len::<$inner>(self.0)

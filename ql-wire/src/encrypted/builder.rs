@@ -1,5 +1,5 @@
 use bytes::BufMut;
-use ql_codec::{BufView, Encode};
+use ql_codec::{BufView, Encode, Varint};
 
 use super::{RecordAck, SessionClose, SessionFrame, StreamData, StreamReset, StreamWindow};
 use crate::{
@@ -15,8 +15,9 @@ pub struct SessionRecordBuilder {
 }
 
 impl SessionRecordBuilder {
-    pub const MIN_CAPACITY: usize =
-        RecordHeader::WIRE_SIZE + RecordSeq::MAX_ENCODED_LEN + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
+    pub const MIN_CAPACITY: usize = RecordHeader::WIRE_SIZE
+        + Varint::<u64>::MAX_ENCODED_LEN
+        + crate::ENCRYPTED_MESSAGE_AUTH_SIZE;
 
     pub fn new(seq: RecordSeq, max_capacity: usize) -> Self {
         let prefix_len =

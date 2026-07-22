@@ -31,23 +31,19 @@ ql_codec::codec_struct! {
     }
 }
 
-impl EphemeralPublicKey {
-    pub const WIRE_SIZE: usize = MlKemPublicKey::SIZE;
-}
-
 ql_codec::codec_newtype! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct EncryptedMlKemCiphertext(pub Box<[u8; Self::WIRE_SIZE]>);
+    pub struct EncryptedMlKemCiphertext(pub Box<[u8; Self::SIZE]>);
 }
 
 impl EncryptedMlKemCiphertext {
-    pub const WIRE_SIZE: usize = MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
+    pub const SIZE: usize = MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
 
-    pub fn new(data: Box<[u8; Self::WIRE_SIZE]>) -> Self {
+    pub fn new(data: Box<[u8; Self::SIZE]>) -> Self {
         Self(data)
     }
 
-    pub fn as_bytes(&self) -> &[u8; Self::WIRE_SIZE] {
+    pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
         self.0.as_ref()
     }
 }
@@ -368,7 +364,7 @@ fn encrypt_mlkem_ciphertext(
     ciphertext: &MlKemCiphertext,
 ) -> Result<EncryptedMlKemCiphertext, Error> {
     let encrypted = symmetric.encrypt_and_hash(crypto, ciphertext.as_bytes())?;
-    let out: Box<[u8; EncryptedMlKemCiphertext::WIRE_SIZE]> =
+    let out: Box<[u8; EncryptedMlKemCiphertext::SIZE]> =
         encrypted.try_into().map_err(|_| Error::InvalidState)?;
     Ok(EncryptedMlKemCiphertext::new(out))
 }

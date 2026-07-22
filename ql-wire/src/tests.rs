@@ -914,7 +914,7 @@ fn mlkem_ciphertext() -> MlKemCiphertext {
 }
 
 fn encrypted_mlkem_ciphertext() -> EncryptedMlKemCiphertext {
-    EncryptedMlKemCiphertext::new(Box::new([3u8; EncryptedMlKemCiphertext::WIRE_SIZE]))
+    EncryptedMlKemCiphertext::new(Box::new([3u8; EncryptedMlKemCiphertext::SIZE]))
 }
 
 fn encrypted_peer_bundle() -> EncryptedPeerBundle {

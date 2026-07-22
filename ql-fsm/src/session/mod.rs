@@ -523,7 +523,7 @@ impl SessionFsm {
         builder: &mut SessionRecordBuilder,
         outbound: &mut TrackedRecord,
     ) {
-        const OVERHEAD: usize = 1 + StreamData::<Vec<u8>>::MIN_WIRE_SIZE;
+        const OVERHEAD: usize = 1 + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD;
 
         let len = self.state.streams.len();
         if len == 0 {

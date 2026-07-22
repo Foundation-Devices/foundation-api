@@ -14,11 +14,17 @@ pub struct StreamData<B, H = B> {
 }
 
 impl<B, H> StreamData<B, H> {
-    pub const MIN_WIRE_SIZE: usize = StreamId::MAX_ENCODED_LEN
-        + Varint::<u64>::MAX_ENCODED_LEN
-        + size_of::<u8>()
-        + Varint::<usize>::MAX_ENCODED_LEN
-        + Varint::<usize>::MAX_ENCODED_LEN;
+    /// Largest framing overhead of a stream data frame, excluding the header and payload bytes
+    /// that its two length prefixes measure.
+    ///
+    /// The terms follow the field order in `encode`. Lengths are bounded as `u64` rather than
+    /// `usize` so the figure does not shrink on a 32-bit target, where framing would otherwise
+    /// differ from the host.
+    pub const MAX_WIRE_OVERHEAD: usize = Varint::<u64>::MAX_ENCODED_LEN // stream id
+        + Varint::<u64>::MAX_ENCODED_LEN // offset
+        + size_of::<u8>() // flags
+        + Varint::<u64>::MAX_ENCODED_LEN // header length
+        + Varint::<u64>::MAX_ENCODED_LEN; // payload length
 }
 
 impl<B: ByteSlice> Decode<B> for StreamData<B> {

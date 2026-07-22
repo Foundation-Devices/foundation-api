@@ -7,10 +7,6 @@ ql_codec::codec_struct! {
     }
 }
 
-impl TransportParams {
-    pub const WIRE_SIZE: usize = size_of::<u32>();
-}
-
 impl Default for TransportParams {
     fn default() -> Self {
         Self {

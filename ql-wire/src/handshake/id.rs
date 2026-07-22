@@ -3,7 +3,3 @@ ql_codec::codec_newtype! {
     #[repr(transparent)]
     pub struct HandshakeId(pub u32);
 }
-
-impl HandshakeId {
-    pub const WIRE_SIZE: usize = size_of::<u32>();
-}

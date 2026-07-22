@@ -234,7 +234,7 @@ fn tracked_record_count_is_bounded() {
         SessionConfig {
             record_max_size: SessionRecordBuilder::MIN_CAPACITY
                 + 1
-                + StreamData::<Vec<u8>>::MIN_WIRE_SIZE
+                + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD
                 + 1,
             stream_send_buffer_size: PAYLOAD_LEN,
             initial_peer_stream_receive_window: PAYLOAD_LEN as u32,
@@ -267,7 +267,7 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
         SessionConfig {
             record_max_size: SessionRecordBuilder::MIN_CAPACITY
                 + 1 // discriminator byte
-                + StreamData::<Vec<u8>>::MIN_WIRE_SIZE
+                + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD
                 + PAYLOAD_LEN,
             ..SessionConfig::default()
         },
@@ -948,7 +948,7 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
         local_parity: StreamParity::Even,
         record_max_size: SessionRecordBuilder::MIN_CAPACITY
             + 1 // discriminator byte
-            + StreamData::<Vec<u8>>::MIN_WIRE_SIZE
+            + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD
             + 10, // keeps stream-data records tiny enough to force ACK paging
         ack_delay: Duration::from_millis(5),
         retransmit_timeout: Duration::from_millis(25),

@@ -1,4 +1,5 @@
 use ql_codec::{ByteSlice, Decode, Encode};
+use ql_common::QID;
 
 use crate::{
     encrypted_message::EncryptedMessage,
@@ -16,7 +17,7 @@ where
 }
 
 pub fn encode_record_vec<T: Encode + ?Sized>(header: RecordHeader, body: &T) -> Vec<u8> {
-    let mut out = Vec::with_capacity(RecordHeader::WIRE_SIZE + body.encoded_len());
+    let mut out = Vec::with_capacity(header.encoded_len() + body.encoded_len());
     encode_record(&mut out, header, body);
     out
 }
@@ -40,7 +41,7 @@ ql_codec::codec_struct! {
 }
 
 impl RecordHeader {
-    pub const WIRE_SIZE: usize = size_of::<u8>() + RouteHeader::WIRE_SIZE + size_of::<u8>();
+    pub const WIRE_SIZE: usize = size_of::<u8>() + QID::SIZE * 2 + size_of::<u8>();
 
     pub fn new(route: RouteHeader, record_type: RecordType) -> Self {
         Self {
