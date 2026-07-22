@@ -24,14 +24,14 @@ const PROTOCOL_IK: &[u8] = b"ql-wire:pq-ik:v1";
 const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct EphemeralPublicKey {
         pub mlkem_public_key: MlKemPublicKey,
     }
 }
 
-ql_codec::codec_newtype! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct EncryptedMlKemCiphertext(pub Box<[u8; Self::SIZE]>);
 }

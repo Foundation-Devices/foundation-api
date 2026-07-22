@@ -209,6 +209,7 @@ impl<B: ByteSlice, T: Decode<B>> Decode<B> for Option<T> {
 
 /// Length prefixes are `u32`, so a 64-bit host cannot emit one a 32-bit peer would reject: a
 /// `usize` varint is capped at ten bytes on one target and five on the other.
+#[track_caller]
 fn len_prefix(len: usize) -> u32 {
     u32::try_from(len).expect("byte field longer than u32::MAX")
 }

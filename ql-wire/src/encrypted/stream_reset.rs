@@ -2,7 +2,7 @@ use ql_common::ResetCode;
 
 use super::StreamId;
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     /// aborts one or both lanes of a stream with a reset code
     ///
     /// stream origin is the peer that opened the stream
@@ -16,7 +16,7 @@ ql_codec::codec_struct! {
     }
 }
 
-ql_codec::codec_enum! {
+ql_codec::codec! {
     /// selects which stream lane a [`StreamReset`] applies to
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum ResetTarget {

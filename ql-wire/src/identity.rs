@@ -2,7 +2,7 @@ use ql_common::QID;
 
 use crate::{derive_qid, Error, MlKemKeyPair, MlKemPrivateKey, MlKemPublicKey, QlCrypto, QlHash};
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct PeerBundle {
         pub version: u16,
@@ -24,7 +24,7 @@ impl PeerBundle {
     }
 }
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone)]
     pub struct QlIdentity {
         pub qid: QID,

@@ -1,4 +1,4 @@
-ql_codec::codec_struct! {
+ql_codec::codec! {
     /// closes the whole session immediately with a reset code.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SessionClose {

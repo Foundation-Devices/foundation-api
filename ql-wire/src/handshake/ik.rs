@@ -67,7 +67,7 @@ impl<B: ByteSlice> ql_codec::Decode<B> for Ik1 {
     }
 }
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Ik2 {
         pub handshake_id: HandshakeId,

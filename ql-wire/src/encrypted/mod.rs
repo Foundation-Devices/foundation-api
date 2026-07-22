@@ -19,7 +19,7 @@ pub use stream_data::*;
 pub use stream_reset::*;
 pub use stream_window::*;
 
-ql_codec::codec_enum! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum SessionFrame<B> as SessionFrameKind {
         // todo: do we need ping as explicit frame?

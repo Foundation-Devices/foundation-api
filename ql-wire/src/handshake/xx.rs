@@ -14,7 +14,7 @@ use crate::{
 
 const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Xx1 {
         pub handshake_id: HandshakeId,
@@ -24,7 +24,7 @@ ql_codec::codec_struct! {
     }
 }
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Xx2 {
         pub handshake_id: HandshakeId,
@@ -34,7 +34,7 @@ ql_codec::codec_struct! {
     }
 }
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Xx3 {
         pub handshake_id: HandshakeId,
@@ -43,7 +43,7 @@ ql_codec::codec_struct! {
     }
 }
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Xx4 {
         pub handshake_id: HandshakeId,

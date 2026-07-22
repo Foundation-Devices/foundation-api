@@ -31,7 +31,7 @@ where
     Ok((reader.decode()?, reader.decode()?))
 }
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct RecordHeader {
         pub version: u8,
@@ -52,7 +52,7 @@ impl RecordHeader {
     }
 }
 
-ql_codec::codec_enum! {
+ql_codec::codec! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum RecordType {
         Handshake = 1,
@@ -60,7 +60,7 @@ ql_codec::codec_enum! {
     }
 }
 
-ql_codec::codec_enum! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum QlHandshakeRecord as HandshakeKind {
         Ik1(Ik1) = 1,
@@ -74,7 +74,7 @@ ql_codec::codec_enum! {
     }
 }
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct QlSessionRecord<B> {
         pub header: SessionHeader,

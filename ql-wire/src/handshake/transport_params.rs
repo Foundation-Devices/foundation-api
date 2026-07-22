@@ -1,4 +1,4 @@
-ql_codec::codec_struct! {
+ql_codec::codec! {
     /// Session parameters advertised in the handshake
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct TransportParams {

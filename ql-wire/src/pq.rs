@@ -8,7 +8,7 @@ const ML_KEM_1024_PUBLIC_KEY_SIZE: usize = 1568;
 const ML_KEM_1024_PRIVATE_KEY_SIZE: usize = 3168;
 const ML_KEM_1024_CIPHERTEXT_SIZE: usize = 1568;
 
-ql_codec::codec_newtype! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     pub struct SessionKey(pub [u8; Self::SIZE]);
 }
@@ -33,7 +33,7 @@ impl Drop for SessionKey {
     }
 }
 
-ql_codec::codec_newtype! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     pub struct MlKemPublicKey(Box<[u8; MlKemPublicKey::SIZE]>);
 }
@@ -56,7 +56,7 @@ impl Drop for MlKemPublicKey {
     }
 }
 
-ql_codec::codec_newtype! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     pub struct MlKemPrivateKey(Box<[u8; MlKemPrivateKey::SIZE]>);
 }
@@ -79,7 +79,7 @@ impl Drop for MlKemPrivateKey {
     }
 }
 
-ql_codec::codec_newtype! {
+ql_codec::codec! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     pub struct MlKemCiphertext(Box<[u8; MlKemCiphertext::SIZE]>);
 }

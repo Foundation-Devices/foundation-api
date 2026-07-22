@@ -3,7 +3,7 @@ use crate::{
     ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
-ql_codec::codec_newtype! {
+ql_codec::codec! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[repr(transparent)]
     pub struct Nonce(pub [u8; Self::SIZE]);

@@ -4,7 +4,7 @@ use ql_common::QID;
 
 use crate::QL_WIRE_VERSION;
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct RouteHeader {
         pub sender: QID,
@@ -12,7 +12,7 @@ ql_codec::codec_struct! {
     }
 }
 
-ql_codec::codec_struct! {
+ql_codec::codec! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct SessionHeader {
         pub seq: RecordSeq,
