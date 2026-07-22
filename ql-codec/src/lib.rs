@@ -3,6 +3,7 @@
 mod buf_view;
 mod codec;
 mod error;
+mod macros;
 mod reader;
 mod slice;
 pub mod varint;

@@ -1,42 +1,26 @@
 use ::bytes::BufMut;
-use ql_codec::{ByteSlice, Encode, Error};
+use ql_codec::Encode;
 use ql_common::QID;
 
 use crate::QL_WIRE_VERSION;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RouteHeader {
-    pub sender: QID,
-    pub recipient: QID,
+ql_codec::codec_struct! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct RouteHeader {
+        pub sender: QID,
+        pub recipient: QID,
+    }
 }
 
 impl RouteHeader {
     pub const WIRE_SIZE: usize = QID::SIZE * 2;
 }
 
-impl Encode for RouteHeader {
-    fn encoded_len(&self) -> usize {
-        self.sender.encoded_len() + self.recipient.encoded_len()
+ql_codec::codec_struct! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SessionHeader {
+        pub seq: RecordSeq,
     }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.sender.encode(out);
-        self.recipient.encode(out);
-    }
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for RouteHeader {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, Error> {
-        Ok(Self {
-            sender: reader.decode()?,
-            recipient: reader.decode()?,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SessionHeader {
-    pub seq: RecordSeq,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -69,23 +53,5 @@ impl SessionHeader {
         self.seq.encode(&mut aad);
         debug_assert_eq!(aad.len(), aad_len);
         aad
-    }
-}
-
-impl Encode for SessionHeader {
-    fn encoded_len(&self) -> usize {
-        self.seq.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.seq.encode(out);
-    }
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for SessionHeader {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, Error> {
-        Ok(Self {
-            seq: reader.decode()?,
-        })
     }
 }

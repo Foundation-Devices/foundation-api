@@ -1,7 +1,5 @@
 //! Shared QuantumLink primitive types.
 
-use ql_codec::{ByteSlice, Decode, Encode, Error, Reader};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct ResetCode(pub u64);
@@ -49,28 +47,14 @@ impl std::fmt::Display for ResetCode {
 
 ql_codec::varint_wrapper!(ResetCode, u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct QID(pub [u8; Self::SIZE]);
+ql_codec::codec_newtype! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct QID(pub [u8; Self::SIZE]);
+}
 
 impl QID {
     pub const SIZE: usize = 16;
-}
-
-impl Encode for QID {
-    fn encoded_len(&self) -> usize {
-        self.0.encoded_len()
-    }
-
-    fn encode<W: bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.0.encode(out);
-    }
-}
-
-impl<B: ByteSlice> Decode<B> for QID {
-    fn decode(reader: &mut Reader<B>) -> Result<Self, Error> {
-        Ok(Self(reader.decode()?))
-    }
 }
 
 /// Identifier for a stream within a QL session.

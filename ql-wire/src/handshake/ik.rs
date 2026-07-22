@@ -67,38 +67,13 @@ impl<B: ByteSlice> ql_codec::Decode<B> for Ik1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ik2 {
-    pub handshake_id: HandshakeId,
-    pub transport_params: TransportParams,
-    pub ekem_ciphertext: MlKemCiphertext,
-    pub skem_ciphertext: EncryptedMlKemCiphertext,
-}
-
-impl Encode for Ik2 {
-    fn encoded_len(&self) -> usize {
-        self.handshake_id.encoded_len()
-            + self.transport_params.encoded_len()
-            + self.ekem_ciphertext.encoded_len()
-            + self.skem_ciphertext.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.handshake_id.encode(out);
-        self.transport_params.encode(out);
-        self.ekem_ciphertext.encode(out);
-        self.skem_ciphertext.encode(out);
-    }
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for Ik2 {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self {
-            handshake_id: reader.decode()?,
-            transport_params: reader.decode()?,
-            ekem_ciphertext: reader.decode()?,
-            skem_ciphertext: reader.decode()?,
-        })
+ql_codec::codec_struct! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Ik2 {
+        pub handshake_id: HandshakeId,
+        pub transport_params: TransportParams,
+        pub ekem_ciphertext: MlKemCiphertext,
+        pub skem_ciphertext: EncryptedMlKemCiphertext,
     }
 }
 

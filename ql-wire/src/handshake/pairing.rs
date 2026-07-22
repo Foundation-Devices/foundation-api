@@ -5,9 +5,15 @@ use crate::QlCrypto;
 const PAIRING_ID_DOMAIN: &[u8] = b"ql-wire:pairing-id:v1";
 const PAIRING_PSK_DOMAIN: &[u8] = b"ql-wire:pairing-psk:v1";
 
-array_wrapper!(PairingToken, 16);
+ql_codec::codec_newtype! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct PairingToken(pub [u8; Self::SIZE]);
+}
 
 impl PairingToken {
+    pub const SIZE: usize = 16;
+
     pub fn id(&self, crypto: &impl QlCrypto) -> PairingId {
         let hash = crypto.sha256(&[PAIRING_ID_DOMAIN, &self.0]);
         let mut id = [0u8; PairingId::SIZE];
@@ -29,7 +35,15 @@ impl Display for PairingToken {
     }
 }
 
-array_wrapper!(PairingId, 16);
+ql_codec::codec_newtype! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct PairingId(pub [u8; Self::SIZE]);
+}
+
+impl PairingId {
+    pub const SIZE: usize = 16;
+}
 
 impl Display for PairingId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {

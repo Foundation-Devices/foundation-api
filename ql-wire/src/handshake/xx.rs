@@ -1,4 +1,3 @@
-use ql_codec::{ByteSlice, Encode};
 use ql_common::QID;
 
 use super::{
@@ -15,130 +14,40 @@ use crate::{
 
 const PROTOCOL_XX: &[u8] = b"ql-wire:pq-xx:v1";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Xx1 {
-    pub handshake_id: HandshakeId,
-    pub pairing_id: PairingId,
-    pub transport_params: TransportParams,
-    pub ephemeral: EphemeralPublicKey,
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for Xx1 {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self {
-            handshake_id: reader.decode()?,
-            pairing_id: reader.decode()?,
-            transport_params: reader.decode()?,
-            ephemeral: reader.decode()?,
-        })
+ql_codec::codec_struct! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Xx1 {
+        pub handshake_id: HandshakeId,
+        pub pairing_id: PairingId,
+        pub transport_params: TransportParams,
+        pub ephemeral: EphemeralPublicKey,
     }
 }
 
-impl Encode for Xx1 {
-    fn encoded_len(&self) -> usize {
-        self.handshake_id.encoded_len()
-            + self.pairing_id.encoded_len()
-            + self.transport_params.encoded_len()
-            + self.ephemeral.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.handshake_id.encode(out);
-        self.pairing_id.encode(out);
-        self.transport_params.encode(out);
-        self.ephemeral.encode(out);
+ql_codec::codec_struct! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Xx2 {
+        pub handshake_id: HandshakeId,
+        pub transport_params: TransportParams,
+        pub ekem_ciphertext: MlKemCiphertext,
+        pub static_bundle: EncryptedPeerBundle,
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Xx2 {
-    pub handshake_id: HandshakeId,
-    pub transport_params: TransportParams,
-    pub ekem_ciphertext: MlKemCiphertext,
-    pub static_bundle: EncryptedPeerBundle,
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for Xx2 {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self {
-            handshake_id: reader.decode()?,
-            transport_params: reader.decode()?,
-            ekem_ciphertext: reader.decode()?,
-            static_bundle: reader.decode()?,
-        })
+ql_codec::codec_struct! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Xx3 {
+        pub handshake_id: HandshakeId,
+        pub skem_ciphertext: EncryptedMlKemCiphertext,
+        pub static_bundle: EncryptedPeerBundle,
     }
 }
 
-impl Encode for Xx2 {
-    fn encoded_len(&self) -> usize {
-        self.handshake_id.encoded_len()
-            + self.transport_params.encoded_len()
-            + self.ekem_ciphertext.encoded_len()
-            + self.static_bundle.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.handshake_id.encode(out);
-        self.transport_params.encode(out);
-        self.ekem_ciphertext.encode(out);
-        self.static_bundle.encode(out);
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Xx3 {
-    pub handshake_id: HandshakeId,
-    pub skem_ciphertext: EncryptedMlKemCiphertext,
-    pub static_bundle: EncryptedPeerBundle,
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for Xx3 {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self {
-            handshake_id: reader.decode()?,
-            skem_ciphertext: reader.decode()?,
-            static_bundle: reader.decode()?,
-        })
-    }
-}
-
-impl Encode for Xx3 {
-    fn encoded_len(&self) -> usize {
-        self.handshake_id.encoded_len()
-            + self.skem_ciphertext.encoded_len()
-            + self.static_bundle.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.handshake_id.encode(out);
-        self.skem_ciphertext.encode(out);
-        self.static_bundle.encode(out);
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Xx4 {
-    pub handshake_id: HandshakeId,
-    pub skem_ciphertext: EncryptedMlKemCiphertext,
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for Xx4 {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self {
-            handshake_id: reader.decode()?,
-            skem_ciphertext: reader.decode()?,
-        })
-    }
-}
-
-impl Encode for Xx4 {
-    fn encoded_len(&self) -> usize {
-        self.handshake_id.encoded_len() + self.skem_ciphertext.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.handshake_id.encode(out);
-        self.skem_ciphertext.encode(out);
+ql_codec::codec_struct! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Xx4 {
+        pub handshake_id: HandshakeId,
+        pub skem_ciphertext: EncryptedMlKemCiphertext,
     }
 }
 

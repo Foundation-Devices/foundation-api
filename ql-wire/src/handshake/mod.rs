@@ -24,35 +24,21 @@ const PROTOCOL_IK: &[u8] = b"ql-wire:pq-ik:v1";
 const PROTOCOL_KK: &[u8] = b"ql-wire:pq-kk:v1";
 const HANDSHAKE_PREAMBLE_DOMAIN: &[u8] = b"ql-wire:handshake-preamble:v1";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EphemeralPublicKey {
-    pub mlkem_public_key: MlKemPublicKey,
+ql_codec::codec_struct! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EphemeralPublicKey {
+        pub mlkem_public_key: MlKemPublicKey,
+    }
 }
 
 impl EphemeralPublicKey {
     pub const WIRE_SIZE: usize = MlKemPublicKey::SIZE;
 }
 
-impl Encode for EphemeralPublicKey {
-    fn encoded_len(&self) -> usize {
-        self.mlkem_public_key.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.mlkem_public_key.encode(out);
-    }
+ql_codec::codec_newtype! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EncryptedMlKemCiphertext(pub Box<[u8; Self::WIRE_SIZE]>);
 }
-
-impl<B: ByteSlice> ql_codec::Decode<B> for EphemeralPublicKey {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self {
-            mlkem_public_key: reader.decode()?,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncryptedMlKemCiphertext(pub Box<[u8; Self::WIRE_SIZE]>);
 
 impl EncryptedMlKemCiphertext {
     pub const WIRE_SIZE: usize = MlKemCiphertext::SIZE + ENCRYPTED_MESSAGE_AUTH_SIZE;
@@ -63,22 +49,6 @@ impl EncryptedMlKemCiphertext {
 
     pub fn as_bytes(&self) -> &[u8; Self::WIRE_SIZE] {
         self.0.as_ref()
-    }
-}
-
-impl Encode for EncryptedMlKemCiphertext {
-    fn encoded_len(&self) -> usize {
-        self.0.encoded_len()
-    }
-
-    fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
-        self.0.encode(out);
-    }
-}
-
-impl<B: ByteSlice> ql_codec::Decode<B> for EncryptedMlKemCiphertext {
-    fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, ql_codec::Error> {
-        Ok(Self(reader.decode()?))
     }
 }
 
