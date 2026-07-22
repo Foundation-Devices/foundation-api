@@ -1022,3 +1022,25 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
     assert!(next_outbound(&mut sender, final_now).is_none());
     assert!(next_outbound(&mut receiver, final_now).is_none());
 }
+
+#[test]
+fn stream_header_larger_than_the_record_budget_does_not_panic() {
+    let now = Instant::now();
+    let record_max_size = SessionRecordBuilder::MIN_CAPACITY + 256;
+    let mut fsm = SessionFsm::new(
+        SessionConfig {
+            record_max_size,
+            ..SessionConfig::default()
+        },
+        now,
+    );
+
+    // The header rides in the same frame as the payload, so one this large leaves no room.
+    let stream_id = fsm
+        .open_stream(Box::from(vec![7u8; 256]), |_| {})
+        .unwrap()
+        .stream_id();
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"payload"), 7);
+
+    assert!(next_outbound(&mut fsm, now).is_none());
+}

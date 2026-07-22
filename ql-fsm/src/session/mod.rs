@@ -543,6 +543,15 @@ impl SessionFsm {
             if matches!(stream.outbound_state, OutboundState::Closed) {
                 continue;
             }
+            // The header shares the frame with the payload, so it has to come out of the same
+            // budget, and that budget is set before poll_transmit picks the range.
+            let header = match stream.role {
+                StreamRole::Initiator if stream.tx.can_send_header() => stream.header.as_deref(),
+                _ => None,
+            };
+            let Some(max_payload) = max_payload.checked_sub(header.map_or(0, <[u8]>::len)) else {
+                continue;
+            };
             let Some(candidate) = stream.tx.poll_transmit(max_payload, stream.peer_max_offset)
             else {
                 continue;
@@ -550,11 +559,7 @@ impl SessionFsm {
             let frame = StreamData {
                 stream_id,
                 offset: Varint(candidate.offset),
-                header: if matches!(stream.role, StreamRole::Initiator) && candidate.offset == 0 {
-                    stream.header.as_deref()
-                } else {
-                    None
-                },
+                header: if candidate.offset == 0 { header } else { None },
                 fin: candidate.fin,
                 bytes: stream.tx.ranged_bytes(candidate),
             };
