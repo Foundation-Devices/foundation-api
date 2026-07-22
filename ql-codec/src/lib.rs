@@ -12,6 +12,7 @@ pub use codec::{encode_bytes, encoded_len_bytes};
 pub use error::Error;
 pub use reader::Reader;
 pub use slice::ByteSlice;
+pub use varint::Varint;
 
 pub trait Encode {
     fn encoded_len(&self) -> usize;
@@ -41,7 +42,7 @@ macro_rules! varint_wrapper {
     ($name:ty, $inner:ty) => {
         impl $name {
             pub const MAX_ENCODED_LEN: usize =
-                <$inner as ql_codec::varint::VarInt>::MAX_ENCODED_LEN;
+                <$inner as ql_codec::varint::Primitive>::MAX_ENCODED_LEN;
         }
 
         impl ql_codec::Encode for $name {

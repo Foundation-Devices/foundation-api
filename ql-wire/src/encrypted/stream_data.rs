@@ -1,5 +1,5 @@
 use ql_codec::{
-    encode_bytes, encoded_len_bytes, varint, BufView, ByteSlice, Decode, Encode, Error,
+    encode_bytes, encoded_len_bytes, BufView, ByteSlice, Decode, Encode, Error, Varint,
 };
 use ql_common::StreamId;
 
@@ -7,7 +7,7 @@ use ql_common::StreamId;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamData<B, H = B> {
     pub stream_id: StreamId,
-    pub offset: u64,
+    pub offset: Varint<u64>,
     pub header: Option<H>,
     pub fin: bool,
     pub bytes: B,
@@ -15,16 +15,16 @@ pub struct StreamData<B, H = B> {
 
 impl<B, H> StreamData<B, H> {
     pub const MIN_WIRE_SIZE: usize = StreamId::MAX_ENCODED_LEN
-        + <u64 as varint::VarInt>::MAX_ENCODED_LEN
+        + Varint::<u64>::MAX_ENCODED_LEN
         + size_of::<u8>()
-        + <usize as varint::VarInt>::MAX_ENCODED_LEN
-        + <usize as varint::VarInt>::MAX_ENCODED_LEN;
+        + Varint::<usize>::MAX_ENCODED_LEN
+        + Varint::<usize>::MAX_ENCODED_LEN;
 }
 
 impl<B: ByteSlice> Decode<B> for StreamData<B> {
     fn decode(reader: &mut ql_codec::Reader<B>) -> Result<Self, Error> {
         let stream_id = reader.decode()?;
-        let offset = reader.decode_varint()?;
+        let offset = reader.decode()?;
         let flags = reader.decode::<u8>()?;
         let fin = (flags & flag::FIN) != 0;
         let has_header = (flags & flag::HEADER) != 0;
@@ -64,7 +64,7 @@ impl<B, H> StreamData<B, H> {
 impl<B: BufView, H: BufView> Encode for StreamData<B, H> {
     fn encoded_len(&self) -> usize {
         self.stream_id.encoded_len()
-            + varint::encoded_len(self.offset)
+            + self.offset.encoded_len()
             + size_of::<u8>()
             + self.header.as_ref().map_or(0, encoded_len_bytes)
             + encoded_len_bytes(&self.bytes)
@@ -72,12 +72,12 @@ impl<B: BufView, H: BufView> Encode for StreamData<B, H> {
 
     fn encode<W: ::bytes::BufMut + ?Sized>(&self, out: &mut W) {
         debug_assert!(
-            self.offset == 0 || self.header.is_none(),
+            *self.offset == 0 || self.header.is_none(),
             "stream header is only valid at offset 0"
         );
 
         self.stream_id.encode(out);
-        varint::encode(self.offset, out);
+        self.offset.encode(out);
         let mut flags = 0;
         if self.fin {
             flags |= flag::FIN;

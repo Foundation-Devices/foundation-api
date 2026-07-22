@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use ql_codec::Varint;
 use ql_common::{ResetCode, StreamId, QID};
 use ql_wire::{
     decode_session_frames, parse_session_frames, RecordAck, RecordSeq, ResetTarget, SessionFrame,
@@ -401,7 +402,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
     let stream_id = StreamId(1);
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
-        offset: 0,
+        offset: Varint(0),
         header: Some(vec![1_u8]),
         fin: false,
         bytes: b"hi".to_vec(),
@@ -453,7 +454,7 @@ fn pure_ack_only_records_are_fire_and_forget() {
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
-        offset: 0,
+        offset: Varint(0),
         header: Some(vec![1_u8]),
         fin: false,
         bytes: b"hi".to_vec(),
@@ -483,7 +484,7 @@ fn inbound_stream_data_emits_opened_and_readable() {
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(ql_wire::StreamData {
         stream_id,
-        offset: 0,
+        offset: Varint(0),
         header: Some(vec![1_u8]),
         fin: true,
         bytes: b"hello".to_vec(),
@@ -512,7 +513,7 @@ fn inbound_empty_fin_emits_finished_immediately() {
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
-        offset: 0,
+        offset: Varint(0),
         header: Some(vec![1_u8]),
         fin: true,
         bytes: Vec::new(),
@@ -597,7 +598,7 @@ fn duplicate_stream_data_is_not_redelivered() {
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
-        offset: 0,
+        offset: Varint(0),
         header: Some(vec![1_u8]),
         fin: false,
         bytes: b"hi".to_vec(),
@@ -655,7 +656,7 @@ fn late_remote_stream_data_after_reset_is_ignored() {
     })];
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
-        offset: 0,
+        offset: Varint(0),
         header: Some(vec![1_u8]),
         fin: false,
         bytes: b"hello".to_vec(),
@@ -687,7 +688,7 @@ fn duplicate_finished_remote_data_after_reap_is_ignored() {
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
-        offset: 0,
+        offset: Varint(0),
         header: Some(vec![1_u8]),
         fin: true,
         bytes: b"hello".to_vec(),
@@ -724,7 +725,7 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
-        offset: 0,
+        offset: Varint(0),
         header: Some(vec![1_u8]),
         fin: true,
         bytes: b"hello".to_vec(),
@@ -836,7 +837,7 @@ fn close_does_not_ack_rejected_record_seq() {
 
     let invalid = vec![SessionFrame::StreamData(StreamData {
         stream_id: StreamId(0),
-        offset: 0,
+        offset: Varint(0),
         header: Some(vec![1_u8]),
         fin: false,
         bytes: b"bad".to_vec(),
@@ -923,7 +924,7 @@ fn initial_peer_stream_receive_window_limits_first_send() {
         RecordSeq(9),
         &[SessionFrame::StreamWindow(ql_wire::StreamWindow {
             stream_id,
-            maximum_offset: 5,
+            maximum_offset: Varint(5),
         })],
     );
     assert!(events.is_empty());
@@ -934,7 +935,7 @@ fn initial_peer_stream_receive_window_limits_first_send() {
             frame,
             SessionFrame::StreamData(frame)
                 if frame.stream_id == stream_id
-                    && frame.offset == 3
+                    && *frame.offset == 3
                     && frame.bytes.as_slice() == b"lo"
         )
     }));

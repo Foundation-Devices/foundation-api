@@ -1,4 +1,4 @@
-use ql_codec::{Decode, Encode};
+use ql_codec::{Decode, Encode, Varint};
 use ql_common::{ResetCode, StreamId, QID};
 
 use super::*;
@@ -651,11 +651,11 @@ fn encrypted_session_record_round_trip_authenticates_header() {
         ),
         SessionFrame::StreamWindow(StreamWindow {
             stream_id: StreamId(9),
-            maximum_offset: 65_536,
+            maximum_offset: Varint(65_536),
         }),
         SessionFrame::StreamData(StreamData {
             stream_id: StreamId(9),
-            offset: 1024,
+            offset: Varint(1024),
             header: None,
             bytes: b"hello".to_vec(),
             fin: true,
@@ -862,7 +862,7 @@ fn protocol_record_size_breakdown() {
         &session.tx_key,
         &[SessionFrame::StreamData(StreamData {
             stream_id: StreamId(1),
-            offset: 0,
+            offset: Varint(0),
             header: None,
             fin: false,
             bytes: Vec::new(),

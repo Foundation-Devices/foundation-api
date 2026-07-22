@@ -53,7 +53,7 @@ impl<B: ByteSlice> Reader<B> {
     #[inline]
     pub fn decode_varint<T>(&mut self) -> Result<T, Error>
     where
-        T: varint::VarInt,
+        T: varint::Primitive,
     {
         varint::decode(self)
     }

@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use indexmap::IndexMap;
+use ql_codec::Varint;
 use ql_common::StreamId;
 use ql_wire::{
     RecordAck, RecordSeq, ResetTarget, SessionClose, SessionCloseCode, SessionFrame,
@@ -503,17 +504,17 @@ impl SessionFsm {
             }
             let frame = StreamWindow {
                 stream_id,
-                maximum_offset: stream.recv_limit(),
+                maximum_offset: Varint(stream.recv_limit()),
             };
             if !builder.push_stream_window(&frame) {
                 break;
             }
 
             stream.pending_window = false;
-            stream.advertised_max_offset = frame.maximum_offset;
+            stream.advertised_max_offset = *frame.maximum_offset;
             outbound
                 .window_updates
-                .push((stream_id, frame.maximum_offset));
+                .push((stream_id, *frame.maximum_offset));
         }
     }
 
@@ -548,7 +549,7 @@ impl SessionFsm {
             };
             let frame = StreamData {
                 stream_id,
-                offset: candidate.offset,
+                offset: Varint(candidate.offset),
                 header: if matches!(stream.role, StreamRole::Initiator) && candidate.offset == 0 {
                     stream.header.as_deref()
                 } else {
@@ -660,7 +661,7 @@ impl SessionFsm {
             },
         };
 
-        let frame_offset = offset;
+        let frame_offset = *offset;
         let Some(frame_end) = frame_offset.checked_add(bytes.len() as u64) else {
             return Err(());
         };
@@ -738,7 +739,7 @@ impl SessionFsm {
         };
 
         let was_full = stream.send_capacity(self.config.stream_send_buffer_size) == 0;
-        let maximum_offset = frame.maximum_offset;
+        let maximum_offset = *frame.maximum_offset;
         if maximum_offset > stream.peer_max_offset {
             stream.peer_max_offset = maximum_offset;
         }
