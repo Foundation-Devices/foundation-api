@@ -203,6 +203,7 @@ impl Harness {
         fsm.connect_xx(
             time,
             PairingInvite {
+                version: PairingInvite::VERSION,
                 qid: remote_qid,
                 token,
             },

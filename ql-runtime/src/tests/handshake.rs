@@ -139,6 +139,7 @@ async fn start_pairing_round_trip_connects_when_armed() {
 
         handle_b.arm_pairing(token);
         handle_a.start_pairing(PairingInvite {
+            version: PairingInvite::VERSION,
             qid: identity_b.qid,
             token,
         });
@@ -168,6 +169,7 @@ async fn start_pairing_does_not_connect_when_unarmed() {
         spawn_forwarder(outbound_b, inbound_a_tx);
 
         handle_a.start_pairing(PairingInvite {
+            version: PairingInvite::VERSION,
             qid: identity_b.qid,
             token,
         });
