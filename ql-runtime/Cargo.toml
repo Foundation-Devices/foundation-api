@@ -1,0 +1,37 @@
+[package]
+name = "ql-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "QuantumLink async runtime"
+license = "Proprietary"
+
+[features]
+default = []
+log = ["dep:log"]
+rpc = ["dep:ql-rpc"]
+
+[dependencies]
+async-channel = { version = "2.5" }
+bytes = { workspace = true }
+diatomic-waker = { version = "0.2.3", default-features = false }
+futures-lite = { version = "2.5" }
+log = { version = "0.4", optional = true }
+oneshot = { version = "0.1.11" }
+ql-fsm = { workspace = true }
+ql-common = { workspace = true }
+ql-rpc = { workspace = true, optional = true }
+ql-wire = { workspace = true }
+
+[dev-dependencies]
+env_logger = "0.11"
+log = "0.4"
+ql-codec = { workspace = true }
+ql-wire = { workspace = true, features = ["test-utils"] }
+tokio = { version = "1.44", features = ["macros", "rt", "time", "sync"] }
+
+[target.'cfg(loom)'.dev-dependencies]
+event-listener = { version = "5.4", features = ["loom"] }
+loom = "0.7"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

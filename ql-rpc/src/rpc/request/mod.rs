@@ -1,0 +1,22 @@
+use super::Route;
+use crate::RpcCodec;
+
+mod client;
+mod server;
+
+pub use self::{client::*, server::*};
+
+/// request-response rpc with exactly one typed value in each direction
+///
+/// the request is read to eof on the server side, so callers must finish the
+/// request stream after encoding [`Self::Request`]
+/// the response is also read to eof and rejects trailing bytes after
+/// [`Self::Response`]
+pub trait Request: Route {
+    /// codec error shared by request and response values
+    type Error;
+    /// typed input sent by the caller
+    type Request: RpcCodec<Error = Self::Error>;
+    /// typed output returned by the responder
+    type Response: RpcCodec<Error = Self::Error>;
+}

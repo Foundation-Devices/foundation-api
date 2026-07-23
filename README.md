@@ -1,14 +1,15 @@
 # Foundation API
 
-This monorepo contains the core crates for a device-to-device API using Blockchain Commons' GSTP
+This monorepo contains the core crates for Foundation device-to-device protocols.
 
 ## Crates
 
--   **abstracted**: Abstractions of the BLE and SE chips
--   **api**: The API - contains predefined QL messages
--   **api-demo**: Tokio-based demo of device-to-device communication
 -   **btp**: Beefcake Transfer Protocol for splitting messages into MTU sized chunks
--   **quantum-link-macros**: Macros to easily turn Rust Structs and Enums into valid QL messages
+-   **backup-shard**: Magic backup shard encoding
+-   **ql-wire**: QuantumLink wire-format definitions
+-   **ql-fsm**: QuantumLink Sans-IO protocol finite state machine
+-   **ql-runtime**: QuantumLink async runtime
+-   **ql-rpc**: RPC modality layer over QuantumLink streams
 
 ## Development
 

@@ -1,0 +1,10 @@
+[package]
+name = "ql-common"
+version = "0.1.0"
+edition = "2021"
+description = "QuantumLink shared primitive types"
+license = "Proprietary"
+
+[dependencies]
+bytes = { workspace = true }
+ql-codec = { workspace = true }

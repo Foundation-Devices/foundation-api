@@ -1,0 +1,11 @@
+[package]
+name = "ql-rpc"
+version = "0.1.0"
+edition = "2021"
+description = "QuantumLink RPC protocol"
+license = "Proprietary"
+
+[dependencies]
+bytes = { workspace = true }
+ql-common = { workspace = true }
+trait-variant = { version = "0.1" }

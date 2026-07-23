@@ -1,31 +1,31 @@
 [workspace]
 resolver = "2"
-members = ["api", "backup-shard", "btp", "quantum-link-macros"]
+members = [
+  "backup-shard",
+  "btp",
+  "ql-codec",
+  "ql-common",
+  "ql-fsm",
+  "ql-rpc",
+  "ql-runtime",
+  "ql-wire",
+]
 
 [workspace.package]
 homepage = "https://github.com/Foundation-Devices/foundation-api"
 
 [workspace.dependencies]
-# blockchain commons
-bc-components = { version = "0.28.0" }
-bc-envelope = { version = "0.37.0" }
-bc-xid = { version = "0.16.0" }
 dcbor = { version = "0.23.3" }
-gstp = { version = "0.11.0" }
-
-chrono = "0.4"
+bytes = "1"
 getrandom = { version = "0.2" }
 insta = { version = "1.43.2" }
-thiserror = { version = "2" }
 rkyv = { version = "0.8" }
 
 # workspace crates
 backup-shard = { path = "backup-shard" }
 btp = { path = "btp" }
-foundation-api = { path = "api" }
-quantum-link-macros = { path = "quantum-link-macros" }
-
-[patch.crates-io]
-pqcrypto-traits = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
-pqcrypto-mldsa = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
-pqcrypto-mlkem = { git = "https://github.com/Foundation-Devices/pqcrypto", rev = "ebadf71214f67cb970242fa1053b4acb65767737" }
+ql-codec = { path = "ql-codec" }
+ql-common = { path = "ql-common" }
+ql-fsm = { path = "ql-fsm" }
+ql-rpc = { path = "ql-rpc" }
+ql-wire = { path = "ql-wire" }

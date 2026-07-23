@@ -1,0 +1,55 @@
+use std::fmt::{self, Display, Formatter};
+
+use crate::QlCrypto;
+
+const PAIRING_ID_DOMAIN: &[u8] = b"ql-wire:pairing-id:v1";
+const PAIRING_PSK_DOMAIN: &[u8] = b"ql-wire:pairing-psk:v1";
+
+ql_codec::codec! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct PairingToken(pub [u8; Self::SIZE]);
+}
+
+impl PairingToken {
+    pub const SIZE: usize = 16;
+
+    pub fn id(&self, crypto: &impl QlCrypto) -> PairingId {
+        let hash = crypto.sha256(&[PAIRING_ID_DOMAIN, &self.0]);
+        let mut id = [0u8; PairingId::SIZE];
+        id.copy_from_slice(&hash[..PairingId::SIZE]);
+        PairingId(id)
+    }
+
+    pub(super) fn psk(&self, crypto: &impl QlCrypto) -> [u8; 32] {
+        crypto.sha256(&[PAIRING_PSK_DOMAIN, &self.0])
+    }
+}
+
+impl Display for PairingToken {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+ql_codec::codec! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct PairingId(pub [u8; Self::SIZE]);
+}
+
+impl PairingId {
+    pub const SIZE: usize = 16;
+}
+
+impl Display for PairingId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
