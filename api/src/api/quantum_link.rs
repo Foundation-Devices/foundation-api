@@ -1,9 +1,8 @@
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use bc_components::{EncapsulationScheme, PrivateKeys, PublicKeys, SignatureScheme, ARID};
 use bc_envelope::{
-    prelude::{CBORCase, CBOR},
-    Envelope, EventBehavior, Expression, ExpressionBehavior, Function,
+    prelude::CBOR, Envelope, EventBehavior, Expression, ExpressionBehavior, Function,
 };
 use bc_xid::XIDDocument;
 use chrono::{DateTime, Utc};
@@ -187,11 +186,23 @@ pub trait QuantumLink: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {
 
 impl<T> QuantumLink for T where T: Into<CBOR> + TryFrom<CBOR, Error = dcbor::Error> {}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[cfg_attr(feature = "envoy", flutter_rust_bridge::frb(opaque))]
 pub struct QuantumLinkIdentity {
     pub private_keys: Option<PrivateKeys>,
     pub xid_document: XIDDocument,
+}
+
+impl fmt::Debug for QuantumLinkIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QuantumLinkIdentity")
+            .field(
+                "private_keys",
+                &self.private_keys.as_ref().map(|_| "<redacted>"),
+            )
+            .field("xid_document", &self.xid_document)
+            .finish()
+    }
 }
 
 impl QuantumLinkIdentity {
@@ -209,33 +220,6 @@ impl QuantumLinkIdentity {
             private_keys: Some(private_keys),
             xid_document,
         }
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut map = bc_envelope::prelude::Map::new();
-        map.insert(CBOR::from("xid_document"), self.clone().xid_document);
-        if self.private_keys.is_some() {
-            map.insert(
-                CBOR::from("private_keys"),
-                self.clone().private_keys.unwrap(),
-            );
-        }
-
-        CBOR::from(map).to_cbor_data()
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> dcbor::Result<Self> {
-        let cbor = CBOR::try_from_data(bytes)?;
-        let case = cbor.into_case();
-
-        let CBORCase::Map(map) = case else {
-            return Err(dcbor::Error::WrongType);
-        };
-
-        Ok(QuantumLinkIdentity {
-            xid_document: map.get("xid_document").ok_or(dcbor::Error::MissingMapKey)?,
-            private_keys: map.get("private_keys"),
-        })
     }
 }
 
