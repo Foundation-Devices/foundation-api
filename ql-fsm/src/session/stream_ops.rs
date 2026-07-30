@@ -12,23 +12,14 @@ pub struct StreamOps<'a, E> {
     session: &'a mut SessionFsm,
     emit: E,
     stream_id: StreamId,
-    stream_index: usize,
-    reap_on_drop: bool,
 }
 
 impl<'a, E: EventSink> StreamOps<'a, E> {
-    pub(super) fn new(
-        session: &'a mut SessionFsm,
-        stream_id: StreamId,
-        stream_index: usize,
-        emit: E,
-    ) -> Self {
+    pub(super) fn new(session: &'a mut SessionFsm, stream_id: StreamId, emit: E) -> Self {
         Self {
             session,
             emit,
             stream_id,
-            stream_index,
-            reap_on_drop: false,
         }
     }
 
@@ -73,7 +64,6 @@ impl<'a, E: EventSink> StreamOps<'a, E> {
         if emit_finished {
             self.emit.emit(SessionEvent::Finished(stream_id));
         }
-        self.reap_on_drop = true;
         Ok(())
     }
 
@@ -102,28 +92,16 @@ impl<'a, E: EventSink> StreamOps<'a, E> {
             target: wire_target,
             code,
         });
-        self.reap_on_drop = true;
     }
 
     #[inline]
     fn stream(&self) -> &StreamState {
-        &self.session.state.streams[self.stream_index]
+        &self.session.state.streams[&self.stream_id]
     }
 
     #[inline]
     fn stream_mut(&mut self) -> &mut StreamState {
-        &mut self.session.state.streams[self.stream_index]
-    }
-}
-
-impl<E> Drop for StreamOps<'_, E> {
-    fn drop(&mut self) {
-        if !self.reap_on_drop {
-            return;
-        }
-
-        self.session
-            .try_reap_stream_at(self.stream_id, self.stream_index);
+        &mut self.session.state.streams[&self.stream_id]
     }
 }
 

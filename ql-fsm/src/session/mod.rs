@@ -143,7 +143,7 @@ impl SessionFsm {
                 ack_tracker: AckTracker::new(config.pending_ack_range_limit),
                 pending_ping: false,
                 streams: IndexMap::default(),
-                next_stream_index: 0,
+                next_stream_id: None,
                 remote_stream_history: RemoteStreamHistory::new(params.local_parity.remote()),
             },
         }
@@ -172,8 +172,7 @@ impl SessionFsm {
                 self.params.initial_stream_receive_window,
             ),
         );
-        let stream_index = self.state.streams.len() - 1;
-        Ok(StreamOps::new(self, stream_id, stream_index, sink))
+        Ok(StreamOps::new(self, stream_id, sink))
     }
 
     pub fn stream<E>(
@@ -185,16 +184,18 @@ impl SessionFsm {
         E: EventSink,
     {
         self.ensure_session_open()?;
-        let Some(stream_index) = (|| {
-            let index = self.state.streams.get_index_of(&stream_id)?;
-            // Event::Opened only fires after we receive the first frame of a stream
-            // prevent early access to streams
-            let _ = self.state.streams[index].header.as_ref()?;
-            Some(index)
-        })() else {
+        // Event::Opened only fires after we receive the first frame of a stream
+        // prevent early access to streams
+        if self
+            .state
+            .streams
+            .get(&stream_id)
+            .and_then(|stream| stream.header.as_ref())
+            .is_none()
+        {
             return Err(StreamError::MissingStream);
-        };
-        Ok(StreamOps::new(self, stream_id, stream_index, sink))
+        }
+        Ok(StreamOps::new(self, stream_id, sink))
     }
 
     pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
@@ -478,7 +479,7 @@ impl SessionFsm {
             return;
         }
 
-        let start = self.state.next_stream_index % len;
+        let start = self.state.round_robin_start();
         for offset in 0..len {
             let index = (start + offset) % len;
             let stream = self.state.streams.get_index_mut(index).unwrap().1;
@@ -505,7 +506,7 @@ impl SessionFsm {
             return;
         }
 
-        let start = self.state.next_stream_index % len;
+        let start = self.state.round_robin_start();
         for offset in 0..len {
             let index = (start + offset) % len;
             let (&stream_id, stream) = self.state.streams.get_index_mut(index).unwrap();
@@ -540,7 +541,7 @@ impl SessionFsm {
             return;
         }
 
-        let start = self.state.next_stream_index % len;
+        let start = self.state.round_robin_start();
         let mut next_index = start;
 
         for offset in 0..len {
@@ -590,7 +591,7 @@ impl SessionFsm {
             next_index = (index + 1) % len;
         }
 
-        self.state.next_stream_index = next_index;
+        self.state.set_round_robin_start(next_index);
     }
 
     fn ensure_session_open(&self) -> Result<(), NoSessionError> {
@@ -740,6 +741,8 @@ impl SessionFsm {
             sink.emit(SessionEvent::Finished(stream_id));
         }
 
+        // Drop it here, or a later frame in this record fails as a protocol error instead of
+        // being ignored.
         self.try_reap_stream(stream_id);
         Ok(())
     }
@@ -799,6 +802,8 @@ impl SessionFsm {
                 target,
             }));
         }
+        // Drop it here, or a later frame in this record fails as a protocol error instead of
+        // being ignored.
         self.try_reap_stream(frame.stream_id);
         Ok(())
     }
@@ -822,82 +827,27 @@ impl SessionFsm {
         matches!(target, ResetTarget::Both) || role.outbound_target() == target
     }
 
-    fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
-        let tracked_refs_stream = self.state.tracked_records.values().any(|record| {
-            record
-                .frames
-                .iter()
-                .any(|frame| frame.references_stream(stream_id))
-        });
-        if tracked_refs_stream {
-            return false;
-        }
-
-        if !stream.tx.is_empty()
-            || stream.pending_reset.is_some()
-            || stream.pending_window
-            || stream.readable_bytes() > 0
-            || stream.rx.buffered_end_offset() > stream.rx.start_offset()
-        {
-            return false;
-        }
-
-        matches!(
-            stream.inbound_state,
-            InboundState::Finished | InboundState::Reset(_) | InboundState::Discarding
-        ) && matches!(
-            stream.outbound_state,
-            OutboundState::Finished | OutboundState::Closed
-        )
-    }
-
     fn reap_reapable_streams(&mut self) {
-        let mut index = 0usize;
-        while index < self.state.streams.len() {
-            let stream_id = *self.state.streams.get_index(index).unwrap().0;
-            let len_before = self.state.streams.len();
-            self.try_reap_stream(stream_id);
-            if self.state.streams.len() == len_before {
-                index += 1;
-            }
-        }
+        let SessionState {
+            tracked_records,
+            streams,
+            ..
+        } = &mut self.state;
+        streams
+            .retain(|&stream_id, stream| !stream_is_reapable(tracked_records, stream_id, stream));
     }
 
     fn try_reap_stream(&mut self, stream_id: StreamId) {
-        let Some(index) = self.state.streams.get_index_of(&stream_id) else {
-            return;
-        };
-        self.try_reap_stream_at(stream_id, index);
-    }
-
-    fn try_reap_stream_at(&mut self, stream_id: StreamId, index: usize) {
-        let Some((indexed_stream_id, stream)) = self.state.streams.get_index(index) else {
-            return;
-        };
-        debug_assert_eq!(*indexed_stream_id, stream_id);
-        if !self.stream_is_reapable(stream_id, stream) {
-            return;
-        }
-        self.reap_stream_at(index);
-    }
-
-    fn reap_stream_at(&mut self, index: usize) {
-        self.state.streams.shift_remove_index(index);
-
-        if self.state.streams.is_empty() {
-            self.state.next_stream_index = 0;
-            return;
-        }
-        if index < self.state.next_stream_index {
-            self.state.next_stream_index -= 1;
-        }
-        if self.state.next_stream_index >= self.state.streams.len() {
-            self.state.next_stream_index %= self.state.streams.len();
+        let reapable = self.state.streams.get(&stream_id).is_some_and(|stream| {
+            stream_is_reapable(&self.state.tracked_records, stream_id, stream)
+        });
+        if reapable {
+            self.state.streams.shift_remove(&stream_id);
         }
     }
 
     fn clear_streams(&mut self) {
-        self.state.next_stream_index = 0;
+        self.state.next_stream_id = None;
         self.state.streams.clear();
     }
 
@@ -968,6 +918,20 @@ fn local_stream_was_opened(
 ) -> bool {
     local_parity.matches(stream_id)
         && stream_id.0 < local_parity.make_stream_id(next_stream_ordinal).0
+}
+
+fn stream_is_reapable(
+    tracked_records: &IndexMap<u64, TrackedRecord>,
+    stream_id: StreamId,
+    stream: &StreamState,
+) -> bool {
+    stream.is_done()
+        && !tracked_records.values().any(|record| {
+            record
+                .frames
+                .iter()
+                .any(|frame| frame.references_stream(stream_id))
+        })
 }
 
 fn acknowledge_tracked_frame(

@@ -27,11 +27,24 @@ pub struct SessionState {
     pub ack_tracker: AckTracker,
     pub pending_ping: bool,
     pub streams: IndexMap<StreamId, StreamState>,
-    pub next_stream_index: usize,
+    pub next_stream_id: Option<StreamId>,
     pub remote_stream_history: RemoteStreamHistory,
 }
 
 impl SessionState {
+    pub fn round_robin_start(&self) -> usize {
+        self.next_stream_id
+            .and_then(|stream_id| self.streams.get_index_of(&stream_id))
+            .unwrap_or(0)
+    }
+
+    pub fn set_round_robin_start(&mut self, index: usize) {
+        self.next_stream_id = self
+            .streams
+            .get_index(index)
+            .map(|(&stream_id, _)| stream_id);
+    }
+
     pub fn restore_tracked_record(&mut self, now: Instant, record: &TrackedRecord) {
         if let Some(ack) = &record.ack {
             self.ack_tracker.restore_acked_ranges(ack, now);
@@ -149,6 +162,26 @@ impl StreamState {
 
     pub fn reset_recv(&mut self) {
         self.rx = StreamRx::with_start_offset(self.rx.start_offset(), self.rx.max_buffered());
+    }
+
+    /// Both halves are terminated and nothing is buffered or pending.
+    pub fn is_done(&self) -> bool {
+        if !self.tx.is_empty()
+            || self.pending_reset.is_some()
+            || self.pending_window
+            || self.readable_bytes() > 0
+            || self.rx.buffered_end_offset() > self.rx.start_offset()
+        {
+            return false;
+        }
+
+        matches!(
+            self.inbound_state,
+            InboundState::Finished | InboundState::Reset(_) | InboundState::Discarding
+        ) && matches!(
+            self.outbound_state,
+            OutboundState::Finished | OutboundState::Closed
+        )
     }
 }
 
