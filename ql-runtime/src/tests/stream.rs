@@ -308,7 +308,10 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
     run_local_test(async {
         let config = RuntimeConfig {
             fsm: QlFsmConfig {
-                session_record_retransmit_timeout: Duration::from_millis(20),
+                session: SessionConfig {
+                    retransmit_timeout: Duration::from_millis(20),
+                    ..default_runtime_config().fsm.session
+                },
                 ..default_runtime_config().fsm
             },
             ..default_runtime_config()
@@ -387,13 +390,16 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
         let expected = payload.clone();
         let config = RuntimeConfig {
             fsm: QlFsmConfig {
-                session_record_max_size: 16 * 1024,
-                session_record_ack_delay: Duration::from_millis(2),
-                session_record_retransmit_timeout: Duration::from_millis(25),
-                session_stream_send_buffer_size: 4 * 1024 * 1024,
-                session_stream_receive_buffer_size: 4 * 1024 * 1024,
-                session_accepted_record_window: 16 * 1024,
-                session_pending_ack_range_limit: 4 * 1024,
+                session: SessionConfig {
+                    record_max_size: 16 * 1024,
+                    ack_delay: Duration::from_millis(2),
+                    retransmit_timeout: Duration::from_millis(25),
+                    stream_send_buffer_size: 4 * 1024 * 1024,
+                    stream_receive_buffer_size: 4 * 1024 * 1024,
+                    accepted_record_window: 16 * 1024,
+                    pending_ack_range_limit: 4 * 1024,
+                    ..default_runtime_config().fsm.session
+                },
                 ..default_runtime_config().fsm
             },
             ..default_runtime_config()
@@ -506,13 +512,16 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
             .collect();
         let config = RuntimeConfig {
             fsm: QlFsmConfig {
-                session_record_max_size: 16 * 1024,
-                session_record_ack_delay: Duration::from_millis(2),
-                session_record_retransmit_timeout: Duration::from_millis(25),
-                session_stream_send_buffer_size: 4 * 1024 * 1024,
-                session_stream_receive_buffer_size: 4 * 1024 * 1024,
-                session_accepted_record_window: 16 * 1024,
-                session_pending_ack_range_limit: 4 * 1024,
+                session: SessionConfig {
+                    record_max_size: 16 * 1024,
+                    ack_delay: Duration::from_millis(2),
+                    retransmit_timeout: Duration::from_millis(25),
+                    stream_send_buffer_size: 4 * 1024 * 1024,
+                    stream_receive_buffer_size: 4 * 1024 * 1024,
+                    accepted_record_window: 16 * 1024,
+                    pending_ack_range_limit: 4 * 1024,
+                    ..default_runtime_config().fsm.session
+                },
                 ..default_runtime_config().fsm
             },
             ..default_runtime_config()

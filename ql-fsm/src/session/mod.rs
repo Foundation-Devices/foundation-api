@@ -37,23 +37,29 @@ use crate::{NoSessionError, StreamError, StreamResetEvent, StreamResetTarget};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
-    pub local_parity: StreamParity,
+    /// maximum total wire size for one session record, including header and auth tag
     pub record_max_size: usize,
+    /// delay before sending a pure record ack
     pub ack_delay: Duration,
+    /// initial wait before resending unacked session records
     pub retransmit_timeout: Duration,
+    /// idle delay before sending a keepalive ping
     pub keepalive_interval: Duration,
+    /// how long to wait before declaring the peer dead
     pub peer_timeout: Duration,
+    /// maximum bytes buffered locally for one stream send side
     pub stream_send_buffer_size: usize,
+    /// maximum bytes buffered locally for one stream receive side
     pub stream_receive_buffer_size: u32,
-    pub initial_peer_stream_receive_window: u32,
+    /// how many accepted record sequence numbers to retain for replay detection
     pub accepted_record_window: u64,
+    /// maximum disjoint pending ACK ranges to retain before dropping the oldest low ranges
     pub pending_ack_range_limit: usize,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            local_parity: StreamParity::Even,
             record_max_size: 8 * 1024,
             ack_delay: Duration::from_millis(5),
             retransmit_timeout: Duration::from_secs(1),
@@ -61,9 +67,24 @@ impl Default for SessionConfig {
             peer_timeout: Duration::from_secs(30),
             stream_send_buffer_size: 16 * 1024,
             stream_receive_buffer_size: 16 * 1024,
-            initial_peer_stream_receive_window: 16 * 1024,
             accepted_record_window: 4096,
             pending_ack_range_limit: 64,
+        }
+    }
+}
+
+/// per-session values settled by the handshake
+#[derive(Debug, Clone, Copy)]
+pub struct SessionParams {
+    pub local_parity: StreamParity,
+    pub initial_stream_receive_window: u32,
+}
+
+impl Default for SessionParams {
+    fn default() -> Self {
+        Self {
+            local_parity: StreamParity::Even,
+            initial_stream_receive_window: 16 * 1024,
         }
     }
 }
@@ -95,11 +116,12 @@ where
 
 pub struct SessionFsm {
     config: SessionConfig,
+    params: SessionParams,
     state: SessionState,
 }
 
 impl SessionFsm {
-    pub fn new(mut config: SessionConfig, now: Instant) -> Self {
+    pub fn new(mut config: SessionConfig, params: SessionParams, now: Instant) -> Self {
         config.record_max_size = config
             .record_max_size
             .max(SessionRecordBuilder::MIN_CAPACITY);
@@ -107,6 +129,7 @@ impl SessionFsm {
         config.stream_receive_buffer_size = config.stream_receive_buffer_size.max(1);
         Self {
             config,
+            params,
             state: SessionState {
                 last_activity_at: now,
                 last_inbound_at: now,
@@ -121,7 +144,7 @@ impl SessionFsm {
                 pending_ping: false,
                 streams: IndexMap::default(),
                 next_stream_index: 0,
-                remote_stream_history: RemoteStreamHistory::new(config.local_parity.remote()),
+                remote_stream_history: RemoteStreamHistory::new(params.local_parity.remote()),
             },
         }
     }
@@ -136,7 +159,7 @@ impl SessionFsm {
     {
         self.ensure_session_open()?;
         let stream_id = self
-            .config
+            .params
             .local_parity
             .make_stream_id(self.state.next_stream_ordinal);
         self.state.next_stream_ordinal = self.state.next_stream_ordinal.saturating_add(1);
@@ -146,7 +169,7 @@ impl SessionFsm {
                 StreamRole::Initiator,
                 Some(Bytes::from(header)),
                 self.config.stream_receive_buffer_size,
-                self.config.initial_peer_stream_receive_window,
+                self.params.initial_stream_receive_window,
             ),
         );
         let stream_index = self.state.streams.len() - 1;
@@ -900,7 +923,7 @@ impl SessionFsm {
         stream_id: StreamId,
     ) -> Result<Option<&mut StreamState>, ()> {
         match classify_missing_stream(
-            self.config.local_parity,
+            self.params.local_parity,
             self.state.next_stream_ordinal,
             stream_id,
             &mut self.state.remote_stream_history,
@@ -920,7 +943,7 @@ impl SessionFsm {
                 StreamRole::Responder,
                 None,
                 self.config.stream_receive_buffer_size,
-                self.config.initial_peer_stream_receive_window,
+                self.params.initial_stream_receive_window,
             ));
 
         Ok(Some(stream.into_mut()))

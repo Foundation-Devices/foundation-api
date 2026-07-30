@@ -8,7 +8,7 @@ use ql_wire::{
     SessionRecordBuilder, StreamData, StreamReset,
 };
 
-use super::{SessionConfig, SessionEvent, SessionFsm};
+use super::{SessionConfig, SessionEvent, SessionFsm, SessionParams};
 use crate::{session::stream_parity::StreamParity, StreamResetEvent};
 
 const REFUSED: ResetCode = ResetCode(1);
@@ -94,7 +94,7 @@ fn receive_events(
 #[test]
 fn outbound_record_seq_increments_monotonically() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"one"), 3);
@@ -115,6 +115,7 @@ fn retransmit_uses_new_record_seq() {
             retransmit_timeout: Duration::from_millis(100),
             ..SessionConfig::default()
         },
+        SessionParams::default(),
         now,
     );
     let stream_id = open_stream_id(&mut fsm);
@@ -139,6 +140,7 @@ fn retransmitted_record_ack_releases_stream_data() {
             stream_send_buffer_size: 4,
             ..SessionConfig::default()
         },
+        SessionParams::default(),
         now,
     );
     let stream_id = open_stream_id(&mut fsm);
@@ -173,6 +175,7 @@ fn acknowledged_rtt_updates_retransmit_timeout() {
             retransmit_timeout: Duration::from_millis(100),
             ..SessionConfig::default()
         },
+        SessionParams::default(),
         now,
     );
     let stream_id = open_stream_id(&mut fsm);
@@ -207,6 +210,7 @@ fn retransmit_timeout_backs_off() {
             retransmit_timeout: Duration::from_millis(20),
             ..SessionConfig::default()
         },
+        SessionParams::default(),
         now,
     );
     let stream_id = open_stream_id(&mut fsm);
@@ -237,8 +241,11 @@ fn tracked_record_count_is_bounded() {
                 + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD
                 + 1,
             stream_send_buffer_size: PAYLOAD_LEN,
-            initial_peer_stream_receive_window: PAYLOAD_LEN as u32,
             ..SessionConfig::default()
+        },
+        SessionParams {
+            initial_stream_receive_window: PAYLOAD_LEN as u32,
+            ..SessionParams::default()
         },
         now,
     );
@@ -271,6 +278,7 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
                 + PAYLOAD_LEN,
             ..SessionConfig::default()
         },
+        SessionParams::default(),
         now,
     );
     let stream_id_a = open_stream_id(&mut fsm);
@@ -315,6 +323,7 @@ fn ack_reopens_write_capacity() {
             stream_send_buffer_size: 4,
             ..SessionConfig::default()
         },
+        SessionParams::default(),
         now,
     );
     let stream_id = open_stream_id(&mut fsm);
@@ -340,7 +349,7 @@ fn ack_reopens_write_capacity() {
 #[test]
 fn ack_of_fin_emits_outbound_finished_once() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"done"), 4);
@@ -393,9 +402,12 @@ fn commit_stream_read_is_what_advances_stream_window() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
         SessionConfig {
-            local_parity: StreamParity::Even,
             ack_delay: Duration::ZERO,
             ..SessionConfig::default()
+        },
+        SessionParams {
+            local_parity: StreamParity::Even,
+            ..SessionParams::default()
         },
         now,
     );
@@ -450,7 +462,7 @@ fn pure_ack_only_records_are_fire_and_forget() {
         ..SessionConfig::default()
     };
     let retransmit_timeout = config.retransmit_timeout;
-    let mut fsm = SessionFsm::new(config, now);
+    let mut fsm = SessionFsm::new(config, SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -480,7 +492,7 @@ fn pure_ack_only_records_are_fire_and_forget() {
 #[test]
 fn inbound_stream_data_emits_opened_and_readable() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(ql_wire::StreamData {
         stream_id,
@@ -509,7 +521,7 @@ fn inbound_stream_data_emits_opened_and_readable() {
 #[test]
 fn inbound_empty_fin_emits_finished_immediately() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -537,6 +549,7 @@ fn remote_stream_reset_is_reliable_and_retried() {
             retransmit_timeout: Duration::from_millis(100),
             ..SessionConfig::default()
         },
+        SessionParams::default(),
         now,
     );
     let stream_id = open_stream_id(&mut fsm);
@@ -567,9 +580,10 @@ fn stream_ids_follow_even_odd_xid_ordering() {
     let odd = StreamParity::for_local(QID([2; QID::SIZE]), QID([1; QID::SIZE]));
 
     let even_id = SessionFsm::new(
-        SessionConfig {
+        SessionConfig::default(),
+        SessionParams {
             local_parity: even,
-            ..SessionConfig::default()
+            ..SessionParams::default()
         },
         now,
     )
@@ -577,9 +591,10 @@ fn stream_ids_follow_even_odd_xid_ordering() {
     .unwrap()
     .stream_id();
     let odd_id = SessionFsm::new(
-        SessionConfig {
+        SessionConfig::default(),
+        SessionParams {
             local_parity: odd,
-            ..SessionConfig::default()
+            ..SessionParams::default()
         },
         now,
     )
@@ -594,7 +609,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
 #[test]
 fn duplicate_stream_data_is_not_redelivered() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -617,7 +632,7 @@ fn duplicate_stream_data_is_not_redelivered() {
 #[test]
 fn duplicate_remote_reset_after_reap_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let reset = StreamReset {
         stream_id: StreamId(1),
         target: ResetTarget::Both,
@@ -647,7 +662,7 @@ fn duplicate_remote_reset_after_reap_is_ignored() {
 #[test]
 fn late_remote_stream_data_after_reset_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let reset = vec![SessionFrame::StreamReset(StreamReset {
         stream_id,
@@ -684,7 +699,7 @@ fn late_remote_stream_data_after_reset_is_ignored() {
 #[test]
 fn duplicate_finished_remote_data_after_reap_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -721,7 +736,7 @@ fn duplicate_finished_remote_data_after_reap_is_ignored() {
 #[test]
 fn duplicate_finished_remote_data_before_read_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -758,7 +773,7 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
 #[test]
 fn out_of_order_remote_stream_first_observations_still_open_once_each() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
     let reset3 = vec![SessionFrame::StreamReset(StreamReset {
         stream_id: StreamId(3),
         target: ResetTarget::Both,
@@ -807,7 +822,7 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
 #[test]
 fn invalid_remote_stream_reset_closes_session() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
 
     let invalid = vec![SessionFrame::StreamReset(StreamReset {
         stream_id: StreamId(0),
@@ -832,6 +847,7 @@ fn close_does_not_ack_rejected_record_seq() {
             ack_delay: Duration::ZERO,
             ..SessionConfig::default()
         },
+        SessionParams::default(),
         now,
     );
 
@@ -866,7 +882,7 @@ fn close_does_not_ack_rejected_record_seq() {
 #[test]
 fn inbound_unpair_emits_final_unpair_frame() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
 
     let events = receive_events(&mut fsm, now, RecordSeq(1), &[SessionFrame::Unpair]);
     assert_eq!(events, vec![SessionEvent::Unpaired]);
@@ -880,7 +896,7 @@ fn inbound_unpair_emits_final_unpair_frame() {
 #[test]
 fn terminating_session_ignores_inbound_frames() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), now);
+    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
 
     let mut events = Vec::new();
     fsm.unpair(&mut |event| events.push(event));
@@ -903,9 +919,10 @@ fn terminating_session_ignores_inbound_frames() {
 fn initial_peer_stream_receive_window_limits_first_send() {
     let now = Instant::now();
     let mut fsm = SessionFsm::new(
-        SessionConfig {
-            initial_peer_stream_receive_window: 3,
-            ..SessionConfig::default()
+        SessionConfig::default(),
+        SessionParams {
+            initial_stream_receive_window: 3,
+            ..SessionParams::default()
         },
         now,
     );
@@ -945,7 +962,6 @@ fn initial_peer_stream_receive_window_limits_first_send() {
 fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
     let now = Instant::now();
     let sender_config = SessionConfig {
-        local_parity: StreamParity::Even,
         record_max_size: SessionRecordBuilder::MIN_CAPACITY
             + 1 // discriminator byte
             + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD
@@ -953,20 +969,21 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
         ack_delay: Duration::from_millis(5),
         retransmit_timeout: Duration::from_millis(25),
         stream_send_buffer_size: 8 * 1024,
-        initial_peer_stream_receive_window: 8 * 1024,
         ..SessionConfig::default()
     };
     let receiver_config = SessionConfig {
-        local_parity: StreamParity::Odd,
         record_max_size: SessionRecordBuilder::MIN_CAPACITY + 10,
         ack_delay: Duration::from_millis(1),
         retransmit_timeout: Duration::from_millis(25),
         pending_ack_range_limit: 512,
-        initial_peer_stream_receive_window: 8 * 1024,
         ..SessionConfig::default()
     };
-    let mut sender = SessionFsm::new(sender_config, now);
-    let mut receiver = SessionFsm::new(receiver_config, now);
+    let params = |local_parity| SessionParams {
+        local_parity,
+        initial_stream_receive_window: 8 * 1024,
+    };
+    let mut sender = SessionFsm::new(sender_config, params(StreamParity::Even), now);
+    let mut receiver = SessionFsm::new(receiver_config, params(StreamParity::Odd), now);
 
     let stream_id = open_stream_id(&mut sender);
     let payload = vec![b'x'; 1200];
@@ -1032,6 +1049,7 @@ fn stream_header_larger_than_the_record_budget_does_not_panic() {
             record_max_size,
             ..SessionConfig::default()
         },
+        SessionParams::default(),
         now,
     );
 

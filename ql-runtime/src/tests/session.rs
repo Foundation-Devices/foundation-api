@@ -164,8 +164,11 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
     run_local_test(async {
         let config_a = RuntimeConfig {
             fsm: QlFsmConfig {
-                session_keepalive_interval: Duration::from_millis(40),
-                session_peer_timeout: Duration::from_millis(60),
+                session: SessionConfig {
+                    keepalive_interval: Duration::from_millis(40),
+                    peer_timeout: Duration::from_millis(60),
+                    ..default_runtime_config().fsm.session
+                },
                 ..default_runtime_config().fsm
             },
             ..default_runtime_config()

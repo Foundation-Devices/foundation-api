@@ -13,7 +13,7 @@ use async_channel::{Receiver, Sender};
 use futures_lite::Stream;
 use ql_codec::Decode;
 use ql_common::{StreamInfo, QID};
-use ql_fsm::PeerStatus;
+use ql_fsm::{PeerStatus, SessionConfig};
 use ql_wire::{
     generate_identity, test_identities, PairingToken, PeerBundle, QlIdentity, RecordHeader,
     RecordType, SoftwareCrypto,
@@ -616,11 +616,13 @@ async fn next_chunk(stream: &mut crate::StreamReader) -> Result<Option<Vec<u8>>,
 fn default_runtime_config() -> RuntimeConfig {
     RuntimeConfig {
         fsm: QlFsmConfig {
+            session: SessionConfig {
+                retransmit_timeout: Duration::from_millis(30),
+                keepalive_interval: Duration::ZERO,
+                peer_timeout: Duration::ZERO,
+                ..SessionConfig::default()
+            },
             handshake_timeout: Duration::from_millis(300),
-            session_record_retransmit_timeout: Duration::from_millis(30),
-            session_keepalive_interval: Duration::ZERO,
-            session_peer_timeout: Duration::ZERO,
-            ..Default::default()
         },
         ..Default::default()
     }

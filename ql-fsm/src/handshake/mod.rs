@@ -9,7 +9,7 @@ use ql_wire::{
 
 use crate::{
     fsm::emit_peer_status,
-    session::{SessionConfig, SessionFsm, StreamParity},
+    session::{SessionFsm, SessionParams, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
     Event, NoPeerError, QlFsm, ReceiveError,
 };
@@ -50,7 +50,7 @@ pub fn handle_disarm_pairing(fsm: &mut QlFsm) {
 
 fn local_transport_params(fsm: &QlFsm) -> wire::TransportParams {
     wire::TransportParams {
-        initial_stream_receive_window: fsm.config.session_stream_receive_buffer_size,
+        initial_stream_receive_window: fsm.config.session.stream_receive_buffer_size,
     }
 }
 
@@ -110,20 +110,11 @@ pub fn finish_handshake(
         fsm.events.push_back(Event::NewPeer);
     }
 
-    let config = &fsm.config;
     let session = SessionFsm::new(
-        SessionConfig {
+        fsm.config.session,
+        SessionParams {
             local_parity: StreamParity::for_local(fsm.identity.qid, qid),
-            record_max_size: config.session_record_max_size,
-            ack_delay: config.session_record_ack_delay,
-            retransmit_timeout: config.session_record_retransmit_timeout,
-            keepalive_interval: config.session_keepalive_interval,
-            peer_timeout: config.session_peer_timeout,
-            stream_send_buffer_size: config.session_stream_send_buffer_size,
-            stream_receive_buffer_size: config.session_stream_receive_buffer_size,
-            accepted_record_window: config.session_accepted_record_window,
-            pending_ack_range_limit: config.session_pending_ack_range_limit,
-            initial_peer_stream_receive_window: transport
+            initial_stream_receive_window: transport
                 .remote_transport_params
                 .initial_stream_receive_window,
         },

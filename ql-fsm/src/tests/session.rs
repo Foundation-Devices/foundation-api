@@ -74,7 +74,7 @@ fn connected_fsms_deliver_stream_data() {
         harness.take_event(Side::B),
         Some(Event::Finished(stream_id))
     );
-    harness.advance(QlFsmConfig::default().session_record_ack_delay);
+    harness.advance(QlFsmConfig::default().session.ack_delay);
     harness.on_timer(Side::B);
     harness.pump();
     assert_eq!(
@@ -96,7 +96,7 @@ fn session_retransmit_uses_new_record_seq() {
 
     let first = harness.next_decoded_outbound(Side::A).unwrap();
 
-    harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
+    harness.advance(config.session.retransmit_timeout + Duration::from_millis(1));
     harness.on_timer(Side::A);
 
     let retried = harness.next_decoded_outbound(Side::A).unwrap();
@@ -105,7 +105,7 @@ fn session_retransmit_uses_new_record_seq() {
     assert_eq!(retried.frames, first.frames);
 
     harness.deliver(Side::B, retried.record);
-    harness.advance(config.session_record_ack_delay);
+    harness.advance(config.session.ack_delay);
     harness.on_timer(Side::A);
     harness.on_timer(Side::B);
     harness.pump();
@@ -120,7 +120,7 @@ fn session_retransmit_uses_new_record_seq() {
         b"retry".to_vec()
     );
 
-    harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
+    harness.advance(config.session.retransmit_timeout + Duration::from_millis(1));
     harness.on_timer(Side::A);
     assert!(harness.next_outbound(Side::A).is_none());
 }
@@ -293,12 +293,12 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
     let first = harness.next_decoded_write(Side::A).unwrap();
     let id = first.write_id.expect("expected session write");
 
-    harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
+    harness.advance(config.session.retransmit_timeout + Duration::from_millis(1));
     harness.on_timer(Side::A);
     assert!(harness.next_write(Side::A).is_none());
 
     harness.confirm_write(Side::A, id);
-    harness.advance(config.session_record_retransmit_timeout + Duration::from_millis(1));
+    harness.advance(config.session.retransmit_timeout + Duration::from_millis(1));
     harness.on_timer(Side::A);
 
     let retried = harness.next_decoded_write(Side::A).unwrap();
@@ -310,7 +310,10 @@ fn unconfirmed_session_write_does_not_start_retransmit_timer() {
 #[test]
 fn ack_frame_releases_stream_capacity_and_emits_writable() {
     let config = QlFsmConfig {
-        session_stream_send_buffer_size: 4,
+        session: SessionConfig {
+            stream_send_buffer_size: 4,
+            ..SessionConfig::default()
+        },
         ..QlFsmConfig::default()
     };
     let mut harness = Harness::connected(config);
@@ -327,7 +330,7 @@ fn ack_frame_releases_stream_capacity_and_emits_writable() {
 
     let record = harness.next_outbound(Side::A).unwrap();
     harness.deliver(Side::B, record);
-    harness.advance(config.session_record_ack_delay);
+    harness.advance(config.session.ack_delay);
     harness.on_timer(Side::A);
     harness.on_timer(Side::B);
     harness.pump();
@@ -451,7 +454,7 @@ fn session_records_contain_ack_frames_after_delivery() {
 
     let data = harness.next_outbound(Side::A).unwrap();
     harness.deliver(Side::B, data);
-    harness.advance(config.session_record_ack_delay);
+    harness.advance(config.session.ack_delay);
     harness.on_timer(Side::B);
 
     let ack = harness.next_decoded_outbound(Side::B).unwrap();
@@ -474,12 +477,12 @@ fn duplicate_record_is_dropped_and_not_acked() {
 
     let data = harness.next_outbound(Side::A).unwrap();
     harness.deliver(Side::B, data.clone());
-    harness.advance(config.session_record_ack_delay);
+    harness.advance(config.session.ack_delay);
     harness.on_timer(Side::B);
     harness.next_decoded_outbound(Side::B).unwrap();
 
     harness.deliver(Side::B, data);
-    harness.advance(config.session_record_ack_delay);
+    harness.advance(config.session.ack_delay);
     harness.on_timer(Side::B);
     assert!(harness.next_outbound(Side::B).is_none());
 }
@@ -487,8 +490,11 @@ fn duplicate_record_is_dropped_and_not_acked() {
 #[test]
 fn replayed_record_does_not_renew_the_peer_timeout() {
     let config = QlFsmConfig {
-        session_accepted_record_window: 1,
-        session_peer_timeout: Duration::from_millis(30),
+        session: SessionConfig {
+            accepted_record_window: 1,
+            peer_timeout: Duration::from_millis(30),
+            ..SessionConfig::default()
+        },
         ..QlFsmConfig::default()
     };
     let mut harness = Harness::connected(config);
@@ -509,7 +515,7 @@ fn replayed_record_does_not_renew_the_peer_timeout() {
     harness.deliver(Side::B, second);
     harness.drain_events(Side::B);
 
-    harness.advance(config.session_peer_timeout);
+    harness.advance(config.session.peer_timeout);
     harness.deliver(Side::B, first);
     harness.on_timer(Side::B);
 
@@ -525,11 +531,17 @@ fn replayed_record_does_not_renew_the_peer_timeout() {
 fn first_stream_data_uses_negotiated_initial_peer_credit() {
     let mut harness = Harness::paired_known_with_configs(
         QlFsmConfig {
-            session_stream_receive_buffer_size: 8,
+            session: SessionConfig {
+                stream_receive_buffer_size: 8,
+                ..SessionConfig::default()
+            },
             ..QlFsmConfig::default()
         },
         QlFsmConfig {
-            session_stream_receive_buffer_size: 3,
+            session: SessionConfig {
+                stream_receive_buffer_size: 3,
+                ..SessionConfig::default()
+            },
             ..QlFsmConfig::default()
         },
     );
@@ -555,12 +567,15 @@ fn first_stream_data_uses_negotiated_initial_peer_credit() {
 #[test]
 fn session_timeout_emits_close_before_disconnect() {
     let config = QlFsmConfig {
-        session_peer_timeout: Duration::from_millis(30),
+        session: SessionConfig {
+            peer_timeout: Duration::from_millis(30),
+            ..SessionConfig::default()
+        },
         ..QlFsmConfig::default()
     };
     let mut harness = Harness::connected(config);
 
-    harness.advance(config.session_peer_timeout);
+    harness.advance(config.session.peer_timeout);
     harness.on_timer(Side::A);
 
     assert_eq!(
