@@ -11,6 +11,10 @@ use std::{
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RangeSet(BTreeMap<u64, u64>);
 
+pub fn single_range(value: u64) -> Range<u64> {
+    value..value.checked_add(1).unwrap()
+}
+
 impl RangeSet {
     pub fn new() -> Self {
         Self::default()

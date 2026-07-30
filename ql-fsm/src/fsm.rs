@@ -132,7 +132,6 @@ pub fn receive(
                 let (decrypt_len, seq) = {
                     let record = wire::QlSessionRecord::decode(&mut reader)
                         .map_err(|error| ReceiveError::wire(ReceiveStage::SessionRecord, error))?;
-                    // checked here too, or else a replay costs a full AES-GCM for nothing
                     if conn.session.is_replay(record.header.seq) {
                         return Ok(());
                     }

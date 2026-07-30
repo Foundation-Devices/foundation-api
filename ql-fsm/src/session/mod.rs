@@ -3,6 +3,7 @@ pub use self::{state::TerminalFrame, stream_ops::*, stream_parity::*, stream_rx:
 mod ack_tracker;
 mod range_set;
 mod remote_stream_history;
+mod replay_window;
 mod state;
 mod stream_ops;
 mod stream_parity;
@@ -27,6 +28,7 @@ use ql_wire::{
 use self::{
     ack_tracker::{AckTracker, PendingAck},
     remote_stream_history::RemoteStreamHistory,
+    replay_window::ReplayWindow,
     state::{InboundState, OutboundState, SessionPhase, SessionState, StreamRole, StreamState},
     stream_tx::StreamTxRange,
     tracked::{LossRecovery, TrackedFrame, TrackedRecord, TrackedStreamData},
@@ -103,8 +105,6 @@ impl SessionFsm {
             .max(SessionRecordBuilder::MIN_CAPACITY);
         config.stream_send_buffer_size = config.stream_send_buffer_size.max(1);
         config.stream_receive_buffer_size = config.stream_receive_buffer_size.max(1);
-        config.accepted_record_window = config.accepted_record_window.max(1);
-        config.pending_ack_range_limit = config.pending_ack_range_limit.max(1);
         Self {
             config,
             state: SessionState {
@@ -116,10 +116,8 @@ impl SessionFsm {
                 next_write_id: 0,
                 tracked_records: IndexMap::default(),
                 loss_recovery: LossRecovery::new(config.retransmit_timeout),
-                ack_tracker: AckTracker::new(
-                    config.accepted_record_window,
-                    config.pending_ack_range_limit,
-                ),
+                replay_window: ReplayWindow::new(config.accepted_record_window),
+                ack_tracker: AckTracker::new(config.pending_ack_range_limit),
                 pending_ping: false,
                 streams: IndexMap::default(),
                 next_stream_index: 0,
@@ -203,7 +201,7 @@ impl SessionFsm {
     }
 
     pub fn is_replay(&self, seq: RecordSeq) -> bool {
-        self.state.ack_tracker.is_replay(seq)
+        self.state.replay_window.is_replay(seq)
     }
 
     pub fn receive<I>(&mut self, now: Instant, seq: RecordSeq, frames: I, sink: &mut impl EventSink)
@@ -216,10 +214,8 @@ impl SessionFsm {
 
         self.collect_timeouts(now);
 
-        // retransmissions carry a fresh seq, so a repeat is duplication or replay, never a lost ack
-        if !self.state.ack_tracker.accept(seq) {
-            return;
-        }
+        self.state.replay_window.accept(seq);
+        self.state.ack_tracker.push(seq);
 
         self.state.last_activity_at = now;
         self.state.last_inbound_at = now;
