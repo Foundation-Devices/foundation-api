@@ -264,7 +264,7 @@ impl SessionFsm {
                         return;
                     }
                 }
-                SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame, sink),
+                SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame),
                 SessionFrame::StreamReset(frame) => {
                     if self.handle_stream_reset(&frame, sink).is_err() {
                         self.close(SessionCloseCode::PROTOCOL, sink);
@@ -308,13 +308,7 @@ impl SessionFsm {
             let Some(record) = self.state.tracked_records.shift_remove(&write_id) else {
                 return;
             };
-            restore_tracked_record(
-                now,
-                &mut self.state.ack_tracker,
-                &mut self.state.pending_ping,
-                &mut self.state.streams,
-                &record,
-            );
+            self.state.restore_tracked_record(now, &record);
         }
     }
 
@@ -413,9 +407,7 @@ impl SessionFsm {
 
         let (builder, outbound) = self.build_next_record(now)?;
 
-        let should_track = outbound.ping_included
-            || !outbound.window_updates.is_empty()
-            || !outbound.frames.is_empty();
+        let should_track = !outbound.frames.is_empty();
         let write_id = should_track.then(|| {
             debug_assert!(self.state.tracked_records.len() < TRACKED_RECORD_LIMIT);
             let write_id = self.state.next_write_id;
@@ -434,8 +426,6 @@ impl SessionFsm {
             seq,
             frames: Vec::new(),
             ack: None,
-            ping_included: false,
-            window_updates: Vec::new(),
             sent_at: None,
         };
 
@@ -443,7 +433,7 @@ impl SessionFsm {
 
         if self.state.pending_ping && builder.push_ping() {
             self.state.pending_ping = false;
-            outbound.ping_included = true;
+            outbound.frames.push(TrackedFrame::Ping);
         }
 
         self.push_next_pending_stream_window(&mut builder, &mut outbound);
@@ -533,8 +523,8 @@ impl SessionFsm {
             stream.pending_window = false;
             stream.advertised_max_offset = *frame.maximum_offset;
             outbound
-                .window_updates
-                .push((stream_id, *frame.maximum_offset));
+                .frames
+                .push(TrackedFrame::StreamWindow(stream_id, *frame.maximum_offset));
         }
     }
 
@@ -615,9 +605,10 @@ impl SessionFsm {
         let stream_send_buffer_size = self.config.stream_send_buffer_size;
         let mut latest_sent_at = None;
         let state = &mut self.state;
-        for (_, record) in state.tracked_records.extract_if(.., |_, record| {
-            record.sent_at.is_some() && ack.contains(record.seq.0)
-        }) {
+        for (_, record) in state
+            .tracked_records
+            .extract_if(.., |_, record| ack.contains(record.seq.0))
+        {
             latest_sent_at = latest_sent_at.max(record.sent_at);
             for frame in &record.frames {
                 acknowledge_tracked_frame(&mut state.streams, stream_send_buffer_size, frame, sink);
@@ -644,22 +635,19 @@ impl SessionFsm {
 
     fn collect_timeouts(&mut self, now: Instant) {
         let rto = self.state.loss_recovery.rto();
-        let mut timed_out = false;
-        let state = &mut self.state;
-        for (_, record) in state.tracked_records.extract_if(.., |_, record| {
-            record.sent_at.is_some_and(|sent_at| sent_at + rto <= now)
-        }) {
-            restore_tracked_record(
-                now,
-                &mut state.ack_tracker,
-                &mut state.pending_ping,
-                &mut state.streams,
-                &record,
-            );
-            timed_out = true;
+        let timed_out: Vec<_> = self
+            .state
+            .tracked_records
+            .extract_if(.., |_, record| {
+                record.sent_at.is_some_and(|sent_at| sent_at + rto <= now)
+            })
+            .map(|(_, record)| record)
+            .collect();
+        for record in &timed_out {
+            self.state.restore_tracked_record(now, record);
         }
-        if timed_out {
-            state.loss_recovery.on_timeout();
+        if !timed_out.is_empty() {
+            self.state.loss_recovery.on_timeout();
         }
         self.reap_reapable_streams();
     }
@@ -756,18 +744,14 @@ impl SessionFsm {
         Ok(())
     }
 
-    fn handle_stream_window(&mut self, frame: &StreamWindow, sink: &mut impl EventSink) {
+    fn handle_stream_window(&mut self, frame: &StreamWindow) {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
             return;
         };
 
-        let was_full = stream.send_capacity(self.config.stream_send_buffer_size) == 0;
         let maximum_offset = *frame.maximum_offset;
         if maximum_offset > stream.peer_max_offset {
             stream.peer_max_offset = maximum_offset;
-        }
-        if was_full && stream.send_capacity(self.config.stream_send_buffer_size) > 0 {
-            sink.emit(SessionEvent::Writable(frame.stream_id));
         }
     }
 
@@ -840,11 +824,10 @@ impl SessionFsm {
 
     fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
         let tracked_refs_stream = self.state.tracked_records.values().any(|record| {
-            record.window_updates.iter().any(|(id, _)| *id == stream_id)
-                || record.frames.iter().any(|frame| match frame {
-                    TrackedFrame::StreamData(frame) => frame.stream_id == stream_id,
-                    TrackedFrame::StreamReset(frame) => frame.stream_id == stream_id,
-                })
+            record
+                .frames
+                .iter()
+                .any(|frame| frame.references_stream(stream_id))
         });
         if tracked_refs_stream {
             return false;
@@ -987,60 +970,6 @@ fn local_stream_was_opened(
         && stream_id.0 < local_parity.make_stream_id(next_stream_ordinal).0
 }
 
-fn restore_tracked_record(
-    now: Instant,
-    ack_tracker: &mut AckTracker,
-    pending_ping: &mut bool,
-    streams: &mut IndexMap<StreamId, StreamState>,
-    record: &TrackedRecord,
-) {
-    if let Some(ack) = &record.ack {
-        ack_tracker.restore_acked_ranges(ack, now);
-    }
-    if record.ping_included {
-        *pending_ping = true;
-    }
-    for &(stream_id, maximum_offset) in &record.window_updates {
-        if let Some(stream) = streams.get_mut(&stream_id) {
-            if stream.recv_limit() >= maximum_offset {
-                stream.pending_window = true;
-            }
-        }
-    }
-    for frame in &record.frames {
-        requeue_tracked_frame(streams, frame);
-    }
-}
-
-fn requeue_tracked_frame(streams: &mut IndexMap<StreamId, StreamState>, frame: &TrackedFrame) {
-    match frame {
-        TrackedFrame::StreamReset(reset) => restore_stream_reset(streams, reset.clone()),
-        TrackedFrame::StreamData(frame) => restore_stream_data(streams, *frame),
-    }
-}
-
-fn restore_stream_reset(streams: &mut IndexMap<StreamId, StreamState>, reset: StreamReset) {
-    if let Some(stream) = streams.get_mut(&reset.stream_id) {
-        stream.pending_reset = Some(reset);
-    }
-}
-
-fn restore_stream_data(streams: &mut IndexMap<StreamId, StreamState>, frame: TrackedStreamData) {
-    if let Some(stream) = streams.get_mut(&frame.stream_id) {
-        if matches!(stream.outbound_state, OutboundState::Closed) {
-            return;
-        }
-        stream.tx.retransmit(stream_tx::StreamTxRange {
-            offset: frame.offset,
-            len: frame.len,
-            fin: frame.fin,
-        });
-        if frame.fin && matches!(stream.outbound_state, OutboundState::Finished) {
-            stream.outbound_state = OutboundState::FinQueued;
-        }
-    }
-}
-
 fn acknowledge_tracked_frame(
     streams: &mut IndexMap<StreamId, StreamState>,
     stream_send_buffer_size: usize,
@@ -1048,7 +977,7 @@ fn acknowledge_tracked_frame(
     sink: &mut impl EventSink,
 ) {
     match frame {
-        TrackedFrame::StreamReset(_) => {}
+        TrackedFrame::StreamReset(_) | TrackedFrame::StreamWindow(..) | TrackedFrame::Ping => {}
         TrackedFrame::StreamData(frame) => {
             let stream_id = frame.stream_id;
             if let Some(stream) = streams.get_mut(&stream_id) {

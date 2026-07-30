@@ -455,6 +455,71 @@ fn commit_stream_read_is_what_advances_stream_window() {
 }
 
 #[test]
+fn lost_stream_window_is_resent_after_a_timeout() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionConfig {
+            ack_delay: Duration::ZERO,
+            retransmit_timeout: Duration::from_millis(20),
+            ..SessionConfig::default()
+        },
+        SessionParams::default(),
+        now,
+    );
+    let stream_id = StreamId(1);
+    let data = vec![SessionFrame::StreamData(StreamData {
+        stream_id,
+        offset: Varint(0),
+        header: Some(vec![1_u8]),
+        fin: false,
+        bytes: b"hi".to_vec(),
+    })];
+    receive_events(&mut fsm, now, RecordSeq(7), &data);
+    next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
+
+    read_stream_all(&mut fsm, stream_id);
+    let (_first_seq, first) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
+    let [SessionFrame::StreamWindow(sent)] = first.as_slice() else {
+        panic!("expected a window update, got {first:?}");
+    };
+    let sent_offset = *sent.maximum_offset;
+
+    let mut emit = |_| {};
+    fsm.on_timer(now + Duration::from_millis(23), &mut emit);
+
+    let (_resent_seq, resent) = next_outbound(&mut fsm, now + Duration::from_millis(23)).unwrap();
+    assert!(matches!(
+        resent.as_slice(),
+        [SessionFrame::StreamWindow(window)]
+            if window.stream_id == stream_id && *window.maximum_offset == sent_offset
+    ));
+}
+
+#[test]
+fn lost_ping_is_resent_after_a_timeout() {
+    let now = Instant::now();
+    let mut fsm = SessionFsm::new(
+        SessionConfig {
+            keepalive_interval: Duration::ZERO,
+            retransmit_timeout: Duration::from_millis(20),
+            ..SessionConfig::default()
+        },
+        SessionParams::default(),
+        now,
+    );
+
+    fsm.queue_ping().unwrap();
+    let (_first_seq, first) = next_outbound(&mut fsm, now).unwrap();
+    assert!(matches!(first.as_slice(), [SessionFrame::Ping]));
+
+    let mut emit = |_| {};
+    fsm.on_timer(now + Duration::from_millis(21), &mut emit);
+
+    let (_resent_seq, resent) = next_outbound(&mut fsm, now + Duration::from_millis(21)).unwrap();
+    assert!(matches!(resent.as_slice(), [SessionFrame::Ping]));
+}
+
+#[test]
 fn pure_ack_only_records_are_fire_and_forget() {
     let now = Instant::now();
     let config = SessionConfig {
