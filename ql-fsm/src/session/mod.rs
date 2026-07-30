@@ -25,7 +25,7 @@ use ql_wire::{
 };
 
 use self::{
-    ack_tracker::{AckTracker, PendingAck, ReceiveOutcome},
+    ack_tracker::{AckTracker, PendingAck},
     remote_stream_history::RemoteStreamHistory,
     state::{InboundState, OutboundState, SessionPhase, SessionState, StreamRole, StreamState},
     stream_tx::StreamTxRange,
@@ -202,6 +202,10 @@ impl SessionFsm {
         self.state.phase == SessionPhase::Closed
     }
 
+    pub fn is_replay(&self, seq: RecordSeq) -> bool {
+        self.state.ack_tracker.is_replay(seq)
+    }
+
     pub fn receive<I>(&mut self, now: Instant, seq: RecordSeq, frames: I, sink: &mut impl EventSink)
     where
         I: IntoIterator<Item = Result<SessionFrame<Bytes>, ql_wire::Error>>,
@@ -210,18 +214,15 @@ impl SessionFsm {
             return;
         }
 
-        self.state.last_activity_at = now;
-        self.state.last_inbound_at = now;
         self.collect_timeouts(now);
 
-        match self.state.ack_tracker.insert(seq) {
-            ReceiveOutcome::TooOld => return,
-            ReceiveOutcome::Duplicate => {
-                self.schedule_ack(now, true);
-                return;
-            }
-            ReceiveOutcome::New => {}
+        // retransmissions carry a fresh seq, so a repeat is duplication or replay, never a lost ack
+        if !self.state.ack_tracker.accept(seq) {
+            return;
         }
+
+        self.state.last_activity_at = now;
+        self.state.last_inbound_at = now;
 
         let mut ack_eliciting = false;
 
@@ -259,7 +260,7 @@ impl SessionFsm {
         }
 
         if ack_eliciting {
-            self.schedule_ack(now, false);
+            self.schedule_ack(now);
         }
     }
 
@@ -611,12 +612,10 @@ impl SessionFsm {
         self.reap_reapable_streams();
     }
 
-    fn schedule_ack(&mut self, now: Instant, immediate: bool) {
-        self.state.ack_tracker.schedule_ack(if immediate {
-            now
-        } else {
-            now + self.config.ack_delay
-        });
+    fn schedule_ack(&mut self, now: Instant) {
+        self.state
+            .ack_tracker
+            .schedule_ack(now + self.config.ack_delay);
     }
 
     fn pending_ack(&self, remaining_capacity: usize) -> Option<PendingAck> {

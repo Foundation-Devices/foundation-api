@@ -462,6 +462,66 @@ fn session_records_contain_ack_frames_after_delivery() {
 }
 
 #[test]
+fn duplicate_record_is_dropped_and_not_acked() {
+    let config = QlFsmConfig::default();
+    let mut harness = Harness::connected(config);
+
+    let stream_id = open_stream_id(&mut harness.a.fsm);
+    assert_eq!(
+        write_stream_bytes(&mut harness.a.fsm, stream_id, b"x").unwrap(),
+        1
+    );
+
+    let data = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, data.clone());
+    harness.advance(config.session_record_ack_delay);
+    harness.on_timer(Side::B);
+    harness.next_decoded_outbound(Side::B).unwrap();
+
+    harness.deliver(Side::B, data);
+    harness.advance(config.session_record_ack_delay);
+    harness.on_timer(Side::B);
+    assert!(harness.next_outbound(Side::B).is_none());
+}
+
+#[test]
+fn replayed_record_does_not_renew_the_peer_timeout() {
+    let config = QlFsmConfig {
+        session_accepted_record_window: 1,
+        session_peer_timeout: Duration::from_millis(30),
+        ..QlFsmConfig::default()
+    };
+    let mut harness = Harness::connected(config);
+
+    let stream_id = open_stream_id(&mut harness.a.fsm);
+    assert_eq!(
+        write_stream_bytes(&mut harness.a.fsm, stream_id, b"x").unwrap(),
+        1
+    );
+    let first = harness.next_outbound(Side::A).unwrap();
+    assert_eq!(
+        write_stream_bytes(&mut harness.a.fsm, stream_id, b"y").unwrap(),
+        1
+    );
+    let second = harness.next_outbound(Side::A).unwrap();
+
+    harness.deliver(Side::B, first.clone());
+    harness.deliver(Side::B, second);
+    harness.drain_events(Side::B);
+
+    harness.advance(config.session_peer_timeout);
+    harness.deliver(Side::B, first);
+    harness.on_timer(Side::B);
+
+    assert_eq!(
+        harness.drain_events(Side::B),
+        vec![Event::SessionClosed(SessionClose {
+            code: ql_wire::SessionCloseCode::TIMEOUT,
+        })]
+    );
+}
+
+#[test]
 fn first_stream_data_uses_negotiated_initial_peer_credit() {
     let mut harness = Harness::paired_known_with_configs(
         QlFsmConfig {
