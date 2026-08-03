@@ -832,66 +832,41 @@ impl SessionFsm {
         matches!(target, ResetTarget::Both) || role.outbound_target() == target
     }
 
-    fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
-        let tracked_refs_stream = self.state.tracked_records.values().any(|record| {
-            record
-                .frames
-                .iter()
-                .any(|frame| frame.references_stream(stream_id))
-        });
-        if tracked_refs_stream {
-            return false;
-        }
-
-        if !stream.tx.is_empty()
-            || stream.pending_reset.is_some()
-            || stream.pending_window
-            || stream.readable_bytes() > 0
-            || stream.rx.buffered_end_offset() > stream.rx.start_offset()
-        {
-            return false;
-        }
-
-        matches!(
-            stream.inbound_state,
-            InboundState::Finished | InboundState::Reset(_) | InboundState::Discarding
-        ) && matches!(
-            stream.outbound_state,
-            OutboundState::Finished | OutboundState::Closed
-        )
-    }
-
     fn reap_reapable_streams(&mut self) {
-        let mut index = 0usize;
-        while index < self.state.streams.len() {
-            let stream_id = *self.state.streams.get_index(index).unwrap().0;
-            let len_before = self.state.streams.len();
-            self.try_reap_stream(stream_id);
-            if self.state.streams.len() == len_before {
-                index += 1;
+        let SessionState {
+            tracked_records,
+            streams,
+            next_stream_index,
+            ..
+        } = &mut self.state;
+        let old_start = *next_stream_index;
+        let mut old_index = 0usize;
+        let mut retained = 0usize;
+        let mut new_start = None;
+
+        streams.retain(|&stream_id, stream| {
+            let keep = !stream_is_reapable(tracked_records, stream_id, stream);
+            if keep {
+                if old_index >= old_start && new_start.is_none() {
+                    new_start = Some(retained);
+                }
+                retained += 1;
             }
-        }
+            old_index += 1;
+            keep
+        });
+
+        *next_stream_index = new_start.unwrap_or(0);
     }
 
     fn try_reap_stream(&mut self, stream_id: StreamId) {
         let Some(index) = self.state.streams.get_index_of(&stream_id) else {
             return;
         };
-        self.try_reap_stream_at(stream_id, index);
-    }
-
-    fn try_reap_stream_at(&mut self, stream_id: StreamId, index: usize) {
-        let Some((indexed_stream_id, stream)) = self.state.streams.get_index(index) else {
-            return;
-        };
-        debug_assert_eq!(*indexed_stream_id, stream_id);
-        if !self.stream_is_reapable(stream_id, stream) {
+        let stream = &self.state.streams[index];
+        if !stream_is_reapable(&self.state.tracked_records, stream_id, stream) {
             return;
         }
-        self.reap_stream_at(index);
-    }
-
-    fn reap_stream_at(&mut self, index: usize) {
         self.state.streams.shift_remove_index(index);
 
         if self.state.streams.is_empty() {
@@ -1023,6 +998,39 @@ fn restore_tracked_record(
             }
         }
     }
+}
+
+fn stream_is_reapable(
+    tracked_records: &IndexMap<u64, TrackedRecord>,
+    stream_id: StreamId,
+    stream: &StreamState,
+) -> bool {
+    let tracked_refs_stream = tracked_records.values().any(|record| {
+        record
+            .frames
+            .iter()
+            .any(|frame| frame.references_stream(stream_id))
+    });
+    if tracked_refs_stream {
+        return false;
+    }
+
+    if !stream.tx.is_empty()
+        || stream.pending_reset.is_some()
+        || stream.pending_window
+        || stream.readable_bytes() > 0
+        || stream.rx.buffered_end_offset() > stream.rx.start_offset()
+    {
+        return false;
+    }
+
+    matches!(
+        (&stream.inbound_state, &stream.outbound_state),
+        (
+            InboundState::Finished | InboundState::Reset(_) | InboundState::Discarding,
+            OutboundState::Finished | OutboundState::Closed,
+        )
+    )
 }
 
 fn acknowledge_tracked_frame(

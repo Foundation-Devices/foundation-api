@@ -8,7 +8,10 @@ use ql_wire::{
     SessionRecordBuilder, StreamData, StreamReset,
 };
 
-use super::{SessionConfig, SessionEvent, SessionFsm, SessionParams};
+use super::{
+    state::{InboundState, OutboundState},
+    SessionConfig, SessionEvent, SessionFsm, SessionParams,
+};
 use crate::{session::stream_parity::StreamParity, StreamResetEvent};
 
 const REFUSED: ResetCode = ResetCode(1);
@@ -105,6 +108,43 @@ fn outbound_record_seq_increments_monotonically() {
 
     assert_eq!(first_seq, RecordSeq(0));
     assert_eq!(second_seq, RecordSeq(1));
+}
+
+#[test]
+fn stream_data_is_scheduled_round_robin() {
+    let now = Instant::now();
+    let config = SessionConfig::default();
+    let payload = vec![b'x'; config.stream_send_buffer_size];
+    let mut fsm = SessionFsm::new(config, SessionParams::default(), now);
+    let a = open_stream_id(&mut fsm);
+    let b = open_stream_id(&mut fsm);
+    let c = open_stream_id(&mut fsm);
+    let d = open_stream_id(&mut fsm);
+    for stream_id in [a, c, d] {
+        assert_eq!(
+            write_stream_bytes(&mut fsm, stream_id, &payload),
+            payload.len()
+        );
+    }
+    let next_stream_id = |fsm: &mut SessionFsm| {
+        let (_, frames) = next_outbound(fsm, now).unwrap();
+        let [SessionFrame::StreamData(frame)] = frames.as_slice() else {
+            panic!("expected one stream data frame, got {frames:?}");
+        };
+        frame.stream_id
+    };
+
+    assert_eq!(next_stream_id(&mut fsm), a);
+
+    let stream = fsm.state.streams.get_mut(&b).unwrap();
+    stream.inbound_state = InboundState::Finished;
+    stream.outbound_state = OutboundState::Finished;
+    fsm.reap_reapable_streams();
+    assert!(fsm.stream(b, |_| {}).is_err());
+
+    for expected in [c, d, a] {
+        assert_eq!(next_stream_id(&mut fsm), expected);
+    }
 }
 
 #[test]
