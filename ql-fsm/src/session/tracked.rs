@@ -11,6 +11,7 @@ pub struct TrackedRecord {
     pub frames: Vec<TrackedFrame>,
     /// separate from `frames`, which only holds ack-eliciting ones
     pub ack: Option<RecordAck>,
+    pub ping_included: bool,
     pub sent_at: Option<Instant>,
 }
 
@@ -19,7 +20,6 @@ pub enum TrackedFrame {
     StreamData(TrackedStreamData),
     StreamReset(StreamReset),
     StreamWindow(StreamId, u64),
-    Ping,
 }
 
 impl TrackedFrame {
@@ -28,7 +28,6 @@ impl TrackedFrame {
             Self::StreamData(frame) => frame.stream_id == stream_id,
             Self::StreamReset(frame) => frame.stream_id == stream_id,
             Self::StreamWindow(id, _) => *id == stream_id,
-            Self::Ping => false,
         }
     }
 }

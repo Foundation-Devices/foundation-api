@@ -10,8 +10,8 @@ use super::{
     remote_stream_history::RemoteStreamHistory,
     replay_window::ReplayWindow,
     stream_rx::StreamRx,
-    stream_tx::{StreamTx, StreamTxRange},
-    tracked::{LossRecovery, TrackedFrame, TrackedRecord},
+    stream_tx::StreamTx,
+    tracked::{LossRecovery, TrackedRecord},
 };
 
 pub struct SessionState {
@@ -43,47 +43,6 @@ impl SessionState {
             .streams
             .get_index(index)
             .map(|(&stream_id, _)| stream_id);
-    }
-
-    pub fn restore_tracked_record(&mut self, now: Instant, record: &TrackedRecord) {
-        if let Some(ack) = &record.ack {
-            self.ack_tracker.restore_acked_ranges(ack, now);
-        }
-        for frame in &record.frames {
-            self.requeue_tracked_frame(frame);
-        }
-    }
-
-    fn requeue_tracked_frame(&mut self, frame: &TrackedFrame) {
-        match frame {
-            TrackedFrame::StreamReset(reset) => {
-                if let Some(stream) = self.streams.get_mut(&reset.stream_id) {
-                    stream.pending_reset = Some(reset.clone());
-                }
-            }
-            TrackedFrame::StreamData(frame) => {
-                let Some(stream) = self.streams.get_mut(&frame.stream_id) else {
-                    return;
-                };
-                if matches!(stream.outbound_state, OutboundState::Closed) {
-                    return;
-                }
-                stream.tx.retransmit(StreamTxRange {
-                    offset: frame.offset,
-                    len: frame.len,
-                    fin: frame.fin,
-                });
-                if frame.fin && matches!(stream.outbound_state, OutboundState::Finished) {
-                    stream.outbound_state = OutboundState::FinQueued;
-                }
-            }
-            TrackedFrame::StreamWindow(stream_id, maximum_offset) => {
-                if let Some(stream) = self.streams.get_mut(stream_id) {
-                    stream.pending_window |= stream.recv_limit() >= *maximum_offset;
-                }
-            }
-            TrackedFrame::Ping => self.pending_ping = true,
-        }
     }
 }
 
