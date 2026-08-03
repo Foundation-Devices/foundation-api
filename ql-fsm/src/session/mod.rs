@@ -3,6 +3,7 @@ pub use self::{state::TerminalFrame, stream_ops::*, stream_parity::*, stream_rx:
 mod ack_tracker;
 mod range_set;
 mod remote_stream_history;
+mod replay_window;
 mod state;
 mod stream_ops;
 mod stream_parity;
@@ -25,8 +26,9 @@ use ql_wire::{
 };
 
 use self::{
-    ack_tracker::{AckTracker, PendingAck, ReceiveOutcome},
+    ack_tracker::{AckTracker, PendingAck},
     remote_stream_history::RemoteStreamHistory,
+    replay_window::ReplayWindow,
     state::{InboundState, OutboundState, SessionPhase, SessionState, StreamRole, StreamState},
     stream_tx::StreamTxRange,
     tracked::{LossRecovery, TrackedFrame, TrackedRecord, TrackedStreamData},
@@ -35,23 +37,29 @@ use crate::{NoSessionError, StreamError, StreamResetEvent, StreamResetTarget};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
-    pub local_parity: StreamParity,
+    /// maximum total wire size for one session record, including header and auth tag
     pub record_max_size: usize,
+    /// delay before sending a pure record ack
     pub ack_delay: Duration,
+    /// initial wait before resending unacked session records
     pub retransmit_timeout: Duration,
+    /// idle delay before sending a keepalive ping
     pub keepalive_interval: Duration,
+    /// how long to wait before declaring the peer dead
     pub peer_timeout: Duration,
+    /// maximum bytes buffered locally for one stream send side
     pub stream_send_buffer_size: usize,
+    /// maximum bytes buffered locally for one stream receive side
     pub stream_receive_buffer_size: u32,
-    pub initial_peer_stream_receive_window: u32,
+    /// how many accepted record sequence numbers to retain for replay detection
     pub accepted_record_window: u64,
+    /// maximum disjoint pending ACK ranges to retain before dropping the oldest low ranges
     pub pending_ack_range_limit: usize,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            local_parity: StreamParity::Even,
             record_max_size: 8 * 1024,
             ack_delay: Duration::from_millis(5),
             retransmit_timeout: Duration::from_secs(1),
@@ -59,9 +67,24 @@ impl Default for SessionConfig {
             peer_timeout: Duration::from_secs(30),
             stream_send_buffer_size: 16 * 1024,
             stream_receive_buffer_size: 16 * 1024,
-            initial_peer_stream_receive_window: 16 * 1024,
             accepted_record_window: 4096,
             pending_ack_range_limit: 64,
+        }
+    }
+}
+
+/// per-session values settled by the handshake
+#[derive(Debug, Clone, Copy)]
+pub struct SessionParams {
+    pub local_parity: StreamParity,
+    pub initial_stream_receive_window: u32,
+}
+
+impl Default for SessionParams {
+    fn default() -> Self {
+        Self {
+            local_parity: StreamParity::Even,
+            initial_stream_receive_window: 16 * 1024,
         }
     }
 }
@@ -93,20 +116,20 @@ where
 
 pub struct SessionFsm {
     config: SessionConfig,
+    params: SessionParams,
     state: SessionState,
 }
 
 impl SessionFsm {
-    pub fn new(mut config: SessionConfig, now: Instant) -> Self {
+    pub fn new(mut config: SessionConfig, params: SessionParams, now: Instant) -> Self {
         config.record_max_size = config
             .record_max_size
             .max(SessionRecordBuilder::MIN_CAPACITY);
         config.stream_send_buffer_size = config.stream_send_buffer_size.max(1);
         config.stream_receive_buffer_size = config.stream_receive_buffer_size.max(1);
-        config.accepted_record_window = config.accepted_record_window.max(1);
-        config.pending_ack_range_limit = config.pending_ack_range_limit.max(1);
         Self {
             config,
+            params,
             state: SessionState {
                 last_activity_at: now,
                 last_inbound_at: now,
@@ -116,14 +139,12 @@ impl SessionFsm {
                 next_write_id: 0,
                 tracked_records: IndexMap::default(),
                 loss_recovery: LossRecovery::new(config.retransmit_timeout),
-                ack_tracker: AckTracker::new(
-                    config.accepted_record_window,
-                    config.pending_ack_range_limit,
-                ),
+                replay_window: ReplayWindow::new(config.accepted_record_window),
+                ack_tracker: AckTracker::new(config.pending_ack_range_limit),
                 pending_ping: false,
                 streams: IndexMap::default(),
                 next_stream_index: 0,
-                remote_stream_history: RemoteStreamHistory::new(config.local_parity.remote()),
+                remote_stream_history: RemoteStreamHistory::new(params.local_parity.remote()),
             },
         }
     }
@@ -138,7 +159,7 @@ impl SessionFsm {
     {
         self.ensure_session_open()?;
         let stream_id = self
-            .config
+            .params
             .local_parity
             .make_stream_id(self.state.next_stream_ordinal);
         self.state.next_stream_ordinal = self.state.next_stream_ordinal.saturating_add(1);
@@ -148,7 +169,7 @@ impl SessionFsm {
                 StreamRole::Initiator,
                 Some(Bytes::from(header)),
                 self.config.stream_receive_buffer_size,
-                self.config.initial_peer_stream_receive_window,
+                self.params.initial_stream_receive_window,
             ),
         );
         let stream_index = self.state.streams.len() - 1;
@@ -202,6 +223,10 @@ impl SessionFsm {
         self.state.phase == SessionPhase::Closed
     }
 
+    pub fn is_replay(&self, seq: RecordSeq) -> bool {
+        self.state.replay_window.is_replay(seq)
+    }
+
     pub fn receive<I>(&mut self, now: Instant, seq: RecordSeq, frames: I, sink: &mut impl EventSink)
     where
         I: IntoIterator<Item = Result<SessionFrame<Bytes>, ql_wire::Error>>,
@@ -210,18 +235,13 @@ impl SessionFsm {
             return;
         }
 
-        self.state.last_activity_at = now;
-        self.state.last_inbound_at = now;
         self.collect_timeouts(now);
 
-        match self.state.ack_tracker.insert(seq) {
-            ReceiveOutcome::TooOld => return,
-            ReceiveOutcome::Duplicate => {
-                self.schedule_ack(now, true);
-                return;
-            }
-            ReceiveOutcome::New => {}
-        }
+        self.state.replay_window.accept(seq);
+        self.state.ack_tracker.push(seq);
+
+        self.state.last_activity_at = now;
+        self.state.last_inbound_at = now;
 
         let mut ack_eliciting = false;
 
@@ -244,7 +264,7 @@ impl SessionFsm {
                         return;
                     }
                 }
-                SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame, sink),
+                SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame),
                 SessionFrame::StreamReset(frame) => {
                     if self.handle_stream_reset(&frame, sink).is_err() {
                         self.close(SessionCloseCode::PROTOCOL, sink);
@@ -259,7 +279,7 @@ impl SessionFsm {
         }
 
         if ack_eliciting {
-            self.schedule_ack(now, false);
+            self.schedule_ack(now);
         }
     }
 
@@ -293,7 +313,7 @@ impl SessionFsm {
                 &mut self.state.ack_tracker,
                 &mut self.state.pending_ping,
                 &mut self.state.streams,
-                &record,
+                record,
             );
         }
     }
@@ -393,9 +413,7 @@ impl SessionFsm {
 
         let (builder, outbound) = self.build_next_record(now)?;
 
-        let should_track = outbound.ping_included
-            || !outbound.window_updates.is_empty()
-            || !outbound.frames.is_empty();
+        let should_track = outbound.ping_included || !outbound.frames.is_empty();
         let write_id = should_track.then(|| {
             debug_assert!(self.state.tracked_records.len() < TRACKED_RECORD_LIMIT);
             let write_id = self.state.next_write_id;
@@ -415,7 +433,6 @@ impl SessionFsm {
             frames: Vec::new(),
             ack: None,
             ping_included: false,
-            window_updates: Vec::new(),
             sent_at: None,
         };
 
@@ -513,8 +530,8 @@ impl SessionFsm {
             stream.pending_window = false;
             stream.advertised_max_offset = *frame.maximum_offset;
             outbound
-                .window_updates
-                .push((stream_id, *frame.maximum_offset));
+                .frames
+                .push(TrackedFrame::StreamWindow(stream_id, *frame.maximum_offset));
         }
     }
 
@@ -595,9 +612,10 @@ impl SessionFsm {
         let stream_send_buffer_size = self.config.stream_send_buffer_size;
         let mut latest_sent_at = None;
         let state = &mut self.state;
-        for (_, record) in state.tracked_records.extract_if(.., |_, record| {
-            record.sent_at.is_some() && ack.contains(record.seq.0)
-        }) {
+        for (_, record) in state
+            .tracked_records
+            .extract_if(.., |_, record| ack.contains(record.seq.0))
+        {
             latest_sent_at = latest_sent_at.max(record.sent_at);
             for frame in &record.frames {
                 acknowledge_tracked_frame(&mut state.streams, stream_send_buffer_size, frame, sink);
@@ -611,12 +629,10 @@ impl SessionFsm {
         self.reap_reapable_streams();
     }
 
-    fn schedule_ack(&mut self, now: Instant, immediate: bool) {
-        self.state.ack_tracker.schedule_ack(if immediate {
-            now
-        } else {
-            now + self.config.ack_delay
-        });
+    fn schedule_ack(&mut self, now: Instant) {
+        self.state
+            .ack_tracker
+            .schedule_ack(now + self.config.ack_delay);
     }
 
     fn pending_ack(&self, remaining_capacity: usize) -> Option<PendingAck> {
@@ -636,7 +652,7 @@ impl SessionFsm {
                 &mut state.ack_tracker,
                 &mut state.pending_ping,
                 &mut state.streams,
-                &record,
+                record,
             );
             timed_out = true;
         }
@@ -738,18 +754,14 @@ impl SessionFsm {
         Ok(())
     }
 
-    fn handle_stream_window(&mut self, frame: &StreamWindow, sink: &mut impl EventSink) {
+    fn handle_stream_window(&mut self, frame: &StreamWindow) {
         let Some(stream) = self.state.streams.get_mut(&frame.stream_id) else {
             return;
         };
 
-        let was_full = stream.send_capacity(self.config.stream_send_buffer_size) == 0;
         let maximum_offset = *frame.maximum_offset;
         if maximum_offset > stream.peer_max_offset {
             stream.peer_max_offset = maximum_offset;
-        }
-        if was_full && stream.send_capacity(self.config.stream_send_buffer_size) > 0 {
-            sink.emit(SessionEvent::Writable(frame.stream_id));
         }
     }
 
@@ -820,67 +832,41 @@ impl SessionFsm {
         matches!(target, ResetTarget::Both) || role.outbound_target() == target
     }
 
-    fn stream_is_reapable(&self, stream_id: StreamId, stream: &StreamState) -> bool {
-        let tracked_refs_stream = self.state.tracked_records.values().any(|record| {
-            record.window_updates.iter().any(|(id, _)| *id == stream_id)
-                || record.frames.iter().any(|frame| match frame {
-                    TrackedFrame::StreamData(frame) => frame.stream_id == stream_id,
-                    TrackedFrame::StreamReset(frame) => frame.stream_id == stream_id,
-                })
-        });
-        if tracked_refs_stream {
-            return false;
-        }
-
-        if !stream.tx.is_empty()
-            || stream.pending_reset.is_some()
-            || stream.pending_window
-            || stream.readable_bytes() > 0
-            || stream.rx.buffered_end_offset() > stream.rx.start_offset()
-        {
-            return false;
-        }
-
-        matches!(
-            stream.inbound_state,
-            InboundState::Finished | InboundState::Reset(_) | InboundState::Discarding
-        ) && matches!(
-            stream.outbound_state,
-            OutboundState::Finished | OutboundState::Closed
-        )
-    }
-
     fn reap_reapable_streams(&mut self) {
-        let mut index = 0usize;
-        while index < self.state.streams.len() {
-            let stream_id = *self.state.streams.get_index(index).unwrap().0;
-            let len_before = self.state.streams.len();
-            self.try_reap_stream(stream_id);
-            if self.state.streams.len() == len_before {
-                index += 1;
+        let SessionState {
+            tracked_records,
+            streams,
+            next_stream_index,
+            ..
+        } = &mut self.state;
+        let old_start = *next_stream_index;
+        let mut old_index = 0usize;
+        let mut retained = 0usize;
+        let mut new_start = None;
+
+        streams.retain(|&stream_id, stream| {
+            let keep = !stream_is_reapable(tracked_records, stream_id, stream);
+            if keep {
+                if old_index >= old_start && new_start.is_none() {
+                    new_start = Some(retained);
+                }
+                retained += 1;
             }
-        }
+            old_index += 1;
+            keep
+        });
+
+        *next_stream_index = new_start.unwrap_or(0);
     }
 
     fn try_reap_stream(&mut self, stream_id: StreamId) {
         let Some(index) = self.state.streams.get_index_of(&stream_id) else {
             return;
         };
-        self.try_reap_stream_at(stream_id, index);
-    }
-
-    fn try_reap_stream_at(&mut self, stream_id: StreamId, index: usize) {
-        let Some((indexed_stream_id, stream)) = self.state.streams.get_index(index) else {
-            return;
-        };
-        debug_assert_eq!(*indexed_stream_id, stream_id);
-        if !self.stream_is_reapable(stream_id, stream) {
+        let stream = &self.state.streams[index];
+        if !stream_is_reapable(&self.state.tracked_records, stream_id, stream) {
             return;
         }
-        self.reap_stream_at(index);
-    }
-
-    fn reap_stream_at(&mut self, index: usize) {
         self.state.streams.shift_remove_index(index);
 
         if self.state.streams.is_empty() {
@@ -905,7 +891,7 @@ impl SessionFsm {
         stream_id: StreamId,
     ) -> Result<Option<&mut StreamState>, ()> {
         match classify_missing_stream(
-            self.config.local_parity,
+            self.params.local_parity,
             self.state.next_stream_ordinal,
             stream_id,
             &mut self.state.remote_stream_history,
@@ -925,7 +911,7 @@ impl SessionFsm {
                 StreamRole::Responder,
                 None,
                 self.config.stream_receive_buffer_size,
-                self.config.initial_peer_stream_receive_window,
+                self.params.initial_stream_receive_window,
             ));
 
         Ok(Some(stream.into_mut()))
@@ -974,53 +960,77 @@ fn restore_tracked_record(
     ack_tracker: &mut AckTracker,
     pending_ping: &mut bool,
     streams: &mut IndexMap<StreamId, StreamState>,
-    record: &TrackedRecord,
+    record: TrackedRecord,
 ) {
-    if let Some(ack) = &record.ack {
-        ack_tracker.restore_acked_ranges(ack, now);
+    if let Some(ack) = record.ack {
+        ack_tracker.restore_acked_ranges(&ack, now);
     }
     if record.ping_included {
         *pending_ping = true;
     }
-    for &(stream_id, maximum_offset) in &record.window_updates {
-        if let Some(stream) = streams.get_mut(&stream_id) {
-            if stream.recv_limit() >= maximum_offset {
-                stream.pending_window = true;
+    for frame in record.frames {
+        match frame {
+            TrackedFrame::StreamReset(reset) => {
+                if let Some(stream) = streams.get_mut(&reset.stream_id) {
+                    stream.pending_reset = Some(reset);
+                }
+            }
+            TrackedFrame::StreamData(frame) => {
+                let Some(stream) = streams.get_mut(&frame.stream_id) else {
+                    continue;
+                };
+                if matches!(stream.outbound_state, OutboundState::Closed) {
+                    continue;
+                }
+                stream.tx.retransmit(StreamTxRange {
+                    offset: frame.offset,
+                    len: frame.len,
+                    fin: frame.fin,
+                });
+                if frame.fin && matches!(stream.outbound_state, OutboundState::Finished) {
+                    stream.outbound_state = OutboundState::FinQueued;
+                }
+            }
+            TrackedFrame::StreamWindow(stream_id, maximum_offset) => {
+                if let Some(stream) = streams.get_mut(&stream_id) {
+                    stream.pending_window |= stream.recv_limit() >= maximum_offset;
+                }
             }
         }
     }
-    for frame in &record.frames {
-        requeue_tracked_frame(streams, frame);
-    }
 }
 
-fn requeue_tracked_frame(streams: &mut IndexMap<StreamId, StreamState>, frame: &TrackedFrame) {
-    match frame {
-        TrackedFrame::StreamReset(reset) => restore_stream_reset(streams, reset.clone()),
-        TrackedFrame::StreamData(frame) => restore_stream_data(streams, *frame),
+fn stream_is_reapable(
+    tracked_records: &IndexMap<u64, TrackedRecord>,
+    stream_id: StreamId,
+    stream: &StreamState,
+) -> bool {
+    let tracked_refs_stream = tracked_records.values().any(|record| {
+        record
+            .frames
+            .iter()
+            .any(|frame| frame.references_stream(stream_id))
+    });
+    if tracked_refs_stream {
+        return false;
     }
-}
 
-fn restore_stream_reset(streams: &mut IndexMap<StreamId, StreamState>, reset: StreamReset) {
-    if let Some(stream) = streams.get_mut(&reset.stream_id) {
-        stream.pending_reset = Some(reset);
+    if !stream.tx.is_empty()
+        || stream.pending_reset.is_some()
+        || stream.pending_window
+        || stream.readable_bytes() > 0
+        || stream.rx.buffered_end_offset() > stream.rx.start_offset()
+    {
+        return false;
     }
-}
 
-fn restore_stream_data(streams: &mut IndexMap<StreamId, StreamState>, frame: TrackedStreamData) {
-    if let Some(stream) = streams.get_mut(&frame.stream_id) {
-        if matches!(stream.outbound_state, OutboundState::Closed) {
-            return;
-        }
-        stream.tx.retransmit(stream_tx::StreamTxRange {
-            offset: frame.offset,
-            len: frame.len,
-            fin: frame.fin,
-        });
-        if frame.fin && matches!(stream.outbound_state, OutboundState::Finished) {
-            stream.outbound_state = OutboundState::FinQueued;
-        }
-    }
+    matches!(
+        (&stream.inbound_state, &stream.outbound_state),
+        (
+            InboundState::Finished | InboundState::Reset(_) | InboundState::Discarding,
+            OutboundState::Finished | OutboundState::Closed,
+        )
+    )
 }
 
 fn acknowledge_tracked_frame(
@@ -1030,7 +1040,7 @@ fn acknowledge_tracked_frame(
     sink: &mut impl EventSink,
 ) {
     match frame {
-        TrackedFrame::StreamReset(_) => {}
+        TrackedFrame::StreamReset(_) | TrackedFrame::StreamWindow(..) => {}
         TrackedFrame::StreamData(frame) => {
             let stream_id = frame.stream_id;
             if let Some(stream) = streams.get_mut(&stream_id) {

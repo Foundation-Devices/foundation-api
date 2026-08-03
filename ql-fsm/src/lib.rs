@@ -37,7 +37,7 @@ pub use error::*;
 pub use pairing::PairingInvite;
 use ql_common::{ResetCode, StreamId};
 use ql_wire::{PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode};
-pub use session::{SessionEvent, StreamReadIter, StreamWriter};
+pub use session::{SessionConfig, SessionEvent, StreamReadIter, StreamWriter};
 
 use crate::state::{LinkState, QlFsmState};
 
@@ -170,40 +170,14 @@ impl StreamOps<'_> {
 pub struct QlFsmConfig {
     /// overall time limit for one handshake attempt
     pub handshake_timeout: Duration,
-    /// delay before sending a pure record ack
-    pub session_record_ack_delay: Duration,
-    /// initial wait before resending unacked session records
-    pub session_record_retransmit_timeout: Duration,
-    /// idle delay before sending a keepalive ping
-    pub session_keepalive_interval: Duration,
-    /// how long to wait before declaring the peer dead
-    pub session_peer_timeout: Duration,
-    /// maximum total wire size for one session record, including header and auth tag
-    pub session_record_max_size: usize,
-    /// maximum bytes buffered locally for one stream send side
-    pub session_stream_send_buffer_size: usize,
-    /// maximum bytes buffered locally for one stream receive side
-    pub session_stream_receive_buffer_size: u32,
-    /// how many accepted record sequence numbers to retain for duplicate detection
-    pub session_accepted_record_window: u64,
-    /// maximum disjoint pending ACK ranges to retain before dropping the oldest low ranges
-    pub session_pending_ack_range_limit: usize,
+    pub session: SessionConfig,
 }
 
 impl Default for QlFsmConfig {
     fn default() -> Self {
-        let s = session::SessionConfig::default();
         Self {
             handshake_timeout: Duration::from_secs(5),
-            session_record_ack_delay: s.ack_delay,
-            session_record_retransmit_timeout: s.retransmit_timeout,
-            session_keepalive_interval: s.keepalive_interval,
-            session_peer_timeout: s.peer_timeout,
-            session_record_max_size: s.record_max_size,
-            session_stream_send_buffer_size: s.stream_send_buffer_size,
-            session_stream_receive_buffer_size: s.stream_receive_buffer_size,
-            session_accepted_record_window: s.accepted_record_window,
-            session_pending_ack_range_limit: s.pending_ack_range_limit,
+            session: SessionConfig::default(),
         }
     }
 }

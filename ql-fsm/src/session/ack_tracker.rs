@@ -2,14 +2,12 @@ use std::{ops::RangeInclusive, time::Instant};
 
 use ql_wire::{RecordAck, RecordAckBuilder, RecordSeq};
 
-use super::range_set::RangeSet;
+use super::range_set::{single_range, RangeSet};
 
 #[derive(Debug, Clone)]
 pub struct AckTracker {
-    accepted_records: RangeSet,
     pending_ack: RangeSet,
-    ack_state: AckState,
-    accepted_record_window: u64,
+    ack_due_at: Option<Instant>,
     pending_ack_range_limit: usize,
 }
 
@@ -20,74 +18,36 @@ pub struct PendingAck {
     pub includes_all_pending: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReceiveOutcome {
-    New,
-    Duplicate,
-    TooOld,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AckState {
-    Idle,
-    Dirty { due_at: Instant },
-}
-
 impl AckTracker {
-    pub fn new(accepted_record_window: u64, pending_ack_range_limit: usize) -> Self {
+    pub fn new(pending_ack_range_limit: usize) -> Self {
         Self {
-            accepted_records: RangeSet::new(),
             pending_ack: RangeSet::new(),
-            ack_state: AckState::Idle,
-            accepted_record_window: accepted_record_window.max(1),
+            ack_due_at: None,
             pending_ack_range_limit: pending_ack_range_limit.max(1),
         }
     }
 
-    pub fn insert(&mut self, seq: RecordSeq) -> ReceiveOutcome {
-        let seq = seq.0;
-        let largest_accepted = self.accepted_records.max();
-        if largest_accepted.is_some_and(|largest| seq < self.accepted_cutoff(largest)) {
-            return ReceiveOutcome::TooOld;
-        }
-        if self.accepted_records.contains(seq) {
-            self.pending_ack.insert(single_range(seq));
-            self.trim_pending_ack_ranges();
-            return ReceiveOutcome::Duplicate;
-        }
-
-        self.accepted_records.insert(single_range(seq));
-        self.trim_accepted_records();
-
-        self.pending_ack.insert(single_range(seq));
+    /// queues an ack for `seq`
+    pub fn push(&mut self, seq: RecordSeq) {
+        self.pending_ack.insert(single_range(seq.0));
         self.trim_pending_ack_ranges();
-
-        ReceiveOutcome::New
     }
 
     pub fn ack_deadline(&self) -> Option<Instant> {
-        match self.ack_state {
-            AckState::Idle => None,
-            AckState::Dirty { due_at } => Some(due_at),
-        }
+        self.ack_due_at
     }
 
     pub fn schedule_ack(&mut self, due_at: Instant) {
-        self.ack_state = match self.ack_state {
-            AckState::Dirty { due_at: old } => AckState::Dirty {
-                due_at: due_at.min(old),
-            },
-            AckState::Idle => AckState::Dirty { due_at },
-        };
+        self.ack_due_at = Some(self.ack_due_at.map_or(due_at, |old| old.min(due_at)));
     }
 
     pub fn pending_ack(&self, max_wire_size: usize) -> Option<PendingAck> {
         let due_at = self.ack_deadline()?;
-        if max_wire_size == 0 || self.pending_ack.range_count() == 0 {
+        let total_range_count = self.pending_ack.range_count();
+        if max_wire_size == 0 || total_range_count == 0 {
             return None;
         }
 
-        let total_range_count = self.pending_ack.range_count();
         let mut ack = RecordAckBuilder::new();
         let mut selected_range_count = 0usize;
 
@@ -109,23 +69,16 @@ impl AckTracker {
     }
 
     pub fn on_ack_emitted(&mut self, pending_ack: &PendingAck) {
-        self.retire_acked_ranges(&pending_ack.ack);
-        if pending_ack.includes_all_pending || self.pending_ack.range_count() == 0 {
-            self.ack_state = AckState::Idle;
-        }
-    }
-
-    pub fn retire_acked_ranges(&mut self, ack: &RecordAck) {
-        for range in ack.ranges() {
+        for range in pending_ack.ack.ranges() {
             self.pending_ack.remove(from_ack_range(range));
         }
-        if self.pending_ack.range_count() == 0 {
-            self.ack_state = AckState::Idle;
+        if pending_ack.includes_all_pending || self.pending_ack.range_count() == 0 {
+            self.ack_due_at = None;
         }
     }
 
     pub fn clear_ack_state(&mut self) {
-        self.ack_state = AckState::Idle;
+        self.ack_due_at = None;
     }
 
     pub fn restore_acked_ranges(&mut self, ack: &RecordAck, due_at: Instant) {
@@ -136,29 +89,11 @@ impl AckTracker {
         self.schedule_ack(due_at);
     }
 
-    fn accepted_cutoff(&self, largest_accepted: u64) -> u64 {
-        largest_accepted
-            .saturating_add(1)
-            .saturating_sub(self.accepted_record_window)
-    }
-
-    fn trim_accepted_records(&mut self) {
-        let Some(largest_accepted) = self.accepted_records.max() else {
-            return;
-        };
-        let cutoff = self.accepted_cutoff(largest_accepted);
-        self.accepted_records.remove(0..cutoff);
-    }
-
     fn trim_pending_ack_ranges(&mut self) {
         while self.pending_ack.range_count() > self.pending_ack_range_limit {
             self.pending_ack.pop_min();
         }
     }
-}
-
-fn single_range(seq: u64) -> std::ops::Range<u64> {
-    seq..seq.checked_add(1).unwrap()
 }
 
 fn to_ack_range(range: std::ops::Range<u64>) -> RangeInclusive<RecordSeq> {
@@ -178,7 +113,7 @@ mod tests {
 
     use ql_wire::RecordSeq;
 
-    use super::{AckTracker, PendingAck, ReceiveOutcome};
+    use super::{AckTracker, PendingAck};
 
     fn ack_ranges(pending_ack: &PendingAck) -> Vec<(u64, u64)> {
         pending_ack
@@ -191,11 +126,11 @@ mod tests {
     #[test]
     fn contiguous_records_emit_one_ack_range() {
         let now = Instant::now();
-        let mut ack_tracker = AckTracker::new(128, 8);
+        let mut ack_tracker = AckTracker::new(8);
 
-        assert_eq!(ack_tracker.insert(RecordSeq(10)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(11)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(12)), ReceiveOutcome::New);
+        ack_tracker.push(RecordSeq(10));
+        ack_tracker.push(RecordSeq(11));
+        ack_tracker.push(RecordSeq(12));
 
         ack_tracker.schedule_ack(now);
         let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
@@ -205,12 +140,12 @@ mod tests {
     #[test]
     fn sparse_records_emit_descending_ack_ranges() {
         let now = Instant::now();
-        let mut ack_tracker = AckTracker::new(128, 8);
+        let mut ack_tracker = AckTracker::new(8);
 
-        assert_eq!(ack_tracker.insert(RecordSeq(10)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(15)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(16)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(12)), ReceiveOutcome::New);
+        ack_tracker.push(RecordSeq(10));
+        ack_tracker.push(RecordSeq(15));
+        ack_tracker.push(RecordSeq(16));
+        ack_tracker.push(RecordSeq(12));
 
         ack_tracker.schedule_ack(now + Duration::from_millis(5));
         let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
@@ -218,23 +153,13 @@ mod tests {
     }
 
     #[test]
-    fn accepted_record_window_evicts_old_sequences() {
-        let mut ack_tracker = AckTracker::new(4, 8);
-
-        assert_eq!(ack_tracker.insert(RecordSeq(10)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(15)), ReceiveOutcome::New);
-
-        assert_eq!(ack_tracker.insert(RecordSeq(10)), ReceiveOutcome::TooOld);
-    }
-
-    #[test]
     fn pending_ack_range_limit_drops_oldest_low_ranges() {
         let now = Instant::now();
-        let mut ack_tracker = AckTracker::new(128, 2);
+        let mut ack_tracker = AckTracker::new(2);
 
-        assert_eq!(ack_tracker.insert(RecordSeq(1)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(3)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(5)), ReceiveOutcome::New);
+        ack_tracker.push(RecordSeq(1));
+        ack_tracker.push(RecordSeq(3));
+        ack_tracker.push(RecordSeq(5));
 
         ack_tracker.schedule_ack(now);
         let pending_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
@@ -242,19 +167,18 @@ mod tests {
     }
 
     #[test]
-    fn retire_acked_ranges_removes_only_exact_snapshot() {
+    fn emitting_an_ack_retires_only_its_own_ranges() {
         let now = Instant::now();
-        let mut ack_tracker = AckTracker::new(128, 8);
+        let mut ack_tracker = AckTracker::new(8);
 
-        assert_eq!(ack_tracker.insert(RecordSeq(1)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(3)), ReceiveOutcome::New);
-        assert_eq!(ack_tracker.insert(RecordSeq(5)), ReceiveOutcome::New);
+        ack_tracker.push(RecordSeq(1));
+        ack_tracker.push(RecordSeq(3));
+        ack_tracker.push(RecordSeq(5));
         ack_tracker.schedule_ack(now);
 
         let first_ack = ack_tracker.pending_ack(4).unwrap();
         assert_eq!(ack_ranges(&first_ack), vec![(5, 5)]);
         ack_tracker.on_ack_emitted(&first_ack);
-        ack_tracker.retire_acked_ranges(&first_ack.ack);
 
         let second_ack = ack_tracker.pending_ack(usize::MAX).unwrap();
         assert_eq!(ack_ranges(&second_ack), vec![(3, 3), (1, 1)]);

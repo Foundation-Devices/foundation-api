@@ -11,7 +11,7 @@ use ql_wire::{
 };
 
 use crate::{
-    session::{SessionConfig, SessionFsm, StreamParity},
+    session::{SessionConfig, SessionFsm, SessionParams, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
     Event, NoPeerError, OutboundWrite, PairingInvite, QlFsm, QlFsmConfig, WriteId,
 };
@@ -111,10 +111,15 @@ impl Harness {
                         .b
                         .fsm
                         .config
-                        .session_stream_receive_buffer_size,
+                        .session
+                        .stream_receive_buffer_size,
                 },
             },
-            session: SessionFsm::new(session_config(&harness, true), harness.now),
+            session: SessionFsm::new(
+                harness.a.fsm.config.session,
+                session_params(&harness, true),
+                harness.now,
+            ),
         });
         harness.b.fsm.state.link = LinkState::Connected(ConnectedState {
             handshake_id: HandshakeId(0),
@@ -127,10 +132,15 @@ impl Harness {
                         .a
                         .fsm
                         .config
-                        .session_stream_receive_buffer_size,
+                        .session
+                        .stream_receive_buffer_size,
                 },
             },
-            session: SessionFsm::new(session_config(&harness, false), harness.now),
+            session: SessionFsm::new(
+                harness.b.fsm.config.session,
+                session_params(&harness, false),
+                harness.now,
+            ),
         });
         harness
     }
@@ -296,36 +306,25 @@ fn pairing_token(byte: u8) -> PairingToken {
     PairingToken([byte; PairingToken::SIZE])
 }
 
-fn session_config(harness: &Harness, a: bool) -> SessionConfig {
-    let (local, peer, config) = if a {
+fn session_params(harness: &Harness, a: bool) -> SessionParams {
+    let (local, remote) = if a {
         (
             harness.a.fsm.identity.qid,
             harness.a.fsm.state.peer.as_ref().unwrap().qid,
-            harness.a.fsm.config,
         )
     } else {
         (
             harness.b.fsm.identity.qid,
             harness.b.fsm.state.peer.as_ref().unwrap().qid,
-            harness.b.fsm.config,
         )
     };
 
-    SessionConfig {
-        local_parity: StreamParity::for_local(local, peer),
-        record_max_size: config.session_record_max_size,
-        ack_delay: config.session_record_ack_delay,
-        retransmit_timeout: config.session_record_retransmit_timeout,
-        keepalive_interval: config.session_keepalive_interval,
-        peer_timeout: config.session_peer_timeout,
-        stream_send_buffer_size: config.session_stream_send_buffer_size,
-        stream_receive_buffer_size: config.session_stream_receive_buffer_size,
-        accepted_record_window: config.session_accepted_record_window,
-        pending_ack_range_limit: config.session_pending_ack_range_limit,
-        initial_peer_stream_receive_window: if a {
-            harness.b.fsm.config.session_stream_receive_buffer_size
+    SessionParams {
+        local_parity: StreamParity::for_local(local, remote),
+        initial_stream_receive_window: if a {
+            harness.b.fsm.config.session.stream_receive_buffer_size
         } else {
-            harness.a.fsm.config.session_stream_receive_buffer_size
+            harness.a.fsm.config.session.stream_receive_buffer_size
         },
     }
 }

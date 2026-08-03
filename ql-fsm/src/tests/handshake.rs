@@ -55,11 +55,17 @@ fn xx_connect_round_trip_establishes_transport_when_armed() {
 fn ik_connect_learns_remote_initial_stream_receive_window() {
     let mut harness = Harness::paired_known_with_configs(
         QlFsmConfig {
-            session_stream_receive_buffer_size: 9,
+            session: SessionConfig {
+                stream_receive_buffer_size: 9,
+                ..SessionConfig::default()
+            },
             ..QlFsmConfig::default()
         },
         QlFsmConfig {
-            session_stream_receive_buffer_size: 3,
+            session: SessionConfig {
+                stream_receive_buffer_size: 3,
+                ..SessionConfig::default()
+            },
             ..QlFsmConfig::default()
         },
     );

@@ -151,11 +151,13 @@ struct Runner {
 impl Runner {
     fn handshake() -> Self {
         let config = QlFsmConfig {
+            session: SessionConfig {
+                ack_delay: Duration::from_millis(5),
+                retransmit_timeout: Duration::from_millis(15),
+                peer_timeout: Duration::from_millis(80),
+                ..SessionConfig::default()
+            },
             handshake_timeout: Duration::from_millis(60),
-            session_record_ack_delay: Duration::from_millis(5),
-            session_record_retransmit_timeout: Duration::from_millis(15),
-            session_peer_timeout: Duration::from_millis(80),
-            ..QlFsmConfig::default()
         };
 
         Self {
@@ -175,9 +177,12 @@ impl Runner {
 
     fn connected() -> Self {
         let config = QlFsmConfig {
-            session_record_ack_delay: Duration::from_millis(5),
-            session_record_retransmit_timeout: Duration::from_millis(15),
-            session_peer_timeout: Duration::from_secs(5),
+            session: SessionConfig {
+                ack_delay: Duration::from_millis(5),
+                retransmit_timeout: Duration::from_millis(15),
+                peer_timeout: Duration::from_secs(5),
+                ..SessionConfig::default()
+            },
             ..QlFsmConfig::default()
         };
         Self::connected_with_config(config)
@@ -366,8 +371,9 @@ impl Runner {
             .a
             .fsm
             .config
-            .session_record_retransmit_timeout
-            .max(self.harness.a.fsm.config.session_record_ack_delay)
+            .session
+            .retransmit_timeout
+            .max(self.harness.a.fsm.config.session.ack_delay)
             + Duration::from_millis(1);
 
         self.reject_all_taken();
@@ -965,13 +971,7 @@ proptest_crate::proptest! {
         payload in vec(any::<u8>(), 512..2048),
         actions in vec(packet_loss_recovery_action_strategy(), 1..96),
     ) {
-        let config = QlFsmConfig {
-            session_record_ack_delay: Duration::from_millis(1),
-            session_record_retransmit_timeout: Duration::from_millis(10),
-            session_record_max_size: ql_wire::SessionRecordBuilder::MIN_CAPACITY + 94,
-            session_pending_ack_range_limit: 512,
-            ..QlFsmConfig::default()
-        };
+        let config = QlFsmConfig { session: SessionConfig { ack_delay: Duration::from_millis(1), retransmit_timeout: Duration::from_millis(10), record_max_size: ql_wire::SessionRecordBuilder::MIN_CAPACITY + 94, pending_ack_range_limit: 512, ..SessionConfig::default() }, ..QlFsmConfig::default() };
         let mut runner = Runner::connected_with_config(config);
 
         runner.apply(&Action::open_stream(Side::A, 0));

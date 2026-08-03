@@ -9,9 +9,9 @@ use ql_wire::{RecordAck, RecordSeq, StreamReset};
 pub struct TrackedRecord {
     pub seq: RecordSeq,
     pub frames: Vec<TrackedFrame>,
+    /// separate from `frames`, which only holds ack-eliciting ones
     pub ack: Option<RecordAck>,
     pub ping_included: bool,
-    pub window_updates: Vec<(StreamId, u64)>,
     pub sent_at: Option<Instant>,
 }
 
@@ -19,6 +19,17 @@ pub struct TrackedRecord {
 pub enum TrackedFrame {
     StreamData(TrackedStreamData),
     StreamReset(StreamReset),
+    StreamWindow(StreamId, u64),
+}
+
+impl TrackedFrame {
+    pub fn references_stream(&self, stream_id: StreamId) -> bool {
+        match self {
+            Self::StreamData(frame) => frame.stream_id == stream_id,
+            Self::StreamReset(frame) => frame.stream_id == stream_id,
+            Self::StreamWindow(id, _) => *id == stream_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

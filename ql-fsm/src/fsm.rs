@@ -132,6 +132,9 @@ pub fn receive(
                 let (decrypt_len, seq) = {
                     let record = wire::QlSessionRecord::decode(&mut reader)
                         .map_err(|error| ReceiveError::wire(ReceiveStage::SessionRecord, error))?;
+                    if conn.session.is_replay(record.header.seq) {
+                        return Ok(());
+                    }
                     let payload = wire::decrypt_record(
                         crypto,
                         &header,
