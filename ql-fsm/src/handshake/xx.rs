@@ -8,11 +8,11 @@ use super::{
 };
 use crate::{
     state::{InitiatorState, LinkState, XxResponderState},
-    QlFsm, ReceiveError, ReceiveStage,
+    QlFsm, ReceiveError, ReceiveStage, StreamMeta,
 };
 
-pub fn start_initiator(
-    fsm: &mut QlFsm,
+pub fn start_initiator<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     crypto: &impl QlCrypto,
     token: PairingToken,
     remote_qid: QID,
@@ -39,8 +39,8 @@ pub fn start_initiator(
     emit_peer_status(fsm, fsm.state.link.status());
 }
 
-pub fn handle_xx1(
-    fsm: &mut QlFsm,
+pub fn handle_xx1<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     crypto: &impl QlCrypto,
     route: RouteHeader,
     message: &Xx1,
@@ -87,8 +87,8 @@ pub fn handle_xx1(
     }
 }
 
-pub fn handle_xx2(
-    fsm: &mut QlFsm,
+pub fn handle_xx2<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     crypto: &impl QlCrypto,
     route: RouteHeader,
     message: &Xx2,
@@ -124,8 +124,8 @@ pub fn handle_xx2(
     Ok(())
 }
 
-pub fn handle_xx3(
-    fsm: &mut QlFsm,
+pub fn handle_xx3<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     crypto: &impl QlCrypto,
     route: RouteHeader,
     message: &Xx3,
@@ -165,8 +165,8 @@ pub fn handle_xx3(
     )
 }
 
-pub fn handle_xx4(
-    fsm: &mut QlFsm,
+pub fn handle_xx4<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     crypto: &impl QlCrypto,
     route: RouteHeader,
     message: &Xx4,
@@ -196,15 +196,15 @@ pub fn handle_xx4(
     )
 }
 
-pub fn disarm_pairing(fsm: &mut QlFsm) {
+pub fn disarm_pairing<M: StreamMeta>(fsm: &mut QlFsm<M>) {
     if matches!(fsm.state.link, LinkState::XxResponder(_)) {
         fsm.state.link = LinkState::Idle;
         fsm.state.handshake = None;
     }
 }
 
-pub fn should_ignore_inbound(
-    fsm: &QlFsm,
+pub fn should_ignore_inbound<M: StreamMeta>(
+    fsm: &QlFsm<M>,
     crypto: &impl QlCrypto,
     route: RouteHeader,
     message: &Xx1,

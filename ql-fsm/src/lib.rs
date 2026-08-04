@@ -11,8 +11,9 @@
 //!
 //! outputs from `QlFsm` are
 //! - outbound session and handshake records from `take_next_write`
-//! - queued `QlFsmEvent`s returned by `poll_event` after `connect_ik`, `connect_kk`,
+//! - queued `Event`s returned by `poll_event` after `connect_ik`, `connect_kk`,
 //!   `connect_xx`, `receive`, and `on_timer`
+//! - stream callbacks on `StreamMeta`
 //!
 //! call `next_deadline` after handling current inputs and any queued outputs
 //! use it to decide how long the outer loop can wait before `on_timer` must run
@@ -37,7 +38,7 @@ pub use error::*;
 pub use pairing::PairingInvite;
 use ql_common::{ResetCode, StreamId};
 use ql_wire::{PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode};
-pub use session::{SessionConfig, SessionEvent, StreamReadIter, StreamWriter};
+pub use session::{SessionConfig, StreamIo, StreamOps, StreamReader, StreamWriter};
 
 use crate::state::{LinkState, QlFsmState};
 
@@ -64,18 +65,10 @@ pub enum Event {
     NewPeer,
     /// the peer changed lifecycle state
     PeerStatusChanged(PeerStatus),
-    /// a stream was opened
+    /// the peer opened a stream
+    ///
+    /// the stream may already be gone when this event is polled
     Opened(StreamId),
-    /// a stream has bytes ready to read
-    Readable(StreamId),
-    /// a stream has room for more local writes
-    Writable(StreamId),
-    /// the peer finished writing this stream and no more bytes remain to read
-    Finished(StreamId),
-    /// our local FIN was acknowledged by the peer at the session layer
-    OutboundFinished(StreamId),
-    /// one or both local stream halves were reset by the peer
-    Reset(StreamResetEvent),
     /// the encrypted session was closed
     ///
     /// session close is abortive and best-effort. the session ends immediately
@@ -84,12 +77,19 @@ pub enum Event {
     SessionClosed(SessionClose),
 }
 
-/// stream was reset by remote peer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamResetEvent {
     pub stream_id: StreamId,
     pub code: ResetCode,
     pub target: StreamResetTarget,
+    pub origin: ResetOrigin,
+}
+
+/// source of a stream reset
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResetOrigin {
+    Local,
+    Peer,
 }
 
 /// local stream halves that can be reset
@@ -125,44 +125,42 @@ pub struct OutboundWrite {
     pub write_id: Option<WriteId>,
 }
 
-pub struct StreamOps<'a> {
-    inner: session::StreamOps<'a, fsm::EventSink<'a>>,
+/// application state stored with each protocol stream
+pub trait StreamMeta: Default {
+    /// handles newly readable bytes
+    fn on_readable(&mut self, stream: StreamIo<'_>);
+
+    /// handles newly available write capacity
+    fn on_writable(&mut self, stream: StreamIo<'_>);
+
+    /// handles the peer finishing its write side
+    fn on_inbound_finished(&mut self, stream: StreamIo<'_>);
+
+    /// handles acknowledgement of the local finish
+    fn on_outbound_finished(&mut self, stream_id: StreamId);
+
+    /// handles a stream reset
+    fn on_reset(&mut self, reset: StreamResetEvent);
 }
 
-impl StreamOps<'_> {
-    /// returns this stream's identifier
-    pub fn stream_id(&self) -> StreamId {
-        self.inner.stream_id()
-    }
+impl StreamMeta for () {
+    fn on_readable(&mut self, _: StreamIo<'_>) {}
 
-    pub fn header(&self) -> &[u8] {
-        self.inner.header()
-    }
+    fn on_writable(&mut self, _: StreamIo<'_>) {}
 
-    /// returns the readable stream bytes as owned `Bytes` views without consuming them
-    pub fn read(&self) -> StreamReadIter<'_> {
-        self.inner.read()
-    }
+    fn on_inbound_finished(&mut self, _: StreamIo<'_>) {}
 
-    /// returns how many bytes can be read from the stream
-    pub fn readable_bytes(&self) -> usize {
-        self.inner.readable_bytes()
-    }
+    fn on_outbound_finished(&mut self, _: StreamId) {}
 
-    /// marks previously read bytes as consumed
-    pub fn commit_read(&mut self, len: usize) -> Result<(), CommitReadError> {
-        self.inner.commit_read(len)
-    }
+    fn on_reset(&mut self, _: StreamResetEvent) {}
+}
 
-    /// returns a writer if the local write side is still open
-    pub fn writer(&mut self) -> Option<StreamWriter<'_>> {
-        self.inner.writer()
-    }
-
-    /// resets the local read side, write side, or both sides of the stream
-    pub fn reset(&mut self, target: StreamResetTarget, code: ResetCode) {
-        self.inner.reset(target, code);
-    }
+/// current state of one stream half
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamStatus {
+    Open,
+    Finished,
+    Reset(ResetCode),
 }
 
 /// timing and buffering knobs for `QlFsm`
@@ -183,14 +181,14 @@ impl Default for QlFsmConfig {
 }
 
 /// synchronous driver for peer binding, handshake, and encrypted streams
-pub struct QlFsm {
+pub struct QlFsm<M: StreamMeta> {
     config: QlFsmConfig,
     identity: QlIdentity,
-    state: QlFsmState,
+    state: QlFsmState<M>,
     events: VecDeque<Event>,
 }
 
-impl QlFsm {
+impl<M: StreamMeta> QlFsm<M> {
     /// creates a new `QlFsm`
     pub fn new(config: QlFsmConfig, identity: QlIdentity, now: Instant) -> Self {
         Self {
@@ -317,12 +315,12 @@ impl QlFsm {
     }
 
     /// opens a new outgoing stream
-    pub fn open_stream(&mut self, header: Box<[u8]>) -> Result<StreamOps<'_>, NoSessionError> {
+    pub fn open_stream(&mut self, header: Box<[u8]>) -> Result<StreamOps<'_, M>, NoSessionError> {
         fsm::open_stream(self, header)
     }
 
-    /// returns a facade for an open stream
-    pub fn stream(&mut self, stream_id: StreamId) -> Result<StreamOps<'_>, StreamError> {
+    /// returns an open stream
+    pub fn stream(&mut self, stream_id: StreamId) -> Result<StreamOps<'_, M>, StreamError> {
         fsm::stream(self, stream_id)
     }
 

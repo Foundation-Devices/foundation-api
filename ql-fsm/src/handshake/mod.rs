@@ -11,56 +11,70 @@ use crate::{
     fsm::emit_peer_status,
     session::{SessionFsm, SessionParams, StreamParity},
     state::{ConnectedState, LinkState, SessionTransport},
-    Event, NoPeerError, QlFsm, ReceiveError,
+    Event, NoPeerError, QlFsm, ReceiveError, StreamMeta,
 };
 
-pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+pub fn handle_connect_ik<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
+    crypto: &impl QlCrypto,
+) -> Result<(), NoPeerError> {
     let peer = fsm.state.peer.clone().ok_or(NoPeerError)?;
     prepare_for_outbound_connect(fsm);
     ik::start_initiator(fsm, crypto, peer, IkPattern::Ik);
     Ok(())
 }
 
-pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+pub fn handle_connect_kk<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
+    crypto: &impl QlCrypto,
+) -> Result<(), NoPeerError> {
     let peer = fsm.state.peer.clone().ok_or(NoPeerError)?;
     prepare_for_outbound_connect(fsm);
     ik::start_initiator(fsm, crypto, peer, IkPattern::Kk);
     Ok(())
 }
 
-pub fn handle_connect_xx(fsm: &mut QlFsm, invite: crate::PairingInvite, crypto: &impl QlCrypto) {
+pub fn handle_connect_xx<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
+    invite: crate::PairingInvite,
+    crypto: &impl QlCrypto,
+) {
     prepare_for_outbound_connect(fsm);
     xx::start_initiator(fsm, crypto, invite.token, invite.qid);
 }
 
-pub fn next_handshake_id(fsm: &mut QlFsm) -> HandshakeId {
+pub fn next_handshake_id<M: StreamMeta>(fsm: &mut QlFsm<M>) -> HandshakeId {
     let handshake_id = wire::HandshakeId(fsm.state.next_control_id);
     fsm.state.next_control_id = fsm.state.next_control_id.wrapping_add(1);
     handshake_id
 }
 
-pub fn enqueue_handshake(fsm: &mut QlFsm, route: RouteHeader, record: QlHandshakeRecord) {
+pub fn enqueue_handshake<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
+    route: RouteHeader,
+    record: QlHandshakeRecord,
+) {
     debug_assert!(fsm.state.handshake.is_none());
     fsm.state.handshake = Some((route, record));
 }
 
-pub fn handle_disarm_pairing(fsm: &mut QlFsm) {
+pub fn handle_disarm_pairing<M: StreamMeta>(fsm: &mut QlFsm<M>) {
     xx::disarm_pairing(fsm);
 }
 
-fn local_transport_params(fsm: &QlFsm) -> wire::TransportParams {
+fn local_transport_params<M: StreamMeta>(fsm: &QlFsm<M>) -> wire::TransportParams {
     wire::TransportParams {
         initial_stream_receive_window: fsm.config.session.stream_receive_buffer_size,
     }
 }
 
-pub fn prepare_for_outbound_connect(fsm: &mut QlFsm) {
+pub fn prepare_for_outbound_connect<M: StreamMeta>(fsm: &mut QlFsm<M>) {
     fsm.state.handshake = None;
     reset_connected_session_if_needed(fsm);
 }
 
-pub fn handle_handshake_record(
-    fsm: &mut QlFsm,
+pub fn handle_handshake_record<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     crypto: &impl QlCrypto,
     route: RouteHeader,
     record: &QlHandshakeRecord,
@@ -77,7 +91,7 @@ pub fn handle_handshake_record(
     }
 }
 
-pub fn handle_timer(fsm: &mut QlFsm) {
+pub fn handle_timer<M: StreamMeta>(fsm: &mut QlFsm<M>) {
     let Some(deadline) = fsm.state.link.handshake_deadline() else {
         return;
     };
@@ -90,12 +104,12 @@ pub fn handle_timer(fsm: &mut QlFsm) {
     emit_peer_status(fsm, fsm.state.link.status());
 }
 
-pub fn next_handshake_deadline(fsm: &QlFsm) -> Option<std::time::Instant> {
+pub fn next_handshake_deadline<M: StreamMeta>(fsm: &QlFsm<M>) -> Option<std::time::Instant> {
     fsm.state.link.handshake_deadline()
 }
 
-pub fn finish_handshake(
-    fsm: &mut QlFsm,
+pub fn finish_handshake<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     handshake_id: HandshakeId,
     transport: SessionTransport,
     remote_bundle: wire::PeerBundle,
@@ -129,8 +143,8 @@ pub fn finish_handshake(
     Ok(())
 }
 
-pub fn establish_session(
-    fsm: &mut QlFsm,
+pub fn establish_session<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     handshake_id: HandshakeId,
     finalized: wire::FinalizedHandshake,
 ) -> Result<(), ReceiveError> {
@@ -143,7 +157,7 @@ pub fn establish_session(
     finish_handshake(fsm, handshake_id, transport, finalized.remote_bundle)
 }
 
-pub fn reset_connected_session_if_needed(fsm: &mut QlFsm) {
+pub fn reset_connected_session_if_needed<M: StreamMeta>(fsm: &mut QlFsm<M>) {
     if matches!(fsm.state.link, LinkState::Connected(_)) {
         fsm.state.link = LinkState::Idle;
     }
@@ -153,7 +167,11 @@ fn local_start_wins(local: &MlKemPublicKey, inbound: &EphemeralPublicKey) -> boo
     local.as_bytes() <= inbound.mlkem_public_key.as_bytes()
 }
 
-fn is_connected_replay(fsm: &QlFsm, handshake_id: HandshakeId, sender: QID) -> bool {
+fn is_connected_replay<M: StreamMeta>(
+    fsm: &QlFsm<M>,
+    handshake_id: HandshakeId,
+    sender: QID,
+) -> bool {
     let LinkState::Connected(connected) = &fsm.state.link else {
         return false;
     };

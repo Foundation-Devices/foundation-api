@@ -10,44 +10,81 @@ use ql_wire::{
 
 use super::{
     state::{InboundState, OutboundState},
-    SessionConfig, SessionEvent, SessionFsm, SessionParams,
+    SessionConfig, SessionEvent, SessionParams,
 };
-use crate::{session::stream_parity::StreamParity, StreamResetEvent};
+use crate::{
+    session::stream_parity::StreamParity, StreamIo, StreamMeta, StreamResetEvent, StreamStatus,
+};
 
 const REFUSED: ResetCode = ResetCode(1);
 const TIMEOUT: ResetCode = ResetCode(2);
 
-fn open_stream_id(fsm: &mut SessionFsm) -> StreamId {
-    fsm.open_stream(Box::from([1]), |_| {}).unwrap().stream_id()
+#[derive(Default)]
+struct TestMeta {
+    readable: usize,
+    writable: usize,
+    consume_reads: bool,
+    read: Vec<u8>,
+    pending_write: Bytes,
+    inbound_finished: usize,
+    outbound_finished: usize,
+    resets: Vec<StreamResetEvent>,
 }
 
-fn write_stream_bytes(fsm: &mut SessionFsm, stream_id: StreamId, bytes: &[u8]) -> usize {
+impl StreamMeta for TestMeta {
+    fn on_readable(&mut self, mut stream: StreamIo<'_>) {
+        self.readable += 1;
+        if self.consume_reads {
+            let mut reader = stream.reader().unwrap();
+            let bytes = reader.read().flatten().collect::<Vec<_>>();
+            reader.commit_read(bytes.len()).unwrap();
+            self.read.extend(bytes);
+        }
+    }
+
+    fn on_writable(&mut self, mut stream: StreamIo<'_>) {
+        self.writable += 1;
+        if let Some(mut writer) = stream.writer() {
+            writer.write(&mut self.pending_write);
+        }
+    }
+
+    fn on_inbound_finished(&mut self, _stream: StreamIo<'_>) {
+        self.inbound_finished += 1;
+    }
+
+    fn on_outbound_finished(&mut self, _stream_id: StreamId) {
+        self.outbound_finished += 1;
+    }
+
+    fn on_reset(&mut self, reset: StreamResetEvent) {
+        self.resets.push(reset);
+    }
+}
+
+fn open_stream_id(fsm: &mut super::SessionFsm<()>) -> StreamId {
+    fsm.open_stream(Box::from([1])).unwrap().io().stream_id()
+}
+
+fn write_stream_bytes(fsm: &mut super::SessionFsm<()>, stream_id: StreamId, bytes: &[u8]) -> usize {
     let mut bytes = Bytes::copy_from_slice(bytes);
-    let mut stream = fsm.stream(stream_id, |_| {}).unwrap();
-    let mut writer = stream.writer().unwrap();
+    let mut stream = fsm.stream(stream_id).unwrap();
+    let mut io = stream.io();
+    let mut writer = io.writer().unwrap();
     writer.write(&mut bytes)
 }
 
-fn read_stream_all(fsm: &mut SessionFsm, stream_id: StreamId) -> Vec<u8> {
-    let mut stream = fsm.stream(stream_id, |_| {}).unwrap();
-    let out = stream.read().flatten().collect::<Vec<u8>>();
-    stream.commit_read(out.len()).unwrap();
+fn read_stream_all(fsm: &mut super::SessionFsm<()>, stream_id: StreamId) -> Vec<u8> {
+    let mut stream = fsm.stream(stream_id).unwrap();
+    let mut io = stream.io();
+    let mut reader = io.reader().unwrap();
+    let out = reader.read().flatten().collect::<Vec<u8>>();
+    reader.commit_read(out.len()).unwrap();
     out
 }
 
-fn read_stream_all_with_events(
-    fsm: &mut SessionFsm,
-    stream_id: StreamId,
-    events: &mut Vec<SessionEvent>,
-) -> Vec<u8> {
-    let mut stream = fsm.stream(stream_id, |event| events.push(event)).unwrap();
-    let out = stream.read().flatten().collect::<Vec<u8>>();
-    stream.commit_read(out.len()).unwrap();
-    out
-}
-
-fn next_outbound(
-    fsm: &mut SessionFsm,
+fn next_outbound<M: StreamMeta>(
+    fsm: &mut super::SessionFsm<M>,
     now: Instant,
 ) -> Option<(RecordSeq, Vec<SessionFrame<Vec<u8>>>)> {
     let (write_id, builder) = fsm.take_next_write(now)?;
@@ -61,7 +98,7 @@ fn next_outbound(
 }
 
 fn drain_outbound(
-    fsm: &mut SessionFsm,
+    fsm: &mut super::SessionFsm<()>,
     now: Instant,
     limit: usize,
 ) -> Vec<(RecordSeq, Vec<SessionFrame<Vec<u8>>>)> {
@@ -76,8 +113,8 @@ fn drain_outbound(
     panic!("session did not quiesce within outbound limit");
 }
 
-fn receive_events(
-    fsm: &mut SessionFsm,
+fn receive_events<M: StreamMeta>(
+    fsm: &mut super::SessionFsm<M>,
     now: Instant,
     seq: RecordSeq,
     record: &[SessionFrame<Vec<u8>>],
@@ -97,7 +134,8 @@ fn receive_events(
 #[test]
 fn outbound_record_seq_increments_monotonically() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = open_stream_id(&mut fsm);
 
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"one"), 3);
@@ -115,7 +153,7 @@ fn stream_data_is_scheduled_round_robin() {
     let now = Instant::now();
     let config = SessionConfig::default();
     let payload = vec![b'x'; config.stream_send_buffer_size];
-    let mut fsm = SessionFsm::new(config, SessionParams::default(), now);
+    let mut fsm = super::SessionFsm::<()>::new(config, SessionParams::default(), now);
     let a = open_stream_id(&mut fsm);
     let b = open_stream_id(&mut fsm);
     let c = open_stream_id(&mut fsm);
@@ -126,7 +164,7 @@ fn stream_data_is_scheduled_round_robin() {
             payload.len()
         );
     }
-    let next_stream_id = |fsm: &mut SessionFsm| {
+    let next_stream_id = |fsm: &mut super::SessionFsm<()>| {
         let (_, frames) = next_outbound(fsm, now).unwrap();
         let [SessionFrame::StreamData(frame)] = frames.as_slice() else {
             panic!("expected one stream data frame, got {frames:?}");
@@ -137,10 +175,10 @@ fn stream_data_is_scheduled_round_robin() {
     assert_eq!(next_stream_id(&mut fsm), a);
 
     let stream = fsm.state.streams.get_mut(&b).unwrap();
-    stream.inbound_state = InboundState::Finished;
-    stream.outbound_state = OutboundState::Finished;
+    stream.io.inbound_state = InboundState::Finished;
+    stream.io.outbound_state = OutboundState::Finished;
     fsm.reap_reapable_streams();
-    assert!(fsm.stream(b, |_| {}).is_err());
+    assert!(fsm.stream(b).is_err());
 
     for expected in [c, d, a] {
         assert_eq!(next_stream_id(&mut fsm), expected);
@@ -150,7 +188,7 @@ fn stream_data_is_scheduled_round_robin() {
 #[test]
 fn retransmit_uses_new_record_seq() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             retransmit_timeout: Duration::from_millis(100),
             ..SessionConfig::default()
@@ -174,7 +212,7 @@ fn retransmit_uses_new_record_seq() {
 #[test]
 fn retransmitted_record_ack_releases_stream_data() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             retransmit_timeout: Duration::from_millis(20),
             stream_send_buffer_size: 4,
@@ -203,14 +241,14 @@ fn retransmitted_record_ack_releases_stream_data() {
         &mut |event| events.push(event),
     );
 
-    assert!(events.contains(&SessionEvent::Writable(stream_id)));
+    assert!(events.is_empty());
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"z"), 1);
 }
 
 #[test]
 fn acknowledged_rtt_updates_retransmit_timeout() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             retransmit_timeout: Duration::from_millis(100),
             ..SessionConfig::default()
@@ -245,7 +283,7 @@ fn acknowledged_rtt_updates_retransmit_timeout() {
 #[test]
 fn retransmit_timeout_backs_off() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             retransmit_timeout: Duration::from_millis(20),
             ..SessionConfig::default()
@@ -274,7 +312,7 @@ fn tracked_record_count_is_bounded() {
     const PAYLOAD_LEN: usize = 1024;
 
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             record_max_size: SessionRecordBuilder::MIN_CAPACITY
                 + 1
@@ -310,7 +348,7 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
     const PAYLOAD_LEN: usize = 40;
 
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             record_max_size: SessionRecordBuilder::MIN_CAPACITY
                 + 1 // discriminator byte
@@ -358,7 +396,7 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
 #[test]
 fn ack_reopens_write_capacity() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<TestMeta>::new(
         SessionConfig {
             stream_send_buffer_size: 4,
             ..SessionConfig::default()
@@ -366,9 +404,13 @@ fn ack_reopens_write_capacity() {
         SessionParams::default(),
         now,
     );
-    let stream_id = open_stream_id(&mut fsm);
+    let stream_id = fsm.open_stream(Box::from([1])).unwrap().io().stream_id();
 
-    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"abcd"), 4);
+    let mut bytes = Bytes::from_static(b"abcd");
+    let mut stream = fsm.stream(stream_id).unwrap();
+    assert_eq!(stream.io().writer().unwrap().write(&mut bytes), 4);
+    stream.metadata_mut().pending_write = Bytes::from_static(b"z");
+    drop(stream);
     let (record_seq, _record) = next_outbound(&mut fsm, now).unwrap();
 
     let mut events = Vec::new();
@@ -382,22 +424,25 @@ fn ack_reopens_write_capacity() {
         &mut emit,
     );
 
-    assert!(events.contains(&SessionEvent::Writable(stream_id)));
-    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"z"), 1);
+    assert!(events.is_empty());
+    let mut stream = fsm.stream(stream_id).unwrap();
+    assert_eq!(stream.metadata().writable, 1);
+    assert!(stream.metadata().pending_write.is_empty());
+    assert_eq!(stream.io().writer().unwrap().capacity(), 3);
 }
 
 #[test]
-fn ack_of_fin_emits_outbound_finished_once() {
+fn ack_of_fin_notifies_metadata_once() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
-    let stream_id = open_stream_id(&mut fsm);
+    let mut fsm =
+        super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
+    let stream_id = fsm.open_stream(Box::from([1])).unwrap().io().stream_id();
 
-    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"done"), 4);
-    fsm.stream(stream_id, |_| {})
-        .unwrap()
-        .writer()
-        .unwrap()
-        .finish();
+    let mut bytes = Bytes::from_static(b"done");
+    let mut stream = fsm.stream(stream_id).unwrap();
+    assert_eq!(stream.io().writer().unwrap().write(&mut bytes), 4);
+    stream.io().writer().unwrap().finish();
+    drop(stream);
 
     let (record_seq, record) = next_outbound(&mut fsm, now).unwrap();
     assert!(matches!(
@@ -421,7 +466,8 @@ fn ack_of_fin_emits_outbound_finished_once() {
             &mut emit,
         );
     }
-    assert_eq!(events, vec![SessionEvent::OutboundFinished(stream_id)]);
+    assert!(events.is_empty());
+    assert_eq!(fsm.state.streams[&stream_id].metadata.outbound_finished, 1);
 
     {
         let mut emit = |event| events.push(event);
@@ -434,13 +480,14 @@ fn ack_of_fin_emits_outbound_finished_once() {
             &mut emit,
         );
     }
-    assert_eq!(events, vec![SessionEvent::OutboundFinished(stream_id)]);
+    assert!(events.is_empty());
+    assert_eq!(fsm.state.streams[&stream_id].metadata.outbound_finished, 1);
 }
 
 #[test]
 fn commit_stream_read_is_what_advances_stream_window() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             ack_delay: Duration::ZERO,
             ..SessionConfig::default()
@@ -460,13 +507,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
         bytes: b"hi".to_vec(),
     })];
     let events = receive_events(&mut fsm, now, RecordSeq(7), &data);
-    assert_eq!(
-        events,
-        vec![
-            SessionEvent::Opened(stream_id),
-            SessionEvent::Readable(stream_id)
-        ]
-    );
+    assert_eq!(events, vec![SessionEvent::Opened(stream_id)]);
 
     let (write_id, builder) = fsm.take_next_write(now + Duration::from_millis(1)).unwrap();
     let first = decode_session_frames(builder.bytes()).unwrap();
@@ -474,7 +515,10 @@ fn commit_stream_read_is_what_advances_stream_window() {
     assert!(matches!(first.as_slice(), [SessionFrame::Ack(_)]));
 
     let read = fsm
-        .stream(stream_id, |_| {})
+        .stream(stream_id)
+        .unwrap()
+        .io()
+        .reader()
         .unwrap()
         .read()
         .map(|chunk| chunk.len())
@@ -483,7 +527,10 @@ fn commit_stream_read_is_what_advances_stream_window() {
 
     assert!(next_outbound(&mut fsm, now + Duration::from_millis(2)).is_none());
 
-    fsm.stream(stream_id, |_| {})
+    fsm.stream(stream_id)
+        .unwrap()
+        .io()
+        .reader()
         .unwrap()
         .commit_read(2)
         .unwrap();
@@ -497,7 +544,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
 #[test]
 fn lost_stream_window_is_resent_after_a_timeout() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             ack_delay: Duration::ZERO,
             retransmit_timeout: Duration::from_millis(20),
@@ -538,7 +585,7 @@ fn lost_stream_window_is_resent_after_a_timeout() {
 #[test]
 fn lost_ping_is_resent_after_a_timeout() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             keepalive_interval: Duration::ZERO,
             retransmit_timeout: Duration::from_millis(20),
@@ -567,7 +614,7 @@ fn pure_ack_only_records_are_fire_and_forget() {
         ..SessionConfig::default()
     };
     let retransmit_timeout = config.retransmit_timeout;
-    let mut fsm = SessionFsm::new(config, SessionParams::default(), now);
+    let mut fsm = super::SessionFsm::<()>::new(config, SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -595,9 +642,10 @@ fn pure_ack_only_records_are_fire_and_forget() {
 }
 
 #[test]
-fn inbound_stream_data_emits_opened_and_readable() {
+fn inbound_stream_data_queues_opened_and_notifies_metadata() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(ql_wire::StreamData {
         stream_id,
@@ -608,25 +656,53 @@ fn inbound_stream_data_emits_opened_and_readable() {
     })];
 
     let events = receive_events(&mut fsm, now, RecordSeq(0), &record);
-    assert_eq!(
-        events,
-        vec![
-            SessionEvent::Opened(stream_id),
-            SessionEvent::Readable(stream_id)
-        ]
-    );
-    let mut events = Vec::new();
-    assert_eq!(
-        read_stream_all_with_events(&mut fsm, stream_id, &mut events),
-        b"hello".to_vec()
-    );
-    assert_eq!(events, vec![SessionEvent::Finished(stream_id)]);
+    assert_eq!(events, vec![SessionEvent::Opened(stream_id)]);
+    let mut stream = fsm.stream(stream_id).unwrap();
+    assert_eq!(stream.metadata().readable, 1);
+    assert_eq!(stream.metadata().inbound_finished, 1);
+    {
+        let mut io = stream.io();
+        assert_eq!(io.reader_status(), StreamStatus::Finished);
+        let mut reader = io.reader().unwrap();
+        let bytes = reader.read().flatten().collect::<Vec<_>>();
+        assert_eq!(bytes, b"hello");
+        reader.commit_read(bytes.len()).unwrap();
+    }
+    drop(stream);
+    let mut stream = fsm.stream(stream_id).unwrap();
+    assert_eq!(stream.metadata().inbound_finished, 1);
+    assert!(stream.io().reader().is_none());
 }
 
 #[test]
-fn inbound_empty_fin_emits_finished_immediately() {
+fn readable_callback_can_consume_stream_data() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
+    let stream_id = fsm.open_stream(Box::from([1])).unwrap().io().stream_id();
+    fsm.stream(stream_id).unwrap().metadata_mut().consume_reads = true;
+    let record = [SessionFrame::StreamData(StreamData {
+        stream_id,
+        offset: Varint(0),
+        header: None,
+        fin: true,
+        bytes: b"hello".to_vec(),
+    })];
+
+    assert!(receive_events(&mut fsm, now, RecordSeq(0), &record).is_empty());
+    let mut stream = fsm.stream(stream_id).unwrap();
+    assert_eq!(stream.metadata().readable, 1);
+    assert_eq!(stream.metadata().read, b"hello");
+    assert_eq!(stream.metadata().inbound_finished, 1);
+    assert!(stream.io().reader().is_none());
+    assert_eq!(stream.io().reader_status(), StreamStatus::Finished);
+}
+
+#[test]
+fn inbound_empty_fin_notifies_metadata_immediately() {
+    let now = Instant::now();
+    let mut fsm =
+        super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -637,19 +713,16 @@ fn inbound_empty_fin_emits_finished_immediately() {
     })];
 
     let events = receive_events(&mut fsm, now, RecordSeq(0), &record);
-    assert_eq!(
-        events,
-        vec![
-            SessionEvent::Opened(stream_id),
-            SessionEvent::Finished(stream_id)
-        ]
-    );
+    assert_eq!(events, vec![SessionEvent::Opened(stream_id)]);
+    let mut stream = fsm.stream(stream_id).unwrap();
+    assert_eq!(stream.io().reader_status(), StreamStatus::Finished);
+    assert_eq!(stream.metadata().inbound_finished, 1);
 }
 
 #[test]
-fn remote_stream_reset_is_reliable_and_retried() {
+fn local_stream_reset_is_reliable_and_notifies_metadata() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<TestMeta>::new(
         SessionConfig {
             retransmit_timeout: Duration::from_millis(100),
             ..SessionConfig::default()
@@ -657,11 +730,20 @@ fn remote_stream_reset_is_reliable_and_retried() {
         SessionParams::default(),
         now,
     );
-    let stream_id = open_stream_id(&mut fsm);
+    let stream_id = fsm.open_stream(Box::from([1])).unwrap().io().stream_id();
 
-    fsm.stream(stream_id, |_| {})
+    fsm.stream(stream_id)
         .unwrap()
         .reset(crate::StreamResetTarget::Both, ResetCode::CANCELLED);
+    assert_eq!(
+        fsm.stream(stream_id).unwrap().metadata().resets,
+        vec![StreamResetEvent {
+            stream_id,
+            code: ResetCode::CANCELLED,
+            target: crate::StreamResetTarget::Both,
+            origin: crate::ResetOrigin::Local,
+        }]
+    );
 
     let (write_id, builder) = fsm.take_next_write(now).unwrap();
     fsm.complete_write(now, write_id.expect("stream reset should be tracked"), true);
@@ -684,7 +766,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
     let even = StreamParity::for_local(QID([1; QID::SIZE]), QID([2; QID::SIZE]));
     let odd = StreamParity::for_local(QID([2; QID::SIZE]), QID([1; QID::SIZE]));
 
-    let even_id = SessionFsm::new(
+    let even_id = super::SessionFsm::<()>::new(
         SessionConfig::default(),
         SessionParams {
             local_parity: even,
@@ -692,10 +774,11 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream(vec![1_u8].into_boxed_slice(), |_| {})
+    .open_stream(vec![1_u8].into_boxed_slice())
     .unwrap()
+    .io()
     .stream_id();
-    let odd_id = SessionFsm::new(
+    let odd_id = super::SessionFsm::<()>::new(
         SessionConfig::default(),
         SessionParams {
             local_parity: odd,
@@ -703,8 +786,9 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream(vec![1_u8].into_boxed_slice(), |_| {})
+    .open_stream(vec![1_u8].into_boxed_slice())
     .unwrap()
+    .io()
     .stream_id();
 
     assert_eq!(even_id.0 % 2, 0);
@@ -714,7 +798,8 @@ fn stream_ids_follow_even_odd_xid_ordering() {
 #[test]
 fn duplicate_stream_data_is_not_redelivered() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -737,7 +822,8 @@ fn duplicate_stream_data_is_not_redelivered() {
 #[test]
 fn duplicate_remote_reset_after_reap_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
     let reset = StreamReset {
         stream_id: StreamId(1),
         target: ResetTarget::Both,
@@ -746,14 +832,8 @@ fn duplicate_remote_reset_after_reap_is_ignored() {
     let record = vec![SessionFrame::StreamReset(reset.clone())];
 
     let first = receive_events(&mut fsm, now, RecordSeq(1), &record);
-    assert_eq!(
-        first,
-        vec![SessionEvent::Reset(StreamResetEvent {
-            stream_id: reset.stream_id,
-            code: reset.code,
-            target: crate::StreamResetTarget::Both,
-        })]
-    );
+    assert!(first.is_empty());
+    assert!(fsm.stream(reset.stream_id).is_err());
 
     let second = receive_events(
         &mut fsm,
@@ -767,7 +847,8 @@ fn duplicate_remote_reset_after_reap_is_ignored() {
 #[test]
 fn late_remote_stream_data_after_reset_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let reset = vec![SessionFrame::StreamReset(StreamReset {
         stream_id,
@@ -783,14 +864,7 @@ fn late_remote_stream_data_after_reset_is_ignored() {
     })];
 
     let first = receive_events(&mut fsm, now, RecordSeq(1), &reset);
-    assert_eq!(
-        first,
-        vec![SessionEvent::Reset(StreamResetEvent {
-            stream_id,
-            code: ResetCode(9),
-            target: crate::StreamResetTarget::Both,
-        })]
-    );
+    assert!(first.is_empty());
 
     let second = receive_events(
         &mut fsm,
@@ -802,9 +876,116 @@ fn late_remote_stream_data_after_reset_is_ignored() {
 }
 
 #[test]
-fn duplicate_finished_remote_data_after_reap_is_ignored() {
+fn stream_reset_in_its_opening_record_leaves_stale_events() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
+    let stream_id = StreamId(1);
+    let record = [
+        SessionFrame::StreamData(StreamData {
+            stream_id,
+            offset: Varint(0),
+            header: Some(vec![1_u8]),
+            fin: false,
+            bytes: b"discarded".to_vec(),
+        }),
+        SessionFrame::StreamReset(StreamReset {
+            stream_id,
+            target: ResetTarget::Both,
+            code: REFUSED,
+        }),
+    ];
+
+    assert_eq!(
+        receive_events(&mut fsm, now, RecordSeq(1), &record),
+        vec![SessionEvent::Opened(stream_id)]
+    );
+    assert!(fsm.stream(stream_id).is_err());
+}
+
+#[test]
+fn one_sided_remote_reset_notifies_metadata_and_preserves_stream() {
+    let now = Instant::now();
+    let mut fsm =
+        super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
+    let stream_id = StreamId(1);
+    let data = [SessionFrame::StreamData(StreamData {
+        stream_id,
+        offset: Varint(0),
+        header: Some(vec![1_u8]),
+        fin: false,
+        bytes: b"discarded".to_vec(),
+    })];
+    let reset = [SessionFrame::StreamReset(StreamReset {
+        stream_id,
+        target: ResetTarget::Origin,
+        code: REFUSED,
+    })];
+
+    assert_eq!(
+        receive_events(&mut fsm, now, RecordSeq(1), &data),
+        vec![SessionEvent::Opened(stream_id)]
+    );
+    assert!(receive_events(&mut fsm, now, RecordSeq(2), &reset).is_empty());
+
+    let mut stream = fsm.stream(stream_id).unwrap();
+    assert_eq!(stream.io().reader_status(), StreamStatus::Reset(REFUSED));
+    assert_eq!(stream.io().writer_status(), StreamStatus::Open);
+    assert!(stream.io().reader().is_none());
+    assert_eq!(
+        stream.metadata().resets,
+        vec![StreamResetEvent {
+            stream_id,
+            code: REFUSED,
+            target: crate::StreamResetTarget::Reader,
+            origin: crate::ResetOrigin::Peer,
+        }]
+    );
+}
+
+#[test]
+fn draining_the_last_bytes_reaps_a_terminal_stream_on_drop() {
+    let now = Instant::now();
+    let mut fsm =
+        super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
+    let stream_id = StreamId(1);
+    let record = [
+        SessionFrame::StreamData(StreamData {
+            stream_id,
+            offset: Varint(0),
+            header: Some(vec![1_u8]),
+            fin: true,
+            bytes: b"hello".to_vec(),
+        }),
+        SessionFrame::StreamReset(StreamReset {
+            stream_id,
+            target: ResetTarget::Return,
+            code: REFUSED,
+        }),
+    ];
+
+    assert_eq!(
+        receive_events(&mut fsm, now, RecordSeq(1), &record),
+        vec![SessionEvent::Opened(stream_id)]
+    );
+    let mut stream = fsm.stream(stream_id).unwrap();
+    {
+        let mut io = stream.io();
+        let mut reader = io.reader().unwrap();
+        let bytes = reader.read().flatten().collect::<Vec<_>>();
+        assert_eq!(bytes, b"hello");
+        reader.commit_read(bytes.len()).unwrap();
+    }
+    drop(stream);
+
+    assert!(fsm.stream(stream_id).is_err());
+}
+
+#[test]
+fn duplicate_finished_remote_data_after_read_is_ignored() {
+    let now = Instant::now();
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -815,19 +996,8 @@ fn duplicate_finished_remote_data_after_reap_is_ignored() {
     })];
 
     let first = receive_events(&mut fsm, now, RecordSeq(1), &record);
-    assert_eq!(
-        first,
-        vec![
-            SessionEvent::Opened(stream_id),
-            SessionEvent::Readable(stream_id)
-        ]
-    );
-    let mut events = Vec::new();
-    assert_eq!(
-        read_stream_all_with_events(&mut fsm, stream_id, &mut events),
-        b"hello".to_vec()
-    );
-    assert_eq!(events, vec![SessionEvent::Finished(stream_id)]);
+    assert_eq!(first, vec![SessionEvent::Opened(stream_id)]);
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"hello".to_vec());
 
     let second = receive_events(
         &mut fsm,
@@ -841,7 +1011,8 @@ fn duplicate_finished_remote_data_after_reap_is_ignored() {
 #[test]
 fn duplicate_finished_remote_data_before_read_is_ignored() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
     let stream_id = StreamId(1);
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
@@ -852,13 +1023,7 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
     })];
 
     let first = receive_events(&mut fsm, now, RecordSeq(1), &record);
-    assert_eq!(
-        first,
-        vec![
-            SessionEvent::Opened(stream_id),
-            SessionEvent::Readable(stream_id)
-        ]
-    );
+    assert_eq!(first, vec![SessionEvent::Opened(stream_id)]);
 
     let second = receive_events(
         &mut fsm,
@@ -867,18 +1032,14 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
         &record,
     );
     assert!(second.is_empty());
-    let mut events = Vec::new();
-    assert_eq!(
-        read_stream_all_with_events(&mut fsm, stream_id, &mut events),
-        b"hello".to_vec()
-    );
-    assert_eq!(events, vec![SessionEvent::Finished(stream_id)]);
+    assert_eq!(read_stream_all(&mut fsm, stream_id), b"hello".to_vec());
 }
 
 #[test]
 fn out_of_order_remote_stream_first_observations_still_open_once_each() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
     let reset3 = vec![SessionFrame::StreamReset(StreamReset {
         stream_id: StreamId(3),
         target: ResetTarget::Both,
@@ -891,14 +1052,7 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
     })];
 
     let first = receive_events(&mut fsm, now, RecordSeq(1), &reset3);
-    assert_eq!(
-        first,
-        vec![SessionEvent::Reset(StreamResetEvent {
-            stream_id: StreamId(3),
-            code: REFUSED,
-            target: crate::StreamResetTarget::Both,
-        })]
-    );
+    assert!(first.is_empty());
 
     let second = receive_events(
         &mut fsm,
@@ -906,14 +1060,7 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
         RecordSeq(2),
         &reset1,
     );
-    assert_eq!(
-        second,
-        vec![SessionEvent::Reset(StreamResetEvent {
-            stream_id: StreamId(1),
-            code: TIMEOUT,
-            target: crate::StreamResetTarget::Both,
-        })]
-    );
+    assert!(second.is_empty());
 
     let third = receive_events(
         &mut fsm,
@@ -927,7 +1074,8 @@ fn out_of_order_remote_stream_first_observations_still_open_once_each() {
 #[test]
 fn invalid_remote_stream_reset_closes_session() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
 
     let invalid = vec![SessionFrame::StreamReset(StreamReset {
         stream_id: StreamId(0),
@@ -947,7 +1095,7 @@ fn invalid_remote_stream_reset_closes_session() {
 #[test]
 fn close_does_not_ack_rejected_record_seq() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             ack_delay: Duration::ZERO,
             ..SessionConfig::default()
@@ -987,7 +1135,8 @@ fn close_does_not_ack_rejected_record_seq() {
 #[test]
 fn inbound_unpair_emits_final_unpair_frame() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
 
     let events = receive_events(&mut fsm, now, RecordSeq(1), &[SessionFrame::Unpair]);
     assert_eq!(events, vec![SessionEvent::Unpaired]);
@@ -1001,7 +1150,8 @@ fn inbound_unpair_emits_final_unpair_frame() {
 #[test]
 fn terminating_session_ignores_inbound_frames() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(SessionConfig::default(), SessionParams::default(), now);
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
 
     let mut events = Vec::new();
     fsm.unpair(&mut |event| events.push(event));
@@ -1023,7 +1173,7 @@ fn terminating_session_ignores_inbound_frames() {
 #[test]
 fn initial_peer_stream_receive_window_limits_first_send() {
     let now = Instant::now();
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig::default(),
         SessionParams {
             initial_stream_receive_window: 3,
@@ -1087,8 +1237,9 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
         local_parity,
         initial_stream_receive_window: 8 * 1024,
     };
-    let mut sender = SessionFsm::new(sender_config, params(StreamParity::Even), now);
-    let mut receiver = SessionFsm::new(receiver_config, params(StreamParity::Odd), now);
+    let mut sender = super::SessionFsm::<()>::new(sender_config, params(StreamParity::Even), now);
+    let mut receiver =
+        super::SessionFsm::<()>::new(receiver_config, params(StreamParity::Odd), now);
 
     let stream_id = open_stream_id(&mut sender);
     let payload = vec![b'x'; 1200];
@@ -1149,7 +1300,7 @@ fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
 fn stream_header_larger_than_the_record_budget_does_not_panic() {
     let now = Instant::now();
     let record_max_size = SessionRecordBuilder::MIN_CAPACITY + 256;
-    let mut fsm = SessionFsm::new(
+    let mut fsm = super::SessionFsm::<()>::new(
         SessionConfig {
             record_max_size,
             ..SessionConfig::default()
@@ -1160,8 +1311,9 @@ fn stream_header_larger_than_the_record_budget_does_not_panic() {
 
     // The header rides in the same frame as the payload, so one this large leaves no room.
     let stream_id = fsm
-        .open_stream(Box::from(vec![7u8; 256]), |_| {})
+        .open_stream(Box::from(vec![7u8; 256]))
         .unwrap()
+        .io()
         .stream_id();
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"payload"), 7);
 

@@ -114,10 +114,6 @@ struct TakenWrite {
 #[derive(Default)]
 struct SideEventState {
     opened: BTreeSet<StreamId>,
-    finished: BTreeSet<StreamId>,
-    outbound_finished: BTreeSet<StreamId>,
-    writable_reset: BTreeSet<StreamId>,
-    reset: BTreeSet<StreamId>,
     peer_statuses: Vec<PeerStatus>,
     last_peer_status: Option<PeerStatus>,
     session_epoch: usize,
@@ -218,7 +214,6 @@ impl Runner {
 
         self.cleanup()?;
         self.observe_and_assert()?;
-        self.assert_terminal_semantics()?;
         self.assert_quiesced()
     }
 
@@ -290,7 +285,7 @@ impl Runner {
                     .fsm
                     .open_stream(Box::from([1]))
                     .ok()
-                    .map(|stream| stream.stream_id());
+                    .map(|mut stream| stream.io().stream_id());
                 if let Some(stream_id) = stream_id {
                     self.slots[side.idx()][*slot] = Some(stream_id);
                     self.known_streams.insert(stream_id);
@@ -303,6 +298,7 @@ impl Runner {
                         0,
                         |mut stream| {
                             stream
+                                .io()
                                 .writer()
                                 .map_or(0, |mut writer| writer.write(&mut chunk))
                         },
@@ -323,7 +319,7 @@ impl Runner {
                         .fsm
                         .stream(stream_id)
                         .is_ok_and(|mut stream| {
-                            stream.writer().is_some_and(|writer| {
+                            stream.io().writer().is_some_and(|writer| {
                                 writer.finish();
                                 true
                             })
@@ -438,59 +434,6 @@ impl Runner {
                         "side {side:?} emitted duplicate Opened for {stream_id:?}"
                     );
                 }
-                Event::Readable(stream_id) | Event::Writable(stream_id) => {
-                    prop_assert!(
-                        self.known_streams.contains(&stream_id),
-                        "side {side:?} emitted readiness for unknown stream {stream_id:?}"
-                    );
-                }
-                Event::Finished(stream_id) => {
-                    prop_assert!(
-                        self.known_streams.contains(&stream_id),
-                        "side {side:?} emitted Finished for unknown stream {stream_id:?}"
-                    );
-                    prop_assert!(
-                        self.events[side.idx()].finished.insert(stream_id),
-                        "side {side:?} emitted duplicate Finished for {stream_id:?}"
-                    );
-                    prop_assert!(
-                        !self.events[side.idx()].reset.contains(&stream_id),
-                        "side {side:?} emitted Finished after Reset for {stream_id:?}"
-                    );
-                }
-                Event::OutboundFinished(stream_id) => {
-                    prop_assert!(
-                        self.known_streams.contains(&stream_id),
-                        "side {side:?} emitted OutboundFinished for unknown stream {stream_id:?}"
-                    );
-                    prop_assert!(
-                        self.events[side.idx()].outbound_finished.insert(stream_id),
-                        "side {side:?} emitted duplicate OutboundFinished for {stream_id:?}"
-                    );
-                }
-                Event::Reset(reset) => {
-                    prop_assert!(
-                        self.known_streams.contains(&reset.stream_id),
-                        "side {side:?} emitted Reset for unknown stream {:?}",
-                        reset.stream_id
-                    );
-                    if reset.target.reader() {
-                        prop_assert!(
-                            self.events[side.idx()].reset.insert(reset.stream_id),
-                            "side {side:?} emitted duplicate inbound Reset for {:?}",
-                            reset.stream_id
-                        );
-                    }
-                    if reset.target.writer() {
-                        prop_assert!(
-                            self.events[side.idx()]
-                                .writable_reset
-                                .insert(reset.stream_id),
-                            "side {side:?} emitted duplicate outbound Reset for {:?}",
-                            reset.stream_id
-                        );
-                    }
-                }
                 Event::SessionClosed(_) => {
                     let state = &mut self.events[side.idx()];
                     prop_assert!(
@@ -572,54 +515,6 @@ impl Runner {
         Ok(())
     }
 
-    fn assert_terminal_semantics(&self) -> TestCaseResult {
-        let a_connected = matches!(self.harness.a.fsm.state.link, LinkState::Connected(_));
-        let b_connected = matches!(self.harness.b.fsm.state.link, LinkState::Connected(_));
-        let connected = [a_connected, b_connected];
-
-        for side in [Side::A, Side::B] {
-            for stream_id in &self.events[side.idx()].finished {
-                if self.inbound_aborted(side, *stream_id) {
-                    continue;
-                }
-                let expected = self.expected[side.idx()]
-                    .get(stream_id)
-                    .map_or(&[][..], Vec::as_slice);
-                let received = self.received[side.idx()]
-                    .get(stream_id)
-                    .map_or(&[][..], Vec::as_slice);
-                prop_assert_eq!(
-                    received,
-                    expected,
-                    "side {:?} finished {:?} without receiving all expected bytes",
-                    side,
-                    stream_id
-                );
-            }
-
-            for stream_id in &self.finished_by[side.idx()] {
-                prop_assert!(
-                    self.events[opposite(side).idx()].finished.contains(stream_id)
-                        || self.events[opposite(side).idx()].reset.contains(stream_id)
-                        || !connected[opposite(side).idx()],
-                    "side {side:?} finished {stream_id:?} but side {:?} saw neither Finished nor Reset",
-                    opposite(side)
-                );
-            }
-
-            for stream_id in &self.reset_by[side.idx()] {
-                prop_assert!(
-                    self.events[opposite(side).idx()].reset.contains(stream_id)
-                        || !connected[opposite(side).idx()],
-                    "side {side:?} reset {stream_id:?} but side {:?} saw no Reset event",
-                    opposite(side)
-                );
-            }
-        }
-
-        Ok(())
-    }
-
     fn assert_expected_delivered(&self, side: Side) -> TestCaseResult {
         for (stream_id, expected) in &self.expected[side.idx()] {
             let received = self.received[side.idx()]
@@ -640,13 +535,10 @@ impl Runner {
     fn assert_no_stream_events(&self) -> TestCaseResult {
         prop_assert!(
             self.known_streams.is_empty()
-                && self.events.iter().all(|events| {
-                    events.opened.is_empty()
-                        && events.finished.is_empty()
-                        && events.outbound_finished.is_empty()
-                        && events.reset.is_empty()
-                        && events.writable_reset.is_empty()
-                }),
+                && self
+                    .events
+                    .iter()
+                    .all(|events| { events.opened.is_empty() }),
             "handshake-only property observed stream activity"
         );
         Ok(())
@@ -714,11 +606,6 @@ impl Runner {
             self.receive_errors.push((side, error));
         }
     }
-
-    fn inbound_aborted(&self, side: Side, stream_id: StreamId) -> bool {
-        self.events[side.idx()].reset.contains(&stream_id)
-            || self.reset_by[side.idx()].contains(&stream_id)
-    }
 }
 
 fn take_unconfirmed_outbound(harness: &mut Harness, side: Side) -> Option<TakenWrite> {
@@ -785,24 +672,23 @@ fn take_taken(taken: &mut Vec<TakenWrite>, index: usize) -> Option<TakenWrite> {
     Some(taken.remove(index % taken.len()))
 }
 
-fn drain_stream(fsm: &mut QlFsm, stream_id: StreamId) -> Vec<u8> {
+fn drain_stream(fsm: &mut QlFsm<()>, stream_id: StreamId) -> Vec<u8> {
     let mut out = Vec::new();
     let Ok(mut stream) = fsm.stream(stream_id) else {
         return out;
     };
 
     loop {
+        let mut io = stream.io();
+        let Some(mut reader) = io.reader() else {
+            break;
+        };
         let mut read = 0usize;
-        for chunk in stream.read() {
+        for chunk in reader.read() {
             out.extend_from_slice(&chunk);
             read += chunk.len();
         }
-
-        if read == 0 {
-            break;
-        }
-
-        stream.commit_read(read).unwrap();
+        reader.commit_read(read).unwrap();
     }
 
     out
@@ -991,14 +877,12 @@ proptest_crate::proptest! {
         runner.cleanup()?;
         runner.observe_and_assert()?;
         runner.assert_expected_delivered(Side::B)?;
-        runner.assert_terminal_semantics()?;
         runner.assert_quiesced()?;
     }
 
     #[test]
-    fn randomized_terminal_actions_preserve_terminal_semantics(actions in vec(terminal_action_strategy(), 1..80)) {
+    fn randomized_terminal_actions_quiesce(actions in vec(terminal_action_strategy(), 1..80)) {
         let mut runner = Runner::connected();
         runner.run(&actions)?;
-        runner.assert_terminal_semantics()?;
     }
 }

@@ -10,7 +10,7 @@ use crate::{
     session::{self, SessionEvent, TerminalFrame},
     state::LinkState,
     Event, NoPeerError, NoSessionError, OutboundWrite, QlFsm, ReceiveError, ReceiveStage,
-    StreamError, WriteId,
+    StreamError, StreamMeta, WriteId,
 };
 
 pub struct EventSink<'a> {
@@ -36,21 +36,6 @@ impl session::EventSink for EventSink<'_> {
             SessionEvent::Opened(stream_id) => {
                 self.events.push_back(Event::Opened(stream_id));
             }
-            SessionEvent::Readable(stream_id) => {
-                self.events.push_back(Event::Readable(stream_id));
-            }
-            SessionEvent::Writable(stream_id) => {
-                self.events.push_back(Event::Writable(stream_id));
-            }
-            SessionEvent::Finished(stream_id) => {
-                self.events.push_back(Event::Finished(stream_id));
-            }
-            SessionEvent::OutboundFinished(stream_id) => {
-                self.events.push_back(Event::OutboundFinished(stream_id));
-            }
-            SessionEvent::Reset(reset) => {
-                self.events.push_back(Event::Reset(reset));
-            }
             SessionEvent::SessionClosed(close) => {
                 self.termination = Some(TerminalFrame::Close(close.clone()));
                 self.events.push_back(Event::SessionClosed(close));
@@ -59,13 +44,13 @@ impl session::EventSink for EventSink<'_> {
     }
 }
 
-pub fn handle_bind_peer(fsm: &mut QlFsm, peer: ql_wire::PeerBundle) {
+pub fn handle_bind_peer<M: StreamMeta>(fsm: &mut QlFsm<M>, peer: ql_wire::PeerBundle) {
     fsm.state.handshake = None;
     fsm.state.link = LinkState::Idle;
     fsm.state.peer = Some(peer);
 }
 
-pub fn unpair(fsm: &mut QlFsm) {
+pub fn unpair<M: StreamMeta>(fsm: &mut QlFsm<M>) {
     let had_peer = fsm.state.peer.is_some();
     fsm.state.handshake = None;
     fsm.state.armed_pairing_token = None;
@@ -83,25 +68,35 @@ pub fn unpair(fsm: &mut QlFsm) {
     fsm.state.peer = None;
 }
 
-pub fn handle_disarm_pairing(fsm: &mut QlFsm) {
+pub fn handle_disarm_pairing<M: StreamMeta>(fsm: &mut QlFsm<M>) {
     fsm.state.armed_pairing_token = None;
     handshake::handle_disarm_pairing(fsm);
 }
 
-pub fn handle_connect_xx(fsm: &mut QlFsm, invite: crate::PairingInvite, crypto: &impl QlCrypto) {
+pub fn handle_connect_xx<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
+    invite: crate::PairingInvite,
+    crypto: &impl QlCrypto,
+) {
     handshake::handle_connect_xx(fsm, invite, crypto);
 }
 
-pub fn handle_connect_ik(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+pub fn handle_connect_ik<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
+    crypto: &impl QlCrypto,
+) -> Result<(), NoPeerError> {
     handshake::handle_connect_ik(fsm, crypto)
 }
 
-pub fn handle_connect_kk(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Result<(), NoPeerError> {
+pub fn handle_connect_kk<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
+    crypto: &impl QlCrypto,
+) -> Result<(), NoPeerError> {
     handshake::handle_connect_kk(fsm, crypto)
 }
 
-pub fn receive(
-    fsm: &mut QlFsm,
+pub fn receive<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     mut bytes: Vec<u8>,
     crypto: &impl QlCrypto,
 ) -> Result<(), ReceiveError> {
@@ -168,7 +163,7 @@ pub fn receive(
     }
 }
 
-pub fn on_timer(fsm: &mut QlFsm) {
+pub fn on_timer<M: StreamMeta>(fsm: &mut QlFsm<M>) {
     handshake::handle_timer(fsm);
 
     let QlFsm { state, events, .. } = fsm;
@@ -180,7 +175,7 @@ pub fn on_timer(fsm: &mut QlFsm) {
     conn.session.on_timer(state.now, &mut emit);
 }
 
-pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
+pub fn next_deadline<M: StreamMeta>(fsm: &QlFsm<M>) -> Option<Instant> {
     [
         handshake::next_handshake_deadline(fsm),
         fsm.state
@@ -193,7 +188,10 @@ pub fn next_deadline(fsm: &QlFsm) -> Option<Instant> {
     .min()
 }
 
-pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<OutboundWrite> {
+pub fn take_next_write<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
+    crypto: &impl QlCrypto,
+) -> Option<OutboundWrite> {
     if let Some((route, record)) = fsm.state.handshake.take() {
         let record = wire::encode_record_vec(
             wire::RecordHeader::new(route, ql_wire::RecordType::Handshake),
@@ -224,14 +222,14 @@ pub fn take_next_write(fsm: &mut QlFsm, crypto: &impl QlCrypto) -> Option<Outbou
     })
 }
 
-pub fn complete_write(fsm: &mut QlFsm, write_id: WriteId, success: bool) {
+pub fn complete_write<M: StreamMeta>(fsm: &mut QlFsm<M>, write_id: WriteId, success: bool) {
     let QlFsm { state, .. } = fsm;
     if let Some(conn) = state.link.connected_mut() {
         conn.session.complete_write(state.now, write_id.0, success);
     }
 }
 
-pub fn close_session(fsm: &mut QlFsm, code: SessionCloseCode) {
+pub fn close_session<M: StreamMeta>(fsm: &mut QlFsm<M>, code: SessionCloseCode) {
     let QlFsm { state, events, .. } = fsm;
     let Some(conn) = state.link.connected_mut() else {
         return;
@@ -240,32 +238,33 @@ pub fn close_session(fsm: &mut QlFsm, code: SessionCloseCode) {
     conn.session.close(code, &mut emit);
 }
 
-pub fn open_stream(
-    fsm: &mut QlFsm,
+pub fn open_stream<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     header: Box<[u8]>,
-) -> Result<crate::StreamOps<'_>, NoSessionError> {
-    let QlFsm { state, events, .. } = fsm;
+) -> Result<crate::StreamOps<'_, M>, NoSessionError> {
+    let QlFsm { state, .. } = fsm;
     let conn = state.link.connected_mut_or_err()?;
-    let inner = conn.session.open_stream(header, EventSink::new(events))?;
-    Ok(crate::StreamOps { inner })
+    conn.session.open_stream(header)
 }
 
-pub fn stream(fsm: &mut QlFsm, stream_id: StreamId) -> Result<crate::StreamOps<'_>, StreamError> {
-    let QlFsm { state, events, .. } = fsm;
+pub fn stream<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
+    stream_id: StreamId,
+) -> Result<crate::StreamOps<'_, M>, StreamError> {
+    let QlFsm { state, .. } = fsm;
     let conn = state.link.connected_mut_or_err()?;
-    let inner = conn.session.stream(stream_id, EventSink::new(events))?;
-    Ok(crate::StreamOps { inner })
+    conn.session.stream(stream_id)
 }
 
-pub fn queue_ping(fsm: &mut QlFsm) -> Result<(), NoSessionError> {
+pub fn queue_ping<M: StreamMeta>(fsm: &mut QlFsm<M>) -> Result<(), NoSessionError> {
     let conn = fsm.state.link.connected_mut_or_err()?;
     conn.session.queue_ping()
 }
 
-pub fn poll_event(fsm: &mut QlFsm) -> Option<Event> {
+pub fn poll_event<M: StreamMeta>(fsm: &mut QlFsm<M>) -> Option<Event> {
     fsm.events.pop_front()
 }
 
-pub fn emit_peer_status(fsm: &mut QlFsm, status: crate::PeerStatus) {
+pub fn emit_peer_status<M: StreamMeta>(fsm: &mut QlFsm<M>, status: crate::PeerStatus) {
     fsm.events.push_back(Event::PeerStatusChanged(status));
 }

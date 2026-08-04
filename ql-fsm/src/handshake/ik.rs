@@ -7,11 +7,11 @@ use super::{
 };
 use crate::{
     state::{InitiatorState, LinkState},
-    QlFsm, ReceiveError, ReceiveStage,
+    QlFsm, ReceiveError, ReceiveStage, StreamMeta,
 };
 
-pub fn start_initiator(
-    fsm: &mut QlFsm,
+pub fn start_initiator<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     crypto: &impl QlCrypto,
     peer: PeerBundle,
     pattern: IkPattern,
@@ -50,8 +50,8 @@ pub fn start_initiator(
     emit_peer_status(fsm, fsm.state.link.status());
 }
 
-pub fn handle_1(
-    fsm: &mut QlFsm,
+pub fn handle_1<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     crypto: &impl QlCrypto,
     route: RouteHeader,
     message: &Ik1,
@@ -115,8 +115,8 @@ pub fn handle_1(
     Ok(())
 }
 
-pub fn handle_2(
-    fsm: &mut QlFsm,
+pub fn handle_2<M: StreamMeta>(
+    fsm: &mut QlFsm<M>,
     crypto: &impl QlCrypto,
     route: RouteHeader,
     message: &Ik2,
@@ -148,8 +148,8 @@ pub fn handle_2(
     )
 }
 
-fn should_ignore_inbound(
-    fsm: &QlFsm,
+fn should_ignore_inbound<M: StreamMeta>(
+    fsm: &QlFsm<M>,
     route: RouteHeader,
     message: &Ik1,
     pattern: IkPattern,

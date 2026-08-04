@@ -1,4 +1,4 @@
-pub use self::{state::TerminalFrame, stream_ops::*, stream_parity::*, stream_rx::*};
+pub use self::{state::TerminalFrame, stream_ops::*, stream_parity::*};
 
 mod ack_tracker;
 mod range_set;
@@ -33,7 +33,7 @@ use self::{
     stream_tx::StreamTxRange,
     tracked::{LossRecovery, TrackedFrame, TrackedRecord, TrackedStreamData},
 };
-use crate::{NoSessionError, StreamError, StreamResetEvent, StreamResetTarget};
+use crate::{NoSessionError, StreamError, StreamMeta, StreamResetEvent, StreamResetTarget};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
@@ -92,11 +92,6 @@ impl Default for SessionParams {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
     Opened(StreamId),
-    Readable(StreamId),
-    Writable(StreamId),
-    Finished(StreamId),
-    OutboundFinished(StreamId),
-    Reset(StreamResetEvent),
     SessionClosed(SessionClose),
     Unpaired,
 }
@@ -114,13 +109,13 @@ where
     }
 }
 
-pub struct SessionFsm {
+pub struct SessionFsm<M> {
     config: SessionConfig,
     params: SessionParams,
-    state: SessionState,
+    state: SessionState<M>,
 }
 
-impl SessionFsm {
+impl<M: StreamMeta> SessionFsm<M> {
     pub fn new(mut config: SessionConfig, params: SessionParams, now: Instant) -> Self {
         config.record_max_size = config
             .record_max_size
@@ -149,14 +144,7 @@ impl SessionFsm {
         }
     }
 
-    pub fn open_stream<E>(
-        &mut self,
-        header: Box<[u8]>,
-        sink: E,
-    ) -> Result<StreamOps<'_, E>, NoSessionError>
-    where
-        E: EventSink,
-    {
+    pub fn open_stream(&mut self, header: Box<[u8]>) -> Result<StreamOps<'_, M>, NoSessionError> {
         self.ensure_session_open()?;
         let stream_id = self
             .params
@@ -166,6 +154,7 @@ impl SessionFsm {
         self.state.streams.insert(
             stream_id,
             StreamState::new(
+                M::default(),
                 StreamRole::Initiator,
                 Some(Bytes::from(header)),
                 self.config.stream_receive_buffer_size,
@@ -173,28 +162,21 @@ impl SessionFsm {
             ),
         );
         let stream_index = self.state.streams.len() - 1;
-        Ok(StreamOps::new(self, stream_id, stream_index, sink))
+        Ok(StreamOps::new(self, stream_id, stream_index))
     }
 
-    pub fn stream<E>(
-        &mut self,
-        stream_id: StreamId,
-        sink: E,
-    ) -> Result<StreamOps<'_, E>, StreamError>
-    where
-        E: EventSink,
-    {
+    pub fn stream(&mut self, stream_id: StreamId) -> Result<StreamOps<'_, M>, StreamError> {
         self.ensure_session_open()?;
         let Some(stream_index) = (|| {
             let index = self.state.streams.get_index_of(&stream_id)?;
             // Event::Opened only fires after we receive the first frame of a stream
             // prevent early access to streams
-            let _ = self.state.streams[index].header.as_ref()?;
+            let _ = self.state.streams[index].io.header.as_ref()?;
             Some(index)
         })() else {
             return Err(StreamError::MissingStream);
         };
-        Ok(StreamOps::new(self, stream_id, stream_index, sink))
+        Ok(StreamOps::new(self, stream_id, stream_index))
     }
 
     pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
@@ -257,7 +239,7 @@ impl SessionFsm {
                     self.unpair(sink);
                     return;
                 }
-                SessionFrame::Ack(ack) => self.process_record_ack(now, &ack, sink),
+                SessionFrame::Ack(ack) => self.process_record_ack(now, &ack),
                 SessionFrame::StreamData(frame) => {
                     if self.handle_stream_data(frame, sink).is_err() {
                         self.close(SessionCloseCode::PROTOCOL, sink);
@@ -266,7 +248,7 @@ impl SessionFsm {
                 }
                 SessionFrame::StreamWindow(frame) => self.handle_stream_window(&frame),
                 SessionFrame::StreamReset(frame) => {
-                    if self.handle_stream_reset(&frame, sink).is_err() {
+                    if self.handle_stream_reset(&frame).is_err() {
                         self.close(SessionCloseCode::PROTOCOL, sink);
                         return;
                     }
@@ -489,7 +471,7 @@ impl SessionFsm {
         for offset in 0..len {
             let index = (start + offset) % len;
             let stream = self.state.streams.get_index_mut(index).unwrap().1;
-            let Some(reset) = stream.pending_reset.as_ref() else {
+            let Some(reset) = stream.io.pending_reset.as_ref() else {
                 continue;
             };
             if !builder.push_stream_reset(reset) {
@@ -497,7 +479,7 @@ impl SessionFsm {
             }
 
             outbound.frames.push(TrackedFrame::StreamReset(
-                stream.pending_reset.take().unwrap(),
+                stream.io.pending_reset.take().unwrap(),
             ));
         }
     }
@@ -516,19 +498,19 @@ impl SessionFsm {
         for offset in 0..len {
             let index = (start + offset) % len;
             let (&stream_id, stream) = self.state.streams.get_index_mut(index).unwrap();
-            if !stream.pending_window {
+            if !stream.io.pending_window {
                 continue;
             }
             let frame = StreamWindow {
                 stream_id,
-                maximum_offset: Varint(stream.recv_limit()),
+                maximum_offset: Varint(stream.io.recv_limit()),
             };
             if !builder.push_stream_window(&frame) {
                 break;
             }
 
-            stream.pending_window = false;
-            stream.advertised_max_offset = *frame.maximum_offset;
+            stream.io.pending_window = false;
+            stream.io.advertised_max_offset = *frame.maximum_offset;
             outbound
                 .frames
                 .push(TrackedFrame::StreamWindow(stream_id, *frame.maximum_offset));
@@ -557,19 +539,24 @@ impl SessionFsm {
 
             let index = (start + offset) % len;
             let (&stream_id, stream) = self.state.streams.get_index_mut(index).unwrap();
-            if matches!(stream.outbound_state, OutboundState::Closed) {
+            if matches!(stream.io.outbound_state, OutboundState::Reset(_)) {
                 continue;
             }
             // The header shares the frame with the payload, so it has to come out of the same
             // budget, and that budget is set before poll_transmit picks the range.
-            let header = match stream.role {
-                StreamRole::Initiator if stream.tx.can_send_header() => stream.header.as_deref(),
+            let header = match stream.io.role {
+                StreamRole::Initiator if stream.io.tx.can_send_header() => {
+                    stream.io.header.as_deref()
+                }
                 _ => None,
             };
             let Some(max_payload) = max_payload.checked_sub(header.map_or(0, <[u8]>::len)) else {
                 continue;
             };
-            let Some(candidate) = stream.tx.poll_transmit(max_payload, stream.peer_max_offset)
+            let Some(candidate) = stream
+                .io
+                .tx
+                .poll_transmit(max_payload, stream.io.peer_max_offset)
             else {
                 continue;
             };
@@ -578,13 +565,13 @@ impl SessionFsm {
                 offset: Varint(candidate.offset),
                 header: if candidate.offset == 0 { header } else { None },
                 fin: candidate.fin,
-                bytes: stream.tx.ranged_bytes(candidate),
+                bytes: stream.io.tx.ranged_bytes(candidate),
             };
             let res = builder.push_stream_data(&frame);
             assert!(res, "builder has capacity");
 
             if candidate.fin {
-                stream.outbound_state = OutboundState::Finished;
+                stream.io.outbound_state = OutboundState::Finished;
             }
             outbound
                 .frames
@@ -608,7 +595,7 @@ impl SessionFsm {
         }
     }
 
-    fn process_record_ack(&mut self, now: Instant, ack: &RecordAck, sink: &mut impl EventSink) {
+    fn process_record_ack(&mut self, now: Instant, ack: &RecordAck) {
         let stream_send_buffer_size = self.config.stream_send_buffer_size;
         let mut latest_sent_at = None;
         let state = &mut self.state;
@@ -618,7 +605,7 @@ impl SessionFsm {
         {
             latest_sent_at = latest_sent_at.max(record.sent_at);
             for frame in &record.frames {
-                acknowledge_tracked_frame(&mut state.streams, stream_send_buffer_size, frame, sink);
+                acknowledge_tracked_frame(&mut state.streams, stream_send_buffer_size, frame);
             }
         }
         if let Some(sent_at) = latest_sent_at {
@@ -667,6 +654,7 @@ impl SessionFsm {
         frame: StreamData<Bytes>,
         sink: &mut impl EventSink,
     ) -> Result<(), ()> {
+        let send_buffer_size = self.config.stream_send_buffer_size;
         let StreamData {
             stream_id,
             offset,
@@ -686,12 +674,16 @@ impl SessionFsm {
         let Some(frame_end) = frame_offset.checked_add(bytes.len() as u64) else {
             return Err(());
         };
-        let readable_before = stream.readable_bytes();
-        let was_finished = matches!(stream.inbound_state, InboundState::Finished);
+        let readable_before = stream.io.readable_bytes();
 
-        let opened = match (stream.role, stream.header.as_ref(), header, frame_offset) {
+        let opened = match (
+            stream.io.role,
+            stream.io.header.as_ref(),
+            header,
+            frame_offset,
+        ) {
             (StreamRole::Responder, None, Some(header), 0) => {
-                stream.header = Some(header);
+                stream.io.header = Some(header);
                 true
             }
             (StreamRole::Initiator, _, Some(_), _)
@@ -700,12 +692,12 @@ impl SessionFsm {
             _ => false,
         };
 
-        match stream.inbound_state {
+        match stream.io.inbound_state {
             InboundState::Open => {}
-            InboundState::Discarding | InboundState::Reset(_) => return Ok(()),
+            InboundState::Reset(_) => return Ok(()),
             InboundState::Finished => {
                 // finished stream should always have a final offset
-                let Some(final_offset) = stream.rx.final_offset() else {
+                let Some(final_offset) = stream.io.rx.final_offset() else {
                     debug_assert!(false, "finished stream must retain final offset");
                     return Ok(());
                 };
@@ -713,14 +705,6 @@ impl SessionFsm {
                 // retransmitted data for an already-finished stream is fine as long as it stays
                 // within the finalized byte range and any repeated FIN lands on that same offset.
                 if (!frame.fin || frame_end == final_offset) && frame_end <= final_offset {
-                    if opened {
-                        sink.emit(SessionEvent::Opened(stream_id));
-                        if readable_before > 0 {
-                            sink.emit(SessionEvent::Readable(stream_id));
-                        } else {
-                            sink.emit(SessionEvent::Finished(stream_id));
-                        }
-                    }
                     return Ok(());
                 }
 
@@ -728,26 +712,30 @@ impl SessionFsm {
             }
         }
 
-        let outcome = stream.rx.insert(frame_offset, fin, bytes).map_err(|_| ())?;
+        let outcome = stream
+            .io
+            .rx
+            .insert(frame_offset, fin, bytes)
+            .map_err(|_| ())?;
 
         if outcome.became_complete {
-            stream.inbound_state = InboundState::Finished;
+            stream.io.inbound_state = InboundState::Finished;
         }
+        let finished = outcome.became_complete && stream.io.header.is_some();
 
         if opened {
             sink.emit(SessionEvent::Opened(stream_id));
         }
 
-        if stream.header.is_some() && readable_before == 0 && stream.readable_bytes() > 0 {
-            sink.emit(SessionEvent::Readable(stream_id));
+        let became_readable =
+            stream.io.header.is_some() && readable_before == 0 && stream.io.readable_bytes() > 0;
+        if became_readable {
+            let StreamState { metadata, io } = stream;
+            metadata.on_readable(StreamIo::new(stream_id, io, send_buffer_size));
         }
-
-        if stream.header.is_some()
-            && !was_finished
-            && matches!(stream.inbound_state, InboundState::Finished)
-            && stream.readable_bytes() == 0
-        {
-            sink.emit(SessionEvent::Finished(stream_id));
+        if finished {
+            let StreamState { metadata, io } = stream;
+            metadata.on_inbound_finished(StreamIo::new(stream_id, io, send_buffer_size));
         }
 
         self.try_reap_stream(stream_id);
@@ -760,16 +748,12 @@ impl SessionFsm {
         };
 
         let maximum_offset = *frame.maximum_offset;
-        if maximum_offset > stream.peer_max_offset {
-            stream.peer_max_offset = maximum_offset;
+        if maximum_offset > stream.io.peer_max_offset {
+            stream.io.peer_max_offset = maximum_offset;
         }
     }
 
-    fn handle_stream_reset(
-        &mut self,
-        frame: &StreamReset,
-        sink: &mut impl EventSink,
-    ) -> Result<(), ()> {
+    fn handle_stream_reset(&mut self, frame: &StreamReset) -> Result<(), ()> {
         let stream_id = frame.stream_id;
         let stream = match self.state.streams.get_mut(&stream_id) {
             Some(stream) => stream,
@@ -779,22 +763,19 @@ impl SessionFsm {
             },
         };
 
-        let inbound = Self::target_affects_inbound(stream.role, frame.target)
-            && !matches!(
-                stream.inbound_state,
-                InboundState::Reset(_) | InboundState::Discarding
-            );
-        let outbound = Self::target_affects_outbound(stream.role, frame.target)
-            && !matches!(stream.outbound_state, OutboundState::Closed);
+        let inbound = Self::target_affects_inbound(stream.io.role, frame.target)
+            && !matches!(stream.io.inbound_state, InboundState::Reset(_));
+        let outbound = Self::target_affects_outbound(stream.io.role, frame.target)
+            && !matches!(stream.io.outbound_state, OutboundState::Reset(_));
 
         if inbound {
-            stream.inbound_state = InboundState::Reset(frame.clone());
-            stream.reset_recv();
+            stream.io.inbound_state = InboundState::Reset(frame.clone());
+            stream.io.reset_recv();
         }
         if outbound {
-            stream.outbound_state = OutboundState::Closed;
-            stream.tx.clear();
-            stream.pending_reset = None;
+            stream.io.outbound_state = OutboundState::Reset(frame.clone());
+            stream.io.tx.clear();
+            stream.io.pending_reset = None;
         }
         if inbound || outbound {
             let target = match (inbound, outbound) {
@@ -803,25 +784,15 @@ impl SessionFsm {
                 (false, true) => StreamResetTarget::Writer,
                 (false, false) => unreachable!(),
             };
-            sink.emit(SessionEvent::Reset(StreamResetEvent {
+            stream.metadata.on_reset(StreamResetEvent {
                 stream_id,
                 code: frame.code,
                 target,
-            }));
+                origin: crate::ResetOrigin::Peer,
+            });
         }
         self.try_reap_stream(frame.stream_id);
         Ok(())
-    }
-
-    fn apply_local_reset_to_stream(stream: &mut StreamState, target: ResetTarget) {
-        if Self::target_affects_inbound(stream.role, target) {
-            stream.inbound_state = InboundState::Discarding;
-            stream.reset_recv();
-        }
-        if Self::target_affects_outbound(stream.role, target) {
-            stream.outbound_state = OutboundState::Closed;
-            stream.tx.clear();
-        }
     }
 
     fn target_affects_inbound(role: StreamRole, target: ResetTarget) -> bool {
@@ -889,7 +860,7 @@ impl SessionFsm {
     fn create_remote_stream(
         &mut self,
         stream_id: StreamId,
-    ) -> Result<Option<&mut StreamState>, ()> {
+    ) -> Result<Option<&mut StreamState<M>>, ()> {
         match classify_missing_stream(
             self.params.local_parity,
             self.state.next_stream_ordinal,
@@ -908,6 +879,7 @@ impl SessionFsm {
             .streams
             .entry(stream_id)
             .insert_entry(StreamState::new(
+                M::default(),
                 StreamRole::Responder,
                 None,
                 self.config.stream_receive_buffer_size,
@@ -955,11 +927,11 @@ fn local_stream_was_opened(
         && stream_id.0 < local_parity.make_stream_id(next_stream_ordinal).0
 }
 
-fn restore_tracked_record(
+fn restore_tracked_record<M>(
     now: Instant,
     ack_tracker: &mut AckTracker,
     pending_ping: &mut bool,
-    streams: &mut IndexMap<StreamId, StreamState>,
+    streams: &mut IndexMap<StreamId, StreamState<M>>,
     record: TrackedRecord,
 ) {
     if let Some(ack) = record.ack {
@@ -972,38 +944,38 @@ fn restore_tracked_record(
         match frame {
             TrackedFrame::StreamReset(reset) => {
                 if let Some(stream) = streams.get_mut(&reset.stream_id) {
-                    stream.pending_reset = Some(reset);
+                    stream.io.pending_reset = Some(reset);
                 }
             }
             TrackedFrame::StreamData(frame) => {
                 let Some(stream) = streams.get_mut(&frame.stream_id) else {
                     continue;
                 };
-                if matches!(stream.outbound_state, OutboundState::Closed) {
+                if matches!(stream.io.outbound_state, OutboundState::Reset(_)) {
                     continue;
                 }
-                stream.tx.retransmit(StreamTxRange {
+                stream.io.tx.retransmit(StreamTxRange {
                     offset: frame.offset,
                     len: frame.len,
                     fin: frame.fin,
                 });
-                if frame.fin && matches!(stream.outbound_state, OutboundState::Finished) {
-                    stream.outbound_state = OutboundState::FinQueued;
+                if frame.fin && matches!(stream.io.outbound_state, OutboundState::Finished) {
+                    stream.io.outbound_state = OutboundState::FinQueued;
                 }
             }
             TrackedFrame::StreamWindow(stream_id, maximum_offset) => {
                 if let Some(stream) = streams.get_mut(&stream_id) {
-                    stream.pending_window |= stream.recv_limit() >= maximum_offset;
+                    stream.io.pending_window |= stream.io.recv_limit() >= maximum_offset;
                 }
             }
         }
     }
 }
 
-fn stream_is_reapable(
+fn stream_is_reapable<M>(
     tracked_records: &IndexMap<u64, TrackedRecord>,
     stream_id: StreamId,
-    stream: &StreamState,
+    stream: &StreamState<M>,
 ) -> bool {
     let tracked_refs_stream = tracked_records.values().any(|record| {
         record
@@ -1015,47 +987,50 @@ fn stream_is_reapable(
         return false;
     }
 
-    if !stream.tx.is_empty()
-        || stream.pending_reset.is_some()
-        || stream.pending_window
-        || stream.readable_bytes() > 0
-        || stream.rx.buffered_end_offset() > stream.rx.start_offset()
+    if !stream.io.tx.is_empty()
+        || stream.io.pending_reset.is_some()
+        || stream.io.pending_window
+        || stream.io.readable_bytes() > 0
+        || stream.io.rx.buffered_end_offset() > stream.io.rx.start_offset()
     {
         return false;
     }
 
     matches!(
-        (&stream.inbound_state, &stream.outbound_state),
+        (&stream.io.inbound_state, &stream.io.outbound_state),
         (
-            InboundState::Finished | InboundState::Reset(_) | InboundState::Discarding,
-            OutboundState::Finished | OutboundState::Closed,
+            InboundState::Finished | InboundState::Reset(_),
+            OutboundState::Finished | OutboundState::Reset(_),
         )
     )
 }
 
-fn acknowledge_tracked_frame(
-    streams: &mut IndexMap<StreamId, StreamState>,
+fn acknowledge_tracked_frame<M: StreamMeta>(
+    streams: &mut IndexMap<StreamId, StreamState<M>>,
     stream_send_buffer_size: usize,
     frame: &TrackedFrame,
-    sink: &mut impl EventSink,
 ) {
     match frame {
         TrackedFrame::StreamReset(_) | TrackedFrame::StreamWindow(..) => {}
         TrackedFrame::StreamData(frame) => {
             let stream_id = frame.stream_id;
             if let Some(stream) = streams.get_mut(&stream_id) {
-                let was_full = stream.send_capacity(stream_send_buffer_size) == 0;
-                let had_unacked_fin = frame.fin && stream.tx.has_unacked_fin();
-                stream.tx.ack(StreamTxRange {
+                let was_full = stream.io.send_capacity(stream_send_buffer_size) == 0;
+                let had_unacked_fin = frame.fin && stream.io.tx.has_unacked_fin();
+                stream.io.tx.ack(StreamTxRange {
                     offset: frame.offset,
                     len: frame.len,
                     fin: frame.fin,
                 });
-                if was_full && stream.send_capacity(stream_send_buffer_size) > 0 {
-                    sink.emit(SessionEvent::Writable(stream_id));
+                if was_full
+                    && stream.io.send_capacity(stream_send_buffer_size) > 0
+                    && stream.io.is_writable()
+                {
+                    let StreamState { metadata, io } = stream;
+                    metadata.on_writable(StreamIo::new(stream_id, io, stream_send_buffer_size));
                 }
-                if had_unacked_fin && !stream.tx.has_unacked_fin() {
-                    sink.emit(SessionEvent::OutboundFinished(stream_id));
+                if had_unacked_fin && !stream.io.tx.has_unacked_fin() {
+                    stream.metadata.on_outbound_finished(stream_id);
                 }
             }
         }

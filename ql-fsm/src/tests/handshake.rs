@@ -103,7 +103,7 @@ fn ik_connect_learns_remote_initial_stream_receive_window() {
 fn connect_methods_require_bound_peer() {
     let time = Harness::paired_known(QlFsmConfig::default()).time();
     let identity = generate_identity(&SoftwareCrypto, "identity");
-    let mut fsm = QlFsm::new(QlFsmConfig::default(), identity, time);
+    let mut fsm = QlFsm::<()>::new(QlFsmConfig::default(), identity, time);
     let crypto = SoftwareCrypto;
 
     assert_eq!(fsm.connect_ik(time, &crypto), Err(NoPeerError));

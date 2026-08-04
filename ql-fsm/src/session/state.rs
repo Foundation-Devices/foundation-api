@@ -14,7 +14,7 @@ use super::{
     tracked::{LossRecovery, TrackedRecord},
 };
 
-pub struct SessionState {
+pub struct SessionState<M> {
     pub last_activity_at: Instant,
     pub last_inbound_at: Instant,
     pub phase: SessionPhase,
@@ -26,7 +26,7 @@ pub struct SessionState {
     pub replay_window: ReplayWindow,
     pub ack_tracker: AckTracker,
     pub pending_ping: bool,
-    pub streams: IndexMap<StreamId, StreamState>,
+    pub streams: IndexMap<StreamId, StreamState<M>>,
     pub next_stream_index: usize,
     pub remote_stream_history: RemoteStreamHistory,
 }
@@ -51,7 +51,13 @@ pub enum TerminalFrame {
 }
 
 #[derive(Debug)]
-pub struct StreamState {
+pub struct StreamState<M> {
+    pub metadata: M,
+    pub io: StreamIoState,
+}
+
+#[derive(Debug)]
+pub struct StreamIoState {
     pub role: StreamRole,
     pub header: Option<Bytes>,
     pub rx: StreamRx,
@@ -64,8 +70,9 @@ pub struct StreamState {
     pub pending_window: bool,
 }
 
-impl StreamState {
+impl<M> StreamState<M> {
     pub fn new(
+        metadata: M,
         role: StreamRole,
         header: Option<Bytes>,
         receive_buffer_size: u32,
@@ -73,19 +80,24 @@ impl StreamState {
     ) -> Self {
         let receive_buffer_size = receive_buffer_size as usize;
         Self {
-            role,
-            header,
-            tx: StreamTx::new(),
-            pending_reset: None,
-            peer_max_offset: u64::from(initial_peer_stream_receive_window),
-            outbound_state: OutboundState::Open,
-            inbound_state: InboundState::Open,
-            rx: StreamRx::new(receive_buffer_size),
-            advertised_max_offset: receive_buffer_size as u64,
-            pending_window: false,
+            metadata,
+            io: StreamIoState {
+                role,
+                header,
+                tx: StreamTx::new(),
+                pending_reset: None,
+                peer_max_offset: u64::from(initial_peer_stream_receive_window),
+                outbound_state: OutboundState::Open,
+                inbound_state: InboundState::Open,
+                rx: StreamRx::new(receive_buffer_size),
+                advertised_max_offset: receive_buffer_size as u64,
+                pending_window: false,
+            },
         }
     }
+}
 
+impl StreamIoState {
     pub fn is_writable(&self) -> bool {
         matches!(self.outbound_state, OutboundState::Open)
     }
@@ -136,7 +148,7 @@ pub enum OutboundState {
     Open,
     FinQueued,
     Finished,
-    Closed,
+    Reset(StreamReset),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,5 +156,4 @@ pub enum InboundState {
     Open,
     Finished,
     Reset(StreamReset),
-    Discarding,
 }

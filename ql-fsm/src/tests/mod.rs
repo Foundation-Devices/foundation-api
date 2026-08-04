@@ -34,7 +34,7 @@ impl Side {
 }
 
 struct Node {
-    fsm: QlFsm,
+    fsm: QlFsm<()>,
     crypto: TestCrypto,
 }
 

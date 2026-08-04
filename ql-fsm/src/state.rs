@@ -8,12 +8,12 @@ use ql_wire::{
 
 use crate::{session::SessionFsm, NoSessionError, PeerStatus};
 
-pub struct QlFsmState {
+pub struct QlFsmState<M> {
     pub next_control_id: u32,
     pub peer: Option<PeerBundle>,
     pub armed_pairing_token: Option<PairingToken>,
     pub handshake: Option<(RouteHeader, QlHandshakeRecord)>,
-    pub link: LinkState,
+    pub link: LinkState<M>,
     pub now: Instant,
 }
 
@@ -26,18 +26,18 @@ pub struct SessionTransport {
 }
 
 #[allow(clippy::large_enum_variant)]
-pub enum LinkState {
+pub enum LinkState<M> {
     Idle,
     IkInitiator(InitiatorState<IkHandshake>),
     XxInitiator(InitiatorState<XxHandshake>),
     XxResponder(XxResponderState),
-    Connected(ConnectedState),
+    Connected(ConnectedState<M>),
 }
 
-pub struct ConnectedState {
+pub struct ConnectedState<M> {
     pub handshake_id: HandshakeId,
     pub transport: SessionTransport,
-    pub session: SessionFsm,
+    pub session: SessionFsm<M>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,7 +52,7 @@ pub struct XxResponderState {
     pub deadline: Instant,
 }
 
-impl LinkState {
+impl<M> LinkState<M> {
     pub fn take(&mut self) -> Self {
         std::mem::replace(self, Self::Idle)
     }
@@ -66,7 +66,7 @@ impl LinkState {
     }
 
     #[inline]
-    pub fn connected(&self) -> Option<&ConnectedState> {
+    pub fn connected(&self) -> Option<&ConnectedState<M>> {
         match self {
             Self::Connected(state) => Some(state),
             _ => None,
@@ -74,7 +74,7 @@ impl LinkState {
     }
 
     #[inline]
-    pub fn connected_mut(&mut self) -> Option<&mut ConnectedState> {
+    pub fn connected_mut(&mut self) -> Option<&mut ConnectedState<M>> {
         match self {
             Self::Connected(state) => Some(state),
             _ => None,
@@ -82,7 +82,7 @@ impl LinkState {
     }
 
     #[inline]
-    pub fn connected_mut_or_err(&mut self) -> Result<&mut ConnectedState, NoSessionError> {
+    pub fn connected_mut_or_err(&mut self) -> Result<&mut ConnectedState<M>, NoSessionError> {
         self.connected_mut().ok_or(NoSessionError)
     }
 
