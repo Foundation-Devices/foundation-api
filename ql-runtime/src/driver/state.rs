@@ -1,140 +1,203 @@
-use std::collections::HashMap;
-
 use bytes::Bytes;
-use ql_common::StreamId;
+use ql_fsm::{StreamIo, StreamMeta, StreamResetEvent, StreamStatus};
 
 use crate::{
     command::Command,
-    io::{PushError, Rx, Tx},
-    QlStreamError,
+    io::{Rx, Tx},
+    log, QlStreamError,
 };
 
 pub struct DriverState {
-    pub streams: HashMap<StreamId, DriverStreamIo>,
     pub runtime_tx: async_channel::Sender<Command>,
     pub max_concurrent_message_writes: usize,
 }
 
+#[derive(Default)]
 pub struct DriverStreamIo {
     outbound: Option<OutboundIo>,
-    inbound: Option<InboundIo>,
+    inbound: Option<Rx>,
+}
+
+struct OutboundIo {
+    tx: Tx,
+    pending: Bytes,
 }
 
 impl DriverStreamIo {
-    pub fn new(outbound: Option<OutboundIo>, inbound: Option<InboundIo>) -> Self {
-        Self { outbound, inbound }
+    pub fn initialize(&mut self, tx: Tx, rx: Rx, stream: StreamIo<'_>) {
+        self.outbound = match stream.writer_status() {
+            StreamStatus::Open => Some(OutboundIo {
+                tx,
+                pending: Bytes::new(),
+            }),
+            StreamStatus::Finished => {
+                tx.finish();
+                None
+            }
+            StreamStatus::Reset(code) => {
+                let error = QlStreamError::StreamReset {
+                    code,
+                    origin: crate::ResetOrigin::Peer,
+                };
+                let _ = tx.fail(error);
+                None
+            }
+        };
+        self.inbound = match stream.reader_status() {
+            StreamStatus::Open | StreamStatus::Finished => Some(rx),
+            StreamStatus::Reset(code) => {
+                let error = QlStreamError::StreamReset {
+                    code,
+                    origin: crate::ResetOrigin::Peer,
+                };
+                rx.fail(error);
+                None
+            }
+        };
+        self.poll_inbound(stream);
     }
 
-    pub fn fail_all(&mut self) {
-        self.inbound_fail(QlStreamError::NoSession);
-        self.outbound_fail(QlStreamError::NoSession);
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.outbound.is_none() && self.inbound.is_none()
-    }
-
-    pub fn outbound_close(&mut self) {
-        self.outbound = None;
-    }
-
-    pub fn outbound_finish(&mut self) {
-        if let Some(outbound) = self.outbound.take() {
-            outbound.tx.finish();
-        }
-    }
-
-    pub fn outbound_fail(&mut self, error: QlStreamError) {
+    fn outbound_fail(&mut self, error: QlStreamError) {
         if let Some(outbound) = self.outbound.take() {
             let _ = outbound.tx.fail(error);
         }
     }
 
-    pub fn outbound_writer_mut(&mut self) -> Option<&mut OutboundIo> {
-        self.outbound.as_mut()
-    }
-
-    pub fn outbound_queue_finish(&mut self) {
-        if let Some(outbound) = self.outbound.as_mut() {
-            outbound.finish_pending = true;
+    fn inbound_fail(&mut self, error: QlStreamError) {
+        if let Some(inbound) = self.inbound.take() {
+            inbound.fail(error);
         }
     }
 
-    pub fn outbound_finish_pending(&self) -> bool {
-        self.outbound
-            .as_ref()
-            .is_some_and(|outbound| outbound.finish_pending)
-    }
-
-    pub fn inbound_close(&mut self) {
-        self.inbound = None;
-    }
-
-    pub fn inbound_try_write(&mut self, bytes: Bytes) -> InboundWriteResult {
-        let Some(inbound) = self.inbound.as_mut() else {
-            return InboundWriteResult::Closed;
+    pub fn poll_inbound(&mut self, mut stream: StreamIo<'_>) {
+        let stream_id = stream.stream_id();
+        let finished = matches!(stream.reader_status(), StreamStatus::Finished);
+        let Some(inbound) = self.inbound.as_ref() else {
+            return;
+        };
+        let Some(mut reader) = stream.reader() else {
+            if finished {
+                inbound.finish();
+                self.inbound = None;
+            }
+            return;
         };
 
-        let len = bytes.len();
-        match inbound.rx.try_write(bytes) {
-            Ok(()) => InboundWriteResult::Accepted(len),
-            Err(PushError::Full(_)) => InboundWriteResult::Full,
-            Err(PushError::Closed(_)) => {
-                self.inbound = None;
-                InboundWriteResult::Closed
+        log::trace!(
+            "draining inbound bytes: stream_id={stream_id} readable={}",
+            reader.readable_bytes()
+        );
+        let mut accepted = 0usize;
+        for chunk in reader.read() {
+            if chunk.is_empty() {
+                continue;
+            }
+            let len = chunk.len();
+            match inbound.try_write(chunk) {
+                Ok(()) => accepted += len,
+                Err(_) => {
+                    // finishing an Rx immediately removes it from self.inbound
+                    // reaching this write means the Rx is unfinished, so an error means the slot is full
+                    log::debug!("inbound backpressure: stream_id={stream_id} accepted={accepted}");
+                    break;
+                }
             }
         }
-    }
 
-    pub fn inbound_finish(&mut self) {
-        if let Some(inbound) = self.inbound.take() {
-            inbound.rx.finish();
+        if accepted > 0 {
+            log::trace!("committed inbound bytes: stream_id={stream_id} accepted={accepted}");
+            reader.commit_read(accepted).unwrap();
+        }
+        if finished && reader.readable_bytes() == 0 {
+            inbound.finish();
+            self.inbound = None;
         }
     }
 
-    pub fn inbound_fail(&mut self, error: QlStreamError) {
-        if let Some(inbound) = self.inbound.take() {
-            inbound.rx.fail(error);
+    pub fn poll_outbound(&mut self, mut stream: StreamIo<'_>) {
+        let stream_id = stream.stream_id();
+        let Some(OutboundIo { tx, pending }) = &mut self.outbound else {
+            return;
+        };
+
+        let Some(mut writer) = stream.writer() else {
+            log::trace!("poll stream skipped without session writer: stream_id={stream_id}");
+            return;
+        };
+        loop {
+            let capacity = writer.capacity();
+            log::trace!("stream write capacity: stream_id={stream_id} capacity={capacity}");
+            if capacity == 0 {
+                break;
+            }
+
+            let Ok(mut bytes) = tx.try_read(pending, capacity) else {
+                break;
+            };
+            if bytes.is_empty() {
+                break;
+            }
+
+            log::trace!(
+                "writing stream bytes: stream_id={stream_id} len={}",
+                bytes.len()
+            );
+            let _ = writer.write(&mut bytes);
+        }
+
+        if pending.is_empty() && tx.is_finished() {
+            log::info!("observed outbound writer finished: stream_id={stream_id}");
+            writer.finish();
         }
     }
 }
 
-pub struct OutboundIo {
-    tx: Tx,
-    pending: Bytes,
-    finish_pending: bool,
-}
+impl StreamMeta for DriverStreamIo {
+    fn on_readable(&mut self, stream: StreamIo<'_>) {
+        self.poll_inbound(stream);
+    }
 
-impl OutboundIo {
-    pub fn new(tx: Tx) -> Self {
-        Self {
-            tx,
-            pending: Bytes::new(),
-            finish_pending: false,
+    fn on_writable(&mut self, stream: StreamIo<'_>) {
+        self.poll_outbound(stream);
+    }
+
+    fn on_inbound_finished(&mut self, stream: StreamIo<'_>) {
+        self.poll_inbound(stream);
+    }
+
+    fn on_outbound_finished(&mut self, _stream_id: ql_common::StreamId) {
+        if let Some(outbound) = self.outbound.take() {
+            outbound.tx.finish();
         }
     }
 
-    pub fn is_finished(&self) -> bool {
-        self.pending.is_empty() && self.tx.is_finished()
+    fn on_reset(&mut self, reset: StreamResetEvent) {
+        log::info!("stream reset: {reset:?}");
+        if reset.origin == crate::ResetOrigin::Local {
+            if reset.target.reader() {
+                self.inbound = None;
+            }
+            if reset.target.writer() {
+                self.outbound = None;
+            }
+            return;
+        }
+        let error = QlStreamError::StreamReset {
+            code: reset.code,
+            origin: reset.origin,
+        };
+        if reset.target.reader() {
+            self.inbound_fail(error.clone());
+        }
+        if reset.target.writer() {
+            self.outbound_fail(error);
+        }
     }
-
-    pub fn try_read(&mut self, max_len: usize) -> Result<Bytes, ()> {
-        self.tx.try_read(&mut self.pending, max_len)
-    }
 }
 
-pub struct InboundIo {
-    rx: Rx,
-}
-
-pub enum InboundWriteResult {
-    Accepted(usize),
-    Full,
-    Closed,
-}
-
-impl InboundIo {
-    pub fn new(rx: Rx) -> Self {
-        Self { rx }
+impl Drop for DriverStreamIo {
+    fn drop(&mut self) {
+        self.inbound_fail(QlStreamError::NoSession);
+        self.outbound_fail(QlStreamError::NoSession);
     }
 }

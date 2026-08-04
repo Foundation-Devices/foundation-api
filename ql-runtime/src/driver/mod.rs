@@ -1,12 +1,6 @@
 mod state;
-#[cfg(test)]
-mod test;
 
 use std::{
-    collections::{
-        hash_map::{Entry, OccupiedEntry},
-        HashMap,
-    },
     future::Future,
     pin::{pin, Pin},
     task::{Context, Poll},
@@ -14,16 +8,16 @@ use std::{
 };
 
 use async_channel::Recv;
-use futures_lite::future::{poll_fn, yield_now};
-use ql_common::{ResetCode, StreamId, StreamInfo};
-use ql_fsm::{Event, QlFsm, StreamResetEvent, StreamResetTarget, WriteId};
+use futures_lite::future::poll_fn;
+use ql_common::{ResetCode, StreamInfo};
+use ql_fsm::{Event, QlFsm, StreamResetTarget, WriteId};
 
-use self::state::{DriverState, DriverStreamIo, InboundIo, InboundWriteResult, OutboundIo};
+use self::state::{DriverState, DriverStreamIo};
 use crate::{
     command::Command,
     io, log,
     platform::{QlInbound, QlPlatform, QlTimer},
-    QlStreamError, ResetOrigin, Runtime,
+    Runtime,
 };
 
 impl<P: QlPlatform> Runtime<P> {
@@ -37,10 +31,9 @@ impl<P: QlPlatform> Runtime<P> {
             tx,
         } = self;
 
-        let mut fsm = QlFsm::new(config.fsm, identity, Instant::now());
+        let mut fsm = QlFsm::<DriverStreamIo>::new(config.fsm, identity, Instant::now());
 
         let mut state = DriverState {
-            streams: HashMap::new(),
             runtime_tx: tx,
             max_concurrent_message_writes: config.max_concurrent_message_writes,
         };
@@ -92,8 +85,9 @@ impl<P: QlPlatform> Runtime<P> {
                     log::trace!(
                         "write completed: success={success} index={index} write_id={write_id:?}",
                     );
-                    DriverState::drive_write_completed(&mut fsm, write_id, success);
-                    yield_now().await;
+                    if let Some(write_id) = write_id {
+                        fsm.complete_write(Instant::now(), write_id, success);
+                    }
                 }
                 DriverStep::TimerExpired => {
                     log::trace!("timer expired");
@@ -177,7 +171,12 @@ where
 
 impl DriverState {
     #[allow(clippy::too_many_lines)]
-    fn drive_command<P: QlPlatform>(&mut self, fsm: &mut QlFsm, command: Command, platform: &P) {
+    fn drive_command<P: QlPlatform>(
+        &mut self,
+        fsm: &mut QlFsm<DriverStreamIo>,
+        command: Command,
+        platform: &P,
+    ) {
         match command {
             Command::BindPeer { peer } => {
                 log::info!("binding peer");
@@ -212,7 +211,7 @@ impl DriverState {
             Command::OpenStream { header, start } => {
                 log::info!("open stream requested");
 
-                let mut stream_ops = match fsm.open_stream(header) {
+                let mut stream = match fsm.open_stream(header) {
                     Ok(stream_ops) => stream_ops,
                     Err(error) => {
                         log::warn!("open stream failed");
@@ -220,36 +219,30 @@ impl DriverState {
                         return;
                     }
                 };
-                let stream_id = stream_ops.stream_id();
+                let (metadata, stream_io) = stream.split_mut();
+                let stream_id = stream_io.stream_id();
                 log::info!("open stream allocated: stream_id={stream_id}");
                 let (reader, writer, reader_io, writer_io) =
                     io::new_stream(stream_id, self.runtime_tx.clone());
-                self.streams.insert(
-                    stream_id,
-                    DriverStreamIo::new(
-                        Some(OutboundIo::new(writer_io)),
-                        Some(InboundIo::new(reader_io)),
-                    ),
-                );
+                metadata.initialize(writer_io, reader_io, stream_io);
                 if start.send(Ok((reader, writer))).is_err() {
                     log::warn!("open stream cancelled before delivery: stream_id={stream_id}");
-                    if let Some(stream) = self.streams.get_mut(&stream_id) {
-                        stream.inbound_close();
-                        stream.outbound_close();
-                    }
-                    stream_ops.reset(StreamResetTarget::Both, ResetCode::DROPPED);
+                    stream.reset(StreamResetTarget::Both, ResetCode::DROPPED);
                     return;
                 }
-                drop(stream_ops);
-                self.poll_stream(fsm, stream_id);
+                stream.poll_writable();
             }
             Command::PollInbound { stream_id } => {
                 log::trace!("poll inbound requested: stream_id={stream_id}");
-                self.handle_inbound_readable(fsm, stream_id);
+                if let Ok(mut stream) = fsm.stream(stream_id) {
+                    stream.poll_readable();
+                }
             }
             Command::PollStream { stream_id } => {
                 log::trace!("poll stream requested: stream_id={stream_id}");
-                self.poll_stream(fsm, stream_id);
+                if let Ok(mut stream) = fsm.stream(stream_id) {
+                    stream.poll_writable();
+                }
             }
             Command::ResetStream {
                 stream_id,
@@ -259,16 +252,6 @@ impl DriverState {
                 log::debug!(
                     "reset stream command: stream_id={stream_id} target={target:?} code={code:?}"
                 );
-                if let Entry::Occupied(mut entry) = self.streams.entry(stream_id) {
-                    let stream = entry.get_mut();
-                    if target.reader() {
-                        stream.inbound_close();
-                    }
-                    if target.writer() {
-                        stream.outbound_close();
-                    }
-                    Self::try_reap_stream(entry);
-                }
                 if let Ok(mut stream) = fsm.stream(stream_id) {
                     stream.reset(target, code);
                 }
@@ -276,13 +259,7 @@ impl DriverState {
         }
     }
 
-    fn drive_write_completed(fsm: &mut QlFsm, session_write_id: Option<WriteId>, success: bool) {
-        if let Some(write_id) = session_write_id {
-            fsm.complete_write(Instant::now(), write_id, success);
-        }
-    }
-
-    fn drain_fsm_events<P: QlPlatform>(&mut self, fsm: &mut QlFsm, platform: &P) {
+    fn drain_fsm_events<P: QlPlatform>(&mut self, fsm: &mut QlFsm<DriverStreamIo>, platform: &P) {
         while let Some(event) = fsm.poll_event() {
             log::trace!("polled FSM event: event={event:?}");
             match event {
@@ -295,182 +272,43 @@ impl DriverState {
                 Event::PeerStatusChanged(status) => {
                     let peer = fsm.peer().map(|peer| peer.qid);
                     log::info!("peer status changed: peer={peer:?} status={status:?}");
-                    if status == ql_fsm::PeerStatus::Unpaired {
-                        for (_, mut stream) in self.streams.drain() {
-                            stream.fail_all();
-                        }
-                    }
                     platform.handle_peer_status(peer, status);
                 }
                 Event::Opened(stream_id) => {
                     log::info!("inbound stream opened: stream_id={stream_id}");
-                    self.handle_opened_stream(fsm, platform, stream_id);
-                }
-                Event::Readable(stream_id) => {
-                    log::trace!("stream readable: stream_id={stream_id}");
-                    self.handle_inbound_readable(fsm, stream_id);
-                }
-                Event::Writable(stream_id) => {
-                    log::trace!("stream writable: stream_id={stream_id}");
-                    self.poll_stream(fsm, stream_id);
-                }
-                Event::Finished(stream_id) => {
-                    log::info!("peer finished stream writes: stream_id={stream_id}");
-                    self.handle_inbound_finished(stream_id);
-                }
-                Event::OutboundFinished(stream_id) => {
-                    log::info!("outbound finish acknowledged: stream_id={stream_id}");
-                    self.handle_outbound_finished(stream_id);
-                }
-                Event::Reset(reset) => {
-                    self.handle_stream_reset(reset);
+                    let Some(qid) = fsm.peer().map(|peer| peer.qid) else {
+                        continue;
+                    };
+                    let Ok(mut stream) = fsm.stream(stream_id) else {
+                        continue;
+                    };
+                    let (metadata, stream_io) = stream.split_mut();
+                    let header = Box::<[u8]>::from(stream_io.header());
+                    let (reader, writer, reader_io, writer_io) =
+                        io::new_stream(stream_id, self.runtime_tx.clone());
+                    metadata.initialize(writer_io, reader_io, stream_io);
+                    drop(stream);
+
+                    log::info!("delivering inbound stream to platform: stream_id={stream_id}");
+                    platform.handle_inbound(
+                        StreamInfo {
+                            qid,
+                            stream_id,
+                            header,
+                        },
+                        crate::QlStream { writer, reader },
+                    );
                 }
                 Event::SessionClosed(close) => {
                     log::info!("session closed: frame={close:?}");
-                    for (_, mut stream) in self.streams.drain() {
-                        stream.fail_all();
-                    }
                 }
             }
         }
-    }
-
-    fn handle_opened_stream<P: QlPlatform>(
-        &mut self,
-        fsm: &mut QlFsm,
-        platform: &P,
-        stream_id: StreamId,
-    ) {
-        let (reader, writer, reader_io, writer_io) =
-            io::new_stream(stream_id, self.runtime_tx.clone());
-
-        self.streams.insert(
-            stream_id,
-            DriverStreamIo::new(
-                Some(OutboundIo::new(writer_io)),
-                Some(InboundIo::new(reader_io)),
-            ),
-        );
-
-        let qid = fsm.peer().unwrap().qid;
-        let stream = fsm.stream(stream_id).unwrap();
-        let header = Box::<[u8]>::from(stream.header());
-
-        log::info!("delivering inbound stream to platform: stream_id={stream_id}",);
-
-        platform.handle_inbound(
-            StreamInfo {
-                qid,
-                stream_id,
-                header,
-            },
-            crate::QlStream { writer, reader },
-        );
-    }
-
-    fn handle_inbound_readable(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
-        let Ok(mut stream_ops) = fsm.stream(stream_id) else {
-            log::info!("inbound readable for unknown stream: stream_id={stream_id}");
-            return;
-        };
-        let readable = stream_ops.readable_bytes();
-        if readable == 0 {
-            return;
-        }
-        log::trace!("draining inbound bytes: stream_id={stream_id} readable={readable}");
-        let mut accepted = 0usize;
-        let mut peer_closed = false;
-        {
-            let Some(stream) = self.streams.get_mut(&stream_id) else {
-                return;
-            };
-            for chunk in stream_ops.read() {
-                if chunk.is_empty() {
-                    continue;
-                }
-                match stream.inbound_try_write(chunk) {
-                    InboundWriteResult::Accepted(n) => {
-                        accepted += n;
-                    }
-                    InboundWriteResult::Full => {
-                        log::debug!(
-                            "inbound backpressure: stream_id={stream_id} accepted={accepted}"
-                        );
-                        break;
-                    }
-                    InboundWriteResult::Closed => {
-                        log::warn!(
-                            "inbound consumer closed; sending CANCELLED: stream_id={stream_id}"
-                        );
-                        peer_closed = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if accepted > 0 {
-            log::trace!("committed inbound bytes: stream_id={stream_id:?} accepted={accepted}");
-            stream_ops.commit_read(accepted).unwrap();
-        }
-        if peer_closed {
-            stream_ops.reset(StreamResetTarget::Reader, ResetCode::DROPPED);
-            if let Entry::Occupied(entry) = self.streams.entry(stream_id) {
-                Self::try_reap_stream(entry);
-            }
-        }
-
-        drop(stream_ops);
-    }
-
-    fn handle_inbound_finished(&mut self, stream_id: StreamId) {
-        log::info!("inbound finished event: stream_id={stream_id}");
-        let Entry::Occupied(mut entry) = self.streams.entry(stream_id) else {
-            return;
-        };
-        log::info!("delivering clean inbound finish: stream_id={stream_id}");
-        entry.get_mut().inbound_finish();
-        Self::try_reap_stream(entry);
-    }
-
-    fn handle_stream_reset(&mut self, reset: StreamResetEvent) {
-        log::info!("stream reset: {reset:?}",);
-        let Entry::Occupied(mut entry) = self.streams.entry(reset.stream_id) else {
-            return;
-        };
-        let stream = entry.get_mut();
-
-        if reset.target.reader() {
-            stream.inbound_fail(QlStreamError::StreamReset {
-                code: reset.code,
-                origin: ResetOrigin::Peer,
-            });
-        }
-        if reset.target.writer() {
-            stream.outbound_fail(QlStreamError::StreamReset {
-                code: reset.code,
-                origin: ResetOrigin::Peer,
-            });
-        }
-        Self::try_reap_stream(entry);
-    }
-
-    fn handle_outbound_finished(&mut self, stream_id: StreamId) {
-        log::info!("outbound finish acknowledged: stream_id={stream_id}");
-        let Entry::Occupied(mut entry) = self.streams.entry(stream_id) else {
-            return;
-        };
-        let stream = entry.get_mut();
-        if !stream.outbound_finish_pending() {
-            return;
-        }
-        stream.outbound_finish();
-        Self::try_reap_stream(entry);
     }
 
     fn fill_write_slots<'a, P: QlPlatform + 'a>(
         &self,
-        fsm: &mut QlFsm,
+        fsm: &mut QlFsm<DriverStreamIo>,
         platform: &'a P,
         in_flight: &mut Vec<InFlightWrite<P::WriteMessageFut<'a>>>,
     ) -> bool {
@@ -491,74 +329,5 @@ impl DriverState {
             });
         }
         filled
-    }
-
-    fn poll_stream(&mut self, fsm: &mut QlFsm, stream_id: StreamId) {
-        let Entry::Occupied(mut entry) = self.streams.entry(stream_id) else {
-            return;
-        };
-        let stream = entry.get_mut();
-        let Some(writer_io) = stream.outbound_writer_mut() else {
-            log::trace!("poll stream skipped without outbound writer: stream_id={stream_id}");
-            return;
-        };
-
-        if writer_io.is_finished() {
-            log::info!("observed outbound writer finished before write: stream_id={stream_id}");
-            if let Ok(mut stream_ops) = fsm.stream(stream_id) {
-                if let Some(writer) = stream_ops.writer() {
-                    writer.finish();
-                }
-            }
-            stream.outbound_queue_finish();
-            if stream.is_closed() {
-                entry.remove();
-            }
-            return;
-        }
-
-        let Ok(mut stream_ops) = fsm.stream(stream_id) else {
-            return;
-        };
-        let Some(mut writer) = stream_ops.writer() else {
-            log::trace!("poll stream skipped without session writer: stream_id={stream_id}");
-            return;
-        };
-
-        loop {
-            let capacity = writer.capacity();
-            log::trace!("stream write capacity: stream_id={stream_id} capacity={capacity}");
-            if capacity == 0 {
-                break;
-            }
-
-            let Ok(mut bytes) = writer_io.try_read(capacity) else {
-                break;
-            };
-            if bytes.is_empty() {
-                break;
-            }
-
-            log::trace!(
-                "writing stream bytes: stream_id={stream_id} len={}",
-                bytes.len()
-            );
-            let _ = writer.write(&mut bytes);
-        }
-
-        if writer_io.is_finished() {
-            log::info!("observed outbound writer finished after write: stream_id={stream_id}");
-            writer.finish();
-            stream.outbound_queue_finish();
-            if stream.is_closed() {
-                entry.remove();
-            }
-        }
-    }
-
-    fn try_reap_stream(entry: OccupiedEntry<'_, StreamId, DriverStreamIo>) {
-        if entry.get().is_closed() {
-            entry.remove();
-        }
     }
 }
