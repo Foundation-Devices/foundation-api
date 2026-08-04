@@ -9,7 +9,7 @@ use ql_common::ResetCode;
 
 use crate::{
     codec, duplex::Duplex, finish_bytes, write_bytes, ChunkQueue, DropResetRead, DropResetWrite,
-    RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
+    Error, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 pub fn start<M, St>(stream: St) -> DuplexCall<M, St::Writer, St::Reader>
@@ -115,25 +115,23 @@ where
                 Ok(ReadStep::Event(value)) => return Poll::Ready(Some(Ok(value))),
                 Ok(ReadStep::NeedMore) => {}
                 Err(error) => {
-                    self.stream.disarm();
+                    let code = error.reset_code().unwrap_or(ResetCode::DROPPED);
+                    DropResetRead::reset(&mut self.stream, code);
                     return Poll::Ready(Some(Err(error)));
                 }
             }
 
             match self.stream.poll_read(cx) {
-                Poll::Ready(Ok(Some(chunk))) => {
-                    self.reader.push(chunk);
-                }
-                Poll::Ready(Ok(None)) => {
-                    if self.reader.is_empty() {
-                        self.stream.disarm();
+                Poll::Ready(Ok(chunk)) if chunk.is_empty() => {
+                    if self.reader.bytes.remaining() == 0 {
                         return Poll::Ready(None);
                     }
-                    self.stream.disarm();
-                    return Poll::Ready(Some(Err(crate::Error::Truncated.into())));
+                    return Poll::Ready(Some(Err(Error::Truncated.into())));
+                }
+                Poll::Ready(Ok(chunk)) => {
+                    self.reader.push(chunk);
                 }
                 Poll::Ready(Err(error)) => {
-                    self.stream.disarm();
                     return Poll::Ready(Some(Err(RpcError::Transport(error))));
                 }
                 Poll::Pending => {
@@ -176,20 +174,12 @@ impl<T: RpcCodec> EventReader<T> {
         self.bytes.push(chunk);
     }
 
-    fn is_empty(&self) -> bool {
-        self.bytes.remaining() == 0
-    }
-
     fn advance<E>(&mut self) -> Result<ReadStep<T>, RpcError<T::Error, E>> {
         let Some(mut body) = self.bytes.try_take_part().map_err(RpcError::Protocol)? else {
             return Ok(ReadStep::NeedMore);
         };
 
-        let value = {
-            let value = T::decode_value(&mut body).map_err(RpcError::Codec)?;
-            drop(body);
-            value
-        };
+        let value = codec::decode_exact(&mut body)?;
         Ok(ReadStep::Event(value))
     }
 }

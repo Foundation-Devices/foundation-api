@@ -490,26 +490,18 @@ async fn rpc_download() {
         {
             let (part_header, mut part) = reader.next_part().await.unwrap().unwrap();
             assert_eq!(part_header, b"icon".to_vec());
-            assert_eq!(
-                part.read_chunk().await.unwrap(),
-                Some(Bytes::from_static(b"abc"))
-            );
-            assert_eq!(
-                part.read_chunk().await.unwrap(),
-                Some(Bytes::from_static(b"def"))
-            );
-            assert_eq!(part.read_chunk().await.unwrap(), None);
+            assert_eq!(part.read_chunk().await.unwrap(), Bytes::from_static(b"abc"));
+            assert_eq!(part.read_chunk().await.unwrap(), Bytes::from_static(b"def"));
+            assert!(part.read_chunk().await.unwrap().is_empty());
         }
         {
             let (part_header, mut part) = reader.next_part().await.unwrap().unwrap();
             assert_eq!(part_header, b"manifest".to_vec());
-            assert_eq!(
-                part.read_chunk().await.unwrap(),
-                Some(Bytes::from_static(b"{}"))
-            );
-            assert_eq!(part.read_chunk().await.unwrap(), None);
+            assert_eq!(part.read_chunk().await.unwrap(), Bytes::from_static(b"{}"));
+            assert!(part.read_chunk().await.unwrap().is_empty());
         }
         assert!(reader.next_part().await.unwrap().is_none());
+        reader.complete().await.unwrap();
         assert_eq!(seen.borrow().as_slice(), &[b"logo".to_vec()]);
 
         tokio::time::timeout(Duration::from_secs(2), responder)
@@ -600,7 +592,11 @@ async fn rpc_upload() {
             while let Some((part_header, mut part)) = upload.next_part().await.unwrap() {
                 body.extend_from_slice(&part_header);
                 body.push(b':');
-                while let Some(chunk) = part.read_chunk().await.unwrap() {
+                loop {
+                    let chunk = part.read_chunk().await.unwrap();
+                    if chunk.is_empty() {
+                        break;
+                    }
                     body.extend_from_slice(&chunk);
                 }
                 body.push(b';');

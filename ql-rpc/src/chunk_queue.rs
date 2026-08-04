@@ -33,11 +33,9 @@ impl ChunkQueue {
         }
     }
 
-    pub(crate) fn next_part_total_len(&self) -> Result<Option<usize>, Error> {
-        let Some(len) = self.peek_next_part_len()? else {
-            return Ok(None);
-        };
-        Ok(Some(len.saturating_add(LENGTH_SIZE)))
+    pub fn next_part_len(&self) -> Result<Option<usize>, Error> {
+        let mut bytes = self.peek();
+        read_part_len_header(&mut bytes)
     }
 
     pub fn pop_front(&mut self, max_len: usize) -> Option<Bytes> {

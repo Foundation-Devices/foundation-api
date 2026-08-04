@@ -4,14 +4,15 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::Bytes;
 use ql_common::ResetCode;
 
 use crate::{
-    codec, finish_bytes,
     progress::Progress,
-    rpc::progress::codec::{ReadStep, ResponseReader},
-    write_bytes, DropResetRead, Error, RpcError, RpcRead, RpcStream,
+    rpc::{
+        progress::codec::{ReadStep, ResponseReader},
+        write_eof_value,
+    },
+    DropResetRead, Error, RpcError, RpcRead, RpcStream,
 };
 
 pub async fn start<M, St>(
@@ -23,12 +24,7 @@ where
     St: RpcStream,
 {
     let (reader, mut writer) = stream.split();
-    let mut payload = Vec::new();
-    codec::encode_value_part(request, &mut payload);
-    write_bytes(&mut writer, Bytes::from(payload))
-        .await
-        .map_err(RpcError::Transport)?;
-    finish_bytes(&mut writer)
+    write_eof_value(&mut writer, request)
         .await
         .map_err(RpcError::Transport)?;
     Ok(ProgressCall::new(reader))
@@ -47,10 +43,18 @@ enum State<M, T>
 where
     M: Progress,
 {
-    Invalid,
     Reading(ResponseReader<M>),
+    AwaitingEof(M::Response),
     Terminal(Result<M::Response, RpcError<M::Error, T>>),
     Done,
+}
+
+enum PollStep<M, T>
+where
+    M: Progress,
+{
+    Terminal(Result<M::Response, RpcError<M::Error, T>>),
+    Progress(M::Progress),
 }
 
 impl<M, R> Unpin for ProgressCall<M, R>
@@ -76,53 +80,70 @@ where
         poll_fn(|cx| self.poll_next_progress(cx)).await
     }
 
-    fn poll_step(&mut self, cx: &mut Context<'_>) -> Poll<Option<M::Progress>> {
+    fn poll_step(&mut self, cx: &mut Context<'_>) -> Poll<PollStep<M, R::Error>> {
         loop {
-            let reader = match &mut self.state {
-                State::Reading(reader) => reader,
-                State::Terminal(_) | State::Done => return Poll::Ready(None),
-                State::Invalid => panic!("invalid state"),
+            let state = match std::mem::replace(&mut self.state, State::Done) {
+                State::Reading(mut reader) => match reader.advance() {
+                    Ok(ReadStep::Progress(value)) => {
+                        self.state = State::Reading(reader);
+                        return Poll::Ready(PollStep::Progress(value));
+                    }
+                    Ok(ReadStep::Response(response)) => State::AwaitingEof(response),
+                    Ok(ReadStep::NeedMore) => State::Reading(reader),
+                    Err(error) => {
+                        let code = error.reset_code().unwrap_or(ResetCode::DROPPED);
+                        DropResetRead::reset(&mut self.stream, code);
+                        return Poll::Ready(PollStep::Terminal(Err(error)));
+                    }
+                },
+                State::AwaitingEof(response) => State::AwaitingEof(response),
+                State::Terminal(result) => return Poll::Ready(PollStep::Terminal(result)),
+                State::Done => panic!("polled after completion"),
             };
 
-            match reader.advance() {
-                Ok(ReadStep::Progress(value)) => return Poll::Ready(Some(value)),
-                Ok(ReadStep::Response(response)) => {
-                    self.stream.disarm();
-                    self.state = State::Terminal(Ok(response));
-                    return Poll::Ready(None);
-                }
-                Ok(ReadStep::NeedMore) => {}
-                Err(error) => {
-                    self.stream.disarm();
-                    self.state = State::Terminal(Err(error));
-                    return Poll::Ready(None);
-                }
-            }
-
             match self.stream.poll_read(cx) {
-                Poll::Ready(Ok(Some(chunk))) => {
-                    let State::Reading(reader) = &mut self.state else {
-                        panic!("invalid state");
+                Poll::Ready(Ok(chunk)) if chunk.is_empty() => {
+                    let result = match state {
+                        State::Reading(_) => Err(Error::Truncated.into()),
+                        State::AwaitingEof(response) => Ok(response),
+                        State::Terminal(_) | State::Done => unreachable!(),
                     };
-                    reader.push(chunk);
+                    return Poll::Ready(PollStep::Terminal(result));
                 }
-                Poll::Ready(Ok(None)) => {
-                    self.stream.disarm();
-                    self.state = State::Terminal(Err(Error::MissingResponse.into()));
-                    return Poll::Ready(None);
-                }
+                Poll::Ready(Ok(chunk)) => match state {
+                    State::Reading(mut reader) => {
+                        reader.push(chunk);
+                        self.state = State::Reading(reader);
+                    }
+                    State::AwaitingEof(_) => {
+                        DropResetRead::reset(&mut self.stream, ResetCode::PROTOCOL);
+                        return Poll::Ready(PollStep::Terminal(Err(Error::TrailingBytes.into())));
+                    }
+                    State::Terminal(_) | State::Done => unreachable!(),
+                },
                 Poll::Ready(Err(error)) => {
-                    self.stream.disarm();
-                    self.state = State::Terminal(Err(RpcError::Transport(error)));
-                    return Poll::Ready(None);
+                    return Poll::Ready(PollStep::Terminal(Err(RpcError::Transport(error))));
                 }
-                Poll::Pending => return Poll::Pending,
+                Poll::Pending => {
+                    self.state = state;
+                    return Poll::Pending;
+                }
             }
         }
     }
 
     pub fn poll_next_progress(&mut self, cx: &mut Context<'_>) -> Poll<Option<M::Progress>> {
-        self.poll_step(cx)
+        if matches!(self.state, State::Terminal(_) | State::Done) {
+            return Poll::Ready(None);
+        }
+        match self.poll_step(cx) {
+            Poll::Ready(PollStep::Progress(value)) => Poll::Ready(Some(value)),
+            Poll::Ready(PollStep::Terminal(result)) => {
+                self.state = State::Terminal(result);
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     pub fn reset(mut self, code: ResetCode) {
@@ -147,18 +168,9 @@ where
 
         loop {
             match this.poll_step(cx) {
-                Poll::Ready(Some(_)) => {}
-                Poll::Ready(None) => match std::mem::replace(&mut this.state, State::Invalid) {
-                    State::Terminal(result) => {
-                        this.state = State::Done;
-                        return Poll::Ready(result);
-                    }
-                    State::Done => panic!("polled after completion"),
-                    State::Invalid => panic!("polled during state transition"),
-                    State::Reading(_) => {
-                        panic!("progress call reached terminal step without result")
-                    }
-                },
+                // discard progress events
+                Poll::Ready(PollStep::Progress(_)) => continue,
+                Poll::Ready(PollStep::Terminal(result)) => return Poll::Ready(result),
                 Poll::Pending => return Poll::Pending,
             }
         }

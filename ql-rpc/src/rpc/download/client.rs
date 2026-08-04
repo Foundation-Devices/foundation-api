@@ -1,11 +1,12 @@
-use std::{future::poll_fn, marker::PhantomData};
+use std::marker::PhantomData;
 
 use bytes::Bytes;
 use ql_common::ResetCode;
 
 use crate::{
     download::Download,
-    parts::{PartFrameReader, PartReadStep},
+    parts::{PartFrame, PartFrameReader},
+    read_bytes,
     rpc::{parts::FrameKind, read_framed_prefix, write_eof_value},
     DropResetRead, RpcError, RpcRead, RpcStream,
 };
@@ -67,8 +68,11 @@ where
     pub async fn start(
         mut self,
     ) -> Result<(M::ResponseHeader, DownloadReader<M, R>), RpcError<M::Error, R::Error>> {
-        let (value, bytes) =
-            read_framed_prefix::<M::ResponseHeader, _>(&mut self.stream, None).await?;
+        let (value, bytes) = read_framed_prefix::<M::ResponseHeader, _>(&mut self.stream, None)
+            .await
+            .inspect_err(|error| {
+                self.reset_inner(error.reset_code().unwrap_or(ResetCode::DROPPED));
+            })?;
         Ok((
             value,
             DownloadReader {
@@ -95,49 +99,42 @@ where
     pub async fn next_part(
         &mut self,
     ) -> Result<Option<(M::PartHeader, DownloadPart<'_, M, R>)>, RpcError<M::Error, R::Error>> {
-        if !self.stream.is_some() {
+        let Some(frame) = self.read_frame().await? else {
             return Ok(None);
-        }
+        };
 
-        match self.read_frame().await? {
-            PartReadStep::PartHeader(value) => Ok(Some((
-                value,
-                DownloadPart {
-                    parent: self,
-                    finished: false,
-                },
-            ))),
-            PartReadStep::Finish => {
-                self.stream.disarm();
-                Ok(None)
+        let kind = match frame {
+            PartFrame::PartHeader(value) => {
+                return Ok(Some((
+                    value,
+                    DownloadPart {
+                        parent: self,
+                        finished: false,
+                    },
+                )));
             }
-            PartReadStep::BodyBytes(_) => {
-                Err(crate::Error::UnexpectedFrameKind(FrameKind::BodyChunk.tag()).into())
-            }
-            PartReadStep::EndPart => {
-                Err(crate::Error::UnexpectedFrameKind(FrameKind::EndPart.tag()).into())
-            }
-            PartReadStep::NeedMore => unreachable!("read_frame waits for a complete frame"),
-        }
+            PartFrame::BodyBytes(_) => FrameKind::BodyChunk,
+            PartFrame::EndPart => FrameKind::EndPart,
+        };
+
+        self.reset_inner(ResetCode::PROTOCOL);
+        Err(crate::Error::UnexpectedFrameKind(kind.tag()).into())
     }
 
+    /// rejects any remaining part; an already terminal reader is accepted
     pub async fn complete(mut self) -> Result<(), RpcError<M::Error, R::Error>> {
-        match self.read_frame().await? {
-            PartReadStep::Finish => {
-                self.stream.disarm();
-                Ok(())
-            }
-            PartReadStep::PartHeader(_) => {
-                Err(crate::Error::UnexpectedFrameKind(FrameKind::PartHeader.tag()).into())
-            }
-            PartReadStep::BodyBytes(_) => {
-                Err(crate::Error::UnexpectedFrameKind(FrameKind::BodyChunk.tag()).into())
-            }
-            PartReadStep::EndPart => {
-                Err(crate::Error::UnexpectedFrameKind(FrameKind::EndPart.tag()).into())
-            }
-            PartReadStep::NeedMore => unreachable!("read_frame waits for a complete frame"),
-        }
+        let Some(frame) = self.read_frame().await? else {
+            return Ok(());
+        };
+
+        let kind = match frame {
+            PartFrame::PartHeader(_) => FrameKind::PartHeader,
+            PartFrame::BodyBytes(_) => FrameKind::BodyChunk,
+            PartFrame::EndPart => FrameKind::EndPart,
+        };
+
+        self.reset_inner(ResetCode::PROTOCOL);
+        Err(crate::Error::UnexpectedFrameKind(kind.tag()).into())
     }
 
     pub fn reset(mut self, code: ResetCode) {
@@ -146,21 +143,26 @@ where
 
     async fn read_frame(
         &mut self,
-    ) -> Result<PartReadStep<M::PartHeader>, RpcError<M::Error, R::Error>> {
+    ) -> Result<Option<PartFrame<M::PartHeader>>, RpcError<M::Error, R::Error>> {
+        if !self.stream.is_some() {
+            return Ok(None);
+        }
+
         loop {
-            match self.reader.advance() {
-                Ok(PartReadStep::NeedMore) => {}
-                Ok(step) => return Ok(step),
-                Err(error) => return Err(error),
+            if let Some(frame) = self.reader.advance().inspect_err(|error| {
+                self.reset_inner(error.reset_code().unwrap_or(ResetCode::DROPPED));
+            })? {
+                return Ok(Some(frame));
             }
 
-            match poll_fn(|cx| self.stream.poll_read(cx)).await {
-                Ok(Some(chunk)) => {
-                    self.reader.push(chunk);
-                }
-                Ok(None) => return Err(crate::Error::Truncated.into()),
-                Err(error) => return Err(RpcError::Transport(error)),
+            let chunk = read_bytes(&mut self.stream)
+                .await
+                .map_err(RpcError::Transport)?;
+            if chunk.is_empty() {
+                self.reader.finish()?;
+                return Ok(None);
             }
+            self.reader.push(chunk);
         }
     }
 
@@ -174,24 +176,32 @@ where
     M: Download,
     R: RpcRead,
 {
-    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, RpcError<M::Error, R::Error>> {
+    /// reads part bytes, returning an empty chunk at the end of the part
+    pub async fn read_chunk(&mut self) -> Result<Bytes, RpcError<M::Error, R::Error>> {
         if self.finished {
-            return Ok(None);
+            return Ok(Bytes::new());
         }
 
-        match self.parent.read_frame().await? {
-            PartReadStep::BodyBytes(bytes) => Ok(Some(bytes)),
-            PartReadStep::EndPart => {
+        let frame = self
+            .parent
+            .read_frame()
+            .await
+            .inspect_err(|_| self.finished = true)?;
+        match frame {
+            Some(PartFrame::BodyBytes(bytes)) => Ok(bytes),
+            Some(PartFrame::EndPart) => {
                 self.finished = true;
-                Ok(None)
+                Ok(Bytes::new())
             }
-            PartReadStep::PartHeader(_) => {
+            Some(PartFrame::PartHeader(_)) => {
+                self.parent.reset_inner(ResetCode::PROTOCOL);
+                self.finished = true;
                 Err(crate::Error::UnexpectedFrameKind(FrameKind::PartHeader.tag()).into())
             }
-            PartReadStep::Finish => {
-                Err(crate::Error::UnexpectedFrameKind(FrameKind::Finish.tag()).into())
+            None => {
+                self.finished = true;
+                Err(crate::Error::Truncated.into())
             }
-            PartReadStep::NeedMore => unreachable!("read_frame waits for a complete frame"),
         }
     }
 

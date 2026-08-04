@@ -48,12 +48,9 @@ impl StreamReader {
         }
     }
 
-    pub fn poll_read(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
+    pub fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Bytes, QlStreamError>> {
         if matches!(self.terminal, ReaderTerminalState::Delivered) {
-            return Poll::Ready(Ok(None));
+            return Poll::Ready(Ok(Bytes::new()));
         }
 
         match self.try_read_ready() {
@@ -72,7 +69,7 @@ impl StreamReader {
         }
     }
 
-    fn try_read_ready(&mut self) -> Poll<Result<Option<Bytes>, QlStreamError>> {
+    fn try_read_ready(&mut self) -> Poll<Result<Bytes, QlStreamError>> {
         match self.rx.pop() {
             Ok(Item::Chunk(bytes)) => {
                 log::trace!(
@@ -83,7 +80,7 @@ impl StreamReader {
                 let _ = self.runtime_tx.try_send(Command::PollInbound {
                     stream_id: self.rx.stream_id(),
                 });
-                Poll::Ready(Ok(Some(bytes)))
+                Poll::Ready(Ok(bytes))
             }
             Ok(Item::Error(error)) => {
                 log::debug!(
@@ -101,14 +98,14 @@ impl StreamReader {
                         self.rx.stream_id()
                     );
                     self.terminal = ReaderTerminalState::Delivered;
-                    return Poll::Ready(Ok(None));
+                    return Poll::Ready(Ok(Bytes::new()));
                 }
                 Poll::Pending
             }
         }
     }
 
-    pub async fn read(&mut self) -> Result<Option<Bytes>, QlStreamError> {
+    pub async fn read(&mut self) -> Result<Bytes, QlStreamError> {
         poll_fn(|cx| self.poll_read(cx)).await
     }
 
@@ -181,13 +178,13 @@ mod loom_tests {
             producer.join().unwrap();
 
             match first {
-                Poll::Ready(Ok(Some(bytes))) => {
+                Poll::Ready(Ok(bytes)) => {
                     assert_eq!(bytes, Bytes::from_static(b"abc"));
                 }
                 Poll::Pending => {
                     assert_eq!(
                         reader.poll_read(&mut cx),
-                        Poll::Ready(Ok(Some(Bytes::from_static(b"abc"))))
+                        Poll::Ready(Ok(Bytes::from_static(b"abc")))
                     );
                 }
                 other => panic!("unexpected first poll result: {other:?}"),

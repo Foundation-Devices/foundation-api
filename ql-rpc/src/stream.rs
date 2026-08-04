@@ -17,8 +17,8 @@ pub trait RpcStream {
 pub trait RpcRead {
     type Error;
 
-    /// reads inbound bytes until eof or error
-    fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, Self::Error>>;
+    /// reads inbound bytes. an empty chunk or error is terminal
+    fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Bytes, Self::Error>>;
 
     /// aborts the read side
     fn reset(self, code: ResetCode);
@@ -44,7 +44,8 @@ pub trait RpcWrite {
     fn reset(self, code: ResetCode);
 }
 
-pub async fn read_bytes<R>(reader: &mut R) -> Result<Option<Bytes>, R::Error>
+/// reads inbound bytes. an empty chunk or error is terminal
+pub async fn read_bytes<R>(reader: &mut R) -> Result<Bytes, R::Error>
 where
     R: RpcRead,
 {
@@ -88,11 +89,6 @@ mod drop {
         }
 
         #[inline]
-        pub fn disarm(&mut self) {
-            self.inner.take();
-        }
-
-        #[inline]
         pub fn reset(&mut self, code: ResetCode) {
             if let Some(reader) = self.inner.take() {
                 reader.reset(code);
@@ -104,8 +100,17 @@ mod drop {
         type Error = R::Error;
 
         #[track_caller]
-        fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, Self::Error>> {
-            self.inner.as_mut().unwrap().poll_read(cx)
+        fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Bytes, Self::Error>> {
+            let result = self.inner.as_mut().unwrap().poll_read(cx);
+            let terminal = match &result {
+                Poll::Ready(Ok(bytes)) => bytes.is_empty(),
+                Poll::Ready(Err(_)) => true,
+                Poll::Pending => false,
+            };
+            if terminal {
+                self.inner.take();
+            }
+            result
         }
 
         fn reset(mut self, code: ResetCode) {

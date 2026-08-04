@@ -19,10 +19,7 @@ impl RpcStream for QlStream {
 impl RpcRead for StreamReader {
     type Error = QlStreamError;
 
-    fn poll_read(
-        &mut self,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<Result<Option<Bytes>, QlStreamError>> {
+    fn poll_read(&mut self, cx: &mut TaskContext<'_>) -> Poll<Result<Bytes, QlStreamError>> {
         StreamReader::poll_read(self, cx)
     }
 

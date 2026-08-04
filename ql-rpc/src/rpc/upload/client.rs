@@ -3,7 +3,7 @@ use ql_common::ResetCode;
 
 use crate::{
     rpc::{
-        parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
+        parts::{encode_body_chunk, encode_end_part, encode_part_header},
         read_eof_value,
     },
     upload::Upload,
@@ -75,13 +75,7 @@ where
     }
 
     pub async fn finish(mut self) -> Result<M::Response, RpcError<M::Error, W::Error>> {
-        let writer = &mut self.writer;
-        let mut encoded = Vec::new();
-        encode_finish(&mut encoded);
-        write_bytes(writer, Bytes::from(encoded))
-            .await
-            .map_err(RpcError::Transport)?;
-        writer.queue_finish();
+        self.writer.queue_finish();
 
         read_eof_value::<M::Response, _>(&mut self.reader).await
     }

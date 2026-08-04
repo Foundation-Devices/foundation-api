@@ -8,7 +8,7 @@ use crate::{
     download::Download,
     finish_bytes,
     rpc::{
-        parts::{encode_body_chunk, encode_end_part, encode_finish, encode_part_header},
+        parts::{encode_body_chunk, encode_end_part, encode_part_header},
         read_eof_request,
     },
     write_bytes, Context, DropResetWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
@@ -88,12 +88,7 @@ where
 
     /// send a header-only response and finish the stream
     pub async fn complete(self, response_header: M::ResponseHeader) -> Result<(), W::Error> {
-        let mut writer = self.writer;
-        let mut encoded = Vec::new();
-        codec::encode_value_part(&response_header, &mut encoded);
-        encode_finish(&mut encoded);
-        write_bytes(&mut writer, Bytes::from(encoded)).await?;
-        finish_bytes(&mut writer).await
+        self.start(response_header).await?.finish().await
     }
 
     /// reset the stream with a transport code
@@ -123,9 +118,6 @@ where
 
     pub async fn finish(self) -> Result<(), W::Error> {
         let mut writer = self.writer;
-        let mut encoded = Vec::new();
-        encode_finish(&mut encoded);
-        write_bytes(&mut writer, Bytes::from(encoded)).await?;
         finish_bytes(&mut writer).await
     }
 

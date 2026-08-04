@@ -2,6 +2,8 @@ use std::{convert::Infallible, str::Utf8Error};
 
 use bytes::{Buf, BufMut, Bytes};
 
+use crate::{Error, RpcError};
+
 pub trait RpcCodec: Sized {
     type Error;
 
@@ -74,11 +76,22 @@ pub fn encode_tagged_value_part<T: RpcCodec, B: BufMut + AsMut<[u8]>>(
     encode_value_part(value, out);
 }
 
-/// reads one length-delimited rpc value from buffered byte chunks
+/// reserves the encoded length field
 pub fn reserve_length<B: BufMut + AsMut<[u8]>>(out: &mut B) -> usize {
     let start = out.as_mut().len();
     out.put_bytes(0, LENGTH_SIZE);
     start
+}
+
+pub fn decode_exact<T, E>(bytes: &mut impl Buf) -> Result<T, RpcError<T::Error, E>>
+where
+    T: RpcCodec,
+{
+    let value = T::decode_value(bytes).map_err(RpcError::Codec)?;
+    if bytes.has_remaining() {
+        return Err(Error::TrailingBytes.into());
+    }
+    Ok(value)
 }
 
 pub fn backpatch_length<B: AsMut<[u8]> + ?Sized>(out: &mut B, start: usize) {

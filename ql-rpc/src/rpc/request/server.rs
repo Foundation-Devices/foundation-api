@@ -1,11 +1,11 @@
 use std::{future::Future, marker::PhantomData};
 
-use bytes::Bytes;
 use ql_common::ResetCode;
 
 use crate::{
-    finish_bytes, request::Request, rpc::read_eof_request, write_bytes, Context, DropResetWrite,
-    RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
+    request::Request,
+    rpc::{read_eof_request, write_eof_value},
+    Context, DropResetWrite, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(RequestHandler: Send)]
@@ -47,12 +47,7 @@ where
     }
 
     pub async fn respond(mut self, response: T) -> Result<(), W::Error> {
-        let writer = &mut self.writer;
-        let mut encoded = Vec::new();
-        response.encode_value(&mut encoded);
-        write_bytes(writer, Bytes::from(encoded)).await?;
-        finish_bytes(writer).await?;
-        Ok(())
+        write_eof_value(&mut self.writer, &response).await
     }
 
     pub fn reset(mut self, code: ResetCode) {

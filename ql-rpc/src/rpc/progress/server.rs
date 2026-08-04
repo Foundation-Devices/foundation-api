@@ -6,7 +6,7 @@ use ql_common::ResetCode;
 use crate::{
     codec, finish_bytes,
     progress::Progress,
-    rpc::{progress::codec::FrameKind, read_framed_request},
+    rpc::{progress::codec::FrameKind, read_eof_request},
     write_bytes, Context, DropResetWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
@@ -79,7 +79,7 @@ where
     let (mut reader, writer) = stream.split();
 
     async move {
-        let request = match read_framed_request::<M::Request, _>(&mut reader, config).await {
+        let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
             Ok(request) => request,
             Err(error) => {
                 let code = error.reset_code();

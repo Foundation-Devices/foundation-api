@@ -610,7 +610,7 @@ async fn next_chunk(stream: &mut crate::StreamReader) -> Result<Option<Vec<u8>>,
     stream
         .read()
         .await
-        .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
+        .map(|bytes| (!bytes.is_empty()).then(|| bytes.to_vec()))
 }
 
 fn default_runtime_config() -> RuntimeConfig {

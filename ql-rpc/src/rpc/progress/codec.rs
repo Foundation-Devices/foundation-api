@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytes::Bytes;
 
-use crate::{progress::Progress, ChunkQueue, Error, RpcCodec, RpcError};
+use crate::{codec, progress::Progress, ChunkQueue, Error, RpcError};
 
 pub enum ReadStep<M: Progress> {
     NeedMore,
@@ -40,21 +40,14 @@ impl<M: Progress> ResponseReader<M> {
 
         match kind {
             x if x == FrameKind::Progress as u8 => {
-                let value = {
-                    let value = M::Progress::decode_value(&mut body).map_err(RpcError::Codec)?;
-                    drop(body);
-                    value
-                };
+                let value = codec::decode_exact(&mut body)?;
                 Ok(ReadStep::Progress(value))
             }
             x if x == FrameKind::Response as u8 => {
-                let response = M::Response::decode_value(&mut body).map_err(RpcError::Codec)?;
+                let response = codec::decode_exact(&mut body)?;
                 drop(body);
-                if self.bytes.remaining() > 0 {
-                    Err(RpcError::Protocol(Error::TrailingBytes))
-                } else {
-                    Ok(ReadStep::Response(response))
-                }
+                self.bytes.expect_empty().map_err(RpcError::Protocol)?;
+                Ok(ReadStep::Response(response))
             }
             other => Err(RpcError::Protocol(Error::UnexpectedFrameKind(other))),
         }

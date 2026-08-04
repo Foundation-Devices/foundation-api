@@ -5,7 +5,6 @@ pub enum Error {
     Truncated,
     LengthOverflow,
     UnexpectedFrameKind(u8),
-    MissingResponse,
     TrailingBytes,
 }
 
@@ -15,7 +14,6 @@ impl std::fmt::Display for Error {
             Self::Truncated => f.write_str("truncated rpc payload"),
             Self::LengthOverflow => f.write_str("rpc payload length overflow"),
             Self::UnexpectedFrameKind(kind) => write!(f, "unexpected rpc frame kind {kind}"),
-            Self::MissingResponse => f.write_str("missing terminal rpc response"),
             Self::TrailingBytes => f.write_str("trailing rpc bytes"),
         }
     }
@@ -27,10 +25,9 @@ impl Error {
     pub const fn reset_code(self) -> ResetCode {
         match self {
             Self::LengthOverflow => ResetCode::LIMIT,
-            Self::Truncated
-            | Self::UnexpectedFrameKind(_)
-            | Self::MissingResponse
-            | Self::TrailingBytes => ResetCode::PROTOCOL,
+            Self::Truncated | Self::UnexpectedFrameKind(_) | Self::TrailingBytes => {
+                ResetCode::PROTOCOL
+            }
         }
     }
 }
