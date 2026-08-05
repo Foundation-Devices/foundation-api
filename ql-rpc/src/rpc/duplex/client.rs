@@ -8,8 +8,8 @@ use bytes::Bytes;
 use ql_common::ResetCode;
 
 use crate::{
-    codec, duplex::Duplex, write_bytes, ChunkQueue, DropResetRead, DropResetWrite, Error, RpcCodec,
-    RpcError, RpcRead, RpcStream, RpcWrite,
+    codec, duplex::Duplex, write_bytes, ChunkQueue, Error, RpcCodec, RpcError, RpcRead, RpcStream,
+    RpcWrite,
 };
 
 pub fn start<M, St>(stream: St) -> DuplexCall<M, St::Writer, St::Reader>
@@ -39,7 +39,7 @@ where
     T: RpcCodec,
     W: RpcWrite,
 {
-    writer: DropResetWrite<W>,
+    writer: W,
     marker: PhantomData<fn() -> T>,
 }
 
@@ -48,8 +48,10 @@ where
     T: RpcCodec,
     R: RpcRead,
 {
-    stream: DropResetRead<R>,
+    stream: R,
     reader: EventReader<T>,
+    /// prevents buffered frames from escaping after termination
+    finished: bool,
 }
 
 impl<T, W> DuplexSender<T, W>
@@ -59,7 +61,7 @@ where
 {
     pub fn new(writer: W) -> Self {
         Self {
-            writer: DropResetWrite::new(writer),
+            writer,
             marker: PhantomData,
         }
     }
@@ -77,7 +79,7 @@ where
     }
 
     pub fn reset(mut self, code: ResetCode) {
-        DropResetWrite::reset(&mut self.writer, code);
+        self.writer.reset(code);
     }
 }
 
@@ -88,8 +90,9 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: DropResetRead::new(stream),
+            stream,
             reader: EventReader::default(),
+            finished: false,
         }
     }
 
@@ -101,7 +104,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<T, RpcError<T::Error, R::Error>>>> {
-        if !self.stream.is_some() {
+        if self.finished {
             return Poll::Ready(None);
         }
 
@@ -111,13 +114,14 @@ where
                 Ok(ReadStep::NeedMore) => {}
                 Err(error) => {
                     let code = error.reset_code().unwrap_or(ResetCode::DROPPED);
-                    DropResetRead::reset(&mut self.stream, code);
+                    self.reset_inner(code);
                     return Poll::Ready(Some(Err(error)));
                 }
             }
 
             match self.stream.poll_read(cx) {
                 Poll::Ready(Ok(chunk)) if chunk.is_empty() => {
+                    self.finished = true;
                     if self.reader.bytes.remaining() == 0 {
                         return Poll::Ready(None);
                     }
@@ -127,6 +131,7 @@ where
                     self.reader.push(chunk);
                 }
                 Poll::Ready(Err(error)) => {
+                    self.finished = true;
                     return Poll::Ready(Some(Err(RpcError::Transport(error))));
                 }
                 Poll::Pending => {
@@ -141,7 +146,8 @@ where
     }
 
     fn reset_inner(&mut self, code: ResetCode) {
-        DropResetRead::reset(&mut self.stream, code);
+        self.finished = true;
+        self.stream.reset(code);
     }
 }
 

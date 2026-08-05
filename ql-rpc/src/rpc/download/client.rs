@@ -8,7 +8,7 @@ use crate::{
     parts::{PartFrame, PartFrameReader},
     read_bytes,
     rpc::{parts::FrameKind, read_framed_prefix, write_eof_value},
-    DropResetRead, RpcError, RpcRead, RpcStream,
+    RpcError, RpcRead, RpcStream,
 };
 
 pub async fn start<M, St>(
@@ -31,7 +31,7 @@ where
     M: Download,
     R: RpcRead,
 {
-    stream: DropResetRead<R>,
+    stream: R,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -41,6 +41,7 @@ where
     R: RpcRead,
 {
     parent: &'a mut DownloadReader<M, R>,
+    /// set after the part boundary so drop only resets abandoned parts
     finished: bool,
 }
 
@@ -49,8 +50,10 @@ where
     M: Download,
     R: RpcRead,
 {
-    stream: DropResetRead<R>,
+    stream: R,
     reader: PartFrameReader<M::PartHeader>,
+    /// prevents buffered frames from escaping after termination
+    finished: bool,
 }
 
 impl<M, R> DownloadCall<M, R>
@@ -60,7 +63,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: DropResetRead::new(stream),
+            stream,
             marker: PhantomData,
         }
     }
@@ -71,23 +74,21 @@ where
         let (value, bytes) = read_framed_prefix::<M::ResponseHeader, _>(&mut self.stream, None)
             .await
             .inspect_err(|error| {
-                self.reset_inner(error.reset_code().unwrap_or(ResetCode::DROPPED));
+                self.stream
+                    .reset(error.reset_code().unwrap_or(ResetCode::DROPPED));
             })?;
         Ok((
             value,
             DownloadReader {
                 stream: self.stream,
                 reader: PartFrameReader::<M::PartHeader>::new(bytes),
+                finished: false,
             },
         ))
     }
 
     pub fn reset(mut self, code: ResetCode) {
-        self.reset_inner(code);
-    }
-
-    fn reset_inner(&mut self, code: ResetCode) {
-        DropResetRead::reset(&mut self.stream, code);
+        self.stream.reset(code);
     }
 }
 
@@ -144,7 +145,7 @@ where
     async fn read_frame(
         &mut self,
     ) -> Result<Option<PartFrame<M::PartHeader>>, RpcError<M::Error, R::Error>> {
-        if !self.stream.is_some() {
+        if self.finished {
             return Ok(None);
         }
 
@@ -157,8 +158,10 @@ where
 
             let chunk = read_bytes(&mut self.stream)
                 .await
+                .inspect_err(|_| self.finished = true)
                 .map_err(RpcError::Transport)?;
             if chunk.is_empty() {
+                self.finished = true;
                 self.reader.finish()?;
                 return Ok(None);
             }
@@ -167,7 +170,8 @@ where
     }
 
     fn reset_inner(&mut self, code: ResetCode) {
-        DropResetRead::reset(&mut self.stream, code);
+        self.finished = true;
+        self.stream.reset(code);
     }
 }
 

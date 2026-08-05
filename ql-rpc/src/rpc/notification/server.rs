@@ -35,7 +35,7 @@ where
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<Err, St::Error>),
 {
-    let (mut reader, writer) = stream.split();
+    let (mut reader, mut writer) = stream.split();
 
     async move {
         let notification = match read_eof_request::<Payload, _>(&mut reader, config).await {

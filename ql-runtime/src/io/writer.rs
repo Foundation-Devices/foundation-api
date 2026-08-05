@@ -13,7 +13,7 @@ use super::{
     slot::PopError,
     PushError, Tx,
 };
-use crate::{command::Command, log, QlStreamError};
+use crate::{command::Command, log, QlStreamError, ResetOrigin};
 
 pub struct StreamWriter {
     tx: Tx,
@@ -57,12 +57,12 @@ impl StreamWriter {
         bytes: &mut Bytes,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), QlStreamError>> {
-        if bytes.is_empty() {
-            return Poll::Ready(Ok(()));
-        }
-
         if !self.open {
             return self.poll_terminal(cx);
+        }
+
+        if bytes.is_empty() {
+            return Poll::Ready(Ok(()));
         }
 
         match self.tx.try_write(std::mem::take(bytes)) {
@@ -119,8 +119,25 @@ impl StreamWriter {
         StreamWriterFinish { writer: self }
     }
 
-    pub fn reset(mut self, code: ResetCode) {
-        self.reset_inner(code);
+    pub fn reset(&mut self, code: ResetCode) {
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        self.terminal = WriterTerminalState::Terminal(Err(QlStreamError::StreamReset {
+            code,
+            origin: ResetOrigin::Local,
+        }));
+        log::debug!(
+            "byte writer reset: stream_id={:?} code={:?}",
+            self.tx.stream_id(),
+            code
+        );
+        let _ = self.runtime_tx.try_send(Command::ResetStream {
+            stream_id: self.tx.stream_id(),
+            target: StreamResetTarget::Writer,
+            code,
+        });
     }
 
     fn queue_finish(&mut self) {
@@ -183,23 +200,6 @@ impl StreamWriter {
 
         Poll::Pending
     }
-
-    fn reset_inner(&mut self, code: ResetCode) {
-        if !self.open {
-            return;
-        }
-        self.open = false;
-        log::debug!(
-            "byte writer reset: stream_id={:?} code={:?}",
-            self.tx.stream_id(),
-            code
-        );
-        let _ = self.runtime_tx.try_send(Command::ResetStream {
-            stream_id: self.tx.stream_id(),
-            target: StreamResetTarget::Writer,
-            code,
-        });
-    }
 }
 
 impl Future for StreamWriterFinish {
@@ -212,7 +212,7 @@ impl Future for StreamWriterFinish {
 
 impl Drop for StreamWriter {
     fn drop(&mut self) {
-        self.reset_inner(ResetCode::DROPPED);
+        self.reset(ResetCode::DROPPED);
     }
 }
 

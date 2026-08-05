@@ -7,7 +7,7 @@ use crate::{
         read_eof_value,
     },
     upload::Upload,
-    write_bytes, DropResetRead, DropResetWrite, RpcError, RpcRead, RpcStream, RpcWrite,
+    write_bytes, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 pub async fn start<M, St>(
@@ -31,8 +31,8 @@ where
     W: RpcWrite,
     R: RpcRead<Error = W::Error>,
 {
-    writer: DropResetWrite<W>,
-    reader: DropResetRead<R>,
+    writer: W,
+    reader: R,
     marker: std::marker::PhantomData<fn() -> M>,
 }
 
@@ -43,6 +43,7 @@ where
     R: RpcRead<Error = W::Error>,
 {
     parent: &'a mut UploadCall<M, W, R>,
+    /// set after the part boundary so drop only resets abandoned parts
     finished: bool,
 }
 
@@ -54,8 +55,8 @@ where
 {
     pub fn new(writer: W, reader: R) -> Self {
         Self {
-            writer: DropResetWrite::new(writer),
-            reader: DropResetRead::new(reader),
+            writer,
+            reader,
             marker: std::marker::PhantomData,
         }
     }
@@ -81,8 +82,8 @@ where
     }
 
     fn reset(&mut self, code: ResetCode) {
-        DropResetRead::reset(&mut self.reader, code);
-        DropResetWrite::reset(&mut self.writer, code);
+        self.reader.reset(code);
+        self.writer.reset(code);
     }
 }
 

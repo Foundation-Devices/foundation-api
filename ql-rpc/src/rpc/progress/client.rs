@@ -12,7 +12,7 @@ use crate::{
         progress::codec::{ReadStep, ResponseReader},
         write_eof_value,
     },
-    DropResetRead, Error, RpcError, RpcRead, RpcStream,
+    Error, RpcError, RpcRead, RpcStream,
 };
 
 pub async fn start<M, St>(
@@ -35,7 +35,7 @@ where
     M: Progress,
     R: RpcRead,
 {
-    stream: DropResetRead<R>,
+    stream: R,
     state: State<M, R::Error>,
 }
 
@@ -71,7 +71,7 @@ where
 {
     pub fn new(stream: R) -> Self {
         Self {
-            stream: DropResetRead::new(stream),
+            stream,
             state: State::Reading(ResponseReader::default()),
         }
     }
@@ -92,7 +92,7 @@ where
                     Ok(ReadStep::NeedMore) => State::Reading(reader),
                     Err(error) => {
                         let code = error.reset_code().unwrap_or(ResetCode::DROPPED);
-                        DropResetRead::reset(&mut self.stream, code);
+                        self.stream.reset(code);
                         return Poll::Ready(PollStep::Terminal(Err(error)));
                     }
                 },
@@ -116,7 +116,7 @@ where
                         self.state = State::Reading(reader);
                     }
                     State::AwaitingEof(_) => {
-                        DropResetRead::reset(&mut self.stream, ResetCode::PROTOCOL);
+                        self.stream.reset(ResetCode::PROTOCOL);
                         return Poll::Ready(PollStep::Terminal(Err(Error::TrailingBytes.into())));
                     }
                     State::Terminal(_) | State::Done => unreachable!(),
@@ -147,12 +147,8 @@ where
     }
 
     pub fn reset(mut self, code: ResetCode) {
-        self.reset_inner(code);
-    }
-
-    fn reset_inner(&mut self, code: ResetCode) {
         self.state = State::Done;
-        DropResetRead::reset(&mut self.stream, code);
+        self.stream.reset(code);
     }
 }
 

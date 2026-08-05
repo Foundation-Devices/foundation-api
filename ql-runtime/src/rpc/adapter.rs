@@ -23,7 +23,7 @@ impl RpcRead for StreamReader {
         StreamReader::poll_read(self, cx)
     }
 
-    fn reset(self, code: ResetCode) {
+    fn reset(&mut self, code: ResetCode) {
         StreamReader::reset(self, code);
     }
 }
@@ -44,7 +44,7 @@ impl RpcWrite for StreamWriter {
         StreamWriter::finish(self)
     }
 
-    fn reset(self, code: ResetCode) {
+    fn reset(&mut self, code: ResetCode) {
         StreamWriter::reset(self, code);
     }
 }

@@ -109,16 +109,12 @@ impl StreamReader {
         poll_fn(|cx| self.poll_read(cx)).await
     }
 
-    pub fn reset(mut self, code: ResetCode) {
-        self.reset_inner(code);
-    }
-
-    fn reset_inner(&mut self, code: ResetCode) {
+    pub fn reset(&mut self, code: ResetCode) {
         if matches!(self.terminal, ReaderTerminalState::Delivered) {
             return;
         }
         log::debug!(
-            "byte reader explicit reset: stream_id={:?} code={:?}",
+            "byte reader reset: stream_id={:?} code={:?}",
             self.rx.stream_id(),
             code
         );
@@ -133,19 +129,7 @@ impl StreamReader {
 
 impl Drop for StreamReader {
     fn drop(&mut self) {
-        if matches!(self.terminal, ReaderTerminalState::Delivered) {
-            return;
-        }
-        log::debug!(
-            "byte reader drop reset: stream_id={:?} code={:?}",
-            self.rx.stream_id(),
-            ResetCode::DROPPED
-        );
-        let _ = self.runtime_tx.try_send(Command::ResetStream {
-            stream_id: self.rx.stream_id(),
-            target: StreamResetTarget::Reader,
-            code: ResetCode::DROPPED,
-        });
+        self.reset(ResetCode::DROPPED);
     }
 }
 

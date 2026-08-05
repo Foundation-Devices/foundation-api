@@ -72,7 +72,7 @@ where
         } = info;
         let context = Context { qid, stream_id };
         let Some(key) = K::decode(&header) else {
-            let (reader, writer) = stream.split();
+            let (mut reader, mut writer) = stream.split();
             reader.reset(ResetCode::PROTOCOL);
             writer.reset(ResetCode::PROTOCOL);
             return None;
@@ -81,7 +81,7 @@ where
             .routes
             .binary_search_by_key(&key, |entry| entry.key.clone())
         else {
-            let (reader, writer) = stream.split();
+            let (mut reader, mut writer) = stream.split();
             reader.reset(ResetCode::UNKNOWN_ROUTE);
             writer.reset(ResetCode::UNKNOWN_ROUTE);
             return None;

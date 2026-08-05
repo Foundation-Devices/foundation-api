@@ -206,7 +206,7 @@ async fn closing_initiator_reader_preserves_initiator_writer() {
             done_tx.send(request).await.unwrap();
         });
 
-        let stream = pair
+        let mut stream = pair
             .side(Side::A)
             .handle
             .open_stream(test_open_stream_params())
@@ -229,6 +229,41 @@ async fn closing_initiator_reader_preserves_initiator_writer() {
             .await
             .unwrap()
             .unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reset_writer_rejects_later_writes_and_finish() {
+    run_local_test(async {
+        let pair = TestPair::new(default_runtime_config());
+        pair.connect_and_wait(Side::A).await;
+
+        let mut stream = pair
+            .side(Side::A)
+            .handle
+            .open_stream(test_open_stream_params())
+            .await
+            .unwrap();
+        stream.writer.reset(ResetCode::CANCELLED);
+
+        let error = stream
+            .writer
+            .write(Bytes::from_static(b"ignored"))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            QlStreamError::StreamReset { code, origin }
+                if code == ResetCode::CANCELLED && origin == ResetOrigin::Local
+        ));
+
+        let error = stream.writer.finish().await.unwrap_err();
+        assert!(matches!(
+            error,
+            QlStreamError::StreamReset { code, origin }
+                if code == ResetCode::CANCELLED && origin == ResetOrigin::Local
+        ));
     })
     .await;
 }

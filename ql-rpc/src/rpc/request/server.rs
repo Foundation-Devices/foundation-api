@@ -5,7 +5,7 @@ use ql_common::ResetCode;
 use crate::{
     request::Request,
     rpc::{read_eof_request, write_eof_value},
-    Context, DropResetWrite, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
+    Context, RouterConfig, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(RequestHandler: Send)]
@@ -30,7 +30,7 @@ pub struct Response<T, W>
 where
     W: RpcWrite,
 {
-    writer: DropResetWrite<W>,
+    writer: W,
     marker: PhantomData<fn() -> T>,
 }
 
@@ -41,7 +41,7 @@ where
 {
     pub(crate) fn new(writer: W) -> Self {
         Self {
-            writer: DropResetWrite::new(writer),
+            writer,
             marker: PhantomData,
         }
     }
@@ -51,7 +51,7 @@ where
     }
 
     pub fn reset(mut self, code: ResetCode) {
-        DropResetWrite::reset(&mut self.writer, code);
+        self.writer.reset(code);
     }
 }
 
@@ -71,7 +71,7 @@ where
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<Err, St::Error>),
 {
-    let (mut reader, writer) = stream.split();
+    let (mut reader, mut writer) = stream.split();
 
     async move {
         let request = match read_eof_request::<Req, _>(&mut reader, config).await {

@@ -7,7 +7,7 @@ use crate::{
     codec,
     progress::Progress,
     rpc::{progress::codec::FrameKind, read_eof_request},
-    write_bytes, Context, DropResetWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
+    write_bytes, Context, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(ProgressHandler: Send)]
@@ -33,7 +33,7 @@ where
     M: Progress,
     W: RpcWrite,
 {
-    writer: DropResetWrite<W>,
+    writer: W,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -57,7 +57,7 @@ where
     }
 
     pub fn reset(mut self, code: ResetCode) {
-        DropResetWrite::reset(&mut self.writer, code);
+        self.writer.reset(code);
     }
 }
 
@@ -76,7 +76,7 @@ where
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
-    let (mut reader, writer) = stream.split();
+    let (mut reader, mut writer) = stream.split();
 
     async move {
         let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
@@ -97,7 +97,7 @@ where
             context,
             request,
             ProgressResponder {
-                writer: DropResetWrite::new(writer),
+                writer,
                 marker: PhantomData,
             },
         )

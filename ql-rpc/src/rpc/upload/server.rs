@@ -10,7 +10,7 @@ use crate::{
         parts::{FrameKind, PartFrame, PartFrameReader},
         read_framed_prefix,
     },
-    Context, DropResetRead, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, Upload,
+    Context, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite, Upload,
 };
 
 #[trait_variant::make(UploadHandler: Send)]
@@ -37,8 +37,10 @@ where
     M: Upload,
     R: RpcRead,
 {
-    stream: DropResetRead<R>,
+    stream: R,
     reader: PartFrameReader<M::PartHeader>,
+    /// prevents buffered frames from escaping after termination
+    finished: bool,
 }
 
 pub struct UploadPart<'a, M, R>
@@ -47,6 +49,7 @@ where
     R: RpcRead,
 {
     parent: &'a mut UploadReader<M, R>,
+    /// set after the part boundary so drop only resets abandoned parts
     finished: bool,
 }
 
@@ -61,10 +64,6 @@ where
         &mut self,
     ) -> Result<Option<(M::PartHeader, UploadPart<'_, M, R>)>, crate::RpcError<M::Error, R::Error>>
     {
-        if !self.stream.is_some() {
-            return Ok(None);
-        }
-
         let Some(frame) = self.read_frame().await? else {
             return Ok(None);
         };
@@ -90,6 +89,10 @@ where
     async fn read_frame(
         &mut self,
     ) -> Result<Option<PartFrame<M::PartHeader>>, crate::RpcError<M::Error, R::Error>> {
+        if self.finished {
+            return Ok(None);
+        }
+
         loop {
             if let Some(frame) = self.reader.advance().inspect_err(|error| {
                 self.reset_inner(error.reset_code().unwrap_or(ResetCode::DROPPED));
@@ -99,8 +102,10 @@ where
 
             let chunk = read_bytes(&mut self.stream)
                 .await
+                .inspect_err(|_| self.finished = true)
                 .map_err(crate::RpcError::Transport)?;
             if chunk.is_empty() {
+                self.finished = true;
                 self.reader.finish()?;
                 return Ok(None);
             }
@@ -113,7 +118,8 @@ where
     }
 
     fn reset_inner(&mut self, code: ResetCode) {
-        DropResetRead::reset(&mut self.stream, code);
+        self.finished = true;
+        self.stream.reset(code);
     }
 }
 
@@ -190,7 +196,7 @@ where
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
-    let (mut reader, writer) = stream.split();
+    let (mut reader, mut writer) = stream.split();
 
     async move {
         let (request, buffered) =
@@ -214,8 +220,9 @@ where
             context,
             request,
             UploadReader {
-                stream: DropResetRead::new(reader),
+                stream: reader,
                 reader: PartFrameReader::new(buffered),
+                finished: false,
             },
             Response::new(writer),
         )

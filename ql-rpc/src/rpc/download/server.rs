@@ -10,7 +10,7 @@ use crate::{
         parts::{encode_body_chunk, encode_end_part, encode_part_header},
         read_eof_request,
     },
-    write_bytes, Context, DropResetWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
+    write_bytes, Context, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 #[trait_variant::make(DownloadHandler: Send)]
@@ -36,7 +36,7 @@ where
     M: Download,
     W: RpcWrite,
 {
-    writer: DropResetWrite<W>,
+    writer: W,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -45,7 +45,7 @@ where
     M: Download,
     W: RpcWrite,
 {
-    writer: DropResetWrite<W>,
+    writer: W,
     marker: PhantomData<fn() -> M>,
 }
 
@@ -55,6 +55,7 @@ where
     W: RpcWrite,
 {
     parent: &'a mut DownloadWriter<M, W>,
+    /// set after the part boundary so drop only resets abandoned parts
     finished: bool,
 }
 
@@ -65,7 +66,7 @@ where
 {
     pub(crate) fn new(writer: W) -> Self {
         Self {
-            writer: DropResetWrite::new(writer),
+            writer,
             marker: PhantomData,
         }
     }
@@ -92,7 +93,7 @@ where
 
     /// reset the stream with a transport code
     pub fn reset(mut self, code: ResetCode) {
-        DropResetWrite::reset(&mut self.writer, code);
+        self.writer.reset(code);
     }
 }
 
@@ -120,7 +121,7 @@ where
     }
 
     pub fn reset(mut self, code: ResetCode) {
-        DropResetWrite::reset(&mut self.writer, code);
+        self.writer.reset(code);
     }
 }
 
@@ -153,7 +154,7 @@ where
 {
     fn drop(&mut self) {
         if !self.finished {
-            DropResetWrite::reset(&mut self.parent.writer, ResetCode::DROPPED);
+            self.parent.writer.reset(ResetCode::DROPPED);
         }
     }
 }
@@ -173,7 +174,7 @@ where
     HF: Future<Output = ()>,
     E: FnOnce(&S, &RpcError<M::Error, St::Error>),
 {
-    let (mut reader, writer) = stream.split();
+    let (mut reader, mut writer) = stream.split();
 
     async move {
         let request = match read_eof_request::<M::Request, _>(&mut reader, config).await {
