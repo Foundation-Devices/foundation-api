@@ -14,6 +14,8 @@ pub(crate) mod parts;
 pub mod progress;
 pub mod request;
 pub mod subscription;
+#[cfg(test)]
+mod tests;
 pub mod upload;
 mod utils;
 
