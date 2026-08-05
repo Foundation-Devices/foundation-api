@@ -4,7 +4,7 @@ use bytes::Bytes;
 use ql_common::ResetCode;
 use ql_rpc::{RpcRead, RpcStream, RpcWrite};
 
-use crate::{QlStream, QlStreamError, StreamReader, StreamWriter};
+use crate::{QlStream, QlStreamError, StreamReader, StreamWriter, StreamWriterFinish};
 
 impl RpcStream for QlStream {
     type Error = QlStreamError;
@@ -30,6 +30,7 @@ impl RpcRead for StreamReader {
 
 impl RpcWrite for StreamWriter {
     type Error = QlStreamError;
+    type Finish = StreamWriterFinish;
 
     fn poll_write(
         &mut self,
@@ -39,12 +40,8 @@ impl RpcWrite for StreamWriter {
         StreamWriter::poll_write(self, bytes, cx)
     }
 
-    fn queue_finish(&mut self) {
-        StreamWriter::queue_finish(self);
-    }
-
-    fn poll_finish(&mut self, cx: &mut TaskContext<'_>) -> Poll<Result<(), QlStreamError>> {
-        StreamWriter::poll_finish(self, cx)
+    fn finish(self) -> Self::Finish {
+        StreamWriter::finish(self)
     }
 
     fn reset(self, code: ResetCode) {

@@ -266,8 +266,7 @@ async fn max_concurrent_message_writes_is_respected() {
             for _ in 0..4 {
                 let (_, stream) = inbound_b.recv().await.unwrap();
                 let _ = read_all(stream.reader).await;
-                let mut writer = stream.writer;
-                writer.queue_finish();
+                drop(stream.writer.finish());
             }
         });
 
@@ -578,7 +577,7 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
                     .await
                     .unwrap();
             }
-            stream.writer.queue_finish();
+            drop(stream.writer.finish());
             let _ = next_chunk(&mut stream.reader).await;
         });
 

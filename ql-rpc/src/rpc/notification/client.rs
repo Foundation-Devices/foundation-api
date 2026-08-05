@@ -7,7 +7,7 @@ where
     M: Notification,
     St: RpcStream,
 {
-    let (reader, mut writer) = stream.split();
+    let (reader, writer) = stream.split();
     reader.reset(ResetCode::CANCELLED);
-    write_eof_value(&mut writer, payload).await
+    write_eof_value(writer, payload).await
 }

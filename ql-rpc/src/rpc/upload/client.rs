@@ -75,7 +75,7 @@ where
     }
 
     pub async fn finish(mut self) -> Result<M::Response, RpcError<M::Error, W::Error>> {
-        self.writer.queue_finish();
+        drop(self.writer.finish());
 
         read_eof_value::<M::Response, _>(&mut self.reader).await
     }

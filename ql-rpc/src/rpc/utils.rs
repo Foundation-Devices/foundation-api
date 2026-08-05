@@ -1,19 +1,19 @@
 use bytes::Bytes;
 
 use crate::{
-    codec, finish_bytes, read_bytes, write_bytes, ChunkQueue, Error, RouterConfig, RpcCodec,
-    RpcError, RpcRead, RpcWrite,
+    codec, read_bytes, write_bytes, ChunkQueue, Error, RouterConfig, RpcCodec, RpcError, RpcRead,
+    RpcWrite,
 };
 
-pub async fn write_eof_value<T, W>(writer: &mut W, value: &T) -> Result<(), W::Error>
+pub async fn write_eof_value<T, W>(mut writer: W, value: &T) -> Result<(), W::Error>
 where
     T: RpcCodec,
     W: RpcWrite,
 {
     let mut encoded = Vec::new();
     value.encode_value(&mut encoded);
-    write_bytes(writer, Bytes::from(encoded)).await?;
-    finish_bytes(writer).await
+    write_bytes(&mut writer, Bytes::from(encoded)).await?;
+    writer.finish().await
 }
 
 pub async fn read_eof_value<T, R>(reader: &mut R) -> Result<T, RpcError<T::Error, R::Error>>

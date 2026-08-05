@@ -6,7 +6,6 @@ use ql_common::ResetCode;
 use crate::{
     codec,
     download::Download,
-    finish_bytes,
     rpc::{
         parts::{encode_body_chunk, encode_end_part, encode_part_header},
         read_eof_request,
@@ -117,8 +116,7 @@ where
     }
 
     pub async fn finish(self) -> Result<(), W::Error> {
-        let mut writer = self.writer;
-        finish_bytes(&mut writer).await
+        self.writer.finish().await
     }
 
     pub fn reset(mut self, code: ResetCode) {

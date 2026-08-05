@@ -1,5 +1,6 @@
 use std::{
-    future::poll_fn,
+    future::{poll_fn, Future},
+    pin::Pin,
     task::{Context, Poll},
 };
 
@@ -19,6 +20,10 @@ pub struct StreamWriter {
     open: bool,
     terminal: WriterTerminalState,
     runtime_tx: async_channel::Sender<Command>,
+}
+
+pub struct StreamWriterFinish {
+    writer: StreamWriter,
 }
 
 enum WriterTerminalState {
@@ -109,7 +114,16 @@ impl StreamWriter {
         poll_fn(|cx| self.poll_write(&mut bytes, cx)).await
     }
 
-    pub fn queue_finish(&mut self) {
+    pub fn finish(mut self) -> StreamWriterFinish {
+        self.queue_finish();
+        StreamWriterFinish { writer: self }
+    }
+
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
+    }
+
+    fn queue_finish(&mut self) {
         if !self.open {
             return;
         }
@@ -117,22 +131,6 @@ impl StreamWriter {
         self.open = false;
         self.tx.request_finish();
         self.poll_runtime();
-    }
-
-    pub async fn finish(mut self) -> Result<(), QlStreamError> {
-        self.queue_finish();
-        poll_fn(|cx| self.poll_terminal(cx)).await
-    }
-
-    pub fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QlStreamError>> {
-        if self.open {
-            self.queue_finish();
-        }
-        self.poll_terminal(cx)
-    }
-
-    pub fn reset(mut self, code: ResetCode) {
-        self.reset_inner(code);
     }
 
     fn poll_runtime(&self) {
@@ -204,6 +202,14 @@ impl StreamWriter {
     }
 }
 
+impl Future for StreamWriterFinish {
+    type Output = Result<(), QlStreamError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.writer.poll_terminal(cx)
+    }
+}
+
 impl Drop for StreamWriter {
     fn drop(&mut self) {
         self.reset_inner(ResetCode::DROPPED);
@@ -216,7 +222,6 @@ mod loom_tests {
 
     use bytes::Bytes;
     use loom::thread;
-    use ql_fsm::StreamResetTarget;
 
     use super::*;
     use crate::io::sync::loom::*;
@@ -258,10 +263,9 @@ mod loom_tests {
     fn poll_finish_observes_terminal_racing_with_registration() {
         check_model(|| {
             let inner = shared();
-            let mut writer = StreamWriter::new(Tx(inner.clone()), handle());
+            let writer = StreamWriter::new(Tx(inner.clone()), handle());
             let mut cx = Context::from_waker(Waker::noop());
-
-            writer.queue_finish();
+            let mut finish = writer.finish();
 
             let finisher = {
                 let inner = inner.clone();
@@ -270,13 +274,13 @@ mod loom_tests {
                 })
             };
 
-            let first = writer.poll_finish(&mut cx);
+            let first = Pin::new(&mut finish).poll(&mut cx);
             finisher.join().unwrap();
 
             match first {
                 Poll::Ready(Ok(())) => {}
                 Poll::Pending => {
-                    assert_eq!(writer.poll_finish(&mut cx), Poll::Ready(Ok(())));
+                    assert_eq!(Pin::new(&mut finish).poll(&mut cx), Poll::Ready(Ok(())));
                 }
                 other => panic!("unexpected first poll result: {other:?}"),
             }

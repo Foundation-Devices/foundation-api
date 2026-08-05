@@ -9,7 +9,7 @@ pub use self::{client::*, server::*};
 
 /// rpc where the responder streams progress values before a final response
 ///
-/// the request is length-delimited
+/// the request is eof-delimited
 /// response frames are tagged so the client can distinguish
 /// [`Self::Progress`] items from the final [`Self::Response`]
 /// reaching eof before the final response is an error

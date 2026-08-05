@@ -12,8 +12,8 @@ where
     M: Request,
     St: RpcStream,
 {
-    let (mut reader, mut writer) = stream.split();
-    write_eof_value(&mut writer, request)
+    let (mut reader, writer) = stream.split();
+    write_eof_value(writer, request)
         .await
         .map_err(RpcError::Transport)?;
     read_eof_value::<M::Response, _>(&mut reader).await

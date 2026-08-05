@@ -23,8 +23,8 @@ where
     M: Progress,
     St: RpcStream,
 {
-    let (reader, mut writer) = stream.split();
-    write_eof_value(&mut writer, request)
+    let (reader, writer) = stream.split();
+    write_eof_value(writer, request)
         .await
         .map_err(RpcError::Transport)?;
     Ok(ProgressCall::new(reader))

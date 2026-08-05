@@ -46,8 +46,8 @@ where
         }
     }
 
-    pub async fn respond(mut self, response: T) -> Result<(), W::Error> {
-        write_eof_value(&mut self.writer, &response).await
+    pub async fn respond(self, response: T) -> Result<(), W::Error> {
+        write_eof_value(self.writer, &response).await
     }
 
     pub fn reset(mut self, code: ResetCode) {

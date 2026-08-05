@@ -8,8 +8,8 @@ use bytes::Bytes;
 use ql_common::ResetCode;
 
 use crate::{
-    codec, duplex::Duplex, finish_bytes, write_bytes, ChunkQueue, DropResetRead, DropResetWrite,
-    Error, RpcCodec, RpcError, RpcRead, RpcStream, RpcWrite,
+    codec, duplex::Duplex, write_bytes, ChunkQueue, DropResetRead, DropResetWrite, Error, RpcCodec,
+    RpcError, RpcRead, RpcStream, RpcWrite,
 };
 
 pub fn start<M, St>(stream: St) -> DuplexCall<M, St::Writer, St::Reader>
@@ -71,14 +71,9 @@ where
         write_bytes(writer, Bytes::from(encoded)).await
     }
 
-    /// queue a graceful write-side finish and return without waiting for transport errors
-    pub fn finish(mut self) {
-        self.writer.queue_finish();
-    }
-
-    /// queue a graceful write-side finish and wait until the transport reports it was sent
-    pub async fn finish_wait(mut self) -> Result<(), W::Error> {
-        finish_bytes(&mut self.writer).await
+    /// queues a graceful write-side finish and returns its delivery future
+    pub fn finish(self) -> W::Finish {
+        self.writer.finish()
     }
 
     pub fn reset(mut self, code: ResetCode) {

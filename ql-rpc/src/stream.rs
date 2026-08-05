@@ -26,21 +26,21 @@ pub trait RpcRead {
 
 pub trait RpcWrite {
     type Error;
+    type Finish: Future<Output = Result<(), Self::Error>>;
 
-    /// writes outbound bytes before finish or reset
+    /// writes outbound bytes
     fn poll_write(
         &mut self,
         bytes: &mut Bytes,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>>;
 
-    /// queues a graceful write-side finish
-    fn queue_finish(&mut self);
+    /// queues a graceful write-side finish and returns its delivery future
+    ///
+    /// polling the future to completion is considered OPTIONAL
+    fn finish(self) -> Self::Finish;
 
-    /// waits for the queued finish to be delivered
-    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
-
-    /// aborts the write side before finish; must not replace a queued finish
+    /// aborts the write side before finish
     fn reset(self, code: ResetCode);
 }
 
@@ -58,14 +58,6 @@ where
 {
     let mut bytes = bytes;
     poll_fn(|cx| writer.poll_write(&mut bytes, cx)).await
-}
-
-pub fn finish_bytes<W>(writer: &mut W) -> impl Future<Output = Result<(), W::Error>> + '_
-where
-    W: RpcWrite,
-{
-    writer.queue_finish();
-    poll_fn(|cx| writer.poll_finish(cx))
 }
 
 pub(crate) use drop::*;
@@ -145,6 +137,7 @@ mod drop {
 
     impl<W: RpcWrite> RpcWrite for DropResetWrite<W> {
         type Error = W::Error;
+        type Finish = W::Finish;
 
         #[track_caller]
         fn poll_write(
@@ -155,14 +148,8 @@ mod drop {
             self.inner.as_mut().unwrap().poll_write(bytes, cx)
         }
 
-        #[track_caller]
-        fn queue_finish(&mut self) {
-            self.inner.as_mut().unwrap().queue_finish();
-        }
-
-        #[track_caller]
-        fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            self.inner.as_mut().unwrap().poll_finish(cx)
+        fn finish(mut self) -> Self::Finish {
+            self.inner.take().unwrap().finish()
         }
 
         fn reset(mut self, code: ResetCode) {

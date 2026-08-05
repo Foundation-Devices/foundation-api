@@ -4,7 +4,7 @@ use ql_fsm::{NoSessionError, PairingInvite};
 use ql_wire::{PairingToken, PeerBundle, SessionCloseCode};
 
 use crate::command::Command;
-pub use crate::io::{StreamReader, StreamWriter};
+pub use crate::io::{StreamReader, StreamWriter, StreamWriterFinish};
 
 #[derive(Debug)]
 pub struct QlStream {

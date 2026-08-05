@@ -4,7 +4,7 @@ use bytes::Bytes;
 use ql_common::ResetCode;
 
 use crate::{
-    codec, finish_bytes,
+    codec,
     progress::Progress,
     rpc::{progress::codec::FrameKind, read_eof_request},
     write_bytes, Context, DropResetWrite, RouterConfig, RpcError, RpcRead, RpcStream, RpcWrite,
@@ -53,7 +53,7 @@ where
         let mut encoded = Vec::new();
         codec::encode_tagged_value_part(FrameKind::Response as u8, &response, &mut encoded);
         write_bytes(&mut self.writer, Bytes::from(encoded)).await?;
-        finish_bytes(&mut self.writer).await
+        self.writer.finish().await
     }
 
     pub fn reset(mut self, code: ResetCode) {

@@ -281,7 +281,7 @@ async fn rpc_subscrption() {
             seen.borrow_mut().push(request);
             let _ = response.send(&b"one".to_vec()).await;
             let _ = response.send(&b"two".to_vec()).await;
-            let _ = response.finish_wait().await;
+            let _ = response.finish().await;
         }
     }
 
@@ -681,7 +681,7 @@ async fn rpc_duplex() {
             let second = peer.receiver.next_event().await.unwrap().unwrap();
             seen.borrow_mut().push(second);
 
-            peer.sender.finish();
+            drop(peer.sender.finish());
         }
     }
 
@@ -712,7 +712,7 @@ async fn rpc_duplex() {
             b"challenge-response".to_vec()
         );
         chat.sender.send(&b"verification".to_vec()).await.unwrap();
-        chat.sender.finish();
+        drop(chat.sender.finish());
         assert!(chat.receiver.next_event().await.is_none());
 
         assert_eq!(
