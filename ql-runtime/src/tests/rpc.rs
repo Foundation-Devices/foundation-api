@@ -17,8 +17,8 @@ use ql_rpc::{
     progress::{ProgressHandlerLocal, ProgressResponder},
     request::{RequestHandler, RequestHandlerLocal, Response},
     subscription::{SubscriptionHandlerLocal, SubscriptionResponder},
-    upload::{UploadHandlerLocal, UploadReader, UploadResponder},
-    Context, LocalSpawner, SendSpawner, Spawner,
+    upload::{UploadHandlerLocal, UploadResponder},
+    Context, LocalSpawner, MultipartReader, SendSpawner, Spawner,
 };
 
 use super::*;
@@ -581,7 +581,7 @@ async fn rpc_upload() {
             self,
             _context: Context,
             request: Vec<u8>,
-            mut upload: UploadReader<BlobUpload, crate::StreamReader>,
+            mut upload: MultipartReader<Vec<u8>, crate::StreamReader>,
             responder: UploadResponder<Vec<u8>, StreamWriter>,
         ) {
             let requests = self.requests.clone();

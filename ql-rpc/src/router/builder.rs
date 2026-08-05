@@ -123,7 +123,13 @@ where
         M: Upload<Key = K> + 'static,
         S: UploadHandlerLocal<M, St> + 'static,
     {
-        add_route!(self, M, handle_upload, S::handle, S::handle_error)
+        add_route!(
+            self,
+            M,
+            handle_upload::<M, _, _, _, _, _>,
+            S::handle,
+            S::handle_error
+        )
     }
 }
 
@@ -208,12 +214,18 @@ where
         St::Reader: Send + 'static,
         St::Writer: Send + 'static,
     {
-        add_route!(self, M, handle_upload, S::handle, S::handle_error)
+        add_route!(
+            self,
+            M,
+            handle_upload::<M, _, _, _, _, _>,
+            S::handle,
+            S::handle_error
+        )
     }
 }
 
 macro_rules! add_route {
-    ($builder:expr, $rpc:ty, $handler:ident, $($arg:path),+ $(,)?) => {
+    ($builder:expr, $rpc:ty, $handler:path, $($arg:path),+ $(,)?) => {
         $builder.add_route(
             <$rpc as Route>::key(),
             |spawner, state, context, config, stream| {

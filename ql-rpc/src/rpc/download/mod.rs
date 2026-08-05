@@ -10,7 +10,7 @@ pub use self::{client::*, server::*};
 ///
 /// the typed portion of the response ends at [`Self::ResponseHeader`]
 /// after the header is decoded, the rest of the stream is exposed as typed
-/// part headers followed by raw byte chunks through [`DownloadReader`]
+/// part headers followed by raw byte chunks through [`crate::MultipartReader`]
 pub trait Download: Route {
     /// codec error shared by request and response header values
     type Error;

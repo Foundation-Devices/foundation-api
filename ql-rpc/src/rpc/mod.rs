@@ -34,6 +34,12 @@ pub trait Route {
 use utils::*;
 
 pub use self::{
-    download::Download, duplex::Duplex, notification::Notification, progress::Progress,
-    request::Request, subscription::Subscription, upload::Upload,
+    download::Download,
+    duplex::Duplex,
+    notification::Notification,
+    parts::{MultipartPart, MultipartReader},
+    progress::Progress,
+    request::Request,
+    subscription::Subscription,
+    upload::Upload,
 };

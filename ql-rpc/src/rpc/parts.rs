@@ -1,8 +1,173 @@
 use std::marker::PhantomData;
 
 use bytes::{BufMut, Bytes};
+use ql_common::ResetCode;
 
-use crate::{codec, ChunkQueue, RpcCodec, RpcError};
+use crate::{codec, read_bytes, ChunkQueue, RpcCodec, RpcError, RpcRead};
+
+/// reads a stream of framed byte parts
+pub struct MultipartReader<H, R>
+where
+    H: RpcCodec,
+    R: RpcRead,
+{
+    stream: R,
+    frames: PartFrameReader<H>,
+    /// prevents buffered frames from escaping after termination
+    finished: bool,
+}
+
+/// reads the body of one multipart entry
+pub struct MultipartPart<'a, H, R>
+where
+    H: RpcCodec,
+    R: RpcRead,
+{
+    parent: &'a mut MultipartReader<H, R>,
+    /// set after the part boundary so drop only resets abandoned parts
+    finished: bool,
+}
+
+impl<H, R> MultipartReader<H, R>
+where
+    H: RpcCodec,
+    R: RpcRead,
+{
+    pub fn new(stream: R, buffered: ChunkQueue) -> Self {
+        Self {
+            stream,
+            frames: PartFrameReader::new(buffered),
+            finished: false,
+        }
+    }
+
+    pub async fn next_part(
+        &mut self,
+    ) -> Result<Option<(H, MultipartPart<'_, H, R>)>, RpcError<H::Error, R::Error>> {
+        let Some(frame) = self.read_frame().await? else {
+            return Ok(None);
+        };
+
+        let kind = match frame {
+            PartFrame::PartHeader(value) => {
+                return Ok(Some((
+                    value,
+                    MultipartPart {
+                        parent: self,
+                        finished: false,
+                    },
+                )));
+            }
+            PartFrame::BodyBytes(_) => FrameKind::BodyChunk,
+            PartFrame::EndPart => FrameKind::EndPart,
+        };
+
+        self.reset_inner(ResetCode::PROTOCOL);
+        Err(crate::Error::UnexpectedFrameKind(kind.tag()).into())
+    }
+
+    /// rejects any remaining part
+    pub async fn complete(mut self) -> Result<(), RpcError<H::Error, R::Error>> {
+        let Some(frame) = self.read_frame().await? else {
+            return Ok(());
+        };
+
+        let kind = match frame {
+            PartFrame::PartHeader(_) => FrameKind::PartHeader,
+            PartFrame::BodyBytes(_) => FrameKind::BodyChunk,
+            PartFrame::EndPart => FrameKind::EndPart,
+        };
+
+        self.reset_inner(ResetCode::PROTOCOL);
+        Err(crate::Error::UnexpectedFrameKind(kind.tag()).into())
+    }
+
+    pub fn reset(mut self, code: ResetCode) {
+        self.reset_inner(code);
+    }
+
+    async fn read_frame(&mut self) -> Result<Option<PartFrame<H>>, RpcError<H::Error, R::Error>> {
+        if self.finished {
+            return Ok(None);
+        }
+
+        loop {
+            if let Some(frame) = self.frames.advance().inspect_err(|error| {
+                self.reset_inner(error.reset_code().unwrap_or(ResetCode::DROPPED));
+            })? {
+                return Ok(Some(frame));
+            }
+
+            let chunk = read_bytes(&mut self.stream)
+                .await
+                .inspect_err(|_| self.finished = true)
+                .map_err(RpcError::Transport)?;
+            if chunk.is_empty() {
+                self.finished = true;
+                self.frames.finish()?;
+                return Ok(None);
+            }
+            self.frames.push(chunk);
+        }
+    }
+
+    fn reset_inner(&mut self, code: ResetCode) {
+        self.finished = true;
+        self.stream.reset(code);
+    }
+}
+
+impl<H, R> MultipartPart<'_, H, R>
+where
+    H: RpcCodec,
+    R: RpcRead,
+{
+    /// reads part bytes, returning an empty chunk at the end of the part
+    pub async fn read_chunk(&mut self) -> Result<Bytes, RpcError<H::Error, R::Error>> {
+        if self.finished {
+            return Ok(Bytes::new());
+        }
+
+        let frame = self
+            .parent
+            .read_frame()
+            .await
+            .inspect_err(|_| self.finished = true)?;
+        match frame {
+            Some(PartFrame::BodyBytes(bytes)) => Ok(bytes),
+            Some(PartFrame::EndPart) => {
+                self.finished = true;
+                Ok(Bytes::new())
+            }
+            Some(PartFrame::PartHeader(_)) => {
+                self.parent.reset_inner(ResetCode::PROTOCOL);
+                self.finished = true;
+                Err(crate::Error::UnexpectedFrameKind(FrameKind::PartHeader.tag()).into())
+            }
+            None => {
+                self.finished = true;
+                Err(crate::Error::Truncated.into())
+            }
+        }
+    }
+
+    pub fn reset(mut self, code: ResetCode) {
+        self.parent.reset_inner(code);
+        self.finished = true;
+    }
+}
+
+impl<H, R> Drop for MultipartPart<'_, H, R>
+where
+    H: RpcCodec,
+    R: RpcRead,
+{
+    fn drop(&mut self) {
+        if !self.finished {
+            self.parent.reset_inner(ResetCode::DROPPED);
+        }
+    }
+}
 
 pub enum PartFrame<H: RpcCodec> {
     PartHeader(H),
@@ -85,11 +250,17 @@ impl<H: RpcCodec> PartFrameReader<H> {
                     };
 
                     let kind = FrameKind::try_from(kind).map_err(RpcError::Protocol)?;
-                    self.pending_frame = if kind == FrameKind::BodyChunk {
-                        PendingFrame::Body { remaining: len }
-                    } else {
-                        PendingFrame::Control { kind, len }
-                    };
+                    match kind {
+                        FrameKind::BodyChunk => {
+                            self.pending_frame = PendingFrame::Body { remaining: len };
+                        }
+                        FrameKind::EndPart if len != 0 => {
+                            return Err(crate::Error::TrailingBytes.into());
+                        }
+                        FrameKind::PartHeader | FrameKind::EndPart => {
+                            self.pending_frame = PendingFrame::Control { kind, len };
+                        }
+                    }
                 }
             }
         }
@@ -253,5 +424,20 @@ mod tests {
             Some(PartFrame::BodyBytes(bytes)) => assert_eq!(bytes, Bytes::from_static(b"llo")),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn part_reader_rejects_nonempty_end_part_from_header() {
+        let mut encoded = Vec::new();
+        encode_end_part(&mut encoded);
+        encoded[1..9].copy_from_slice(&1u64.to_le_bytes());
+
+        let mut reader = PartFrameReader::<Vec<u8>>::new(Default::default());
+        reader.push(Bytes::from(encoded));
+
+        assert!(matches!(
+            reader.advance::<std::convert::Infallible>(),
+            Err(crate::RpcError::Protocol(crate::Error::TrailingBytes))
+        ));
     }
 }
