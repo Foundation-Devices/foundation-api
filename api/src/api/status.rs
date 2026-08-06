@@ -15,7 +15,12 @@ pub struct EnvoyStatus {
 }
 
 #[quantum_link]
-pub struct Heartbeat {}
+pub struct Heartbeat {
+    #[n(0)]
+    pub request_id: Option<[u8; 16]>,
+    #[n(1)]
+    pub timestamp_ms: Option<u64>,
+}
 
 #[quantum_link]
 pub struct TimezoneRequest {}

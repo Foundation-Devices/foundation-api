@@ -546,5 +546,16 @@ fn golden_restore_magic_backup_result_error() {
 
 #[test]
 fn golden_heartbeat() {
-    assert_golden!(QuantumLinkMessage::Heartbeat(Heartbeat {}))
+    assert_golden!(QuantumLinkMessage::Heartbeat(Heartbeat {
+        request_id: None,
+        timestamp_ms: None,
+    }))
+}
+
+#[test]
+fn golden_heartbeat_with_request_id() {
+    assert_golden!(QuantumLinkMessage::Heartbeat(Heartbeat {
+        request_id: Some([0x42; 16]),
+        timestamp_ms: Some(1_700_000_000_123),
+    }))
 }
