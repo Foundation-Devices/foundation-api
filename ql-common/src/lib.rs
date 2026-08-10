@@ -57,6 +57,23 @@ impl QID {
     pub const SIZE: usize = 16;
 }
 
+impl std::fmt::Display for QID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::str::FromStr for QID {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        u128::from_str_radix(value, 16).map(|value| Self(value.to_be_bytes()))
+    }
+}
+
 /// Identifier for a stream within a QL session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -75,4 +92,10 @@ pub struct StreamInfo {
     pub qid: QID,
     pub stream_id: StreamId,
     pub header: Box<[u8]>,
+}
+
+#[test]
+fn qid_text_round_trip() {
+    let qid = QID([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    assert_eq!(qid.to_string().parse(), Ok(qid));
 }
