@@ -11,6 +11,7 @@ use async_channel::Recv;
 use futures_lite::future::poll_fn;
 use ql_common::{ResetCode, StreamInfo};
 use ql_fsm::{Event, QlFsm, StreamResetTarget, WriteId};
+use ql_wire::SessionCloseCode;
 
 use self::state::{DriverState, DriverStreamIo};
 use crate::{
@@ -36,6 +37,7 @@ impl<P: QlPlatform> Runtime<P> {
         let mut state = DriverState {
             runtime_tx: tx,
             max_concurrent_message_writes: config.max_concurrent_message_writes,
+            terminal_write: None,
         };
 
         let mut in_flight = Vec::new();
@@ -44,20 +46,18 @@ impl<P: QlPlatform> Runtime<P> {
         let inbound = platform.inbound();
         let mut inbound = pin!(inbound);
         let recv_future = rx.recv();
-        let mut recv_future = Some(pin!(recv_future));
+        let mut recv_future = pin!(recv_future);
         let mut poll_cursor = 0usize;
 
         loop {
             state.drain_fsm_events(&mut fsm, &platform);
-            if state.fill_write_slots(&mut fsm, &platform, &mut in_flight) {
-                state.drain_fsm_events(&mut fsm, &platform);
-            }
+            state.fill_write_slots(&mut fsm, &platform, &mut in_flight);
             timer.as_mut().set_deadline(fsm.next_deadline());
 
             let step = poll_fn(|cx| {
                 next_step(
                     cx,
-                    recv_future.as_mut().map(|future| future.as_mut()),
+                    recv_future.as_mut(),
                     inbound.as_mut(),
                     timer.as_mut(),
                     &mut in_flight,
@@ -91,17 +91,20 @@ impl<P: QlPlatform> Runtime<P> {
                 }
                 DriverStep::TimerExpired => {
                     log::trace!("timer expired");
-                    fsm.on_timer(Instant::now());
+                    fsm.on_timer(Instant::now(), platform.crypto());
                 }
                 DriverStep::Closed => {
                     log::debug!(
                         "command channel closed: in_flight_writes={}",
                         in_flight.len()
                     );
-                    recv_future = None;
-                    if in_flight.is_empty() && !fsm.has_shutdown_work() {
-                        break;
+                    in_flight.clear();
+                    fsm.close_session(SessionCloseCode::CANCELLED, platform.crypto());
+                    state.drain_fsm_events(&mut fsm, &platform);
+                    if let Some(write) = state.terminal_write.take() {
+                        let _ = platform.write_message(write.record).await;
                     }
+                    break;
                 }
             }
         }
@@ -126,7 +129,7 @@ const STEP_COUNT: usize = 4;
 
 fn next_step<T, F, I>(
     cx: &mut Context<'_>,
-    mut recv_future: Option<Pin<&mut Recv<'_, Command>>>,
+    mut recv_future: Pin<&mut Recv<'_, Command>>,
     mut inbound: Pin<&mut I>,
     mut timer: Pin<&mut T>,
     in_flight: &mut [InFlightWrite<F>],
@@ -140,12 +143,10 @@ where
     for offset in 0..STEP_COUNT {
         let step = (start + offset) % STEP_COUNT;
         let poll = match step {
-            0 => recv_future.as_mut().map_or(Poll::Pending, |recv_future| {
-                recv_future
-                    .as_mut()
-                    .poll(cx)
-                    .map(|res| res.map_or(DriverStep::Closed, DriverStep::Command))
-            }),
+            0 => recv_future
+                .as_mut()
+                .poll(cx)
+                .map(|res| res.map_or(DriverStep::Closed, DriverStep::Command)),
             1 => inbound.as_mut().poll_recv(cx).map(DriverStep::Inbound),
             2 => {
                 for (index, write) in in_flight.iter_mut().enumerate() {
@@ -202,11 +203,11 @@ impl DriverState {
             }
             Command::CloseSession { code } => {
                 log::info!("closing session: code={code:?}");
-                fsm.close_session(code);
+                fsm.close_session(code, platform.crypto());
             }
             Command::Unpair => {
                 log::info!("unpairing peer");
-                fsm.unpair();
+                fsm.unpair(platform.crypto());
             }
             Command::OpenStream { header, start } => {
                 log::info!("open stream requested");
@@ -299,25 +300,34 @@ impl DriverState {
                         crate::QlStream { writer, reader },
                     );
                 }
-                Event::SessionClosed(close) => {
+                Event::SessionClosed { close, write } => {
                     log::info!("session closed: frame={close:?}");
+                    self.terminal_write = Some(*write);
+                }
+                Event::Unpaired { write } => {
+                    log::info!("peer unpaired");
+                    if let Some(write) = write {
+                        self.terminal_write = Some(*write);
+                    }
                 }
             }
         }
     }
 
     fn fill_write_slots<'a, P: QlPlatform + 'a>(
-        &self,
+        &mut self,
         fsm: &mut QlFsm<DriverStreamIo>,
         platform: &'a P,
         in_flight: &mut Vec<InFlightWrite<P::WriteMessageFut<'a>>>,
-    ) -> bool {
-        let mut filled = false;
+    ) {
         while in_flight.len() < self.max_concurrent_message_writes {
-            let Some(write) = fsm.take_next_write(Instant::now(), platform.crypto()) else {
+            let Some(write) = self
+                .terminal_write
+                .take()
+                .or_else(|| fsm.take_next_write(Instant::now(), platform.crypto()))
+            else {
                 break;
             };
-            filled = true;
             log::trace!(
                 "queueing transport write: bytes={} write_id={:?}",
                 write.record.len(),
@@ -328,6 +338,5 @@ impl DriverState {
                 future: platform.write_message(write.record),
             });
         }
-        filled
     }
 }

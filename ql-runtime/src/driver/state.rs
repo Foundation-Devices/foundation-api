@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use ql_fsm::{StreamIo, StreamMeta, StreamResetEvent, StreamStatus};
+use ql_fsm::{OutboundWrite, StreamIo, StreamMeta, StreamResetEvent, StreamStatus};
 
 use crate::{
     command::Command,
@@ -10,6 +10,7 @@ use crate::{
 pub struct DriverState {
     pub runtime_tx: async_channel::Sender<Command>,
     pub max_concurrent_message_writes: usize,
+    pub terminal_write: Option<OutboundWrite>,
 }
 
 #[derive(Default)]

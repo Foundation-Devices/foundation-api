@@ -489,10 +489,9 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
             });
         });
 
+        let handle_a = pair.side(Side::A).handle.clone();
         let writer = tokio::task::spawn_local(async move {
-            let mut stream = pair
-                .side(Side::A)
-                .handle
+            let mut stream = handle_a
                 .open_stream(test_open_stream_params())
                 .await
                 .unwrap();

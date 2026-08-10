@@ -264,7 +264,8 @@ impl Harness {
 
     fn on_timer(&mut self, side: Side) {
         let time = self.time();
-        self.node_mut(side).fsm.on_timer(time);
+        let Node { fsm, crypto } = self.node_mut(side);
+        fsm.on_timer(time, crypto);
     }
 
     fn take_event(&mut self, side: Side) -> Option<Event> {

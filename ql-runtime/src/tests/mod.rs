@@ -637,27 +637,3 @@ fn runtime_is_send() {
     let (runtime, _handle) = new_runtime(identity, platform, config);
     let _run: Box<dyn Future<Output = ()> + Send> = Box::new(runtime.run());
 }
-
-#[test]
-fn runtime_exits_when_last_handle_drops() {
-    let config = default_runtime_config();
-    let identity = generate_identity(&SoftwareCrypto, "runtime");
-    let (platform, _, _, _) = TestPlatform::new();
-    let (runtime, handle) = new_runtime(identity, platform, config);
-    let (done_tx, done_rx) = oneshot::channel();
-
-    std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap()
-            .block_on(runtime.run());
-        done_tx.send(()).unwrap();
-    });
-
-    drop(handle);
-
-    done_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("runtime should stop once the last sender is dropped");
-}

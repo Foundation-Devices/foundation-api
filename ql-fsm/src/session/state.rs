@@ -3,7 +3,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use indexmap::IndexMap;
 use ql_common::StreamId;
-use ql_wire::{RecordSeq, ResetTarget, SessionClose, StreamReset};
+use ql_wire::{RecordSeq, ResetTarget, StreamReset};
 
 use super::{
     ack_tracker::AckTracker,
@@ -17,7 +17,6 @@ use super::{
 pub struct SessionState<M> {
     pub last_activity_at: Instant,
     pub last_inbound_at: Instant,
-    pub phase: SessionPhase,
     pub next_stream_ordinal: u32,
     pub next_record_seq: RecordSeq,
     pub next_write_id: u64,
@@ -29,25 +28,6 @@ pub struct SessionState<M> {
     pub streams: IndexMap<StreamId, StreamState<M>>,
     pub next_stream_index: usize,
     pub remote_stream_history: RemoteStreamHistory,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionPhase {
-    Open,
-    Terminating(TerminalFrame),
-    Closed,
-}
-
-impl SessionPhase {
-    pub fn is_open(&self) -> bool {
-        self == &Self::Open
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminalFrame {
-    Close(SessionClose),
-    Unpair,
 }
 
 #[derive(Debug)]

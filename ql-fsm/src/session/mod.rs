@@ -1,4 +1,4 @@
-pub use self::{state::TerminalFrame, stream_ops::*, stream_parity::*};
+pub use self::{stream_ops::*, stream_parity::*};
 
 mod ack_tracker;
 mod range_set;
@@ -29,11 +29,11 @@ use self::{
     ack_tracker::{AckTracker, PendingAck},
     remote_stream_history::RemoteStreamHistory,
     replay_window::ReplayWindow,
-    state::{InboundState, OutboundState, SessionPhase, SessionState, StreamRole, StreamState},
+    state::{InboundState, OutboundState, SessionState, StreamRole, StreamState},
     stream_tx::StreamTxRange,
     tracked::{LossRecovery, TrackedFrame, TrackedRecord, TrackedStreamData},
 };
-use crate::{NoSessionError, StreamError, StreamMeta, StreamResetEvent, StreamResetTarget};
+use crate::{StreamError, StreamMeta, StreamResetEvent, StreamResetTarget};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
@@ -89,11 +89,16 @@ impl Default for SessionParams {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SessionEvent {
     Opened(StreamId),
-    SessionClosed(SessionClose),
-    Unpaired,
+    SessionClosed {
+        close: SessionClose,
+        write: SessionRecordBuilder,
+    },
+    Unpaired {
+        write: SessionRecordBuilder,
+    },
 }
 
 pub trait EventSink {
@@ -128,7 +133,6 @@ impl<M: StreamMeta> SessionFsm<M> {
             state: SessionState {
                 last_activity_at: now,
                 last_inbound_at: now,
-                phase: SessionPhase::Open,
                 next_stream_ordinal: 0,
                 next_record_seq: RecordSeq(0),
                 next_write_id: 0,
@@ -144,8 +148,7 @@ impl<M: StreamMeta> SessionFsm<M> {
         }
     }
 
-    pub fn open_stream(&mut self, header: Box<[u8]>) -> Result<StreamOps<'_, M>, NoSessionError> {
-        self.ensure_session_open()?;
+    pub fn open_stream(&mut self, header: Box<[u8]>) -> StreamOps<'_, M> {
         let stream_id = self
             .params
             .local_parity
@@ -162,11 +165,10 @@ impl<M: StreamMeta> SessionFsm<M> {
             ),
         );
         let stream_index = self.state.streams.len() - 1;
-        Ok(StreamOps::new(self, stream_id, stream_index))
+        StreamOps::new(self, stream_id, stream_index)
     }
 
     pub fn stream(&mut self, stream_id: StreamId) -> Result<StreamOps<'_, M>, StreamError> {
-        self.ensure_session_open()?;
         let Some(stream_index) = (|| {
             let index = self.state.streams.get_index_of(&stream_id)?;
             // Event::Opened only fires after we receive the first frame of a stream
@@ -179,30 +181,21 @@ impl<M: StreamMeta> SessionFsm<M> {
         Ok(StreamOps::new(self, stream_id, stream_index))
     }
 
-    pub fn queue_ping(&mut self) -> Result<(), NoSessionError> {
-        self.ensure_session_open()?;
+    pub fn queue_ping(&mut self) {
         self.state.pending_ping = true;
-        Ok(())
     }
 
     pub fn close(&mut self, code: SessionCloseCode, sink: &mut impl EventSink) {
-        if self.state.phase != SessionPhase::Open {
-            return;
-        }
-
-        self.begin_termination(TerminalFrame::Close(SessionClose { code }), sink);
+        let close = SessionClose { code };
+        let mut write = self.terminal_write();
+        assert!(write.push_close(&close), "builder has capacity");
+        sink.emit(SessionEvent::SessionClosed { close, write });
     }
 
     pub fn unpair(&mut self, sink: &mut impl EventSink) {
-        if self.state.phase != SessionPhase::Open {
-            return;
-        }
-
-        self.begin_termination(TerminalFrame::Unpair, sink);
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.state.phase == SessionPhase::Closed
+        let mut write = self.terminal_write();
+        assert!(write.push_unpair(), "builder has capacity");
+        sink.emit(SessionEvent::Unpaired { write });
     }
 
     pub fn is_replay(&self, seq: RecordSeq) -> bool {
@@ -213,10 +206,6 @@ impl<M: StreamMeta> SessionFsm<M> {
     where
         I: IntoIterator<Item = Result<SessionFrame<Bytes>, ql_wire::Error>>,
     {
-        if self.state.phase != SessionPhase::Open {
-            return;
-        }
-
         self.collect_timeouts(now);
 
         self.state.replay_window.accept(seq);
@@ -266,9 +255,6 @@ impl<M: StreamMeta> SessionFsm<M> {
     }
 
     pub fn complete_write(&mut self, now: Instant, write_id: u64, success: bool) {
-        if !self.state.phase.is_open() {
-            return;
-        }
         if success {
             let Some(record) = self.state.tracked_records.get_mut(&write_id) else {
                 return;
@@ -301,9 +287,6 @@ impl<M: StreamMeta> SessionFsm<M> {
     }
 
     pub fn on_timer(&mut self, now: Instant, sink: &mut impl EventSink) {
-        if !self.state.phase.is_open() {
-            return;
-        }
         self.collect_timeouts(now);
         if !self.config.peer_timeout.is_zero()
             && self.state.last_inbound_at + self.config.peer_timeout <= now
@@ -311,8 +294,7 @@ impl<M: StreamMeta> SessionFsm<M> {
             self.close(SessionCloseCode::TIMEOUT, sink);
             return;
         }
-        if self.state.phase == SessionPhase::Open
-            && !self.config.keepalive_interval.is_zero()
+        if !self.config.keepalive_interval.is_zero()
             && self.state.last_activity_at + self.config.keepalive_interval <= now
         {
             self.state.pending_ping = true;
@@ -320,9 +302,6 @@ impl<M: StreamMeta> SessionFsm<M> {
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        if !self.state.phase.is_open() {
-            return None;
-        }
         let ack_deadline = self.state.ack_tracker.ack_deadline();
         let rto = self.state.loss_recovery.rto();
         let retransmit_deadline = self
@@ -331,11 +310,10 @@ impl<M: StreamMeta> SessionFsm<M> {
             .values()
             .filter_map(|record| record.sent_at.map(|sent_at| sent_at + rto))
             .min();
-        let is_open = self.state.phase.is_open();
-        let keepalive_deadline =
-            (is_open && !self.config.keepalive_interval.is_zero() && !self.state.pending_ping)
-                .then_some(self.state.last_activity_at + self.config.keepalive_interval);
-        let peer_timeout_deadline = (is_open && !self.config.peer_timeout.is_zero())
+        let keepalive_deadline = (!self.config.keepalive_interval.is_zero()
+            && !self.state.pending_ping)
+            .then_some(self.state.last_activity_at + self.config.keepalive_interval);
+        let peer_timeout_deadline = (!self.config.peer_timeout.is_zero())
             .then_some(self.state.last_inbound_at + self.config.peer_timeout);
         [
             ack_deadline,
@@ -348,36 +326,9 @@ impl<M: StreamMeta> SessionFsm<M> {
         .min()
     }
 
-    pub fn has_shutdown_work(&self) -> bool {
-        matches!(self.state.phase, SessionPhase::Terminating(_))
-            || self.state.ack_tracker.ack_deadline().is_some()
-            || !self.state.tracked_records.is_empty()
-    }
-
     pub fn take_next_write(&mut self, now: Instant) -> Option<(Option<u64>, SessionRecordBuilder)> {
         const TRACKED_RECORD_LIMIT: usize = 64;
 
-        match &self.state.phase {
-            SessionPhase::Terminating(frame) => {
-                let seq = self.state.next_record_seq;
-                next_seq(&mut self.state.next_record_seq);
-                let mut builder = SessionRecordBuilder::new(seq, self.config.record_max_size);
-                match frame {
-                    TerminalFrame::Close(close) => {
-                        assert!(builder.push_close(close), "builder has capacity");
-                    }
-                    TerminalFrame::Unpair => {
-                        assert!(builder.push_unpair(), "builder has capacity");
-                    }
-                }
-                self.state.phase = SessionPhase::Closed;
-                return Some((None, builder));
-            }
-            SessionPhase::Closed => {
-                return None;
-            }
-            SessionPhase::Open => {}
-        }
         self.collect_timeouts(now);
 
         // ack-only records need no tracking slot and prevent two full peers from stalling
@@ -445,16 +396,10 @@ impl<M: StreamMeta> SessionFsm<M> {
         Some((builder, outbound))
     }
 
-    fn begin_termination(&mut self, frame: TerminalFrame, sink: &mut impl EventSink) {
-        match &frame {
-            TerminalFrame::Close(close) => sink.emit(SessionEvent::SessionClosed(close.clone())),
-            TerminalFrame::Unpair => sink.emit(SessionEvent::Unpaired),
-        }
-
-        self.state.phase = SessionPhase::Terminating(frame);
-        self.state.tracked_records.clear();
-        self.state.ack_tracker.clear_ack_state();
-        self.clear_streams();
+    fn terminal_write(&mut self) -> SessionRecordBuilder {
+        let seq = self.state.next_record_seq;
+        next_seq(&mut self.state.next_record_seq);
+        SessionRecordBuilder::new(seq, self.config.record_max_size)
     }
 
     fn push_next_pending_stream_reset(
@@ -585,14 +530,6 @@ impl<M: StreamMeta> SessionFsm<M> {
         }
 
         self.state.next_stream_index = next_index;
-    }
-
-    fn ensure_session_open(&self) -> Result<(), NoSessionError> {
-        if self.state.phase == SessionPhase::Open {
-            Ok(())
-        } else {
-            Err(NoSessionError)
-        }
     }
 
     fn process_record_ack(&mut self, now: Instant, ack: &RecordAck) {
@@ -850,11 +787,6 @@ impl<M: StreamMeta> SessionFsm<M> {
         if self.state.next_stream_index >= self.state.streams.len() {
             self.state.next_stream_index %= self.state.streams.len();
         }
-    }
-
-    fn clear_streams(&mut self) {
-        self.state.next_stream_index = 0;
-        self.state.streams.clear();
     }
 
     fn create_remote_stream(

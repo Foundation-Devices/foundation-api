@@ -77,10 +77,6 @@ impl AckTracker {
         }
     }
 
-    pub fn clear_ack_state(&mut self) {
-        self.ack_due_at = None;
-    }
-
     pub fn restore_acked_ranges(&mut self, ack: &RecordAck, due_at: Instant) {
         for range in ack.ranges() {
             self.pending_ack.insert(from_ack_range(range));

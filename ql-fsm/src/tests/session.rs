@@ -345,32 +345,33 @@ fn ack_frame_releases_stream_capacity() {
 #[test]
 fn close_session_disconnects_locally() {
     let mut harness = Harness::connected(QlFsmConfig::default());
+    let remote_qid = harness.b.fsm.identity.qid;
 
     harness
         .a
         .fsm
-        .close_session(ql_wire::SessionCloseCode::CANCELLED);
+        .close_session(ql_wire::SessionCloseCode::CANCELLED, &harness.a.crypto);
 
-    assert!(matches!(
-        harness.take_event(Side::A),
-        Some(Event::SessionClosed(SessionClose {
-            code: ql_wire::SessionCloseCode::CANCELLED,
-        }))
-    ));
-    assert!(matches!(harness.a.fsm.state.link, LinkState::Connected(_)));
+    assert_eq!(harness.a.fsm.remote_qid(), Some(remote_qid));
+    assert_eq!(harness.a.fsm.peer_status(), PeerStatus::Disconnected);
+    let Some(Event::SessionClosed { close, write }) = harness.take_event(Side::A) else {
+        panic!("missing session close event");
+    };
+    assert_eq!(close.code, ql_wire::SessionCloseCode::CANCELLED);
+    let close = harness.decode_session_write(*write, Side::A);
+    assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
     assert!(matches!(
         harness.a.fsm.open_stream(Box::from([1])),
         Err(NoSessionError)
     ));
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
-
-    let close = harness.next_decoded_outbound(Side::A).unwrap();
     assert!(matches!(
         close.frames.as_slice(),
         [ql_wire::SessionFrame::Close(_)]
     ));
 
-    assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
+    assert_eq!(harness.a.fsm.remote_qid(), Some(remote_qid));
+    assert_eq!(harness.a.fsm.peer_status(), PeerStatus::Disconnected);
     assert_eq!(
         harness.take_event(Side::A),
         Some(Event::PeerStatusChanged(PeerStatus::Disconnected))
@@ -381,12 +382,13 @@ fn close_session_disconnects_locally() {
 fn unpair_clears_bound_peer_and_emits_unpair_frame() {
     let mut harness = Harness::connected(QlFsmConfig::default());
 
-    harness.a.fsm.unpair();
+    harness.a.fsm.unpair(&harness.a.crypto);
 
-    assert_eq!(
-        harness.take_event(Side::A),
-        Some(Event::PeerStatusChanged(PeerStatus::Unpaired))
-    );
+    assert_eq!(harness.a.fsm.remote_qid(), None);
+    assert_eq!(harness.a.fsm.peer_status(), PeerStatus::Disconnected);
+    let Some(Event::Unpaired { write: Some(write) }) = harness.take_event(Side::A) else {
+        panic!("missing unpair event");
+    };
     assert!(harness.a.fsm.peer().is_none());
     assert!(matches!(
         harness.a.fsm.open_stream(Box::from([1])),
@@ -394,22 +396,41 @@ fn unpair_clears_bound_peer_and_emits_unpair_frame() {
     ));
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
 
-    let unpair = harness.next_decoded_outbound(Side::A).unwrap();
+    let unpair = harness.decode_session_write(*write, Side::A);
     assert!(matches!(
         unpair.frames.as_slice(),
         [ql_wire::SessionFrame::Unpair]
     ));
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
+    assert_eq!(harness.a.fsm.remote_qid(), None);
+    assert_eq!(harness.a.fsm.peer_status(), PeerStatus::Disconnected);
+    assert_eq!(
+        harness.take_event(Side::A),
+        Some(Event::PeerStatusChanged(PeerStatus::Unpaired))
+    );
 }
 
 #[test]
 fn inbound_unpair_clears_remote_peer_binding() {
     let mut harness = Harness::connected(QlFsmConfig::default());
+    let reply_key = harness.a.fsm.state.link.transport().unwrap().rx_key.clone();
 
-    harness.a.fsm.unpair();
-    let unpair = harness.next_outbound(Side::A).unwrap();
-    harness.deliver(Side::B, unpair);
+    harness.a.fsm.unpair(&harness.a.crypto);
+    let Some(Event::Unpaired {
+        write: Some(unpair),
+    }) = harness.take_event(Side::A)
+    else {
+        panic!("missing unpair event");
+    };
+    assert_eq!(
+        harness.take_event(Side::A),
+        Some(Event::PeerStatusChanged(PeerStatus::Unpaired))
+    );
+    harness.deliver(Side::B, unpair.record);
 
+    let Some(Event::Unpaired { write: Some(reply) }) = harness.take_event(Side::B) else {
+        panic!("missing unpair reply");
+    };
     assert_eq!(
         harness.take_event(Side::B),
         Some(Event::PeerStatusChanged(PeerStatus::Unpaired))
@@ -421,9 +442,7 @@ fn inbound_unpair_clears_remote_peer_binding() {
     ));
     assert!(matches!(harness.connect_ik(Side::B), Err(NoPeerError)));
 
-    let reply_key = harness.b.fsm.state.link.transport().unwrap().tx_key.clone();
-    let reply = harness.next_outbound(Side::B).unwrap();
-    let (_header, frames) = decrypt_record(&harness.b.crypto, &reply, &reply_key);
+    let (_header, frames) = decrypt_record(&harness.b.crypto, &reply.record, &reply_key);
     assert!(matches!(frames.as_slice(), [ql_wire::SessionFrame::Unpair]));
     assert!(matches!(harness.b.fsm.state.link, LinkState::Idle));
 }
@@ -432,14 +451,19 @@ fn inbound_unpair_clears_remote_peer_binding() {
 fn local_unpair_without_session_emits_unpaired_immediately() {
     let mut harness = Harness::paired_known(QlFsmConfig::default());
 
-    harness.a.fsm.unpair();
+    harness.a.fsm.unpair(&harness.a.crypto);
 
+    assert_eq!(
+        harness.take_event(Side::A),
+        Some(Event::Unpaired { write: None })
+    );
+    assert!(harness.a.fsm.peer().is_none());
+    assert_eq!(harness.a.fsm.remote_qid(), None);
+    assert_eq!(harness.a.fsm.peer_status(), PeerStatus::Disconnected);
     assert_eq!(
         harness.take_event(Side::A),
         Some(Event::PeerStatusChanged(PeerStatus::Unpaired))
     );
-    assert!(harness.a.fsm.peer().is_none());
-    assert_eq!(harness.take_event(Side::A), None);
 }
 
 #[test]
@@ -520,11 +544,18 @@ fn replayed_record_does_not_renew_the_peer_timeout() {
     harness.deliver(Side::B, first);
     harness.on_timer(Side::B);
 
+    assert!(matches!(
+        harness.take_event(Side::B),
+        Some(Event::SessionClosed {
+            close: SessionClose {
+                code: ql_wire::SessionCloseCode::TIMEOUT
+            },
+            ..
+        })
+    ));
     assert_eq!(
-        harness.drain_events(Side::B),
-        vec![Event::SessionClosed(SessionClose {
-            code: ql_wire::SessionCloseCode::TIMEOUT,
-        })]
+        harness.take_event(Side::B),
+        Some(Event::PeerStatusChanged(PeerStatus::Disconnected))
     );
 }
 
@@ -566,7 +597,7 @@ fn first_stream_data_uses_negotiated_initial_peer_credit() {
 }
 
 #[test]
-fn session_timeout_emits_close_before_disconnect() {
+fn session_timeout_emits_close() {
     let config = QlFsmConfig {
         session: SessionConfig {
             peer_timeout: Duration::from_millis(30),
@@ -579,14 +610,11 @@ fn session_timeout_emits_close_before_disconnect() {
     harness.advance(config.session.peer_timeout);
     harness.on_timer(Side::A);
 
-    assert_eq!(
-        harness.drain_events(Side::A),
-        vec![Event::SessionClosed(SessionClose {
-            code: ql_wire::SessionCloseCode::TIMEOUT,
-        })]
-    );
-
-    let close = harness.next_decoded_outbound(Side::A).unwrap();
+    let Some(Event::SessionClosed { close, write }) = harness.take_event(Side::A) else {
+        panic!("missing session close event");
+    };
+    assert_eq!(close.code, ql_wire::SessionCloseCode::TIMEOUT);
+    let close = harness.decode_session_write(*write, Side::A);
     assert!(matches!(
         close.frames.as_slice(),
         [ql_wire::SessionFrame::Close(_)]

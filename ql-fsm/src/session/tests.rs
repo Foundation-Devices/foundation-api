@@ -63,7 +63,7 @@ impl StreamMeta for TestMeta {
 }
 
 fn open_stream_id(fsm: &mut super::SessionFsm<()>) -> StreamId {
-    fsm.open_stream(Box::from([1])).unwrap().io().stream_id()
+    fsm.open_stream(Box::from([1])).io().stream_id()
 }
 
 fn write_stream_bytes(fsm: &mut super::SessionFsm<()>, stream_id: StreamId, bytes: &[u8]) -> usize {
@@ -404,7 +404,7 @@ fn ack_reopens_write_capacity() {
         SessionParams::default(),
         now,
     );
-    let stream_id = fsm.open_stream(Box::from([1])).unwrap().io().stream_id();
+    let stream_id = fsm.open_stream(Box::from([1])).io().stream_id();
 
     let mut bytes = Bytes::from_static(b"abcd");
     let mut stream = fsm.stream(stream_id).unwrap();
@@ -436,7 +436,7 @@ fn ack_of_fin_notifies_metadata_once() {
     let now = Instant::now();
     let mut fsm =
         super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
-    let stream_id = fsm.open_stream(Box::from([1])).unwrap().io().stream_id();
+    let stream_id = fsm.open_stream(Box::from([1])).io().stream_id();
 
     let mut bytes = Bytes::from_static(b"done");
     let mut stream = fsm.stream(stream_id).unwrap();
@@ -595,7 +595,7 @@ fn lost_ping_is_resent_after_a_timeout() {
         now,
     );
 
-    fsm.queue_ping().unwrap();
+    fsm.queue_ping();
     let (_first_seq, first) = next_outbound(&mut fsm, now).unwrap();
     assert!(matches!(first.as_slice(), [SessionFrame::Ping]));
 
@@ -679,7 +679,7 @@ fn readable_callback_can_consume_stream_data() {
     let now = Instant::now();
     let mut fsm =
         super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
-    let stream_id = fsm.open_stream(Box::from([1])).unwrap().io().stream_id();
+    let stream_id = fsm.open_stream(Box::from([1])).io().stream_id();
     fsm.stream(stream_id).unwrap().metadata_mut().consume_reads = true;
     let record = [SessionFrame::StreamData(StreamData {
         stream_id,
@@ -730,7 +730,7 @@ fn local_stream_reset_is_reliable_and_notifies_metadata() {
         SessionParams::default(),
         now,
     );
-    let stream_id = fsm.open_stream(Box::from([1])).unwrap().io().stream_id();
+    let stream_id = fsm.open_stream(Box::from([1])).io().stream_id();
 
     fsm.stream(stream_id)
         .unwrap()
@@ -775,7 +775,6 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         now,
     )
     .open_stream(vec![1_u8].into_boxed_slice())
-    .unwrap()
     .io()
     .stream_id();
     let odd_id = super::SessionFsm::<()>::new(
@@ -787,7 +786,6 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         now,
     )
     .open_stream(vec![1_u8].into_boxed_slice())
-    .unwrap()
     .io()
     .stream_id();
 
@@ -1084,12 +1082,14 @@ fn invalid_remote_stream_reset_closes_session() {
     })];
     let events = receive_events(&mut fsm, now, RecordSeq(1), &invalid);
 
-    assert_eq!(
-        events,
-        vec![SessionEvent::SessionClosed(ql_wire::SessionClose {
-            code: ql_wire::SessionCloseCode::PROTOCOL,
-        })]
-    );
+    let [SessionEvent::SessionClosed { close, write }] = events.as_slice() else {
+        panic!("expected session close event");
+    };
+    assert_eq!(close.code, ql_wire::SessionCloseCode::PROTOCOL);
+    assert!(matches!(
+        decode_session_frames(write.bytes()).unwrap().as_slice(),
+        [SessionFrame::Close(_)]
+    ));
 }
 
 #[test]
@@ -1112,62 +1112,30 @@ fn close_does_not_ack_rejected_record_seq() {
         bytes: b"bad".to_vec(),
     })];
     let events = receive_events(&mut fsm, now, RecordSeq(7), &invalid);
-    assert_eq!(
-        events,
-        vec![SessionEvent::SessionClosed(ql_wire::SessionClose {
-            code: ql_wire::SessionCloseCode::PROTOCOL,
-        })]
-    );
-
-    let valid_after_close = vec![SessionFrame::Ping];
-    let events = receive_events(
-        &mut fsm,
-        now + Duration::from_millis(1),
-        RecordSeq(8),
-        &valid_after_close,
-    );
-    assert!(events.is_empty());
-
-    let (_seq, outbound) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
-    assert!(matches!(outbound.as_slice(), [SessionFrame::Close(_)]));
+    let [SessionEvent::SessionClosed { close, write }] = events.as_slice() else {
+        panic!("expected session close event");
+    };
+    assert_eq!(close.code, ql_wire::SessionCloseCode::PROTOCOL);
+    assert!(matches!(
+        decode_session_frames(write.bytes()).unwrap().as_slice(),
+        [SessionFrame::Close(_)]
+    ));
 }
 
 #[test]
-fn inbound_unpair_emits_final_unpair_frame() {
+fn inbound_unpair_closes_session() {
     let now = Instant::now();
     let mut fsm =
         super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
 
     let events = receive_events(&mut fsm, now, RecordSeq(1), &[SessionFrame::Unpair]);
-    assert_eq!(events, vec![SessionEvent::Unpaired]);
-    assert!(!fsm.is_closed());
-
-    let (_seq, outbound) = next_outbound(&mut fsm, now + Duration::from_millis(1)).unwrap();
-    assert!(matches!(outbound.as_slice(), [SessionFrame::Unpair]));
-    assert!(fsm.is_closed());
-}
-
-#[test]
-fn terminating_session_ignores_inbound_frames() {
-    let now = Instant::now();
-    let mut fsm =
-        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
-
-    let mut events = Vec::new();
-    fsm.unpair(&mut |event| events.push(event));
-    assert_eq!(events, vec![SessionEvent::Unpaired]);
-
-    let ignored = receive_events(
-        &mut fsm,
-        now + Duration::from_millis(1),
-        RecordSeq(1),
-        &[SessionFrame::Ping],
-    );
-    assert!(ignored.is_empty());
-
-    let (_seq, outbound) = next_outbound(&mut fsm, now + Duration::from_millis(2)).unwrap();
-    assert!(matches!(outbound.as_slice(), [SessionFrame::Unpair]));
-    assert!(fsm.is_closed());
+    let [SessionEvent::Unpaired { write }] = events.as_slice() else {
+        panic!("expected unpaired event");
+    };
+    assert!(matches!(
+        decode_session_frames(write.bytes()).unwrap().as_slice(),
+        [SessionFrame::Unpair]
+    ));
 }
 
 #[test]
@@ -1310,11 +1278,7 @@ fn stream_header_larger_than_the_record_budget_does_not_panic() {
     );
 
     // The header rides in the same frame as the payload, so one this large leaves no room.
-    let stream_id = fsm
-        .open_stream(Box::from(vec![7u8; 256]))
-        .unwrap()
-        .io()
-        .stream_id();
+    let stream_id = fsm.open_stream(Box::from(vec![7u8; 256])).io().stream_id();
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"payload"), 7);
 
     assert!(next_outbound(&mut fsm, now).is_none());

@@ -13,6 +13,55 @@ use super::*;
 use crate::QlStreamError;
 
 #[tokio::test(flavor = "current_thread")]
+async fn runtime_shutdown_sends_pending_close_before_exit() {
+    run_local_test(async {
+        let config = RuntimeConfig {
+            max_concurrent_message_writes: 1,
+            ..default_runtime_config()
+        };
+        let (platform_a, outbound_a, inbound_a_tx, status_a) =
+            TestPlatform::new_with_delayed_writes(Duration::from_millis(20), WriteStats::new());
+        let (platform_b, outbound_b, inbound_b_tx, status_b) = TestPlatform::new();
+        let (identity_a, identity_b) = test_identities(&SoftwareCrypto);
+        let (runtime_a, handle_a) = new_runtime(identity_a.clone(), platform_a, config);
+        let (runtime_b, handle_b) = new_runtime(identity_b.clone(), platform_b, config);
+        let runtime_a = tokio::task::spawn_local(runtime_a.run());
+
+        tokio::task::spawn_local(runtime_b.run());
+        spawn_forwarder(outbound_a, inbound_b_tx);
+        spawn_forwarder(outbound_b, inbound_a_tx);
+        register_peers(&handle_a, &handle_b, &identity_a, &identity_b);
+        handle_a.connect();
+
+        await_status(&status_a, Some(identity_b.qid), PeerStatus::Connected).await;
+        await_status(&status_b, Some(identity_a.qid), PeerStatus::Connected).await;
+
+        let mut stream = handle_a
+            .open_stream(test_open_stream_params())
+            .await
+            .unwrap();
+        stream
+            .writer
+            .write(Bytes::from_static(b"pending"))
+            .await
+            .unwrap();
+
+        handle_a.close_session(SessionCloseCode::CANCELLED);
+        handle_a.unpair();
+        drop(handle_a);
+        drop(stream);
+
+        await_status(&status_a, Some(identity_b.qid), PeerStatus::Disconnected).await;
+        await_status(&status_b, Some(identity_a.qid), PeerStatus::Disconnected).await;
+        tokio::time::timeout(Duration::from_secs(2), runtime_a)
+            .await
+            .unwrap()
+            .unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn close_session_aborts_active_streams_and_allows_reconnect() {
     run_local_test(async {
         let mut pair = TestPair::new(default_runtime_config());

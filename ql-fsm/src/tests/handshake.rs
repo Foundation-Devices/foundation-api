@@ -52,6 +52,34 @@ fn xx_connect_round_trip_establishes_transport_when_armed() {
 }
 
 #[test]
+fn public_state_tracks_xx_pairing() {
+    let mut harness = Harness::paired(QlFsmConfig::default(), false, false);
+    let token = pairing_token(2);
+
+    assert_eq!(harness.a.fsm.remote_qid(), None);
+    assert_eq!(harness.a.fsm.peer_status(), PeerStatus::Disconnected);
+
+    harness.b.fsm.arm_pairing(token);
+    harness.connect_xx(Side::A, token);
+
+    assert_eq!(harness.a.fsm.remote_qid(), Some(harness.b.fsm.identity.qid));
+    assert_eq!(harness.a.fsm.peer_status(), PeerStatus::Initiator);
+
+    let xx1 = harness.next_outbound(Side::A).unwrap();
+    harness.deliver(Side::B, xx1);
+
+    assert_eq!(harness.b.fsm.remote_qid(), Some(harness.a.fsm.identity.qid));
+    assert_eq!(harness.b.fsm.peer_status(), PeerStatus::Disconnected);
+
+    harness.pump();
+
+    assert_eq!(harness.a.fsm.remote_qid(), Some(harness.b.fsm.identity.qid));
+    assert_eq!(harness.a.fsm.peer_status(), PeerStatus::Connected);
+    assert_eq!(harness.b.fsm.remote_qid(), Some(harness.a.fsm.identity.qid));
+    assert_eq!(harness.b.fsm.peer_status(), PeerStatus::Connected);
+}
+
+#[test]
 fn ik_connect_learns_remote_initial_stream_receive_window() {
     let mut harness = Harness::paired_known_with_configs(
         QlFsmConfig {

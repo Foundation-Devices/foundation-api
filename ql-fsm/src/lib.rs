@@ -36,7 +36,7 @@ use std::{
 pub use bytes::Bytes;
 pub use error::*;
 pub use pairing::PairingInvite;
-use ql_common::{ResetCode, StreamId};
+use ql_common::{ResetCode, StreamId, QID};
 use ql_wire::{PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode};
 pub use session::{SessionConfig, StreamIo, StreamOps, StreamReader, StreamWriter};
 
@@ -70,11 +70,12 @@ pub enum Event {
     /// the stream may already be gone when this event is polled
     Opened(StreamId),
     /// the encrypted session was closed
-    ///
-    /// session close is abortive and best-effort. the session ends immediately
-    /// one final write remains: a record containing only `SessionFrame::Close`
-    /// the FSM does not wait for an ack for that record
-    SessionClosed(SessionClose),
+    SessionClosed {
+        close: SessionClose,
+        write: Box<OutboundWrite>,
+    },
+    /// the bound peer was forgotten
+    Unpaired { write: Option<Box<OutboundWrite>> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +217,23 @@ impl<M: StreamMeta> QlFsm<M> {
         self.state.peer.as_ref()
     }
 
+    /// returns the remote QID for a bound peer or active handshake
+    pub fn remote_qid(&self) -> Option<QID> {
+        match &self.state.link {
+            LinkState::XxInitiator(state) => Some(state.handshake.remote_qid()),
+            LinkState::XxResponder(state) => Some(state.handshake.remote_qid()),
+            LinkState::Connected(state) => Some(state.transport.remote_qid),
+            LinkState::Idle | LinkState::IkInitiator(_) => {
+                self.state.peer.as_ref().map(|peer| peer.qid)
+            }
+        }
+    }
+
+    /// returns the current peer lifecycle state
+    pub fn peer_status(&self) -> PeerStatus {
+        self.state.link.status()
+    }
+
     /// arms acceptance of inbound xx pairings for a single token
     pub fn arm_pairing(&mut self, token: PairingToken) {
         self.state.armed_pairing_token = Some(token);
@@ -265,21 +283,14 @@ impl<M: StreamMeta> QlFsm<M> {
     }
 
     /// advances time-based state
-    pub fn on_timer(&mut self, now: Instant) {
+    pub fn on_timer(&mut self, now: Instant, crypto: &impl QlCrypto) {
         self.state.now = now;
-        fsm::on_timer(self);
+        fsm::on_timer(self, crypto);
     }
 
     /// returns the next timer deadline, if any
     pub fn next_deadline(&self) -> Option<Instant> {
         fsm::next_deadline(self)
-    }
-
-    pub fn has_shutdown_work(&self) -> bool {
-        self.state
-            .link
-            .connected()
-            .is_some_and(|state| state.session.has_shutdown_work())
     }
 
     /// returns the next outbound record
@@ -305,13 +316,13 @@ impl<M: StreamMeta> QlFsm<M> {
     }
 
     /// closes the current encrypted session locally
-    pub fn close_session(&mut self, code: SessionCloseCode) {
-        fsm::close_session(self, code);
+    pub fn close_session(&mut self, code: SessionCloseCode, crypto: &impl QlCrypto) {
+        fsm::close_session(self, code, crypto);
     }
 
-    /// forgets the bound peer locally and may emit one final outbound `SessionFrame::Unpair`
-    pub fn unpair(&mut self) {
-        fsm::unpair(self);
+    /// forgets the bound peer locally
+    pub fn unpair(&mut self, crypto: &impl QlCrypto) {
+        fsm::unpair(self, crypto);
     }
 
     /// opens a new outgoing stream
