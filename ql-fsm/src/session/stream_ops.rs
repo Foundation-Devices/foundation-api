@@ -5,9 +5,7 @@ use super::{
     state::{InboundState, OutboundState, StreamIoState, StreamState},
     SessionFsm,
 };
-use crate::{
-    CommitReadError, ResetOrigin, StreamMeta, StreamResetEvent, StreamResetTarget, StreamStatus,
-};
+use crate::{CommitReadError, ResetOrigin, StreamMeta, StreamResetEvent, StreamResetTarget};
 
 pub struct StreamOps<'a, M: StreamMeta> {
     session: &'a mut SessionFsm<M>,
@@ -141,39 +139,66 @@ impl<'a> StreamIo<'a> {
         self.state.header.as_ref().unwrap()
     }
 
-    pub fn reader_status(&self) -> StreamStatus {
-        match &self.state.inbound_state {
-            InboundState::Open => StreamStatus::Open,
-            InboundState::Finished => StreamStatus::Finished,
-            InboundState::Reset(reset) => StreamStatus::Reset(reset.code),
+    pub fn reader(&mut self) -> ReaderState<'_> {
+        if let InboundState::Reset(reset) = &self.state.inbound_state {
+            return ReaderState::Reset(reset.code);
+        }
+        let readable = self.state.readable_bytes() > 0;
+        let finished = matches!(self.state.inbound_state, InboundState::Finished);
+        match (readable, finished) {
+            (true, true) => ReaderState::Final(StreamReader { state: self.state }),
+            (true, false) => ReaderState::Readable(StreamReader { state: self.state }),
+            (false, true) => ReaderState::Finished,
+            (false, false) => ReaderState::Open,
         }
     }
 
-    pub fn writer_status(&self) -> StreamStatus {
-        match &self.state.outbound_state {
-            OutboundState::Open => StreamStatus::Open,
-            OutboundState::FinQueued | OutboundState::Finished => StreamStatus::Finished,
-            OutboundState::Reset(reset) => StreamStatus::Reset(reset.code),
+    pub fn writer(&mut self) -> WriterState<'_> {
+        if let OutboundState::Reset(reset) = &self.state.outbound_state {
+            return WriterState::Reset(reset.code);
         }
-    }
-
-    pub fn reader(&mut self) -> Option<StreamReader<'_>> {
-        if self.state.readable_bytes() == 0
-            || matches!(self.state.inbound_state, InboundState::Reset(_))
-        {
-            return None;
+        if matches!(
+            self.state.outbound_state,
+            OutboundState::FinQueued | OutboundState::Finished
+        ) {
+            return WriterState::Finished;
         }
-        Some(StreamReader { state: self.state })
-    }
-
-    pub fn writer(&mut self) -> Option<StreamWriter<'_>> {
-        if !self.state.is_writable() {
-            return None;
-        }
-        Some(StreamWriter {
+        WriterState::Open(StreamWriter {
             state: self.state,
             send_buffer_size: self.send_buffer_size,
         })
+    }
+}
+
+pub enum ReaderState<'a> {
+    Open,
+    Readable(StreamReader<'a>),
+    Final(StreamReader<'a>),
+    Finished,
+    Reset(ResetCode),
+}
+
+impl<'a> ReaderState<'a> {
+    pub fn active(self) -> Option<StreamReader<'a>> {
+        match self {
+            Self::Readable(reader) | Self::Final(reader) => Some(reader),
+            Self::Open | Self::Finished | Self::Reset(_) => None,
+        }
+    }
+}
+
+pub enum WriterState<'a> {
+    Open(StreamWriter<'a>),
+    Finished,
+    Reset(ResetCode),
+}
+
+impl<'a> WriterState<'a> {
+    pub fn active(self) -> Option<StreamWriter<'a>> {
+        match self {
+            Self::Open(writer) => Some(writer),
+            Self::Finished | Self::Reset(_) => None,
+        }
     }
 }
 

@@ -13,7 +13,8 @@ use super::{
     SessionConfig, SessionEvent, SessionParams,
 };
 use crate::{
-    session::stream_parity::StreamParity, StreamIo, StreamMeta, StreamResetEvent, StreamStatus,
+    session::stream_parity::StreamParity, ReaderState, StreamIo, StreamMeta, StreamResetEvent,
+    WriterState,
 };
 
 const REFUSED: ResetCode = ResetCode(1);
@@ -35,7 +36,7 @@ impl StreamMeta for TestMeta {
     fn on_readable(&mut self, mut stream: StreamIo<'_>) {
         self.readable += 1;
         if self.consume_reads {
-            let mut reader = stream.reader().unwrap();
+            let mut reader = stream.reader().active().unwrap();
             let bytes = reader.read().flatten().collect::<Vec<_>>();
             reader.commit_read(bytes.len()).unwrap();
             self.read.extend(bytes);
@@ -44,7 +45,7 @@ impl StreamMeta for TestMeta {
 
     fn on_writable(&mut self, mut stream: StreamIo<'_>) {
         self.writable += 1;
-        if let Some(mut writer) = stream.writer() {
+        if let Some(mut writer) = stream.writer().active() {
             writer.write(&mut self.pending_write);
         }
     }
@@ -70,14 +71,14 @@ fn write_stream_bytes(fsm: &mut super::SessionFsm<()>, stream_id: StreamId, byte
     let mut bytes = Bytes::copy_from_slice(bytes);
     let mut stream = fsm.stream(stream_id).unwrap();
     let mut io = stream.io();
-    let mut writer = io.writer().unwrap();
+    let mut writer = io.writer().active().unwrap();
     writer.write(&mut bytes)
 }
 
 fn read_stream_all(fsm: &mut super::SessionFsm<()>, stream_id: StreamId) -> Vec<u8> {
     let mut stream = fsm.stream(stream_id).unwrap();
     let mut io = stream.io();
-    let mut reader = io.reader().unwrap();
+    let mut reader = io.reader().active().unwrap();
     let out = reader.read().flatten().collect::<Vec<u8>>();
     reader.commit_read(out.len()).unwrap();
     out
@@ -408,7 +409,7 @@ fn ack_reopens_write_capacity() {
 
     let mut bytes = Bytes::from_static(b"abcd");
     let mut stream = fsm.stream(stream_id).unwrap();
-    assert_eq!(stream.io().writer().unwrap().write(&mut bytes), 4);
+    assert_eq!(stream.io().writer().active().unwrap().write(&mut bytes), 4);
     stream.metadata_mut().pending_write = Bytes::from_static(b"z");
     drop(stream);
     let (record_seq, _record) = next_outbound(&mut fsm, now).unwrap();
@@ -428,7 +429,7 @@ fn ack_reopens_write_capacity() {
     let mut stream = fsm.stream(stream_id).unwrap();
     assert_eq!(stream.metadata().writable, 1);
     assert!(stream.metadata().pending_write.is_empty());
-    assert_eq!(stream.io().writer().unwrap().capacity(), 3);
+    assert_eq!(stream.io().writer().active().unwrap().capacity(), 3);
 }
 
 #[test]
@@ -440,8 +441,8 @@ fn ack_of_fin_notifies_metadata_once() {
 
     let mut bytes = Bytes::from_static(b"done");
     let mut stream = fsm.stream(stream_id).unwrap();
-    assert_eq!(stream.io().writer().unwrap().write(&mut bytes), 4);
-    stream.io().writer().unwrap().finish();
+    assert_eq!(stream.io().writer().active().unwrap().write(&mut bytes), 4);
+    stream.io().writer().active().unwrap().finish();
     drop(stream);
 
     let (record_seq, record) = next_outbound(&mut fsm, now).unwrap();
@@ -519,6 +520,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
         .unwrap()
         .io()
         .reader()
+        .active()
         .unwrap()
         .read()
         .map(|chunk| chunk.len())
@@ -531,6 +533,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
         .unwrap()
         .io()
         .reader()
+        .active()
         .unwrap()
         .commit_read(2)
         .unwrap();
@@ -662,8 +665,8 @@ fn inbound_stream_data_queues_opened_and_notifies_metadata() {
     assert_eq!(stream.metadata().inbound_finished, 1);
     {
         let mut io = stream.io();
-        assert_eq!(io.reader_status(), StreamStatus::Finished);
-        let mut reader = io.reader().unwrap();
+        assert!(matches!(io.reader(), ReaderState::Final(_)));
+        let mut reader = io.reader().active().unwrap();
         let bytes = reader.read().flatten().collect::<Vec<_>>();
         assert_eq!(bytes, b"hello");
         reader.commit_read(bytes.len()).unwrap();
@@ -671,7 +674,7 @@ fn inbound_stream_data_queues_opened_and_notifies_metadata() {
     drop(stream);
     let mut stream = fsm.stream(stream_id).unwrap();
     assert_eq!(stream.metadata().inbound_finished, 1);
-    assert!(stream.io().reader().is_none());
+    assert!(stream.io().reader().active().is_none());
 }
 
 #[test]
@@ -694,8 +697,8 @@ fn readable_callback_can_consume_stream_data() {
     assert_eq!(stream.metadata().readable, 1);
     assert_eq!(stream.metadata().read, b"hello");
     assert_eq!(stream.metadata().inbound_finished, 1);
-    assert!(stream.io().reader().is_none());
-    assert_eq!(stream.io().reader_status(), StreamStatus::Finished);
+    assert!(stream.io().reader().active().is_none());
+    assert!(matches!(stream.io().reader(), ReaderState::Finished));
 }
 
 #[test]
@@ -715,7 +718,7 @@ fn inbound_empty_fin_notifies_metadata_immediately() {
     let events = receive_events(&mut fsm, now, RecordSeq(0), &record);
     assert_eq!(events, vec![SessionEvent::Opened(stream_id)]);
     let mut stream = fsm.stream(stream_id).unwrap();
-    assert_eq!(stream.io().reader_status(), StreamStatus::Finished);
+    assert!(matches!(stream.io().reader(), ReaderState::Finished));
     assert_eq!(stream.metadata().inbound_finished, 1);
 }
 
@@ -927,9 +930,9 @@ fn one_sided_remote_reset_notifies_metadata_and_preserves_stream() {
     assert!(receive_events(&mut fsm, now, RecordSeq(2), &reset).is_empty());
 
     let mut stream = fsm.stream(stream_id).unwrap();
-    assert_eq!(stream.io().reader_status(), StreamStatus::Reset(REFUSED));
-    assert_eq!(stream.io().writer_status(), StreamStatus::Open);
-    assert!(stream.io().reader().is_none());
+    assert!(matches!(stream.io().reader(), ReaderState::Reset(REFUSED)));
+    assert!(matches!(stream.io().writer(), WriterState::Open(_)));
+    assert!(stream.io().reader().active().is_none());
     assert_eq!(
         stream.metadata().resets,
         vec![StreamResetEvent {
@@ -969,7 +972,7 @@ fn draining_the_last_bytes_reaps_a_terminal_stream_on_drop() {
     let mut stream = fsm.stream(stream_id).unwrap();
     {
         let mut io = stream.io();
-        let mut reader = io.reader().unwrap();
+        let mut reader = io.reader().active().unwrap();
         let bytes = reader.read().flatten().collect::<Vec<_>>();
         assert_eq!(bytes, b"hello");
         reader.commit_read(bytes.len()).unwrap();

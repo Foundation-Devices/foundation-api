@@ -38,7 +38,9 @@ pub use error::*;
 pub use pairing::PairingInvite;
 use ql_common::{ResetCode, StreamId, QID};
 use ql_wire::{PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode};
-pub use session::{SessionConfig, StreamIo, StreamOps, StreamReader, StreamWriter};
+pub use session::{
+    ReaderState, SessionConfig, StreamIo, StreamOps, StreamReader, StreamWriter, WriterState,
+};
 
 use crate::state::{LinkState, QlFsmState};
 
@@ -154,14 +156,6 @@ impl StreamMeta for () {
     fn on_outbound_finished(&mut self, _: StreamId) {}
 
     fn on_reset(&mut self, _: StreamResetEvent) {}
-}
-
-/// current state of one stream half
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamStatus {
-    Open,
-    Finished,
-    Reset(ResetCode),
 }
 
 /// timing and buffering knobs for `QlFsm`

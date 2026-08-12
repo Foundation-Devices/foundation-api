@@ -5,7 +5,10 @@ use ql_common::StreamId;
 use ql_wire::SessionClose;
 
 use super::*;
-use crate::{state::LinkState, CommitReadError, Event, NoSessionError, PeerStatus, StreamError};
+use crate::{
+    state::LinkState, CommitReadError, Event, NoSessionError, PeerStatus, ReaderState, StreamError,
+    WriterState,
+};
 
 fn open_stream_id(fsm: &mut QlFsm<()>) -> StreamId {
     fsm.open_stream(Box::from([1])).unwrap().io().stream_id()
@@ -19,7 +22,7 @@ fn write_stream_bytes(
     let mut bytes = Bytes::copy_from_slice(bytes);
     let mut stream = fsm.stream(stream_id)?;
     let mut io = stream.io();
-    let mut writer = io.writer().expect("stream is not writable");
+    let mut writer = io.writer().active().expect("stream is not writable");
     Ok(writer.write(&mut bytes))
 }
 
@@ -30,7 +33,7 @@ fn read_stream_all(fsm: &mut QlFsm<()>, stream_id: StreamId) -> Vec<u8> {
     };
     loop {
         let mut io = stream.io();
-        let Some(mut reader) = io.reader() else {
+        let Some(mut reader) = io.reader().active() else {
             break;
         };
         let mut read = 0;
@@ -59,6 +62,7 @@ fn connected_fsms_deliver_stream_data() {
         .unwrap()
         .io()
         .writer()
+        .active()
         .unwrap()
         .finish();
 
@@ -69,30 +73,18 @@ fn connected_fsms_deliver_stream_data() {
         read_stream_all(&mut harness.b.fsm, stream_id),
         b"hello".to_vec()
     );
-    assert_eq!(
-        harness
-            .b
-            .fsm
-            .stream(stream_id)
-            .unwrap()
-            .io()
-            .reader_status(),
-        crate::StreamStatus::Finished
-    );
+    assert!(matches!(
+        harness.b.fsm.stream(stream_id).unwrap().io().reader(),
+        ReaderState::Finished
+    ));
     assert_eq!(harness.take_event(Side::B), None);
     harness.advance(QlFsmConfig::default().session.ack_delay);
     harness.on_timer(Side::B);
     harness.pump();
-    assert_eq!(
-        harness
-            .a
-            .fsm
-            .stream(stream_id)
-            .unwrap()
-            .io()
-            .writer_status(),
-        crate::StreamStatus::Finished
-    );
+    assert!(matches!(
+        harness.a.fsm.stream(stream_id).unwrap().io().writer(),
+        WriterState::Finished
+    ));
     assert_eq!(harness.take_event(Side::A), None);
 }
 
@@ -194,11 +186,12 @@ fn disconnected_stream_operations_fail_with_no_session() {
         Err(StreamError::NoSession)
     );
     assert_eq!(
-        harness
-            .a
-            .fsm
-            .stream(missing)
-            .map(|mut stream| stream.io().writer().unwrap().finish()),
+        harness.a.fsm.stream(missing).map(|mut stream| stream
+            .io()
+            .writer()
+            .active()
+            .unwrap()
+            .finish()),
         Err(StreamError::NoSession)
     );
     assert_eq!(
@@ -241,7 +234,7 @@ fn commit_read_rejects_lengths_past_readable_prefix() {
 
     let mut stream = harness.b.fsm.stream(stream_id).unwrap();
     assert_eq!(
-        stream.io().reader().unwrap().commit_read(3),
+        stream.io().reader().active().unwrap().commit_read(3),
         Err(CommitReadError)
     );
 }

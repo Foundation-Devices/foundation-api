@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use ql_fsm::{OutboundWrite, StreamIo, StreamMeta, StreamResetEvent, StreamStatus};
+use ql_fsm::{OutboundWrite, ReaderState, StreamIo, StreamMeta, StreamResetEvent, WriterState};
 
 use crate::{
     command::Command,
@@ -25,17 +25,17 @@ struct OutboundIo {
 }
 
 impl DriverStreamIo {
-    pub fn initialize(&mut self, tx: Tx, rx: Rx, stream: StreamIo<'_>) {
-        self.outbound = match stream.writer_status() {
-            StreamStatus::Open => Some(OutboundIo {
+    pub fn initialize(&mut self, tx: Tx, rx: Rx, mut stream: StreamIo<'_>) {
+        self.outbound = match stream.writer() {
+            WriterState::Open(_) => Some(OutboundIo {
                 tx,
                 pending: Bytes::new(),
             }),
-            StreamStatus::Finished => {
+            WriterState::Finished => {
                 tx.finish();
                 None
             }
-            StreamStatus::Reset(code) => {
+            WriterState::Reset(code) => {
                 let error = QlStreamError::StreamReset {
                     code,
                     origin: crate::ResetOrigin::Peer,
@@ -44,9 +44,13 @@ impl DriverStreamIo {
                 None
             }
         };
-        self.inbound = match stream.reader_status() {
-            StreamStatus::Open | StreamStatus::Finished => Some(rx),
-            StreamStatus::Reset(code) => {
+        self.inbound = match stream.reader() {
+            ReaderState::Open | ReaderState::Readable(_) | ReaderState::Final(_) => Some(rx),
+            ReaderState::Finished => {
+                rx.finish();
+                None
+            }
+            ReaderState::Reset(code) => {
                 let error = QlStreamError::StreamReset {
                     code,
                     origin: crate::ResetOrigin::Peer,
@@ -72,15 +76,25 @@ impl DriverStreamIo {
 
     pub fn poll_inbound(&mut self, mut stream: StreamIo<'_>) {
         let stream_id = stream.stream_id();
-        let finished = matches!(stream.reader_status(), StreamStatus::Finished);
-        let Some(inbound) = self.inbound.as_ref() else {
-            return;
-        };
-        let Some(mut reader) = stream.reader() else {
-            if finished {
-                inbound.finish();
-                self.inbound = None;
+        let (mut reader, finished) = match stream.reader() {
+            ReaderState::Open => return,
+            ReaderState::Readable(reader) => (reader, false),
+            ReaderState::Final(reader) => (reader, true),
+            ReaderState::Finished => {
+                if let Some(inbound) = self.inbound.take() {
+                    inbound.finish();
+                }
+                return;
             }
+            ReaderState::Reset(code) => {
+                self.inbound_fail(QlStreamError::StreamReset {
+                    code,
+                    origin: crate::ResetOrigin::Peer,
+                });
+                return;
+            }
+        };
+        let Some(inbound) = self.inbound.as_ref() else {
             return;
         };
 
@@ -121,9 +135,16 @@ impl DriverStreamIo {
             return;
         };
 
-        let Some(mut writer) = stream.writer() else {
-            log::trace!("poll stream skipped without session writer: stream_id={stream_id}");
-            return;
+        let mut writer = match stream.writer() {
+            WriterState::Open(writer) => writer,
+            WriterState::Finished => return,
+            WriterState::Reset(code) => {
+                self.outbound_fail(QlStreamError::StreamReset {
+                    code,
+                    origin: crate::ResetOrigin::Peer,
+                });
+                return;
+            }
         };
         loop {
             let capacity = writer.capacity();
@@ -144,6 +165,11 @@ impl DriverStreamIo {
                 bytes.len()
             );
             let _ = writer.write(&mut bytes);
+            debug_assert!(
+                bytes.is_empty(),
+                "stream writer left {} bytes unwritten: stream_id={stream_id}",
+                bytes.len()
+            );
         }
 
         if pending.is_empty() && tx.is_finished() {

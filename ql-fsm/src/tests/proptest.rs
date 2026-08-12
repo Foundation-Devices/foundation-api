@@ -300,6 +300,7 @@ impl Runner {
                             stream
                                 .io()
                                 .writer()
+                                .active()
                                 .map_or(0, |mut writer| writer.write(&mut chunk))
                         },
                     );
@@ -319,7 +320,7 @@ impl Runner {
                         .fsm
                         .stream(stream_id)
                         .is_ok_and(|mut stream| {
-                            stream.io().writer().is_some_and(|writer| {
+                            stream.io().writer().active().is_some_and(|writer| {
                                 writer.finish();
                                 true
                             })
@@ -667,7 +668,7 @@ fn drain_stream(fsm: &mut QlFsm<()>, stream_id: StreamId) -> Vec<u8> {
 
     loop {
         let mut io = stream.io();
-        let Some(mut reader) = io.reader() else {
+        let Some(mut reader) = io.reader().active() else {
             break;
         };
         let mut read = 0usize;
