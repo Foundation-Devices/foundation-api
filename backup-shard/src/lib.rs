@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: © 2025 Foundation Devices, Inc. <hello@foundation.xyz>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::fmt;
+
 use dcbor::{CBOR, CBOREncodable, Map};
 
 #[derive(Debug, Default, Clone, PartialEq, zeroize::ZeroizeOnDrop)]
@@ -324,7 +326,7 @@ impl TryFrom<CBOR> for ShardVersion {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, zeroize::ZeroizeOnDrop)]
+#[derive(Default, Clone, PartialEq, zeroize::ZeroizeOnDrop)]
 #[cfg_attr(
     feature = "keyos",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
@@ -335,6 +337,18 @@ pub struct ShardV0 {
     pub seed_shamir_share: Vec<u8>,
     pub seed_shamir_share_index: usize,
     pub part_of_magic_backup: bool,
+}
+
+impl fmt::Debug for ShardV0 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ShardV0")
+            .field("device_id", &self.device_id)
+            .field("seed_fingerprint", &self.seed_fingerprint)
+            .field("seed_shamir_share", &"<redacted>")
+            .field("seed_shamir_share_index", &self.seed_shamir_share_index)
+            .field("part_of_magic_backup", &self.part_of_magic_backup)
+            .finish()
+    }
 }
 
 impl ShardV0 {
@@ -425,7 +439,7 @@ impl TryFrom<CBOR> for ShardV0 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, zeroize::ZeroizeOnDrop)]
+#[derive(Clone, PartialEq, zeroize::ZeroizeOnDrop)]
 #[cfg_attr(
     feature = "keyos",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
@@ -439,6 +453,21 @@ pub struct ShardV1 {
     pub timestamp: u32,
     pub scheme_threshold: usize,
     pub scheme_share_count: usize,
+}
+
+impl fmt::Debug for ShardV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ShardV1")
+            .field("device_id", &self.device_id)
+            .field("seed_fingerprint", &self.seed_fingerprint)
+            .field("seed_shamir_share", &"<redacted>")
+            .field("seed_shamir_share_index", &self.seed_shamir_share_index)
+            .field("part_of_magic_backup", &self.part_of_magic_backup)
+            .field("timestamp", &self.timestamp)
+            .field("scheme_threshold", &self.scheme_threshold)
+            .field("scheme_share_count", &self.scheme_share_count)
+            .finish()
+    }
 }
 
 impl ShardV1 {
