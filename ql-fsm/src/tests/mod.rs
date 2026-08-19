@@ -112,7 +112,7 @@ impl Harness {
                         .fsm
                         .config
                         .session
-                        .stream_receive_buffer_size,
+                        .initial_stream_receive_window,
                 },
             },
             session: SessionFsm::new(
@@ -133,7 +133,7 @@ impl Harness {
                         .fsm
                         .config
                         .session
-                        .stream_receive_buffer_size,
+                        .initial_stream_receive_window,
                 },
             },
             session: SessionFsm::new(
@@ -323,9 +323,9 @@ fn session_params(harness: &Harness, a: bool) -> SessionParams {
     SessionParams {
         local_parity: StreamParity::for_local(local, remote),
         initial_stream_receive_window: if a {
-            harness.b.fsm.config.session.stream_receive_buffer_size
+            harness.b.fsm.config.session.initial_stream_receive_window
         } else {
-            harness.a.fsm.config.session.stream_receive_buffer_size
+            harness.a.fsm.config.session.initial_stream_receive_window
         },
     }
 }

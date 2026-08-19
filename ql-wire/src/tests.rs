@@ -655,8 +655,12 @@ fn encrypted_session_record_round_trip_authenticates_header() {
         }),
         SessionFrame::StreamData(StreamData {
             stream_id: StreamId(9),
-            offset: Varint(1024),
-            header: None,
+            offset: Varint(0),
+            open: Some(StreamOpen {
+                header: b"route".to_vec(),
+                receive_window: Varint(32 * 1024),
+                requested_peer_receive_window: Varint(24 * 1024),
+            }),
             bytes: b"hello".to_vec(),
             fin: true,
         }),
@@ -863,7 +867,7 @@ fn protocol_record_size_breakdown() {
         &[SessionFrame::StreamData(StreamData {
             stream_id: StreamId(1),
             offset: Varint(0),
-            header: None,
+            open: None,
             fin: false,
             bytes: Vec::new(),
         })],
@@ -973,6 +977,20 @@ fn encoded_len_matches_encoding() {
         &StreamWindow {
             stream_id: StreamId(9),
             maximum_offset: Varint(1 << 40),
+        },
+    );
+    assert_encoded_len(
+        "StreamData",
+        &StreamData {
+            stream_id: StreamId(9),
+            offset: Varint(0),
+            open: Some(StreamOpen {
+                header: b"route".as_slice(),
+                receive_window: Varint(32 * 1024),
+                requested_peer_receive_window: Varint(24 * 1024),
+            }),
+            fin: false,
+            bytes: b"payload".as_slice(),
         },
     );
     assert_encoded_len(

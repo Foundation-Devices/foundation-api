@@ -238,10 +238,11 @@ pub fn close_session<M: StreamMeta>(
 pub fn open_stream<M: StreamMeta>(
     fsm: &mut QlFsm<M>,
     header: Box<[u8]>,
+    options: crate::StreamOptions,
 ) -> Result<crate::StreamOps<'_, M>, NoSessionError> {
     let QlFsm { state, .. } = fsm;
     let conn = state.link.connected_mut_or_err()?;
-    Ok(conn.session.open_stream(header))
+    Ok(conn.session.open_stream(header, options))
 }
 
 pub fn stream<M: StreamMeta>(

@@ -30,7 +30,7 @@ pub use record::*;
 #[cfg(any(feature = "test-utils", test))]
 pub use testing::*;
 
-pub const QL_WIRE_VERSION: u8 = 1;
+pub const QL_WIRE_VERSION: u8 = 2;
 pub const ENCRYPTED_MESSAGE_AUTH_SIZE: usize = 16;
 
 #[cfg(test)]

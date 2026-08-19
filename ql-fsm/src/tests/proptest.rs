@@ -283,7 +283,7 @@ impl Runner {
                     .harness
                     .node_mut(*side)
                     .fsm
-                    .open_stream(Box::from([1]))
+                    .open_stream(Box::from([1]), crate::StreamOptions::default())
                     .ok()
                     .map(|mut stream| stream.io().stream_id());
                 if let Some(stream_id) = stream_id {

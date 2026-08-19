@@ -5,12 +5,12 @@ use ql_codec::Varint;
 use ql_common::{ResetCode, StreamId, QID};
 use ql_wire::{
     decode_session_frames, parse_session_frames, RecordAck, RecordSeq, ResetTarget, SessionFrame,
-    SessionRecordBuilder, StreamData, StreamReset,
+    SessionRecordBuilder, StreamData, StreamOpen, StreamReset,
 };
 
 use super::{
     state::{InboundState, OutboundState},
-    SessionConfig, SessionEvent, SessionParams,
+    SessionConfig, SessionEvent, SessionParams, StreamOptions,
 };
 use crate::{
     session::stream_parity::StreamParity, ReaderState, StreamIo, StreamMeta, StreamResetEvent,
@@ -64,7 +64,19 @@ impl StreamMeta for TestMeta {
 }
 
 fn open_stream_id(fsm: &mut super::SessionFsm<()>) -> StreamId {
-    fsm.open_stream(Box::from([1])).io().stream_id()
+    fsm.open_stream(Box::from([1]), StreamOptions::default())
+        .io()
+        .stream_id()
+}
+
+fn test_open(header: Vec<u8>) -> Option<StreamOpen<Vec<u8>>> {
+    let config = SessionConfig::default();
+    let params = SessionParams::default();
+    Some(StreamOpen {
+        header,
+        receive_window: Varint(config.initial_stream_receive_window),
+        requested_peer_receive_window: Varint(params.initial_stream_receive_window),
+    })
 }
 
 fn write_stream_bytes(fsm: &mut super::SessionFsm<()>, stream_id: StreamId, bytes: &[u8]) -> usize {
@@ -317,7 +329,7 @@ fn tracked_record_count_is_bounded() {
         SessionConfig {
             record_max_size: SessionRecordBuilder::MIN_CAPACITY
                 + 1
-                + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD
+                + StreamData::<Vec<u8>>::MAX_OPEN_WIRE_OVERHEAD
                 + 1,
             stream_send_buffer_size: PAYLOAD_LEN,
             ..SessionConfig::default()
@@ -353,7 +365,7 @@ fn lost_record_on_one_stream_does_not_block_another_stream() {
         SessionConfig {
             record_max_size: SessionRecordBuilder::MIN_CAPACITY
                 + 1 // discriminator byte
-                + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD
+                + StreamData::<Vec<u8>>::MAX_OPEN_WIRE_OVERHEAD
                 + PAYLOAD_LEN,
             ..SessionConfig::default()
         },
@@ -405,7 +417,10 @@ fn ack_reopens_write_capacity() {
         SessionParams::default(),
         now,
     );
-    let stream_id = fsm.open_stream(Box::from([1])).io().stream_id();
+    let stream_id = fsm
+        .open_stream(Box::from([1]), StreamOptions::default())
+        .io()
+        .stream_id();
 
     let mut bytes = Bytes::from_static(b"abcd");
     let mut stream = fsm.stream(stream_id).unwrap();
@@ -437,7 +452,10 @@ fn ack_of_fin_notifies_metadata_once() {
     let now = Instant::now();
     let mut fsm =
         super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
-    let stream_id = fsm.open_stream(Box::from([1])).io().stream_id();
+    let stream_id = fsm
+        .open_stream(Box::from([1]), StreamOptions::default())
+        .io()
+        .stream_id();
 
     let mut bytes = Bytes::from_static(b"done");
     let mut stream = fsm.stream(stream_id).unwrap();
@@ -503,7 +521,7 @@ fn commit_stream_read_is_what_advances_stream_window() {
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
@@ -560,7 +578,7 @@ fn lost_stream_window_is_resent_after_a_timeout() {
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
@@ -622,7 +640,7 @@ fn pure_ack_only_records_are_fire_and_forget() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
@@ -653,7 +671,7 @@ fn inbound_stream_data_queues_opened_and_notifies_metadata() {
     let record = vec![SessionFrame::StreamData(ql_wire::StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -682,12 +700,15 @@ fn readable_callback_can_consume_stream_data() {
     let now = Instant::now();
     let mut fsm =
         super::SessionFsm::<TestMeta>::new(SessionConfig::default(), SessionParams::default(), now);
-    let stream_id = fsm.open_stream(Box::from([1])).io().stream_id();
+    let stream_id = fsm
+        .open_stream(Box::from([1]), StreamOptions::default())
+        .io()
+        .stream_id();
     fsm.stream(stream_id).unwrap().metadata_mut().consume_reads = true;
     let record = [SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: None,
+        open: None,
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -710,7 +731,7 @@ fn inbound_empty_fin_notifies_metadata_immediately() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: true,
         bytes: Vec::new(),
     })];
@@ -733,7 +754,10 @@ fn local_stream_reset_is_reliable_and_notifies_metadata() {
         SessionParams::default(),
         now,
     );
-    let stream_id = fsm.open_stream(Box::from([1])).io().stream_id();
+    let stream_id = fsm
+        .open_stream(Box::from([1]), StreamOptions::default())
+        .io()
+        .stream_id();
 
     fsm.stream(stream_id)
         .unwrap()
@@ -777,7 +801,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream(vec![1_u8].into_boxed_slice())
+    .open_stream(vec![1_u8].into_boxed_slice(), StreamOptions::default())
     .io()
     .stream_id();
     let odd_id = super::SessionFsm::<()>::new(
@@ -788,7 +812,7 @@ fn stream_ids_follow_even_odd_xid_ordering() {
         },
         now,
     )
-    .open_stream(vec![1_u8].into_boxed_slice())
+    .open_stream(vec![1_u8].into_boxed_slice(), StreamOptions::default())
     .io()
     .stream_id();
 
@@ -805,7 +829,7 @@ fn duplicate_stream_data_is_not_redelivered() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: false,
         bytes: b"hi".to_vec(),
     })];
@@ -859,7 +883,7 @@ fn late_remote_stream_data_after_reset_is_ignored() {
     let data = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: false,
         bytes: b"hello".to_vec(),
     })];
@@ -886,7 +910,7 @@ fn stream_reset_in_its_opening_record_leaves_stale_events() {
         SessionFrame::StreamData(StreamData {
             stream_id,
             offset: Varint(0),
-            header: Some(vec![1_u8]),
+            open: test_open(vec![1_u8]),
             fin: false,
             bytes: b"discarded".to_vec(),
         }),
@@ -913,7 +937,7 @@ fn one_sided_remote_reset_notifies_metadata_and_preserves_stream() {
     let data = [SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: false,
         bytes: b"discarded".to_vec(),
     })];
@@ -954,7 +978,7 @@ fn draining_the_last_bytes_reaps_a_terminal_stream_on_drop() {
         SessionFrame::StreamData(StreamData {
             stream_id,
             offset: Varint(0),
-            header: Some(vec![1_u8]),
+            open: test_open(vec![1_u8]),
             fin: true,
             bytes: b"hello".to_vec(),
         }),
@@ -991,7 +1015,7 @@ fn duplicate_finished_remote_data_after_read_is_ignored() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -1018,7 +1042,7 @@ fn duplicate_finished_remote_data_before_read_is_ignored() {
     let record = vec![SessionFrame::StreamData(StreamData {
         stream_id,
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: true,
         bytes: b"hello".to_vec(),
     })];
@@ -1110,7 +1134,7 @@ fn close_does_not_ack_rejected_record_seq() {
     let invalid = vec![SessionFrame::StreamData(StreamData {
         stream_id: StreamId(0),
         offset: Varint(0),
-        header: Some(vec![1_u8]),
+        open: test_open(vec![1_u8]),
         fin: false,
         bytes: b"bad".to_vec(),
     })];
@@ -1185,12 +1209,188 @@ fn initial_peer_stream_receive_window_limits_first_send() {
 }
 
 #[test]
+fn default_stream_options_inherit_session_and_peer_values() {
+    let now = Instant::now();
+    let mut fsm = super::SessionFsm::<()>::new(
+        SessionConfig {
+            stream_send_buffer_size: 4,
+            initial_stream_receive_window: 8,
+            max_stream_receive_window: 32,
+            ..SessionConfig::default()
+        },
+        SessionParams {
+            initial_stream_receive_window: 12,
+            ..SessionParams::default()
+        },
+        now,
+    );
+    let stream_id = fsm
+        .open_stream(Box::from([1]), StreamOptions::default())
+        .io()
+        .stream_id();
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"0123456789"), 4);
+
+    let (_, frames) = next_outbound(&mut fsm, now).unwrap();
+    assert!(matches!(
+        frames.as_slice(),
+        [SessionFrame::StreamData(StreamData {
+            open: Some(StreamOpen {
+                receive_window,
+                requested_peer_receive_window,
+                ..
+            }),
+            ..
+        })]
+            if **receive_window == 8 && **requested_peer_receive_window == 12
+    ));
+}
+
+#[test]
+fn opening_frame_carries_normalized_stream_options() {
+    let now = Instant::now();
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
+    let stream_id = fsm
+        .open_stream(
+            Box::from([1]),
+            StreamOptions {
+                receive_window: Some(64 * 1024),
+                requested_peer_receive_window: Some(48 * 1024),
+                send_buffer_size: Some(4),
+            },
+        )
+        .io()
+        .stream_id();
+    assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"data"), 4);
+
+    let (_, frames) = next_outbound(&mut fsm, now).unwrap();
+    assert!(matches!(
+        frames.as_slice(),
+        [SessionFrame::StreamData(StreamData {
+            open: Some(StreamOpen {
+                receive_window,
+                requested_peer_receive_window,
+                ..
+            }),
+            ..
+        })]
+            if **receive_window == 32 * 1024
+                && **requested_peer_receive_window == 48 * 1024
+    ));
+}
+
+#[test]
+fn stream_open_applies_granted_and_requested_receive_windows() {
+    let now = Instant::now();
+    let mut fsm = super::SessionFsm::<()>::new(
+        SessionConfig {
+            initial_stream_receive_window: 8,
+            max_stream_receive_window: 32,
+            ..SessionConfig::default()
+        },
+        SessionParams {
+            initial_stream_receive_window: 8,
+            ..SessionParams::default()
+        },
+        now,
+    );
+    let stream_id = StreamId(1);
+    let record = [SessionFrame::StreamData(StreamData {
+        stream_id,
+        offset: Varint(0),
+        open: Some(StreamOpen {
+            header: vec![1],
+            receive_window: Varint(64),
+            requested_peer_receive_window: Varint(64),
+        }),
+        fin: false,
+        bytes: vec![0; 8],
+    })];
+
+    assert_eq!(
+        receive_events(&mut fsm, now, RecordSeq(1), &record),
+        vec![SessionEvent::Opened(stream_id)]
+    );
+    assert_eq!(fsm.state.streams[&stream_id].io.peer_max_offset, 64);
+    assert_eq!(fsm.state.streams[&stream_id].io.rx.max_buffered(), 32);
+
+    let (_, response) = next_outbound(&mut fsm, now).unwrap();
+    assert!(response.iter().any(|frame| matches!(
+        frame,
+        SessionFrame::StreamWindow(window)
+            if window.stream_id == stream_id && *window.maximum_offset == 32
+    )));
+}
+
+#[test]
+fn opening_payload_cannot_spend_requested_credit() {
+    let now = Instant::now();
+    let mut fsm = super::SessionFsm::<()>::new(
+        SessionConfig {
+            initial_stream_receive_window: 8,
+            max_stream_receive_window: 32,
+            ..SessionConfig::default()
+        },
+        SessionParams::default(),
+        now,
+    );
+    let record = [SessionFrame::StreamData(StreamData {
+        stream_id: StreamId(1),
+        offset: Varint(0),
+        open: Some(StreamOpen {
+            header: vec![1],
+            receive_window: Varint(8),
+            requested_peer_receive_window: Varint(32),
+        }),
+        fin: false,
+        bytes: vec![0; 9],
+    })];
+
+    let events = receive_events(&mut fsm, now, RecordSeq(1), &record);
+    assert!(matches!(
+        events.as_slice(),
+        [SessionEvent::SessionClosed { close, .. }]
+            if close.code == ql_wire::SessionCloseCode::PROTOCOL
+    ));
+}
+
+#[test]
+fn streams_have_independent_send_buffer_sizes() {
+    let now = Instant::now();
+    let mut fsm =
+        super::SessionFsm::<()>::new(SessionConfig::default(), SessionParams::default(), now);
+    let small = fsm
+        .open_stream(
+            Box::from([1]),
+            StreamOptions {
+                send_buffer_size: Some(4),
+                ..StreamOptions::default()
+            },
+        )
+        .io()
+        .stream_id();
+    let large = fsm
+        .open_stream(
+            Box::from([1]),
+            StreamOptions {
+                send_buffer_size: Some(9),
+                ..StreamOptions::default()
+            },
+        )
+        .io()
+        .stream_id();
+
+    assert_eq!(write_stream_bytes(&mut fsm, small, b"0123456789"), 4);
+    assert_eq!(write_stream_bytes(&mut fsm, large, b"0123456789"), 9);
+}
+
+#[test]
 fn sparse_out_of_order_ack_ranges_page_and_quiesce() {
     let now = Instant::now();
     let sender_config = SessionConfig {
         record_max_size: SessionRecordBuilder::MIN_CAPACITY
             + 1 // discriminator byte
-            + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD
+            + StreamData::<Vec<u8>>::MAX_OPEN_WIRE_OVERHEAD
             + 10, // keeps stream-data records tiny enough to force ACK paging
         ack_delay: Duration::from_millis(5),
         retransmit_timeout: Duration::from_millis(25),
@@ -1281,7 +1481,10 @@ fn stream_header_larger_than_the_record_budget_does_not_panic() {
     );
 
     // The header rides in the same frame as the payload, so one this large leaves no room.
-    let stream_id = fsm.open_stream(Box::from(vec![7u8; 256])).io().stream_id();
+    let stream_id = fsm
+        .open_stream(Box::from(vec![7u8; 256]), StreamOptions::default())
+        .io()
+        .stream_id();
     assert_eq!(write_stream_bytes(&mut fsm, stream_id, b"payload"), 7);
 
     assert!(next_outbound(&mut fsm, now).is_none());

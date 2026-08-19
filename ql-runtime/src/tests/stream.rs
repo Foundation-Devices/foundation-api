@@ -30,7 +30,7 @@ async fn open_stream_duplex_happy_path() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream
@@ -78,7 +78,7 @@ async fn large_stream_payload_round_trips() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream
@@ -118,7 +118,7 @@ async fn dropping_responder_closes_initiator_response() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         let err = stream.writer.finish().await.unwrap_err();
@@ -173,7 +173,7 @@ async fn dropping_inbound_reader_cancels_remote_writer() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream.writer.finish().await.unwrap();
@@ -209,7 +209,7 @@ async fn closing_initiator_reader_preserves_initiator_writer() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         let mut writer = stream.writer;
@@ -242,7 +242,7 @@ async fn reset_writer_rejects_later_writes_and_finish() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream.writer.reset(ResetCode::CANCELLED);
@@ -309,7 +309,10 @@ async fn max_concurrent_message_writes_is_respected() {
         for i in 0..4u8 {
             let handle = handle_a.clone();
             tasks.push(tokio::task::spawn_local(async move {
-                let mut stream = handle.open_stream(test_open_stream_params()).await.unwrap();
+                let mut stream = handle
+                    .open_stream(test_open_stream_params(), StreamOptions::default())
+                    .await
+                    .unwrap();
                 stream.writer.write(Bytes::from(vec![i; 8])).await.unwrap();
                 stream.writer.finish().await.unwrap();
                 assert_eq!(next_chunk(&mut stream.reader).await.unwrap(), None);
@@ -387,7 +390,7 @@ async fn stream_round_trip_survives_encrypted_packet_drops() {
         });
 
         let mut stream = handle_a
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream
@@ -429,7 +432,8 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
                     ack_delay: Duration::from_millis(2),
                     retransmit_timeout: Duration::from_millis(25),
                     stream_send_buffer_size: 4 * 1024 * 1024,
-                    stream_receive_buffer_size: 4 * 1024 * 1024,
+                    initial_stream_receive_window: 4 * 1024 * 1024,
+                    max_stream_receive_window: 4 * 1024 * 1024,
                     accepted_record_window: 16 * 1024,
                     pending_ack_range_limit: 4 * 1024,
                     ..default_runtime_config().fsm.session
@@ -492,7 +496,7 @@ async fn multi_megabyte_stream_survives_asymmetric_loss_and_delay() {
         let handle_a = pair.side(Side::A).handle.clone();
         let writer = tokio::task::spawn_local(async move {
             let mut stream = handle_a
-                .open_stream(test_open_stream_params())
+                .open_stream(test_open_stream_params(), StreamOptions::default())
                 .await
                 .unwrap();
             for (index, chunk) in payload.chunks(chunk_len).enumerate() {
@@ -550,7 +554,8 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
                     ack_delay: Duration::from_millis(2),
                     retransmit_timeout: Duration::from_millis(25),
                     stream_send_buffer_size: 4 * 1024 * 1024,
-                    stream_receive_buffer_size: 4 * 1024 * 1024,
+                    initial_stream_receive_window: 4 * 1024 * 1024,
+                    max_stream_receive_window: 4 * 1024 * 1024,
                     accepted_record_window: 16 * 1024,
                     pending_ack_range_limit: 4 * 1024,
                     ..default_runtime_config().fsm.session
@@ -601,7 +606,7 @@ async fn reproducer_writer_stalls_after_reverse_path_impairment() {
             let mut stream = pair
                 .side(Side::A)
                 .handle
-                .open_stream(test_open_stream_params())
+                .open_stream(test_open_stream_params(), StreamOptions::default())
                 .await
                 .unwrap();
             for chunk in payload.chunks(chunk_len) {
@@ -649,7 +654,7 @@ async fn responder_drains_multiple_local_chunks_per_writable_wake() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream

@@ -209,10 +209,14 @@ impl DriverState {
                 log::info!("unpairing peer");
                 fsm.unpair(platform.crypto());
             }
-            Command::OpenStream { header, start } => {
+            Command::OpenStream {
+                header,
+                options,
+                start,
+            } => {
                 log::info!("open stream requested");
 
-                let mut stream = match fsm.open_stream(header) {
+                let mut stream = match fsm.open_stream(header, options) {
                     Ok(stream_ops) => stream_ops,
                     Err(error) => {
                         log::warn!("open stream failed");

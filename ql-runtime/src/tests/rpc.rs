@@ -145,7 +145,7 @@ async fn rpc_request_uses_runtime_streams() {
             .side_mut(Side::A)
             .handle
             .rpc()
-            .request::<Echo>(&"hello".into())
+            .request::<Echo>(&"hello".into(), StreamOptions::default())
             .await
             .unwrap();
         assert_eq!(response, "world");
@@ -207,7 +207,7 @@ async fn rpc_progress_preserves_response_reader_after_request_finish() {
             .side_mut(Side::A)
             .handle
             .rpc()
-            .progress::<Download>(&b"logo".to_vec())
+            .progress::<Download>(&b"logo".to_vec(), StreamOptions::default())
             .await
             .unwrap();
         assert_eq!(download.next_progress().await, Some(b"10".to_vec()));

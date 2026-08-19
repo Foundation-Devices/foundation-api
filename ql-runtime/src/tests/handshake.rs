@@ -20,7 +20,7 @@ async fn opening_stream_requires_connection() {
         assert!(matches!(
             pair.side(Side::A)
                 .handle
-                .open_stream(test_open_stream_params())
+                .open_stream(test_open_stream_params(), StreamOptions::default())
                 .await,
             Err(NoSessionError)
         ));
@@ -89,7 +89,7 @@ async fn rejected_session_write_is_reissued() {
         });
 
         let mut stream = handle_a
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream

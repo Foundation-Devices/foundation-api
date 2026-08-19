@@ -84,14 +84,14 @@ fn ik_connect_learns_remote_initial_stream_receive_window() {
     let mut harness = Harness::paired_known_with_configs(
         QlFsmConfig {
             session: SessionConfig {
-                stream_receive_buffer_size: 9,
+                initial_stream_receive_window: 9,
                 ..SessionConfig::default()
             },
             ..QlFsmConfig::default()
         },
         QlFsmConfig {
             session: SessionConfig {
-                stream_receive_buffer_size: 3,
+                initial_stream_receive_window: 3,
                 ..SessionConfig::default()
             },
             ..QlFsmConfig::default()

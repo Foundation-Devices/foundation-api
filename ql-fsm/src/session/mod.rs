@@ -22,14 +22,16 @@ use ql_codec::Varint;
 use ql_common::StreamId;
 use ql_wire::{
     RecordAck, RecordSeq, ResetTarget, SessionClose, SessionCloseCode, SessionFrame,
-    SessionRecordBuilder, StreamData, StreamReset, StreamWindow,
+    SessionRecordBuilder, StreamData, StreamOpen, StreamReset, StreamWindow,
 };
 
 use self::{
     ack_tracker::{AckTracker, PendingAck},
     remote_stream_history::RemoteStreamHistory,
     replay_window::ReplayWindow,
-    state::{InboundState, OutboundState, SessionState, StreamRole, StreamState},
+    state::{
+        InboundState, OutboundState, SessionState, StreamOpenOptions, StreamRole, StreamState,
+    },
     stream_tx::StreamTxRange,
     tracked::{LossRecovery, TrackedFrame, TrackedRecord, TrackedStreamData},
 };
@@ -47,10 +49,12 @@ pub struct SessionConfig {
     pub keepalive_interval: Duration,
     /// how long to wait before declaring the peer dead
     pub peer_timeout: Duration,
-    /// maximum bytes buffered locally for one stream send side
+    /// default bytes buffered locally for one stream send side
     pub stream_send_buffer_size: usize,
-    /// maximum bytes buffered locally for one stream receive side
-    pub stream_receive_buffer_size: u32,
+    /// receive credit available to every new stream before its opening request is accepted
+    pub initial_stream_receive_window: u32,
+    /// maximum receive credit accepted from a stream opening request
+    pub max_stream_receive_window: u32,
     /// how many accepted record sequence numbers to retain for replay detection
     pub accepted_record_window: u64,
     /// maximum disjoint pending ACK ranges to retain before dropping the oldest low ranges
@@ -66,11 +70,23 @@ impl Default for SessionConfig {
             keepalive_interval: Duration::from_secs(10),
             peer_timeout: Duration::from_secs(30),
             stream_send_buffer_size: 16 * 1024,
-            stream_receive_buffer_size: 16 * 1024,
+            initial_stream_receive_window: 16 * 1024,
+            max_stream_receive_window: 32 * 1024,
             accepted_record_window: 4096,
             pending_ack_range_limit: 64,
         }
     }
+}
+
+/// per-stream overrides applied when opening a stream
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StreamOptions {
+    /// overrides credit granted to the peer for its sending direction
+    pub receive_window: Option<u32>,
+    /// overrides credit requested from the peer for the local sending direction
+    pub requested_peer_receive_window: Option<u32>,
+    /// overrides bytes buffered locally for the sending direction
+    pub send_buffer_size: Option<usize>,
 }
 
 /// per-session values settled by the handshake
@@ -126,7 +142,10 @@ impl<M: StreamMeta> SessionFsm<M> {
             .record_max_size
             .max(SessionRecordBuilder::MIN_CAPACITY);
         config.stream_send_buffer_size = config.stream_send_buffer_size.max(1);
-        config.stream_receive_buffer_size = config.stream_receive_buffer_size.max(1);
+        config.initial_stream_receive_window = config.initial_stream_receive_window.max(1);
+        config.max_stream_receive_window = config
+            .max_stream_receive_window
+            .max(config.initial_stream_receive_window);
         Self {
             config,
             params,
@@ -148,7 +167,22 @@ impl<M: StreamMeta> SessionFsm<M> {
         }
     }
 
-    pub fn open_stream(&mut self, header: Box<[u8]>) -> StreamOps<'_, M> {
+    pub fn open_stream(&mut self, header: Box<[u8]>, options: StreamOptions) -> StreamOps<'_, M> {
+        let receive_window = options
+            .receive_window
+            .unwrap_or(self.config.initial_stream_receive_window)
+            .clamp(
+                self.config.initial_stream_receive_window,
+                self.config.max_stream_receive_window,
+            );
+        let requested_peer_receive_window = options
+            .requested_peer_receive_window
+            .unwrap_or(self.params.initial_stream_receive_window)
+            .max(1);
+        let send_buffer_size = options
+            .send_buffer_size
+            .unwrap_or(self.config.stream_send_buffer_size)
+            .max(1);
         let stream_id = self
             .params
             .local_parity
@@ -160,8 +194,13 @@ impl<M: StreamMeta> SessionFsm<M> {
                 M::default(),
                 StreamRole::Initiator,
                 Some(Bytes::from(header)),
-                self.config.stream_receive_buffer_size,
+                receive_window,
                 self.params.initial_stream_receive_window,
+                send_buffer_size,
+                StreamOpenOptions {
+                    receive_window,
+                    requested_peer_receive_window,
+                },
             ),
         );
         let stream_index = self.state.streams.len() - 1;
@@ -467,8 +506,6 @@ impl<M: StreamMeta> SessionFsm<M> {
         builder: &mut SessionRecordBuilder,
         outbound: &mut TrackedRecord,
     ) {
-        const OVERHEAD: usize = 1 + StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD;
-
         let len = self.state.streams.len();
         if len == 0 {
             return;
@@ -478,24 +515,40 @@ impl<M: StreamMeta> SessionFsm<M> {
         let mut next_index = start;
 
         for offset in 0..len {
-            let Some(max_payload) = builder.remaining_capacity().checked_sub(OVERHEAD) else {
-                break;
-            };
-
             let index = (start + offset) % len;
             let (&stream_id, stream) = self.state.streams.get_index_mut(index).unwrap();
             if matches!(stream.io.outbound_state, OutboundState::Reset(_)) {
                 continue;
             }
-            // The header shares the frame with the payload, so it has to come out of the same
-            // budget, and that budget is set before poll_transmit picks the range.
-            let header = match stream.io.role {
+            // the opening shares the frame with the payload, so its header has to come out of the
+            // same budget before poll_transmit picks the range
+            let open = match stream.io.role {
                 StreamRole::Initiator if stream.io.tx.can_send_header() => {
-                    stream.io.header.as_deref()
+                    let options = stream.io.opening_options;
+                    stream.io.header.as_deref().map(|header| StreamOpen {
+                        header,
+                        receive_window: Varint(options.receive_window),
+                        requested_peer_receive_window: Varint(
+                            options.requested_peer_receive_window,
+                        ),
+                    })
                 }
                 _ => None,
             };
-            let Some(max_payload) = max_payload.checked_sub(header.map_or(0, <[u8]>::len)) else {
+            let overhead = 1 + if open.is_some() {
+                StreamData::<Vec<u8>>::MAX_OPEN_WIRE_OVERHEAD
+            } else {
+                StreamData::<Vec<u8>>::MAX_WIRE_OVERHEAD
+            };
+            let Some(max_payload) =
+                builder
+                    .remaining_capacity()
+                    .checked_sub(overhead)
+                    .and_then(|capacity| {
+                        let header_size = open.as_ref().map_or(0, |open| open.header.len());
+                        capacity.checked_sub(header_size)
+                    })
+            else {
                 continue;
             };
             let Some(candidate) = stream
@@ -508,7 +561,7 @@ impl<M: StreamMeta> SessionFsm<M> {
             let frame = StreamData {
                 stream_id,
                 offset: Varint(candidate.offset),
-                header: if candidate.offset == 0 { header } else { None },
+                open: if candidate.offset == 0 { open } else { None },
                 fin: candidate.fin,
                 bytes: stream.io.tx.ranged_bytes(candidate),
             };
@@ -533,7 +586,6 @@ impl<M: StreamMeta> SessionFsm<M> {
     }
 
     fn process_record_ack(&mut self, now: Instant, ack: &RecordAck) {
-        let stream_send_buffer_size = self.config.stream_send_buffer_size;
         let mut latest_sent_at = None;
         let state = &mut self.state;
         for (_, record) in state
@@ -542,7 +594,7 @@ impl<M: StreamMeta> SessionFsm<M> {
         {
             latest_sent_at = latest_sent_at.max(record.sent_at);
             for frame in &record.frames {
-                acknowledge_tracked_frame(&mut state.streams, stream_send_buffer_size, frame);
+                acknowledge_tracked_frame(&mut state.streams, frame);
             }
         }
         if let Some(sent_at) = latest_sent_at {
@@ -591,11 +643,12 @@ impl<M: StreamMeta> SessionFsm<M> {
         frame: StreamData<Bytes>,
         sink: &mut impl EventSink,
     ) -> Result<(), ()> {
-        let send_buffer_size = self.config.stream_send_buffer_size;
+        let initial_receive_window = self.config.initial_stream_receive_window;
+        let max_receive_window = self.config.max_stream_receive_window;
         let StreamData {
             stream_id,
             offset,
-            header,
+            open,
             fin,
             bytes,
         } = frame;
@@ -616,11 +669,22 @@ impl<M: StreamMeta> SessionFsm<M> {
         let opened = match (
             stream.io.role,
             stream.io.header.as_ref(),
-            header,
+            open,
             frame_offset,
         ) {
-            (StreamRole::Responder, None, Some(header), 0) => {
-                stream.io.header = Some(header);
+            (StreamRole::Responder, None, Some(open), 0) => {
+                if frame_end > stream.io.recv_limit() {
+                    return Err(());
+                }
+                let receive_window = (*open.requested_peer_receive_window)
+                    .clamp(initial_receive_window, max_receive_window);
+                stream.io.rx.set_max_buffered(receive_window as usize);
+                stream.io.pending_window = receive_window > initial_receive_window;
+                stream.io.peer_max_offset = stream
+                    .io
+                    .peer_max_offset
+                    .max(u64::from(*open.receive_window));
+                stream.io.header = Some(open.header);
                 true
             }
             (StreamRole::Initiator, _, Some(_), _)
@@ -668,11 +732,11 @@ impl<M: StreamMeta> SessionFsm<M> {
             stream.io.header.is_some() && readable_before == 0 && stream.io.readable_bytes() > 0;
         if became_readable {
             let StreamState { metadata, io } = stream;
-            metadata.on_readable(StreamIo::new(stream_id, io, send_buffer_size));
+            metadata.on_readable(StreamIo::new(stream_id, io));
         }
         if finished {
             let StreamState { metadata, io } = stream;
-            metadata.on_inbound_finished(StreamIo::new(stream_id, io, send_buffer_size));
+            metadata.on_inbound_finished(StreamIo::new(stream_id, io));
         }
 
         self.try_reap_stream(stream_id);
@@ -814,8 +878,13 @@ impl<M: StreamMeta> SessionFsm<M> {
                 M::default(),
                 StreamRole::Responder,
                 None,
-                self.config.stream_receive_buffer_size,
+                self.config.initial_stream_receive_window,
                 self.params.initial_stream_receive_window,
+                self.config.stream_send_buffer_size,
+                StreamOpenOptions {
+                    receive_window: self.config.initial_stream_receive_window,
+                    requested_peer_receive_window: self.params.initial_stream_receive_window,
+                },
             ));
 
         Ok(Some(stream.into_mut()))
@@ -939,7 +1008,6 @@ fn stream_is_reapable<M>(
 
 fn acknowledge_tracked_frame<M: StreamMeta>(
     streams: &mut IndexMap<StreamId, StreamState<M>>,
-    stream_send_buffer_size: usize,
     frame: &TrackedFrame,
 ) {
     match frame {
@@ -947,19 +1015,16 @@ fn acknowledge_tracked_frame<M: StreamMeta>(
         TrackedFrame::StreamData(frame) => {
             let stream_id = frame.stream_id;
             if let Some(stream) = streams.get_mut(&stream_id) {
-                let was_full = stream.io.send_capacity(stream_send_buffer_size) == 0;
+                let was_full = stream.io.send_capacity() == 0;
                 let had_unacked_fin = frame.fin && stream.io.tx.has_unacked_fin();
                 stream.io.tx.ack(StreamTxRange {
                     offset: frame.offset,
                     len: frame.len,
                     fin: frame.fin,
                 });
-                if was_full
-                    && stream.io.send_capacity(stream_send_buffer_size) > 0
-                    && stream.io.is_writable()
-                {
+                if was_full && stream.io.send_capacity() > 0 && stream.io.is_writable() {
                     let StreamState { metadata, io } = stream;
-                    metadata.on_writable(StreamIo::new(stream_id, io, stream_send_buffer_size));
+                    metadata.on_writable(StreamIo::new(stream_id, io));
                 }
                 if had_unacked_fin && !stream.io.tx.has_unacked_fin() {
                     stream.metadata.on_outbound_finished(stream_id);

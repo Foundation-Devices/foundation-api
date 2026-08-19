@@ -60,6 +60,10 @@ impl StreamRx {
         self.max_buffered
     }
 
+    pub fn set_max_buffered(&mut self, max_buffered: usize) {
+        self.max_buffered = self.max_buffered.max(max_buffered);
+    }
+
     pub fn readable_len(&self) -> usize {
         let mut cursor = self.start_offset;
         for (&offset, bytes) in self.chunks.range(self.start_offset..) {

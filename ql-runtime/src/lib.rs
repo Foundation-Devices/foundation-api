@@ -1,4 +1,4 @@
-pub use ql_fsm::{NoSessionError, PairingInvite};
+pub use ql_fsm::{NoSessionError, PairingInvite, StreamOptions};
 
 pub use self::{
     error::{QlStreamError, ResetOrigin},

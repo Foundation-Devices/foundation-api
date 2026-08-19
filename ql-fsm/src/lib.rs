@@ -39,7 +39,8 @@ pub use pairing::PairingInvite;
 use ql_common::{ResetCode, StreamId, QID};
 use ql_wire::{PairingToken, PeerBundle, QlCrypto, QlIdentity, SessionClose, SessionCloseCode};
 pub use session::{
-    ReaderState, SessionConfig, StreamIo, StreamOps, StreamReader, StreamWriter, WriterState,
+    ReaderState, SessionConfig, StreamIo, StreamOps, StreamOptions, StreamReader, StreamWriter,
+    WriterState,
 };
 
 use crate::state::{LinkState, QlFsmState};
@@ -320,8 +321,12 @@ impl<M: StreamMeta> QlFsm<M> {
     }
 
     /// opens a new outgoing stream
-    pub fn open_stream(&mut self, header: Box<[u8]>) -> Result<StreamOps<'_, M>, NoSessionError> {
-        fsm::open_stream(self, header)
+    pub fn open_stream(
+        &mut self,
+        header: Box<[u8]>,
+        options: StreamOptions,
+    ) -> Result<StreamOps<'_, M>, NoSessionError> {
+        fsm::open_stream(self, header, options)
     }
 
     /// returns an open stream

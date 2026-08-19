@@ -22,7 +22,7 @@ use tokio::{task::LocalSet, time::Sleep};
 
 use crate::{
     new_runtime, platform::QlTimer, NoSessionError, PairingInvite, QlFsmConfig, QlStream,
-    QlStreamError, RuntimeConfig, RuntimeHandle,
+    QlStreamError, RuntimeConfig, RuntimeHandle, StreamOptions,
 };
 
 type InboundStream = (StreamInfo, QlStream);

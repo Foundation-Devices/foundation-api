@@ -37,7 +37,7 @@ async fn runtime_shutdown_sends_pending_close_before_exit() {
         await_status(&status_b, Some(identity_a.qid), PeerStatus::Connected).await;
 
         let mut stream = handle_a
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream
@@ -86,7 +86,7 @@ async fn close_session_aborts_active_streams_and_allows_reconnect() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream
@@ -151,7 +151,7 @@ async fn unpair_aborts_active_streams_and_prevents_reconnect() {
         let mut stream = pair
             .side(Side::A)
             .handle
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         stream
@@ -177,14 +177,14 @@ async fn unpair_aborts_active_streams_and_prevents_reconnect() {
         assert!(matches!(
             pair.side(Side::A)
                 .handle
-                .open_stream(test_open_stream_params())
+                .open_stream(test_open_stream_params(), StreamOptions::default())
                 .await,
             Err(NoSessionError)
         ));
         assert!(matches!(
             pair.side(Side::B)
                 .handle
-                .open_stream(test_open_stream_params())
+                .open_stream(test_open_stream_params(), StreamOptions::default())
                 .await,
             Err(NoSessionError)
         ));
@@ -254,7 +254,7 @@ async fn session_timeout_disconnects_and_fails_pending_open() {
         drop_flag.store(true, Ordering::Relaxed);
 
         let mut pending = handle_a
-            .open_stream(test_open_stream_params())
+            .open_stream(test_open_stream_params(), StreamOptions::default())
             .await
             .unwrap();
         let err = pending.writer.finish().await.unwrap_err();

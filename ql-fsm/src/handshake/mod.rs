@@ -64,7 +64,7 @@ pub fn handle_disarm_pairing<M: StreamMeta>(fsm: &mut QlFsm<M>) {
 
 fn local_transport_params<M: StreamMeta>(fsm: &QlFsm<M>) -> wire::TransportParams {
     wire::TransportParams {
-        initial_stream_receive_window: fsm.config.session.stream_receive_buffer_size,
+        initial_stream_receive_window: fsm.config.session.initial_stream_receive_window,
     }
 }
 

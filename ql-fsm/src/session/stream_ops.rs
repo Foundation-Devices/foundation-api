@@ -36,18 +36,16 @@ impl<'a, M: StreamMeta> StreamOps<'a, M> {
 
     pub fn io(&mut self) -> StreamIo<'_> {
         let stream_id = self.stream_id;
-        let send_buffer_size = self.session.config.stream_send_buffer_size;
-        StreamIo::new(stream_id, &mut self.stream_mut().io, send_buffer_size)
+        StreamIo::new(stream_id, &mut self.stream_mut().io)
     }
 
     /// returns the metadata and stream I/O together
     pub fn split_mut(&mut self) -> (&mut M, StreamIo<'_>) {
         let stream_id = self.stream_id;
-        let send_buffer_size = self.session.config.stream_send_buffer_size;
         let stream = self.stream_mut();
         (
             &mut stream.metadata,
-            StreamIo::new(stream_id, &mut stream.io, send_buffer_size),
+            StreamIo::new(stream_id, &mut stream.io),
         )
     }
 
@@ -115,20 +113,11 @@ impl<M: StreamMeta> Drop for StreamOps<'_, M> {
 pub struct StreamIo<'a> {
     stream_id: StreamId,
     state: &'a mut StreamIoState,
-    send_buffer_size: usize,
 }
 
 impl<'a> StreamIo<'a> {
-    pub(super) fn new(
-        stream_id: StreamId,
-        state: &'a mut StreamIoState,
-        send_buffer_size: usize,
-    ) -> Self {
-        Self {
-            stream_id,
-            state,
-            send_buffer_size,
-        }
+    pub(super) fn new(stream_id: StreamId, state: &'a mut StreamIoState) -> Self {
+        Self { stream_id, state }
     }
 
     pub fn stream_id(&self) -> StreamId {
@@ -163,10 +152,7 @@ impl<'a> StreamIo<'a> {
         ) {
             return WriterState::Finished;
         }
-        WriterState::Open(StreamWriter {
-            state: self.state,
-            send_buffer_size: self.send_buffer_size,
-        })
+        WriterState::Open(StreamWriter { state: self.state })
     }
 }
 
@@ -234,13 +220,12 @@ impl StreamReader<'_> {
 
 pub struct StreamWriter<'a> {
     state: &'a mut StreamIoState,
-    send_buffer_size: usize,
 }
 
 impl StreamWriter<'_> {
     /// returns how many bytes can still be buffered for local writes
     pub fn capacity(&self) -> usize {
-        self.state.send_capacity(self.send_buffer_size)
+        self.state.send_capacity()
     }
 
     /// appends as many bytes as possible and returns the accepted count

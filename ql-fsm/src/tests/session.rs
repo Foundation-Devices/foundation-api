@@ -7,11 +7,14 @@ use ql_wire::SessionClose;
 use super::*;
 use crate::{
     state::LinkState, CommitReadError, Event, NoSessionError, PeerStatus, ReaderState, StreamError,
-    WriterState,
+    StreamOptions, WriterState,
 };
 
 fn open_stream_id(fsm: &mut QlFsm<()>) -> StreamId {
-    fsm.open_stream(Box::from([1])).unwrap().io().stream_id()
+    fsm.open_stream(Box::from([1]), StreamOptions::default())
+        .unwrap()
+        .io()
+        .stream_id()
 }
 
 fn write_stream_bytes(
@@ -178,7 +181,10 @@ fn disconnected_stream_operations_fail_with_no_session() {
     let missing = StreamId(0);
 
     assert!(matches!(
-        harness.a.fsm.open_stream(Box::from([1])),
+        harness
+            .a
+            .fsm
+            .open_stream(Box::from([1]), StreamOptions::default()),
         Err(NoSessionError)
     ));
     assert_eq!(
@@ -354,7 +360,10 @@ fn close_session_disconnects_locally() {
     let close = harness.decode_session_write(*write, Side::A);
     assert!(matches!(harness.a.fsm.state.link, LinkState::Idle));
     assert!(matches!(
-        harness.a.fsm.open_stream(Box::from([1])),
+        harness
+            .a
+            .fsm
+            .open_stream(Box::from([1]), StreamOptions::default()),
         Err(NoSessionError)
     ));
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
@@ -384,7 +393,10 @@ fn unpair_clears_bound_peer_and_emits_unpair_frame() {
     };
     assert!(harness.a.fsm.peer().is_none());
     assert!(matches!(
-        harness.a.fsm.open_stream(Box::from([1])),
+        harness
+            .a
+            .fsm
+            .open_stream(Box::from([1]), StreamOptions::default()),
         Err(NoSessionError)
     ));
     assert_eq!(harness.a.fsm.queue_ping(), Err(NoSessionError));
@@ -430,7 +442,10 @@ fn inbound_unpair_clears_remote_peer_binding() {
     );
     assert!(harness.b.fsm.peer().is_none());
     assert!(matches!(
-        harness.b.fsm.open_stream(Box::from([1])),
+        harness
+            .b
+            .fsm
+            .open_stream(Box::from([1]), StreamOptions::default()),
         Err(NoSessionError)
     ));
     assert!(matches!(harness.connect_ik(Side::B), Err(NoPeerError)));
@@ -557,14 +572,14 @@ fn first_stream_data_uses_negotiated_initial_peer_credit() {
     let mut harness = Harness::paired_known_with_configs(
         QlFsmConfig {
             session: SessionConfig {
-                stream_receive_buffer_size: 8,
+                initial_stream_receive_window: 8,
                 ..SessionConfig::default()
             },
             ..QlFsmConfig::default()
         },
         QlFsmConfig {
             session: SessionConfig {
-                stream_receive_buffer_size: 3,
+                initial_stream_receive_window: 3,
                 ..SessionConfig::default()
             },
             ..QlFsmConfig::default()

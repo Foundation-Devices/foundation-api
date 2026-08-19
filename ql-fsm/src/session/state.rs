@@ -13,7 +13,6 @@ use super::{
     stream_tx::StreamTx,
     tracked::{LossRecovery, TrackedRecord},
 };
-
 pub struct SessionState<M> {
     pub last_activity_at: Instant,
     pub last_inbound_at: Instant,
@@ -48,6 +47,15 @@ pub struct StreamIoState {
     pub inbound_state: InboundState,
     pub advertised_max_offset: u64,
     pub pending_window: bool,
+    pub send_buffer_size: usize,
+    /// only used when the stream is opened locally
+    pub opening_options: StreamOpenOptions,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StreamOpenOptions {
+    pub receive_window: u32,
+    pub requested_peer_receive_window: u32,
 }
 
 impl<M> StreamState<M> {
@@ -57,7 +65,10 @@ impl<M> StreamState<M> {
         header: Option<Bytes>,
         receive_buffer_size: u32,
         initial_peer_stream_receive_window: u32,
+        send_buffer_size: usize,
+        opening_options: StreamOpenOptions,
     ) -> Self {
+        let advertised_max_offset = u64::from(receive_buffer_size);
         let receive_buffer_size = receive_buffer_size as usize;
         Self {
             metadata,
@@ -70,8 +81,10 @@ impl<M> StreamState<M> {
                 outbound_state: OutboundState::Open,
                 inbound_state: InboundState::Open,
                 rx: StreamRx::new(receive_buffer_size),
-                advertised_max_offset: receive_buffer_size as u64,
+                advertised_max_offset,
                 pending_window: false,
+                send_buffer_size,
+                opening_options,
             },
         }
     }
@@ -82,8 +95,8 @@ impl StreamIoState {
         matches!(self.outbound_state, OutboundState::Open)
     }
 
-    pub fn send_capacity(&self, send_buffer_size: usize) -> usize {
-        send_buffer_size.saturating_sub(self.tx.buffered_len())
+    pub fn send_capacity(&self) -> usize {
+        self.send_buffer_size.saturating_sub(self.tx.buffered_len())
     }
 
     pub fn readable_bytes(&self) -> usize {
