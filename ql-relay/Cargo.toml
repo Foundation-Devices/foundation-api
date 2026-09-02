@@ -3,7 +3,7 @@ name = "ql-relay"
 version = "0.1.0"
 edition = "2021"
 description = "QuantumLink relay protocol and client"
-license.workspace = true
+license = "Proprietary"
 
 [dependencies]
 bytes = { workspace = true }
