@@ -1,0 +1,12 @@
+[package]
+name = "ql-relay"
+version = "0.1.0"
+edition = "2021"
+description = "QuantumLink relay protocol and client"
+license.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+ql-codec = { workspace = true }
+ql-wire = { workspace = true, features = ["test-utils"] }
+tokio = { version = "1", features = ["io-util", "net"] }
