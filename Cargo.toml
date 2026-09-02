@@ -5,6 +5,9 @@ members = [
   "btp",
   "ql-codec",
   "ql-common",
+  "ql-keyos",
+  "ql-relay",
+  "ql-api",
   "ql-fsm",
   "ql-rpc",
   "ql-runtime",
@@ -27,5 +30,7 @@ btp = { path = "btp" }
 ql-codec = { path = "ql-codec" }
 ql-common = { path = "ql-common" }
 ql-fsm = { path = "ql-fsm" }
+ql-keyos = { path = "ql-keyos" }
+ql-relay = { path = "ql-relay" }
 ql-rpc = { path = "ql-rpc" }
 ql-wire = { path = "ql-wire" }
