@@ -1,9 +1,13 @@
+//! encrypted transport and routing client for QuantumLink
+//!
+//! one transport connection can attach multiple authenticated QIDs
+
 use std::io;
 
-use ql_codec::{Decode, Encode};
+use ql_codec::Decode;
 use ql_wire::{
-    generate_identity, HandshakeId, IkHandshake, PeerBundle, QlHandshakeRecord, RecordHeader,
-    RecordType, RouteHeader, SessionKey, SoftwareCrypto, TransportParams,
+    generate_identity, HandshakeId, IkHandshake, PeerBundle, QlHandshakeRecord, QlIdentity,
+    RecordHeader, RecordType, RouteHeader, SessionKey, SoftwareCrypto, TransportParams,
 };
 use tokio::net::{
     tcp::{OwnedReadHalf, OwnedWriteHalf},
@@ -11,6 +15,12 @@ use tokio::net::{
 };
 
 use crate::protocol::PacketKind;
+
+macro_rules! io_error {
+    ($kind:ident, $message:expr) => {
+        io::Error::new(io::ErrorKind::$kind, $message)
+    };
+}
 
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:7447";
 pub const MAX_RECORD_SIZE: usize = 8 * 1024;
@@ -62,15 +72,15 @@ pub async fn connect(
 
     let response = protocol::read_frame(&mut tcp)
         .await?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "router disconnected"))?;
+        .ok_or_else(|| io_error!(UnexpectedEof, "router disconnected"))?;
     let protocol::TransportResponse {
         header,
         handshake: response,
     } = protocol::TransportResponse::decode_bytes(response.payload()).map_err(invalid_data)?;
     let QlHandshakeRecord::Ik2(response) = response else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unexpected transport handshake record",
+        return Err(io_error!(
+            InvalidData,
+            "unexpected transport handshake record"
         ));
     };
     handshake
@@ -78,9 +88,9 @@ pub async fn connect(
         .map_err(invalid_data)?;
     let finalized = handshake.finalize(&SoftwareCrypto).map_err(invalid_data)?;
     if finalized.remote_bundle != *router {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "transport peer does not match router",
+        return Err(io_error!(
+            PermissionDenied,
+            "transport peer does not match router"
         ));
     }
     let tx_key = finalized.tx_key;
@@ -106,43 +116,106 @@ pub async fn connect(
 }
 
 pub async fn receive(receiver: &mut Receiver) -> io::Result<Option<Vec<u8>>> {
+    let Some((kind, payload)) = receive_packet(receiver).await? else {
+        return Ok(None);
+    };
+    match kind {
+        PacketKind::Record => Ok(Some(payload)),
+        _ => Err(io_error!(InvalidData, "unexpected router packet")),
+    }
+}
+
+pub async fn receive_packet(receiver: &mut Receiver) -> io::Result<Option<(PacketKind, Vec<u8>)>> {
     let Receiver { tcp, key, counter } = receiver;
     let Some(frame) = protocol::read_frame(tcp).await? else {
         return Ok(None);
     };
     let nonce = protocol::take_counter(counter)
-        .ok_or_else(|| io::Error::other("nonce counter exhausted"))?;
-    let (kind, payload) = protocol::open_packet_owned(key, nonce, frame)?;
-    match kind {
-        PacketKind::Record => Ok(Some(payload)),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unexpected router packet",
-        )),
-    }
+        .ok_or_else(|| io_error!(Other, "nonce counter exhausted"))?;
+    protocol::open_packet_owned(key, nonce, frame).map(Some)
 }
 
 pub async fn send(sender: &mut Sender, record: &[u8]) -> io::Result<()> {
     send_packet(sender, PacketKind::Record, record).await
 }
 
-pub async fn attach(sender: &mut Sender, bundle: &PeerBundle) -> io::Result<()> {
-    let payload = bundle.encode_vec();
-    send_packet(sender, PacketKind::Attach, &payload).await
+pub async fn send_attach(sender: &mut Sender, handshake: &[u8]) -> io::Result<()> {
+    send_packet(sender, PacketKind::Attach, handshake).await
+}
+
+pub async fn attach(
+    receiver: &mut Receiver,
+    sender: &mut Sender,
+    identity: &QlIdentity,
+    router: &PeerBundle,
+) -> io::Result<()> {
+    let route = RouteHeader {
+        sender: identity.qid,
+        recipient: router.qid,
+    };
+    let mut handshake = IkHandshake::new_ik_initiator(
+        &SoftwareCrypto,
+        identity,
+        router.clone(),
+        TransportParams::default(),
+    );
+    let mut random = [0; 4];
+    ql_wire::QlRandom::fill_random_bytes(&SoftwareCrypto, &mut random);
+    let handshake_id = HandshakeId::decode_bytes(random.as_slice()).unwrap();
+    let request = ql_wire::encode_record_vec(
+        RecordHeader::new(route, RecordType::Handshake),
+        &QlHandshakeRecord::Ik1(
+            handshake
+                .write_1(&SoftwareCrypto, handshake_id)
+                .map_err(invalid_data)?,
+        ),
+    );
+    send_attach(sender, &request).await?;
+
+    let response = protocol::read_frame(&mut receiver.tcp)
+        .await?
+        .ok_or_else(|| io_error!(UnexpectedEof, "router disconnected"))?;
+    let nonce = protocol::take_counter(&mut receiver.counter)
+        .ok_or_else(|| io_error!(Other, "nonce counter exhausted"))?;
+    let (kind, response) = protocol::open_packet_owned(&receiver.key, nonce, response)?;
+    if kind != PacketKind::Attach {
+        return Err(io_error!(InvalidData, "unexpected router packet"));
+    }
+    let (header, response) = ql_wire::decode_record::<QlHandshakeRecord, _>(response.as_slice())
+        .map_err(invalid_data)?;
+    let QlHandshakeRecord::Ik2(response) = response else {
+        return Err(io_error!(
+            InvalidData,
+            "unexpected attachment handshake record"
+        ));
+    };
+    handshake
+        .read_2(&SoftwareCrypto, header.route, &response)
+        .map_err(invalid_data)?;
+    let finalized = handshake.finalize(&SoftwareCrypto).map_err(invalid_data)?;
+    if finalized.remote_bundle != *router {
+        return Err(io_error!(
+            PermissionDenied,
+            "attachment peer does not match router"
+        ));
+    }
+    Ok(())
 }
 
 async fn send_packet(sender: &mut Sender, kind: PacketKind, payload: &[u8]) -> io::Result<()> {
     let nonce = protocol::take_counter(&mut sender.counter)
-        .ok_or_else(|| io::Error::other("nonce counter exhausted"))?;
+        .ok_or_else(|| io_error!(Other, "nonce counter exhausted"))?;
     protocol::seal_packet_into(&mut sender.buffer, &sender.key, kind, nonce, payload)?;
     protocol::write_packet(&mut sender.tcp, &sender.buffer).await
 }
 
 fn invalid_data(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error)
+    io_error!(InvalidData, error)
 }
 
 pub mod protocol {
+    //! framing for the encrypted router transport
+
     use std::io;
 
     use ql_codec::{codec, Decode, Encode};
@@ -220,12 +293,7 @@ pub mod protocol {
         let length = PACKET_OVERHEAD
             .checked_add(payload.len())
             .filter(|length| *length <= MAX_FRAME_SIZE)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "frame exceeds the transport limit",
-                )
-            })?;
+            .ok_or_else(|| io_error!(InvalidInput, "frame exceeds the transport limit"))?;
         packet.clear();
         packet.reserve(FRAME_HEADER_SIZE + length);
         (length as u32).encode(packet);
@@ -243,18 +311,12 @@ pub mod protocol {
         packet: &'a [u8],
     ) -> io::Result<Packet<'a>> {
         if packet.len() < FRAME_HEADER_SIZE + PACKET_OVERHEAD {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid authenticated frame",
-            ));
+            return Err(io_error!(InvalidData, "invalid authenticated frame"));
         }
         let length =
             u32::decode_bytes(&packet[..FRAME_HEADER_SIZE]).map_err(super::invalid_data)?;
         if length as usize != packet.len() - FRAME_HEADER_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid authenticated frame length",
-            ));
+            return Err(io_error!(InvalidData, "invalid authenticated frame length"));
         }
         let kind =
             PacketKind::decode_bytes(&packet[FRAME_HEADER_SIZE..]).map_err(super::invalid_data)?;
@@ -268,9 +330,9 @@ pub mod protocol {
             &mut [],
             &tag,
         ) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "authenticated packet tag mismatch",
+            return Err(io_error!(
+                PermissionDenied,
+                "authenticated packet tag mismatch"
             ));
         }
         Ok(Packet {
@@ -301,10 +363,7 @@ pub mod protocol {
         reader.read_exact(&mut header[1..]).await?;
         let length = u32::decode_bytes(header.as_slice()).map_err(super::invalid_data)? as usize;
         if length > MAX_FRAME_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "frame exceeds the transport limit",
-            ));
+            return Err(io_error!(InvalidData, "frame exceeds the transport limit"));
         }
         let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + length);
         frame.extend_from_slice(&header);
@@ -318,10 +377,7 @@ pub mod protocol {
         payload: &[u8],
     ) -> io::Result<()> {
         if payload.len() > MAX_FRAME_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "frame exceeds the transport limit",
-            ));
+            return Err(io_error!(InvalidInput, "frame exceeds the transport limit"));
         }
         let mut header = [0; FRAME_HEADER_SIZE];
         (payload.len() as u32).encode(&mut header.as_mut_slice());

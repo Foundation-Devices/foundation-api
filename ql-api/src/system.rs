@@ -39,6 +39,7 @@ app_routes! {
         SubscribeAppActivity: Subscription = 5,
         RequestPeerPermissions: Request = 6,
         RequestInstallPeerBundles: Request = 7,
+        RequestAttachRouter: Request = 8,
     }
 }
 
@@ -137,6 +138,19 @@ impl Request for RequestInstallPeerBundles {
     type Error = Error;
     type Request = InstallPeerBundlesParams;
     type Response = InstallPeerBundlesResponse;
+}
+
+rpc! {
+    pub enum AttachRouterResponse {
+        Started,
+        Rejected,
+    }
+}
+
+impl Request for RequestAttachRouter {
+    type Error = Error;
+    type Request = Empty;
+    type Response = AttachRouterResponse;
 }
 
 // SERVICE ROUTES

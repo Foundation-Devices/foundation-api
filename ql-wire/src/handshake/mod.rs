@@ -1,3 +1,5 @@
+//! authenticated QuantumLink handshake patterns
+
 use ql_codec::{ByteSlice, Decode, Encode};
 
 use crate::{
@@ -5,14 +7,12 @@ use crate::{
     QlCrypto, RouteHeader, SessionKey, ENCRYPTED_MESSAGE_AUTH_SIZE,
 };
 
-mod challenge;
 mod id;
 mod ik;
 mod pairing;
 mod transport_params;
 mod xx;
 
-pub use challenge::{answer_peer_challenge, PeerChallenge, PendingChallengeConfirmation};
 pub use id::HandshakeId;
 pub use ik::{Ik1, Ik2, IkHandshake, IkPattern};
 pub use pairing::{PairingId, PairingToken};

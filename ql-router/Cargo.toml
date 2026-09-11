@@ -1,8 +1,8 @@
 [package]
-name = "ql-relay"
+name = "ql-router"
 version = "0.1.0"
 edition = "2021"
-description = "QuantumLink relay protocol and client"
+description = "QuantumLink router protocol and client"
 license = "Proprietary"
 
 [dependencies]
