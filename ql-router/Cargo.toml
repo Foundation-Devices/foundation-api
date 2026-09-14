@@ -12,5 +12,9 @@ tokio = ["dep:tokio", "ql-wire/software-crypto"]
 [dependencies]
 bytes = { workspace = true }
 ql-codec = { workspace = true }
+ql-common = { workspace = true }
 ql-wire = { workspace = true }
 tokio = { version = "1", features = ["io-util", "net"], optional = true }
+
+[dev-dependencies]
+ql-wire = { workspace = true, features = ["software-crypto"] }

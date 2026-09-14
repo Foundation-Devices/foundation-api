@@ -10,7 +10,10 @@ use tokio::net::{
     TcpStream, ToSocketAddrs,
 };
 
-use crate::{invalid_data, protocol, protocol::PacketKind};
+use crate::{
+    invalid_data,
+    protocol::{self, AttachChallenge, AttachRecord, PacketKind},
+};
 
 pub struct Receiver {
     tcp: OwnedReadHalf,
@@ -123,7 +126,12 @@ pub async fn receive_packet(receiver: &mut Receiver) -> io::Result<Option<(Packe
     };
     let nonce = protocol::take_counter(counter)
         .ok_or_else(|| io::Error::other("nonce counter exhausted"))?;
-    protocol::open_packet_owned(&SoftwareCrypto, key, nonce, frame).map(Some)
+    Ok(Some(protocol::open_packet_owned(
+        &SoftwareCrypto,
+        key,
+        nonce,
+        frame,
+    )?))
 }
 
 pub async fn send(sender: &mut Sender, record: &[u8]) -> io::Result<()> {
@@ -155,7 +163,7 @@ pub async fn attach(
     let handshake_id = HandshakeId::decode_bytes(random.as_slice()).unwrap();
     let request = ql_wire::encode_record_vec(
         RecordHeader::new(route, RecordType::Handshake),
-        &QlHandshakeRecord::Ik1(
+        &AttachRecord::Initiate(
             handshake
                 .write_1(&SoftwareCrypto, handshake_id)
                 .map_err(invalid_data)?,
@@ -163,22 +171,21 @@ pub async fn attach(
     );
     send_attach(sender, &request).await?;
 
-    let response = protocol::read_frame(&mut receiver.tcp)
+    let (kind, response) = receive_packet(receiver)
         .await?
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "router disconnected"))?;
-    let nonce = protocol::take_counter(&mut receiver.counter)
-        .ok_or_else(|| io::Error::other("nonce counter exhausted"))?;
-    let (kind, response) =
-        protocol::open_packet_owned(&SoftwareCrypto, &receiver.key, nonce, response)?;
     if kind != PacketKind::Attach {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unexpected router packet",
         ));
     }
-    let (header, response) = ql_wire::decode_record::<QlHandshakeRecord, _>(response.as_slice())
-        .map_err(invalid_data)?;
-    let QlHandshakeRecord::Ik2(response) = response else {
+    let (header, response) = protocol::decode_attach(&response)?;
+    let AttachRecord::Challenge(AttachChallenge {
+        handshake: response,
+        cookie,
+    }) = response
+    else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unexpected attachment handshake record",
@@ -194,7 +201,12 @@ pub async fn attach(
             "attachment peer does not match router",
         ));
     }
-    Ok(())
+    let confirmation = protocol::confirm_cookie(&SoftwareCrypto, &finalized.tx_key, cookie);
+    let confirmation = ql_wire::encode_record_vec(
+        RecordHeader::new(route, RecordType::Handshake),
+        &AttachRecord::Confirm(confirmation),
+    );
+    send_attach(sender, &confirmation).await
 }
 
 async fn send_packet(sender: &mut Sender, kind: PacketKind, payload: &[u8]) -> io::Result<()> {
