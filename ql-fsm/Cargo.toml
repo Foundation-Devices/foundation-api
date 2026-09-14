@@ -14,4 +14,4 @@ ql-wire = { workspace = true }
 
 [dev-dependencies]
 proptest = "1.6"
-ql-wire = { workspace = true, features = ["test-utils"] }
+ql-wire = { workspace = true, features = ["software-crypto"] }
