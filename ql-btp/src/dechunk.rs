@@ -8,7 +8,6 @@ use crate::{
 pub enum ReceiveError {
     HeaderTooSmall,
     UnsupportedVersion { tag: u8 },
-    EmptyRecord,
     RecordTooLarge { actual: usize, maximum: usize },
     InvalidChunkIndex { index: u16, total_chunks: usize },
     ChunkTooSmall { expected: usize, actual: usize },
@@ -28,7 +27,6 @@ impl std::fmt::Display for ReceiveError {
             Self::UnsupportedVersion { tag } => {
                 write!(f, "unsupported BTP version tag 0x{tag:02x}")
             }
-            Self::EmptyRecord => f.write_str("record is empty"),
             Self::RecordTooLarge { actual, maximum } => {
                 write!(f, "record is too large: {actual} bytes exceeds {maximum}")
             }
@@ -52,9 +50,15 @@ impl std::fmt::Display for ReceiveError {
 
 impl std::error::Error for ReceiveError {}
 
+/// two records are stored at a time to support out of order packets between adjacent records
 #[derive(Debug, Default)]
 pub struct Dechunker {
-    sequence: Option<u16>,
+    records: [Option<Record>; 2],
+}
+
+#[derive(Debug)]
+struct Record {
+    sequence: u16,
     record_len: usize,
     // one bit per chunk, set after that chunk is copied into data
     received: Vec<u64>,
@@ -79,9 +83,6 @@ impl Dechunker {
         let mut reader = Reader::new(data);
         let header = Header::decode(&mut reader).map_err(|_| ReceiveError::HeaderTooSmall)?;
         let record_len = (header.tagged_record_len & RECORD_LEN_MASK) as usize;
-        if record_len == 0 {
-            return Err(ReceiveError::EmptyRecord);
-        }
         if record_len > MAX_RECORD_SIZE {
             return Err(ReceiveError::RecordTooLarge {
                 actual: record_len,
@@ -108,66 +109,66 @@ impl Dechunker {
         }
 
         let sequence = header.sequence;
-        match self.sequence {
-            None => self.start(sequence, record_len),
-            Some(current) if current == sequence => {
-                if self.record_len != record_len {
-                    return Err(ReceiveError::LengthChanged {
-                        expected: self.record_len,
-                        actual: record_len,
+        let target = match &self.records {
+            [Some(first), _] if first.sequence == sequence => 0,
+            [_, Some(second)] if second.sequence == sequence => 1,
+            [None, _] => 0,
+            [_, None] => 1,
+            [Some(first), Some(second)] => {
+                // wrapping distance makes 0 newer than u16::MAX
+                // only an exact half-cycle is ambiguous
+                let is_newer = |sequence: u16, current: u16| {
+                    let distance = sequence.wrapping_sub(current);
+                    distance != 0 && distance < 1 << 15
+                };
+                let (newest, newest_sequence) = if is_newer(second.sequence, first.sequence) {
+                    (1, second.sequence)
+                } else {
+                    (0, first.sequence)
+                };
+                if !is_newer(sequence, newest_sequence) {
+                    return Err(ReceiveError::StaleSequence {
+                        expected: newest_sequence,
+                        actual: sequence,
                     });
                 }
+                1 - newest
             }
-            Some(_) if header.index == 0 => self.start(sequence, record_len),
-            Some(current) if sequence.wrapping_sub(current) < 1 << 15 => {
-                self.start(sequence, record_len);
-            }
-            Some(current) => {
-                return Err(ReceiveError::StaleSequence {
-                    expected: current,
-                    actual: sequence,
+        };
+
+        if let Some(record) = &self.records[target] {
+            if record.sequence == sequence && record.record_len != record_len {
+                return Err(ReceiveError::LengthChanged {
+                    expected: record.record_len,
+                    actual: record_len,
                 });
             }
+            if record.sequence != sequence {
+                self.records[target] = None;
+            }
         }
+        let record = self.records[target].get_or_insert_with(|| Record {
+            sequence,
+            record_len,
+            received: vec![0; total_chunks.div_ceil(u64::BITS as usize)],
+            received_count: 0,
+            data: vec![0; record_len],
+        });
 
         let index = header.index as usize;
         // split the chunk index into its bitmap word and bit offset
         let word = index / u64::BITS as usize;
         let bit = 1 << (index % u64::BITS as usize);
-        if self.received[word] & bit == 0 {
+        if record.received[word] & bit == 0 {
             let start = index * CHUNK_DATA_SIZE;
-            self.data[start..start + len].copy_from_slice(&payload[..len]);
-            self.received[word] |= bit;
-            self.received_count += 1;
+            record.data[start..start + len].copy_from_slice(&payload[..len]);
+            record.received[word] |= bit;
+            record.received_count += 1;
         }
 
-        if self.received_count == self.record_len.div_ceil(CHUNK_DATA_SIZE) {
-            self.sequence = None;
-            self.received.clear();
-            self.received_count = 0;
-            self.record_len = 0;
-            return Ok(Some(std::mem::take(&mut self.data)));
+        if record.received_count == total_chunks {
+            return Ok(self.records[target].take().map(|record| record.data));
         }
         Ok(None)
-    }
-
-    pub fn progress(&self) -> f32 {
-        let total = self.record_len.div_ceil(CHUNK_DATA_SIZE);
-        if total == 0 {
-            0.0
-        } else {
-            self.received_count as f32 / total as f32
-        }
-    }
-
-    fn start(&mut self, sequence: u16, record_len: usize) {
-        let chunks = record_len.div_ceil(CHUNK_DATA_SIZE);
-        self.sequence = Some(sequence);
-        self.record_len = record_len;
-        self.received.clear();
-        self.received.resize(chunks.div_ceil(u64::BITS as usize), 0);
-        self.received_count = 0;
-        self.data.clear();
-        self.data.resize(record_len, 0);
     }
 }
