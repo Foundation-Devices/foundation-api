@@ -4,7 +4,7 @@ This monorepo contains the core crates for Foundation device-to-device protocols
 
 ## Crates
 
--   **btp**: Beefcake Transfer Protocol for splitting messages into MTU sized chunks
+-   **ql-btp**: QuantumLink BTP framing for splitting records into MTU-sized chunks
 -   **backup-shard**: Magic backup shard encoding
 -   **ql-wire**: QuantumLink wire-format definitions
 -   **ql-fsm**: QuantumLink Sans-IO protocol finite state machine

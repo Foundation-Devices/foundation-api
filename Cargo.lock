@@ -205,17 +205,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "btp"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "consts",
- "getrandom 0.2.16",
- "rand",
- "thiserror",
-]
-
-[[package]]
 name = "build-target"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -255,20 +244,6 @@ name = "bytemuck"
 version = "1.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3995eaeebcdf32f91f980d360f78732ddc061097ab4e39991ae7a6ace9194677"
-dependencies = [
- "bytemuck_derive",
-]
-
-[[package]]
-name = "bytemuck_derive"
-version = "1.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f154e572231cb6ba2bd1176980827e3d5dc04cc183a75dea38109fbdd672d29"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "byteorder"
@@ -1376,6 +1351,15 @@ dependencies = [
  "ql-keyos",
  "ql-rpc",
  "serde",
+]
+
+[[package]]
+name = "ql-btp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "consts",
+ "ql-codec",
 ]
 
 [[package]]
