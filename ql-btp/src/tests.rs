@@ -1,4 +1,19 @@
-use crate::{chunk_with_sequence, Dechunker, ReceiveError, CHUNK_DATA_SIZE};
+use crate::{
+    chunk_with_sequence, packet_version, Dechunker, ReceiveError, Version, CHUNK_DATA_SIZE,
+};
+
+#[test]
+fn packet_version_uses_v1_padding_byte() {
+    let mut chunk = chunk_with_sequence(&[1], 0).next().unwrap();
+    assert_eq!(packet_version(&chunk), Some(Version::V2));
+
+    chunk[7] = 0;
+    assert_eq!(packet_version(&chunk), Some(Version::V1));
+    assert!(matches!(
+        Dechunker::new().receive(&chunk),
+        Err(ReceiveError::UnsupportedVersion { tag: 0 })
+    ));
+}
 
 #[test]
 fn round_trip_out_of_order() {

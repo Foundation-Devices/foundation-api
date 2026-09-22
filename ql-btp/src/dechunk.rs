@@ -1,10 +1,13 @@
 use ql_codec::{Decode, Reader};
 
-use crate::{Header, CHUNK_DATA_SIZE, HEADER_SIZE, MAX_RECORD_SIZE};
+use crate::{
+    packet_version, Header, Version, CHUNK_DATA_SIZE, HEADER_SIZE, MAX_RECORD_SIZE, RECORD_LEN_MASK,
+};
 
 #[derive(Debug)]
 pub enum ReceiveError {
     HeaderTooSmall,
+    UnsupportedVersion { tag: u8 },
     EmptyRecord,
     RecordTooLarge { actual: usize, maximum: usize },
     InvalidChunkIndex { index: u16, total_chunks: usize },
@@ -21,6 +24,9 @@ impl std::fmt::Display for ReceiveError {
                     f,
                     "chunk is too small, expected at least {HEADER_SIZE} bytes"
                 )
+            }
+            Self::UnsupportedVersion { tag } => {
+                write!(f, "unsupported BTP version tag 0x{tag:02x}")
             }
             Self::EmptyRecord => f.write_str("record is empty"),
             Self::RecordTooLarge { actual, maximum } => {
@@ -65,9 +71,14 @@ impl Dechunker {
         if data.len() < HEADER_SIZE {
             return Err(ReceiveError::HeaderTooSmall);
         }
+        if packet_version(data) != Some(Version::V2) {
+            return Err(ReceiveError::UnsupportedVersion {
+                tag: data[HEADER_SIZE - 1],
+            });
+        }
         let mut reader = Reader::new(data);
         let header = Header::decode(&mut reader).map_err(|_| ReceiveError::HeaderTooSmall)?;
-        let record_len = header.record_len as usize;
+        let record_len = (header.tagged_record_len & RECORD_LEN_MASK) as usize;
         if record_len == 0 {
             return Err(ReceiveError::EmptyRecord);
         }

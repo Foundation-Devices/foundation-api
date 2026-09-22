@@ -4,7 +4,7 @@ use bytes::BufMut;
 use consts::APP_MTU;
 use ql_codec::Encode;
 
-use crate::{Header, CHUNK_DATA_SIZE, MAX_RECORD_SIZE};
+use crate::{Header, CHUNK_DATA_SIZE, MAX_RECORD_SIZE, V2_TAG_BITS};
 
 pub struct Chunker<'a> {
     data: &'a [u8],
@@ -26,7 +26,7 @@ impl Iterator for Chunker<'_> {
         let header = Header {
             sequence: self.sequence,
             index: self.index,
-            record_len: self.data.len() as u32,
+            tagged_record_len: V2_TAG_BITS | self.data.len() as u32,
         };
         let mut chunk = [0; APP_MTU];
         let mut output = &mut chunk[..];
