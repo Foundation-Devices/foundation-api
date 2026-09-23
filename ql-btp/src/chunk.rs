@@ -37,7 +37,10 @@ impl Iterator for Chunker<'_> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.data.len() - self.index as usize * CHUNK_DATA_SIZE;
+        let remaining = self
+            .data
+            .len()
+            .saturating_sub(self.index as usize * CHUNK_DATA_SIZE);
         let chunks = remaining.div_ceil(CHUNK_DATA_SIZE);
         (chunks, Some(chunks))
     }

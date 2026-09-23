@@ -87,3 +87,11 @@ fn exact_chunk_boundary_terminates() {
         2
     );
 }
+
+#[test]
+fn exhausted_chunker_has_no_remaining_chunks() {
+    let mut chunks = chunk_with_sequence(&[0], 0);
+
+    chunks.next().unwrap();
+    assert_eq!(chunks.size_hint(), (0, Some(0)));
+}
