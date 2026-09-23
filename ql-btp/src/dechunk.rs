@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use ql_codec::{Decode, Reader};
 
 use crate::{
@@ -51,15 +53,17 @@ impl std::fmt::Display for ReceiveError {
 impl std::error::Error for ReceiveError {}
 
 /// two records are stored at a time to support out of order packets between adjacent records
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Dechunker {
     records: [Option<Record>; 2],
+    inactivity_timeout: Duration,
 }
 
 #[derive(Debug)]
 struct Record {
     sequence: u16,
     record_len: usize,
+    last_received: Instant,
     // one bit per chunk, set after that chunk is copied into data
     received: Vec<u64>,
     received_count: usize,
@@ -67,8 +71,11 @@ struct Record {
 }
 
 impl Dechunker {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(inactivity_timeout: Duration) -> Self {
+        Self {
+            records: [None, None],
+            inactivity_timeout,
+        }
     }
 
     pub fn receive(&mut self, data: &[u8]) -> Result<Option<Vec<u8>>, ReceiveError> {
@@ -106,6 +113,15 @@ impl Dechunker {
                 expected: len,
                 actual: payload.len(),
             });
+        }
+
+        let now = Instant::now();
+        for record in &mut self.records {
+            if record.as_ref().is_some_and(|record| {
+                now.saturating_duration_since(record.last_received) >= self.inactivity_timeout
+            }) {
+                *record = None;
+            }
         }
 
         let sequence = header.sequence;
@@ -150,6 +166,7 @@ impl Dechunker {
         let record = self.records[target].get_or_insert_with(|| Record {
             sequence,
             record_len,
+            last_received: now,
             received: vec![0; total_chunks.div_ceil(u64::BITS as usize)],
             received_count: 0,
             data: vec![0; record_len],
@@ -165,10 +182,17 @@ impl Dechunker {
             record.received[word] |= bit;
             record.received_count += 1;
         }
+        record.last_received = now;
 
         if record.received_count == total_chunks {
             return Ok(self.records[target].take().map(|record| record.data));
         }
         Ok(None)
+    }
+}
+
+impl Default for Dechunker {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(5))
     }
 }
