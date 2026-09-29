@@ -6,7 +6,7 @@ description = "QuantumLink protocol wire format"
 license = "Proprietary"
 
 [features]
-test-utils = [
+software-crypto = [
   "dep:getrandom",
   "dep:libcrux-aesgcm",
   "dep:libcrux-ml-kem",

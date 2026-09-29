@@ -14,7 +14,7 @@ mod identity;
 mod pq;
 mod qid;
 mod record;
-#[cfg(any(feature = "test-utils", test))]
+#[cfg(any(feature = "software-crypto", test))]
 mod testing;
 
 pub use crypto::*;
@@ -27,7 +27,7 @@ pub use identity::*;
 pub use pq::*;
 pub use qid::*;
 pub use record::*;
-#[cfg(any(feature = "test-utils", test))]
+#[cfg(any(feature = "software-crypto", test))]
 pub use testing::*;
 
 pub const QL_WIRE_VERSION: u8 = 2;

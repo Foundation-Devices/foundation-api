@@ -2,9 +2,12 @@
 resolver = "2"
 members = [
   "backup-shard",
-  "btp",
+  "ql-btp",
   "ql-codec",
   "ql-common",
+  "ql-keyos",
+  "ql-router",
+  "ql-api",
   "ql-fsm",
   "ql-rpc",
   "ql-runtime",
@@ -23,9 +26,11 @@ rkyv = { version = "0.8" }
 
 # workspace crates
 backup-shard = { path = "backup-shard" }
-btp = { path = "btp" }
+ql-btp = { path = "ql-btp" }
 ql-codec = { path = "ql-codec" }
 ql-common = { path = "ql-common" }
 ql-fsm = { path = "ql-fsm" }
+ql-keyos = { path = "ql-keyos" }
+ql-router = { path = "ql-router" }
 ql-rpc = { path = "ql-rpc" }
 ql-wire = { path = "ql-wire" }

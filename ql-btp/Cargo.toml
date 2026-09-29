@@ -1,16 +1,12 @@
 [package]
-name = "btp"
+name = "ql-btp"
 version = "0.1.0"
 edition = "2021"
 homepage.workspace = true
 
 [dependencies]
-bytemuck = { version = "1", features = ["derive"] }
+bytes = { workspace = true }
 consts = { git = "https://github.com/Foundation-Devices/prime-ble-firmware.git", features = [
     "dle",
 ] }
-getrandom = { workspace = true }
-thiserror = "2"
-
-[dev-dependencies]
-rand = "0.9"
+ql-codec = { workspace = true }
