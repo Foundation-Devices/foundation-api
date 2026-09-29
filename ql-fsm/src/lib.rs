@@ -118,7 +118,7 @@ impl StreamResetTarget {
 
 /// handle for a session write returned by `QlFsm::take_next_write`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct WriteId(pub(crate) u64);
+pub struct WriteId(pub u64);
 
 /// outbound record produced by `QlFsm`
 #[derive(Debug, Clone, PartialEq, Eq)]
