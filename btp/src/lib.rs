@@ -39,8 +39,10 @@ impl Header {
         bytemuck::bytes_of(self)
     }
 
+    /// Reads a header out of `bytes`, which does not have to be aligned:
+    /// received packets are often a sub-slice of a larger transport buffer.
     #[inline]
-    fn from_bytes(bytes: &[u8]) -> Option<&Self> {
-        bytemuck::try_from_bytes::<Header>(bytes).ok()
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        bytemuck::try_pod_read_unaligned::<Header>(bytes).ok()
     }
 }

@@ -256,6 +256,44 @@ fn chunk_decode_and_insert() {
     assert_eq!(dechunker.data(), Some(data.to_vec()));
 }
 
+/// Copies `chunk` into a buffer at an odd address and returns that sub-slice,
+/// mimicking a receive path that hands us a view into a larger packet buffer.
+fn unaligned<'a>(buf: &'a mut [u8], chunk: &[u8]) -> &'a [u8] {
+    let offset = if buf.as_ptr() as usize % 2 == 0 { 1 } else { 2 };
+    buf[offset..offset + chunk.len()].copy_from_slice(chunk);
+    let slice = &buf[offset..offset + chunk.len()];
+    assert_eq!(slice.as_ptr() as usize % 2, 1, "slice should be unaligned");
+    slice
+}
+
+#[test]
+fn decode_unaligned_chunk() {
+    let data = b"Chunk arriving on an odd address";
+    let chunks: Vec<_> = chunk(data).collect();
+
+    let mut buf = vec![0u8; APP_MTU + 2];
+    let slice = unaligned(&mut buf, &chunks[0]);
+
+    let decoded = Chunk::decode(slice).expect("decoding must not depend on buffer alignment");
+    assert_eq!(decoded.as_slice(), data);
+}
+
+#[test]
+fn receive_unaligned_chunks() {
+    let data = vec![7u8; CHUNK_DATA_SIZE * 2 + 1];
+    let chunks: Vec<_> = chunk(&data).collect();
+
+    let mut dechunker = Dechunker::new();
+    for chunk in &chunks {
+        let mut buf = vec![0u8; APP_MTU + 2];
+        dechunker
+            .receive(unaligned(&mut buf, chunk))
+            .expect("unaligned chunk should be received");
+    }
+
+    assert_eq!(dechunker.data(), Some(data));
+}
+
 #[test]
 fn chunk_decode_errors() {
     let small_data = vec![0u8; HEADER_SIZE - 1];

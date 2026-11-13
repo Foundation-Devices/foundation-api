@@ -86,10 +86,7 @@ impl Chunk {
         let mut chunk = [0u8; CHUNK_DATA_SIZE];
         chunk[..data_len].copy_from_slice(&chunk_data[..data_len]);
 
-        Ok(Chunk {
-            header: *header,
-            chunk,
-        })
+        Ok(Chunk { header, chunk })
     }
 }
 
