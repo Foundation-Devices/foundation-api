@@ -6,7 +6,8 @@ homepage.workspace = true
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
-consts = { git = "https://github.com/Foundation-Devices/prime-ble-firmware.git", features = [
+# host-protocol_v4.0.0, the BLE protocol release Passport Prime builds with
+consts = { git = "https://github.com/Foundation-Devices/prime-ble-firmware.git", rev = "6c29bc743e2986451f9ea5063be916eb0d55df6a", features = [
     "dle",
 ] }
 getrandom = { workspace = true }
