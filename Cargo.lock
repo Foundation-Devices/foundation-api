@@ -523,8 +523,8 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "consts"
-version = "1.0.0"
-source = "git+https://github.com/Foundation-Devices/prime-ble-firmware.git#543345473e874d7b45c47b386168ff24b9b7f060"
+version = "2.0.0"
+source = "git+https://github.com/Foundation-Devices/prime-ble-firmware.git?rev=6c29bc743e2986451f9ea5063be916eb0d55df6a#6c29bc743e2986451f9ea5063be916eb0d55df6a"
 
 [[package]]
 name = "core-foundation-sys"
